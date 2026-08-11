@@ -8,7 +8,7 @@ export interface CustomFetchOptions {
   apiKey?: string;
   /** API URL used for attestation; required outside OpenSecretProvider. */
   apiUrl?: string;
-  /** PCR0 trust policy enforced before non-loopback session key exchange. */
+  /** PCR0 trust policy enforced before non-loopback session key exchange; defaults to production. */
   pcrConfig?: PcrConfig;
 }
 

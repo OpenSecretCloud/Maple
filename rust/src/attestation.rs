@@ -27,19 +27,9 @@ pub struct AttestationDocument {
 /// authenticity alone does not identify an OpenSecret deployment. Production
 /// callers should use `OpenSecretClient`, which additionally enforces its
 /// configured `Pcr0TrustPolicy` before key exchange.
+#[derive(Default)]
 pub struct AttestationVerifier {
     expected_pcrs: Option<std::collections::HashMap<usize, Vec<u8>>>,
-    allow_debug: bool,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for AttestationVerifier {
-    fn default() -> Self {
-        Self {
-            expected_pcrs: None,
-            allow_debug: cfg!(feature = "mock-attestation"),
-        }
-    }
 }
 
 impl AttestationVerifier {
@@ -294,11 +284,6 @@ impl AttestationVerifier {
     }
 
     fn verify_certificate_chain(&self, doc: &AttestationDocument) -> Result<()> {
-        // In mock mode, skip certificate verification
-        if self.allow_debug && doc.module_id.starts_with("mock-") {
-            return Ok(());
-        }
-
         // Step 1: Verify the first cert in cabundle matches AWS Nitro root
         if doc.cabundle.is_empty() {
             return Err(Error::AttestationVerificationFailed(
@@ -466,11 +451,6 @@ impl AttestationVerifier {
         signature_bytes: &[u8],
         doc: &AttestationDocument,
     ) -> Result<()> {
-        // In mock mode, skip signature verification
-        if self.allow_debug && doc.module_id.starts_with("mock-") {
-            return Ok(());
-        }
-
         // Parse the leaf certificate
         let (_, cert) = X509Certificate::from_der(&doc.certificate).map_err(|e| {
             Error::AttestationVerificationFailed(format!(
@@ -664,4 +644,21 @@ pub fn create_mock_attestation_document(nonce: &str) -> Result<String> {
 
     let cose_bytes = cbor::to_vec(&CborValue::Array(cose_sign1))?;
     Ok(BASE64.encode(cose_bytes))
+}
+
+#[cfg(all(test, feature = "mock-attestation"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_verifier_never_accepts_feature_gated_mock_documents() {
+        let nonce = "test-nonce";
+        let document = create_mock_attestation_document(nonce).unwrap();
+
+        let error = AttestationVerifier::new()
+            .verify_attestation_document(&document, nonce)
+            .unwrap_err();
+
+        assert!(matches!(error, Error::AttestationVerificationFailed(_)));
+    }
 }

@@ -1,4 +1,6 @@
-use opensecret::{OpenSecretClient, Result};
+mod common;
+
+use opensecret::Result;
 use std::env;
 
 #[tokio::test]
@@ -6,7 +8,7 @@ async fn test_session_establishment() -> Result<()> {
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
 
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
 
     // Initially should have no session
     assert!(

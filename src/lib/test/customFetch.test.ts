@@ -352,12 +352,14 @@ describe("createCustomFetch stale-session recovery", () => {
   test("forwards one endpoint-bound PCR policy through lookup and renewal", async () => {
     const apiUrl = "https://enclave.example.test/base";
     const pcrConfig: PcrConfig = {
-      pcr0Values: ["2a".repeat(48)],
+      environment: "development",
+      pcr0DevValues: ["2a".repeat(48)],
       remoteAttestation: false
     };
     const expectedPcrConfig: PcrConfig = {
-      pcr0Values: ["2a".repeat(48)],
-      pcr0DevValues: [],
+      environment: "development",
+      pcr0Values: [],
+      pcr0DevValues: ["2a".repeat(48)],
       remoteAttestation: false,
       remoteAttestationUrls: {
         prod: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrProdHistory.json",
@@ -377,7 +379,8 @@ describe("createCustomFetch stale-session recovery", () => {
         },
         fetch: async (_input, init) => {
           if (recordRequest(init).sessionId === staleAttestation.sessionId) {
-            pcrConfig.pcr0Values = ["4c".repeat(48)];
+            pcrConfig.environment = "production";
+            pcrConfig.pcr0DevValues = ["4c".repeat(48)];
             pcrConfig.remoteAttestation = true;
             return new Response("stale", { status: 400 });
           }
@@ -432,6 +435,7 @@ describe("createCustomFetch stale-session recovery", () => {
       expect(calls[0][0]).toBe(false);
       expect(calls[0][1]).toBe(apiUrl);
       expect(calls[0][2]).toEqual(expect.objectContaining(pcrConfig));
+      expect(calls[0][2]?.environment).toBe("production");
     } finally {
       setApiUrl(originalApiUrl, originalPcrConfig);
     }

@@ -26,7 +26,7 @@ http = "1"
 ## Quick Start
 
 ```rust
-use opensecret::{OpenSecretClient, Pcr0TrustPolicy, Result};
+use opensecret::{OpenSecretClient, Pcr0Environment, Pcr0TrustPolicy, Result};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -53,8 +53,23 @@ async fn main() -> Result<()> {
 
 Production clients verify both the AWS Nitro attestation and the enclave's
 PCR0 deployment identity. `OpenSecretClient::new` uses pinned official PCR0
-values and OpenSecret's signed production and development histories. Custom
-deployments can add a static allowlist without replacing official trust:
+values and OpenSecret's signed production history. Development trust must be
+selected explicitly and checks only the development roots and signed history:
+
+```rust
+let development_client = OpenSecretClient::new_with_pcr0_environment(
+    "https://enclave.secretgpt.ai",
+    Pcr0Environment::Development,
+)?;
+```
+
+The API-key equivalent is
+`OpenSecretClient::new_with_api_key_and_pcr0_environment`. A signed PCR0 added
+to the selected GitHub history is accepted without a client update. Neither
+official policy falls back to the other environment.
+
+Custom deployments can add a static allowlist without replacing the selected
+official trust policy:
 
 ```rust
 let policy = Pcr0TrustPolicy::official().with_additional_pcr0s([
@@ -215,8 +230,12 @@ The SDK reads configuration from `.env.local` in the parent directory (OpenSecre
 Required environment variables in `.env.local`:
 ```bash
 VITE_OPEN_SECRET_API_URL=http://localhost:3000
+VITE_OPEN_SECRET_PCR_ENVIRONMENT=production
 VITE_TEST_CLIENT_ID=your-client-id-uuid
 ```
+
+Production is the default when `VITE_OPEN_SECRET_PCR_ENVIRONMENT` is omitted.
+Set it to `development` when the configured URL is a hosted development enclave.
 
 Run tests:
 ```bash

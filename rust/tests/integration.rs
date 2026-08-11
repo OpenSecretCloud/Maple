@@ -1,4 +1,6 @@
-use opensecret::{OpenSecretClient, Result};
+mod common;
+
+use opensecret::Result;
 use std::env;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -7,7 +9,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 async fn test_client_initialization() -> Result<()> {
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
     assert!(client.get_session_id()?.is_none());
     Ok(())
 }
@@ -26,7 +28,7 @@ async fn test_health_check_mock() -> Result<()> {
         .mount(&mock_server)
         .await;
 
-    let client = OpenSecretClient::new(mock_server.uri())?;
+    let client = common::new_test_client(mock_server.uri())?;
     let response = client.test_connection().await?;
 
     assert!(response.contains("healthy"));
@@ -45,7 +47,7 @@ async fn test_full_flow_with_real_server() -> Result<()> {
 
     println!("Testing against: {}", base_url);
 
-    let client = OpenSecretClient::new(base_url)?;
+    let client = common::new_test_client(base_url)?;
 
     // 1. Test connection
     let health = client.test_connection().await?;

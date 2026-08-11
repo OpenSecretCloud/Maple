@@ -66,6 +66,7 @@
 - [ParsedAttestationView](type-aliases/ParsedAttestationView.md)
 - [Pcr0ValidationResult](type-aliases/Pcr0ValidationResult.md)
 - [PcrConfig](type-aliases/PcrConfig.md)
+- [PcrEnvironment](type-aliases/PcrEnvironment.md)
 - [ProjectDetails](type-aliases/ProjectDetails.md)
 - [ProjectSettings](type-aliases/ProjectSettings.md)
 - [PushSettings](type-aliases/PushSettings.md)

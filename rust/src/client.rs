@@ -3,7 +3,7 @@ use crate::{
     cbor::{self, Value as CborValue},
     crypto::{self},
     error::{Error, Result},
-    pcr::Pcr0TrustPolicy,
+    pcr::{Pcr0Environment, Pcr0TrustPolicy},
     session::SessionManager,
     types::*,
 };
@@ -424,11 +424,20 @@ fn uses_mock_attestation(base_url: &str) -> Result<bool> {
 }
 
 impl OpenSecretClient {
+    /// Construct a client using the official production PCR0 trust roots.
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
-        Self::new_with_pcr0_trust_policy(base_url, Pcr0TrustPolicy::official())
+        Self::new_with_pcr0_environment(base_url, Pcr0Environment::default())
     }
 
-    /// Construct a client with an explicit production PCR0 trust policy.
+    /// Construct a client using one explicit official PCR0 environment.
+    pub fn new_with_pcr0_environment(
+        base_url: impl Into<String>,
+        pcr0_environment: Pcr0Environment,
+    ) -> Result<Self> {
+        Self::new_with_pcr0_trust_policy(base_url, Pcr0TrustPolicy::official_for(pcr0_environment))
+    }
+
+    /// Construct a client with an explicit PCR0 trust policy.
     pub fn new_with_pcr0_trust_policy(
         base_url: impl Into<String>,
         pcr0_trust_policy: Pcr0TrustPolicy,
@@ -446,11 +455,25 @@ impl OpenSecretClient {
         })
     }
 
+    /// Construct an API-key client using the official production PCR0 trust roots.
     pub fn new_with_api_key(base_url: impl Into<String>, api_key: String) -> Result<Self> {
-        Self::new_with_api_key_and_pcr0_trust_policy(base_url, api_key, Pcr0TrustPolicy::official())
+        Self::new_with_api_key_and_pcr0_environment(base_url, api_key, Pcr0Environment::default())
     }
 
-    /// Construct an API-key client with an explicit production PCR0 policy.
+    /// Construct an API-key client using one explicit official PCR0 environment.
+    pub fn new_with_api_key_and_pcr0_environment(
+        base_url: impl Into<String>,
+        api_key: String,
+        pcr0_environment: Pcr0Environment,
+    ) -> Result<Self> {
+        Self::new_with_api_key_and_pcr0_trust_policy(
+            base_url,
+            api_key,
+            Pcr0TrustPolicy::official_for(pcr0_environment),
+        )
+    }
+
+    /// Construct an API-key client with an explicit PCR0 trust policy.
     pub fn new_with_api_key_and_pcr0_trust_policy(
         base_url: impl Into<String>,
         api_key: String,
@@ -485,22 +508,40 @@ impl OpenSecretClient {
         let attestation_doc = self.get_attestation_document(&nonce).await?;
 
         // Step 2: Parse and verify attestation document
-        let doc = if !self.use_mock_attestation {
+        if !self.use_mock_attestation {
             let verifier = AttestationVerifier::new();
             let doc = verifier
                 .verify_attestation_document(&attestation_doc.attestation_document, &nonce)?;
-            let pcr0 = doc.pcrs.get(&0).ok_or_else(|| {
-                Error::AttestationVerificationFailed(
-                    "Missing PCR0 in attestation document".to_string(),
-                )
-            })?;
-            self.pcr0_trust_policy.verify_pcr0(pcr0).await?;
-            doc
+            self.establish_session_from_verified_attestation(&nonce, doc)
+                .await
         } else {
             // For mock mode, extract without full verification
-            self.parse_mock_attestation(&attestation_doc.attestation_document)?
-        };
+            let doc = self.parse_mock_attestation(&attestation_doc.attestation_document)?;
+            self.establish_session_from_document(&nonce, doc).await
+        }
+    }
 
+    /// Establish a session from a Nitro-authenticated document.
+    ///
+    /// Keeping PCR0 enforcement in the same path as key exchange makes the
+    /// fail-before-key-exchange ordering explicit and independently testable.
+    async fn establish_session_from_verified_attestation(
+        &self,
+        nonce: &str,
+        doc: AttestationDocument,
+    ) -> Result<()> {
+        let pcr0 = doc.pcrs.get(&0).ok_or_else(|| {
+            Error::AttestationVerificationFailed("Missing PCR0 in attestation document".to_string())
+        })?;
+        self.pcr0_trust_policy.verify_pcr0(pcr0).await?;
+        self.establish_session_from_document(nonce, doc).await
+    }
+
+    async fn establish_session_from_document(
+        &self,
+        nonce: &str,
+        doc: AttestationDocument,
+    ) -> Result<()> {
         let server_public_key = doc.public_key.ok_or_else(|| {
             Error::AttestationVerificationFailed(
                 "No public key in attestation document".to_string(),
@@ -508,8 +549,7 @@ impl OpenSecretClient {
         })?;
 
         // Step 3: Perform key exchange
-        self.perform_key_exchange(&nonce, &server_public_key)
-            .await?;
+        self.perform_key_exchange(nonce, &server_public_key).await?;
 
         Ok(())
     }
@@ -2513,6 +2553,23 @@ mod tests {
         Match, Mock, MockServer, Request, Respond, ResponseTemplate,
     };
 
+    const DEVELOPMENT_PCR0: &str =
+        "62c0407056217a4c10764ed9045694c29fa93255d3cc04c2f989cdd9a1f8050c8b169714c71f1118ebce2fcc9951d1a9";
+
+    fn synthetic_verified_attestation(pcr0: &str) -> AttestationDocument {
+        AttestationDocument {
+            module_id: "test-module".to_string(),
+            timestamp: 1,
+            digest: "SHA384".to_string(),
+            pcrs: HashMap::from([(0, hex::decode(pcr0).expect("valid test PCR0"))]),
+            certificate: Vec::new(),
+            cabundle: Vec::new(),
+            public_key: Some(vec![7; 32]),
+            user_data: None,
+            nonce: Some(b"test-nonce".to_vec()),
+        }
+    }
+
     struct MissingHeaderMatcher(&'static str);
 
     impl Match for MissingHeaderMatcher {
@@ -2852,6 +2909,60 @@ mod tests {
         let client = OpenSecretClient::new("http://localhost:3000").unwrap();
         assert_eq!(client.base_url, "http://localhost:3000");
         assert!(client.use_mock_attestation);
+    }
+
+    #[tokio::test]
+    async fn cross_environment_pcr0_fails_before_key_exchange() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/key_exchange"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let production_policy =
+            Pcr0TrustPolicy::official_for(Pcr0Environment::Production).without_remote_history();
+        let client =
+            OpenSecretClient::new_with_pcr0_trust_policy(mock_server.uri(), production_policy)
+                .unwrap();
+        let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
+
+        let error = client
+            .establish_session_from_verified_attestation("test-nonce", document)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::AttestationVerificationFailed(_)));
+        assert!(client.get_session_id().unwrap().is_none());
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn development_environment_accepts_development_pcr0_before_key_exchange() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/key_exchange"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = OpenSecretClient::new_with_pcr0_environment(
+            mock_server.uri(),
+            Pcr0Environment::Development,
+        )
+        .unwrap();
+        let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
+
+        let error = client
+            .establish_session_from_verified_attestation("test-nonce", document)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Api { status: 500, .. }));
+        assert!(client.get_session_id().unwrap().is_none());
+        mock_server.verify().await;
     }
 
     #[test]

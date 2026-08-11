@@ -26,6 +26,7 @@ sidebar_position: 100
 - [ParsedAttestationView](type-aliases/ParsedAttestationView.md)
 - [Pcr0ValidationResult](type-aliases/Pcr0ValidationResult.md)
 - [PcrConfig](type-aliases/PcrConfig.md)
+- [PcrEnvironment](type-aliases/PcrEnvironment.md)
 - [ProjectDetails](type-aliases/ProjectDetails.md)
 - [ProjectSettings](type-aliases/ProjectSettings.md)
 - [UserResponse](type-aliases/UserResponse.md)

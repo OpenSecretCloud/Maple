@@ -14,7 +14,7 @@ import type { AttestationDocument } from "./attestation";
 import type { LoginResponse, ThirdPartyTokenResponse, DocumentResponse } from "./api";
 import { PcrConfig } from "./pcr";
 
-const DEFAULT_PCR_CONFIG: PcrConfig = {};
+const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
 
 export type OpenSecretAuthState = {
   loading: boolean;
@@ -352,7 +352,8 @@ export type OpenSecretContextType = {
   apiUrl: string;
 
   /**
-   * PCR0 trust policy enforced before every non-loopback session key exchange
+   * PCR0 trust policy enforced before every non-loopback session key exchange.
+   * The trust environment defaults to production.
    */
   pcrConfig: PcrConfig;
 
@@ -942,7 +943,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   signMessage: api.signMessage,
   aiCustomFetch: async () => new Response(),
   apiUrl: "",
-  pcrConfig: {},
+  pcrConfig: DEFAULT_PCR_CONFIG,
   getAttestation,
   authenticate,
   parseAttestationForView,
@@ -1000,7 +1001,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
  * @param props.children - React child components to be wrapped by the provider
  * @param props.apiUrl - URL of OpenSecret enclave backend
  * @param props.clientId - UUID identifying which project/tenant this instance belongs to
- * @param props.pcrConfig - Optional PCR0 trust policy enforced before session establishment
+ * @param props.pcrConfig - Optional PCR0 trust policy enforced before session establishment; its environment defaults to production
  *
  * @remarks
  * This provider manages:

@@ -27,7 +27,9 @@ test.skipIf(!runLive)(
       return originalFetch(input, init);
     };
 
-    const attestation = await getAttestation(true, liveApiUrl);
+    const attestation = await getAttestation(true, liveApiUrl, {
+      environment: "development"
+    });
 
     expect(attestation.sessionKey).toHaveLength(32);
     expect(attestation.sessionId).toBeTruthy();
@@ -38,8 +40,8 @@ test.skipIf(!runLive)(
     const keyExchangeIndex = requests.findIndex((url) => url.endsWith("/key_exchange"));
 
     expect(attestationIndex).toBeGreaterThanOrEqual(0);
-    expect(prodHistoryIndex).toBeGreaterThan(attestationIndex);
-    expect(devHistoryIndex).toBeGreaterThan(prodHistoryIndex);
+    expect(prodHistoryIndex).toBe(-1);
+    expect(devHistoryIndex).toBeGreaterThan(attestationIndex);
     expect(keyExchangeIndex).toBeGreaterThan(devHistoryIndex);
   }
 );
@@ -53,11 +55,32 @@ test.skipIf(!runLive)(
       return originalFetch(input, init);
     };
 
-    await expect(getAttestation(true, liveApiUrl, { remoteAttestation: false })).rejects.toThrow(
-      /PCR0/i
-    );
+    await expect(
+      getAttestation(true, liveApiUrl, {
+        environment: "development",
+        remoteAttestation: false
+      })
+    ).rejects.toThrow(/PCR0/i);
 
     expect(requests.filter((url) => url.includes("/attestation/"))).toHaveLength(1);
+    expect(requests.filter((url) => url.endsWith("/key_exchange"))).toHaveLength(0);
+  }
+);
+
+test.skipIf(!runLive)(
+  "hosted development enclave is rejected by the default production policy",
+  async () => {
+    const requests: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push(requestUrl(input));
+      return originalFetch(input, init);
+    };
+
+    await expect(getAttestation(true, liveApiUrl)).rejects.toThrow(/PCR0/i);
+
+    expect(requests.filter((url) => url.includes("/attestation/"))).toHaveLength(1);
+    expect(requests.filter((url) => url.endsWith("/pcrProdHistory.json"))).toHaveLength(1);
+    expect(requests.filter((url) => url.endsWith("/pcrDevHistory.json"))).toHaveLength(0);
     expect(requests.filter((url) => url.endsWith("/key_exchange"))).toHaveLength(0);
   }
 );

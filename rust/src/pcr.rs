@@ -47,10 +47,22 @@ const OFFICIAL_DEVELOPMENT_PCR0S: &[&str] = &[
     "c4285443b87b9b12a6cea3bef1064ec060f652b235a297095975af8f134e5ed65f92d70d4616fdec80af9dff48bb9f35",
 ];
 
+/// OpenSecret deployment environment whose PCR0 trust roots should be used.
+///
+/// Production is the fail-closed default. Development must be selected
+/// explicitly by clients that connect to an OpenSecret development enclave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pcr0Environment {
+    #[default]
+    Production,
+    Development,
+}
+
 /// PCR0 deployment-identity policy enforced after Nitro document validation.
 ///
-/// The default policy trusts OpenSecret's pinned PCR0 values and falls back to
-/// the signed official production and development histories. Use
+/// The default policy trusts OpenSecret's pinned production PCR0 values and
+/// falls back to the signed official production history. Use
+/// [`Self::official_for`] to explicitly select development trust roots, or
 /// [`Self::from_static_allowlist`] for a custom deployment that must not use
 /// remote history.
 #[derive(Debug, Clone)]
@@ -60,20 +72,29 @@ pub struct Pcr0TrustPolicy {
 }
 
 impl Pcr0TrustPolicy {
-    /// Return the official OpenSecret policy used by default.
+    /// Return the official production policy used by default.
     pub fn official() -> Self {
-        let trusted_pcr0s = OFFICIAL_PRODUCTION_PCR0S
-            .iter()
-            .chain(OFFICIAL_DEVELOPMENT_PCR0S)
-            .map(|pcr0| (*pcr0).to_string())
-            .collect();
-        let remote_history_urls = [
-            OFFICIAL_PRODUCTION_PCR_HISTORY_URL,
-            OFFICIAL_DEVELOPMENT_PCR_HISTORY_URL,
-        ]
-        .into_iter()
-        .map(|url| Url::parse(url).expect("official PCR history URL must be valid"))
-        .collect();
+        Self::official_for(Pcr0Environment::Production)
+    }
+
+    /// Return the official policy for one explicit OpenSecret environment.
+    ///
+    /// The selected policy contains only that environment's pinned PCR0 roots
+    /// and signed history URL. It never falls back to the other environment.
+    pub fn official_for(environment: Pcr0Environment) -> Self {
+        let (pcr0s, remote_history_url) = match environment {
+            Pcr0Environment::Production => (
+                OFFICIAL_PRODUCTION_PCR0S,
+                OFFICIAL_PRODUCTION_PCR_HISTORY_URL,
+            ),
+            Pcr0Environment::Development => (
+                OFFICIAL_DEVELOPMENT_PCR0S,
+                OFFICIAL_DEVELOPMENT_PCR_HISTORY_URL,
+            ),
+        };
+        let trusted_pcr0s = pcr0s.iter().map(|pcr0| (*pcr0).to_string()).collect();
+        let remote_history_urls =
+            vec![Url::parse(remote_history_url).expect("official PCR history URL must be valid")];
 
         Self {
             trusted_pcr0s,
@@ -157,6 +178,11 @@ impl Pcr0TrustPolicy {
             return Err(Error::AttestationVerificationFailed(format!(
                 "PCR0 must be {PCR0_BYTES_LEN} bytes"
             )));
+        }
+        if pcr0.iter().all(|byte| *byte == 0) {
+            return Err(Error::AttestationVerificationFailed(
+                "PCR0 must not be all zero".to_string(),
+            ));
         }
         let pcr0_hex = hex::encode(pcr0);
         if self.trusted_pcr0s.contains(&pcr0_hex) {
@@ -302,6 +328,11 @@ fn validate_pcr0_hex(pcr0: &str) -> Result<()> {
             "PCR0 values must be 96 lowercase hexadecimal characters".to_string(),
         ));
     }
+    if pcr0.bytes().all(|byte| byte == b'0') {
+        return Err(Error::Configuration(
+            "PCR0 values must not be all zero".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -347,6 +378,22 @@ mod tests {
         "3637534c33a8bafc5034d5763e441a481f161bbbe888e375ce14b016c7497dc4e550afe866bd8e65969b409d54766481";
     const SIGNED_PCR0_SIGNATURE: &str =
         "GZTXC0Xt0+yAaAatmMUd37pUJpF0nRAOj3Df9qxDOvDvRkiTF8UbGlzlL4kIOi/nd7dXAaEqYnY7OlpyngHBED2CSTpRRwV0xGo109epfqUKWWudrFaXpMsJ+GRKJLFO";
+    const UNKNOWN_PCR0: &str = concat!(
+        "1111111111111111",
+        "1111111111111111",
+        "1111111111111111",
+        "1111111111111111",
+        "1111111111111111",
+        "1111111111111111",
+    );
+    const ALL_ZERO_PCR0: &str = concat!(
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000",
+    );
 
     fn pcr_bytes(value: &str) -> Vec<u8> {
         hex::decode(value).unwrap()
@@ -361,6 +408,76 @@ mod tests {
             "signature": signature,
             "futureMetadata": { "release": "ignored" },
         }])
+    }
+
+    #[tokio::test]
+    async fn official_policy_defaults_to_production_only() {
+        let policy = Pcr0TrustPolicy::official();
+        let default_policy = Pcr0TrustPolicy::default();
+        let production_history =
+            Url::parse(OFFICIAL_PRODUCTION_PCR_HISTORY_URL).expect("valid production URL");
+
+        for candidate in [&policy, &default_policy] {
+            assert_eq!(
+                candidate.remote_history_urls,
+                vec![production_history.clone()]
+            );
+            assert_eq!(
+                candidate.trusted_pcr0s.len(),
+                OFFICIAL_PRODUCTION_PCR0S.len()
+            );
+            assert!(OFFICIAL_PRODUCTION_PCR0S
+                .iter()
+                .all(|pcr0| candidate.trusted_pcr0s.contains(*pcr0)));
+            assert!(OFFICIAL_DEVELOPMENT_PCR0S
+                .iter()
+                .all(|pcr0| !candidate.trusted_pcr0s.contains(*pcr0)));
+        }
+
+        let static_policy = policy.without_remote_history();
+        static_policy
+            .verify_pcr0(&pcr_bytes(OFFICIAL_PRODUCTION_PCR0S[0]))
+            .await
+            .unwrap();
+        assert!(static_policy
+            .verify_pcr0(&pcr_bytes(OFFICIAL_DEVELOPMENT_PCR0S[0]))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn development_policy_excludes_production_trust() {
+        let policy = Pcr0TrustPolicy::official_for(Pcr0Environment::Development);
+        assert_eq!(
+            policy.remote_history_urls,
+            vec![Url::parse(OFFICIAL_DEVELOPMENT_PCR_HISTORY_URL).expect("valid development URL")]
+        );
+        assert_eq!(policy.trusted_pcr0s.len(), OFFICIAL_DEVELOPMENT_PCR0S.len());
+        assert!(OFFICIAL_DEVELOPMENT_PCR0S
+            .iter()
+            .all(|pcr0| policy.trusted_pcr0s.contains(*pcr0)));
+        assert!(OFFICIAL_PRODUCTION_PCR0S
+            .iter()
+            .all(|pcr0| !policy.trusted_pcr0s.contains(*pcr0)));
+
+        let static_policy = policy.without_remote_history();
+        static_policy
+            .verify_pcr0(&pcr_bytes(OFFICIAL_DEVELOPMENT_PCR0S[0]))
+            .await
+            .unwrap();
+        assert!(static_policy
+            .verify_pcr0(&pcr_bytes(OFFICIAL_PRODUCTION_PCR0S[0]))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn all_zero_pcr0_is_never_trusted() {
+        assert!(Pcr0TrustPolicy::from_static_allowlist([ALL_ZERO_PCR0]).is_err());
+
+        let policy = Pcr0TrustPolicy::official().without_remote_history();
+        let error = policy.verify_pcr0(&[0; PCR0_BYTES_LEN]).await.unwrap_err();
+        assert!(matches!(error, Error::AttestationVerificationFailed(_)));
     }
 
     #[tokio::test]
@@ -383,7 +500,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let policy = Pcr0TrustPolicy::from_static_allowlist(["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"])
+        let policy = Pcr0TrustPolicy::from_static_allowlist([UNKNOWN_PCR0])
             .unwrap()
             .with_remote_history_urls([format!("{}/history.json", server.uri())])
             .unwrap();
@@ -400,7 +517,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let policy = Pcr0TrustPolicy::from_static_allowlist(["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"])
+        let policy = Pcr0TrustPolicy::from_static_allowlist([UNKNOWN_PCR0])
             .unwrap()
             .with_remote_history_urls([format!("{}/history.json", server.uri())])
             .unwrap();
@@ -426,7 +543,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let policy = Pcr0TrustPolicy::from_static_allowlist(["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"])
+        let policy = Pcr0TrustPolicy::from_static_allowlist([UNKNOWN_PCR0])
             .unwrap()
             .with_remote_history_urls([format!("{}/history.json", server.uri())])
             .unwrap();
@@ -448,7 +565,7 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        let policy = Pcr0TrustPolicy::from_static_allowlist(["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"])
+        let policy = Pcr0TrustPolicy::from_static_allowlist([UNKNOWN_PCR0])
             .unwrap()
             .with_remote_history_urls([format!("{}/history.json", server.uri())])
             .unwrap();
