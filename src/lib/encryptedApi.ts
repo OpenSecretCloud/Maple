@@ -1,7 +1,7 @@
 import { encryptMessage, decryptMessage } from "./encryption";
 import { getAttestation } from "./getAttestation";
-import { refreshToken } from "./api";
-import { platformRefreshToken } from "./platformApi";
+import { getApiPcrConfig, getApiUrl, refreshToken } from "./api";
+import { getPlatformApiUrl, getPlatformPcrConfig, platformRefreshToken } from "./platformApi";
 import { apiConfig } from "./apiConfig";
 
 interface EncryptedResponse {
@@ -113,13 +113,14 @@ async function internalEncryptedApiCall<T, U>(
 ): Promise<ApiResponse<U>> {
   // Use apiConfig to determine the context and get the appropriate API URL
   const endpoint = apiConfig.resolveEndpoint(url);
-  const explicitApiUrl = endpoint.context === "platform" ? apiConfig.platformApiUrl : undefined;
+  const explicitApiUrl = endpoint.context === "platform" ? getPlatformApiUrl() : getApiUrl();
+  const pcrConfig = endpoint.context === "platform" ? getPlatformPcrConfig() : getApiPcrConfig();
 
-  let { sessionKey, sessionId } = await getAttestation(false, explicitApiUrl);
+  let { sessionKey, sessionId } = await getAttestation(false, explicitApiUrl, pcrConfig);
 
   const makeRequest = async (token: string | undefined, forceNewAttestation: boolean = false) => {
     if (forceNewAttestation || !sessionKey || !sessionId) {
-      const newAttestation = await getAttestation(true, explicitApiUrl);
+      const newAttestation = await getAttestation(true, explicitApiUrl, pcrConfig);
       sessionKey = newAttestation.sessionKey;
       sessionId = newAttestation.sessionId;
     }

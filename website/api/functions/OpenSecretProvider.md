@@ -34,9 +34,9 @@ UUID identifying which project/tenant this instance belongs to
 
 #### pcrConfig?
 
-[`PcrConfig`](../type-aliases/PcrConfig.md) = `{}`
+[`PcrConfig`](../type-aliases/PcrConfig.md) = `DEFAULT_PCR_CONFIG`
 
-Optional PCR configuration for attestation validation
+Optional PCR0 trust policy enforced before session establishment
 
 ## Returns
 

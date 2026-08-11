@@ -1,7 +1,7 @@
 import React, { createContext, useState, useEffect } from "react";
 import * as api from "./api";
 import { createCustomFetch } from "./ai";
-import { getAttestation } from "./getAttestation";
+import { clearAttestationSessions, getAttestation } from "./getAttestation";
 import type { Model } from "openai/resources/models.js";
 import { authenticate } from "./attestation";
 import {
@@ -13,6 +13,8 @@ import {
 import type { AttestationDocument } from "./attestation";
 import type { LoginResponse, ThirdPartyTokenResponse, DocumentResponse } from "./api";
 import { PcrConfig } from "./pcr";
+
+const DEFAULT_PCR_CONFIG: PcrConfig = {};
 
 export type OpenSecretAuthState = {
   loading: boolean;
@@ -350,12 +352,12 @@ export type OpenSecretContextType = {
   apiUrl: string;
 
   /**
-   * Additional PCR0 hashes to validate against
+   * PCR0 trust policy enforced before every non-loopback session key exchange
    */
   pcrConfig: PcrConfig;
 
   /**
-   * Gets attestation from the enclave
+   * Gets an attested session after enforcing the effective PCR0 trust policy
    */
   getAttestation: typeof getAttestation;
 
@@ -998,7 +1000,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
  * @param props.children - React child components to be wrapped by the provider
  * @param props.apiUrl - URL of OpenSecret enclave backend
  * @param props.clientId - UUID identifying which project/tenant this instance belongs to
- * @param props.pcrConfig - Optional PCR configuration for attestation validation
+ * @param props.pcrConfig - Optional PCR0 trust policy enforced before session establishment
  *
  * @remarks
  * This provider manages:
@@ -1021,7 +1023,7 @@ export function OpenSecretProvider({
   children,
   apiUrl,
   clientId,
-  pcrConfig = {}
+  pcrConfig = DEFAULT_PCR_CONFIG
 }: {
   children: React.ReactNode;
   apiUrl: string;
@@ -1063,7 +1065,7 @@ export function OpenSecretProvider({
         "OpenSecretProvider requires a non-empty clientId. Please provide a valid project UUID."
       );
     }
-    api.setApiUrl(apiUrl);
+    api.setApiUrl(apiUrl, pcrConfig);
 
     // Configure the apiConfig service with the app URL
     // Using dynamic import to avoid circular dependencies
@@ -1071,17 +1073,17 @@ export function OpenSecretProvider({
       const platformUrl = apiConfig.platformApiUrl || "";
       apiConfig.configure(apiUrl, platformUrl);
     });
-  }, [apiUrl, clientId]);
+  }, [apiUrl, clientId, pcrConfig]);
 
   // Create aiCustomFetch when API is configured (supports JWT or API key internally)
   useEffect(() => {
     if (apiUrl) {
       // Pass API key if available, otherwise falls back to JWT
-      setAiCustomFetch(() => createCustomFetch(apiKey ? { apiKey } : undefined));
+      setAiCustomFetch(() => createCustomFetch({ apiKey, apiUrl, pcrConfig }));
     } else {
       setAiCustomFetch(undefined);
     }
-  }, [apiUrl, apiKey]);
+  }, [apiUrl, apiKey, pcrConfig]);
 
   async function fetchUser() {
     const access_token = window.localStorage.getItem("access_token");
@@ -1193,8 +1195,7 @@ export function OpenSecretProvider({
     }
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
-    sessionStorage.removeItem("sessionKey");
-    sessionStorage.removeItem("sessionId");
+    clearAttestationSessions();
     // Clear any in-memory API key so no post-logout calls can use it
     setApiKey(undefined);
     setAuth({
@@ -1363,7 +1364,8 @@ export function OpenSecretProvider({
     aiCustomFetch: aiCustomFetch || (async () => new Response()),
     apiUrl,
     pcrConfig,
-    getAttestation,
+    getAttestation: (forceRefresh, explicitApiUrl, explicitPcrConfig) =>
+      getAttestation(forceRefresh, explicitApiUrl || apiUrl, explicitPcrConfig || pcrConfig),
     authenticate,
     parseAttestationForView,
     awsRootCertDer: AWS_ROOT_CERT_DER,

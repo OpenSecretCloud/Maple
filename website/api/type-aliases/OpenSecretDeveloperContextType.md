@@ -343,7 +343,7 @@ Expected hash of the AWS root certificate
 
 > **getAttestation**: *typeof* `getAttestation`
 
-Gets attestation from the enclave
+Gets an attested session after enforcing the effective PCR0 trust policy
 
 ***
 
@@ -666,7 +666,7 @@ Parses an attestation document for viewing
 
 > **pcrConfig**: [`PcrConfig`](PcrConfig.md)
 
-Additional PCR0 hashes to validate against
+PCR0 trust policy enforced before every non-loopback session key exchange
 
 ***
 

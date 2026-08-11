@@ -1,10 +1,15 @@
 import { decryptMessage, encryptMessage } from "./encryption";
 import { getAttestation, type Attestation } from "./getAttestation";
 import * as api from "./api";
+import { serializePcrConfig, snapshotPcrConfig, type PcrConfig } from "./pcr";
 
 export interface CustomFetchOptions {
-  apiKey?: string; // Optional API key to use instead of JWT token
-  apiUrl?: string; // Optional API URL for attestation (required when not using OpenSecretProvider)
+  /** Optional API key to use instead of a JWT token. */
+  apiKey?: string;
+  /** API URL used for attestation; required outside OpenSecretProvider. */
+  apiUrl?: string;
+  /** PCR0 trust policy enforced before non-loopback session key exchange. */
+  pcrConfig?: PcrConfig;
 }
 
 interface ActiveAttestation {
@@ -60,25 +65,40 @@ export function createCustomFetchWithDependencies(
   options: CustomFetchOptions | undefined,
   dependencies: CustomFetchDependencies
 ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
-  let attestationRefresh: Promise<ActiveAttestation> | undefined;
+  const attestationRefreshes = new Map<string, Promise<ActiveAttestation>>();
 
-  const renewAttestation = async (failedSessionId: string): Promise<ActiveAttestation> => {
+  const resolveAttestationIdentity = () => {
+    const apiUrl = options?.apiUrl || api.getApiUrl() || undefined;
+    const pcrConfig = snapshotPcrConfig(options?.pcrConfig || api.getApiPcrConfig());
+    return {
+      apiUrl,
+      pcrConfig,
+      scope: `${apiUrl || ""}\n${serializePcrConfig(pcrConfig)}`
+    };
+  };
+
+  const renewAttestation = async (
+    failedSessionId: string,
+    identity: ReturnType<typeof resolveAttestationIdentity>
+  ): Promise<ActiveAttestation> => {
     // A concurrent request or token refresh may already have replaced the
     // failed session. Reuse it instead of starting another handshake.
     const currentAttestation = requireActiveAttestation(
-      await dependencies.getAttestation(false, options?.apiUrl)
+      await dependencies.getAttestation(false, identity.apiUrl, identity.pcrConfig)
     );
     if (currentAttestation.sessionId !== failedSessionId) {
       return currentAttestation;
     }
 
+    let attestationRefresh = attestationRefreshes.get(identity.scope);
     if (!attestationRefresh) {
       attestationRefresh = dependencies
-        .getAttestation(true, options?.apiUrl)
+        .getAttestation(true, identity.apiUrl, identity.pcrConfig)
         .then(requireActiveAttestation)
         .finally(() => {
-          attestationRefresh = undefined;
+          attestationRefreshes.delete(identity.scope);
         });
+      attestationRefreshes.set(identity.scope, attestationRefresh);
     }
 
     return attestationRefresh;
@@ -100,6 +120,9 @@ export function createCustomFetchWithDependencies(
     };
 
     try {
+      // Capture endpoint and trust policy together so retries cannot cross a
+      // provider reconfiguration that happens while this request is in flight.
+      const attestationIdentity = resolveAttestationIdentity();
       // Keep this operation bound to the identity that initiated it. An
       // unrelated account change during attestation must not send the
       // already-prepared plaintext request under a different token.
@@ -130,7 +153,11 @@ export function createCustomFetchWithDependencies(
       };
 
       let attestation = requireActiveAttestation(
-        await dependencies.getAttestation(false, options?.apiUrl)
+        await dependencies.getAttestation(
+          false,
+          attestationIdentity.apiUrl,
+          attestationIdentity.pcrConfig
+        )
       );
       let refreshedToken = false;
       let renewedAttestation = false;
@@ -149,7 +176,11 @@ export function createCustomFetchWithDependencies(
           // The encrypted refresh call may itself have replaced a stale
           // attestation. Always rebuild the outer request from current state.
           attestation = requireActiveAttestation(
-            await dependencies.getAttestation(false, options?.apiUrl)
+            await dependencies.getAttestation(
+              false,
+              attestationIdentity.apiUrl,
+              attestationIdentity.pcrConfig
+            )
           );
           continue;
         }
@@ -158,7 +189,7 @@ export function createCustomFetchWithDependencies(
           renewedAttestation = true;
           await discardResponse(attempt.response);
           console.warn("Bad Request, renewing attestation and retrying once");
-          attestation = await renewAttestation(attempt.attestation.sessionId);
+          attestation = await renewAttestation(attempt.attestation.sessionId, attestationIdentity);
           continue;
         }
 

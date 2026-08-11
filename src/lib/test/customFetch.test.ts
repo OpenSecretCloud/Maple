@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { createCustomFetchWithDependencies, type CustomFetchDependencies } from "../ai";
+import { getApiPcrConfig, getApiUrl, setApiUrl } from "../api";
 import type { Attestation } from "../getAttestation";
+import type { PcrConfig } from "../pcr";
 
 const staleKey = new Uint8Array(32).fill(1);
 const freshKey = new Uint8Array(32).fill(2);
@@ -345,5 +347,93 @@ describe("createCustomFetch stale-session recovery", () => {
     );
     expect(requests).toBe(1);
     expect(forcedAttestations).toBe(0);
+  });
+
+  test("forwards one endpoint-bound PCR policy through lookup and renewal", async () => {
+    const apiUrl = "https://enclave.example.test/base";
+    const pcrConfig: PcrConfig = {
+      pcr0Values: ["2a".repeat(48)],
+      remoteAttestation: false
+    };
+    const expectedPcrConfig: PcrConfig = {
+      pcr0Values: ["2a".repeat(48)],
+      pcr0DevValues: [],
+      remoteAttestation: false,
+      remoteAttestationUrls: {
+        prod: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrProdHistory.json",
+        dev: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrDevHistory.json"
+      }
+    };
+    const calls: Array<[boolean | undefined, string | undefined, PcrConfig | undefined]> = [];
+    let currentAttestation = staleAttestation;
+
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key", apiUrl, pcrConfig },
+      dependencies({
+        getAttestation: async (forceRefresh, explicitApiUrl, policy) => {
+          calls.push([forceRefresh, explicitApiUrl, policy]);
+          if (forceRefresh) currentAttestation = freshAttestation;
+          return currentAttestation;
+        },
+        fetch: async (_input, init) => {
+          if (recordRequest(init).sessionId === staleAttestation.sessionId) {
+            pcrConfig.pcr0Values = ["4c".repeat(48)];
+            pcrConfig.remoteAttestation = true;
+            return new Response("stale", { status: 400 });
+          }
+          return Response.json({ encrypted: '2:{"ok":true}' });
+        }
+      })
+    );
+
+    const response = await customFetch("https://example.test/v1/responses");
+
+    expect(await response.json()).toEqual({ ok: true });
+    expect(calls).toHaveLength(3);
+    expect(calls.map(([forceRefresh]) => forceRefresh)).toEqual([false, false, true]);
+    expect(calls.every(([, endpoint]) => endpoint === apiUrl)).toBe(true);
+    expect(calls.every(([, , policy]) => policy !== pcrConfig)).toBe(true);
+    expect(calls.map(([, , policy]) => policy)).toEqual([
+      expectedPcrConfig,
+      expectedPcrConfig,
+      expectedPcrConfig
+    ]);
+    expect(calls[0][2]).toBe(calls[1][2]);
+    expect(calls[1][2]).toBe(calls[2][2]);
+  });
+
+  test("inherits the provider's global endpoint and PCR policy when options omit them", async () => {
+    const originalApiUrl = getApiUrl();
+    const originalPcrConfig = getApiPcrConfig();
+    const apiUrl = "https://provider.example.test";
+    const pcrConfig: PcrConfig = {
+      pcr0Values: ["3b".repeat(48)],
+      remoteAttestation: false
+    };
+    const calls: Array<[boolean | undefined, string | undefined, PcrConfig | undefined]> = [];
+
+    try {
+      setApiUrl(apiUrl, pcrConfig);
+      const customFetch = createCustomFetchWithDependencies(
+        { apiKey: "test-api-key" },
+        dependencies({
+          getAttestation: async (forceRefresh, explicitApiUrl, policy) => {
+            calls.push([forceRefresh, explicitApiUrl, policy]);
+            return freshAttestation;
+          },
+          fetch: async () => Response.json({ encrypted: '2:{"ok":true}' })
+        })
+      );
+
+      expect(await (await customFetch("https://example.test/v1/responses")).json()).toEqual({
+        ok: true
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0]).toBe(false);
+      expect(calls[0][1]).toBe(apiUrl);
+      expect(calls[0][2]).toEqual(expect.objectContaining(pcrConfig));
+    } finally {
+      setApiUrl(originalApiUrl, originalPcrConfig);
+    }
   });
 });

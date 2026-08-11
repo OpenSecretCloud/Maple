@@ -1,4 +1,5 @@
 import { encryptedApiCall, authenticatedApiCall } from "./encryptedApi";
+import { snapshotPcrConfig, type PcrConfig } from "./pcr";
 
 // Platform Auth Types
 export type PlatformLoginResponse = {
@@ -130,13 +131,19 @@ export type OrganizationMember = {
 };
 
 let platformApiUrl = "";
+let platformPcrConfig: PcrConfig = snapshotPcrConfig();
 
-export function setPlatformApiUrl(url: string) {
+export function setPlatformApiUrl(url: string, pcrConfig?: PcrConfig) {
   platformApiUrl = url;
+  platformPcrConfig = snapshotPcrConfig(pcrConfig);
 }
 
 export function getPlatformApiUrl(): string {
   return platformApiUrl;
+}
+
+export function getPlatformPcrConfig(): PcrConfig {
+  return snapshotPcrConfig(platformPcrConfig);
 }
 
 // Platform Authentication

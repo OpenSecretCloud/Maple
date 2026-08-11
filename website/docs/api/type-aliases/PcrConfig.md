@@ -16,7 +16,8 @@ Configuration options for PCR validation
 
 > `optional` **pcr0DevValues**: `string`[]
 
-Additional custom PCR0 values for development environments
+Additional trusted PCR0 values for development environments.
+The SDK's built-in development trust roots always remain trusted.
 
 ***
 
@@ -24,7 +25,8 @@ Additional custom PCR0 values for development environments
 
 > `optional` **pcr0Values**: `string`[]
 
-Additional custom PCR0 values for production environments
+Additional trusted PCR0 values for production environments.
+The SDK's built-in production trust roots always remain trusted.
 
 ***
 
@@ -32,7 +34,8 @@ Additional custom PCR0 values for production environments
 
 > `optional` **remoteAttestation**: `boolean`
 
-Enable/disable remote attestation (defaults to true)
+Whether to consult pinned-key signed PCR history after local trust roots miss
+(defaults to true). This does not enable or disable Nitro attestation verification.
 
 ***
 
@@ -40,7 +43,7 @@ Enable/disable remote attestation (defaults to true)
 
 > `optional` **remoteAttestationUrls**: `object`
 
-Custom URLs for remote attestation
+Custom URLs for pinned-key signed PCR history
 
 #### dev?
 

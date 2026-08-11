@@ -13,7 +13,7 @@ function App() {
   return (
     <OpenSecretDeveloper 
       apiUrl="https://developer.opensecret.cloud"
-      pcrConfig={{}} // Optional PCR configuration for attestation validation
+      pcrConfig={{}} // Optional PCR0 trust policy enforced before session establishment
     >
       <YourApp />
     </OpenSecretDeveloper>
@@ -351,8 +351,8 @@ function PlatformManagement() {
 
 ### Attestation Verification
 
-- `pcrConfig`: An object containing additional PCR0 hashes to validate against.
-- `getAttestation`: Gets attestation from the enclave.
+- `pcrConfig`: The PCR0 trust policy enforced before non-loopback session establishment. Custom hashes are additive to the SDK's built-in roots.
+- `getAttestation`: Gets an attested session after enforcing the effective PCR0 trust policy.
 - `authenticate`: Authenticates an attestation document.
 - `parseAttestationForView`: Parses an attestation document for viewing.
 - `awsRootCertDer`: AWS root certificate in DER format.
