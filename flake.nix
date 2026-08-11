@@ -41,9 +41,6 @@
           clang
           libclang
 
-          # TypeScript / OpenClaw plugin
-          nodejs_22
-
           # Useful tools
           jq
           just

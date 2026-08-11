@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting Maple Proxy Server");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
     info!("Backend URL: {}", config.backend_url);
+    info!("PCR0 environment: {:?}", config.pcr0_environment);
     info!("Binding to: {}", config.socket_addr()?);
 
     if config.default_api_key.is_some() {
