@@ -34,6 +34,7 @@ import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
+import { ResizableSidebarLayout } from "@/components/ResizableSidebarLayout";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { fileToDataURL } from "@/utils/file";
@@ -97,11 +98,6 @@ import {
   projectedUserTurnScrollTop,
   type ChatProjectionScrollLease
 } from "@/components/chatProjectionScroll";
-import {
-  getSidebarLayoutStyle,
-  SIDEBAR_AWARE_FIXED_CENTER_CLASS,
-  SIDEBAR_GRID_COLUMNS_CLASS
-} from "@/constants/layout";
 import type {
   InputTextContent,
   OutputTextContent,
@@ -183,7 +179,7 @@ import {
   unregisterChatOptimisticMessage
 } from "@/services/chatOptimisticMessageOwnership";
 
-const CHAT_ALERT_CLASS = `fixed top-16 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4 ${SIDEBAR_AWARE_FIXED_CENTER_CLASS}`;
+const CHAT_ALERT_CLASS = "absolute top-16 left-1/2 z-50 w-full max-w-2xl -translate-x-1/2 px-4";
 const STREAM_EVENT_DEBUG_STORAGE_KEY = "maple:sse-debug";
 
 function isStreamEventDebugLoggingEnabled(): boolean {
@@ -1715,6 +1711,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const draftProjectId = activeRuntime.composer.draftProjectId;
   const isGenerating = activeRuntime.isGenerating;
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
+  const [isSidebarTransitioning, setIsSidebarTransitioning] = useState(false);
   const error = activeRuntime.error;
   const [titleJustUpdatedKey, setTitleJustUpdatedKey] = useState<ChatRuntimeKey | null>(null);
   const titleJustUpdated = Boolean(
@@ -4977,18 +4974,18 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  const sidebarLayoutStyle = getSidebarLayoutStyle({ offsetContent: isSidebarOpen });
-
   return (
-    <div
-      style={sidebarLayoutStyle}
+    <ResizableSidebarLayout
       data-runtime-key={runtimeStore.resolveKey(activeRuntimeKey)}
       data-generating={isGenerating ? "true" : "false"}
-      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""}`}
+      isCompactLayout={isCompactLayout}
+      isOpen={isSidebarOpen}
+      mode="chat"
+      onOpenChange={setIsSidebarOpen}
+      onTransitionChange={setIsSidebarTransitioning}
+      sidebar={<Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />}
+      userId={os.auth.user?.user.id}
     >
-      {/* Use the existing Sidebar component */}
-      <Sidebar chatId={chatId} isOpen={isSidebarOpen} onToggle={toggleSidebar} />
-
       {/* Main Content */}
       <div className="flex flex-col flex-1 min-w-0 min-h-0 bg-background overflow-hidden relative">
         {/* Error message - fixed at top below header, always visible */}
@@ -5023,7 +5020,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         )}
 
         {/* Sidebar toggle + wordmark — fixed except on compact layouts while chatting (two-row header below) */}
-        {!isSidebarOpen && !(isCompactLayout && messages.length > 0) && (
+        {!isSidebarOpen && !isSidebarTransitioning && !(isCompactLayout && messages.length > 0) && (
           <div className="fixed left-4 top-[9.5px] z-20 flex items-center gap-1.5">
             <SidebarToggle onToggle={toggleSidebar} />
             <MapleWordmark
@@ -5689,6 +5686,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           className="hidden"
         />
       </div>
-    </div>
+    </ResizableSidebarLayout>
   );
 }

@@ -1,5 +1,32 @@
-import { createContext, useCallback, useContext, type Dispatch, type SetStateAction } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type Dispatch,
+  type SetStateAction
+} from "react";
 import type { AgentSessionSelectionMemory } from "@/services/agentSessionSelection";
+import {
+  loadSidebarOpenPreference,
+  saveSidebarOpenPreference
+} from "@/services/sidebarOpenPreference";
+
+type SidebarOpenStorage = Pick<Storage, "getItem" | "setItem">;
+
+type AccountSidebarOpenState = {
+  userId: string | null;
+  value: boolean | null;
+};
+
+function loadSidebarOpenState(
+  userId: string | null,
+  storage?: SidebarOpenStorage | null
+): boolean | null {
+  return userId ? loadSidebarOpenPreference(userId, storage) : null;
+}
 
 export type PersistentHomeNavigation = {
   returnToHome: (options?: { replace?: boolean }) => void;
@@ -18,6 +45,46 @@ export function usePersistentHomeNavigation() {
     );
   }
   return context;
+}
+
+export function useAccountSidebarOpenState(
+  userId: string | null,
+  storage?: SidebarOpenStorage | null
+): readonly [boolean | null, Dispatch<SetStateAction<boolean | null>>] {
+  const [accountState, setAccountState] = useState<AccountSidebarOpenState>(() => ({
+    userId,
+    value: loadSidebarOpenState(userId, storage)
+  }));
+  const value =
+    accountState.userId === userId ? accountState.value : loadSidebarOpenState(userId, storage);
+  const setValue = useCallback<Dispatch<SetStateAction<boolean | null>>>(
+    (nextValue) => {
+      setAccountState((current) => {
+        const currentValue =
+          current.userId === userId ? current.value : loadSidebarOpenState(userId, storage);
+        return {
+          userId,
+          value: typeof nextValue === "function" ? nextValue(currentValue) : nextValue
+        };
+      });
+    },
+    [storage, userId]
+  );
+
+  useLayoutEffect(() => {
+    if (accountState.userId === userId) return;
+    setAccountState({ userId, value: loadSidebarOpenState(userId, storage) });
+  }, [accountState.userId, storage, userId]);
+
+  useEffect(() => {
+    if (!accountState.userId) return;
+    const { userId: stateUserId, value: stateValue } = accountState;
+    if (typeof stateValue === "boolean") {
+      saveSidebarOpenPreference(stateUserId, stateValue, storage);
+    }
+  }, [accountState, storage]);
+
+  return [value, setValue] as const;
 }
 
 export function usePersistentSidebarState(

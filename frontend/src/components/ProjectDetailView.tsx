@@ -15,6 +15,7 @@ import {
 import { useOpenSecret, type Conversation } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
+import { ResizableSidebarLayout } from "@/components/ResizableSidebarLayout";
 import { useIsMobile, useIsLandscapeMobile } from "@/utils/utils";
 import { useSelectedProjectState } from "@/state/useLocalState";
 import { Button } from "@/components/ui/button";
@@ -46,7 +47,6 @@ import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
 import { listAllConversationProjects } from "@/utils/paginatedLists";
-import { SIDEBAR_GRID_COLUMNS_CLASS, SIDEBAR_LAYOUT_STYLE } from "@/constants/layout";
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import {
@@ -164,6 +164,7 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const runtimeStore = useChatRuntimeStore<Conversation, unknown>();
 
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
+  const [isSidebarTransitioning, setIsSidebarTransitioning] = useState(false);
   const wasLandscapeMobileRef = useRef(isLandscapeMobile);
 
   useEffect(() => {
@@ -513,31 +514,39 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   if (isProjectPending && !project) {
     return (
-      <div
-        style={SIDEBAR_LAYOUT_STYLE}
-        className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-          isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
-        }`}
+      <ResizableSidebarLayout
+        isCompactLayout={isCompactLayout}
+        isOpen={isSidebarOpen}
+        mode="chat"
+        onOpenChange={setIsSidebarOpen}
+        onTransitionChange={setIsSidebarTransitioning}
+        sidebar={<Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />}
+        userId={userId}
       >
-        <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
-        <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background">
+        <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background">
+          {!isSidebarOpen && !isSidebarTransitioning ? (
+            <div className="fixed left-4 top-[9.5px] z-20">
+              <SidebarToggle onToggle={toggleSidebar} />
+            </div>
+          ) : null}
           <p className="text-sm text-muted-foreground">Loading project...</p>
         </div>
-      </div>
+      </ResizableSidebarLayout>
     );
   }
 
   return (
-    <div
-      style={SIDEBAR_LAYOUT_STYLE}
-      className={`grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden ${
-        isSidebarOpen ? SIDEBAR_GRID_COLUMNS_CLASS : ""
-      }`}
+    <ResizableSidebarLayout
+      isCompactLayout={isCompactLayout}
+      isOpen={isSidebarOpen}
+      mode="chat"
+      onOpenChange={setIsSidebarOpen}
+      onTransitionChange={setIsSidebarTransitioning}
+      sidebar={<Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />}
+      userId={userId}
     >
-      <Sidebar isOpen={isSidebarOpen} onToggle={toggleSidebar} />
-
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
-        {!isSidebarOpen ? (
+        {!isSidebarOpen && !isSidebarTransitioning ? (
           <div className="fixed left-4 top-[9.5px] z-20">
             <SidebarToggle onToggle={toggleSidebar} />
           </div>
@@ -911,6 +920,6 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
         onConfirm={handleMoveSelectedConversations}
         isMoving={isBulkMoving}
       />
-    </div>
+    </ResizableSidebarLayout>
   );
 }
