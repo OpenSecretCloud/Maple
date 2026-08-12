@@ -1445,7 +1445,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "maple-proxy"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1637,9 +1637,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "opensecret"
-version = "3.6.0"
+version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f870bc0826a7091062aba70eeb82590691bcec630f35b7c2b60792f982fc66d8"
+checksum = "86d9a35e5dd1ee761d3449d9e2db722eb1ebbab0eef02d3bb8601fd6b23d6bd9"
 dependencies = [
  "aes-gcm",
  "anyhow",
