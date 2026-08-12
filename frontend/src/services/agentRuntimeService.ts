@@ -100,6 +100,11 @@ export interface AgentCreateSessionRequest {
   mcpServerNames?: string[] | null;
 }
 
+export interface AgentRenameSessionRequest {
+  sessionId: string;
+  title: string;
+}
+
 export interface AgentSessionSummary {
   id: string;
   title: string;
@@ -359,6 +364,16 @@ export class AgentRuntimeService {
     return await this.invokeForUser<AgentSessionDetail>(userId, "agent_load_session", {
       userId,
       sessionId
+    });
+  }
+
+  async renameSession(
+    userId: string,
+    request: AgentRenameSessionRequest
+  ): Promise<AgentSessionSummary> {
+    return await this.invokeForUser<AgentSessionSummary>(userId, "agent_rename_session", {
+      userId,
+      request
     });
   }
 
