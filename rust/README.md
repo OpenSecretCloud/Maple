@@ -17,7 +17,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opensecret = "3.6.0"
+opensecret = "3.6.1"
 bytes = "1"
 futures = "0.3"
 http = "1"
