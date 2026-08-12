@@ -36,7 +36,7 @@ tauri-plugin-os = "2.3.2"
 tauri-plugin-sign-in-with-apple = "1.0.2"
 tokio = { version = "1.0", features = ["io-std", "io-util", "net", "process", "sync", "rt-multi-thread", "macros", "time"] }
 once_cell = "1.18.0"
-maple-proxy = "0.3.0"
+maple-proxy = "0.3.1"
 tauri-plugin-fs = "2.5.1"
 anyhow = "1.0"
 axum = "0.8"
@@ -59,7 +59,7 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 # history.
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose", default-features = false }
 goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose-providers", default-features = false }
-opensecret = "3.6.0"
+opensecret = "3.6.1"
 rand = "0.8.6"
 async-trait = "0.1"
 rmcp = { version = "=3.1.2", default-features = false }
