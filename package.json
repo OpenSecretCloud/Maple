@@ -22,12 +22,7 @@
     "pack": "bun run build && bun pm pack",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
-    "test": "bun test --timeout 30000",
-    "docs:dev": "cd website && bun run start",
-    "docs:build": "cd website && bun run build",
-    "docs:serve": "cd website && bun run serve",
-    "docs:clear": "cd website && bun run clear",
-    "docs:deploy": "cd website && bun run deploy"
+    "test": "bun test --timeout 30000"
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0"
