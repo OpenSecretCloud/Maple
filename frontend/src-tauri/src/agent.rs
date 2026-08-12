@@ -31,6 +31,7 @@ use goose::permission::{Permission, PermissionConfirmation};
 use goose::session::session_manager::{Session, SessionType};
 use goose::session::SessionManager;
 use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
+use icu_properties::{props::DefaultIgnorableCodePoint, CodePointSetData};
 use provider::{MapleProvider, MAPLE_PROVIDER_NAME};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -44,7 +45,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -896,6 +897,7 @@ pub struct MapleAgentService {
     login_shell_search_paths: Arc<tokio::sync::OnceCell<Vec<String>>>,
     account_generations: Arc<Mutex<HashMap<String, u64>>>,
     session_lifecycle: Arc<Mutex<()>>,
+    session_title_lifecycles: SessionTitleLifecycles,
     pending_permissions: PendingPermissions,
     live_timelines: LiveTimelines,
     admission: Arc<AtomicU8>,
@@ -910,6 +912,26 @@ pub(crate) struct AgentRuntimeHandle {
 }
 
 type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimelineEntry>>>;
+
+/// Orders title-sensitive reads, writes, and update events within one account task.
+/// Weak entries avoid retaining completed task locks for the service lifetime.
+type SessionTitleLifecycles = Arc<Mutex<HashMap<(String, String), Weak<Mutex<()>>>>>;
+
+async fn resolve_session_title_lifecycle(
+    lifecycles: &SessionTitleLifecycles,
+    account_scope: &str,
+    session_id: &str,
+) -> Arc<Mutex<()>> {
+    let key = (account_scope.to_string(), session_id.to_string());
+    let mut lifecycles = lifecycles.lock().await;
+    if let Some(lifecycle) = lifecycles.get(&key).and_then(Weak::upgrade) {
+        return lifecycle;
+    }
+    lifecycles.retain(|_, lifecycle| lifecycle.strong_count() > 0);
+    let lifecycle = Arc::new(Mutex::new(()));
+    lifecycles.insert(key, Arc::downgrade(&lifecycle));
+    lifecycle
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct LiveTimelineEntry {
@@ -959,6 +981,7 @@ impl MapleAgentService {
             login_shell_search_paths: Arc::new(tokio::sync::OnceCell::new()),
             account_generations: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
+            session_title_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(AtomicU8::new(AGENT_SERVICE_OPEN)),
@@ -1095,6 +1118,22 @@ fn normalize_user_provided_session_title(title: &str) -> Result<String, String> 
     if title.is_empty() {
         return Err("Agent task title cannot be empty".to_string());
     }
+    if title
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
+    {
+        return Err(
+            "Agent task title must be a single line without control characters".to_string(),
+        );
+    }
+    let default_ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
+    if !title.chars().any(|character| {
+        !character.is_whitespace()
+            && !character.is_control()
+            && !default_ignorable.contains(character)
+    }) {
+        return Err("Agent task title must contain visible characters".to_string());
+    }
     if title.chars().count() > MAX_AGENT_SESSION_TITLE_CHARS {
         return Err(format!(
             "Agent task title must be {MAX_AGENT_SESSION_TITLE_CHARS} characters or fewer"
@@ -1169,6 +1208,7 @@ struct AgentSessionTitleGeneration<'a> {
     session_manager: &'a SessionManager,
     agent: &'a Agent,
     session_lifecycle: &'a Arc<Mutex<()>>,
+    session_title_lifecycle: &'a Arc<Mutex<()>>,
     session_id: &'a str,
     first_prompt: &'a str,
     expected_fallback_title: &'a str,
@@ -1183,6 +1223,7 @@ async fn generate_agent_session_title(
         session_manager,
         agent,
         session_lifecycle,
+        session_title_lifecycle,
         session_id,
         first_prompt,
         expected_fallback_title,
@@ -1245,6 +1286,14 @@ async fn generate_agent_session_title(
         biased;
         _ = title_cancel_token.cancelled() => return Ok(None),
         guard = session_lifecycle.lock() => guard,
+    };
+    if title_cancel_token.is_cancelled() {
+        return Ok(None);
+    }
+    let _session_title_lifecycle_guard = tokio::select! {
+        biased;
+        _ = title_cancel_token.cancelled() => return Ok(None),
+        guard = session_title_lifecycle.lock() => guard,
     };
     if title_cancel_token.is_cancelled() {
         return Ok(None);
@@ -1321,6 +1370,7 @@ struct AgentSessionTitleJob {
     session_manager: Arc<SessionManager>,
     agent: Arc<Agent>,
     session_lifecycle: Arc<Mutex<()>>,
+    session_title_lifecycle: Arc<Mutex<()>>,
     session_id: String,
     first_prompt: String,
     expected_fallback_title: String,
@@ -1336,6 +1386,7 @@ async fn run_agent_session_title_task(job: AgentSessionTitleJob) {
         session_manager,
         agent,
         session_lifecycle,
+        session_title_lifecycle,
         session_id,
         first_prompt,
         expected_fallback_title,
@@ -1361,6 +1412,11 @@ async fn run_agent_session_title_task(job: AgentSessionTitleJob) {
             biased;
             _ = cancel_token.cancelled() => return,
             guard = session_lifecycle.lock() => guard,
+        };
+        let _session_title_lifecycle_guard = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => return,
+            guard = session_title_lifecycle.lock() => guard,
         };
         let persisted_session = match session_manager.get_session(&session_id, false).await {
             Ok(session) => session,
@@ -1406,6 +1462,7 @@ async fn run_agent_session_title_task(job: AgentSessionTitleJob) {
         session_manager: session_manager.as_ref(),
         agent: agent.as_ref(),
         session_lifecycle: &session_lifecycle,
+        session_title_lifecycle: &session_title_lifecycle,
         session_id: &session_id,
         first_prompt: &first_prompt,
         expected_fallback_title: &expected_fallback_title,
@@ -2476,6 +2533,12 @@ impl AgentRuntimeHandle {
         }
         let title = normalize_user_provided_session_title(&request.title)?;
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let session_title_lifecycle = resolve_session_title_lifecycle(
+            &state.session_title_lifecycles,
+            account_scope,
+            &session_id,
+        )
+        .await;
         let _auth_lease = maple_api_session.active_lease().await?;
         let session_manager = {
             let runtime = state.inner.lock().await;
@@ -2487,6 +2550,14 @@ impl AgentRuntimeHandle {
                 None => account_session_manager(&state.host.paths, user_id)?,
             }
         };
+        let _session_title_lifecycle_guard = session_title_lifecycle.lock().await;
+        let current_session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task before renaming: {error}"))?;
+        if current_session.name == title {
+            return Ok(session_summary(&current_session));
+        }
 
         session_manager
             .update(&session_id)
@@ -3039,6 +3110,12 @@ impl AgentRuntimeHandle {
         }
 
         let session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let session_title_lifecycle = resolve_session_title_lifecycle(
+            &state.session_title_lifecycles,
+            account_scope,
+            &request.session_id,
+        )
+        .await;
         let run_id = next_run_id();
         let (run_events, run_events_rx) = AgentRunEventPublisher::new(
             state.host.events.clone(),
@@ -3307,6 +3384,7 @@ impl AgentRuntimeHandle {
             let title_session_manager = Arc::clone(&session_manager);
             let title_agent = Arc::clone(&agent);
             let title_session_lifecycle = Arc::clone(&session_lifecycle);
+            let title_session_title_lifecycle = Arc::clone(&session_title_lifecycle);
             let title_session_id = session_id.clone();
             let title_first_prompt = session_title_prompt.clone();
             let title_expected_fallback = prompt_title.clone();
@@ -3329,6 +3407,7 @@ impl AgentRuntimeHandle {
                     session_manager: title_session_manager,
                     agent: title_agent,
                     session_lifecycle: title_session_lifecycle,
+                    session_title_lifecycle: title_session_title_lifecycle,
                     session_id: title_session_id,
                     first_prompt: title_first_prompt,
                     expected_fallback_title: title_expected_fallback,
@@ -3373,7 +3452,7 @@ impl AgentRuntimeHandle {
                         events: task_events.clone(),
                         agent: Arc::clone(&task_agent),
                         session_manager: Arc::clone(&task_session_manager),
-                        session_lifecycle: Arc::clone(&session_lifecycle),
+                        session_title_lifecycle: Arc::clone(&session_title_lifecycle),
                         live_timelines: live_timelines.clone(),
                         session_id: session_id.clone(),
                         user_message: task_user_message.clone(),
@@ -3703,6 +3782,12 @@ impl AgentRuntimeHandle {
         if session_id.is_empty() {
             return Err("Agent permission mode update requires a task ID".to_string());
         }
+        let session_title_lifecycle = resolve_session_title_lifecycle(
+            &state.session_title_lifecycles,
+            account_scope,
+            &session_id,
+        )
+        .await;
         let goose_mode = parse_user_permission_mode(&request.mode)?;
         let (agent_manager, session_manager, maple_api_session, permission_modes, active_agent) = {
             let runtime = state.inner.lock().await;
@@ -3863,19 +3948,20 @@ impl AgentRuntimeHandle {
         // The policy is already committed at this point. A best-effort refresh
         // must not report failure to the selector and make it roll back to a mode
         // that is no longer authoritative.
+        let _session_title_lifecycle_guard = session_title_lifecycle.lock().await;
         match session_manager.get_session(&session_id, false).await {
-        Ok(session) => emit_agent_event(
-            &state.host.events,
-            AgentServiceEvent::SessionUpdated {
-                session_id,
-                run_id: None,
-                session: session_summary(&session),
-            },
-        ),
-        Err(error) => log::warn!(
-            "Agent permission mode was updated, but the refreshed session could not be loaded: {error}"
-        ),
-    }
+            Ok(session) => emit_agent_event(
+                &state.host.events,
+                AgentServiceEvent::SessionUpdated {
+                    session_id,
+                    run_id: None,
+                    session: session_summary(&session),
+                },
+            ),
+            Err(error) => log::warn!(
+                "Agent permission mode was updated, but the refreshed session could not be loaded: {error}"
+            ),
+        }
         Ok(())
     }
 
@@ -4055,7 +4141,7 @@ struct AgentPromptRun {
     events: AgentRunEventPublisher,
     agent: Arc<Agent>,
     session_manager: Arc<SessionManager>,
-    session_lifecycle: Arc<Mutex<()>>,
+    session_title_lifecycle: Arc<Mutex<()>>,
     live_timelines: LiveTimelines,
     session_id: String,
     user_message: Message,
@@ -4478,7 +4564,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         events,
         agent,
         session_manager,
-        session_lifecycle,
+        session_title_lifecycle,
         live_timelines,
         session_id,
         user_message,
@@ -4504,7 +4590,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         .reply(user_message, session_config, Some(cancel_token.clone()))
         .await
         .map_err(|e| format!("Goose reply failed: {e}"))?;
-    let session_lifecycle_guard = session_lifecycle.lock().await;
+    let session_title_lifecycle_guard = session_title_lifecycle.lock().await;
     let updated_session = session_manager
         .get_session(&session_id, false)
         .await
@@ -4515,7 +4601,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
             &updated_session,
         )))
         .await;
-    drop(session_lifecycle_guard);
+    drop(session_title_lifecycle_guard);
     if let Some(start) = session_title_start {
         // Goose has persisted the first user message and Maple has published
         // the fallback snapshot. A semantic title can now advance that state,
@@ -11307,7 +11393,7 @@ mod tests {
     }
 
     #[test]
-    fn user_provided_session_title_trims_and_enforces_unicode_scalar_limit() {
+    fn user_provided_session_title_is_visible_single_line_and_unicode_safe() {
         assert_eq!(
             normalize_user_provided_session_title("\u{2003}Renamed 🙂\u{2003}").unwrap(),
             "Renamed 🙂"
@@ -11316,6 +11402,33 @@ mod tests {
             normalize_user_provided_session_title(" \n\t ").unwrap_err(),
             "Agent task title cannot be empty"
         );
+        for invalid in [
+            "First\nSecond",
+            "First\rSecond",
+            "First\tSecond",
+            "First\0Second",
+            "First\u{2028}Second",
+            "First\u{2029}Second",
+        ] {
+            assert_eq!(
+                normalize_user_provided_session_title(invalid).unwrap_err(),
+                "Agent task title must be a single line without control characters"
+            );
+        }
+        for invisible in ["\u{200b}", "\u{200d}\u{fe0f}"] {
+            assert_eq!(
+                normalize_user_provided_session_title(invisible).unwrap_err(),
+                "Agent task title must contain visible characters"
+            );
+        }
+        for valid in [
+            "日本語のタスク",
+            "مهمة عربية",
+            "می\u{200c}روم",
+            "👩\u{200d}💻 plan",
+        ] {
+            assert_eq!(normalize_user_provided_session_title(valid).unwrap(), valid);
+        }
 
         let maximum = "🙂".repeat(MAX_AGENT_SESSION_TITLE_CHARS);
         assert_eq!(
@@ -11327,6 +11440,71 @@ mod tests {
                 .unwrap_err(),
             format!("Agent task title must be {MAX_AGENT_SESSION_TITLE_CHARS} characters or fewer")
         );
+    }
+
+    #[tokio::test]
+    async fn session_title_lifecycles_are_account_and_task_scoped() {
+        let lifecycles = Arc::new(Mutex::new(HashMap::new()));
+        let first = resolve_session_title_lifecycle(&lifecycles, "account-a", "task-a").await;
+        let same = resolve_session_title_lifecycle(&lifecycles, "account-a", "task-a").await;
+        let other_task = resolve_session_title_lifecycle(&lifecycles, "account-a", "task-b").await;
+        let other_account =
+            resolve_session_title_lifecycle(&lifecycles, "account-b", "task-a").await;
+
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other_task));
+        assert!(!Arc::ptr_eq(&first, &other_account));
+    }
+
+    #[tokio::test]
+    async fn unchanged_new_task_rename_preserves_automatic_title_eligibility() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("unchanged-new-task-rename", sink.clone());
+        let user_id = "unchanged-new-task-rename-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = account_session_manager(&paths, user_id).unwrap();
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+
+        let summary = state
+            .handle_for_user(user_id)
+            .await
+            .unwrap()
+            .rename_session(
+                crate::maple_api::test_maple_api_session(user_id),
+                AgentRenameSessionRequest {
+                    session_id: session.id.clone(),
+                    title: format!("  {DEFAULT_AGENT_SESSION_TITLE}  "),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(summary.title, DEFAULT_AGENT_SESSION_TITLE);
+        let persisted = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        assert!(!persisted.user_set_name);
+        assert!(should_name_session_from_prompt(&persisted));
+        assert!(sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+
+        drop(state);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[tokio::test]
@@ -11764,6 +11942,7 @@ mod tests {
             AgentHostEventPolicy::Suppress,
         );
         let session_lifecycle = Arc::new(Mutex::new(()));
+        let session_title_lifecycle = Arc::new(Mutex::new(()));
         let (title_start, title_start_rx) = oneshot::channel();
         let (_title_settled, title_settled_rx) = oneshot::channel();
         let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
@@ -11772,6 +11951,7 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             agent: Arc::clone(&agent),
             session_lifecycle: Arc::clone(&session_lifecycle),
+            session_title_lifecycle: Arc::clone(&session_title_lifecycle),
             session_id: session.id.clone(),
             first_prompt: "hey how are you?".to_string(),
             expected_fallback_title: "hey how are you?".to_string(),
@@ -11786,7 +11966,7 @@ mod tests {
                 events,
                 agent: Arc::clone(&agent),
                 session_manager: Arc::clone(&session_manager),
-                session_lifecycle,
+                session_title_lifecycle,
                 live_timelines: Arc::new(Mutex::new(HashMap::new())),
                 session_id: session.id.clone(),
                 user_message: Message::user().with_text(prompt).with_generated_id(),
@@ -11900,12 +12080,18 @@ mod tests {
         );
         let event_order = Arc::clone(&events.order);
         let event_order_guard = event_order.lock().await;
+        let session_title_lifecycle = resolve_session_title_lifecycle(
+            &state.session_title_lifecycles,
+            &account_scope(user_id).unwrap(),
+            &session.id,
+        )
+        .await;
         let prompt = "Start the task";
         let prompt_task = tokio::spawn(run_agent_prompt(AgentPromptRun {
             events,
             agent: Arc::clone(&agent),
             session_manager: Arc::clone(&session_manager),
-            session_lifecycle: Arc::clone(&state.session_lifecycle),
+            session_title_lifecycle: Arc::clone(&session_title_lifecycle),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
             session_id: session.id.clone(),
             user_message: Message::user().with_text(prompt).with_generated_id(),
@@ -11922,14 +12108,15 @@ mod tests {
         }));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                if state.session_lifecycle.try_lock().is_err() {
+                if session_title_lifecycle.try_lock().is_err() {
                     break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("the run should hold the session lifecycle while publishing its summary");
+        .expect("the run should hold its title lifecycle while publishing its summary");
+        assert!(state.session_lifecycle.try_lock().is_ok());
 
         let rename_task = tokio::spawn(async move {
             handle
@@ -11988,6 +12175,253 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_reply_poll_does_not_wait_for_unrelated_session_lifecycle() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("reply-poll-session-isolation", sink.clone());
+        let user_id = "reply-poll-session-isolation-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                "Fallback task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        agent
+            .update_provider(
+                Arc::new(SessionTitleTestProvider {
+                    calls: Arc::clone(&calls),
+                    response: "Done",
+                }),
+                ModelConfig::new(DEFAULT_AGENT_MODEL),
+                &session.id,
+            )
+            .await
+            .unwrap();
+        let (events, _run_events) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink),
+            session.id.clone(),
+            "reply-poll-session-isolation".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        let session_title_lifecycle = resolve_session_title_lifecycle(
+            &state.session_title_lifecycles,
+            &account_scope(user_id).unwrap(),
+            &session.id,
+        )
+        .await;
+        let unrelated_session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let prompt = "Start the task";
+        let prompt_task = tokio::spawn(run_agent_prompt(AgentPromptRun {
+            events,
+            agent: Arc::clone(&agent),
+            session_manager: Arc::clone(&session_manager),
+            session_title_lifecycle,
+            live_timelines: Arc::new(Mutex::new(HashMap::new())),
+            session_id: session.id.clone(),
+            user_message: Message::user().with_text(prompt).with_generated_id(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            web_permission_context: WebPermissionContext::from_user_prompt(prompt),
+            cancel_token: CancellationToken::new(),
+            session_title_start: None,
+            pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+            issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+            cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+            run_id: "reply-poll-session-isolation".to_string(),
+            permission_routing: AgentPermissionRouting::Desktop,
+        }));
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), prompt_task)
+            .await
+            .expect("an unrelated lifecycle holder must not block the first provider poll")
+            .unwrap()
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(outcome.terminal_message.is_some());
+
+        drop(unrelated_session_lifecycle_guard);
+        drop(agent);
+        drop(session_manager);
+        drop(state);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn permission_mode_summary_waits_for_semantic_title_event() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("permission-mode-title-ordering", sink.clone());
+        let user_id = "permission-mode-title-ordering-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "Fallback task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let (run_events, _run_events_rx) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink.clone()),
+            session.id.clone(),
+            "permission-mode-title-ordering".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        let run_id = "permission-mode-title-ordering".to_string();
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager,
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::from([(
+                run_id,
+                ActiveAgentRun {
+                    agent,
+                    permission_routing: AgentPermissionRouting::Desktop,
+                    token: CancellationToken::new(),
+                    tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
+                    session_id: session.id.clone(),
+                    events: run_events,
+                    cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    task_handle: tokio::spawn(async {}),
+                },
+            )]),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root,
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope: account_scope.clone(),
+        });
+
+        let session_title_lifecycle = resolve_session_title_lifecycle(
+            &state.session_title_lifecycles,
+            &account_scope,
+            &session.id,
+        )
+        .await;
+        let session_title_lifecycle_guard = session_title_lifecycle.lock().await;
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let mode_session_id = session.id.clone();
+        let mode_task = tokio::spawn(async move {
+            handle
+                .set_permission_mode(AgentPermissionModeRequest {
+                    session_id: mode_session_id,
+                    mode: GooseMode::Auto.to_string(),
+                })
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if session_manager
+                    .get_session(&session.id, false)
+                    .await
+                    .is_ok_and(|persisted| persisted.goose_mode == GooseMode::Auto)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the permission mode should persist before its summary waits");
+        assert!(!mode_task.is_finished());
+
+        session_manager
+            .update(&session.id)
+            .system_generated_name("Semantic title".to_string())
+            .apply()
+            .await
+            .unwrap();
+        let semantic_session = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        emit_agent_event(
+            &state.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id: session.id.clone(),
+                run_id: None,
+                session: session_summary(&semantic_session),
+            },
+        );
+        drop(session_title_lifecycle_guard);
+        mode_task.await.unwrap().unwrap();
+
+        let emitted_summaries = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|event| match event {
+                AgentServiceEvent::SessionUpdated { session, .. } => {
+                    Some((session.title.clone(), session.mode.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            emitted_summaries,
+            vec![
+                ("Semantic title".to_string(), "auto".to_string()),
+                ("Semantic title".to_string(), "auto".to_string()),
+            ]
+        );
+
+        let runtime = state.inner.lock().await.take();
+        drop(runtime);
+        drop(session_manager);
+        drop(state);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
     async fn abandoned_first_send_restores_new_task_for_retry() {
         let test_root = recent_roots_test_dir("abandoned-session-title");
         let project_root = test_root.join("project");
@@ -12039,6 +12473,7 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             agent: Arc::clone(&agent),
             session_lifecycle: Arc::new(Mutex::new(())),
+            session_title_lifecycle: Arc::new(Mutex::new(())),
             session_id: session.id.clone(),
             first_prompt: "hey how are you?".to_string(),
             expected_fallback_title: "hey how are you?".to_string(),
@@ -12094,6 +12529,7 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             agent: Arc::clone(&agent),
             session_lifecycle: Arc::new(Mutex::new(())),
+            session_title_lifecycle: Arc::new(Mutex::new(())),
             session_id: session.id.clone(),
             first_prompt: "hey how are you?".to_string(),
             expected_fallback_title: "Explain reactive titles".to_string(),
@@ -12184,6 +12620,7 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             agent: Arc::clone(&agent),
             session_lifecycle: Arc::clone(&session_lifecycle),
+            session_title_lifecycle: Arc::new(Mutex::new(())),
             session_id: session.id.clone(),
             first_prompt: "hey how are you?".to_string(),
             expected_fallback_title: "hey how are you?".to_string(),
@@ -12261,6 +12698,7 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             agent: Arc::clone(&agent),
             session_lifecycle: Arc::new(Mutex::new(())),
+            session_title_lifecycle: Arc::new(Mutex::new(())),
             session_id: session.id.clone(),
             first_prompt: "Explain how reactive Agent titles work".to_string(),
             expected_fallback_title: "Explain reactive titles".to_string(),
@@ -12328,6 +12766,7 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             agent: Arc::clone(&agent),
             session_lifecycle: Arc::new(Mutex::new(())),
+            session_title_lifecycle: Arc::new(Mutex::new(())),
             session_id: session.id.clone(),
             first_prompt: "Explain how reactive Agent titles work".to_string(),
             expected_fallback_title: "Explain reactive titles".to_string(),
@@ -12443,11 +12882,18 @@ mod tests {
         let generation_agent = Arc::clone(&agent);
         let generation_session_id = session.id.clone();
         let generation_session_lifecycle = Arc::clone(&state.session_lifecycle);
+        let generation_session_title_lifecycle = resolve_session_title_lifecycle(
+            &state.session_title_lifecycles,
+            &account_scope(user_id).unwrap(),
+            &session.id,
+        )
+        .await;
         let generation = tokio::spawn(async move {
             generate_agent_session_title(AgentSessionTitleGeneration {
                 session_manager: generation_session_manager.as_ref(),
                 agent: generation_agent.as_ref(),
                 session_lifecycle: &generation_session_lifecycle,
+                session_title_lifecycle: &generation_session_title_lifecycle,
                 session_id: &generation_session_id,
                 first_prompt: "Explain how reactive Agent titles work",
                 expected_fallback_title: "Explain reactive titles",
@@ -12518,6 +12964,7 @@ mod tests {
             session_manager: session_manager.as_ref(),
             agent: &agent,
             session_lifecycle: &Arc::new(Mutex::new(())),
+            session_title_lifecycle: &Arc::new(Mutex::new(())),
             session_id: &session.id,
             first_prompt: &first_prompt,
             expected_fallback_title: "Explain reactive titles",
@@ -12565,6 +13012,7 @@ mod tests {
             session_manager: session_manager.as_ref(),
             agent: &agent,
             session_lifecycle: &Arc::new(Mutex::new(())),
+            session_title_lifecycle: &Arc::new(Mutex::new(())),
             session_id: &session.id,
             first_prompt: "Explain how reactive Agent titles work",
             expected_fallback_title: "Explain reactive titles",
@@ -12605,6 +13053,7 @@ mod tests {
             session_manager: session_manager.as_ref(),
             agent: &agent,
             session_lifecycle: &Arc::new(Mutex::new(())),
+            session_title_lifecycle: &Arc::new(Mutex::new(())),
             session_id: &session.id,
             first_prompt: "Explain how reactive Agent titles work",
             expected_fallback_title: "Explain reactive titles",
@@ -12645,6 +13094,7 @@ mod tests {
             session_manager: session_manager.as_ref(),
             agent: &agent,
             session_lifecycle: &Arc::new(Mutex::new(())),
+            session_title_lifecycle: &Arc::new(Mutex::new(())),
             session_id: &session.id,
             first_prompt: "Explain how reactive Agent titles work",
             expected_fallback_title: "Explain reactive titles",
