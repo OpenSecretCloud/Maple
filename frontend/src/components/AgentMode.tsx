@@ -176,7 +176,9 @@ import {
   aggregateAgentSidebarStatus,
   agentProjectProgressLabel,
   agentProjectTaskSummaryLabel,
-  agentTaskAccessibleLabel
+  agentTaskAccessibleLabel,
+  agentTaskRowInteractionPresentation,
+  type AgentTaskRowKeyboardFocusTarget
 } from "@/services/agentSidebarPresentation";
 import {
   loadAgentSidebarPreferences,
@@ -215,7 +217,7 @@ const AGENT_MODEL_PREFERENCE_KEY = "selectedAgentModel";
 const projectRootPersistenceQueues = new Map<string, Promise<void>>();
 const AGENT_SIDEBAR_ACTION_ROW_BASE = "absolute inset-y-0 right-0 z-30 flex min-h-0 items-stretch";
 const AGENT_SIDEBAR_ACTION_BUTTON =
-  "relative z-10 flex shrink-0 items-center justify-center rounded-full border-0 bg-transparent text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:bg-foreground/5 focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/70";
+  "relative z-10 flex shrink-0 items-center justify-center rounded-full border-0 bg-transparent text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:bg-foreground/5 focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/70 data-[silent-focus=true]:focus-visible:bg-transparent data-[silent-focus=true]:focus-visible:text-muted-foreground data-[silent-focus=true]:focus-visible:ring-0";
 
 class PendingAgentSendCancelledError extends Error {
   constructor() {
@@ -2687,10 +2689,13 @@ export function AgentMode({ userId }: { userId: string }) {
     },
     []
   );
-  const handleReturnRenameTaskFocus = useCallback(() => {
+  const handleReturnRenameTaskFocus = useCallback((focusVisible: boolean) => {
     const menuTrigger = renameTaskMenuTriggerRef.current;
     renameTaskMenuTriggerRef.current = null;
-    if (menuTrigger?.isConnected) menuTrigger.focus();
+    if (!menuTrigger?.isConnected) return;
+    if (focusVisible) delete menuTrigger.dataset.silentFocus;
+    else menuTrigger.dataset.silentFocus = "true";
+    menuTrigger.focus({ preventScroll: true });
   }, []);
   const handleRenameProject = useCallback(
     (root: AgentProjectRootView, displayName: string) => {
@@ -3171,25 +3176,32 @@ function AgentSidebarTaskRow({
   session
 }: AgentSidebarTaskRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [hasKeyboardFocusWithin, setHasKeyboardFocusWithin] = useState(false);
+  const [keyboardFocusTarget, setKeyboardFocusTarget] =
+    useState<AgentTaskRowKeyboardFocusTarget>(null);
   const [infoCardOpen, setInfoCardOpen] = useState(false);
+  const taskSelectionButtonRef = useRef<HTMLButtonElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const title = sessionTitle(session);
   const hasVisualStatus = isRunning || isUnreadCompleted;
   const visibleInfoCardOpen = !isTouchLayout && infoCardOpen;
+  const interactionPresentation = agentTaskRowInteractionPresentation(
+    menuOpen,
+    keyboardFocusTarget,
+    visibleInfoCardOpen
+  );
 
   useEffect(() => {
     if (isTouchLayout) setInfoCardOpen(false);
   }, [isTouchLayout]);
 
-  const activeSurface =
-    menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen
-      ? isActive
-        ? "bg-[hsl(var(--sidebar-row-selected-hover))] ring-1 ring-ring/70"
-        : "bg-[hsl(var(--sidebar-row-hover))] ring-1 ring-ring/70"
-      : null;
+  const activeSurface = interactionPresentation.emphasizeSurface
+    ? isActive
+      ? "bg-[hsl(var(--sidebar-row-selected-hover))] ring-1 ring-ring/70"
+      : "bg-[hsl(var(--sidebar-row-hover))] ring-1 ring-ring/70"
+    : null;
   const taskSelectionButton = (
     <button
+      ref={taskSelectionButtonRef}
       type="button"
       className={cn(
         "relative z-0 flex min-w-0 flex-1 cursor-pointer items-center pl-8 text-left text-sm text-foreground/95 transition-colors focus-visible:outline-none aria-disabled:cursor-default",
@@ -3229,11 +3241,28 @@ function AgentSidebarTaskRow({
         activeSurface
       )}
       onContextMenu={(event) => event.preventDefault()}
-      onFocusCapture={(event) => setHasKeyboardFocusWithin(isKeyboardFocusTarget(event.target))}
+      onFocusCapture={(event) => {
+        const focusedElement = event.target as Element;
+        if (!isKeyboardFocusTarget(focusedElement)) {
+          setKeyboardFocusTarget(null);
+          return;
+        }
+        setKeyboardFocusTarget(
+          focusedElement === taskSelectionButtonRef.current ? "selection" : "action"
+        );
+      }}
       onBlurCapture={(event) => {
         const nextTarget = event.relatedTarget;
-        setHasKeyboardFocusWithin(
-          event.currentTarget.contains(nextTarget as Node) && isKeyboardFocusTarget(nextTarget)
+        if (
+          !(nextTarget instanceof Element) ||
+          !event.currentTarget.contains(nextTarget) ||
+          !isKeyboardFocusTarget(nextTarget)
+        ) {
+          setKeyboardFocusTarget(null);
+          return;
+        }
+        setKeyboardFocusTarget(
+          nextTarget === taskSelectionButtonRef.current ? "selection" : "action"
         );
       }}
     >
@@ -3272,9 +3301,7 @@ function AgentSidebarTaskRow({
             "pointer-events-none absolute top-1/2 z-40 flex -translate-y-1/2 items-center justify-center transition-opacity duration-150 motion-reduce:transition-none",
             isTouchLayout ? "right-10" : "right-2",
             !isTouchLayout && "group-hover/task:opacity-0",
-            !isTouchLayout &&
-              (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
-              "opacity-0"
+            !isTouchLayout && interactionPresentation.revealActions && "opacity-0"
           )}
         >
           {isRunning ? (
@@ -3289,7 +3316,7 @@ function AgentSidebarTaskRow({
         className={taskActionRowClass(
           isTouchLayout,
           menuOpen,
-          hasKeyboardFocusWithin || visibleInfoCardOpen
+          interactionPresentation.revealActions
         )}
       >
         <div
@@ -3299,7 +3326,7 @@ function AgentSidebarTaskRow({
             isActive
               ? "to-[hsl(var(--sidebar-row-selected))] group-hover/task:to-[hsl(var(--sidebar-row-selected-hover))]"
               : "to-[hsl(var(--sidebar))] group-hover/task:to-[hsl(var(--sidebar-row-hover))]",
-            (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
+            interactionPresentation.emphasizeSurface &&
               (isActive
                 ? "to-[hsl(var(--sidebar-row-selected-hover))]"
                 : "to-[hsl(var(--sidebar-row-hover))]")
@@ -3311,7 +3338,7 @@ function AgentSidebarTaskRow({
             isActive
               ? "bg-[hsl(var(--sidebar-row-selected))] group-hover/task:bg-[hsl(var(--sidebar-row-selected-hover))]"
               : "bg-[hsl(var(--sidebar))] group-hover/task:bg-[hsl(var(--sidebar-row-hover))]",
-            (menuOpen || hasKeyboardFocusWithin || visibleInfoCardOpen) &&
+            interactionPresentation.emphasizeSurface &&
               (isActive
                 ? "bg-[hsl(var(--sidebar-row-selected-hover))]"
                 : "bg-[hsl(var(--sidebar-row-hover))]")
@@ -3326,6 +3353,13 @@ function AgentSidebarTaskRow({
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
+                }}
+                onBlur={(event) => {
+                  delete event.currentTarget.dataset.silentFocus;
+                }}
+                onKeyDown={(event) => {
+                  delete event.currentTarget.dataset.silentFocus;
+                  setKeyboardFocusTarget("action");
                 }}
                 aria-label={`Open task menu for ${title}`}
               >

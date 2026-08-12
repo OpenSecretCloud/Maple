@@ -11,13 +11,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { validateAgentTaskRename } from "@/components/agent/agentTaskRename";
 
 interface RenameAgentTaskDialogProps {
   currentTitle: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onRename: (title: string) => Promise<void>;
-  onReturnFocus: () => void;
+  onReturnFocus: (focusVisible: boolean) => void;
 }
 
 export function RenameAgentTaskDialog({
@@ -32,6 +33,7 @@ export function RenameAgentTaskDialog({
   const [isPending, setIsPending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const isPendingRef = useRef(false);
+  const returnFocusVisibleRef = useRef(true);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && isPendingRef.current) return;
@@ -42,9 +44,9 @@ export function RenameAgentTaskDialog({
     event.preventDefault();
     if (isPendingRef.current) return;
 
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle) {
-      setError("Task title cannot be empty.");
+    const validation = validateAgentTaskRename(title, currentTitle);
+    if (!validation.ok) {
+      setError(validation.error);
       inputRef.current?.focus();
       return;
     }
@@ -54,7 +56,7 @@ export function RenameAgentTaskDialog({
     inputRef.current?.focus();
     setIsPending(true);
     try {
-      await onRename(trimmedTitle);
+      await onRename(validation.title);
       isPendingRef.current = false;
       setIsPending(false);
       onOpenChange(false);
@@ -80,12 +82,20 @@ export function RenameAgentTaskDialog({
         className={isPending ? "sm:max-w-[425px] [&>button]:hidden" : "sm:max-w-[425px]"}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
-          onReturnFocus();
+          onReturnFocus(returnFocusVisibleRef.current);
+        }}
+        onPointerDownCapture={() => {
+          returnFocusVisibleRef.current = false;
+        }}
+        onKeyDownCapture={() => {
+          returnFocusVisibleRef.current = true;
         }}
         onEscapeKeyDown={(event) => {
+          returnFocusVisibleRef.current = true;
           if (isPendingRef.current) event.preventDefault();
         }}
         onInteractOutside={(event) => {
+          returnFocusVisibleRef.current = false;
           if (isPendingRef.current) event.preventDefault();
         }}
       >

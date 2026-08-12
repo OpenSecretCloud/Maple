@@ -10,6 +10,24 @@ export interface AgentTaskAccessibleStatus {
   unread: boolean;
 }
 
+export type AgentTaskRowKeyboardFocusTarget = "selection" | "action" | null;
+
+export interface AgentTaskRowInteractionPresentation {
+  revealActions: boolean;
+  emphasizeSurface: boolean;
+}
+
+export function agentTaskRowInteractionPresentation(
+  menuOpen: boolean,
+  keyboardFocusTarget: AgentTaskRowKeyboardFocusTarget,
+  infoCardOpen: boolean
+): AgentTaskRowInteractionPresentation {
+  return {
+    revealActions: menuOpen || keyboardFocusTarget !== null || infoCardOpen,
+    emphasizeSurface: menuOpen || keyboardFocusTarget === "selection" || infoCardOpen
+  };
+}
+
 export function aggregateAgentSidebarStatus(
   runningSessionIds: ReadonlySet<string>,
   completedUnreadSessionIds: ReadonlySet<string>

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   agentProjectProgressLabel,
   agentProjectTaskSummaryLabel,
+  agentTaskRowInteractionPresentation,
   agentSidebarToggleLabel,
   agentSidebarVisualStatus,
   agentTaskAccessibleLabel,
@@ -60,6 +61,35 @@ describe("Agent task accessible labels", () => {
     [{ running: true, unread: true }, "Investigate login, running, completed, unread"]
   ] as const)("preserves status text for %o", (status, expected) => {
     expect(agentTaskAccessibleLabel("Investigate login", status)).toBe(expected);
+  });
+});
+
+describe("Agent task row interaction presentation", () => {
+  test("reveals actions without emphasizing the whole row when its action owns focus", () => {
+    expect(agentTaskRowInteractionPresentation(false, "action", false)).toEqual({
+      revealActions: true,
+      emphasizeSurface: false
+    });
+  });
+
+  test.each([
+    [true, null, false],
+    [false, "selection", false],
+    [false, null, true]
+  ] as const)(
+    "emphasizes the row for menu=%s focus=%s info=%s",
+    (menuOpen, keyboardFocusTarget, infoCardOpen) => {
+      expect(
+        agentTaskRowInteractionPresentation(menuOpen, keyboardFocusTarget, infoCardOpen)
+      ).toEqual({ revealActions: true, emphasizeSurface: true });
+    }
+  );
+
+  test("keeps the idle row neutral", () => {
+    expect(agentTaskRowInteractionPresentation(false, null, false)).toEqual({
+      revealActions: false,
+      emphasizeSurface: false
+    });
   });
 });
 

@@ -70,6 +70,7 @@ httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 tempfile = "3"
+icu_properties = "2.1.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
