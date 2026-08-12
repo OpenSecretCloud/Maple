@@ -20,9 +20,9 @@ fn conversation_item_id(item: &ConversationItem) -> Uuid {
 async fn setup_authenticated_client() -> Result<OpenSecretClient> {
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     } else {
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
     }
 
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")

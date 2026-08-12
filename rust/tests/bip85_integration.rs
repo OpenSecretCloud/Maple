@@ -13,7 +13,7 @@ async fn test_bip85_derive_child_mnemonic() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -68,7 +68,7 @@ async fn test_bip85_private_key_bytes() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -124,7 +124,7 @@ async fn test_bip85_public_key_derivation() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -182,7 +182,7 @@ async fn test_bip85_message_signing() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
@@ -250,7 +250,7 @@ async fn test_bip85_encryption_decryption() -> Result<()> {
     // Load environment variables
     let env_path = std::path::Path::new("../.env.local");
     if env_path.exists() {
-        dotenv::from_path(env_path).ok();
+        dotenvy::from_path(env_path).ok();
     }
 
     let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")

@@ -33,7 +33,7 @@ async fn test_attestation_handshake_localhost() -> Result<()> {
 async fn test_attestation_handshake_hosted_selected_environment() -> Result<()> {
     // Try to load .env.local if it exists (for local testing)
     if std::path::Path::new("../.env.local").exists() {
-        dotenv::from_path("../.env.local").ok();
+        dotenvy::from_path("../.env.local").ok();
     }
 
     // This test requires VITE_OPEN_SECRET_API_URL to be set to a hosted endpoint.
