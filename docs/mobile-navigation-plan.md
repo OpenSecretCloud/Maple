@@ -332,9 +332,9 @@ add a second menu or change the responsive breakpoints.
   not rendered in page mode.
 - Mobile usage copy is 12 pixels, with 11-pixel plan/API labels. The account row aligns that card
   with an exact 44-by-44-pixel Settings control.
-- Portaled menu content is constrained to the viewport, scrolls vertically when necessary, uses
-  16-pixel collision padding, and gives its menu items 44-pixel targets with 16-pixel labels and
-  20-pixel icons.
+- Portaled menu content is constrained to the viewport, or to the native iOS safe-content frame
+  when the page is full bleed. It scrolls vertically when necessary, uses 16-pixel collision
+  padding, and gives its menu items 44-pixel targets with 16-pixel labels and 20-pixel icons.
 - The footer uses the greater of 16 pixels or the device bottom safe-area inset. In short landscape,
   the full menu surface becomes the vertical scroller and the decorative history tail/fade
   contracts, so every section remains reachable.
@@ -512,6 +512,45 @@ and the pinned iOS simulator bundle build pass. Lint remains at the existing 13-
 baseline, with no warning in a touched file. A physical-device rerun of the revised canvas timing,
 title animation, 16-pixel typography, long-title fade, historical-chat load, short cancellation, and
 Settings gestures remains pending.
+
+### Third physical iPhone navigation follow-up — August 14, 2026
+
+The next two physical recordings showed that matching the document canvas to the current page was
+not sufficient. WKWebView still laid out every moving React surface only inside the safe-content
+rectangle, so the page boundary moved between the status bar and home indicator while the top and
+bottom bands stayed fixed and changed color only after the transition committed. The same build
+also exposed a second settle during Settings entry and a Settings Back race that could briefly
+reveal the menu before returning to the previously viewed chat.
+
+The revised native-iOS compact presentation now:
+
+- Adds `viewport-fit=cover` dynamically after exact native-iOS detection and before React renders,
+  using the existing compact width and short-landscape predicates. Mobile web, Android, wide iPad,
+  and desktop layouts keep their original viewport metadata and breakpoints.
+- Gives every transformed menu, chat, New Chat, project, Settings-menu, and Settings-detail layer a
+  full physical-screen background. Content is independently inset by all four iOS safe-area values,
+  so the page boundary travels through the status and home-indicator regions without moving controls
+  into them. Existing footer/composer safe padding is neutralized only inside this native frame to
+  avoid double bottom insets.
+- Keeps native-reachable static auth, reset, verification, callback, fallback, and Agent screens,
+  fixed notifications, the marketing header, and team alerts inside the same safe-content bounds.
+  Portaled menus and selects collide against the actual safe frame rather than the physical screen.
+- Disables the base transform transition only while the native Settings push keyframe owns entry,
+  eliminating the WebKit class-removal rebound while preserving pop, interactive swipe, reduced
+  motion, mobile-web, and Android behavior.
+- Animates a Settings Back-button close before changing history. It returns through the marked menu
+  entry with one blocker-free Back, replaces a markerless/direct entry with `/`, and commits only if
+  the raw browser URL and history-entry key still match the initiating Settings page. A concurrent
+  browser Back, deep link, duplicate close, or unmount therefore cannot perform a late second Back;
+  an invalidated close also restores the Settings shell instead of leaving it popped or inert.
+
+Focused viewport, mobile-navigation, swipe, Settings-navigation, and runtime tests pass. The complete
+local frontend suite passes with 723 tests; typecheck, formatting, the production build, and lint
+also pass, with lint unchanged at 13 existing warnings and no errors. Source review confirms the
+full-bleed rules require the exact native-iOS compact marker and do not alter the 296-pixel desktop
+sidebar. A physical-iPhone rerun of edge-to-edge push/pop/swipe boundaries, Settings entry, the
+chat-to-menu-to-Settings Back sequence, rotation/short landscape, portaled menus, and global overlays
+remains pending.
 
 ## Non-Goals
 

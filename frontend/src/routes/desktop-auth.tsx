@@ -87,7 +87,7 @@ function DesktopAuth() {
   // Special handling for Apple OAuth - use popup instead of redirect
   if (provider === "apple") {
     return (
-      <Card className="max-w-md mx-auto mt-20">
+      <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
         <CardHeader>
           <CardTitle>Apple Sign In</CardTitle>
         </CardHeader>
@@ -114,7 +114,7 @@ function DesktopAuth() {
   }
 
   return (
-    <Card className="max-w-md mx-auto mt-20">
+    <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
       <CardHeader>
         <CardTitle>Redirecting to {provider}</CardTitle>
       </CardHeader>

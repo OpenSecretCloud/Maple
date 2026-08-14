@@ -552,7 +552,9 @@ export function ProjectDetailView({
   const renderProjectLayout = (children: React.ReactNode) => {
     if (standaloneMobile) {
       return (
-        <div className="grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden">{children}</div>
+        <div className="maple-standalone-mobile-content-height grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden">
+          {children}
+        </div>
       );
     }
 

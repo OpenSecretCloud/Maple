@@ -206,10 +206,10 @@
 
   /* Match the iOS safe-area canvas to the full-screen mobile menu without
    * changing the viewport or the background of chat, project, or Settings pages. */
-  html.maple-mobile-menu-canvas,
-  html.maple-mobile-menu-canvas body,
-  html.maple-mobile-settings-menu-canvas,
-  html.maple-mobile-settings-menu-canvas body {
+  html.maple-mobile-menu-canvas:not(.maple-native-ios-compact-viewport),
+  html.maple-mobile-menu-canvas:not(.maple-native-ios-compact-viewport) body,
+  html.maple-mobile-settings-menu-canvas:not(.maple-native-ios-compact-viewport),
+  html.maple-mobile-settings-menu-canvas:not(.maple-native-ios-compact-viewport) body {
     background-color: hsl(var(--sidebar));
   }
 
@@ -340,6 +340,136 @@
 
   .maple-navigation-page-enter {
     animation: maple-navigation-push-in 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+
+  html.maple-native-ios-compact-viewport .maple-navigation-page-enter {
+    transition: none;
+  }
+
+  /* Native iOS expands the authenticated home stack beneath system chrome. Each moving page
+   * paints that full canvas while its content remains inside a page-local safe frame. */
+  .maple-mobile-navigation-safe-frame {
+    display: contents;
+  }
+
+  html.maple-native-ios-compact-viewport .maple-mobile-navigation-safe-frame {
+    position: absolute;
+    inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    display: block;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+    transform: translate3d(0, 0, 0);
+  }
+
+  #maple-native-ios-safe-area-boundary {
+    display: none;
+  }
+
+  html.maple-native-ios-compact-viewport #maple-native-ios-safe-area-boundary {
+    position: fixed;
+    inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    display: block;
+    pointer-events: none;
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-safe-dropdown-content {
+    max-height: var(--radix-dropdown-menu-content-available-height);
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-safe-select-content {
+    max-height: min(24rem, var(--radix-select-content-available-height));
+  }
+
+  html.maple-native-ios-compact-viewport .maple-mobile-menu-navigation-layer {
+    background-color: hsl(var(--sidebar));
+  }
+
+  html.maple-native-ios-compact-viewport .maple-mobile-settings-safe-surface {
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+
+  html.maple-native-ios-compact-viewport .maple-mobile-settings-sticky-header {
+    top: env(safe-area-inset-top, 0px);
+  }
+
+  html.maple-native-ios-compact-viewport .maple-standalone-mobile-content-height {
+    height: 100%;
+  }
+
+  html.maple-native-ios-compact-viewport .maple-mobile-menu-footer {
+    padding-bottom: 1rem;
+  }
+
+  html.maple-native-ios-compact-viewport .maple-mobile-chat-composer-safe-bottom {
+    padding-bottom: 0;
+  }
+
+  /* Full-bleed is initialized before authentication. Static routes keep their own background on
+   * the outer page while ordinary (non-animated) content stays within the same native insets. */
+  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-page {
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-content {
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-block {
+    padding-top: calc(2rem + env(safe-area-inset-top, 0px));
+    padding-right: calc(1rem + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(1rem + env(safe-area-inset-left, 0px));
+  }
+
+  html.maple-native-ios-compact-viewport
+    .maple-mobile-settings-safe-surface
+    .maple-native-ios-static-safe-block {
+    padding: 2rem 1rem;
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-agent-safe-page {
+    padding-top: calc(1.5rem + env(safe-area-inset-top, 0px));
+    padding-right: calc(1.5rem + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(1.5rem + env(safe-area-inset-left, 0px));
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-card {
+    width: calc(100% - 2rem - env(safe-area-inset-right, 0px) - env(safe-area-inset-left, 0px));
+    margin-top: calc(5rem + env(safe-area-inset-top, 0px));
+    margin-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-top {
+    top: env(safe-area-inset-top, 0px);
+    right: env(safe-area-inset-right, 0px);
+    left: env(safe-area-inset-left, 0px);
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-global-notification {
+    top: calc(1rem + env(safe-area-inset-top, 0px));
+    right: calc(1rem + env(safe-area-inset-right, 0px));
+  }
+
+  html.maple-native-ios-compact-viewport .maple-native-ios-team-seat-alert {
+    top: calc(5rem + env(safe-area-inset-top, 0px));
+    right: calc(0.75rem + env(safe-area-inset-right, 0px));
+    left: calc(0.75rem + env(safe-area-inset-left, 0px));
+  }
+
+  @media (min-width: 640px) {
+    html.maple-native-ios-compact-viewport .maple-native-ios-team-seat-alert {
+      right: calc(1rem + env(safe-area-inset-right, 0px));
+      left: auto;
+    }
   }
 
   .maple-navigation-page-covered {

@@ -585,7 +585,7 @@ export function MainMenu({
         </div>
         <div
           className={cn(
-            "w-full border-t border-border/25 pt-2",
+            "maple-mobile-menu-footer w-full border-t border-border/25 pt-2",
             isPagePresentation
               ? "shrink-0 px-5 pb-[max(1rem,env(safe-area-inset-bottom))]"
               : "px-4 pb-4"

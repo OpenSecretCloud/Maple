@@ -43,12 +43,15 @@ import {
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
+import { NATIVE_IOS_COMPACT_VIEWPORT_CLASS } from "@/utils/nativeIOSViewport";
 import { isIOS } from "@/utils/platform";
 import {
+  closeCompactSettings,
   getSettingsBackTarget,
   hasSettingsHomeParent,
   isSettingsPath,
   isSettingsRootPath,
+  SETTINGS_SHELL_POP_CANCEL_EVENT,
   SETTINGS_SHELL_POP_EVENT,
   SETTINGS_SHELL_SWIPE_BACK_EVENT,
   settingsMenuOwnsDocumentCanvas,
@@ -80,6 +83,14 @@ type SettingsNavItem = {
 };
 
 const MOBILE_SETTINGS_MENU_CANVAS_CLASS = "maple-mobile-settings-menu-canvas";
+
+function browserHistoryEntryKey(state: unknown) {
+  if (!state || typeof state !== "object") return null;
+
+  const candidate = state as Record<string, unknown>;
+  if (typeof candidate.__TSR_key === "string") return candidate.__TSR_key;
+  return typeof candidate.key === "string" ? candidate.key : null;
+}
 
 function SettingsNavLink({ item }: { item: SettingsNavItem }) {
   const Icon = item.icon;
@@ -160,7 +171,8 @@ function SettingsLayoutContent() {
   const settingsShellPopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settingsShellPopResolveRef = useRef<(() => void) | null>(null);
   const skipNextDetailPopAnimationRef = useRef(false);
-  const skipNextSettingsShellPopAnimationRef = useRef(false);
+  const settingsCloseAttemptRef = useRef(0);
+  const settingsCloseInFlightRef = useRef(false);
   const [isPopping, setIsPopping] = useState(false);
   const [isClosingSettings, setIsClosingSettings] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -176,7 +188,13 @@ function SettingsLayoutContent() {
 
   useLayoutEffect(() => {
     const documentRoot = document.documentElement;
-    documentRoot.classList.toggle(MOBILE_SETTINGS_MENU_CANVAS_CLASS, settingsMenuOwnsCanvas);
+    const usesMovingFullBleedCanvas = documentRoot.classList.contains(
+      NATIVE_IOS_COMPACT_VIEWPORT_CLASS
+    );
+    documentRoot.classList.toggle(
+      MOBILE_SETTINGS_MENU_CANVAS_CLASS,
+      settingsMenuOwnsCanvas && !usesMovingFullBleedCanvas
+    );
 
     return () => documentRoot.classList.remove(MOBILE_SETTINGS_MENU_CANVAS_CLASS);
   }, [settingsMenuOwnsCanvas]);
@@ -349,16 +367,42 @@ function SettingsLayoutContent() {
 
   const closeSettings = useCallback(
     async (interactive = false) => {
-      if (isNavigationLocked || isSigningOut || isClosingSettings) return;
+      if (
+        isNavigationLocked ||
+        isSigningOut ||
+        isClosingSettings ||
+        settingsCloseInFlightRef.current
+      ) {
+        return;
+      }
 
       if (isCompactViewport) {
-        if (hasSettingsHomeParent(window.history.state)) {
-          if (interactive) skipNextSettingsShellPopAnimationRef.current = true;
-          router.history.back();
-          return;
-        }
+        settingsCloseInFlightRef.current = true;
+        const attempt = ++settingsCloseAttemptRef.current;
+        const settingsHref = window.location.href;
+        const settingsHistoryKey = browserHistoryEntryKey(window.history.state);
+        let committed = false;
 
-        if (!interactive) await runSettingsShellPop();
+        try {
+          committed = await closeCompactSettings({
+            interactive,
+            hasHomeParent: hasSettingsHomeParent(window.history.state),
+            animate: runSettingsShellPop,
+            canCommit: () =>
+              settingsCloseAttemptRef.current === attempt &&
+              window.location.href === settingsHref &&
+              browserHistoryEntryKey(window.history.state) === settingsHistoryKey,
+            goBack: () => router.history.back({ ignoreBlocker: true }),
+            replaceWithMenu: () => router.navigate({ to: "/", replace: true, ignoreBlocker: true })
+          });
+        } finally {
+          if (!committed && settingsCloseAttemptRef.current === attempt) {
+            settingsCloseInFlightRef.current = false;
+            setIsClosingSettings(false);
+            window.dispatchEvent(new Event(SETTINGS_SHELL_POP_CANCEL_EVENT));
+          }
+        }
+        return;
       }
 
       returnToHome();
@@ -369,7 +413,7 @@ function SettingsLayoutContent() {
       isNavigationLocked,
       isSigningOut,
       returnToHome,
-      router.history,
+      router,
       runSettingsShellPop
     ]
   );
@@ -391,6 +435,8 @@ function SettingsLayoutContent() {
 
   useEffect(() => {
     return () => {
+      settingsCloseAttemptRef.current += 1;
+      settingsCloseInFlightRef.current = false;
       if (popTimerRef.current) clearTimeout(popTimerRef.current);
       popResolveRef.current?.();
       if (settingsShellPopTimerRef.current) clearTimeout(settingsShellPopTimerRef.current);
@@ -428,10 +474,6 @@ function SettingsLayoutContent() {
           !isSettingsPath(nextLocation.pathname) &&
           isBackwardAction
         ) {
-          if (skipNextSettingsShellPopAnimationRef.current) {
-            skipNextSettingsShellPopAnimationRef.current = false;
-            return false;
-          }
           await runSettingsShellPop();
           return false;
         }
@@ -661,7 +703,7 @@ function SettingsLayoutContent() {
           "flex min-h-0 flex-col overflow-hidden border-r border-border/40 bg-muted dark:bg-[hsl(var(--sidebar))]",
           isCompactViewport
             ? [
-                "maple-navigation-page fixed inset-0 z-10 w-full border-r-0",
+                "maple-mobile-settings-safe-surface maple-navigation-page fixed inset-0 z-10 w-full border-r-0",
                 !isSettingsRoot && !isPopping && "maple-navigation-page-covered",
                 isSettingsDetailSwipeActive && "maple-navigation-page-interactive"
               ]
@@ -743,7 +785,7 @@ function SettingsLayoutContent() {
         className={cn(
           "min-h-0 min-w-0 overflow-y-auto overscroll-y-contain bg-background",
           isCompactViewport && [
-            "maple-navigation-page fixed inset-0 z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
+            "maple-mobile-settings-safe-surface maple-navigation-page fixed inset-0 z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
             isSettingsDetailSwipeActive && "maple-navigation-page-interactive",
             isSettingsRoot
               ? "maple-navigation-page-pop"
@@ -755,7 +797,7 @@ function SettingsLayoutContent() {
         style={isSettingsDetailSwipeActive ? settingsDetailSwipeStyle : undefined}
       >
         {isCompactViewport && (
-          <div className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/50 bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+          <div className="maple-mobile-settings-sticky-header sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/50 bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <button
               ref={detailBackButtonRef}
               type="button"

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  closeCompactSettings,
   getSettingsBackTarget,
   hasSettingsHomeParent,
   isSettingsPath,
@@ -27,6 +28,112 @@ describe("compact settings navigation", () => {
     expect(hasSettingsHomeParent({ [SETTINGS_HOME_PARENT_STATE_KEY]: true })).toBe(true);
     expect(hasSettingsHomeParent({ [SETTINGS_HOME_PARENT_STATE_KEY]: false })).toBe(false);
     expect(hasSettingsHomeParent(null)).toBe(false);
+  });
+
+  test("animates before returning to the marked home entry", async () => {
+    const operations: string[] = [];
+
+    await closeCompactSettings({
+      interactive: false,
+      hasHomeParent: true,
+      animate: async () => {
+        operations.push("animate");
+      },
+      canCommit: () => true,
+      goBack: () => {
+        operations.push("back");
+      },
+      replaceWithMenu: () => {
+        operations.push("replace-menu");
+      }
+    });
+
+    expect(operations).toEqual(["animate", "back"]);
+  });
+
+  test("does not replay the shell animation after an interactive swipe", async () => {
+    const operations: string[] = [];
+
+    await closeCompactSettings({
+      interactive: true,
+      hasHomeParent: true,
+      animate: async () => {
+        operations.push("animate");
+      },
+      canCommit: () => true,
+      goBack: () => {
+        operations.push("back");
+      },
+      replaceWithMenu: () => {
+        operations.push("replace-menu");
+      }
+    });
+
+    expect(operations).toEqual(["back"]);
+  });
+
+  test("replaces a markerless or direct Settings entry with the menu", async () => {
+    const operations: string[] = [];
+
+    await closeCompactSettings({
+      interactive: false,
+      hasHomeParent: false,
+      animate: async () => {
+        operations.push("animate");
+      },
+      canCommit: () => true,
+      goBack: () => {
+        operations.push("back");
+      },
+      replaceWithMenu: async () => {
+        operations.push("replace-menu");
+      }
+    });
+
+    expect(operations).toEqual(["animate", "replace-menu"]);
+  });
+
+  test("does not commit a deferred close after history changes", async () => {
+    const operations: string[] = [];
+
+    const committed = await closeCompactSettings({
+      interactive: false,
+      hasHomeParent: true,
+      animate: async () => {
+        operations.push("animate");
+      },
+      canCommit: () => false,
+      goBack: () => {
+        operations.push("back");
+      },
+      replaceWithMenu: () => {
+        operations.push("replace-menu");
+      }
+    });
+
+    expect(committed).toBe(false);
+    expect(operations).toEqual(["animate"]);
+  });
+
+  test("a markerless interactive close goes straight to the menu", async () => {
+    const operations: string[] = [];
+
+    await closeCompactSettings({
+      interactive: true,
+      hasHomeParent: false,
+      animate: async () => {
+        operations.push("animate");
+      },
+      canCommit: () => true,
+      goBack: () => {
+        operations.push("back");
+      },
+      replaceWithMenu: () => {
+        operations.push("replace-menu");
+      }
+    });
+
+    expect(operations).toEqual(["replace-menu"]);
   });
 
   test("returns to the recorded menu entry across nested detail history", () => {

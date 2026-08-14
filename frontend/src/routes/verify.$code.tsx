@@ -61,7 +61,7 @@ function VerifyEmail() {
 
   if (isVerifying) {
     return (
-      <Card className="max-w-md mx-auto mt-20">
+      <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
         <CardHeader>
           <CardTitle>Verifying Email</CardTitle>
         </CardHeader>
@@ -74,7 +74,7 @@ function VerifyEmail() {
 
   if (error) {
     return (
-      <Card className="max-w-md mx-auto mt-20">
+      <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
         <CardHeader>
           <CardTitle>Verification Failed</CardTitle>
         </CardHeader>
@@ -86,7 +86,7 @@ function VerifyEmail() {
   }
 
   return (
-    <Card className="max-w-md mx-auto mt-20">
+    <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
       <CardHeader>
         <CardTitle>Email Verified</CardTitle>
       </CardHeader>

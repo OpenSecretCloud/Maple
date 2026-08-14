@@ -15,7 +15,7 @@ function PasswordResetConfirm() {
   const { email, secret } = Route.useSearch();
 
   return (
-    <div className="pt-8 mx-auto max-w-md">
+    <div className="maple-native-ios-static-safe-block mx-auto max-w-md pt-8">
       <h1 className="text-2xl font-bold mb-4">Confirm Password Reset</h1>
       <PasswordResetConfirmForm email={email} secret={secret} />
     </div>

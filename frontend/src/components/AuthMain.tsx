@@ -9,7 +9,7 @@ type AuthMainProps = {
 
 export function AuthMain({ children, title, description }: AuthMainProps) {
   return (
-    <div className="flex min-h-dvh flex-col bg-[#e2e2e2] text-[#221a18] dark:bg-background dark:text-foreground">
+    <div className="maple-native-ios-static-safe-page flex min-h-dvh flex-col bg-[#e2e2e2] text-[#221a18] dark:bg-background dark:text-foreground">
       <AuthHeader />
 
       <main className="flex flex-1 items-center justify-center px-4 py-10 sm:px-6">

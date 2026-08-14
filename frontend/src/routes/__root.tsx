@@ -15,6 +15,7 @@ import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
   isSettingsRootPath,
+  SETTINGS_SHELL_POP_CANCEL_EVENT,
   SETTINGS_SHELL_POP_EVENT,
   SETTINGS_SHELL_SWIPE_BACK_EVENT,
   shouldSuspendCoveredHomeChats
@@ -132,8 +133,13 @@ function Root() {
 
   useEffect(() => {
     const handleSettingsPop = () => setIsSettingsPopping(true);
+    const handleSettingsPopCancel = () => setIsSettingsPopping(false);
     window.addEventListener(SETTINGS_SHELL_POP_EVENT, handleSettingsPop);
-    return () => window.removeEventListener(SETTINGS_SHELL_POP_EVENT, handleSettingsPop);
+    window.addEventListener(SETTINGS_SHELL_POP_CANCEL_EVENT, handleSettingsPopCancel);
+    return () => {
+      window.removeEventListener(SETTINGS_SHELL_POP_EVENT, handleSettingsPop);
+      window.removeEventListener(SETTINGS_SHELL_POP_CANCEL_EVENT, handleSettingsPopCancel);
+    };
   }, []);
 
   useLayoutEffect(() => {

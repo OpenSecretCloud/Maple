@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { isTauriDesktop, waitForPlatform } from "@/utils/platform";
+import { initializeNativeIOSCompactViewport } from "@/utils/nativeIOSViewport";
+import { isIOS, isTauriDesktop, isTauriMobile, waitForPlatform } from "@/utils/platform";
 import { restoreChatTypographyAtLaunch } from "@/services/chatTypographyPreferences";
 import { restoreWorkspaceModeAtLaunch } from "@/services/workspaceModePreference";
 
@@ -13,6 +14,7 @@ async function initializeApp() {
   // Wait for platform detection to complete
   // This ensures all platform checks are correct from the first render
   await waitForPlatform();
+  initializeNativeIOSCompactViewport(isTauriMobile() && isIOS());
   restoreWorkspaceModeAtLaunch(isTauriDesktop());
 
   // Create the router only after restoring the launch route so its first

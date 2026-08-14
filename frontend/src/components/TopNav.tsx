@@ -37,7 +37,7 @@ export function TopNav() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
-    <div className="fixed top-0 left-0 right-0 z-50 px-4 sm:px-6 lg:px-8">
+    <div className="maple-native-ios-static-safe-top fixed left-0 right-0 top-0 z-50 px-4 sm:px-6 lg:px-8">
       <nav className="w-full max-w-7xl mx-auto my-4">
         <div className="flex h-16 items-center px-6 relative overflow-visible rounded-xl border border-[#E2E2E2]/10 bg-[#111111]/80 backdrop-blur-md">
           <div className="relative z-10 flex w-full items-center justify-between">

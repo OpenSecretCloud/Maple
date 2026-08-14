@@ -83,7 +83,7 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
   const hasActions = notification.actions && notification.actions.length > 0;
 
   return (
-    <div className="fixed top-4 right-4 z-50 pointer-events-none">
+    <div className="maple-native-ios-global-notification pointer-events-none fixed right-4 top-4 z-50">
       <div
         className={cn(
           "pointer-events-auto flex flex-col gap-3 rounded-lg border bg-card text-card-foreground p-4 shadow-lg transition-all duration-200 min-w-[320px] max-w-md",

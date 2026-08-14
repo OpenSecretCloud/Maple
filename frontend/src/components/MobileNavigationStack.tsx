@@ -16,6 +16,7 @@ import { UnifiedChat } from "@/components/UnifiedChat";
 import { useIOSSwipeBack } from "@/components/useIOSSwipeBack";
 import { useSelectedProjectState } from "@/state/useLocalState";
 import { cn } from "@/utils/utils";
+import { NATIVE_IOS_COMPACT_VIEWPORT_CLASS } from "@/utils/nativeIOSViewport";
 import { isTauriMobile } from "@/utils/platform";
 import {
   activeMobilePage,
@@ -116,7 +117,7 @@ function NavigationLayer({
         className
       )}
     >
-      {children}
+      <div className="maple-mobile-navigation-safe-frame">{children}</div>
     </div>
   );
 }
@@ -616,7 +617,13 @@ export function MobileNavigationStack({
 
   useLayoutEffect(() => {
     const documentRoot = document.documentElement;
-    documentRoot.classList.toggle(MOBILE_MENU_CANVAS_CLASS, menuOwnsDocumentCanvas);
+    const usesMovingFullBleedCanvas = documentRoot.classList.contains(
+      NATIVE_IOS_COMPACT_VIEWPORT_CLASS
+    );
+    documentRoot.classList.toggle(
+      MOBILE_MENU_CANVAS_CLASS,
+      menuOwnsDocumentCanvas && !usesMovingFullBleedCanvas
+    );
 
     return () => documentRoot.classList.remove(MOBILE_MENU_CANVAS_CLASS);
   }, [menuOwnsDocumentCanvas]);
@@ -696,7 +703,7 @@ export function MobileNavigationStack({
       <NavigationLayer
         active={!isTransitioningBackward && baseActivePage.type === "menu"}
         className={cn(
-          "maple-navigation-page z-0",
+          "maple-mobile-menu-navigation-layer maple-navigation-page z-0",
           isMenuCovered && "maple-navigation-page-covered",
           swipeParentPage?.type === "menu" && "maple-navigation-page-interactive"
         )}

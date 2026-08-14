@@ -14,7 +14,7 @@ export function FullPageMain({ children, className }: FullPageMainProps) {
         className
       )}
     >
-      <div className="flex flex-col gap-8 w-full">
+      <div className="maple-native-ios-static-safe-content flex w-full flex-col gap-8">
         {children}
         <div>
           <Footer />

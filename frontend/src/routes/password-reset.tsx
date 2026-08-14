@@ -7,7 +7,7 @@ export const Route = createFileRoute("/password-reset")({
 
 function PasswordResetRequest() {
   return (
-    <div className="pt-8 mx-auto max-w-md">
+    <div className="maple-native-ios-static-safe-block mx-auto max-w-md pt-8">
       <PasswordResetRequestForm />
     </div>
   );

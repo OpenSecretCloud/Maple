@@ -5100,6 +5100,7 @@ export function UnifiedChat({
 
   return (
     <ResizableSidebarLayout
+      className={standaloneMobile ? "maple-standalone-mobile-content-height" : undefined}
       data-runtime-key={runtimeStore.resolveKey(activeRuntimeKey)}
       data-generating={isGenerating ? "true" : "false"}
       isCompactLayout={standaloneMobile || isCompactLayout}
@@ -5543,7 +5544,7 @@ export function UnifiedChat({
           </div>
         ) : (
           // Fixed at bottom when there are messages
-          <div className="bg-background pb-[env(safe-area-inset-bottom)]">
+          <div className="maple-mobile-chat-composer-safe-bottom bg-background pb-[env(safe-area-inset-bottom)]">
             <div className="mx-auto max-w-4xl px-4 landscape-short:px-3">
               <form onSubmit={handleSendMessage} className="relative">
                 <div className="space-y-2 landscape-short:space-y-1">

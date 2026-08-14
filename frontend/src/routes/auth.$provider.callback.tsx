@@ -178,7 +178,7 @@ function OAuthCallback() {
   // After auth completes for a native app flow, show a button to open the app
   if (nativeRedirectUrl) {
     return (
-      <Card className="max-w-md mx-auto mt-20">
+      <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
         <CardHeader>
           <CardTitle>{formattedProvider} Authentication Successful</CardTitle>
         </CardHeader>
@@ -197,7 +197,7 @@ function OAuthCallback() {
   // If this is a Tauri app auth flow (desktop or mobile), show processing UI
   if (localStorage.getItem("redirect-to-native") === "true") {
     return (
-      <Card className="max-w-md mx-auto mt-20">
+      <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
         <CardHeader>
           <CardTitle>Processing {formattedProvider} Login</CardTitle>
         </CardHeader>
@@ -214,7 +214,7 @@ function OAuthCallback() {
   // Regular processing UI for web flow
   if (isProcessing) {
     return (
-      <Card className="max-w-md mx-auto mt-20">
+      <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
         <CardHeader>
           <CardTitle>Processing {formattedProvider} Login</CardTitle>
         </CardHeader>
@@ -227,7 +227,7 @@ function OAuthCallback() {
 
   if (error) {
     return (
-      <Card className="max-w-md mx-auto mt-20">
+      <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
         <CardHeader>
           <CardTitle>Authentication Failed</CardTitle>
         </CardHeader>
@@ -244,7 +244,7 @@ function OAuthCallback() {
   }
 
   return (
-    <Card className="max-w-md mx-auto mt-20">
+    <Card className="maple-native-ios-static-safe-card mx-auto mt-20 max-w-md">
       <CardHeader>
         <CardTitle>{formattedProvider} Authentication Successful</CardTitle>
       </CardHeader>

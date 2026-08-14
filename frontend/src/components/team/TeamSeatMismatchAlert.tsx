@@ -36,7 +36,7 @@ export function TeamSeatMismatchAlert() {
       : "Seat count mismatch";
 
   return (
-    <div className="pointer-events-none fixed left-3 right-3 top-20 z-40 sm:left-auto sm:right-4 sm:w-[24rem]">
+    <div className="maple-native-ios-team-seat-alert pointer-events-none fixed left-3 right-3 top-20 z-40 sm:left-auto sm:right-4 sm:w-[24rem]">
       <div className="pointer-events-auto rounded-lg border border-destructive/50 bg-card p-4 text-card-foreground shadow-lg">
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-destructive" />
