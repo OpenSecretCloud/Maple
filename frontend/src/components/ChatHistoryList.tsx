@@ -59,6 +59,13 @@ import {
   initialChatHistoryPage,
   shouldLoadConversationHistory
 } from "@/services/chatHistoryAccountScope";
+import {
+  consumeReplacedMenuFocusRestore,
+  conversationMenuKey,
+  nextExclusiveMenuKey,
+  projectMenuKey,
+  trackExclusiveMenuFocusChange
+} from "@/utils/exclusiveMenu";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -159,6 +166,31 @@ export function ChatHistoryList({
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(selectedProjectId);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preventProjectMenuFocusRestoreRef = useRef(false);
+  const openPageMenuKeyRef = useRef<string | null>(null);
+  const closingPageMenuKeysRef = useRef(new Set<string>());
+  const replacedPageMenuKeysRef = useRef(new Set<string>());
+  const [openPageMenuKey, setOpenPageMenuKey] = useState<string | null>(null);
+
+  const handlePageMenuOpenChange = useCallback((menuKey: string, open: boolean) => {
+    trackExclusiveMenuFocusChange(
+      closingPageMenuKeysRef.current,
+      replacedPageMenuKeysRef.current,
+      openPageMenuKeyRef.current,
+      menuKey,
+      open
+    );
+    const nextKey = nextExclusiveMenuKey(openPageMenuKeyRef.current, menuKey, open);
+    openPageMenuKeyRef.current = nextKey;
+    setOpenPageMenuKey(nextKey);
+  }, []);
+
+  useEffect(() => {
+    if (pagePresentation && !isSelectionMode) return;
+    openPageMenuKeyRef.current = null;
+    closingPageMenuKeysRef.current.clear();
+    replacedPageMenuKeysRef.current.clear();
+    setOpenPageMenuKey(null);
+  }, [isSelectionMode, pagePresentation]);
 
   // Pagination states
   const [oldestConversationId, setOldestConversationId] = useState<string | undefined>();
@@ -1197,6 +1229,7 @@ export function ChatHistoryList({
   }
 
   const renderConversationRow = (conversation: Conversation) => {
+    const menuKey = conversationMenuKey(conversation.id);
     const title = getConversationTitle(conversation);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
@@ -1320,7 +1353,13 @@ export function ChatHistoryList({
                 <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
               ) : null}
               <div className="flex items-center">
-                <DropdownMenu>
+                <DropdownMenu
+                  modal={pagePresentation ? false : undefined}
+                  open={pagePresentation ? openPageMenuKey === menuKey : undefined}
+                  onOpenChange={
+                    pagePresentation ? (open) => handlePageMenuOpenChange(menuKey, open) : undefined
+                  }
+                >
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
@@ -1340,6 +1379,18 @@ export function ChatHistoryList({
                   <DropdownMenuContent
                     className={pagePresentation ? PAGE_DROPDOWN_CONTENT : undefined}
                     collisionPadding={pagePresentation ? 16 : undefined}
+                    onCloseAutoFocus={(event) => {
+                      if (
+                        pagePresentation &&
+                        consumeReplacedMenuFocusRestore(
+                          closingPageMenuKeysRef.current,
+                          replacedPageMenuKeysRef.current,
+                          menuKey
+                        )
+                      ) {
+                        event.preventDefault();
+                      }
+                    }}
                   >
                     <DropdownMenuItem onClick={() => onSelectionChange(new Set([conversation.id]))}>
                       <CheckSquare className="mr-2 h-4 w-4" strokeWidth={ICON_STROKE} />
@@ -1473,6 +1524,7 @@ export function ChatHistoryList({
           )}
 
           {filteredProjects.map((project) => {
+            const menuKey = projectMenuKey(project.id);
             const isProjectExpanded = expandedProjectId === project.id;
             const isProjectSelected = selectedProjectId === project.id;
             const showProjectRunningIndicator =
@@ -1554,7 +1606,15 @@ export function ChatHistoryList({
                       <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
                     ) : null}
                     <div className="flex items-center">
-                      <DropdownMenu>
+                      <DropdownMenu
+                        modal={pagePresentation ? false : undefined}
+                        open={pagePresentation ? openPageMenuKey === menuKey : undefined}
+                        onOpenChange={
+                          pagePresentation
+                            ? (open) => handlePageMenuOpenChange(menuKey, open)
+                            : undefined
+                        }
+                      >
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"
@@ -1575,7 +1635,19 @@ export function ChatHistoryList({
                           className={pagePresentation ? PAGE_DROPDOWN_CONTENT : undefined}
                           collisionPadding={pagePresentation ? 16 : undefined}
                           onCloseAutoFocus={(event) => {
-                            if (!preventProjectMenuFocusRestoreRef.current) return;
+                            const preventReplacedMenuFocusRestore =
+                              pagePresentation &&
+                              consumeReplacedMenuFocusRestore(
+                                closingPageMenuKeysRef.current,
+                                replacedPageMenuKeysRef.current,
+                                menuKey
+                              );
+                            if (
+                              !preventReplacedMenuFocusRestore &&
+                              !preventProjectMenuFocusRestoreRef.current
+                            ) {
+                              return;
+                            }
                             preventProjectMenuFocusRestoreRef.current = false;
                             event.preventDefault();
                           }}

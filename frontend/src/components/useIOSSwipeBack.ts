@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -93,6 +94,8 @@ export function useIOSSwipeBack<Context>({
   const platformEnabledRef = useRef(isTauriMobile() && isIOS());
   const gestureRef = useRef<SwipeGesture<Context> | null>(null);
   const visualRef = useRef<IOSSwipeBackInteractiveVisual<Context> | null>(null);
+  const appliedVisualRef = useRef<IOSSwipeBackInteractiveVisual<Context> | null>(null);
+  const pendingClearSurfaceRef = useRef<HTMLDivElement | null>(null);
   const visualFrameRef = useRef<number | null>(null);
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visualProperties] = useState(createVisualProperties);
@@ -101,7 +104,9 @@ export function useIOSSwipeBack<Context>({
 
   const activateVisual = useCallback(
     (next: IOSSwipeBackInteractiveVisual<Context>) => {
+      pendingClearSurfaceRef.current = null;
       visualRef.current = next;
+      appliedVisualRef.current = next;
       applyVisual(next, visualProperties);
       setVisual({ context: next.context });
     },
@@ -122,7 +127,10 @@ export function useIOSSwipeBack<Context>({
       visualFrameRef.current = window.requestAnimationFrame(() => {
         visualFrameRef.current = null;
         const latest = visualRef.current;
-        if (latest?.transitionMs === 0) applyVisual(latest, visualProperties);
+        if (latest?.transitionMs === 0) {
+          appliedVisualRef.current = latest;
+          applyVisual(latest, visualProperties);
+        }
       });
     },
     [visualProperties]
@@ -142,11 +150,21 @@ export function useIOSSwipeBack<Context>({
       }
     }
 
-    const current = visualRef.current;
+    const current = visualRef.current ?? appliedVisualRef.current;
     visualRef.current = null;
-    if (current) clearVisual(current.surface, visualProperties);
+    appliedVisualRef.current = null;
+    if (current) pendingClearSurfaceRef.current = current.surface;
     setVisual(null);
-  }, [cancelVisualFrame, visualProperties]);
+  }, [cancelVisualFrame]);
+
+  useLayoutEffect(() => {
+    if (visual !== null) return;
+    const surface = pendingClearSurfaceRef.current;
+    if (!surface) return;
+
+    pendingClearSurfaceRef.current = null;
+    clearVisual(surface, visualProperties);
+  }, [visual, visualProperties]);
 
   useEffect(() => {
     return () => {
@@ -157,9 +175,14 @@ export function useIOSSwipeBack<Context>({
       if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
       settleTimerRef.current = null;
       gestureRef.current = null;
-      const current = visualRef.current;
+      const surface =
+        visualRef.current?.surface ??
+        appliedVisualRef.current?.surface ??
+        pendingClearSurfaceRef.current;
       visualRef.current = null;
-      if (current) clearVisual(current.surface, visualProperties);
+      appliedVisualRef.current = null;
+      pendingClearSurfaceRef.current = null;
+      if (surface) clearVisual(surface, visualProperties);
     };
   }, [visualProperties]);
 
@@ -169,8 +192,13 @@ export function useIOSSwipeBack<Context>({
       if (!current) return;
       cancelVisualFrame();
 
+      // Pointerup can arrive before the final coalesced move has painted. The completion decision
+      // uses that latest sample, but the CSS transition must be timed from the position actually on
+      // screen or a reversal followed by a quick flick visibly jumps forward.
+      const applied = appliedVisualRef.current ?? current;
+
       const transitionMs = getSwipeBackSettleDuration({
-        progress: current.offset / current.width,
+        progress: applied.offset / applied.width,
         completing,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches
       });
@@ -180,6 +208,7 @@ export function useIOSSwipeBack<Context>({
         transitionMs
       };
       visualRef.current = next;
+      appliedVisualRef.current = next;
       applyVisual(next, visualProperties);
 
       if (settleTimerRef.current) clearTimeout(settleTimerRef.current);

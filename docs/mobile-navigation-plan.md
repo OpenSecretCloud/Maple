@@ -552,6 +552,36 @@ sidebar. A physical-iPhone rerun of edge-to-edge push/pop/swipe boundaries, Sett
 chat-to-menu-to-Settings Back sequence, rotation/short landscape, portaled menus, and global overlays
 remains pending.
 
+### Fourth physical iPhone interaction follow-up — August 14, 2026
+
+The full-bleed physical build confirmed that ordinary edge drags and flicks were smooth, but one
+deliberately reversed gesture still exposed two completion discontinuities. The chat moved from 259
+pixels revealed back to 29 pixels, then the final rightward flick reached 177 pixels before release.
+The next frame jumped to 276 pixels, and after reaching the full 294-pixel width the menu briefly
+fell back to 238 pixels before settling again. The same test pass also found that tapping another
+row overflow button while a popover was open could leave both menus visible instead of transferring
+the interaction in one tap.
+
+The follow-up implementation now:
+
+- Tracks the last swipe position actually written to CSS separately from the latest coalesced pointer
+  sample. Completion still uses the latest sample for intent, but its duration starts from the
+  position currently visible on screen, so an unpainted final flick cannot shorten and jump the
+  settle animation.
+- Keeps the hook-scoped swipe properties in place until React has removed their inline transform
+  consumers. This prevents the revealed menu from falling back to its covered `-24%` transform
+  between the interactive history commit and the final render.
+- Makes chat/project overflow menus nonmodal only in full-screen page presentation and controls them
+  with one shared exclusive key. An outside tap dismisses the current menu without blocking its
+  target; tapping another overflow button transfers ownership immediately, and a delayed close from
+  the old menu cannot close the new one. Desktop dropdown modality and uncontrolled state remain
+  unchanged.
+
+Focused hook and exclusive-menu regressions pass, and the complete frontend suite passes with 732
+tests. TypeScript, touched-file formatting and lint, and diff checks pass. A physical-iPhone rerun of
+the reversed-drag/final-flick sequence, ordinary cancel/complete gestures, outside popover dismissal,
+chat-to-chat/project menu switching, nested submenus, and compact keyboard focus remains pending.
+
 ## Non-Goals
 
 - Redesigning or duplicating the menu
