@@ -345,6 +345,18 @@
     animation: none !important;
   }
 
+  [data-ios-swipe-back-surface],
+  [data-ios-swipe-back-surface] * {
+    touch-action: pan-y;
+  }
+
+  [data-ios-swipe-back-surface][data-swipe-back-ignore],
+  [data-ios-swipe-back-surface][data-swipe-back-ignore] *,
+  [data-ios-swipe-back-surface] [data-swipe-back-ignore],
+  [data-ios-swipe-back-surface] [data-swipe-back-ignore] * {
+    touch-action: auto;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .maple-navigation-page {
       transition-duration: 0ms;

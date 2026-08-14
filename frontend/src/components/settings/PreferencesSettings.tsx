@@ -219,6 +219,7 @@ export function PreferencesSettings() {
               </output>
             </div>
             <input
+              data-swipe-back-ignore=""
               id="settings-chat-font-size"
               type="range"
               min={CHAT_FONT_SIZE_MIN}
@@ -334,6 +335,7 @@ export function PreferencesSettings() {
               </output>
             </div>
             <input
+              data-swipe-back-ignore=""
               id="settings-tts-speech-speed"
               type="range"
               min={TTS_MIN_PLAYBACK_SPEED}

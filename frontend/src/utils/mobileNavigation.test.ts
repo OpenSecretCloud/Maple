@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   MOBILE_NAVIGATION_HISTORY_KEY,
   activeMobilePage,
+  createNativeMobileLaunchGate,
   createInitialMobileNavigation,
   createMobileHistoryState,
   mobileMenuHistoryDelta,
@@ -58,6 +59,23 @@ describe("mobile navigation URL resolution", () => {
       hasInAppParent: false,
       historyIndex: 0
     });
+  });
+
+  it("does not consume the native launch claim during an abandoned render", () => {
+    const gate = createNativeMobileLaunchGate();
+
+    expect(gate.peek(true)).toBe(true);
+    expect(gate.peek(true)).toBe(true);
+
+    gate.commit();
+    expect(gate.peek(true)).toBe(false);
+  });
+
+  it("does not let a web render consume the native launch claim", () => {
+    const gate = createNativeMobileLaunchGate();
+
+    expect(gate.peek(false)).toBe(false);
+    expect(gate.peek(true)).toBe(true);
   });
 });
 

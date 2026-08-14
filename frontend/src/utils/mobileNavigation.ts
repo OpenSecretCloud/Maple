@@ -1,5 +1,21 @@
 export const MOBILE_NAVIGATION_HISTORY_KEY = "__mapleMobileNavigation";
 
+export type NativeMobileLaunchGate = {
+  commit: () => void;
+  peek: (isNativeMobile: boolean) => boolean;
+};
+
+export function createNativeMobileLaunchGate(): NativeMobileLaunchGate {
+  let initialized = false;
+
+  return {
+    peek: (isNativeMobile) => isNativeMobile && !initialized,
+    commit: () => {
+      initialized = true;
+    }
+  };
+}
+
 export type MobileNavigationPage =
   | { type: "menu"; instanceId: number }
   | { type: "new-chat"; instanceId: number; projectId: string | null }

@@ -114,7 +114,7 @@ function CodeExample({ label, code }: { label: string; code: string }) {
         <span className="text-xs font-medium">{label}</span>
         <CopyButton value={code} label={`${label} example`} />
       </div>
-      <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
+      <pre data-swipe-back-ignore="" className="overflow-x-auto p-3 text-xs leading-relaxed">
         <code>{code}</code>
       </pre>
     </div>

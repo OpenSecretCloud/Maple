@@ -162,6 +162,9 @@ function SettingsLayoutContent() {
   const [isClosingSettings, setIsClosingSettings] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [enteredDetailPath, setEnteredDetailPath] = useState<string | null>(null);
+  const isSettingsDetailEntering =
+    isCompactViewport && !isSettingsRoot && enteredDetailPath !== location.pathname;
 
   useSettingsNavigationLock(isSigningOut);
 
@@ -222,6 +225,18 @@ function SettingsLayoutContent() {
     return () => window.cancelAnimationFrame(frame);
   }, [isAuthReady, isCompactViewport, isPopping, isSettingsRoot]);
 
+  useEffect(() => {
+    if (!isCompactViewport || isSettingsRoot) {
+      setEnteredDetailPath(null);
+      return;
+    }
+
+    const pathname = location.pathname;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const timeout = setTimeout(() => setEnteredDetailPath(pathname), reducedMotion ? 0 : 320);
+    return () => clearTimeout(timeout);
+  }, [isCompactViewport, isSettingsRoot, location.pathname]);
+
   const runPopAnimation = useCallback(() => {
     if (popAnimationRef.current) return popAnimationRef.current;
 
@@ -263,7 +278,8 @@ function SettingsLayoutContent() {
       isSettingsRoot ||
       isNavigationLocked ||
       isPopping ||
-      isClosingSettings
+      isClosingSettings ||
+      isSettingsDetailEntering
     ) {
       return null;
     }
@@ -274,6 +290,7 @@ function SettingsLayoutContent() {
     isCompactViewport,
     isNavigationLocked,
     isPopping,
+    isSettingsDetailEntering,
     isSettingsRoot,
     location.pathname
   ]);
@@ -305,6 +322,7 @@ function SettingsLayoutContent() {
     pointerHandlers: settingsSwipePointerHandlers,
     reset: resetSettingsDetailSwipe
   } = useIOSSwipeBack({
+    blocked: isSettingsDetailEntering,
     enabled: isCompactViewport && !isSettingsRoot,
     getContext: getSettingsDetailSwipeContext,
     onComplete: commitSettingsDetailSwipe
@@ -609,6 +627,7 @@ function SettingsLayoutContent() {
 
   return (
     <div
+      data-ios-swipe-back-surface={isIOSSwipeBackEnabled && isCompactViewport ? "" : undefined}
       className={cn(
         "relative grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-background sm:grid-cols-[16rem_minmax(0,1fr)]",
         isIOSSwipeBackEnabled && isCompactViewport && "touch-pan-y"
@@ -715,7 +734,7 @@ function SettingsLayoutContent() {
               ? "maple-navigation-page-pop"
               : isPopping
                 ? "maple-navigation-page-pop"
-                : "maple-navigation-page-enter"
+                : isSettingsDetailEntering && "maple-navigation-page-enter"
           ]
         )}
         style={isSettingsDetailSwipeActive ? settingsDetailSwipeStyle : undefined}

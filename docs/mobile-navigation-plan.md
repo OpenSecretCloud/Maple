@@ -344,10 +344,10 @@ and existing overflow behavior.
 
 Validation for this pass:
 
-- The complete frontend suite passes with 286 tests, including focused mobile-navigation,
+- The complete frontend suite passes with 701 tests, including focused mobile-navigation,
   response-lifecycle, Settings-navigation, swipe, and history-pagination coverage.
 - TypeScript, formatting, lint, and the production build pass. Lint remains at the existing
-  12-warning/zero-error baseline.
+  13-warning/zero-error baseline.
 - The production CSS contains the 44-pixel height/width/min-height utilities, 60-pixel title
   clearance, viewport-limited dropdown height, and bottom safe-area expression used by page mode.
 - A source-level branch audit confirmed that the new dimensions are reachable only through
@@ -417,6 +417,38 @@ Do not install this custom gesture in mobile Safari; Safari owns its browser nav
 
 Physical-device verification remains required because the gesture is intentionally disabled outside
 the iOS Tauri runtime.
+
+### Physical iPhone follow-up — August 14, 2026
+
+A physical-iPhone recording exposed two implementation defects before final device sign-off:
+
+- Nine deliberate edge swipes—including fast flicks, slow drags well beyond the 35-percent
+  threshold, and a drag held at the fully revealed position—tracked the correct menu destination
+  but returned to the chat on release.
+- A native development launch could render the main menu because the one-process New Chat claim was
+  mutated during React render. Strict Mode or another abandoned render could consume that claim
+  before the committed navigation shell initialized.
+
+The follow-up implementation now:
+
+- Treats an iOS `pointercancel` after horizontal lock as release at the last position shown to the
+  user, completing only when that visible distance crossed the normal threshold. Unexpected capture
+  loss still cancels, while ordinary pointer-up uses both distance and recent velocity from the last
+  reliable sample instead of a potentially reset WebKit release coordinate.
+- Applies vertical-pan ownership throughout the active native navigation surface, while code blocks,
+  tables, and range controls that intentionally use horizontal gestures opt out. Portaled controls
+  outside that surface are rejected before gesture capture.
+- Updates interactive transforms through hook-scoped CSS properties instead of rerendering the full
+  chat or Settings tree for every pointer sample.
+- Removes completed push-animation classes after 320 milliseconds and prevents a swipe during the
+  active entrance, so canceling a later gesture cannot restart the original push animation.
+- Peeks at the fresh-native-launch claim during render and commits it only from the mounted layout
+  effect, preserving New Chat across Strict Mode and abandoned-render retries.
+
+Focused launch/gesture tests and the complete frontend test suite cover the new launch gate and
+interrupted-settlement rules. The corrected build still needs a physical-iPhone rerun for long drag,
+short cancel, fast flick, vertical edge scrolling, Back-button taps, chat/project destinations, and
+both Settings levels; the physical-device checkbox below intentionally remains unchecked.
 
 ## Non-Goals
 
@@ -521,7 +553,8 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [x] Hamburger-state chat surfaces reveal and open the main menu directly.
 - [x] A completed gesture does not replay the non-interactive pop animation.
 - [x] Popped chats unmount after completion, and canceled chat previews unmount after snap-back.
-- [ ] Verify tracking, completion, cancellation, and vertical-scroll rejection on a physical iPhone.
+- [ ] Re-verify tracking, completion, cancellation, vertical-scroll rejection, and Back-button taps
+      with the corrected build on a physical iPhone.
 
 ### Compact Settings
 
@@ -543,5 +576,5 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [ ] Validate navigation away from and back to an actively generating chat.
 - [x] Run the repository's applicable format, lint, typecheck, test, and build checks.
 
-The unresolved composer-draft gap does not block completion. Physical iOS gesture validation remains
-part of the final release-validation pass.
+The unresolved composer-draft gap does not block completion. Post-fix physical iOS gesture and fresh
+launch validation remain part of the final release-validation pass.

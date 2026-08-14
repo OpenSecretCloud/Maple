@@ -21,6 +21,7 @@ import {
   activeMobilePage,
   createInitialMobileNavigation,
   createMobileHistoryState,
+  createNativeMobileLaunchGate,
   mobileMenuHistoryDelta,
   mobilePageHref,
   mobilePageUsesMenuButton,
@@ -34,16 +35,10 @@ import {
 } from "@/utils/mobileNavigation";
 
 const PAGE_TRANSITION_MS = 320;
-let nativeMobileNavigationInitialized = false;
+const nativeMobileLaunchGate = createNativeMobileLaunchGate();
 
 function currentHomeHref() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
-}
-
-function consumeNativeFreshLaunch() {
-  if (!isTauriMobile() || nativeMobileNavigationInitialized) return false;
-  nativeMobileNavigationInitialized = true;
-  return true;
 }
 
 function maxInstanceId(snapshot: MobileNavigationSnapshot) {
@@ -133,7 +128,7 @@ export function MobileNavigationStack({
 }) {
   const router = useRouter();
   const { setSelectedProjectId } = useSelectedProjectState();
-  const nativeFreshLaunchRef = useRef(consumeNativeFreshLaunch());
+  const nativeFreshLaunchRef = useRef(nativeMobileLaunchGate.peek(isTauriMobile()));
   const [snapshot, setSnapshot] = useState<MobileNavigationSnapshot>(() =>
     createInitialMobileNavigation(currentHomeHref(), {
       nativeFreshLaunch: nativeFreshLaunchRef.current
@@ -154,6 +149,7 @@ export function MobileNavigationStack({
   );
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const forwardTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const enteringTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousHomeLocationHrefRef = useRef(homeLocationHref);
   const skipNextBackwardAnimationRef = useRef(false);
   const pendingMenuNavigationRef = useRef<"animated" | "interactive" | null>(null);
@@ -226,12 +222,14 @@ export function MobileNavigationStack({
     reset: resetSwipeBack,
     visual: swipeVisual
   } = useIOSSwipeBack({
-    blocked: isExiting,
+    blocked: isExiting || enteringInstanceId !== null,
     getContext: getSwipeParentSnapshot,
     onComplete: commitSwipeBack
   });
 
   useLayoutEffect(() => {
+    if (nativeFreshLaunchRef.current) nativeMobileLaunchGate.commit();
+
     const href = nativeFreshLaunchRef.current ? "/" : currentHomeHref();
     window.history.replaceState(
       createMobileHistoryState(snapshotRef.current, window.history.state),
@@ -251,6 +249,31 @@ export function MobileNavigationStack({
 
     return () => clearTimeout(timeout);
   }, []);
+
+  useEffect(() => {
+    if (enteringTransitionTimerRef.current) {
+      clearTimeout(enteringTransitionTimerRef.current);
+      enteringTransitionTimerRef.current = null;
+    }
+    if (enteringInstanceId === null) return;
+
+    const instanceId = enteringInstanceId;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    enteringTransitionTimerRef.current = setTimeout(
+      () => {
+        enteringTransitionTimerRef.current = null;
+        setEnteringInstanceId((current) => (current === instanceId ? null : current));
+      },
+      reducedMotion ? 0 : PAGE_TRANSITION_MS
+    );
+
+    return () => {
+      if (enteringTransitionTimerRef.current) {
+        clearTimeout(enteringTransitionTimerRef.current);
+        enteringTransitionTimerRef.current = null;
+      }
+    };
+  }, [enteringInstanceId]);
 
   useEffect(() => {
     const previousHomeLocationHref = previousHomeLocationHrefRef.current;
@@ -396,6 +419,7 @@ export function MobileNavigationStack({
     return () => {
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
       if (forwardTransitionTimerRef.current) clearTimeout(forwardTransitionTimerRef.current);
+      if (enteringTransitionTimerRef.current) clearTimeout(enteringTransitionTimerRef.current);
       backwardTransitionActiveRef.current = false;
     };
   }, []);
@@ -647,6 +671,7 @@ export function MobileNavigationStack({
 
   return (
     <div
+      data-ios-swipe-back-surface={isIOSSwipeBackEnabled ? "" : undefined}
       className={cn(
         "relative h-dvh min-h-0 w-full overflow-hidden bg-background",
         isIOSSwipeBackEnabled && "touch-pan-y"

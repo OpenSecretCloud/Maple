@@ -37,6 +37,25 @@ export function shouldCompleteSwipeBack({
   );
 }
 
+export function shouldCompleteSwipeBackFromLastSample({
+  distance,
+  elapsedSinceMove,
+  velocity,
+  width
+}: {
+  distance: number;
+  elapsedSinceMove: number;
+  velocity: number;
+  width: number;
+}) {
+  const recentVelocity =
+    Number.isFinite(elapsedSinceMove) && elapsedSinceMove >= 0 && elapsedSinceMove <= 80
+      ? velocity
+      : 0;
+
+  return shouldCompleteSwipeBack({ distance, width, velocity: recentVelocity });
+}
+
 export function getSwipeBackSettleDuration({
   progress,
   completing,

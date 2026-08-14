@@ -3,7 +3,8 @@ import {
   clampSwipeBackDistance,
   getSwipeBackDirection,
   getSwipeBackSettleDuration,
-  shouldCompleteSwipeBack
+  shouldCompleteSwipeBack,
+  shouldCompleteSwipeBackFromLastSample
 } from "./swipeBack";
 
 describe("iOS swipe-back gesture", () => {
@@ -27,6 +28,41 @@ describe("iOS swipe-back gesture", () => {
     expect(shouldCompleteSwipeBack({ distance: 140, width: 390, velocity: 0.1 })).toBe(true);
     expect(shouldCompleteSwipeBack({ distance: 60, width: 390, velocity: 0.7 })).toBe(true);
     expect(shouldCompleteSwipeBack({ distance: 60, width: 390, velocity: 0.2 })).toBe(false);
+  });
+
+  test("settles an interrupted gesture from its last visible sample", () => {
+    expect(
+      shouldCompleteSwipeBackFromLastSample({
+        distance: 312,
+        width: 390,
+        velocity: 0.1,
+        elapsedSinceMove: 20
+      })
+    ).toBe(true);
+    expect(
+      shouldCompleteSwipeBackFromLastSample({
+        distance: 58,
+        width: 390,
+        velocity: 0.2,
+        elapsedSinceMove: 20
+      })
+    ).toBe(false);
+    expect(
+      shouldCompleteSwipeBackFromLastSample({
+        distance: 58,
+        width: 390,
+        velocity: 0.7,
+        elapsedSinceMove: 20
+      })
+    ).toBe(true);
+    expect(
+      shouldCompleteSwipeBackFromLastSample({
+        distance: 58,
+        width: 390,
+        velocity: 0.7,
+        elapsedSinceMove: 120
+      })
+    ).toBe(false);
   });
 
   test("settles faster when less distance remains and skips motion when requested", () => {

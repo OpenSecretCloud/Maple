@@ -67,8 +67,11 @@ function Root() {
   const keepAuthenticatedHomeMounted = !!auth.user && (isHomeRoute || isSettingsRoute);
 
   const getSettingsShellSwipeContext = useCallback(
-    () => (isCompactLayout && isSettingsRoot && !isSettingsPopping ? location.pathname : null),
-    [isCompactLayout, isSettingsPopping, isSettingsRoot, location.pathname]
+    () =>
+      isCompactLayout && isSettingsRoot && hasSettingsShellEntered && !isSettingsPopping
+        ? location.pathname
+        : null,
+    [hasSettingsShellEntered, isCompactLayout, isSettingsPopping, isSettingsRoot, location.pathname]
   );
   const commitSettingsShellSwipe = useCallback((_pathname: string, resetSwipe: () => void) => {
     const accepted = window.dispatchEvent(
@@ -84,6 +87,7 @@ function Root() {
     pointerHandlers: settingsShellSwipePointerHandlers,
     reset: resetSettingsShellSwipe
   } = useIOSSwipeBack({
+    blocked: isSettingsRoot && !hasSettingsShellEntered,
     enabled: isCompactLayout && isSettingsRoot,
     getContext: getSettingsShellSwipeContext,
     onComplete: commitSettingsShellSwipe
@@ -190,6 +194,9 @@ function Root() {
         routeContent={
           <div
             ref={routedSurfaceRef}
+            data-ios-swipe-back-surface={
+              isIOSSwipeBackEnabled && isCompactLayout && isSettingsRoot ? "" : undefined
+            }
             aria-hidden={isSettingsRoute && isSettingsPopping ? true : undefined}
             className={cn(
               isSettingsRoute
@@ -200,7 +207,7 @@ function Root() {
                       isSettingsShellSwipeActive && "maple-navigation-page-interactive",
                       isSettingsPopping
                         ? "maple-navigation-page-pop pointer-events-none"
-                        : "maple-navigation-page-enter"
+                        : !hasSettingsShellEntered && "maple-navigation-page-enter"
                     ]
                   : "fixed inset-0 z-50 overflow-hidden bg-background"
                 : "contents"

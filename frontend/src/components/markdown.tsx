@@ -308,7 +308,7 @@ function PreCode(props: JSX.IntrinsicElements["pre"]) {
           )}
         </Button>
       </div>
-      <pre ref={ref} className="w-full overflow-x-auto">
+      <pre ref={ref} data-swipe-back-ignore="" className="w-full overflow-x-auto">
         {props.children}
       </pre>
     </div>
@@ -376,6 +376,7 @@ function ResponsiveTable({ children, className, ...rest }: JSX.IntrinsicElements
       )}
       <div
         ref={scrollRef}
+        data-swipe-back-ignore=""
         className={cn(
           "maple-thin-scrollbar overflow-x-auto overflow-y-visible overscroll-x-contain",
           "[-webkit-overflow-scrolling:touch]"
