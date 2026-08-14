@@ -1185,9 +1185,13 @@ export function ChatHistoryList({
     filteredRecentConversations.length === 0
   ) {
     return (
-      <div className="text-muted-foreground text-center py-4">
+      <div
+        className={`py-4 text-center text-muted-foreground ${pagePresentation ? "text-xl" : ""}`}
+      >
         <p>No chats found matching "{trimmedQuery}"</p>
-        <p className="text-sm mt-1">Try a different search term</p>
+        <p className={`${pagePresentation ? "text-base" : "text-sm"} mt-1`}>
+          Try a different search term
+        </p>
       </div>
     );
   }
@@ -1210,7 +1214,7 @@ export function ChatHistoryList({
       <div
         key={conversation.id}
         className={`group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl ${
-          pagePresentation ? "min-h-11 text-base" : ""
+          pagePresentation ? "min-h-11 text-xl" : ""
         }`}
         onContextMenu={(event) => event.preventDefault()}
       >
@@ -1403,12 +1407,16 @@ export function ChatHistoryList({
       <div
         ref={pullContentRef}
         className={`flex min-w-0 w-full max-w-full flex-col gap-5 ${
-          pagePresentation ? "text-base" : ""
+          pagePresentation ? "text-xl" : ""
         }`}
         style={{ willChange: "transform" }}
       >
         <div className="space-y-2">
-          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <div
+            className={`text-xs font-medium uppercase tracking-wider text-muted-foreground ${
+              pagePresentation ? "pb-1.5" : ""
+            }`}
+          >
             Projects
           </div>
           {conversationProjects.length >= MAX_PROJECTS ? (
@@ -1418,7 +1426,7 @@ export function ChatHistoryList({
                   type="button"
                   disabled
                   className={`flex w-full items-center gap-2 rounded-2xl pl-0 pr-1 text-left text-muted-foreground/50 cursor-not-allowed ${
-                    pagePresentation ? "min-h-11 text-base" : "py-1.5"
+                    pagePresentation ? "min-h-11 text-xl" : "py-1.5"
                   }`}
                 >
                   <FolderPlus
@@ -1437,7 +1445,7 @@ export function ChatHistoryList({
               type="button"
               onClick={handleOpenCreateProjectDialog}
               className={`flex w-full items-center gap-2 rounded-2xl pl-0 pr-1 text-left text-foreground/95 transition-colors hover:text-foreground ${
-                pagePresentation ? "min-h-11 text-base" : "py-1.5"
+                pagePresentation ? "min-h-11 text-xl" : "py-1.5"
               }`}
             >
               <FolderPlus
@@ -1482,7 +1490,7 @@ export function ChatHistoryList({
                         : project.name
                     }
                     className={`relative ${ROW_CONTENT_Z} w-full rounded-2xl text-left ${
-                      pagePresentation ? "flex min-h-11 items-center py-0 text-base" : "py-1"
+                      pagePresentation ? "flex min-h-11 items-center py-0 text-xl" : "py-1"
                     } ${
                       isProjectExpanded || isProjectSelected
                         ? "font-bold text-foreground"
@@ -1585,7 +1593,11 @@ export function ChatHistoryList({
 
         {filteredPinnedConversations.length > 0 ? (
           <div className="space-y-2">
-            <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <div
+              className={`text-xs font-medium uppercase tracking-wider text-muted-foreground ${
+                pagePresentation ? "pb-1.5" : ""
+              }`}
+            >
               Pinned
             </div>
             {filteredPinnedConversations.map((conversation) => renderConversationRow(conversation))}
@@ -1593,14 +1605,18 @@ export function ChatHistoryList({
         ) : null}
 
         <div className="space-y-2">
-          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <div
+            className={`text-xs font-medium uppercase tracking-wider text-muted-foreground ${
+              pagePresentation ? "pb-1.5" : ""
+            }`}
+          >
             Recents
           </div>
           {filteredRecentConversations.length > 0 ? (
             filteredRecentConversations.map((conversation) => renderConversationRow(conversation))
           ) : (
             <div
-              className={`py-2 text-muted-foreground ${pagePresentation ? "text-base" : "text-sm"}`}
+              className={`py-2 text-muted-foreground ${pagePresentation ? "text-xl" : "text-sm"}`}
             >
               No recent chats.
             </div>

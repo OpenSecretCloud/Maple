@@ -46,10 +46,14 @@ export function historyStateWithDraftRuntimeKey(
 export function runtimeKeyForChatLocation(
   conversationId: string | undefined,
   historyState: unknown,
-  createDraftKey: () => DraftChatRuntimeKey = createChatDraftKey
+  createDraftKey: () => DraftChatRuntimeKey = createChatDraftKey,
+  { restoreDraftFromHistory = true }: { restoreDraftFromHistory?: boolean } = {}
 ): ChatRuntimeKey {
   if (conversationId) return createConversationChatKey(conversationId);
-  return draftRuntimeKeyFromHistoryState(historyState) ?? createDraftKey();
+  return (
+    (restoreDraftFromHistory ? draftRuntimeKeyFromHistoryState(historyState) : null) ??
+    createDraftKey()
+  );
 }
 
 export function conversationIdFromChatRuntimeKey(key: ChatRuntimeKey): string | undefined {

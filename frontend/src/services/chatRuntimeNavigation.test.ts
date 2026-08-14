@@ -41,6 +41,33 @@ describe("chat runtime history navigation", () => {
     ).toBe(createConversationChatKey("conversation-a"));
   });
 
+  test("ignores an inherited draft key for a stack-owned mobile New Chat", () => {
+    const previousDraftKey = createChatDraftKey("materialized-previous-chat");
+    const nextDraftKey = createChatDraftKey("fresh-mobile-chat");
+
+    expect(
+      runtimeKeyForChatLocation(
+        undefined,
+        historyStateWithDraftRuntimeKey({}, previousDraftKey),
+        () => nextDraftKey,
+        { restoreDraftFromHistory: false }
+      )
+    ).toBe(nextDraftKey);
+  });
+
+  test("keeps a direct conversation authoritative when mobile draft restoration is disabled", () => {
+    const previousDraftKey = createChatDraftKey("previous-project-chat");
+
+    expect(
+      runtimeKeyForChatLocation(
+        "direct-conversation",
+        historyStateWithDraftRuntimeKey({}, previousDraftKey),
+        () => createChatDraftKey("unused"),
+        { restoreDraftFromHistory: false }
+      )
+    ).toBe(createConversationChatKey("direct-conversation"));
+  });
+
   test("a saved draft history entry follows an offscreen rekeyed conversation", () => {
     const draftKey = createChatDraftKey("creating-conversation");
     const conversationKey = createConversationChatKey("created-offscreen");

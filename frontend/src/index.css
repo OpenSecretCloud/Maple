@@ -204,6 +204,13 @@
     @apply bg-background text-foreground;
   }
 
+  /* Match the iOS safe-area canvas to the full-screen mobile menu without
+   * changing the viewport or the background of chat, project, or Settings pages. */
+  html.maple-mobile-menu-canvas,
+  html.maple-mobile-menu-canvas body {
+    background-color: hsl(var(--sidebar));
+  }
+
   /* Dark mode when .dark class is applied to root */
   /* Dark mode — Neutral scale from Figma */
   .dark {

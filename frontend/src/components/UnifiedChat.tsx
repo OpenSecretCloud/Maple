@@ -1625,10 +1625,19 @@ export function UnifiedChat({
       standaloneMobile ? standaloneMobileProjectId : undefined,
       selectedProjectId
     );
-    const runtimeKey = runtimeKeyForChatLocation(urlConversationId, window.history.state, () =>
-      resumeOrCreateChatDraftKey(runtimeStore, initialDraftProjectId, () =>
-        createChatDraftKey(`unified-chat-${runtimeInstanceId}`)
-      )
+    const runtimeKey = runtimeKeyForChatLocation(
+      urlConversationId,
+      window.history.state,
+      () =>
+        resumeOrCreateChatDraftKey(runtimeStore, initialDraftProjectId, () =>
+          createChatDraftKey(`unified-chat-${runtimeInstanceId}`)
+        ),
+      {
+        // A stack-owned New Chat inherits the previous browser entry's unrelated state. Its saved
+        // draft key may now alias the conversation that was just created, so let the scoped draft
+        // selector choose a fresh or legitimately retained unsent draft instead.
+        restoreDraftFromHistory: !(standaloneMobile && standaloneMobileConversationId === null)
+      }
     );
     return {
       draftProjectId: initialDraftProjectId,

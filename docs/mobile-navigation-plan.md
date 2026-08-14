@@ -320,14 +320,15 @@ add a second menu or change the responsive breakpoints.
 - The full-screen header, New Chat, Search, New Project, project rows, chat rows, overflow buttons,
   Settings, selection actions, selection hit areas, and context-menu actions use a 44-pixel minimum
   target.
-- Primary and list labels are 16 pixels; their primary icons, disclosure icons, pinned indicators,
-  and overflow icons are 20 pixels. Section headings remain 12 pixels.
+- Primary and list labels are 20 pixels with a 28-pixel line height; their primary icons,
+  disclosure icons, pinned indicators, and overflow icons remain 20 pixels. Section headings remain
+  12 pixels, with 6 pixels of additional separation before the first row in each section.
 - The search field is 44 pixels tall with 48 pixels of trailing clearance, and its clear action has
   a real 44-by-44-pixel hit area.
 - Chat and project titles reserve 60 pixels at the trailing edge for the enlarged 44-pixel overflow
   control, so long titles truncate before the control instead of sitting beneath it.
 - The page header is at least 44 pixels tall and uses a 20-pixel-high wordmark.
-- Page-level horizontal insets are a symmetric 16 pixels. The desktop-only workspace-mode switch is
+- Page-level horizontal insets are a symmetric 20 pixels. The desktop-only workspace-mode switch is
   not rendered in page mode.
 - Mobile usage copy is 12 pixels, with 11-pixel plan/API labels. The account row aligns that card
   with an exact 44-by-44-pixel Settings control.
@@ -344,7 +345,7 @@ and existing overflow behavior.
 
 Validation for this pass:
 
-- The complete frontend suite passes with 701 tests, including focused mobile-navigation,
+- The complete frontend suite passes with 705 tests, including focused mobile-navigation,
   response-lifecycle, Settings-navigation, swipe, and history-pagination coverage.
 - TypeScript, formatting, lint, and the production build pass. Lint remains at the existing
   13-warning/zero-error baseline.
@@ -361,20 +362,10 @@ Validation for this pass:
 
 ### Unsent composer state
 
-The implemented behavior discards unsent composer state when a chat or transient New Chat page is
-unmounted. Whether that state should be preserved is an unresolved follow-up, not part of this
-feature's definition of done.
-
-Relevant transient state includes:
-
-- Typed but unsent text
-- Selected images
-- Selected documents
-- Composer-specific UI state
-
-An in-memory `draftMessages` mechanism exists in local state, but `UnifiedChat` does not currently
-use it. This implementation does not connect, remove, or redesign that unused state. Preserving
-unsent text or attachments should be considered separately.
+The current runtime store retains a scope-specific, offscreen New Chat draft in memory, including
+its composer resources, and resumes it when that scope is opened again. The mobile navigation shell
+reuses that current-master behavior; it does not add persistent, cross-process draft storage or a
+new draft model.
 
 ## Stretch Goal: iOS Edge-Swipe Back
 
@@ -450,6 +441,37 @@ interrupted-settlement rules. The corrected build still needs a physical-iPhone 
 short cancel, fast flick, vertical edge scrolling, Back-button taps, chat/project destinations, and
 both Settings levels; the physical-device checkbox below intentionally remains unchecked.
 
+### Physical iPhone menu follow-up — August 14, 2026
+
+The first physical-menu screenshots exposed three additional issues:
+
+- Compared with the 402-by-874-point reference, Maple's 16-pixel labels and 16-pixel page insets
+  remained visually too close to its desktop-sidebar proportions. The existing approximately
+  52-pixel row cadence already matched the reference and did not need to grow.
+- The iPhone's top and bottom safe-area bands used the chat document background instead of the menu
+  background. Pixel inspection showed the exact dark-theme values: `#0A0A0A` in the safe areas and
+  `#262626` on the menu.
+- After a transient New Chat became a conversation, opening either global New Chat or New Chat in
+  Project could select that conversation again. The pushed mobile history entry inherited the old
+  draft key, which intentionally remained an alias to the newly created conversation.
+
+The follow-up implementation:
+
+- Uses 20-pixel labels and symmetric 20-pixel insets only in full-screen page presentation. It
+  keeps the existing font family, 12-pixel section headings, icons, buttons, 44-pixel targets,
+  overflow clearance, and row cadence unchanged.
+- Lets the active or interactively revealed menu own the document canvas color, including the iOS
+  safe-area bands. Chat, project, and Settings surfaces retain their existing background, and no
+  global viewport or native-window configuration changed.
+- Ignores an inherited browser-history draft key only when initializing a stack-owned transient
+  mobile New Chat. The existing scope-aware draft selector then creates a fresh root/project draft
+  after a conversation materializes or resumes a legitimate unsent draft. Desktop and direct URL
+  restoration remain history-authoritative.
+
+Source review, focused regressions, and the complete 705-test frontend suite pass. Post-fix physical
+iPhone validation of typography, safe-area painting, both New Chat entry points, and the gesture
+changes remains pending.
+
 ## Non-Goals
 
 - Redesigning or duplicating the menu
@@ -485,11 +507,11 @@ The core feature is complete when every agreed non-stretch behavior is implement
 
 - [x] Page-mode primary, list, overflow, Settings, selection, and context-menu controls have
       44-pixel minimum targets.
-- [x] Page-mode primary/list labels are 16 pixels and icons are 20 pixels; 12-pixel section headings
+- [x] Page-mode primary/list labels are 20 pixels and icons are 20 pixels; 12-pixel section headings
       retain their hierarchy.
 - [x] The search clear action has a 44-by-44-pixel target and row titles clear enlarged overflow
       controls.
-- [x] The page header is at least 44 pixels tall with a 20-pixel wordmark and symmetric 16-pixel
+- [x] The page header is at least 44 pixels tall with a 20-pixel wordmark and symmetric 20-pixel
       horizontal insets.
 - [x] Mobile usage copy is 11–12 pixels and aligns with an exact 44-by-44-pixel Settings control.
 - [x] The menu footer accounts for the bottom safe area, and short-landscape page mode has a
@@ -534,6 +556,8 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [x] Reopening a generating chat catches up without resubmitting the prompt.
 - [x] Reopening after generation completes shows the completed result.
 - [x] Switching between chat, New Chat, project detail, and the menu does not create duplicate conversations or messages.
+- [x] After a New Chat becomes a conversation, global New Chat and New Chat in Project select a
+      blank or legitimately retained unsent draft instead of reopening that conversation.
 
 ### Motion and accessibility
 

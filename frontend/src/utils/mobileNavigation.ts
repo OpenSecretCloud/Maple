@@ -239,6 +239,16 @@ export function mobilePageUsesMenuButton(page: MobileNavigationPage) {
   return page.type === "new-chat" || (page.type === "chat" && page.openedFromNewChat === true);
 }
 
+export function mobileMenuOwnsDocumentCanvas(
+  homeLocationHref: string | null,
+  targetPage: MobileNavigationPage,
+  swipeParentPage: MobileNavigationPage | null
+) {
+  return (
+    homeLocationHref !== null && (targetPage.type === "menu" || swipeParentPage?.type === "menu")
+  );
+}
+
 export function mobileMenuHistoryDelta(snapshot: MobileNavigationSnapshot) {
   return snapshot.hasInAppParent && snapshot.historyIndex > 0 ? -snapshot.historyIndex : null;
 }

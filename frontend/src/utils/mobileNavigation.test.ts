@@ -6,6 +6,7 @@ import {
   createInitialMobileNavigation,
   createMobileHistoryState,
   mobileMenuHistoryDelta,
+  mobileMenuOwnsDocumentCanvas,
   mobilePageHref,
   mobilePageUsesMenuButton,
   pageFromHref,
@@ -369,5 +370,27 @@ describe("opening the mobile menu", () => {
   it("replaces a root-like native New Chat entry instead of leaving the app", () => {
     const snapshot = createInitialMobileNavigation("/", { nativeFreshLaunch: true });
     expect(mobileMenuHistoryDelta(snapshot)).toBeNull();
+  });
+});
+
+describe("mobile menu document canvas", () => {
+  const menu: MobileNavigationPage = { type: "menu", instanceId: 0 };
+  const chat: MobileNavigationPage = {
+    type: "chat",
+    instanceId: 1,
+    conversationId: "conversation-a"
+  };
+
+  it("uses the menu canvas while the menu is active or interactively revealed", () => {
+    expect(mobileMenuOwnsDocumentCanvas("/", menu, null)).toBe(true);
+    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", chat, menu)).toBe(true);
+    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", chat, null)).toBe(
+      false
+    );
+  });
+
+  it("does not leak the menu canvas into Settings while the home stack is suspended", () => {
+    expect(mobileMenuOwnsDocumentCanvas(null, menu, null)).toBe(false);
+    expect(mobileMenuOwnsDocumentCanvas(null, chat, menu)).toBe(false);
   });
 });

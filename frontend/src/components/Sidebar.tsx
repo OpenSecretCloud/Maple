@@ -390,7 +390,7 @@ export function MainMenu({
           <div
             className={cn(
               "flex items-center",
-              isPagePresentation ? "min-h-11 px-4" : "pl-4 pr-[8px]"
+              isPagePresentation ? "min-h-11 px-5" : "pl-4 pr-[8px]"
             )}
           >
             <div className="min-w-0 flex-1">
@@ -422,8 +422,8 @@ export function MainMenu({
           )}
           <div
             className={cn(
-              "flex flex-col gap-2 px-4",
-              isPagePresentation && "[&>button]:min-h-11 [&>button]:text-base"
+              "flex flex-col gap-2",
+              isPagePresentation ? "px-5 [&>button]:min-h-11 [&>button]:text-xl" : "px-4"
             )}
           >
             <SidebarNewItemButton
@@ -442,7 +442,7 @@ export function MainMenu({
                 type="button"
                 className={cn(
                   "flex w-full items-center justify-start gap-2 pr-1 pl-0 text-foreground hover:text-foreground/70 transition-colors",
-                  isPagePresentation ? "min-h-11 text-base" : "py-1.5 text-sm"
+                  isPagePresentation ? "min-h-11 text-xl" : "py-1.5 text-sm"
                 )}
                 onClick={toggleSearch}
                 aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
@@ -454,7 +454,7 @@ export function MainMenu({
           </div>
         </div>
         {!isAgentMode && isSelectionMode && (
-          <div className={cn("mb-2 space-y-2 px-4", isPagePresentation && "shrink-0")}>
+          <div className={cn("mb-2 space-y-2", isPagePresentation ? "shrink-0 px-5" : "px-4")}>
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
@@ -465,7 +465,7 @@ export function MainMenu({
               >
                 <X className={isPagePresentation ? "h-5 w-5" : "h-4 w-4"} />
               </Button>
-              <span className={cn("font-medium", isPagePresentation ? "text-base" : "text-sm")}>
+              <span className={cn("font-medium", isPagePresentation ? "text-xl" : "text-sm")}>
                 {selectedIds.size >= 20 ? "max" : selectedIds.size} selected
               </span>
             </div>
@@ -473,7 +473,7 @@ export function MainMenu({
               <Button
                 variant="outline"
                 size="sm"
-                className={cn("flex-1", isPagePresentation ? "h-11 text-base" : "h-8")}
+                className={cn("flex-1", isPagePresentation ? "h-11 text-xl" : "h-8")}
                 onClick={handleMoveSelected}
                 disabled={selectedIds.size === 0}
               >
@@ -483,7 +483,7 @@ export function MainMenu({
               <Button
                 variant="destructive"
                 size="sm"
-                className={cn("flex-1", isPagePresentation ? "h-11 text-base" : "h-8")}
+                className={cn("flex-1", isPagePresentation ? "h-11 text-xl" : "h-8")}
                 onClick={handleDeleteSelected}
                 disabled={selectedIds.size === 0}
               >
@@ -496,8 +496,8 @@ export function MainMenu({
         {!isAgentMode && isSearchVisible && (
           <div
             className={cn(
-              "relative transition-all duration-200 ease-in-out px-4",
-              isPagePresentation && "shrink-0"
+              "relative transition-all duration-200 ease-in-out",
+              isPagePresentation ? "shrink-0 px-5" : "px-4"
             )}
           >
             <Input
@@ -506,7 +506,7 @@ export function MainMenu({
               placeholder="Search chat titles..."
               className={cn(
                 "rounded-full pl-4",
-                isPagePresentation ? "h-11 pr-12 text-base" : "h-9 pr-8"
+                isPagePresentation ? "h-11 pr-12 text-xl" : "h-9 pr-8"
               )}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -520,7 +520,7 @@ export function MainMenu({
                 className={cn(
                   "absolute text-muted-foreground hover:text-foreground",
                   isPagePresentation
-                    ? "right-4 top-0 flex h-11 w-11 items-center justify-center"
+                    ? "right-5 top-0 flex h-11 w-11 items-center justify-center"
                     : "right-6 top-2.5"
                 )}
                 aria-label="Clear search"
@@ -541,7 +541,7 @@ export function MainMenu({
             className={cn(
               "sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pt-5",
               isPagePresentation
-                ? "px-4 landscape-short:flex-none landscape-short:overflow-y-visible"
+                ? "px-5 landscape-short:flex-none landscape-short:overflow-y-visible"
                 : "pl-4 pr-2 md:px-4"
             )}
           >
@@ -585,8 +585,10 @@ export function MainMenu({
         </div>
         <div
           className={cn(
-            "w-full border-t border-border/25 px-4 pt-2",
-            isPagePresentation ? "shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]" : "pb-4"
+            "w-full border-t border-border/25 pt-2",
+            isPagePresentation
+              ? "shrink-0 px-5 pb-[max(1rem,env(safe-area-inset-bottom))]"
+              : "px-4 pb-4"
           )}
         >
           <AccountMenu pagePresentation={isPagePresentation} />

@@ -22,6 +22,7 @@ import {
   createInitialMobileNavigation,
   createMobileHistoryState,
   createNativeMobileLaunchGate,
+  mobileMenuOwnsDocumentCanvas,
   mobileMenuHistoryDelta,
   mobilePageHref,
   mobilePageUsesMenuButton,
@@ -35,6 +36,7 @@ import {
 } from "@/utils/mobileNavigation";
 
 const PAGE_TRANSITION_MS = 320;
+const MOBILE_MENU_CANVAS_CLASS = "maple-mobile-menu-canvas";
 const nativeMobileLaunchGate = createNativeMobileLaunchGate();
 
 function currentHomeHref() {
@@ -606,6 +608,19 @@ export function MobileNavigationStack({
   const targetActivePage = incomingActivePage ?? baseActivePage;
   const isMenuCovered = targetActivePage.type !== "menu";
   const swipeParentPage = swipeVisual ? activeMobilePage(swipeVisual.context) : null;
+  const menuOwnsDocumentCanvas = mobileMenuOwnsDocumentCanvas(
+    homeLocationHref,
+    targetActivePage,
+    swipeParentPage
+  );
+
+  useLayoutEffect(() => {
+    const documentRoot = document.documentElement;
+    documentRoot.classList.toggle(MOBILE_MENU_CANVAS_CLASS, menuOwnsDocumentCanvas);
+
+    return () => documentRoot.classList.remove(MOBILE_MENU_CANVAS_CLASS);
+  }, [menuOwnsDocumentCanvas]);
+
   const isRevealingMenuDirectly =
     (swipeParentPage?.type === "menu" && mobilePageUsesMenuButton(baseActivePage)) ||
     (isTransitioningBackward &&
