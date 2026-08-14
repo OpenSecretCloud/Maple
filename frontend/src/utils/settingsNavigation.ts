@@ -70,3 +70,15 @@ export function shouldSuspendCoveredHomeChats({
     isSettingsRoute && hasSettingsShellEntered && !isSettingsPopping && !isSettingsShellSwipeActive
   );
 }
+
+export function settingsMenuOwnsDocumentCanvas({
+  compact,
+  isSettingsRoot,
+  isSettingsDetailEntering
+}: {
+  compact: boolean;
+  isSettingsRoot: boolean;
+  isSettingsDetailEntering: boolean;
+}) {
+  return compact && (isSettingsRoot || isSettingsDetailEntering);
+}

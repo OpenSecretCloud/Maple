@@ -374,23 +374,56 @@ describe("opening the mobile menu", () => {
 });
 
 describe("mobile menu document canvas", () => {
-  const menu: MobileNavigationPage = { type: "menu", instanceId: 0 };
-  const chat: MobileNavigationPage = {
-    type: "chat",
-    instanceId: 1,
-    conversationId: "conversation-a"
-  };
+  it("keeps the source canvas until a forward entry settles", () => {
+    const menu = createInitialMobileNavigation("/");
+    const enteringChat = pushMobilePage(menu, {
+      type: "chat",
+      instanceId: 1,
+      conversationId: "conversation-a"
+    });
 
-  it("uses the menu canvas while the menu is active or interactively revealed", () => {
     expect(mobileMenuOwnsDocumentCanvas("/", menu, null)).toBe(true);
-    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", chat, menu)).toBe(true);
+    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", enteringChat, 1)).toBe(
+      true
+    );
+    expect(
+      mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", enteringChat, null)
+    ).toBe(false);
+  });
+
+  it("keeps the current chat canvas throughout a menu reveal and switches on commit", () => {
+    const chat = createInitialMobileNavigation("/?conversation_id=conversation-a");
+    const menu = createInitialMobileNavigation("/");
+
     expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", chat, null)).toBe(
       false
     );
+    expect(mobileMenuOwnsDocumentCanvas("/", menu, null)).toBe(true);
+  });
+
+  it("uses the chat background for a fresh native New Chat", () => {
+    const newChat = createInitialMobileNavigation("/", { nativeFreshLaunch: true });
+    expect(mobileMenuOwnsDocumentCanvas("/", newChat, null)).toBe(false);
+  });
+
+  it("keeps the background canvas when a chat enters from a project", () => {
+    const project = pushMobilePage(createInitialMobileNavigation("/"), {
+      type: "project",
+      instanceId: 1,
+      projectId: "project-a"
+    });
+    const chat = pushMobilePage(project, {
+      type: "chat",
+      instanceId: 2,
+      conversationId: "conversation-a"
+    });
+
+    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", chat, 2)).toBe(false);
   });
 
   it("does not leak the menu canvas into Settings while the home stack is suspended", () => {
-    expect(mobileMenuOwnsDocumentCanvas(null, menu, null)).toBe(false);
-    expect(mobileMenuOwnsDocumentCanvas(null, chat, menu)).toBe(false);
+    expect(mobileMenuOwnsDocumentCanvas(null, createInitialMobileNavigation("/"), null)).toBe(
+      false
+    );
   });
 });

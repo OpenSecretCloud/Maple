@@ -320,13 +320,13 @@ add a second menu or change the responsive breakpoints.
 - The full-screen header, New Chat, Search, New Project, project rows, chat rows, overflow buttons,
   Settings, selection actions, selection hit areas, and context-menu actions use a 44-pixel minimum
   target.
-- Primary and list labels are 20 pixels with a 28-pixel line height; their primary icons,
+- Primary and list labels are 16 pixels with a 24-pixel line height; their primary icons,
   disclosure icons, pinned indicators, and overflow icons remain 20 pixels. Section headings remain
   12 pixels, with 6 pixels of additional separation before the first row in each section.
 - The search field is 44 pixels tall with 48 pixels of trailing clearance, and its clear action has
   a real 44-by-44-pixel hit area.
-- Chat and project titles reserve 60 pixels at the trailing edge for the enlarged 44-pixel overflow
-  control, so long titles truncate before the control instead of sitting beneath it.
+- Chat and project title regions end at the enlarged 44-pixel overflow control and fade over their
+  final 16 pixels, so long titles cannot sit beneath the control or reappear beyond it.
 - The page header is at least 44 pixels tall and uses a 20-pixel-high wordmark.
 - Page-level horizontal insets are a symmetric 20 pixels. The desktop-only workspace-mode switch is
   not rendered in page mode.
@@ -345,12 +345,12 @@ and existing overflow behavior.
 
 Validation for this pass:
 
-- The complete frontend suite passes with 705 tests, including focused mobile-navigation,
+- The complete frontend suite passes with 712 tests, including focused mobile-navigation,
   response-lifecycle, Settings-navigation, swipe, and history-pagination coverage.
 - TypeScript, formatting, lint, and the production build pass. Lint remains at the existing
   13-warning/zero-error baseline.
-- The production CSS contains the 44-pixel height/width/min-height utilities, 60-pixel title
-  clearance, viewport-limited dropdown height, and bottom safe-area expression used by page mode.
+- The production CSS contains the 44-pixel height/width/min-height utilities, mobile title clipping
+  and fade, viewport-limited dropdown height, and bottom safe-area expression used by page mode.
 - A source-level branch audit confirmed that the new dimensions are reachable only through
   `presentation="page"` / `pagePresentation`; the desktop sidebar retains its original class
   branches. The desktop-only workspace-mode switch is omitted from page mode.
@@ -437,9 +437,10 @@ The follow-up implementation now:
   effect, preserving New Chat across Strict Mode and abandoned-render retries.
 
 Focused launch/gesture tests and the complete frontend test suite cover the new launch gate and
-interrupted-settlement rules. The corrected build still needs a physical-iPhone rerun for long drag,
-short cancel, fast flick, vertical edge scrolling, Back-button taps, chat/project destinations, and
-both Settings levels; the physical-device checkbox below intentionally remains unchecked.
+interrupted-settlement rules. A subsequent physical-iPhone build confirmed smooth tracking and
+completion for full-distance drags and fast hamburger-state flicks. Short cancellation, vertical
+edge scrolling, Back-button taps, project-backed destinations, and both Settings levels still need
+device verification.
 
 ### Physical iPhone menu follow-up — August 14, 2026
 
@@ -468,9 +469,49 @@ The follow-up implementation:
   after a conversation materializes or resumes a legitimate unsent draft. Desktop and direct URL
   restoration remain history-authoritative.
 
-Source review, focused regressions, and the complete 705-test frontend suite pass. Post-fix physical
-iPhone validation of typography, safe-area painting, both New Chat entry points, and the gesture
-changes remains pending.
+Source review, focused regressions, and the complete 705-test frontend suite passed at that stage.
+The next physical build confirmed edge-to-edge menu painting and both global and project-scoped New
+Chat entry points, while exposing the refinements below.
+
+### Second physical iPhone menu follow-up — August 14, 2026
+
+The next physical recording and screenshots established four remaining issues:
+
+- The safe-area canvas switched to the destination color at transition start. During an edge swipe,
+  the top and bottom bands changed from the chat background to the menu background one frame after
+  horizontal lock, while the chat still covered almost the entire viewport.
+- Mobile title generation reused the desktop title-flash animation, which painted a translucent
+  background, padding, and scale behind the changing title.
+- Selecting an uncached historical conversation after creating a chat could render the just-created
+  runtime. First-mount projection fell back to the store's previously active key before the requested
+  conversation had been created in the runtime cache.
+- The 20-pixel page labels measured substantially larger than the reference's list typography, and a
+  long title could continue beneath the overflow button and visibly reappear on its far side.
+
+The follow-up implementation:
+
+- Uses the settled/source page as the document-canvas owner until a push, pop, or interactive swipe
+  commits. Menu and Settings-root surfaces use the sidebar canvas color; Chat, New Chat, project, and
+  Settings-detail surfaces retain the application background. This keeps each visible screen's top
+  and bottom safe areas consistent throughout the transition.
+- Uses a mobile-only title text animation without the desktop background, padding, radius, or scale.
+  Desktop title animation remains unchanged.
+- Projects and creates a requested conversation runtime on a chat page's first mount. The existing
+  selected-runtime fallback remains available only after that page has committed, preserving the
+  synchronous deletion/replacement guard.
+- Returns full-screen page labels to 16 pixels with a 24-pixel line height while retaining the
+  20-pixel page insets, 44-pixel controls and rows, 20-pixel icons, 12-pixel headings, and existing
+  vertical cadence. Mobile project and chat titles now clip at the 44-pixel overflow-control
+  boundary and fade over their final 16 pixels; their complete accessible labels remain available.
+  Desktop typography, spacing, title clipping, overflow presentation, and sidebar dimensions are
+  unchanged.
+
+Focused canvas-ownership, Settings-navigation, and runtime-projection tests pass, and the complete
+frontend suite passes with 712 tests. TypeScript, formatting, the PR-configured production web build,
+and the pinned iOS simulator bundle build pass. Lint remains at the existing 13-warning/zero-error
+baseline, with no warning in a touched file. A physical-device rerun of the revised canvas timing,
+title animation, 16-pixel typography, long-title fade, historical-chat load, short cancellation, and
+Settings gestures remains pending.
 
 ## Non-Goals
 
@@ -507,7 +548,7 @@ The core feature is complete when every agreed non-stretch behavior is implement
 
 - [x] Page-mode primary, list, overflow, Settings, selection, and context-menu controls have
       44-pixel minimum targets.
-- [x] Page-mode primary/list labels are 20 pixels and icons are 20 pixels; 12-pixel section headings
+- [x] Page-mode primary/list labels are 16 pixels and icons are 20 pixels; 12-pixel section headings
       retain their hierarchy.
 - [x] The search clear action has a 44-by-44-pixel target and row titles clear enlarged overflow
       controls.
@@ -558,6 +599,8 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [x] Switching between chat, New Chat, project detail, and the menu does not create duplicate conversations or messages.
 - [x] After a New Chat becomes a conversation, global New Chat and New Chat in Project select a
       blank or legitimately retained unsent draft instead of reopening that conversation.
+- [x] Selecting an uncached historical chat after creating a conversation projects and loads the
+      requested chat instead of retaining the just-created runtime.
 
 ### Motion and accessibility
 
@@ -577,8 +620,10 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [x] Hamburger-state chat surfaces reveal and open the main menu directly.
 - [x] A completed gesture does not replay the non-interactive pop animation.
 - [x] Popped chats unmount after completion, and canceled chat previews unmount after snap-back.
-- [ ] Re-verify tracking, completion, cancellation, vertical-scroll rejection, and Back-button taps
-      with the corrected build on a physical iPhone.
+- [x] A physical iPhone confirms smooth tracking and completion for full-distance and fast-flick
+      hamburger-state gestures.
+- [ ] Re-verify short cancellation, vertical-scroll rejection, Back-button taps, final canvas
+      timing, project-backed destinations, and Settings gestures on a physical iPhone.
 
 ### Compact Settings
 

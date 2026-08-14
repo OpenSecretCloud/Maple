@@ -51,6 +51,7 @@ import {
   isSettingsRootPath,
   SETTINGS_SHELL_POP_EVENT,
   SETTINGS_SHELL_SWIPE_BACK_EVENT,
+  settingsMenuOwnsDocumentCanvas,
   shouldAnimateSettingsPop
 } from "@/utils/settingsNavigation";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
@@ -77,6 +78,8 @@ type SettingsNavItem = {
   badge?: string;
   badgeTone?: "warning" | "danger";
 };
+
+const MOBILE_SETTINGS_MENU_CANVAS_CLASS = "maple-mobile-settings-menu-canvas";
 
 function SettingsNavLink({ item }: { item: SettingsNavItem }) {
   const Icon = item.icon;
@@ -165,6 +168,18 @@ function SettingsLayoutContent() {
   const [enteredDetailPath, setEnteredDetailPath] = useState<string | null>(null);
   const isSettingsDetailEntering =
     isCompactViewport && !isSettingsRoot && enteredDetailPath !== location.pathname;
+  const settingsMenuOwnsCanvas = settingsMenuOwnsDocumentCanvas({
+    compact: isCompactViewport,
+    isSettingsRoot,
+    isSettingsDetailEntering
+  });
+
+  useLayoutEffect(() => {
+    const documentRoot = document.documentElement;
+    documentRoot.classList.toggle(MOBILE_SETTINGS_MENU_CANVAS_CLASS, settingsMenuOwnsCanvas);
+
+    return () => documentRoot.classList.remove(MOBILE_SETTINGS_MENU_CANVAS_CLASS);
+  }, [settingsMenuOwnsCanvas]);
 
   useSettingsNavigationLock(isSigningOut);
 

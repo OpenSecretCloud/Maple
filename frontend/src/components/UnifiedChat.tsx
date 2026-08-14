@@ -152,6 +152,7 @@ import {
   historyStateWithDraftRuntimeKey,
   isDraftChatRuntimeKey,
   runtimeKeyForChatLocation,
+  runtimeKeyForChatProjection,
   shouldProjectMigratedConversation,
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
@@ -1614,6 +1615,7 @@ export function UnifiedChat({
   const runtimeStore = useChatRuntimeStore<Conversation, Message>();
   const runtimeInstanceId = useId();
   const visibleChatOwner = useRef<object>({}).current;
+  const hasCommittedRuntimeSelectionRef = useRef(false);
 
   const [initialRuntimeSelection] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1653,9 +1655,12 @@ export function UnifiedChat({
   // Runtime selection is updated synchronously before the matching React state
   // update commits. If the old chat is deleted in that gap, render the store's
   // selected replacement instead of recreating the deleted runtime.
-  const renderedRuntimeKey = runtimeStore.get(activeRuntimeKey)
-    ? activeRuntimeKey
-    : (runtimeStore.getActiveKey() ?? activeRuntimeKey);
+  const renderedRuntimeKey = runtimeKeyForChatProjection(
+    activeRuntimeKey,
+    runtimeStore.get(activeRuntimeKey) !== undefined,
+    runtimeStore.getActiveKey(),
+    hasCommittedRuntimeSelectionRef.current
+  );
   runtimeStore.ensure(renderedRuntimeKey, {
     composer: createChatComposerState(initialRuntimeSelection.draftProjectId)
   });
@@ -1683,6 +1688,7 @@ export function UnifiedChat({
 
   useLayoutEffect(() => {
     if (!isVisible) return;
+    hasCommittedRuntimeSelectionRef.current = true;
     runtimeStore.select(renderedRuntimeKey);
     const lease = runtimeStore.claimVisibleChat(visibleChatOwner, renderedRuntimeKey);
     return () => runtimeStore.releaseVisibleChat(lease);
@@ -5160,7 +5166,7 @@ export function UnifiedChat({
               </div>
               <h1
                 className={`min-w-0 flex-1 truncate px-1 text-center text-base font-medium text-foreground transition-colors duration-300 ${
-                  titleJustUpdated ? "title-update-animation" : ""
+                  titleJustUpdated ? "mobile-title-update-animation" : ""
                 }`}
               >
                 {conversation?.metadata?.title || "Chat"}
@@ -5196,7 +5202,7 @@ export function UnifiedChat({
               </div>
               <h1
                 className={`w-full truncate px-1 text-center text-base font-medium text-foreground transition-colors duration-300 ${
-                  titleJustUpdated ? "title-update-animation" : ""
+                  titleJustUpdated ? "mobile-title-update-animation" : ""
                 }`}
               >
                 {conversation?.metadata?.title || "Chat"}

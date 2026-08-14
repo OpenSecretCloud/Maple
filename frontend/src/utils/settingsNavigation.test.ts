@@ -5,6 +5,7 @@ import {
   isSettingsPath,
   isSettingsRootPath,
   SETTINGS_HOME_PARENT_STATE_KEY,
+  settingsMenuOwnsDocumentCanvas,
   shouldAnimateSettingsPop,
   shouldSuspendCoveredHomeChats
 } from "./settingsNavigation";
@@ -90,5 +91,36 @@ describe("compact settings navigation", () => {
         })
       ).toBe(false);
     }
+  });
+
+  test("keeps the source Settings canvas through compact page transitions", () => {
+    expect(
+      settingsMenuOwnsDocumentCanvas({
+        compact: true,
+        isSettingsRoot: true,
+        isSettingsDetailEntering: false
+      })
+    ).toBe(true);
+    expect(
+      settingsMenuOwnsDocumentCanvas({
+        compact: true,
+        isSettingsRoot: false,
+        isSettingsDetailEntering: true
+      })
+    ).toBe(true);
+    expect(
+      settingsMenuOwnsDocumentCanvas({
+        compact: true,
+        isSettingsRoot: false,
+        isSettingsDetailEntering: false
+      })
+    ).toBe(false);
+    expect(
+      settingsMenuOwnsDocumentCanvas({
+        compact: false,
+        isSettingsRoot: true,
+        isSettingsDetailEntering: false
+      })
+    ).toBe(false);
   });
 });

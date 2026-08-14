@@ -423,7 +423,7 @@ export function MainMenu({
           <div
             className={cn(
               "flex flex-col gap-2",
-              isPagePresentation ? "px-5 [&>button]:min-h-11 [&>button]:text-xl" : "px-4"
+              isPagePresentation ? "px-5 [&>button]:min-h-11 [&>button]:text-base" : "px-4"
             )}
           >
             <SidebarNewItemButton
@@ -442,7 +442,7 @@ export function MainMenu({
                 type="button"
                 className={cn(
                   "flex w-full items-center justify-start gap-2 pr-1 pl-0 text-foreground hover:text-foreground/70 transition-colors",
-                  isPagePresentation ? "min-h-11 text-xl" : "py-1.5 text-sm"
+                  isPagePresentation ? "min-h-11 text-base" : "py-1.5 text-sm"
                 )}
                 onClick={toggleSearch}
                 aria-label={isSearchVisible ? "Hide search" : "Search chat history"}
@@ -465,7 +465,7 @@ export function MainMenu({
               >
                 <X className={isPagePresentation ? "h-5 w-5" : "h-4 w-4"} />
               </Button>
-              <span className={cn("font-medium", isPagePresentation ? "text-xl" : "text-sm")}>
+              <span className={cn("font-medium", isPagePresentation ? "text-base" : "text-sm")}>
                 {selectedIds.size >= 20 ? "max" : selectedIds.size} selected
               </span>
             </div>
@@ -473,7 +473,7 @@ export function MainMenu({
               <Button
                 variant="outline"
                 size="sm"
-                className={cn("flex-1", isPagePresentation ? "h-11 text-xl" : "h-8")}
+                className={cn("flex-1", isPagePresentation ? "h-11 text-base" : "h-8")}
                 onClick={handleMoveSelected}
                 disabled={selectedIds.size === 0}
               >
@@ -483,7 +483,7 @@ export function MainMenu({
               <Button
                 variant="destructive"
                 size="sm"
-                className={cn("flex-1", isPagePresentation ? "h-11 text-xl" : "h-8")}
+                className={cn("flex-1", isPagePresentation ? "h-11 text-base" : "h-8")}
                 onClick={handleDeleteSelected}
                 disabled={selectedIds.size === 0}
               >
@@ -506,7 +506,7 @@ export function MainMenu({
               placeholder="Search chat titles..."
               className={cn(
                 "rounded-full pl-4",
-                isPagePresentation ? "h-11 pr-12 text-xl" : "h-9 pr-8"
+                isPagePresentation ? "h-11 pr-12 text-base" : "h-9 pr-8"
               )}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}

@@ -1186,7 +1186,7 @@ export function ChatHistoryList({
   ) {
     return (
       <div
-        className={`py-4 text-center text-muted-foreground ${pagePresentation ? "text-xl" : ""}`}
+        className={`py-4 text-center text-muted-foreground ${pagePresentation ? "text-base" : ""}`}
       >
         <p>No chats found matching "{trimmedQuery}"</p>
         <p className={`${pagePresentation ? "text-base" : "text-sm"} mt-1`}>
@@ -1203,7 +1203,7 @@ export function ChatHistoryList({
     const runtimeKey = createConversationChatKey(conversation.id);
     const isRunning = activeRunKeySet.has(runtimeKey);
     const isUnreadCompleted = !isRunning && completedUnreadKeySet.has(runtimeKey);
-    const titlePaddingClass = pagePresentation ? "pr-[3.75rem]" : "pr-8";
+    const titlePaddingClass = pagePresentation ? (isSelectionMode ? "pr-0" : "pr-11") : "pr-8";
 
     const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
     const rowTextClass = isBoldState
@@ -1214,7 +1214,7 @@ export function ChatHistoryList({
       <div
         key={conversation.id}
         className={`group relative isolate flex w-full min-w-0 select-none items-stretch gap-0.5 rounded-2xl ${
-          pagePresentation ? "min-h-11 text-xl" : ""
+          pagePresentation ? "min-h-11 text-base" : ""
         }`}
         onContextMenu={(event) => event.preventDefault()}
       >
@@ -1246,11 +1246,17 @@ export function ChatHistoryList({
           onTouchMove={handleLongPressMove}
           onTouchEnd={handleLongPressEnd}
           onTouchCancel={handleLongPressEnd}
-          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 pr-2 text-left ${rowTextClass} ${
+          className={`relative ${ROW_CONTENT_Z} min-w-0 flex-1 text-left ${rowTextClass} ${
             pagePresentation ? "flex min-h-11 items-center py-0" : "py-1"
-          } ${isSelectionMode ? (pagePresentation ? "pl-12" : "pl-8") : "pl-0"} cursor-pointer`}
+          } ${pagePresentation ? "pr-0" : "pr-2"} ${
+            isSelectionMode ? (pagePresentation ? "pl-12" : "pl-8") : "pl-0"
+          } cursor-pointer`}
         >
-          <div className={titlePaddingClass}>
+          <div
+            className={`${titlePaddingClass} ${
+              pagePresentation ? "w-full min-w-0 overflow-hidden" : ""
+            }`}
+          >
             <div className="relative z-0 flex min-w-0 items-center gap-1.5">
               {isRunning ? (
                 <>
@@ -1275,7 +1281,15 @@ export function ChatHistoryList({
                   aria-hidden
                 />
               ) : null}
-              <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap">{title}</div>
+              <div
+                className={`min-w-0 flex-1 ${
+                  pagePresentation && !isSelectionMode
+                    ? "maple-mobile-row-title-fade"
+                    : "overflow-hidden whitespace-nowrap"
+                }`}
+              >
+                {title}
+              </div>
             </div>
           </div>
         </button>
@@ -1302,7 +1316,9 @@ export function ChatHistoryList({
         {!isSelectionMode ? (
           <>
             <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
-              <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
+              {!pagePresentation ? (
+                <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
+              ) : null}
               <div className="flex items-center">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -1407,7 +1423,7 @@ export function ChatHistoryList({
       <div
         ref={pullContentRef}
         className={`flex min-w-0 w-full max-w-full flex-col gap-5 ${
-          pagePresentation ? "text-xl" : ""
+          pagePresentation ? "text-base" : ""
         }`}
         style={{ willChange: "transform" }}
       >
@@ -1426,7 +1442,7 @@ export function ChatHistoryList({
                   type="button"
                   disabled
                   className={`flex w-full items-center gap-2 rounded-2xl pl-0 pr-1 text-left text-muted-foreground/50 cursor-not-allowed ${
-                    pagePresentation ? "min-h-11 text-xl" : "py-1.5"
+                    pagePresentation ? "min-h-11 text-base" : "py-1.5"
                   }`}
                 >
                   <FolderPlus
@@ -1445,7 +1461,7 @@ export function ChatHistoryList({
               type="button"
               onClick={handleOpenCreateProjectDialog}
               className={`flex w-full items-center gap-2 rounded-2xl pl-0 pr-1 text-left text-foreground/95 transition-colors hover:text-foreground ${
-                pagePresentation ? "min-h-11 text-xl" : "py-1.5"
+                pagePresentation ? "min-h-11 text-base" : "py-1.5"
               }`}
             >
               <FolderPlus
@@ -1490,7 +1506,7 @@ export function ChatHistoryList({
                         : project.name
                     }
                     className={`relative ${ROW_CONTENT_Z} w-full rounded-2xl text-left ${
-                      pagePresentation ? "flex min-h-11 items-center py-0 text-xl" : "py-1"
+                      pagePresentation ? "flex min-h-11 items-center py-0 text-base" : "py-1"
                     } ${
                       isProjectExpanded || isProjectSelected
                         ? "font-bold text-foreground"
@@ -1499,7 +1515,7 @@ export function ChatHistoryList({
                   >
                     <div
                       className={`relative z-0 flex items-center gap-2 ${
-                        pagePresentation ? "w-full pr-[3.75rem]" : "pr-8"
+                        pagePresentation ? "w-full min-w-0 overflow-hidden pr-11" : "pr-8"
                       }`}
                     >
                       {isProjectExpanded ? (
@@ -1513,7 +1529,13 @@ export function ChatHistoryList({
                           strokeWidth={ICON_STROKE}
                         />
                       )}
-                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                      <span
+                        className={`min-w-0 flex-1 ${
+                          pagePresentation ? "maple-mobile-row-title-fade" : "truncate"
+                        }`}
+                      >
+                        {project.name}
+                      </span>
                       {showProjectRunningIndicator ? (
                         <Loader2
                           className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]"
@@ -1528,7 +1550,9 @@ export function ChatHistoryList({
                     </div>
                   </button>
                   <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
-                    <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
+                    {!pagePresentation ? (
+                      <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
+                    ) : null}
                     <div className="flex items-center">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -1616,7 +1640,7 @@ export function ChatHistoryList({
             filteredRecentConversations.map((conversation) => renderConversationRow(conversation))
           ) : (
             <div
-              className={`py-2 text-muted-foreground ${pagePresentation ? "text-xl" : "text-sm"}`}
+              className={`py-2 text-muted-foreground ${pagePresentation ? "text-base" : "text-sm"}`}
             >
               No recent chats.
             </div>

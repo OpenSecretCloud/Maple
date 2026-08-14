@@ -56,6 +56,16 @@ export function runtimeKeyForChatLocation(
   );
 }
 
+export function runtimeKeyForChatProjection(
+  requestedRuntimeKey: ChatRuntimeKey,
+  requestedRuntimeExists: boolean,
+  selectedRuntimeKey: ChatRuntimeKey | null,
+  hasCommittedRuntimeSelection: boolean
+): ChatRuntimeKey {
+  if (requestedRuntimeExists || !hasCommittedRuntimeSelection) return requestedRuntimeKey;
+  return selectedRuntimeKey ?? requestedRuntimeKey;
+}
+
 export function conversationIdFromChatRuntimeKey(key: ChatRuntimeKey): string | undefined {
   const prefix = "conversation:";
   return key.startsWith(prefix) && key.length > prefix.length

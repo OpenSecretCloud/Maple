@@ -610,8 +610,8 @@ export function MobileNavigationStack({
   const swipeParentPage = swipeVisual ? activeMobilePage(swipeVisual.context) : null;
   const menuOwnsDocumentCanvas = mobileMenuOwnsDocumentCanvas(
     homeLocationHref,
-    targetActivePage,
-    swipeParentPage
+    snapshot,
+    enteringInstanceId
   );
 
   useLayoutEffect(() => {

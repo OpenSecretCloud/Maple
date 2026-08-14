@@ -241,12 +241,18 @@ export function mobilePageUsesMenuButton(page: MobileNavigationPage) {
 
 export function mobileMenuOwnsDocumentCanvas(
   homeLocationHref: string | null,
-  targetPage: MobileNavigationPage,
-  swipeParentPage: MobileNavigationPage | null
+  snapshot: MobileNavigationSnapshot,
+  enteringInstanceId: number | null
 ) {
-  return (
-    homeLocationHref !== null && (targetPage.type === "menu" || swipeParentPage?.type === "menu")
-  );
+  if (homeLocationHref === null) return false;
+
+  const activePage = activeMobilePage(snapshot);
+  const sourcePage =
+    enteringInstanceId === activePage.instanceId && snapshot.stack.length > 1
+      ? snapshot.stack[snapshot.stack.length - 2]
+      : activePage;
+
+  return sourcePage.type === "menu";
 }
 
 export function mobileMenuHistoryDelta(snapshot: MobileNavigationSnapshot) {

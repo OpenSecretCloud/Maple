@@ -9,6 +9,7 @@ import {
   pushFreshChatHistoryEntry,
   pushChatHistoryEntryForDraft,
   runtimeKeyForChatLocation,
+  runtimeKeyForChatProjection,
   shouldProjectMigratedConversation
 } from "./chatRuntimeNavigation";
 import {
@@ -66,6 +67,33 @@ describe("chat runtime history navigation", () => {
         { restoreDraftFromHistory: false }
       )
     ).toBe(createConversationChatKey("direct-conversation"));
+  });
+
+  test("projects an uncached initial conversation instead of the previously selected chat", () => {
+    const requestedKey = createConversationChatKey("historical-chat");
+    const previouslySelectedKey = createConversationChatKey("just-created-chat");
+
+    expect(runtimeKeyForChatProjection(requestedKey, false, previouslySelectedKey, false)).toBe(
+      requestedKey
+    );
+  });
+
+  test("uses a synchronously selected replacement after a committed runtime is deleted", () => {
+    const deletedKey = createConversationChatKey("deleted-chat");
+    const replacementKey = createChatDraftKey("replacement");
+
+    expect(runtimeKeyForChatProjection(deletedKey, false, replacementKey, true)).toBe(
+      replacementKey
+    );
+  });
+
+  test("keeps an existing requested runtime after the initial selection commits", () => {
+    const requestedKey = createConversationChatKey("cached-historical-chat");
+    const otherSelectedKey = createConversationChatKey("other-chat");
+
+    expect(runtimeKeyForChatProjection(requestedKey, true, otherSelectedKey, true)).toBe(
+      requestedKey
+    );
   });
 
   test("a saved draft history entry follows an offscreen rekeyed conversation", () => {
