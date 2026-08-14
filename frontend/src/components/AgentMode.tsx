@@ -127,6 +127,11 @@ import {
   userFacingAgentError
 } from "@/services/agentMcpErrors";
 import { reconcileNewChatMcpServerNames } from "@/services/agentMcpServers";
+import {
+  agentComposerCanSend,
+  agentComposerShowsStop,
+  canSubmitAgentComposerMessage
+} from "@/services/agentComposerSend";
 import { agentOperationFence } from "@/services/agentOperationFence";
 import { reconcileAgentSessionSnapshot } from "@/services/agentSessionSummaries";
 import {
@@ -2111,11 +2116,12 @@ export function AgentMode({ userId }: { userId: string }) {
     const requestedSessionId = activeSessionIdRef.current;
     let pendingSessionKey = requestedSessionId || NEW_SESSION_PENDING_KEY;
     if (
-      !text ||
-      isAgentSendLocked ||
-      pendingSessionSelectionIdRef.current !== null ||
-      pendingSendTokensRef.current.has(pendingSessionKey) ||
-      (requestedSessionId && activeRunsBySession[requestedSessionId])
+      !canSubmitAgentComposerMessage({
+        text,
+        isSendLocked: isAgentSendLocked,
+        isSessionSelectionPending: pendingSessionSelectionIdRef.current !== null,
+        hasInFlightSend: pendingSendTokensRef.current.has(pendingSessionKey)
+      })
     ) {
       return;
     }
@@ -2207,7 +2213,6 @@ export function AgentMode({ userId }: { userId: string }) {
       clearPendingSend(pendingSessionKey, sendToken);
     }
   }, [
-    activeRunsBySession,
     availableModels,
     cancelledPendingSendTokensRef,
     clearPendingSend,
@@ -4341,7 +4346,7 @@ function AgentComposer({
         </div>
 
         <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
-          {isSending ? (
+          {agentComposerShowsStop(isSending) ? (
             <Button
               type="button"
               size="icon"
@@ -4352,24 +4357,23 @@ function AgentComposer({
             >
               <div className="h-3 w-3 rounded-md bg-current" />
             </Button>
-          ) : (
-            <button
-              type="button"
-              className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40",
-                onToggleExpanded && !isExpanded && "sm:h-9 sm:w-9"
-              )}
-              onClick={onSendMessage}
-              disabled={isSendDisabled || !input.trim() || !projectRoot}
-              aria-label="Send agent message"
-            >
-              {isStarting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <ArrowUp className="h-4 w-4" />
-              )}
-            </button>
-          )}
+          ) : null}
+          <button
+            type="button"
+            className={cn(
+              "flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40",
+              onToggleExpanded && !isExpanded && "sm:h-9 sm:w-9"
+            )}
+            onClick={onSendMessage}
+            disabled={!agentComposerCanSend({ text: input, isSendDisabled, projectRoot })}
+            aria-label="Send agent message"
+          >
+            {isStarting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ArrowUp className="h-4 w-4" />
+            )}
+          </button>
         </div>
       </div>
     </ChatComposerSurface>

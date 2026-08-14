@@ -455,6 +455,15 @@ pub(crate) enum AgentHostEventPolicy {
     Suppress,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopSendDisposition {
+    /// Desktop send: attach to the live Goose loop when one exists, otherwise
+    /// start a run.
+    QueueOrStart,
+    /// ACP and other exclusive surfaces must not join another run.
+    StartOnly,
+}
+
 impl AgentHostEventPolicy {
     fn publishes(self) -> bool {
         matches!(self, Self::Publish)
@@ -599,8 +608,12 @@ struct ActiveAgentRun {
     session_id: String,
     events: AgentRunEventPublisher,
     cancelled_permission_ids: CancelledPermissionIds,
+    pending_steers: PendingSteerQueue,
+    accepting_steers: Arc<AtomicBool>,
     task_handle: tokio::task::JoinHandle<()>,
 }
+
+type PendingSteerQueue = Arc<Mutex<Vec<Message>>>;
 
 struct ActiveAgentSessionTitleTask {
     run_id: String,
@@ -1658,6 +1671,11 @@ async fn stop_runtime_inner(
     for (_, active_run) in active_runs {
         // Cancel first so an ActionRequired event racing this snapshot will
         // take the immediate-cancel path in register_pending_permission.
+        active_run
+            .agent
+            .discard_pending_steers(&active_run.session_id)
+            .await;
+        active_run.pending_steers.lock().await.clear();
         active_run.tool_context.cancel_run(&active_run.token);
         task_handles.push(active_run.task_handle);
     }
@@ -3069,6 +3087,7 @@ impl AgentRuntimeHandle {
             None,
             AgentHostEventPolicy::Publish,
             AgentPermissionRouting::Desktop,
+            DesktopSendDisposition::QueueOrStart,
         )
         .await
     }
@@ -3086,6 +3105,7 @@ impl AgentRuntimeHandle {
             Some(surface_lifetime),
             host_events,
             AgentPermissionRouting::CallingSurface,
+            DesktopSendDisposition::StartOnly,
         )
         .await
     }
@@ -3097,6 +3117,7 @@ impl AgentRuntimeHandle {
         surface_lifetime: Option<CancellationToken>,
         host_events: AgentHostEventPolicy,
         permission_routing: AgentPermissionRouting,
+        desktop_send: DesktopSendDisposition,
     ) -> Result<AgentRunHandle, String> {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
@@ -3110,6 +3131,26 @@ impl AgentRuntimeHandle {
         }
 
         let session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (launch_message, extra_steers) = match desktop_send {
+            DesktopSendDisposition::QueueOrStart => {
+                match self
+                    .take_desktop_send_plan(&request, permission_routing)
+                    .await?
+                {
+                    DesktopSendPlan::Steered(run_id) => {
+                        return Ok(steered_run_handle(run_id));
+                    }
+                    DesktopSendPlan::Start {
+                        launch_message,
+                        extra_steers,
+                    } => (launch_message, extra_steers),
+                }
+            }
+            DesktopSendDisposition::StartOnly => {
+                reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
+                (user_message_from_prompt(&text), Vec::new())
+            }
+        };
         let session_title_lifecycle = resolve_session_title_lifecycle(
             &state.session_title_lifecycles,
             account_scope,
@@ -3130,10 +3171,11 @@ impl AgentRuntimeHandle {
         if cancel_token.is_cancelled() {
             return Err("Agent surface closed before the run could start".to_string());
         }
-        let prompt_title = session_title_from_prompt(&text);
-        let session_title_prompt = text.clone();
-        let web_permission_context = WebPermissionContext::from_user_prompt(&text);
-        let user_message = Message::user().with_text(text).with_generated_id();
+        let user_message = launch_message;
+        let launch_text = user_message.as_concat_text();
+        let prompt_title = session_title_from_prompt(&launch_text);
+        let session_title_prompt = launch_text.clone();
+        let web_permission_context = WebPermissionContext::from_user_prompt(&launch_text);
         let (
             agent_manager,
             session_manager,
@@ -3366,6 +3408,10 @@ impl AgentRuntimeHandle {
         let active_agent = Arc::clone(&agent);
         let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
+        let pending_steers = Arc::new(Mutex::new(Vec::new()));
+        let task_pending_steers = Arc::clone(&pending_steers);
+        let accepting_steers = Arc::new(AtomicBool::new(true));
+        let task_accepting_steers = Arc::clone(&accepting_steers);
         let task_issued_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let (
             session_title_start,
@@ -3464,6 +3510,7 @@ impl AgentRuntimeHandle {
                         pending_permissions: Arc::clone(&task_pending_permissions),
                         issued_permission_ids: task_issued_permission_ids,
                         cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
+                        pending_steers: Arc::clone(&task_pending_steers),
                         run_id: task_run_id.clone(),
                         permission_routing,
                     }),
@@ -3480,6 +3527,7 @@ impl AgentRuntimeHandle {
             // Completion and cancellation linearize under the same lock used by
             // agent_cancel_run. Whichever side acquires it first owns the terminal
             // result, so Stop cannot succeed against an already-settled run.
+            task_accepting_steers.store(false, Ordering::Release);
             let run_was_cancelled = !should_run || task_cancel_token.is_cancelled();
             let terminal_permissions = cancel_pending_permissions_for_runs(
                 &task_pending_permissions,
@@ -3576,6 +3624,22 @@ impl AgentRuntimeHandle {
             // Remove the stored JoinHandle only after the final externally visible
             // side effect. Stop may otherwise miss this task and return while its
             // runFinished event is still pending.
+            let leftover = task_pending_steers
+                .lock()
+                .await
+                .drain(..)
+                .collect::<Vec<_>>();
+            task_agent.discard_pending_steers(&session_id).await;
+            if !run_was_cancelled {
+                for message in leftover {
+                    if let Err(error) = task_session_manager
+                        .add_message(&session_id, &message)
+                        .await
+                    {
+                        log::warn!("Failed to retain queued Agent follow-up: {error}");
+                    }
+                }
+            }
             let mut runtime = state_inner.lock().await;
             if let Some(current) = runtime.as_mut() {
                 current.active_runs.remove(&task_run_id);
@@ -3609,6 +3673,8 @@ impl AgentRuntimeHandle {
                                 session_id: request.session_id.clone(),
                                 events: run_events.clone(),
                                 cancelled_permission_ids: Arc::clone(&cancelled_permission_ids),
+                                pending_steers: Arc::clone(&pending_steers),
+                                accepting_steers: Arc::clone(&accepting_steers),
                                 task_handle: task.take().expect("task handle must be available"),
                             },
                         );
@@ -3666,6 +3732,18 @@ impl AgentRuntimeHandle {
             user_item.clone(),
         )
         .await;
+        for extra in extra_steers {
+            queue_desktop_steer_message(
+                &agent,
+                &run_events,
+                &state.live_timelines,
+                &request.session_id,
+                permission_routing,
+                &pending_steers,
+                extra,
+            )
+            .await;
+        }
         let _ = start_tx.send(());
         // Keep the session claimed until the optimistic timeline item and start
         // signal are ordered. A cancellation cleanup must not finish and then be
@@ -3697,6 +3775,35 @@ impl AgentRuntimeHandle {
         })
     }
 
+    async fn take_desktop_send_plan(
+        &self,
+        request: &AgentSendMessageRequest,
+        permission_routing: AgentPermissionRouting,
+    ) -> Result<DesktopSendPlan, String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
+        if let Some(run_id) =
+            desktop_run_id_for_session(state, account_scope, &request.session_id).await?
+        {
+            let incoming = user_message_from_prompt(request.text.trim());
+            queue_existing_desktop_steer(
+                state,
+                account_scope,
+                &request.session_id,
+                permission_routing,
+                incoming,
+            )
+            .await?;
+            return Ok(DesktopSendPlan::Steered(run_id));
+        }
+
+        Ok(DesktopSendPlan::Start {
+            launch_message: user_message_from_prompt(request.text.trim()),
+            extra_steers: Vec::new(),
+        })
+    }
+
     pub(crate) async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
         self.cancel_run_scoped(&run_id, None, AgentPermissionRouting::Desktop)
             .await
@@ -3716,7 +3823,7 @@ impl AgentRuntimeHandle {
         // terminal event. If the worker settled first, its active-run entry will
         // already be gone by the time this command inspects it.
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (agent, cancel_token, tool_context, run_events, cancelled_permission_ids) = {
+        let (agent, cancel_token, tool_context, run_events, cancelled_permission_ids, session_id) = {
             let runtime = state.inner.lock().await;
             let Some(current) = runtime.as_ref() else {
                 return Ok(());
@@ -3737,8 +3844,15 @@ impl AgentRuntimeHandle {
                 active_run.tool_context.clone(),
                 active_run.events.clone(),
                 Arc::clone(&active_run.cancelled_permission_ids),
+                active_run.session_id.clone(),
             )
         };
+        agent.discard_pending_steers(&session_id).await;
+        if let Some(current) = state.inner.lock().await.as_mut() {
+            if let Some(active_run) = current.active_runs.get(&run_id.to_string()) {
+                active_run.pending_steers.lock().await.clear();
+            }
+        }
         tool_context.cancel_run(&cancel_token);
         let run_id = run_id.to_string();
         let cancelled_permissions = cancel_pending_permissions_for_runs(
@@ -4153,6 +4267,7 @@ struct AgentPromptRun {
     pending_permissions: PendingPermissions,
     issued_permission_ids: IssuedPermissionIds,
     cancelled_permission_ids: CancelledPermissionIds,
+    pending_steers: PendingSteerQueue,
     run_id: String,
     permission_routing: AgentPermissionRouting,
 }
@@ -4576,6 +4691,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         pending_permissions,
         issued_permission_ids,
         cancelled_permission_ids,
+        pending_steers,
         run_id,
         permission_routing,
     } = run;
@@ -4618,6 +4734,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         };
         match event {
             Ok(AgentEvent::Message(message)) => {
+                confirm_pending_steer(&pending_steers, &message).await;
                 let extracted_permissions = tool_permission_requests(&message);
                 if !extracted_permissions.conflicting_ids.is_empty() {
                     for request_id in &extracted_permissions.conflicting_ids {
@@ -4655,7 +4772,10 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         .await
                         .extend(automatically_handled.iter().cloned());
                 }
-                let mut items = message_to_timeline_items(&message, true);
+                // Steered user rows are emitted when queued. Goose later yields
+                // the same complete message; replace it instead of appending.
+                let live = message_role(&message) != "user";
+                let mut items = message_to_timeline_items(&message, live);
                 items.retain(|item| {
                     pending_permission_request_id(item)
                         .is_none_or(|request_id| !automatically_handled.contains(&request_id))
@@ -7164,6 +7284,144 @@ fn has_active_session_run(active_runs: &HashMap<String, ActiveAgentRun>, session
     active_runs.values().any(|run| run.session_id == session_id)
 }
 
+enum DesktopSendPlan {
+    Steered(String),
+    Start {
+        launch_message: Message,
+        extra_steers: Vec<Message>,
+    },
+}
+
+fn user_message_from_prompt(text: &str) -> Message {
+    Message::user().with_text(text).with_generated_id()
+}
+
+fn steered_run_handle(run_id: String) -> AgentRunHandle {
+    let (_events_tx, events) = mpsc::channel(1);
+    let (_terminal_tx, terminal) = watch::channel(None);
+    AgentRunHandle {
+        run_id,
+        events,
+        terminal,
+        event_overflowed: Arc::new(AtomicBool::new(false)),
+        permission_responder: None,
+        cancellation: None,
+    }
+}
+
+fn desktop_run_is_steerable(run: &ActiveAgentRun) -> bool {
+    run.permission_routing == AgentPermissionRouting::Desktop
+        && !run.token.is_cancelled()
+        && run.accepting_steers.load(Ordering::Acquire)
+}
+
+async fn reject_foreign_surface_session(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    let runtime = state.inner.lock().await;
+    let Some(current) = runtime.as_ref() else {
+        return Ok(());
+    };
+    ensure_runtime_account(current, account_scope)?;
+    if current.active_runs.values().any(|run| {
+        run.session_id == session_id
+            && run.permission_routing == AgentPermissionRouting::CallingSurface
+    }) {
+        return Err("This Agent task is controlled by another Agent surface".to_string());
+    }
+    Ok(())
+}
+
+async fn desktop_run_id_for_session(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    let runtime = state.inner.lock().await;
+    let Some(current) = runtime.as_ref() else {
+        return Ok(None);
+    };
+    ensure_runtime_account(current, account_scope)?;
+    Ok(current.active_runs.iter().find_map(|(run_id, run)| {
+        (run.session_id == session_id && desktop_run_is_steerable(run)).then(|| run_id.clone())
+    }))
+}
+
+async fn queue_existing_desktop_steer(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    permission_routing: AgentPermissionRouting,
+    message: Message,
+) -> Result<(), String> {
+    let (agent, events, pending_steers) = {
+        let runtime = state.inner.lock().await;
+        let current = runtime
+            .as_ref()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, account_scope)?;
+        let active_run = current
+            .active_runs
+            .values()
+            .find(|run| run.session_id == session_id && desktop_run_is_steerable(run))
+            .ok_or_else(|| "Agent task is not running".to_string())?;
+        (
+            Arc::clone(&active_run.agent),
+            active_run.events.clone(),
+            Arc::clone(&active_run.pending_steers),
+        )
+    };
+    queue_desktop_steer_message(
+        &agent,
+        &events,
+        &state.live_timelines,
+        session_id,
+        permission_routing,
+        &pending_steers,
+        message,
+    )
+    .await;
+    Ok(())
+}
+
+async fn queue_desktop_steer_message(
+    agent: &Agent,
+    events: &AgentRunEventPublisher,
+    live_timelines: &LiveTimelines,
+    session_id: &str,
+    permission_routing: AgentPermissionRouting,
+    pending_steers: &PendingSteerQueue,
+    message: Message,
+) {
+    let user_item = message_to_timeline_items(&message, false)
+        .into_iter()
+        .next();
+    pending_steers.lock().await.push(message.clone());
+    agent.steer(session_id, message).await;
+    if let Some(user_item) = user_item {
+        record_and_emit_timeline_item(
+            events,
+            live_timelines,
+            session_id,
+            permission_routing,
+            user_item,
+        )
+        .await;
+    }
+}
+
+async fn confirm_pending_steer(pending_steers: &PendingSteerQueue, message: &Message) {
+    let Some(message_id) = message.id.as_deref() else {
+        return;
+    };
+    pending_steers
+        .lock()
+        .await
+        .retain(|pending| pending.id.as_deref() != Some(message_id));
+}
+
 fn project_has_active_session_run(
     session_roots: &HashMap<String, String>,
     active_session_ids: &HashSet<String>,
@@ -7623,6 +7881,246 @@ mod tests {
             status,
             HashMap::from([("desktop-session".to_string(), "desktop-run".to_string())])
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn desktop_send_during_active_run_queues_a_goose_steer() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("desktop-steer-queue", sink.clone());
+        let user_id = "desktop-steer-queue-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "Steer task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let (run_events, _run_events_rx) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink.clone()),
+            session.id.clone(),
+            "desktop-steer-run".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        let pending_steers = Arc::new(Mutex::new(Vec::new()));
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager,
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::from([(
+                "desktop-steer-run".to_string(),
+                ActiveAgentRun {
+                    agent,
+                    permission_routing: AgentPermissionRouting::Desktop,
+                    token: CancellationToken::new(),
+                    tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
+                    session_id: session.id.clone(),
+                    events: run_events,
+                    cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    pending_steers: Arc::clone(&pending_steers),
+                    accepting_steers: Arc::new(AtomicBool::new(true)),
+                    task_handle: tokio::spawn(async {}),
+                },
+            )]),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root,
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope: account_scope.clone(),
+        });
+
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        {
+            let runtime = state.inner.lock().await;
+            let current = runtime.as_ref().expect("runtime");
+            assert!(
+                current
+                    .active_runs
+                    .values()
+                    .any(|run| { run.session_id == session.id && desktop_run_is_steerable(run) }),
+                "test fixture must expose a steerable desktop run"
+            );
+        }
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            handle.send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "also check the tests".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+            }),
+        )
+        .await
+        .expect("desktop steer should return")
+        .unwrap();
+        let second = handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "then open the readme".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(first.run_id, "desktop-steer-run");
+        assert_eq!(second.run_id, "desktop-steer-run");
+        let queued_texts = pending_steers
+            .lock()
+            .await
+            .iter()
+            .map(Message::as_concat_text)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            queued_texts,
+            vec!["also check the tests", "then open the readme"]
+        );
+
+        // Isolated Goose managers can block on discard/teardown. The queue
+        // contents above are the Maple-owned contract for this fixture.
+        std::mem::forget(state.inner.lock().await.take());
+        std::mem::forget(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn desktop_send_rejects_steering_onto_an_acp_run() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("desktop-steer-rejects-acp", sink.clone());
+        let user_id = "desktop-steer-rejects-acp-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "ACP task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let (run_events, _run_events_rx) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink),
+            session.id.clone(),
+            "acp-steer-run".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager,
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::from([(
+                "acp-steer-run".to_string(),
+                ActiveAgentRun {
+                    agent,
+                    permission_routing: AgentPermissionRouting::CallingSurface,
+                    token: CancellationToken::new(),
+                    tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
+                    session_id: session.id.clone(),
+                    events: run_events,
+                    cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    pending_steers: Arc::new(Mutex::new(Vec::new())),
+                    accepting_steers: Arc::new(AtomicBool::new(true)),
+                    task_handle: tokio::spawn(async {}),
+                },
+            )]),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root,
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope,
+        });
+
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let error = match handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "should not join the ACP run".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+            })
+            .await
+        {
+            Ok(_) => panic!("desktop send should not join an ACP-owned run"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("another Agent surface"),
+            "unexpected error: {error}"
+        );
+
+        std::mem::forget(state.inner.lock().await.take());
+        std::mem::forget(session_manager);
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]
@@ -11978,6 +12476,7 @@ mod tests {
                 pending_permissions: Arc::new(Mutex::new(HashMap::new())),
                 issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                pending_steers: Arc::new(Mutex::new(Vec::new())),
                 run_id: "fast-reply-run".to_string(),
                 permission_routing: AgentPermissionRouting::Desktop,
             }),
@@ -12103,6 +12602,7 @@ mod tests {
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+            pending_steers: Arc::new(Mutex::new(Vec::new())),
             run_id: "rename-during-run-summary".to_string(),
             permission_routing: AgentPermissionRouting::Desktop,
         }));
@@ -12243,6 +12743,7 @@ mod tests {
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+            pending_steers: Arc::new(Mutex::new(Vec::new())),
             run_id: "reply-poll-session-isolation".to_string(),
             permission_routing: AgentPermissionRouting::Desktop,
         }));
@@ -12326,6 +12827,8 @@ mod tests {
                     session_id: session.id.clone(),
                     events: run_events,
                     cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    pending_steers: Arc::new(Mutex::new(Vec::new())),
+                    accepting_steers: Arc::new(AtomicBool::new(true)),
                     task_handle: tokio::spawn(async {}),
                 },
             )]),
