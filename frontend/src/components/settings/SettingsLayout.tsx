@@ -329,7 +329,7 @@ function SettingsLayoutContent() {
   ]);
 
   const commitSettingsDetailSwipe = useCallback(
-    (_pathname: string, resetSwipe: () => void) => {
+    (resetSwipe: () => void) => {
       const target = getSettingsBackTarget(
         window.history.state?.__TSR_index,
         rootHistoryIndexRef.current
@@ -685,10 +685,7 @@ function SettingsLayoutContent() {
   return (
     <div
       data-ios-swipe-back-surface={isIOSSwipeBackEnabled && isCompactViewport ? "" : undefined}
-      className={cn(
-        "relative grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-background sm:grid-cols-[16rem_minmax(0,1fr)]",
-        isIOSSwipeBackEnabled && isCompactViewport && "touch-pan-y"
-      )}
+      className="relative grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-background sm:grid-cols-[16rem_minmax(0,1fr)]"
       data-swipe-back-ignore={
         isNavigationLocked || isSigningOut || isClosingSettings ? "" : undefined
       }
@@ -787,11 +784,9 @@ function SettingsLayoutContent() {
           isCompactViewport && [
             "maple-mobile-settings-safe-surface maple-navigation-page fixed inset-0 z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
             isSettingsDetailSwipeActive && "maple-navigation-page-interactive",
-            isSettingsRoot
+            isSettingsRoot || isPopping
               ? "maple-navigation-page-pop"
-              : isPopping
-                ? "maple-navigation-page-pop"
-                : isSettingsDetailEntering && "maple-navigation-page-enter"
+              : isSettingsDetailEntering && "maple-navigation-page-enter"
           ]
         )}
         style={isSettingsDetailSwipeActive ? settingsDetailSwipeStyle : undefined}

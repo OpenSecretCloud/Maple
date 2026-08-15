@@ -23,7 +23,6 @@ describe("mobile navigation URL resolution", () => {
     expect(createInitialMobileNavigation("/")).toEqual({
       version: 1,
       stack: [{ type: "menu", instanceId: 0 }],
-      hasInAppParent: false,
       historyIndex: 0
     });
   });
@@ -35,7 +34,6 @@ describe("mobile navigation URL resolution", () => {
         { type: "menu", instanceId: 0 },
         { type: "chat", instanceId: 1, conversationId: "conv_123" }
       ],
-      hasInAppParent: false,
       historyIndex: 0
     });
   });
@@ -57,7 +55,6 @@ describe("mobile navigation URL resolution", () => {
         { type: "menu", instanceId: 0 },
         { type: "new-chat", instanceId: 1, projectId: null }
       ],
-      hasInAppParent: false,
       historyIndex: 0
     });
   });
@@ -102,7 +99,6 @@ describe("mobile navigation history state", () => {
       readMobileHistoryState({
         [MOBILE_NAVIGATION_HISTORY_KEY]: {
           version: 1,
-          hasInAppParent: true,
           historyIndex: 1,
           stack: [{ type: "chat", instanceId: 1, conversationId: "conv_1" }]
         }
@@ -215,7 +211,6 @@ describe("missing mobile conversations", () => {
           { type: "menu", instanceId: 0 },
           { type: "project", instanceId: 1, projectId: "project_1" }
         ],
-        hasInAppParent: true,
         historyIndex: 2
       },
       targetSnapshot: {
@@ -224,7 +219,6 @@ describe("missing mobile conversations", () => {
           { type: "menu", instanceId: 0 },
           { type: "project", instanceId: 1, projectId: "project_1" }
         ],
-        hasInAppParent: true,
         historyIndex: 1
       },
       historyDelta: -1
@@ -238,13 +232,11 @@ describe("missing mobile conversations", () => {
       sanitizedSnapshot: {
         version: 1,
         stack: [{ type: "menu", instanceId: 0 }],
-        hasInAppParent: false,
         historyIndex: 0
       },
       targetSnapshot: {
         version: 1,
         stack: [{ type: "menu", instanceId: 0 }],
-        hasInAppParent: false,
         historyIndex: 0
       },
       historyDelta: null
@@ -269,13 +261,11 @@ describe("missing mobile conversations", () => {
       sanitizedSnapshot: {
         version: 1,
         stack: [{ type: "menu", instanceId: 0 }],
-        hasInAppParent: true,
         historyIndex: 2
       },
       targetSnapshot: {
         version: 1,
         stack: [{ type: "menu", instanceId: 0 }],
-        hasInAppParent: false,
         historyIndex: 0
       },
       historyDelta: -2
@@ -293,13 +283,11 @@ describe("missing mobile conversations", () => {
       sanitizedSnapshot: {
         version: 1,
         stack: [{ type: "menu", instanceId: 0 }],
-        hasInAppParent: false,
         historyIndex: 0
       },
       targetSnapshot: {
         version: 1,
         stack: [{ type: "menu", instanceId: 0 }],
-        hasInAppParent: false,
         historyIndex: 0
       },
       historyDelta: null
@@ -382,28 +370,22 @@ describe("mobile menu document canvas", () => {
       conversationId: "conversation-a"
     });
 
-    expect(mobileMenuOwnsDocumentCanvas("/", menu, null)).toBe(true);
-    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", enteringChat, 1)).toBe(
-      true
-    );
-    expect(
-      mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", enteringChat, null)
-    ).toBe(false);
+    expect(mobileMenuOwnsDocumentCanvas(true, menu, null)).toBe(true);
+    expect(mobileMenuOwnsDocumentCanvas(true, enteringChat, 1)).toBe(true);
+    expect(mobileMenuOwnsDocumentCanvas(true, enteringChat, null)).toBe(false);
   });
 
   it("keeps the current chat canvas throughout a menu reveal and switches on commit", () => {
     const chat = createInitialMobileNavigation("/?conversation_id=conversation-a");
     const menu = createInitialMobileNavigation("/");
 
-    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", chat, null)).toBe(
-      false
-    );
-    expect(mobileMenuOwnsDocumentCanvas("/", menu, null)).toBe(true);
+    expect(mobileMenuOwnsDocumentCanvas(true, chat, null)).toBe(false);
+    expect(mobileMenuOwnsDocumentCanvas(true, menu, null)).toBe(true);
   });
 
   it("uses the chat background for a fresh native New Chat", () => {
     const newChat = createInitialMobileNavigation("/", { nativeFreshLaunch: true });
-    expect(mobileMenuOwnsDocumentCanvas("/", newChat, null)).toBe(false);
+    expect(mobileMenuOwnsDocumentCanvas(true, newChat, null)).toBe(false);
   });
 
   it("keeps the background canvas when a chat enters from a project", () => {
@@ -418,11 +400,11 @@ describe("mobile menu document canvas", () => {
       conversationId: "conversation-a"
     });
 
-    expect(mobileMenuOwnsDocumentCanvas("/?conversation_id=conversation-a", chat, 2)).toBe(false);
+    expect(mobileMenuOwnsDocumentCanvas(true, chat, 2)).toBe(false);
   });
 
   it("does not leak the menu canvas into Settings while the home stack is suspended", () => {
-    expect(mobileMenuOwnsDocumentCanvas(null, createInitialMobileNavigation("/"), null)).toBe(
+    expect(mobileMenuOwnsDocumentCanvas(false, createInitialMobileNavigation("/"), null)).toBe(
       false
     );
   });

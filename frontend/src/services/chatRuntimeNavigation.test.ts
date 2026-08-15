@@ -34,12 +34,19 @@ describe("chat runtime history navigation", () => {
     });
   });
 
-  test("uses the URL conversation instead of a saved draft runtime", () => {
+  test("keeps the URL conversation authoritative regardless of draft restoration", () => {
     const draftKey = createChatDraftKey("previous-draft");
 
-    expect(
-      runtimeKeyForChatLocation("conversation-a", historyStateWithDraftRuntimeKey({}, draftKey))
-    ).toBe(createConversationChatKey("conversation-a"));
+    for (const restoreDraftFromHistory of [true, false]) {
+      expect(
+        runtimeKeyForChatLocation(
+          "conversation-a",
+          historyStateWithDraftRuntimeKey({}, draftKey),
+          () => createChatDraftKey("unused"),
+          { restoreDraftFromHistory }
+        )
+      ).toBe(createConversationChatKey("conversation-a"));
+    }
   });
 
   test("ignores an inherited draft key for a stack-owned mobile New Chat", () => {
@@ -54,19 +61,6 @@ describe("chat runtime history navigation", () => {
         { restoreDraftFromHistory: false }
       )
     ).toBe(nextDraftKey);
-  });
-
-  test("keeps a direct conversation authoritative when mobile draft restoration is disabled", () => {
-    const previousDraftKey = createChatDraftKey("previous-project-chat");
-
-    expect(
-      runtimeKeyForChatLocation(
-        "direct-conversation",
-        historyStateWithDraftRuntimeKey({}, previousDraftKey),
-        () => createChatDraftKey("unused"),
-        { restoreDraftFromHistory: false }
-      )
-    ).toBe(createConversationChatKey("direct-conversation"));
   });
 
   test("projects an uncached initial conversation instead of the previously selected chat", () => {

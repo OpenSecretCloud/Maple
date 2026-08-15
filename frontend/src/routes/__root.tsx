@@ -14,6 +14,7 @@ import { VerificationModal } from "@/components/VerificationModal";
 import { transitionAgentAuthUser } from "@/services/agentRuntimeService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
+  isSettingsPath,
   isSettingsRootPath,
   SETTINGS_SHELL_POP_CANCEL_EVENT,
   SETTINGS_SHELL_POP_EVENT,
@@ -62,8 +63,7 @@ function Root() {
   const [hasSettingsShellEntered, setHasSettingsShellEntered] = useState(false);
 
   const isHomeRoute = location.pathname === "/";
-  const isSettingsRoute =
-    location.pathname === "/settings" || location.pathname.startsWith("/settings/");
+  const isSettingsRoute = isSettingsPath(location.pathname);
   const isSettingsRoot = isSettingsRootPath(location.pathname);
   const keepAuthenticatedHomeMounted = !!auth.user && (isHomeRoute || isSettingsRoute);
 
@@ -74,7 +74,7 @@ function Root() {
         : null,
     [hasSettingsShellEntered, isCompactLayout, isSettingsPopping, isSettingsRoot, location.pathname]
   );
-  const commitSettingsShellSwipe = useCallback((_pathname: string, resetSwipe: () => void) => {
+  const commitSettingsShellSwipe = useCallback((resetSwipe: () => void) => {
     const accepted = window.dispatchEvent(
       new Event(SETTINGS_SHELL_SWIPE_BACK_EVENT, { cancelable: true })
     );
@@ -209,7 +209,6 @@ function Root() {
                 ? isCompactLayout
                   ? [
                       "maple-navigation-page fixed inset-0 z-50 overflow-hidden bg-background shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
-                      isIOSSwipeBackEnabled && isSettingsRoot && "touch-pan-y",
                       isSettingsShellSwipeActive && "maple-navigation-page-interactive",
                       isSettingsPopping
                         ? "maple-navigation-page-pop pointer-events-none"

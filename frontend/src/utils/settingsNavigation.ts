@@ -1,4 +1,4 @@
-export type SettingsBackTarget = { type: "history"; delta: number } | { type: "root" };
+type SettingsBackTarget = { type: "history"; delta: number } | { type: "root" };
 
 type CompactSettingsCloseOptions = {
   interactive: boolean;

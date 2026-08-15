@@ -5,8 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ReactNode,
-  type RefObject
+  type ReactNode
 } from "react";
 import { flushSync } from "react-dom";
 import { useRouter } from "@tanstack/react-router";
@@ -56,16 +55,6 @@ function lastProjectPage(snapshot: MobileNavigationSnapshot) {
   return null;
 }
 
-function parentSnapshotForSwipe(snapshot: MobileNavigationSnapshot) {
-  if (snapshot.stack.length <= 1) return null;
-
-  return {
-    ...snapshot,
-    stack: snapshot.stack.slice(0, -1),
-    historyIndex: Math.max(0, snapshot.historyIndex - 1)
-  };
-}
-
 function mobilePageMatchesHomeHref(page: MobileNavigationPage, href: string) {
   const hrefPage = pageFromHref(href, -1);
   if (hrefPage.type === "menu") {
@@ -81,17 +70,14 @@ function NavigationLayer({
   active,
   children,
   className,
-  layerRef,
   style
 }: {
   active: boolean;
   children: ReactNode;
   className?: string;
-  layerRef?: RefObject<HTMLDivElement>;
   style?: CSSProperties;
 }) {
-  const fallbackRef = useRef<HTMLDivElement>(null);
-  const ref = layerRef ?? fallbackRef;
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const element = ref.current;
@@ -140,11 +126,11 @@ export function MobileNavigationStack({
   const snapshotRef = useRef(snapshot);
   const nextInstanceIdRef = useRef(maxInstanceId(snapshot) + 1);
   const [incomingSnapshot, setIncomingSnapshot] = useState<MobileNavigationSnapshot | null>(null);
+  const isTransitioningBackward = incomingSnapshot !== null;
   const [outgoingChatPage, setOutgoingChatPage] = useState<Extract<
     MobileNavigationPage,
     { type: "chat" | "new-chat" }
   > | null>(null);
-  const [isExiting, setIsExiting] = useState(false);
   const [enteringInstanceId, setEnteringInstanceId] = useState<number | null>(
     nativeFreshLaunchRef.current || activeMobilePage(snapshot).type === "menu"
       ? null
@@ -175,15 +161,15 @@ export function MobileNavigationStack({
     [setSelectedProjectId]
   );
 
-  const getSwipeParentSnapshot = useCallback(() => {
+  const getSwipeParentPage = useCallback(() => {
     const activePage = activeMobilePage(snapshotRef.current);
     if (activePage.type === "menu") return null;
-    if (mobilePageUsesMenuButton(activePage)) return createInitialMobileNavigation("/");
-    return parentSnapshotForSwipe(snapshotRef.current);
+    if (mobilePageUsesMenuButton(activePage)) return snapshotRef.current.stack[0];
+    return snapshotRef.current.stack.at(-2) ?? null;
   }, []);
 
   const commitSwipeBack = useCallback(
-    (_parentSnapshot: MobileNavigationSnapshot, resetSwipe: () => void) => {
+    (resetSwipe: () => void) => {
       const current = snapshotRef.current;
       const activePage = activeMobilePage(current);
       const opensMenu = mobilePageUsesMenuButton(activePage);
@@ -195,7 +181,7 @@ export function MobileNavigationStack({
         return;
       }
 
-      if (!opensMenu && current.hasInAppParent) {
+      if (!opensMenu && current.historyIndex > 0) {
         skipNextBackwardAnimationRef.current = true;
         window.history.back();
         return;
@@ -208,7 +194,6 @@ export function MobileNavigationStack({
         setSelectedProjectId(null);
         updateSnapshot(menu);
         setIncomingSnapshot(null);
-        setIsExiting(false);
         setEnteringInstanceId(null);
       });
       resetSwipe();
@@ -225,8 +210,8 @@ export function MobileNavigationStack({
     reset: resetSwipeBack,
     visual: swipeVisual
   } = useIOSSwipeBack({
-    blocked: isExiting || enteringInstanceId !== null,
-    getContext: getSwipeParentSnapshot,
+    blocked: isTransitioningBackward || enteringInstanceId !== null,
+    getContext: getSwipeParentPage,
     onComplete: commitSwipeBack
   });
 
@@ -315,7 +300,6 @@ export function MobileNavigationStack({
     updateSnapshot(next);
     setIncomingSnapshot(null);
     setOutgoingChatPage(null);
-    setIsExiting(false);
     setEnteringInstanceId(null);
     resetSwipeBack();
   }, [homeLocationHref, resetSwipeBack, syncSelectedProjectFromPage, updateSnapshot]);
@@ -332,7 +316,6 @@ export function MobileNavigationStack({
 
       setOutgoingChatPage(null);
       setIncomingSnapshot(next);
-      setIsExiting(true);
 
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       transitionTimerRef.current = setTimeout(
@@ -340,7 +323,6 @@ export function MobileNavigationStack({
           backwardTransitionActiveRef.current = false;
           updateSnapshot(next);
           setIncomingSnapshot(null);
-          setIsExiting(false);
           setEnteringInstanceId(null);
           transitionTimerRef.current = null;
         },
@@ -372,7 +354,6 @@ export function MobileNavigationStack({
           backwardTransitionActiveRef.current = false;
           updateSnapshot(menu);
           setIncomingSnapshot(null);
-          setIsExiting(false);
           setEnteringInstanceId(null);
           resetSwipeBack();
         } else {
@@ -392,7 +373,6 @@ export function MobileNavigationStack({
           backwardTransitionActiveRef.current = false;
           updateSnapshot(restored);
           setIncomingSnapshot(null);
-          setIsExiting(false);
           setEnteringInstanceId(null);
           resetSwipeBack();
           return;
@@ -512,8 +492,7 @@ export function MobileNavigationStack({
       );
       if (next === snapshotRef.current) return false;
 
-      snapshotRef.current = next;
-      setSnapshot(next);
+      updateSnapshot(next);
       window.history.replaceState(
         createMobileHistoryState(next, window.history.state),
         "",
@@ -521,7 +500,7 @@ export function MobileNavigationStack({
       );
       return true;
     },
-    []
+    [updateSnapshot]
   );
 
   const handleConversationNotFound = useCallback(
@@ -569,10 +548,10 @@ export function MobileNavigationStack({
   );
 
   const goBack = useCallback(() => {
-    if (isExiting || isSwipeBackActive) return;
+    if (isTransitioningBackward || isSwipeBackActive) return;
 
     const current = snapshotRef.current;
-    if (current.hasInAppParent) {
+    if (current.historyIndex > 0) {
       window.history.back();
       return;
     }
@@ -582,10 +561,16 @@ export function MobileNavigationStack({
     window.history.replaceState(createMobileHistoryState(menu, window.history.state), "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     completeBackwardNavigation(menu);
-  }, [completeBackwardNavigation, isExiting, isSwipeBackActive, setSelectedProjectId]);
+  }, [
+    completeBackwardNavigation,
+    isSwipeBackActive,
+    isTransitioningBackward,
+    setSelectedProjectId
+  ]);
 
   const showMenu = useCallback(() => {
-    if (isExiting || isSwipeBackActive || pendingMenuNavigationRef.current !== null) return;
+    if (isTransitioningBackward || isSwipeBackActive || pendingMenuNavigationRef.current !== null)
+      return;
 
     const current = snapshotRef.current;
     const historyDelta = mobileMenuHistoryDelta(current);
@@ -600,17 +585,21 @@ export function MobileNavigationStack({
     window.history.replaceState(createMobileHistoryState(menu, window.history.state), "", "/");
     window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     completeBackwardNavigation(menu);
-  }, [completeBackwardNavigation, isExiting, isSwipeBackActive, setSelectedProjectId]);
+  }, [
+    completeBackwardNavigation,
+    isSwipeBackActive,
+    isTransitioningBackward,
+    setSelectedProjectId
+  ]);
 
   const baseActivePage = activeMobilePage(snapshot);
   const baseProjectPage = lastProjectPage(snapshot);
   const incomingActivePage = incomingSnapshot ? activeMobilePage(incomingSnapshot) : null;
-  const isTransitioningBackward = isExiting && incomingSnapshot !== null;
   const targetActivePage = incomingActivePage ?? baseActivePage;
   const isMenuCovered = targetActivePage.type !== "menu";
-  const swipeParentPage = swipeVisual ? activeMobilePage(swipeVisual.context) : null;
+  const swipeParentPage = swipeVisual?.context ?? null;
   const menuOwnsDocumentCanvas = mobileMenuOwnsDocumentCanvas(
-    homeLocationHref,
+    homeLocationHref !== null,
     snapshot,
     enteringInstanceId
   );
@@ -694,10 +683,7 @@ export function MobileNavigationStack({
   return (
     <div
       data-ios-swipe-back-surface={isIOSSwipeBackEnabled ? "" : undefined}
-      className={cn(
-        "relative h-dvh min-h-0 w-full overflow-hidden bg-background",
-        isIOSSwipeBackEnabled && "touch-pan-y"
-      )}
+      className="relative h-dvh min-h-0 w-full overflow-hidden bg-background"
       {...swipeBackPointerHandlers}
     >
       <NavigationLayer

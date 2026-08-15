@@ -59,13 +59,7 @@ import {
   initialChatHistoryPage,
   shouldLoadConversationHistory
 } from "@/services/chatHistoryAccountScope";
-import {
-  consumeReplacedMenuFocusRestore,
-  conversationMenuKey,
-  nextExclusiveMenuKey,
-  projectMenuKey,
-  trackExclusiveMenuFocusChange
-} from "@/utils/exclusiveMenu";
+import { applyExclusiveMenuChange, consumeReplacedMenuFocusRestore } from "@/utils/exclusiveMenu";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -172,14 +166,13 @@ export function ChatHistoryList({
   const [openPageMenuKey, setOpenPageMenuKey] = useState<string | null>(null);
 
   const handlePageMenuOpenChange = useCallback((menuKey: string, open: boolean) => {
-    trackExclusiveMenuFocusChange(
+    const nextKey = applyExclusiveMenuChange(
       closingPageMenuKeysRef.current,
       replacedPageMenuKeysRef.current,
       openPageMenuKeyRef.current,
       menuKey,
       open
     );
-    const nextKey = nextExclusiveMenuKey(openPageMenuKeyRef.current, menuKey, open);
     openPageMenuKeyRef.current = nextKey;
     setOpenPageMenuKey(nextKey);
   }, []);
@@ -1229,7 +1222,7 @@ export function ChatHistoryList({
   }
 
   const renderConversationRow = (conversation: Conversation) => {
-    const menuKey = conversationMenuKey(conversation.id);
+    const menuKey = `chat:${conversation.id}`;
     const title = getConversationTitle(conversation);
     const isActive = conversation.id === currentChatId;
     const isSelected = selectedIds.has(conversation.id);
@@ -1473,9 +1466,7 @@ export function ChatHistoryList({
 
       <div
         ref={pullContentRef}
-        className={`flex min-w-0 w-full max-w-full flex-col gap-5 ${
-          pagePresentation ? "text-base" : ""
-        }`}
+        className="flex w-full min-w-0 max-w-full flex-col gap-5"
         style={{ willChange: "transform" }}
       >
         <div className="space-y-2">
@@ -1524,7 +1515,7 @@ export function ChatHistoryList({
           )}
 
           {filteredProjects.map((project) => {
-            const menuKey = projectMenuKey(project.id);
+            const menuKey = `project-menu:${project.id}`;
             const isProjectExpanded = expandedProjectId === project.id;
             const isProjectSelected = selectedProjectId === project.id;
             const showProjectRunningIndicator =

@@ -29,7 +29,6 @@ function subscribeToNativeIOSCollisionBoundary(subscriber: () => void) {
 
   boundarySubscribers.add(subscriber);
   if (boundarySubscribers.size === 1) {
-    window.addEventListener("resize", notifyBoundarySubscribers);
     if (typeof MutationObserver !== "undefined") {
       boundaryClassObserver = new MutationObserver(notifyBoundarySubscribers);
       boundaryClassObserver.observe(document.documentElement, {
@@ -43,7 +42,6 @@ function subscribeToNativeIOSCollisionBoundary(subscriber: () => void) {
     boundarySubscribers.delete(subscriber);
     if (boundarySubscribers.size > 0) return;
 
-    window.removeEventListener("resize", notifyBoundarySubscribers);
     boundaryClassObserver?.disconnect();
     boundaryClassObserver = null;
   };

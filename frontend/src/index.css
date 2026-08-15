@@ -389,7 +389,11 @@
     background-color: hsl(var(--sidebar));
   }
 
-  html.maple-native-ios-compact-viewport .maple-mobile-settings-safe-surface {
+  /* Full-bleed surfaces paint behind system chrome while their content stays within the same
+   * native insets. */
+  html.maple-native-ios-compact-viewport .maple-mobile-settings-safe-surface,
+  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-page,
+  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-content {
     padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
       env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
@@ -408,18 +412,6 @@
 
   html.maple-native-ios-compact-viewport .maple-mobile-chat-composer-safe-bottom {
     padding-bottom: 0;
-  }
-
-  /* Full-bleed is initialized before authentication. Static routes keep their own background on
-   * the outer page while ordinary (non-animated) content stays within the same native insets. */
-  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-page {
-    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
-      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
-  }
-
-  html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-content {
-    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
-      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
 
   html.maple-native-ios-compact-viewport .maple-native-ios-static-safe-block {

@@ -31,7 +31,7 @@ type SwipeGesture<Context> = {
   tracking: boolean;
 };
 
-export type IOSSwipeBackVisual<Context> = {
+type IOSSwipeBackVisual<Context> = {
   context: Context;
 };
 
@@ -89,7 +89,7 @@ export function useIOSSwipeBack<Context>({
   blocked?: boolean;
   enabled?: boolean;
   getContext: () => Context | null;
-  onComplete: (context: Context, reset: () => void) => void;
+  onComplete: (reset: () => void) => void;
 }) {
   const platformEnabledRef = useRef(isTauriMobile() && isIOS());
   const gestureRef = useRef<SwipeGesture<Context> | null>(null);
@@ -215,7 +215,7 @@ export function useIOSSwipeBack<Context>({
       settleTimerRef.current = setTimeout(() => {
         settleTimerRef.current = null;
         if (completing) {
-          onComplete(current.context, reset);
+          onComplete(reset);
         } else {
           reset();
         }

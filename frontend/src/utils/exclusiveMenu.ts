@@ -1,30 +1,13 @@
-export function nextExclusiveMenuKey(
-  currentKey: string | null,
-  changedKey: string,
-  open: boolean
-): string | null {
-  if (open) return changedKey;
-  return currentKey === changedKey ? null : currentKey;
-}
-
-export function conversationMenuKey(conversationId: string): string {
-  return `chat:${conversationId}`;
-}
-
-export function projectMenuKey(projectId: string): string {
-  return `project-menu:${projectId}`;
-}
-
-export function trackExclusiveMenuFocusChange(
+export function applyExclusiveMenuChange(
   closingKeys: Set<string>,
   replacedKeys: Set<string>,
   currentKey: string | null,
   changedKey: string,
   open: boolean
-): void {
+): string | null {
   if (!open) {
     closingKeys.add(changedKey);
-    return;
+    return currentKey === changedKey ? null : currentKey;
   }
 
   // Reopening the same Root cancels Radix Presence's pending unmount, so its prior
@@ -38,6 +21,8 @@ export function trackExclusiveMenuFocusChange(
   for (const closingKey of closingKeys) {
     replacedKeys.add(closingKey);
   }
+
+  return changedKey;
 }
 
 export function consumeReplacedMenuFocusRestore(

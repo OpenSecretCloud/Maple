@@ -53,7 +53,7 @@ import {
   type AgentSidebarAggregateStatus
 } from "@/services/agentSidebarPresentation";
 
-export type SidebarProps = {
+type SidebarProps = {
   chatId?: string;
   isOpen: boolean;
   mode?: WorkspaceMode;
@@ -63,7 +63,7 @@ export type SidebarProps = {
   onToggle: () => void;
 };
 
-export type MainMenuProps = {
+type MainMenuProps = {
   chatId?: string;
   isOpen?: boolean;
   mode?: WorkspaceMode;
@@ -71,7 +71,7 @@ export type MainMenuProps = {
   isNewItemTemporarilyDisabled?: boolean;
   onNewItem?: () => void;
   onToggle?: () => void;
-  presentation?: "page" | "sidebar";
+  presentation: "page" | "sidebar";
   onOpenConversation?: (conversationId: string) => void;
   onOpenProject?: (projectId: string) => void;
   onOpenNewChat?: (projectId: string | null) => void;
@@ -85,7 +85,7 @@ export function MainMenu({
   isNewItemTemporarilyDisabled = false,
   onNewItem,
   onToggle = () => {},
-  presentation = "page",
+  presentation,
   onOpenConversation,
   onOpenProject,
   onOpenNewChat
@@ -585,20 +585,22 @@ export function MainMenu({
         </div>
         <div
           className={cn(
-            "maple-mobile-menu-footer w-full border-t border-border/25 pt-2",
+            "w-full border-t border-border/25 pt-2",
             isPagePresentation
-              ? "shrink-0 px-5 pb-[max(1rem,env(safe-area-inset-bottom))]"
+              ? "maple-mobile-menu-footer shrink-0 px-5 pb-[max(1rem,env(safe-area-inset-bottom))]"
               : "px-4 pb-4"
           )}
         >
           <AccountMenu pagePresentation={isPagePresentation} />
         </div>
       </div>
-      <UpgradePromptDialog
-        open={agentModeUpgradeOpen}
-        onOpenChange={setAgentModeUpgradeOpen}
-        feature="agent"
-      />
+      {!isPagePresentation ? (
+        <UpgradePromptDialog
+          open={agentModeUpgradeOpen}
+          onOpenChange={setAgentModeUpgradeOpen}
+          feature="agent"
+        />
+      ) : null}
     </div>
   );
 }

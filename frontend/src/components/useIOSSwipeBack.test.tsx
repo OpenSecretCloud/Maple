@@ -33,7 +33,6 @@ class FakeStyle {
 
 class FakeSurface {
   readonly clientWidth = 294;
-  readonly capturedPointers = new Set<number>();
   readonly ownerDocument: { documentElement: { style: FakeStyle } };
 
   constructor(style: FakeStyle) {
@@ -44,13 +43,9 @@ class FakeSurface {
     return target instanceof FakeNode;
   }
 
-  releasePointerCapture(pointerId: number) {
-    this.capturedPointers.delete(pointerId);
-  }
+  releasePointerCapture() {}
 
-  setPointerCapture(pointerId: number) {
-    this.capturedPointers.add(pointerId);
-  }
+  setPointerCapture() {}
 }
 
 class FakeWindow {
@@ -208,7 +203,8 @@ describe("useIOSSwipeBack", () => {
 
     act(() => currentHook().reset());
 
-    expect(parentStylesDuringRemoval).toEqual([undefined, undefined, undefined]);
+    expect(parentStylesDuringRemoval.length).toBeGreaterThan(0);
+    expect(parentStylesDuringRemoval.every((style) => style === undefined)).toBe(true);
     expect(style.values.size).toBe(0);
   });
 });

@@ -1,38 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import {
-  consumeReplacedMenuFocusRestore,
-  conversationMenuKey,
-  nextExclusiveMenuKey,
-  projectMenuKey,
-  trackExclusiveMenuFocusChange
-} from "./exclusiveMenu";
+import { applyExclusiveMenuChange, consumeReplacedMenuFocusRestore } from "./exclusiveMenu";
 
 describe("exclusive mobile overflow menus", () => {
-  test("keeps only the most recently opened menu", () => {
-    expect(nextExclusiveMenuKey(null, "chat:a", true)).toBe("chat:a");
-    expect(nextExclusiveMenuKey("chat:a", "project:b", true)).toBe("project:b");
-  });
-
-  test("ignores a stale close from the menu that was replaced", () => {
-    expect(nextExclusiveMenuKey("project:b", "chat:a", false)).toBe("project:b");
-    expect(nextExclusiveMenuKey("project:b", "project:b", false)).toBeNull();
-  });
-
-  test("uses conversation IDs rather than display titles for menu identity", () => {
-    expect(conversationMenuKey("conversation-a")).toBe("chat:conversation-a");
-    expect(conversationMenuKey("conversation-a")).not.toBe(conversationMenuKey("conversation-b"));
-    expect(projectMenuKey("project-a")).toBe("project-menu:project-a");
-  });
-
   test("suppresses only replaced-menu focus restoration across touch event orderings", () => {
     const closingKeys = new Set<string>();
     const replacedKeys = new Set<string>();
 
     // Touch can close A before the click that opens B reaches the new trigger.
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:a", "chat:a", false);
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, null, "chat:b", true);
+    expect(
+      applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:a", "chat:a", false)
+    ).toBeNull();
+    expect(applyExclusiveMenuChange(closingKeys, replacedKeys, null, "chat:b", true)).toBe(
+      "chat:b"
+    );
     // B may finish its own action before A's exit animation unmounts.
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:b", "chat:b", false);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:b", "chat:b", false);
 
     expect(consumeReplacedMenuFocusRestore(closingKeys, replacedKeys, "chat:a")).toBe(true);
     expect(consumeReplacedMenuFocusRestore(closingKeys, replacedKeys, "chat:b")).toBe(false);
@@ -42,8 +24,12 @@ describe("exclusive mobile overflow menus", () => {
     const closingKeys = new Set<string>();
     const replacedKeys = new Set<string>();
 
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:a", "chat:b", true);
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:b", "chat:a", false);
+    expect(applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:a", "chat:b", true)).toBe(
+      "chat:b"
+    );
+    expect(applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:b", "chat:a", false)).toBe(
+      "chat:b"
+    );
 
     expect(consumeReplacedMenuFocusRestore(closingKeys, replacedKeys, "chat:a")).toBe(true);
   });
@@ -52,9 +38,9 @@ describe("exclusive mobile overflow menus", () => {
     const closingKeys = new Set<string>();
     const replacedKeys = new Set<string>();
 
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:a", "chat:a", false);
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, null, "chat:a", true);
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:a", "chat:a", false);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:a", "chat:a", false);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, null, "chat:a", true);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:a", "chat:a", false);
 
     expect(consumeReplacedMenuFocusRestore(closingKeys, replacedKeys, "chat:a")).toBe(false);
   });
@@ -63,10 +49,10 @@ describe("exclusive mobile overflow menus", () => {
     const closingKeys = new Set<string>();
     const replacedKeys = new Set<string>();
 
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:a", "chat:b", true);
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:b", "chat:a", false);
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:b", "chat:a", true);
-    trackExclusiveMenuFocusChange(closingKeys, replacedKeys, "chat:a", "chat:b", false);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:a", "chat:b", true);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:b", "chat:a", false);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:b", "chat:a", true);
+    applyExclusiveMenuChange(closingKeys, replacedKeys, "chat:a", "chat:b", false);
 
     expect(consumeReplacedMenuFocusRestore(closingKeys, replacedKeys, "chat:b")).toBe(true);
     expect(consumeReplacedMenuFocusRestore(closingKeys, replacedKeys, "chat:a")).toBe(false);

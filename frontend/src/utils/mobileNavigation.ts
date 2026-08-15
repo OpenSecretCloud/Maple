@@ -1,6 +1,6 @@
 export const MOBILE_NAVIGATION_HISTORY_KEY = "__mapleMobileNavigation";
 
-export type NativeMobileLaunchGate = {
+type NativeMobileLaunchGate = {
   commit: () => void;
   peek: (isNativeMobile: boolean) => boolean;
 };
@@ -30,11 +30,10 @@ export type MobileNavigationPage =
 export type MobileNavigationSnapshot = {
   version: 1;
   stack: MobileNavigationPage[];
-  hasInAppParent: boolean;
   historyIndex: number;
 };
 
-export type MissingMobileConversationResolution = {
+type MissingMobileConversationResolution = {
   sanitizedSnapshot: MobileNavigationSnapshot;
   targetSnapshot: MobileNavigationSnapshot;
   historyDelta: number | null;
@@ -94,7 +93,6 @@ export function createInitialMobileNavigation(
     return {
       version: 1,
       stack: [menuPage(), { type: "new-chat", instanceId: 1, projectId: null }],
-      hasInAppParent: false,
       historyIndex: 0
     };
   }
@@ -103,7 +101,6 @@ export function createInitialMobileNavigation(
   return {
     version: 1,
     stack: page.type === "menu" ? [page] : [menuPage(), page],
-    hasInAppParent: false,
     historyIndex: 0
   };
 }
@@ -132,9 +129,9 @@ export function readMobileHistoryState(state: unknown): MobileNavigationSnapshot
   const candidate = snapshot as Record<string, unknown>;
   if (
     candidate.version !== 1 ||
-    typeof candidate.hasInAppParent !== "boolean" ||
     typeof candidate.historyIndex !== "number" ||
-    !Number.isFinite(candidate.historyIndex) ||
+    !Number.isInteger(candidate.historyIndex) ||
+    candidate.historyIndex < 0 ||
     !Array.isArray(candidate.stack) ||
     candidate.stack.length === 0 ||
     !candidate.stack.every(isPage) ||
@@ -153,7 +150,6 @@ export function pushMobilePage(
   return {
     version: 1,
     stack: [...snapshot.stack, page],
-    hasInAppParent: true,
     historyIndex: snapshot.historyIndex + 1
   };
 }
@@ -201,7 +197,6 @@ export function resolveMissingMobileConversation(
     return {
       sanitizedSnapshot: {
         ...targetSnapshot,
-        hasInAppParent: snapshot.hasInAppParent,
         historyIndex: snapshot.historyIndex
       },
       targetSnapshot,
@@ -212,19 +207,17 @@ export function resolveMissingMobileConversation(
   const parentStack = snapshot.stack.slice(0, -1);
   if (parentStack.length === 0) return null;
 
-  const hasBrowserParent = snapshot.hasInAppParent && snapshot.historyIndex > 0;
+  const hasBrowserParent = snapshot.historyIndex > 0;
   const targetHistoryIndex = hasBrowserParent
     ? Math.max(0, snapshot.historyIndex - 1)
     : snapshot.historyIndex;
   const targetSnapshot: MobileNavigationSnapshot = {
     ...snapshot,
     stack: parentStack,
-    hasInAppParent: targetHistoryIndex > 0,
     historyIndex: targetHistoryIndex
   };
   const sanitizedSnapshot: MobileNavigationSnapshot = {
     ...targetSnapshot,
-    hasInAppParent: snapshot.hasInAppParent,
     historyIndex: snapshot.historyIndex
   };
 
@@ -240,11 +233,11 @@ export function mobilePageUsesMenuButton(page: MobileNavigationPage) {
 }
 
 export function mobileMenuOwnsDocumentCanvas(
-  homeLocationHref: string | null,
+  homeIsActive: boolean,
   snapshot: MobileNavigationSnapshot,
   enteringInstanceId: number | null
 ) {
-  if (homeLocationHref === null) return false;
+  if (!homeIsActive) return false;
 
   const activePage = activeMobilePage(snapshot);
   const sourcePage =
@@ -256,7 +249,7 @@ export function mobileMenuOwnsDocumentCanvas(
 }
 
 export function mobileMenuHistoryDelta(snapshot: MobileNavigationSnapshot) {
-  return snapshot.hasInAppParent && snapshot.historyIndex > 0 ? -snapshot.historyIndex : null;
+  return snapshot.historyIndex > 0 ? -snapshot.historyIndex : null;
 }
 
 export function mobilePageHref(page: MobileNavigationPage): string {

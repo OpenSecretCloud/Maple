@@ -1,9 +1,9 @@
 export const SWIPE_BACK_EDGE_WIDTH = 28;
-export const SWIPE_BACK_DIRECTION_LOCK = 8;
-export const SWIPE_BACK_DISTANCE_THRESHOLD = 0.35;
-export const SWIPE_BACK_VELOCITY_THRESHOLD = 0.5;
+const SWIPE_BACK_DIRECTION_LOCK = 8;
+const SWIPE_BACK_DISTANCE_THRESHOLD = 0.35;
+const SWIPE_BACK_VELOCITY_THRESHOLD = 0.5;
 
-export type SwipeBackDirection = "pending" | "track" | "reject";
+type SwipeBackDirection = "pending" | "track" | "reject";
 
 export function getSwipeBackDirection(deltaX: number, deltaY: number): SwipeBackDirection {
   if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < SWIPE_BACK_DIRECTION_LOCK) {

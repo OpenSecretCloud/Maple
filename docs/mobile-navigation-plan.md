@@ -2,9 +2,9 @@
 
 ## Status
 
-Core implementation, the iOS edge-swipe stretch goal, and the compact main-menu sizing pass are
-complete on the `mobile-navigation` branch. Navigation/history, stream-disconnect, gesture, and
-compact Settings decisions have focused automated coverage. The full-screen menu now uses
+Core implementation, the iOS edge-swipe gesture, and the compact main-menu sizing pass are complete
+on the `mobile-navigation` branch. Navigation/history, gesture, and compact Settings decisions have
+focused automated coverage. The full-screen menu now uses
 phone-scale controls while retaining the same menu implementation and the original 296-pixel
 desktop sidebar presentation. Unchecked acceptance items below still require authenticated
 interactive browser or physical iOS/Android validation.
@@ -78,19 +78,10 @@ The breakpoints and compact-layout detection logic are not changing. Larger tabl
 
 ## Shared Menu Architecture
 
-There must be one menu implementation.
-
-The current `Sidebar` combines two responsibilities:
-
-1. Sidebar-specific layout, sizing, visibility, outside-click, and collapse behavior.
-2. The actual menu UI and behavior.
-
-Refactor this boundary without redesigning the menu:
-
-- Extract the inner menu into a shared `MainMenu` component.
-- Keep `Sidebar` as a thin desktop wrapper around `MainMenu`.
-- Render the same `MainMenu` as the full-screen mobile root page.
-- Continue using the existing `ChatHistoryList` for projects, pinned chats, recents, selection, and list actions.
+There is one menu implementation. `MainMenu` owns the shared menu UI and behavior, `Sidebar` is its
+thin desktop layout/collapse wrapper, and the compact navigation stack renders that same `MainMenu`
+as its full-screen root page. Both presentations continue using `ChatHistoryList` for projects,
+pinned chats, recents, selection, and list actions.
 
 Changes made later to shared menu content must appear in both the desktop sidebar and the mobile main menu automatically.
 
@@ -225,93 +216,9 @@ Compact Settings follows the same root/detail hierarchy and paired motion:
   prior home surface remain unchanged.
 - Desktop-width Settings keeps its existing two-column navigation and detail layout.
 
-## Implementation Sequence
+## Implemented Details
 
-### Phase 1: Shared menu boundary
-
-1. Extract the existing inner menu UI into `MainMenu`.
-2. Keep menu data, actions, dialogs, search, selection, and list behavior unchanged.
-3. Convert `Sidebar` into a thin desktop layout/collapse wrapper.
-4. Confirm the desktop sidebar is visually and behaviorally unchanged before adding mobile navigation.
-
-### Phase 2: Mobile navigation state
-
-1. Extend the current authenticated-home shell with a compact-layout navigation stack that always provides the mobile main-menu parent page.
-2. Centralize interpretation of the existing URL plus transient in-memory history state.
-3. Represent main menu, new chat, existing chat, and project detail without adding routes or query parameters.
-4. Keep non-chat parent surfaces mounted and mark covered pages inert/hidden appropriately; do not
-   retain covered chats.
-5. Preserve the existing persistent-home URL capture and return flow used by settings routes.
-
-### Phase 3: Page headers and back flow
-
-1. Keep the hamburger/menu button on New Chat and conversations started from it.
-2. Use the shared back button for chats selected from the menu or project detail.
-3. Replace the mobile project-detail hamburger with the same back button.
-4. Implement the direct-URL fallback to the main menu.
-5. Synchronize header controls, browser history back/forward, and transient new-chat history.
-
-### Phase 4: Unmount lifecycle
-
-1. Unmount chat pages after they are popped or replaced by another chat/New Chat surface.
-2. Disconnect local streaming work without canceling server-side processing.
-3. Confirm reopening uses the existing load-and-poll flow.
-4. Prevent duplicate prompt submission or duplicate conversation creation during back/forward transitions.
-
-### Phase 5: Motion and accessibility
-
-1. Add the forward and backward slide transitions.
-2. Add reduced-motion behavior.
-3. Move focus to the pushed page when navigation completes.
-4. Restore sensible focus when returning to the parent.
-5. Ensure covered pages cannot receive pointer, keyboard, or assistive-technology interaction.
-
-### Phase 6: Platform lifecycle and regression validation
-
-1. Ensure web reloads honor the current URL.
-2. Ensure native resume preserves the in-memory page.
-3. Ensure a fresh native launch starts on New Chat.
-4. Validate the existing compact breakpoint and short-landscape behavior.
-5. Complete desktop and menu-behavior regression testing.
-
-## Likely Files Involved
-
-This is a planning estimate, not a requirement to modify every file listed.
-
-- `frontend/src/components/Sidebar.tsx`
-- `frontend/src/components/ChatHistoryList.tsx`
-- `frontend/src/components/UnifiedChat.tsx`
-- `frontend/src/components/ProjectDetailView.tsx`
-- `frontend/src/components/AuthenticatedHomeContent.tsx`
-- `frontend/src/contexts/PersistentHomeNavigationContext.ts`
-- `frontend/src/routes/__root.tsx` only if the existing mounted-home wrapper needs a small integration change
-- `frontend/src/routes/index.tsx` only if authenticated-root coordination requires it
-- `frontend/src/utils/utils.ts` only if a shared navigation helper belongs there; breakpoint behavior must not change
-- A small new shared menu and/or mobile navigation-shell component
-- Focused tests for navigation-state resolution and history behavior
-
-No backend, database, or OpenSecret API change is expected.
-
-## Gap Analysis
-
-### Mobile main-menu sizing audit — implemented
-
-The initial full-screen menu reused the desktop sidebar's dimensions as well as its content. That
-kept the codebase simple, but it meant the content grew from a roughly 296-pixel-wide rail to a
-roughly 390–430-pixel-wide phone surface while most vertical dimensions remained desktop-dense.
-
-The pre-sizing audit measured:
-
-- Base menu and list text is 14 pixels; section headings are 12 pixels.
-- New Chat, Search, and New Project are approximately 32–33 pixels tall with 16-pixel icons.
-- Project and chat rows are approximately 29 pixels tall.
-- Visible mobile row-overflow controls are approximately 28 by 28 pixels.
-- Search and Settings controls are 36 pixels tall; the search clear control has only a 16-pixel
-  icon-sized hit area.
-- Usage-card copy ranges from 9 to 10 pixels.
-- The page-mode header loses the desktop-only 36-pixel close control, leaving its height largely
-  defined by the 16-pixel wordmark and 12/8-pixel vertical padding.
-- The history area uses 16 pixels of left inset and 8 pixels of right inset on mobile.
+### Compact main-menu sizing
 
 The implemented pass scopes proportional sizing to `MainMenu`'s page presentation and passes that
 presentation state through the existing shared history, account, and usage components. It does not
@@ -343,23 +250,6 @@ All original desktop sizing branches remain in place: the 296-pixel sidebar reta
 labels, 16-pixel icons, dense rows, 36-pixel Settings control, original asymmetric history padding,
 and existing overflow behavior.
 
-Validation for this pass:
-
-- The complete frontend suite passes with 712 tests, including focused mobile-navigation,
-  response-lifecycle, Settings-navigation, swipe, and history-pagination coverage.
-- TypeScript, formatting, lint, and the production build pass. Lint remains at the existing
-  13-warning/zero-error baseline.
-- The production CSS contains the 44-pixel height/width/min-height utilities, mobile title clipping
-  and fade, viewport-limited dropdown height, and bottom safe-area expression used by page mode.
-- A source-level branch audit confirmed that the new dimensions are reachable only through
-  `presentation="page"` / `pagePresentation`; the desktop sidebar retains its original class
-  branches. The desktop-only workspace-mode switch is omitted from page mode.
-- Authenticated interactive viewport validation was not available in this workspace:
-  `opensecret-workspaces` is not installed, the assigned OpenSecret/Billing/Maple ports had no
-  listeners, and the remote branch preview required a Cloudflare Access sign-in. The representative
-  portrait, short-landscape, breakpoint, light/dark, safe-area, and physical-device checks therefore
-  remain unchecked below rather than being claimed from source inspection.
-
 ### Unsent composer state
 
 The current runtime store retains a scope-specific, offscreen New Chat draft in memory, including
@@ -367,7 +257,7 @@ its composer resources, and resumes it when that scope is opened again. The mobi
 reuses that current-master behavior; it does not add persistent, cross-process draft storage or a
 new draft model.
 
-## Stretch Goal: iOS Edge-Swipe Back
+## iOS Edge-Swipe Back
 
 Implemented as an interactive left-edge swipe-back gesture for the iOS Tauri app. The same shared
 gesture tracker is used for chat/project navigation, Settings detail-to-menu navigation, and
@@ -375,7 +265,7 @@ Settings menu-to-home navigation.
 
 Wry 0.55.1 does not expose built-in back/forward navigation gestures on iOS, so this requires an app-level gesture rather than a configuration switch.
 
-Expected behavior:
+Behavior:
 
 - Begin only from the left screen edge.
 - Track horizontal finger movement while rejecting primarily vertical gestures.
@@ -406,181 +296,45 @@ Implementation details:
 
 Do not install this custom gesture in mobile Safari; Safari owns its browser navigation gesture. No Android-specific equivalent is planned.
 
-Physical-device verification remains required because the gesture is intentionally disabled outside
-the iOS Tauri runtime.
+Additional physical-device verification remains required because the gesture is intentionally
+disabled outside the iOS Tauri runtime.
 
-### Physical iPhone follow-up — August 14, 2026
+### Physical iPhone refinements — August 14, 2026
 
-A physical-iPhone recording exposed two implementation defects before final device sign-off:
+Physical-device recordings validated ordinary edge tracking and fast hamburger-state flicks, and
+drove these final refinements:
 
-- Nine deliberate edge swipes—including fast flicks, slow drags well beyond the 35-percent
-  threshold, and a drag held at the fully revealed position—tracked the correct menu destination
-  but returned to the chat on release.
-- A native development launch could render the main menu because the one-process New Chat claim was
-  mutated during React render. Strict Mode or another abandoned render could consume that claim
-  before the committed navigation shell initialized.
+- The fresh-native-launch claim is committed only after the navigation shell mounts, so React
+  retries cannot consume the one-process New Chat start.
+- Pointer cancellation settles from the last visible distance, pointer movement is compositor
+  coalesced, completion timing starts from the last painted position, and swipe CSS properties stay
+  installed until React removes their consumers. These rules prevent cancellation, release jumps,
+  and the covered-parent rebound observed in the recordings.
+- Full-screen menu labels are 16 pixels within 20-pixel page insets; 44-pixel targets, 20-pixel
+  icons, 12-pixel headings, and the existing row cadence remain. Long titles clip and fade before
+  their 44-pixel overflow control. Mobile title updates animate text only.
+- Stack-owned New Chat ignores an inherited materialized draft alias, while selecting an uncached
+  historical chat projects the requested runtime on first mount. Desktop and URL-authoritative
+  restoration retain their existing behavior.
+- Native compact iOS enables `viewport-fit=cover` before React renders. Every moving page paints the
+  physical screen while its content remains inside all four safe-area insets; static native screens,
+  fixed alerts, and portaled menus/selects use the same bounds. Mobile web, Android, wide layouts,
+  and desktop retain their original viewport behavior.
+- Settings entry avoids the underlying transform rebound. Settings Back animates before committing
+  history, rejects stale or duplicate deferred closes, and falls back to the menu for a direct or
+  markerless entry.
+- Page-mode chat/project overflow menus are nonmodal and share exclusive ownership. An outside tap
+  dismisses the current menu without consuming its target, delayed closes cannot dismiss a newly
+  opened menu, and desktop keeps Radix's default modal/uncontrolled behavior.
 
-The follow-up implementation now:
+Still pending on a physical iPhone: replay the reversed-drag/final-flick case after its latest fix;
+verify short cancellation, vertical-scroll rejection, project-backed and both Settings gestures,
+rotation/short landscape, safe-area portal placement, outside-menu transfer, nested submenus, and
+compact keyboard focus.
 
-- Treats an iOS `pointercancel` after horizontal lock as release at the last position shown to the
-  user, completing only when that visible distance crossed the normal threshold. Unexpected capture
-  loss still cancels, while ordinary pointer-up uses both distance and recent velocity from the last
-  reliable sample instead of a potentially reset WebKit release coordinate.
-- Applies vertical-pan ownership throughout the active native navigation surface, while code blocks,
-  tables, and range controls that intentionally use horizontal gestures opt out. Portaled controls
-  outside that surface are rejected before gesture capture.
-- Updates interactive transforms through hook-scoped CSS properties instead of rerendering the full
-  chat or Settings tree for every pointer sample.
-- Removes completed push-animation classes after 320 milliseconds and prevents a swipe during the
-  active entrance, so canceling a later gesture cannot restart the original push animation.
-- Peeks at the fresh-native-launch claim during render and commits it only from the mounted layout
-  effect, preserving New Chat across Strict Mode and abandoned-render retries.
-
-Focused launch/gesture tests and the complete frontend test suite cover the new launch gate and
-interrupted-settlement rules. A subsequent physical-iPhone build confirmed smooth tracking and
-completion for full-distance drags and fast hamburger-state flicks. Short cancellation, vertical
-edge scrolling, Back-button taps, project-backed destinations, and both Settings levels still need
-device verification.
-
-### Physical iPhone menu follow-up — August 14, 2026
-
-The first physical-menu screenshots exposed three additional issues:
-
-- Compared with the 402-by-874-point reference, Maple's 16-pixel labels and 16-pixel page insets
-  remained visually too close to its desktop-sidebar proportions. The existing approximately
-  52-pixel row cadence already matched the reference and did not need to grow.
-- The iPhone's top and bottom safe-area bands used the chat document background instead of the menu
-  background. Pixel inspection showed the exact dark-theme values: `#0A0A0A` in the safe areas and
-  `#262626` on the menu.
-- After a transient New Chat became a conversation, opening either global New Chat or New Chat in
-  Project could select that conversation again. The pushed mobile history entry inherited the old
-  draft key, which intentionally remained an alias to the newly created conversation.
-
-The follow-up implementation:
-
-- Uses 20-pixel labels and symmetric 20-pixel insets only in full-screen page presentation. It
-  keeps the existing font family, 12-pixel section headings, icons, buttons, 44-pixel targets,
-  overflow clearance, and row cadence unchanged.
-- Lets the active or interactively revealed menu own the document canvas color, including the iOS
-  safe-area bands. Chat, project, and Settings surfaces retain their existing background, and no
-  global viewport or native-window configuration changed.
-- Ignores an inherited browser-history draft key only when initializing a stack-owned transient
-  mobile New Chat. The existing scope-aware draft selector then creates a fresh root/project draft
-  after a conversation materializes or resumes a legitimate unsent draft. Desktop and direct URL
-  restoration remain history-authoritative.
-
-Source review, focused regressions, and the complete 705-test frontend suite passed at that stage.
-The next physical build confirmed edge-to-edge menu painting and both global and project-scoped New
-Chat entry points, while exposing the refinements below.
-
-### Second physical iPhone menu follow-up — August 14, 2026
-
-The next physical recording and screenshots established four remaining issues:
-
-- The safe-area canvas switched to the destination color at transition start. During an edge swipe,
-  the top and bottom bands changed from the chat background to the menu background one frame after
-  horizontal lock, while the chat still covered almost the entire viewport.
-- Mobile title generation reused the desktop title-flash animation, which painted a translucent
-  background, padding, and scale behind the changing title.
-- Selecting an uncached historical conversation after creating a chat could render the just-created
-  runtime. First-mount projection fell back to the store's previously active key before the requested
-  conversation had been created in the runtime cache.
-- The 20-pixel page labels measured substantially larger than the reference's list typography, and a
-  long title could continue beneath the overflow button and visibly reappear on its far side.
-
-The follow-up implementation:
-
-- Uses the settled/source page as the document-canvas owner until a push, pop, or interactive swipe
-  commits. Menu and Settings-root surfaces use the sidebar canvas color; Chat, New Chat, project, and
-  Settings-detail surfaces retain the application background. This keeps each visible screen's top
-  and bottom safe areas consistent throughout the transition.
-- Uses a mobile-only title text animation without the desktop background, padding, radius, or scale.
-  Desktop title animation remains unchanged.
-- Projects and creates a requested conversation runtime on a chat page's first mount. The existing
-  selected-runtime fallback remains available only after that page has committed, preserving the
-  synchronous deletion/replacement guard.
-- Returns full-screen page labels to 16 pixels with a 24-pixel line height while retaining the
-  20-pixel page insets, 44-pixel controls and rows, 20-pixel icons, 12-pixel headings, and existing
-  vertical cadence. Mobile project and chat titles now clip at the 44-pixel overflow-control
-  boundary and fade over their final 16 pixels; their complete accessible labels remain available.
-  Desktop typography, spacing, title clipping, overflow presentation, and sidebar dimensions are
-  unchanged.
-
-Focused canvas-ownership, Settings-navigation, and runtime-projection tests pass, and the complete
-frontend suite passes with 712 tests. TypeScript, formatting, the PR-configured production web build,
-and the pinned iOS simulator bundle build pass. Lint remains at the existing 13-warning/zero-error
-baseline, with no warning in a touched file. A physical-device rerun of the revised canvas timing,
-title animation, 16-pixel typography, long-title fade, historical-chat load, short cancellation, and
-Settings gestures remains pending.
-
-### Third physical iPhone navigation follow-up — August 14, 2026
-
-The next two physical recordings showed that matching the document canvas to the current page was
-not sufficient. WKWebView still laid out every moving React surface only inside the safe-content
-rectangle, so the page boundary moved between the status bar and home indicator while the top and
-bottom bands stayed fixed and changed color only after the transition committed. The same build
-also exposed a second settle during Settings entry and a Settings Back race that could briefly
-reveal the menu before returning to the previously viewed chat.
-
-The revised native-iOS compact presentation now:
-
-- Adds `viewport-fit=cover` dynamically after exact native-iOS detection and before React renders,
-  using the existing compact width and short-landscape predicates. Mobile web, Android, wide iPad,
-  and desktop layouts keep their original viewport metadata and breakpoints.
-- Gives every transformed menu, chat, New Chat, project, Settings-menu, and Settings-detail layer a
-  full physical-screen background. Content is independently inset by all four iOS safe-area values,
-  so the page boundary travels through the status and home-indicator regions without moving controls
-  into them. Existing footer/composer safe padding is neutralized only inside this native frame to
-  avoid double bottom insets.
-- Keeps native-reachable static auth, reset, verification, callback, fallback, and Agent screens,
-  fixed notifications, the marketing header, and team alerts inside the same safe-content bounds.
-  Portaled menus and selects collide against the actual safe frame rather than the physical screen.
-- Disables the base transform transition only while the native Settings push keyframe owns entry,
-  eliminating the WebKit class-removal rebound while preserving pop, interactive swipe, reduced
-  motion, mobile-web, and Android behavior.
-- Animates a Settings Back-button close before changing history. It returns through the marked menu
-  entry with one blocker-free Back, replaces a markerless/direct entry with `/`, and commits only if
-  the raw browser URL and history-entry key still match the initiating Settings page. A concurrent
-  browser Back, deep link, duplicate close, or unmount therefore cannot perform a late second Back;
-  an invalidated close also restores the Settings shell instead of leaving it popped or inert.
-
-Focused viewport, mobile-navigation, swipe, Settings-navigation, and runtime tests pass. The complete
-local frontend suite passes with 723 tests; typecheck, formatting, the production build, and lint
-also pass, with lint unchanged at 13 existing warnings and no errors. Source review confirms the
-full-bleed rules require the exact native-iOS compact marker and do not alter the 296-pixel desktop
-sidebar. A physical-iPhone rerun of edge-to-edge push/pop/swipe boundaries, Settings entry, the
-chat-to-menu-to-Settings Back sequence, rotation/short landscape, portaled menus, and global overlays
-remains pending.
-
-### Fourth physical iPhone interaction follow-up — August 14, 2026
-
-The full-bleed physical build confirmed that ordinary edge drags and flicks were smooth, but one
-deliberately reversed gesture still exposed two completion discontinuities. The chat moved from 259
-pixels revealed back to 29 pixels, then the final rightward flick reached 177 pixels before release.
-The next frame jumped to 276 pixels, and after reaching the full 294-pixel width the menu briefly
-fell back to 238 pixels before settling again. The same test pass also found that tapping another
-row overflow button while a popover was open could leave both menus visible instead of transferring
-the interaction in one tap.
-
-The follow-up implementation now:
-
-- Tracks the last swipe position actually written to CSS separately from the latest coalesced pointer
-  sample. Completion still uses the latest sample for intent, but its duration starts from the
-  position currently visible on screen, so an unpainted final flick cannot shorten and jump the
-  settle animation.
-- Keeps the hook-scoped swipe properties in place until React has removed their inline transform
-  consumers. This prevents the revealed menu from falling back to its covered `-24%` transform
-  between the interactive history commit and the final render.
-- Makes chat/project overflow menus nonmodal only in full-screen page presentation and controls them
-  with one shared exclusive key. An outside tap dismisses the current menu without blocking its
-  target; tapping another overflow button transfers ownership immediately, and a delayed close from
-  the old menu cannot close the new one. Desktop dropdown modality and uncontrolled state remain
-  unchanged.
-
-Focused hook and exclusive-menu regressions pass, and the complete frontend suite passes with 732
-tests. TypeScript, touched-file formatting and lint, and diff checks pass. A physical-iPhone rerun of
-the reversed-drag/final-flick sequence, ordinary cancel/complete gestures, outside popover dismissal,
-chat-to-chat/project menu switching, nested submenus, and compact keyboard focus remains pending.
+The pinned Nix toolchain passes 723 tests, TypeScript typecheck, formatting, and lint with the
+repository's existing 13 warnings and no errors. The same checks and the production frontend build
+pass locally; `git diff --check` also passes.
 
 ## Non-Goals
 
@@ -600,7 +354,10 @@ chat-to-chat/project menu switching, nested submenus, and compact keyboard focus
 
 ## Definition of Done
 
-The core feature is complete when every agreed non-stretch behavior is implemented and verified. No additional product scope is implied by this checklist.
+The core feature is complete when every agreed behavior is implemented and verified. Checked items
+below have automated or source-level evidence unless they explicitly say a physical device was used;
+the separate Validation list remains the authority for outstanding platform checks. No additional
+product scope is implied by this checklist.
 
 ### Shared menu and desktop preservation
 
@@ -714,5 +471,5 @@ The core feature is complete when every agreed non-stretch behavior is implement
 - [ ] Validate navigation away from and back to an actively generating chat.
 - [x] Run the repository's applicable format, lint, typecheck, test, and build checks.
 
-The unresolved composer-draft gap does not block completion. Post-fix physical iOS gesture and fresh
-launch validation remain part of the final release-validation pass.
+Post-fix physical iOS interaction checks and iOS/Android lifecycle validation remain part of the
+final release-validation pass.
