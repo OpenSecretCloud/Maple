@@ -95,6 +95,12 @@ import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcp
 import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
 import { handleAgentModeThoughtRunFinished } from "@/components/agent/agentModeThoughtRun";
 import {
+  agentPromptHistory,
+  agentPromptHistoryDirection,
+  navigateAgentPromptHistory,
+  type AgentPromptHistoryNavigation
+} from "@/components/agent/agentPromptHistory";
+import {
   agentRuntimeService,
   awaitAgentAuthUser,
   type AgentConfig,
@@ -431,6 +437,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isSessionMcpServersLoading, setIsSessionMcpServersLoading] = useState(false);
   const [isMcpServerTogglePending, setIsMcpServerTogglePending] = useState(false);
   const [input, setInput] = useState("");
+  const promptHistoryEntries = useMemo(() => agentPromptHistory(timelineItems), [timelineItems]);
+  const promptHistoryEntriesRef = useRef<readonly string[]>(promptHistoryEntries);
+  const promptHistoryNavigationRef = useRef<AgentPromptHistoryNavigation | null>(null);
+  const promptHistoryGenerationRef = useRef(0);
+  const promptHistoryReplacementSessionRef = useRef<string | null>(null);
   const [isAgentFullscreen, setIsAgentFullscreen] = useState(
     () => localStorage.getItem("agentFullscreen") === "true"
   );
@@ -517,6 +528,32 @@ export function AgentMode({ userId }: { userId: string }) {
     };
     userIdRef.current = userId;
   }, [model, openai, os, setAvailableModels, setHasWhisperModel, setModelAliases, userId]);
+
+  useLayoutEffect(() => {
+    if (
+      activeSessionId === null ||
+      promptHistoryReplacementSessionRef.current !== activeSessionId
+    ) {
+      promptHistoryEntriesRef.current = promptHistoryEntries;
+    }
+  }, [activeSessionId, promptHistoryEntries]);
+
+  const resetPromptHistoryNavigation = useCallback(() => {
+    promptHistoryNavigationRef.current = null;
+    promptHistoryGenerationRef.current += 1;
+  }, []);
+
+  useLayoutEffect(() => {
+    resetPromptHistoryNavigation();
+  }, [activeSessionId, resetPromptHistoryNavigation, userId]);
+
+  const handleAgentInputChange = useCallback(
+    (value: string) => {
+      resetPromptHistoryNavigation();
+      setInput(value);
+    },
+    [resetPromptHistoryNavigation]
+  );
 
   const restoreNewTaskModel = useCallback(() => {
     const nextModel = newTaskAgentModel(agentModelPreferenceRef.current);
@@ -1061,12 +1098,17 @@ export function AgentMode({ userId }: { userId: string }) {
         return false;
       }
       bumpTimelineRevision(sessionId);
+      if (promptHistoryReplacementSessionRef.current === sessionId) {
+        promptHistoryReplacementSessionRef.current = null;
+      }
       if (activeSessionIdRef.current === sessionId) {
+        resetPromptHistoryNavigation();
+        promptHistoryEntriesRef.current = agentPromptHistory(items);
         setTimelineItems(items);
       }
       return true;
     },
-    [bumpTimelineRevision, timelineRevisionBySessionRef]
+    [bumpTimelineRevision, resetPromptHistoryNavigation, timelineRevisionBySessionRef]
   );
 
   const mergeSessionTimelineItem = useCallback(
@@ -2128,6 +2170,7 @@ export function AgentMode({ userId }: { userId: string }) {
     markPendingSend(pendingSessionKey, sendToken);
 
     setError(null);
+    resetPromptHistoryNavigation();
     setInput("");
     shouldAutoScrollRef.current = true;
     requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
@@ -2223,6 +2266,7 @@ export function AgentMode({ userId }: { userId: string }) {
     pendingSendTokensRef,
     permissionModeUpdateRef,
     recordActiveRun,
+    resetPromptHistoryNavigation,
     scrollTimelineToBottom,
     terminalRunIdsRef,
     thoughtPhaseTrackerRef,
@@ -2276,7 +2320,49 @@ export function AgentMode({ userId }: { userId: string }) {
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing) return;
-      if ((event.shiftKey || isCompactLayout) && continueChatComposerList(event, setInput)) {
+      const direction = agentPromptHistoryDirection(
+        {
+          key: event.key,
+          value: event.currentTarget.value,
+          selectionStart: event.currentTarget.selectionStart,
+          selectionEnd: event.currentTarget.selectionEnd,
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          isComposing: event.nativeEvent.isComposing
+        },
+        promptHistoryNavigationRef.current
+      );
+      if (direction) {
+        const step = navigateAgentPromptHistory(
+          promptHistoryNavigationRef.current,
+          promptHistoryEntriesRef.current,
+          direction
+        );
+        if (step) {
+          event.preventDefault();
+          promptHistoryNavigationRef.current = step.navigation;
+          promptHistoryGenerationRef.current += 1;
+          const promptHistoryGeneration = promptHistoryGenerationRef.current;
+          setInput(step.value);
+          const textarea = event.currentTarget;
+          requestAnimationFrame(() => {
+            if (
+              promptHistoryGenerationRef.current === promptHistoryGeneration &&
+              textarea.isConnected &&
+              document.activeElement === textarea
+            ) {
+              textarea.setSelectionRange(step.value.length, step.value.length);
+            }
+          });
+          return;
+        }
+      }
+      if (
+        (event.shiftKey || isCompactLayout) &&
+        continueChatComposerList(event, handleAgentInputChange)
+      ) {
         return;
       }
       if (event.key === "Enter" && !event.shiftKey && !isCompactLayout) {
@@ -2284,12 +2370,15 @@ export function AgentMode({ userId }: { userId: string }) {
         void sendMessage();
       }
     },
-    [isCompactLayout, sendMessage]
+    [handleAgentInputChange, isCompactLayout, sendMessage]
   );
 
-  const handleBeforeInput = useCallback((event: React.FormEvent<HTMLTextAreaElement>) => {
-    continueChatComposerListBeforeInput(event, setInput);
-  }, []);
+  const handleBeforeInput = useCallback(
+    (event: React.FormEvent<HTMLTextAreaElement>) => {
+      continueChatComposerListBeforeInput(event, handleAgentInputChange);
+    },
+    [handleAgentInputChange]
+  );
 
   const removeSessionFromState = useCallback(
     (sessionId: string) => {
@@ -2575,6 +2664,11 @@ export function AgentMode({ userId }: { userId: string }) {
           void (async () => {
             const id = event.sessionId || activeSessionIdRef.current;
             if (!id) return;
+            if (activeSessionIdRef.current === id) {
+              resetPromptHistoryNavigation();
+              promptHistoryReplacementSessionRef.current = id;
+              promptHistoryEntriesRef.current = [];
+            }
             const invalidatedTurnId = thoughtPhaseTrackerRef.current.resetForHistoryReplacement(id);
             if (invalidatedTurnId) {
               invalidateThoughtLabelsForTurn(id, invalidatedTurnId);
@@ -2629,6 +2723,7 @@ export function AgentMode({ userId }: { userId: string }) {
       recordActiveRun,
       refreshSessionMcpServers,
       replaceSessionTimeline,
+      resetPromptHistoryNavigation,
       terminalRunIdsRef,
       thoughtPhaseSeededRunIdsRef,
       thoughtPhaseTrackerRef,
@@ -3003,7 +3098,8 @@ export function AgentMode({ userId }: { userId: string }) {
                   isExpanded={isAgentFullscreen}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
-                  onInputChange={setInput}
+                  onInputChange={handleAgentInputChange}
+                  onInputPointerDown={resetPromptHistoryNavigation}
                   onKeyDown={handleKeyDown}
                   onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
@@ -3047,7 +3143,8 @@ export function AgentMode({ userId }: { userId: string }) {
                   recentRoots={displayProjectRoots}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
-                  onInputChange={setInput}
+                  onInputChange={handleAgentInputChange}
+                  onInputPointerDown={resetPromptHistoryNavigation}
                   onKeyDown={handleKeyDown}
                   onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
@@ -4198,6 +4295,7 @@ interface AgentComposerProps {
   onCancelPrompt: () => void;
   onChooseProjectRoot: () => void;
   onInputChange: (value: string) => void;
+  onInputPointerDown: () => void;
   onBeforeInput: (event: React.FormEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onManageMcpServers: () => void;
@@ -4228,6 +4326,7 @@ function AgentComposer({
   onCancelPrompt,
   onChooseProjectRoot,
   onInputChange,
+  onInputPointerDown,
   onBeforeInput,
   onKeyDown,
   onManageMcpServers,
@@ -4276,6 +4375,7 @@ function AgentComposer({
         id="agent-message"
         value={input}
         onChange={(event) => onInputChange(event.target.value)}
+        onPointerDown={onInputPointerDown}
         onBeforeInput={onBeforeInput}
         onKeyDown={onKeyDown}
         disabled={isSendDisabled}
