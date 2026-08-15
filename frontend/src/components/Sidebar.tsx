@@ -248,8 +248,7 @@ export function MainMenu({
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const chatHistoryContainerRef =
-    isPagePresentation && isLandscapeMobile ? sidebarRef : historyContainerRef;
+  const chatHistoryContainerRef = historyContainerRef;
   const agentModeAvailable = isTauriDesktop();
   const [agentModeFlag, setAgentModeFlag] = useState<{
     userId: string;
@@ -369,7 +368,7 @@ export function MainMenu({
               "fixed md:static landscape-short:fixed z-10 h-full overflow-x-hidden overflow-y-hidden",
               isOpen ? `block ${SIDEBAR_WIDTH_CLASS}` : "hidden"
             ]
-          : "relative z-0 h-full min-h-0 w-full overflow-x-hidden overflow-y-hidden landscape-short:overflow-y-auto"
+          : "relative z-0 h-full min-h-0 w-full overflow-x-hidden overflow-y-hidden"
       )}
     >
       <div
@@ -377,7 +376,7 @@ export function MainMenu({
           "flex h-full min-h-0 min-w-0 flex-col items-stretch overflow-x-hidden bg-muted dark:bg-[hsl(var(--sidebar))]",
           presentation === "sidebar"
             ? ["border-r border-border/20", SIDEBAR_WIDTH_CLASS, SIDEBAR_MAX_WIDTH_CLASS]
-            : "w-full max-w-none overflow-y-hidden backdrop-blur-lg landscape-short:h-auto landscape-short:min-h-full landscape-short:overflow-y-visible"
+            : "w-full max-w-none overflow-y-hidden backdrop-blur-lg"
         )}
       >
         {/* Header section */}
@@ -405,7 +404,9 @@ export function MainMenu({
               >
                 <PanelLeft className="h-4 w-4" />
               </button>
-            ) : null}
+            ) : (
+              <AccountMenu pagePresentation showCreditUsage={false} />
+            )}
           </div>
           {!isPagePresentation && (showAgentMode || isAgentMode) && (
             <div className="mb-2 px-8">
@@ -530,19 +531,12 @@ export function MainMenu({
             )}
           </div>
         )}
-        <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col",
-            isPagePresentation && "landscape-short:flex-none"
-          )}
-        >
+        <div className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col")}>
           <nav
             ref={historyContainerRef}
             className={cn(
               "sidebar-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-clip pt-5",
-              isPagePresentation
-                ? "px-5 landscape-short:flex-none landscape-short:overflow-y-visible"
-                : "pl-4 pr-2 md:px-4"
+              isPagePresentation ? "px-5" : "pl-4 pr-2 md:px-4"
             )}
           >
             {navigationContent || (
@@ -569,8 +563,8 @@ export function MainMenu({
             <div
               aria-hidden
               className={cn(
-                "min-h-[7.5rem] shrink-0 bg-transparent",
-                isPagePresentation && "landscape-short:min-h-4"
+                "shrink-0 bg-transparent",
+                isPagePresentation ? "min-h-8" : "min-h-[7.5rem]"
               )}
             />
           </nav>
@@ -578,21 +572,15 @@ export function MainMenu({
           <div
             aria-hidden
             className={cn(
-              "pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]",
-              isPagePresentation && "landscape-short:hidden"
+              "pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
             )}
           />
         </div>
-        <div
-          className={cn(
-            "w-full border-t border-border/25 pt-2",
-            isPagePresentation
-              ? "maple-mobile-menu-footer shrink-0 px-5 pb-[max(1rem,env(safe-area-inset-bottom))]"
-              : "px-4 pb-4"
-          )}
-        >
-          <AccountMenu pagePresentation={isPagePresentation} />
-        </div>
+        {!isPagePresentation && (
+          <div className="w-full border-t border-border/25 px-4 pb-4 pt-2">
+            <AccountMenu />
+          </div>
+        )}
       </div>
       {!isPagePresentation ? (
         <UpgradePromptDialog
