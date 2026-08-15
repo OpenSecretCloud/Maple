@@ -41,6 +41,7 @@ import { useSelectedProjectState } from "@/state/useLocalState";
 import { ConversationProjectDialog } from "@/components/ConversationProjectDialog";
 import { DeleteConversationProjectDialog } from "@/components/DeleteConversationProjectDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
+import { getChatHistoryEllipsisButtonClass } from "@/components/chatHistoryMenuPresentation";
 import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
 import {
   createChatHistoryEntryForDraft,
@@ -76,10 +77,6 @@ function sidebarEllipsisTriggerRowClass(isMobile: boolean): string {
   if (isMobile) return SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE;
   return `${SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE} transition-opacity duration-150 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100`;
 }
-const SIDEBAR_ELLIPSIS_BTN =
-  "relative z-10 shrink-0 rounded-full border-0 bg-muted p-1.5 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
-const PAGE_ELLIPSIS_BTN =
-  "relative z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-0 bg-muted p-0 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
 const PAGE_DROPDOWN_CONTENT =
   "max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] !overflow-y-auto overflow-x-hidden [&_[role=menuitem]]:min-h-11 [&_[role=menuitem]]:text-base [&_[role=menuitem]_svg]:h-5 [&_[role=menuitem]_svg]:w-5";
 
@@ -1357,7 +1354,7 @@ export function ChatHistoryList({
                     <button
                       type="button"
                       aria-label={`Open chat menu for ${title}`}
-                      className={pagePresentation ? PAGE_ELLIPSIS_BTN : SIDEBAR_ELLIPSIS_BTN}
+                      className={getChatHistoryEllipsisButtonClass(pagePresentation)}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1610,7 +1607,7 @@ export function ChatHistoryList({
                           <button
                             type="button"
                             aria-label={`Open project menu for ${project.name}`}
-                            className={pagePresentation ? PAGE_ELLIPSIS_BTN : SIDEBAR_ELLIPSIS_BTN}
+                            className={getChatHistoryEllipsisButtonClass(pagePresentation)}
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
