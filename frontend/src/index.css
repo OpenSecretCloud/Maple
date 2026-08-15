@@ -398,10 +398,6 @@
       env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
 
-  html.maple-native-ios-compact-viewport .maple-mobile-settings-sticky-header {
-    top: env(safe-area-inset-top, 0px);
-  }
-
   html.maple-native-ios-compact-viewport .maple-standalone-mobile-content-height {
     height: 100%;
   }

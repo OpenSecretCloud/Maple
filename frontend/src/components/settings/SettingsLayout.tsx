@@ -128,7 +128,7 @@ function SettingsNavLink({ item, compact }: { item: SettingsNavItem; compact: bo
       className={cn(
         "group flex min-h-11 items-center justify-start font-medium transition-colors",
         compact
-          ? "gap-2 rounded-2xl pr-1 text-base leading-6"
+          ? "-mx-2 gap-2 rounded-2xl px-2 text-base leading-6"
           : "gap-3 rounded-lg px-3 py-2 text-sm",
         isNavigationLocked && "cursor-not-allowed opacity-50"
       )}
@@ -818,7 +818,7 @@ function SettingsLayoutContent() {
         ref={mainRef}
         aria-hidden={isCompactViewport && (isSettingsRoot || isPopping)}
         className={cn(
-          "min-h-0 min-w-0 overflow-y-auto overscroll-y-contain bg-background",
+          "flex min-h-0 min-w-0 flex-col overflow-hidden bg-background",
           isCompactViewport && [
             "maple-mobile-settings-safe-surface maple-navigation-page fixed inset-0 z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
             isSettingsDetailSwipeActive && "maple-navigation-page-interactive",
@@ -830,7 +830,7 @@ function SettingsLayoutContent() {
         style={isSettingsDetailSwipeActive ? settingsDetailSwipeStyle : undefined}
       >
         {isCompactViewport && (
-          <div className="maple-mobile-settings-sticky-header sticky top-0 z-30 flex h-16 items-center gap-2 border-b border-border/50 bg-background/95 px-5 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+          <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border/50 bg-background px-5">
             <button
               ref={detailBackButtonRef}
               type="button"
@@ -844,7 +844,9 @@ function SettingsLayoutContent() {
             <p className="text-base font-semibold">Settings</p>
           </div>
         )}
-        <Outlet />
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain">
+          <Outlet />
+        </div>
       </main>
     </div>
   );
