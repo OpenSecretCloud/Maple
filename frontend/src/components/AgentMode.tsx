@@ -1102,13 +1102,15 @@ export function AgentMode({ userId }: { userId: string }) {
         promptHistoryReplacementSessionRef.current = null;
       }
       if (activeSessionIdRef.current === sessionId) {
-        resetPromptHistoryNavigation();
+        // Routine reconciliation (including runFinished) refreshes entries for
+        // the next navigation session without disturbing the active snapshot.
+        // Edit, send, pointer, task/account, and historyReplaced paths own exits.
         promptHistoryEntriesRef.current = agentPromptHistory(items);
         setTimelineItems(items);
       }
       return true;
     },
-    [bumpTimelineRevision, resetPromptHistoryNavigation, timelineRevisionBySessionRef]
+    [bumpTimelineRevision, timelineRevisionBySessionRef]
   );
 
   const mergeSessionTimelineItem = useCallback(
