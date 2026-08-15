@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { SidebarToggle } from "./Sidebar";
@@ -41,5 +42,20 @@ describe("SidebarToggle", () => {
 
     expect(markup).toContain('aria-label="Open Agent sidebar"');
     expect(markup).not.toContain("data-agent-sidebar-status");
+  });
+});
+
+describe("compact menu history", () => {
+  test("bleeds the native scroll canvas to the device edge while keeping a safe final-row tail", () => {
+    const sidebarSource = readFileSync(new URL("./Sidebar.tsx", import.meta.url), "utf8");
+    const globalStyles = readFileSync(new URL("../index.css", import.meta.url), "utf8");
+
+    expect(sidebarSource).toContain("maple-mobile-menu-history-tail min-h-8");
+    expect(globalStyles).toMatch(
+      /\.maple-mobile-menu-navigation-layer\s*>\s*\.maple-mobile-navigation-safe-frame\s*{\s*bottom:\s*0;/
+    );
+    expect(globalStyles).toMatch(
+      /\.maple-mobile-menu-navigation-layer\s+\.maple-mobile-menu-history-tail\s*{\s*min-height:\s*calc\(2rem \+ env\(safe-area-inset-bottom, 0px\)\);/
+    );
   });
 });

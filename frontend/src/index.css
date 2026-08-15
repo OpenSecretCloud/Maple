@@ -389,6 +389,20 @@
     background-color: hsl(var(--sidebar));
   }
 
+  /* Let the menu history canvas reach the physical bottom edge. Its real tail still keeps the
+   * final row above the home indicator; chat and detail pages retain the shared safe frame. */
+  html.maple-native-ios-compact-viewport
+    .maple-mobile-menu-navigation-layer
+    > .maple-mobile-navigation-safe-frame {
+    bottom: 0;
+  }
+
+  html.maple-native-ios-compact-viewport
+    .maple-mobile-menu-navigation-layer
+    .maple-mobile-menu-history-tail {
+    min-height: calc(2rem + env(safe-area-inset-bottom, 0px));
+  }
+
   /* Full-bleed surfaces paint behind system chrome while their content stays within the same
    * native insets. */
   html.maple-native-ios-compact-viewport .maple-mobile-settings-safe-surface,

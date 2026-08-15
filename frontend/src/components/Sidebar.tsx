@@ -564,7 +564,7 @@ export function MainMenu({
               aria-hidden
               className={cn(
                 "shrink-0 bg-transparent",
-                isPagePresentation ? "min-h-8" : "min-h-[7.5rem]"
+                isPagePresentation ? "maple-mobile-menu-history-tail min-h-8" : "min-h-[7.5rem]"
               )}
             />
           </nav>
