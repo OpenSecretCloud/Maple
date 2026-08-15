@@ -248,6 +248,17 @@ export function mobileMenuOwnsDocumentCanvas(
   return sourcePage.type === "menu";
 }
 
+export function mobileChatNavigationOwnerInstanceId(
+  homeIsActive: boolean,
+  snapshot: MobileNavigationSnapshot,
+  incomingSnapshot: MobileNavigationSnapshot | null
+) {
+  if (!homeIsActive) return null;
+
+  const page = activeMobilePage(incomingSnapshot ?? snapshot);
+  return page.type === "chat" || page.type === "new-chat" ? page.instanceId : null;
+}
+
 export function mobileMenuHistoryDelta(snapshot: MobileNavigationSnapshot) {
   return snapshot.historyIndex > 0 ? -snapshot.historyIndex : null;
 }

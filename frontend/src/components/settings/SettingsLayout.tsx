@@ -393,7 +393,7 @@ function SettingsLayoutContent() {
               window.location.href === settingsHref &&
               browserHistoryEntryKey(window.history.state) === settingsHistoryKey,
             goBack: () => router.history.back({ ignoreBlocker: true }),
-            replaceWithMenu: () => router.navigate({ to: "/", replace: true, ignoreBlocker: true })
+            replaceWithHome: returnToHome
           });
         } finally {
           if (!committed && settingsCloseAttemptRef.current === attempt) {

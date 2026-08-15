@@ -22,6 +22,7 @@ import {
   createInitialMobileNavigation,
   createMobileHistoryState,
   createNativeMobileLaunchGate,
+  mobileChatNavigationOwnerInstanceId,
   mobileMenuOwnsDocumentCanvas,
   mobileMenuHistoryDelta,
   mobilePageHref,
@@ -126,6 +127,7 @@ export function MobileNavigationStack({
   const snapshotRef = useRef(snapshot);
   const nextInstanceIdRef = useRef(maxInstanceId(snapshot) + 1);
   const [incomingSnapshot, setIncomingSnapshot] = useState<MobileNavigationSnapshot | null>(null);
+  const incomingSnapshotRef = useRef<MobileNavigationSnapshot | null>(null);
   const isTransitioningBackward = incomingSnapshot !== null;
   const [outgoingChatPage, setOutgoingChatPage] = useState<Extract<
     MobileNavigationPage,
@@ -140,15 +142,32 @@ export function MobileNavigationStack({
   const forwardTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enteringTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousHomeLocationHrefRef = useRef(homeLocationHref);
+  const activeHomeLocationHrefRef = useRef(homeLocationHref);
   const skipNextBackwardAnimationRef = useRef(false);
   const pendingMenuNavigationRef = useRef<"animated" | "interactive" | null>(null);
   const backwardTransitionActiveRef = useRef(false);
+  const backwardTransitionAttemptRef = useRef(0);
 
   const updateSnapshot = useCallback((next: MobileNavigationSnapshot) => {
     snapshotRef.current = next;
     nextInstanceIdRef.current = Math.max(nextInstanceIdRef.current, maxInstanceId(next) + 1);
     setSnapshot(next);
   }, []);
+
+  const updateIncomingSnapshot = useCallback((next: MobileNavigationSnapshot | null) => {
+    incomingSnapshotRef.current = next;
+    setIncomingSnapshot(next);
+  }, []);
+
+  const cancelBackwardTransition = useCallback(() => {
+    backwardTransitionAttemptRef.current += 1;
+    if (transitionTimerRef.current) {
+      clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
+    backwardTransitionActiveRef.current = false;
+    updateIncomingSnapshot(null);
+  }, [updateIncomingSnapshot]);
 
   const syncSelectedProjectFromPage = useCallback(
     (page: MobileNavigationPage) => {
@@ -182,6 +201,7 @@ export function MobileNavigationStack({
       }
 
       if (!opensMenu && current.historyIndex > 0) {
+        backwardTransitionActiveRef.current = true;
         skipNextBackwardAnimationRef.current = true;
         window.history.back();
         return;
@@ -193,12 +213,12 @@ export function MobileNavigationStack({
       flushSync(() => {
         setSelectedProjectId(null);
         updateSnapshot(menu);
-        setIncomingSnapshot(null);
+        updateIncomingSnapshot(null);
         setEnteringInstanceId(null);
       });
       resetSwipe();
     },
-    [setSelectedProjectId, updateSnapshot]
+    [setSelectedProjectId, updateIncomingSnapshot, updateSnapshot]
   );
 
   const {
@@ -214,6 +234,10 @@ export function MobileNavigationStack({
     getContext: getSwipeParentPage,
     onComplete: commitSwipeBack
   });
+
+  useLayoutEffect(() => {
+    activeHomeLocationHrefRef.current = homeLocationHref;
+  }, [homeLocationHref]);
 
   useLayoutEffect(() => {
     if (nativeFreshLaunchRef.current) nativeMobileLaunchGate.commit();
@@ -279,10 +303,7 @@ export function MobileNavigationStack({
         : createInitialMobileNavigation(homeLocationHref);
     const activePage = activeMobilePage(next);
 
-    if (transitionTimerRef.current) {
-      clearTimeout(transitionTimerRef.current);
-      transitionTimerRef.current = null;
-    }
+    cancelBackwardTransition();
     if (forwardTransitionTimerRef.current) {
       clearTimeout(forwardTransitionTimerRef.current);
       forwardTransitionTimerRef.current = null;
@@ -298,42 +319,52 @@ export function MobileNavigationStack({
     );
     syncSelectedProjectFromPage(activePage);
     updateSnapshot(next);
-    setIncomingSnapshot(null);
+    updateIncomingSnapshot(null);
     setOutgoingChatPage(null);
     setEnteringInstanceId(null);
     resetSwipeBack();
-  }, [homeLocationHref, resetSwipeBack, syncSelectedProjectFromPage, updateSnapshot]);
+  }, [
+    cancelBackwardTransition,
+    homeLocationHref,
+    resetSwipeBack,
+    syncSelectedProjectFromPage,
+    updateIncomingSnapshot,
+    updateSnapshot
+  ]);
 
   const completeBackwardNavigation = useCallback(
     (next: MobileNavigationSnapshot) => {
-      if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+      cancelBackwardTransition();
       if (forwardTransitionTimerRef.current) {
         clearTimeout(forwardTransitionTimerRef.current);
         forwardTransitionTimerRef.current = null;
       }
       backwardTransitionActiveRef.current = true;
+      const attempt = backwardTransitionAttemptRef.current;
       resetSwipeBack();
 
       setOutgoingChatPage(null);
-      setIncomingSnapshot(next);
+      updateIncomingSnapshot(next);
 
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       transitionTimerRef.current = setTimeout(
         () => {
+          if (backwardTransitionAttemptRef.current !== attempt) return;
           backwardTransitionActiveRef.current = false;
           updateSnapshot(next);
-          setIncomingSnapshot(null);
+          updateIncomingSnapshot(null);
           setEnteringInstanceId(null);
           transitionTimerRef.current = null;
         },
         reducedMotion ? 0 : PAGE_TRANSITION_MS
       );
     },
-    [resetSwipeBack, updateSnapshot]
+    [cancelBackwardTransition, resetSwipeBack, updateIncomingSnapshot, updateSnapshot]
   );
 
   useEffect(() => {
     const handlePopState = () => {
+      cancelBackwardTransition();
       if (forwardTransitionTimerRef.current) {
         clearTimeout(forwardTransitionTimerRef.current);
         forwardTransitionTimerRef.current = null;
@@ -353,7 +384,7 @@ export function MobileNavigationStack({
         if (pendingMenuNavigation === "interactive") {
           backwardTransitionActiveRef.current = false;
           updateSnapshot(menu);
-          setIncomingSnapshot(null);
+          updateIncomingSnapshot(null);
           setEnteringInstanceId(null);
           resetSwipeBack();
         } else {
@@ -372,7 +403,7 @@ export function MobileNavigationStack({
           skipNextBackwardAnimationRef.current = false;
           backwardTransitionActiveRef.current = false;
           updateSnapshot(restored);
-          setIncomingSnapshot(null);
+          updateIncomingSnapshot(null);
           setEnteringInstanceId(null);
           resetSwipeBack();
           return;
@@ -392,9 +423,11 @@ export function MobileNavigationStack({
     return () => window.removeEventListener("popstate", handlePopState);
   }, [
     completeBackwardNavigation,
+    cancelBackwardTransition,
     resetSwipeBack,
     setSelectedProjectId,
     syncSelectedProjectFromPage,
+    updateIncomingSnapshot,
     updateSnapshot
   ]);
 
@@ -409,6 +442,10 @@ export function MobileNavigationStack({
 
   const pushPage = useCallback(
     (page: Exclude<MobileNavigationPage, { type: "menu" }>) => {
+      if (backwardTransitionActiveRef.current || pendingMenuNavigationRef.current !== null) {
+        return false;
+      }
+
       const current = snapshotRef.current;
       const currentPage = activeMobilePage(current);
       const next = pushMobilePage(current, page);
@@ -435,6 +472,7 @@ export function MobileNavigationStack({
       );
       updateSnapshot(next);
       setEnteringInstanceId(page.instanceId);
+      return true;
     },
     [router.history, updateSnapshot]
   );
@@ -446,7 +484,7 @@ export function MobileNavigationStack({
         instanceId: nextInstanceIdRef.current++,
         conversationId
       };
-      pushPage(page);
+      if (!pushPage(page)) return;
       window.dispatchEvent(new CustomEvent("conversationselected", { detail: { conversationId } }));
     },
     [pushPage]
@@ -459,7 +497,7 @@ export function MobileNavigationStack({
         instanceId: nextInstanceIdRef.current++,
         projectId
       };
-      pushPage(page);
+      if (!pushPage(page)) return;
       window.dispatchEvent(new Event("projectselected"));
     },
     [pushPage]
@@ -467,13 +505,17 @@ export function MobileNavigationStack({
 
   const openNewChat = useCallback(
     (projectId: string | null) => {
+      if (backwardTransitionActiveRef.current || pendingMenuNavigationRef.current !== null) {
+        return;
+      }
+
       flushSync(() => setSelectedProjectId(projectId));
       const page: MobileNavigationPage = {
         type: "new-chat",
         instanceId: nextInstanceIdRef.current++,
         projectId
       };
-      pushPage(page);
+      if (!pushPage(page)) return;
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId } }));
     },
     [pushPage, setSelectedProjectId]
@@ -481,7 +523,17 @@ export function MobileNavigationStack({
 
   const handleConversationCreated = useCallback(
     (newChatInstanceId: number, conversationId: string) => {
-      if (pendingMenuNavigationRef.current !== null || backwardTransitionActiveRef.current) {
+      if (
+        activeHomeLocationHrefRef.current === null ||
+        window.location.pathname !== "/" ||
+        pendingMenuNavigationRef.current !== null ||
+        backwardTransitionActiveRef.current ||
+        mobileChatNavigationOwnerInstanceId(
+          true,
+          snapshotRef.current,
+          incomingSnapshotRef.current
+        ) !== newChatInstanceId
+      ) {
         return false;
       }
 
@@ -505,7 +557,29 @@ export function MobileNavigationStack({
 
   const handleConversationNotFound = useCallback(
     (instanceId: number) => {
-      const resolution = resolveMissingMobileConversation(snapshotRef.current, instanceId);
+      const current = snapshotRef.current;
+      const incoming = incomingSnapshotRef.current;
+      if (
+        activeHomeLocationHrefRef.current === null ||
+        window.location.pathname !== "/" ||
+        pendingMenuNavigationRef.current !== null ||
+        (backwardTransitionActiveRef.current && incoming === null)
+      ) {
+        return;
+      }
+
+      if (
+        mobileChatNavigationOwnerInstanceId(
+          activeHomeLocationHrefRef.current !== null,
+          current,
+          incoming
+        ) !== instanceId
+      ) {
+        return;
+      }
+
+      const ownerSnapshot = incoming ?? current;
+      const resolution = resolveMissingMobileConversation(ownerSnapshot, instanceId);
       if (!resolution) return;
 
       const targetPage = activeMobilePage(resolution.targetSnapshot);
@@ -537,6 +611,8 @@ export function MobileNavigationStack({
       if (resolution.historyDelta !== null) {
         if (targetPage.type === "menu") {
           pendingMenuNavigationRef.current = "animated";
+        } else {
+          backwardTransitionActiveRef.current = true;
         }
         window.history.go(resolution.historyDelta);
         return;
@@ -548,10 +624,13 @@ export function MobileNavigationStack({
   );
 
   const goBack = useCallback(() => {
-    if (isTransitioningBackward || isSwipeBackActive) return;
+    if (isTransitioningBackward || isSwipeBackActive || backwardTransitionActiveRef.current) {
+      return;
+    }
 
     const current = snapshotRef.current;
     if (current.historyIndex > 0) {
+      backwardTransitionActiveRef.current = true;
       window.history.back();
       return;
     }
@@ -569,7 +648,12 @@ export function MobileNavigationStack({
   ]);
 
   const showMenu = useCallback(() => {
-    if (isTransitioningBackward || isSwipeBackActive || pendingMenuNavigationRef.current !== null)
+    if (
+      isTransitioningBackward ||
+      isSwipeBackActive ||
+      backwardTransitionActiveRef.current ||
+      pendingMenuNavigationRef.current !== null
+    )
       return;
 
     const current = snapshotRef.current;
@@ -596,6 +680,11 @@ export function MobileNavigationStack({
   const baseProjectPage = lastProjectPage(snapshot);
   const incomingActivePage = incomingSnapshot ? activeMobilePage(incomingSnapshot) : null;
   const targetActivePage = incomingActivePage ?? baseActivePage;
+  const chatNavigationOwnerInstanceId = mobileChatNavigationOwnerInstanceId(
+    homeLocationHref !== null,
+    snapshot,
+    incomingSnapshot
+  );
   const isMenuCovered = targetActivePage.type !== "menu";
   const swipeParentPage = swipeVisual?.context ?? null;
   const menuOwnsDocumentCanvas = mobileMenuOwnsDocumentCanvas(
@@ -654,6 +743,7 @@ export function MobileNavigationStack({
 
     return (
       <UnifiedChat
+        isVisible={chatNavigationOwnerInstanceId === page.instanceId}
         standaloneMobile
         standaloneMobileConversationId={page.type === "chat" ? page.conversationId : null}
         standaloneMobileProjectId={page.type === "new-chat" ? page.projectId : undefined}
@@ -707,7 +797,7 @@ export function MobileNavigationStack({
       {baseProjectPage ? (
         <NavigationLayer
           key={`project-${baseProjectPage.instanceId}`}
-          active={baseActivePage.type === "project"}
+          active={baseActivePage.type === "project" && !isTransitioningBackward}
           className={cn(
             "maple-navigation-page z-10 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
             isTransitioningBackward && baseActivePage.type === "project"
@@ -745,7 +835,7 @@ export function MobileNavigationStack({
         return (
           <NavigationLayer
             key={`chat-${page.instanceId}`}
-            active={!isIncoming && !isSwipeParent && !isForwardOutgoing}
+            active={!isLeaving && !isIncoming && !isSwipeParent && !isForwardOutgoing}
             className={cn(
               "maple-navigation-page shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
               isForwardOutgoing ? "maple-navigation-page-covered z-10" : "z-20",

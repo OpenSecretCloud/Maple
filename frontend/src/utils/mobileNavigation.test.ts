@@ -5,6 +5,7 @@ import {
   createNativeMobileLaunchGate,
   createInitialMobileNavigation,
   createMobileHistoryState,
+  mobileChatNavigationOwnerInstanceId,
   mobileMenuHistoryDelta,
   mobileMenuOwnsDocumentCanvas,
   mobilePageHref,
@@ -407,5 +408,22 @@ describe("mobile menu document canvas", () => {
     expect(mobileMenuOwnsDocumentCanvas(false, createInitialMobileNavigation("/"), null)).toBe(
       false
     );
+  });
+});
+
+describe("mobile chat navigation ownership", () => {
+  it("assigns URL and runtime ownership only to the committed home chat", () => {
+    const currentChat = createInitialMobileNavigation("/?conversation_id=current");
+    const parentChat = pushMobilePage(createInitialMobileNavigation("/"), {
+      type: "chat",
+      instanceId: 7,
+      conversationId: "parent"
+    });
+    const menu = createInitialMobileNavigation("/");
+
+    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, null)).toBe(1);
+    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, parentChat)).toBe(7);
+    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, menu)).toBeNull();
+    expect(mobileChatNavigationOwnerInstanceId(false, currentChat, null)).toBeNull();
   });
 });

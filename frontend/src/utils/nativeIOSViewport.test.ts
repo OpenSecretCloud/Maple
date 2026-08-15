@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   initializeNativeIOSCompactViewport,
   MOBILE_VIEWPORT_QUERY,
+  nativeIOSCompactViewportSnapshot,
   NATIVE_IOS_COMPACT_VIEWPORT_CLASS,
-  SHORT_LANDSCAPE_VIEWPORT_QUERY
+  SHORT_LANDSCAPE_VIEWPORT_QUERY,
+  subscribeToNativeIOSCompactViewport
 } from "./nativeIOSViewport";
 
 class FakeMediaQueryList {
@@ -112,6 +114,23 @@ describe("native iOS compact viewport", () => {
     expect(environment.viewportContent()).toContain("viewport-fit=cover");
     expect(environment.classes.has(NATIVE_IOS_COMPACT_VIEWPORT_CLASS)).toBe(true);
 
+    cleanup();
+  });
+
+  test("publishes compact viewport changes to React consumers", () => {
+    const environment = createEnvironment();
+    const cleanup = initializeNativeIOSCompactViewport(true, environment);
+    const snapshots: boolean[] = [];
+    const unsubscribe = subscribeToNativeIOSCompactViewport(() => {
+      snapshots.push(nativeIOSCompactViewportSnapshot());
+    });
+
+    environment.widthQuery.setMatches(true);
+    environment.widthQuery.setMatches(false);
+
+    expect(snapshots).toEqual([true, false]);
+
+    unsubscribe();
     cleanup();
   });
 

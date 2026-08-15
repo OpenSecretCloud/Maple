@@ -6,7 +6,7 @@ type CompactSettingsCloseOptions = {
   animate: () => Promise<void>;
   canCommit: () => boolean;
   goBack: () => void;
-  replaceWithMenu: () => void | Promise<void>;
+  replaceWithHome: () => void | Promise<void>;
 };
 
 export const SETTINGS_HOME_PARENT_STATE_KEY = "__mapleSettingsHomeParent";
@@ -41,7 +41,7 @@ export async function closeCompactSettings({
   animate,
   canCommit,
   goBack,
-  replaceWithMenu
+  replaceWithHome
 }: CompactSettingsCloseOptions) {
   if (!interactive) await animate();
   if (!canCommit()) return false;
@@ -51,7 +51,7 @@ export async function closeCompactSettings({
     return true;
   }
 
-  await replaceWithMenu();
+  await replaceWithHome();
   return true;
 }
 

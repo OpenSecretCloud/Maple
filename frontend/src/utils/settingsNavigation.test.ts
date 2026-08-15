@@ -43,8 +43,8 @@ describe("compact settings navigation", () => {
       goBack: () => {
         operations.push("back");
       },
-      replaceWithMenu: () => {
-        operations.push("replace-menu");
+      replaceWithHome: () => {
+        operations.push("replace-home");
       }
     });
 
@@ -64,15 +64,15 @@ describe("compact settings navigation", () => {
       goBack: () => {
         operations.push("back");
       },
-      replaceWithMenu: () => {
-        operations.push("replace-menu");
+      replaceWithHome: () => {
+        operations.push("replace-home");
       }
     });
 
     expect(operations).toEqual(["back"]);
   });
 
-  test("replaces a markerless or direct Settings entry with the menu", async () => {
+  test("returns a markerless or direct Settings entry to the remembered home", async () => {
     const operations: string[] = [];
 
     await closeCompactSettings({
@@ -85,12 +85,12 @@ describe("compact settings navigation", () => {
       goBack: () => {
         operations.push("back");
       },
-      replaceWithMenu: async () => {
-        operations.push("replace-menu");
+      replaceWithHome: async () => {
+        operations.push("replace-home");
       }
     });
 
-    expect(operations).toEqual(["animate", "replace-menu"]);
+    expect(operations).toEqual(["animate", "replace-home"]);
   });
 
   test("does not commit a deferred close after history changes", async () => {
@@ -106,8 +106,8 @@ describe("compact settings navigation", () => {
       goBack: () => {
         operations.push("back");
       },
-      replaceWithMenu: () => {
-        operations.push("replace-menu");
+      replaceWithHome: () => {
+        operations.push("replace-home");
       }
     });
 
@@ -115,7 +115,7 @@ describe("compact settings navigation", () => {
     expect(operations).toEqual(["animate"]);
   });
 
-  test("a markerless interactive close goes straight to the menu", async () => {
+  test("a markerless interactive close goes straight to the remembered home", async () => {
     const operations: string[] = [];
 
     await closeCompactSettings({
@@ -128,12 +128,12 @@ describe("compact settings navigation", () => {
       goBack: () => {
         operations.push("back");
       },
-      replaceWithMenu: () => {
-        operations.push("replace-menu");
+      replaceWithHome: () => {
+        operations.push("replace-home");
       }
     });
 
-    expect(operations).toEqual(["replace-menu"]);
+    expect(operations).toEqual(["replace-home"]);
   });
 
   test("returns to the recorded menu entry across nested detail history", () => {

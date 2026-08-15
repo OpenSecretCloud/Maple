@@ -32,6 +32,27 @@ type NativeIOSViewportEnvironment = {
 };
 
 const cleanupByDocument = new WeakMap<ViewportDocumentLike, () => void>();
+const compactViewportSubscribers = new Set<() => void>();
+let nativeIOSViewportEnabled = false;
+let nativeIOSCompactViewportActive = false;
+
+function setNativeIOSCompactViewportActive(active: boolean) {
+  if (nativeIOSCompactViewportActive === active) return;
+
+  nativeIOSCompactViewportActive = active;
+  for (const subscriber of compactViewportSubscribers) subscriber();
+}
+
+export function nativeIOSCompactViewportSnapshot() {
+  return nativeIOSCompactViewportActive;
+}
+
+export function subscribeToNativeIOSCompactViewport(subscriber: () => void) {
+  if (!nativeIOSViewportEnabled) return () => {};
+
+  compactViewportSubscribers.add(subscriber);
+  return () => compactViewportSubscribers.delete(subscriber);
+}
 
 function viewportContentWithCover(content: string) {
   const tokens = content
@@ -60,11 +81,20 @@ export function initializeNativeIOSCompactViewport(
 ) {
   cleanupByDocument.get(environment.document)?.();
 
-  if (!enabled) return () => {};
+  if (!enabled) {
+    nativeIOSViewportEnabled = false;
+    setNativeIOSCompactViewportActive(false);
+    return () => {};
+  }
 
   const viewportMeta = environment.document.querySelector('meta[name="viewport"]');
-  if (!viewportMeta) return () => {};
+  if (!viewportMeta) {
+    nativeIOSViewportEnabled = false;
+    setNativeIOSCompactViewportActive(false);
+    return () => {};
+  }
 
+  nativeIOSViewportEnabled = true;
   const originalContent = viewportMeta.getAttribute("content");
   const compactWidth = environment.matchMedia(MOBILE_VIEWPORT_QUERY);
   const shortLandscape = environment.matchMedia(SHORT_LANDSCAPE_VIEWPORT_QUERY);
@@ -76,9 +106,11 @@ export function initializeNativeIOSCompactViewport(
     if (compactWidth.matches || shortLandscape.matches) {
       viewportMeta.setAttribute("content", viewportContentWithCover(originalContent ?? ""));
       environment.document.documentElement.classList.add(NATIVE_IOS_COMPACT_VIEWPORT_CLASS);
+      setNativeIOSCompactViewportActive(true);
     } else {
       restoreViewportContent(viewportMeta, originalContent);
       environment.document.documentElement.classList.remove(NATIVE_IOS_COMPACT_VIEWPORT_CLASS);
+      setNativeIOSCompactViewportActive(false);
     }
   };
 
@@ -93,6 +125,8 @@ export function initializeNativeIOSCompactViewport(
     shortLandscape.removeEventListener("change", update);
     restoreViewportContent(viewportMeta, originalContent);
     environment.document.documentElement.classList.remove(NATIVE_IOS_COMPACT_VIEWPORT_CLASS);
+    nativeIOSViewportEnabled = false;
+    setNativeIOSCompactViewportActive(false);
     if (cleanupByDocument.get(environment.document) === cleanup) {
       cleanupByDocument.delete(environment.document);
     }

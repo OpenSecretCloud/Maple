@@ -173,6 +173,11 @@ All mobile surfaces use one shared back-navigation flow. Do not design separate 
 
 Maple/OpenSecret already continues processing a submitted chat after the client disconnects or the app exits. This is existing system behavior, not new backend work.
 
+If the user leaves a transient New Chat before its delayed conversation creation completes, the
+late callback must not promote navigation, rewrite history, or start a response request after the
+user has left. Once a response request has started, navigation must not cancel that server-side
+work.
+
 When a chat leaves the mobile navigation stack:
 
 - Complete its exit transition.
@@ -199,6 +204,10 @@ controller push/pop motion:
 - The popped page unmounts after its exit transition completes.
 - Respect `prefers-reduced-motion` by removing or minimizing nonessential animation.
 - Keep transition state centralized in the mobile navigation shell.
+- Make outgoing pages inert during a pop, and invalidate an unfinished pop before processing newer
+  browser history so its timer cannot overwrite the newer destination.
+- Give only the committed home chat ownership of runtime selection and URL synchronization;
+  outgoing, covered, and interactive-preview chat layers are visual only.
 
 ## Compact Settings Navigation
 
@@ -214,6 +223,8 @@ Compact Settings follows the same root/detail hierarchy and paired motion:
 - A directly loaded Settings detail URL falls back to `/settings` from the in-app back button.
 - Existing nested category routes, navigation locks, sign-out behavior, and persistent return to the
   prior home surface remain unchanged.
+- Closing a markerless Settings entry returns to the provider's sanitized remembered home surface;
+  a genuinely direct Settings load initializes that fallback to the main menu.
 - Desktop-width Settings keeps its existing two-column navigation and detail layout.
 
 ## Implemented Details
@@ -299,7 +310,7 @@ Do not install this custom gesture in mobile Safari; Safari owns its browser nav
 Additional physical-device verification remains required because the gesture is intentionally
 disabled outside the iOS Tauri runtime.
 
-### Physical iPhone refinements — August 14, 2026
+### Physical iPhone refinements
 
 Physical-device recordings validated ordinary edge tracking and fast hamburger-state flicks, and
 drove these final refinements:
@@ -321,8 +332,8 @@ drove these final refinements:
   fixed alerts, and portaled menus/selects use the same bounds. Mobile web, Android, wide layouts,
   and desktop retain their original viewport behavior.
 - Settings entry avoids the underlying transform rebound. Settings Back animates before committing
-  history, rejects stale or duplicate deferred closes, and falls back to the menu for a direct or
-  markerless entry.
+  history, rejects stale or duplicate deferred closes, and uses the remembered home surface for
+  markerless in-app entries while direct loads still fall back to the menu.
 - Page-mode chat/project overflow menus are nonmodal and share exclusive ownership. An outside tap
   dismisses the current menu without consuming its target, delayed closes cannot dismiss a newly
   opened menu, and desktop keeps Radix's default modal/uncontrolled behavior.
@@ -332,9 +343,8 @@ verify short cancellation, vertical-scroll rejection, project-backed and both Se
 rotation/short landscape, safe-area portal placement, outside-menu transfer, nested submenus, and
 compact keyboard focus.
 
-The pinned Nix toolchain passes 723 tests, TypeScript typecheck, formatting, and lint with the
-repository's existing 13 warnings and no errors. The same checks and the production frontend build
-pass locally; `git diff --check` also passes.
+The pinned Nix toolchain passes the full frontend test suite, TypeScript typecheck, formatting, and
+lint with no new warnings. The production frontend build and `git diff --check` also pass.
 
 ## Non-Goals
 

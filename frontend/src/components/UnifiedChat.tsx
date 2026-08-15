@@ -3038,13 +3038,13 @@ export function UnifiedChat({
   // Load conversation when URL changes or on mount. Cached runtimes—including
   // active offscreen streams—remain authoritative and do not get reloaded.
   useEffect(() => {
-    if (chatId && openai) {
+    if (isVisible && chatId && openai) {
       const snapshot = runtimeStore.get(activeRuntimeKey);
       if (!snapshot?.historyLoaded) {
         void loadConversation(activeRuntimeKey, chatId);
       }
     }
-  }, [activeRuntimeKey, chatId, openai, loadConversation, runtimeStore]);
+  }, [activeRuntimeKey, chatId, isVisible, openai, loadConversation, runtimeStore]);
 
   // Set up progressive polling interval
   useEffect(() => {
