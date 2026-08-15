@@ -29,6 +29,7 @@ import {
   SettingsAccountArea,
   SETTINGS_USAGE_LINK_CLASS
 } from "@/components/settings/SettingsAccountArea";
+import { getSettingsNavLinkPresentation } from "@/components/settings/settingsNavPresentation";
 import { SettingsNavigationLockProvider } from "@/components/settings/SettingsNavigationLockProvider";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
 import { useSettingsBillingRefresh } from "@/components/settings/useSettingsBillingRefresh";
@@ -99,6 +100,7 @@ function browserHistoryEntryKey(state: unknown) {
 function SettingsNavLink({ item, compact }: { item: SettingsNavItem; compact: boolean }) {
   const Icon = item.icon;
   const isNavigationLocked = useSettingsNavigationLockState();
+  const presentation = getSettingsNavLinkPresentation(compact);
   const attentionLabel =
     item.badge === "Paused"
       ? "Team usage paused"
@@ -119,17 +121,14 @@ function SettingsNavLink({ item, compact }: { item: SettingsNavItem; compact: bo
         }
       }}
       activeProps={{
-        className:
-          "bg-[hsl(var(--sidebar-chrome))] text-foreground shadow-sm dark:bg-[hsl(var(--sidebar-chrome-hover))]"
+        className: presentation.activeClassName
       }}
       inactiveProps={{
-        className: "text-muted-foreground hover:bg-background/70 hover:text-foreground"
+        className: presentation.inactiveClassName
       }}
       className={cn(
-        "group flex min-h-11 items-center justify-start font-medium transition-colors",
-        compact
-          ? "-mx-2 gap-2 rounded-2xl px-2 text-base leading-6"
-          : "gap-3 rounded-lg px-3 py-2 text-sm",
+        "group flex min-h-11 items-center justify-start font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        presentation.containerClassName,
         isNavigationLocked && "cursor-not-allowed opacity-50"
       )}
     >
@@ -168,8 +167,6 @@ function SettingsLayoutContent() {
   const isSettingsRoot = isSettingsRootPath(location.pathname);
   const isAuthReady = !os.auth.loading && !!os.auth.user;
   const menuRef = useRef<HTMLElement>(null);
-  const menuBackButtonRef = useRef<HTMLButtonElement>(null);
-  const detailBackButtonRef = useRef<HTMLButtonElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const rootHistoryIndexRef = useRef<number | null>(null);
   const popAnimationRef = useRef<Promise<void> | null>(null);
@@ -258,9 +255,9 @@ function SettingsLayoutContent() {
 
     const frame = window.requestAnimationFrame(() => {
       if (isSettingsRoot) {
-        menuBackButtonRef.current?.focus({ preventScroll: true });
+        menuRef.current?.focus({ preventScroll: true });
       } else if (!isPopping) {
-        detailBackButtonRef.current?.focus({ preventScroll: true });
+        mainRef.current?.focus({ preventScroll: true });
       }
     });
     return () => window.cancelAnimationFrame(frame);
@@ -699,10 +696,11 @@ function SettingsLayoutContent() {
     >
       <aside
         ref={menuRef}
+        tabIndex={isCompactViewport ? -1 : undefined}
         aria-label="Settings navigation"
         aria-hidden={isCompactViewport && !isSettingsRoot}
         className={cn(
-          "flex min-h-0 flex-col overflow-hidden border-r border-border/40 bg-muted dark:bg-[hsl(var(--sidebar))]",
+          "flex min-h-0 flex-col overflow-hidden border-r border-border/40 bg-muted outline-none dark:bg-[hsl(var(--sidebar))]",
           isCompactViewport
             ? [
                 "maple-mobile-settings-safe-surface maple-navigation-page fixed inset-0 z-10 w-full border-r-0",
@@ -720,12 +718,11 @@ function SettingsLayoutContent() {
           )}
         >
           <button
-            ref={menuBackButtonRef}
             type="button"
             onClick={() => void closeSettings()}
             disabled={isNavigationLocked || isClosingSettings}
             className={cn(
-              "flex min-w-0 flex-1 items-center justify-start gap-2 rounded-lg text-foreground transition-colors hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50",
+              "flex min-w-0 flex-1 items-center justify-start gap-2 rounded-lg text-foreground transition-colors hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
               isCompactViewport ? "min-h-11" : "h-10 px-2"
             )}
             aria-label="Back to chats"
@@ -816,9 +813,10 @@ function SettingsLayoutContent() {
 
       <main
         ref={mainRef}
+        tabIndex={isCompactViewport ? -1 : undefined}
         aria-hidden={isCompactViewport && (isSettingsRoot || isPopping)}
         className={cn(
-          "flex min-h-0 min-w-0 flex-col overflow-hidden bg-background",
+          "flex min-h-0 min-w-0 flex-col overflow-hidden bg-background outline-none",
           isCompactViewport && [
             "maple-mobile-settings-safe-surface maple-navigation-page fixed inset-0 z-20 shadow-[-12px_0_28px_rgba(0,0,0,0.12)]",
             isSettingsDetailSwipeActive && "maple-navigation-page-interactive",
@@ -832,7 +830,6 @@ function SettingsLayoutContent() {
         {isCompactViewport && (
           <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border/50 bg-background px-5">
             <button
-              ref={detailBackButtonRef}
               type="button"
               onClick={() => void showSettingsMenu()}
               disabled={isNavigationLocked || isPopping || isSettingsDetailSwipeActive}
