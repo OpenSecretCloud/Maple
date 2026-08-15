@@ -184,7 +184,10 @@ import {
   registerChatOptimisticMessage,
   unregisterChatOptimisticMessage
 } from "@/services/chatOptimisticMessageOwnership";
-import { resolveMobileDraftProjectId } from "@/utils/mobileNavigation";
+import {
+  mobileStackOwnsConversationHref,
+  resolveMobileDraftProjectId
+} from "@/utils/mobileNavigation";
 
 const CHAT_ALERT_CLASS = "absolute top-16 left-1/2 z-50 w-full max-w-2xl -translate-x-1/2 px-4";
 const STREAM_EVENT_DEBUG_STORAGE_KEY = "maple:sse-debug";
@@ -1616,6 +1619,10 @@ export function UnifiedChat({
   const runtimeInstanceId = useId();
   const visibleChatOwner = useRef<object>({}).current;
   const hasCommittedRuntimeSelectionRef = useRef(false);
+  const mobileNavigationOwnsConversationHref = mobileStackOwnsConversationHref(
+    standaloneMobile,
+    onMobileConversationCreated !== undefined
+  );
 
   const [initialRuntimeSelection] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1699,7 +1706,9 @@ export function UnifiedChat({
     const canonicalKey = runtimeStore.resolveKey(renderedRuntimeKey);
     const canonicalConversationId = conversationIdFromChatRuntimeKey(canonicalKey);
     if (canonicalConversationId) {
-      canonicalizeConversationHistoryEntry(canonicalConversationId);
+      if (!mobileNavigationOwnsConversationHref) {
+        canonicalizeConversationHistoryEntry(canonicalConversationId);
+      }
       return;
     }
     if (!isDraftChatRuntimeKey(canonicalKey)) return;
@@ -1716,6 +1725,7 @@ export function UnifiedChat({
   }, [
     activeRuntime.composer.draftProjectId,
     isVisible,
+    mobileNavigationOwnsConversationHref,
     renderedRuntimeKey,
     runtimeStore,
     selectedProjectId,
@@ -4913,7 +4923,7 @@ export function UnifiedChat({
             activeRuntimeKeyRef.current = runtimeKey;
             setActiveRuntimeKey(runtimeKey);
             setChatId(conversationId);
-            if (!standaloneMobile || !onMobileConversationCreated) {
+            if (!mobileNavigationOwnsConversationHref) {
               canonicalizeConversationHistoryEntry(conversationId);
             }
           }
@@ -5051,6 +5061,7 @@ export function UnifiedChat({
       billingStatus,
       isRuntimeSelected,
       isWebSearchEnabled,
+      mobileNavigationOwnsConversationHref,
       model,
       openai,
       processStreamingResponse,

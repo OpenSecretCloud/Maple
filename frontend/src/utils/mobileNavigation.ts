@@ -5,6 +5,11 @@ type NativeMobileLaunchGate = {
   peek: (isNativeMobile: boolean) => boolean;
 };
 
+type MobileNavigationHistory = {
+  flush: () => void;
+  push: (href: string, state?: unknown) => void;
+};
+
 export function createNativeMobileLaunchGate(): NativeMobileLaunchGate {
   let initialized = false;
 
@@ -118,6 +123,39 @@ export function createMobileHistoryState(
     ...base,
     [MOBILE_NAVIGATION_HISTORY_KEY]: snapshot
   };
+}
+
+export function pushMobileHistoryEntry(
+  history: MobileNavigationHistory,
+  snapshot: MobileNavigationSnapshot,
+  page: Exclude<MobileNavigationPage, { type: "menu" }>,
+  existingState: unknown = null
+) {
+  history.push(mobilePageHref(page), createMobileHistoryState(snapshot, existingState));
+  // TanStack buffers browser-history writes in a microtask. Commit this entry before React can
+  // mount the destination page and let it attach state to what must now be the new entry.
+  history.flush();
+}
+
+export function mobileStackOwnsConversationHref(
+  standaloneMobile: boolean,
+  hasConversationCreatedHandler: boolean
+) {
+  return standaloneMobile && hasConversationCreatedHandler;
+}
+
+export function mobilePageMatchesHref(page: MobileNavigationPage, href: string) {
+  const url = new URL(href, "https://maple.local");
+  if (url.pathname !== "/") return false;
+
+  const hrefPage = pageFromHref(href, -1);
+  if (hrefPage.type === "menu") {
+    return page.type === "menu" || page.type === "new-chat";
+  }
+  if (hrefPage.type === "chat") {
+    return page.type === "chat" && page.conversationId === hrefPage.conversationId;
+  }
+  return page.type === "project" && page.projectId === hrefPage.projectId;
 }
 
 export function readMobileHistoryState(state: unknown): MobileNavigationSnapshot | null {
@@ -251,11 +289,13 @@ export function mobileMenuOwnsDocumentCanvas(
 export function mobileChatNavigationOwnerInstanceId(
   homeIsActive: boolean,
   snapshot: MobileNavigationSnapshot,
-  incomingSnapshot: MobileNavigationSnapshot | null
+  incomingSnapshot: MobileNavigationSnapshot | null,
+  href: string
 ) {
   if (!homeIsActive) return null;
 
   const page = activeMobilePage(incomingSnapshot ?? snapshot);
+  if (!mobilePageMatchesHref(page, href)) return null;
   return page.type === "chat" || page.type === "new-chat" ? page.instanceId : null;
 }
 

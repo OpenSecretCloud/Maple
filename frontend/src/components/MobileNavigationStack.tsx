@@ -26,9 +26,10 @@ import {
   mobileMenuOwnsDocumentCanvas,
   mobileMenuHistoryDelta,
   mobilePageHref,
+  mobilePageMatchesHref,
   mobilePageUsesMenuButton,
-  pageFromHref,
   promoteNewChatToConversation,
+  pushMobileHistoryEntry,
   pushMobilePage,
   readMobileHistoryState,
   resolveMissingMobileConversation,
@@ -54,17 +55,6 @@ function lastProjectPage(snapshot: MobileNavigationSnapshot) {
     if (page.type === "project") return page;
   }
   return null;
-}
-
-function mobilePageMatchesHomeHref(page: MobileNavigationPage, href: string) {
-  const hrefPage = pageFromHref(href, -1);
-  if (hrefPage.type === "menu") {
-    return page.type === "menu" || page.type === "new-chat";
-  }
-  if (hrefPage.type === "chat") {
-    return page.type === "chat" && page.conversationId === hrefPage.conversationId;
-  }
-  return page.type === "project" && page.projectId === hrefPage.projectId;
 }
 
 function NavigationLayer({
@@ -293,12 +283,12 @@ export function MobileNavigationStack({
     if (previousHomeLocationHref !== null || homeLocationHref === null) return;
 
     const current = snapshotRef.current;
-    if (mobilePageMatchesHomeHref(activeMobilePage(current), homeLocationHref)) return;
+    if (mobilePageMatchesHref(activeMobilePage(current), homeLocationHref)) return;
 
     const restoredFromHistory = readMobileHistoryState(window.history.state);
     const next =
       restoredFromHistory &&
-      mobilePageMatchesHomeHref(activeMobilePage(restoredFromHistory), homeLocationHref)
+      mobilePageMatchesHref(activeMobilePage(restoredFromHistory), homeLocationHref)
         ? restoredFromHistory
         : createInitialMobileNavigation(homeLocationHref);
     const activePage = activeMobilePage(next);
@@ -466,10 +456,7 @@ export function MobileNavigationStack({
         setOutgoingChatPage(null);
       }
 
-      router.history.push(
-        mobilePageHref(page),
-        createMobileHistoryState(next, window.history.state)
-      );
+      pushMobileHistoryEntry(router.history, next, page, window.history.state);
       updateSnapshot(next);
       setEnteringInstanceId(page.instanceId);
       return true;
@@ -531,7 +518,8 @@ export function MobileNavigationStack({
         mobileChatNavigationOwnerInstanceId(
           true,
           snapshotRef.current,
-          incomingSnapshotRef.current
+          incomingSnapshotRef.current,
+          currentHomeHref()
         ) !== newChatInstanceId
       ) {
         return false;
@@ -572,7 +560,8 @@ export function MobileNavigationStack({
         mobileChatNavigationOwnerInstanceId(
           activeHomeLocationHrefRef.current !== null,
           current,
-          incoming
+          incoming,
+          currentHomeHref()
         ) !== instanceId
       ) {
         return;
@@ -683,7 +672,8 @@ export function MobileNavigationStack({
   const chatNavigationOwnerInstanceId = mobileChatNavigationOwnerInstanceId(
     homeLocationHref !== null,
     snapshot,
-    incomingSnapshot
+    incomingSnapshot,
+    currentHomeHref()
   );
   const isMenuCovered = targetActivePage.type !== "menu";
   const swipeParentPage = swipeVisual?.context ?? null;

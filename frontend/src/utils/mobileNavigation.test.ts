@@ -9,9 +9,12 @@ import {
   mobileMenuHistoryDelta,
   mobileMenuOwnsDocumentCanvas,
   mobilePageHref,
+  mobilePageMatchesHref,
   mobilePageUsesMenuButton,
+  mobileStackOwnsConversationHref,
   pageFromHref,
   promoteNewChatToConversation,
+  pushMobileHistoryEntry,
   pushMobilePage,
   readMobileHistoryState,
   resolveMissingMobileConversation,
@@ -126,6 +129,60 @@ describe("mobile navigation history state", () => {
       type: "chat",
       instanceId: 2,
       conversationId: "conv_2"
+    });
+  });
+
+  it("commits a pushed chat before mounted content can replace the current entry", () => {
+    type Entry = { href: string; state: unknown };
+    const menu = createInitialMobileNavigation("/");
+    const entries: Entry[] = [
+      { href: "/", state: createMobileHistoryState(menu, { __TSR_index: 0 }) }
+    ];
+    const calls: string[] = [];
+    let currentIndex = 0;
+    let pendingEntry: Entry | null = null;
+    const history = {
+      push: (href: string, state?: unknown) => {
+        calls.push("push");
+        pendingEntry = { href, state };
+      },
+      flush: () => {
+        calls.push("flush");
+        if (!pendingEntry) return;
+        entries.splice(currentIndex + 1, entries.length, pendingEntry);
+        currentIndex += 1;
+        pendingEntry = null;
+      }
+    };
+    const chatPage = {
+      type: "chat" as const,
+      instanceId: 1,
+      conversationId: "project-chat"
+    };
+    const chat = pushMobilePage(menu, chatPage);
+
+    pushMobileHistoryEntry(history, chat, chatPage, entries[currentIndex].state);
+
+    // Model a destination layout effect attaching state with replaceState. The pushed chat must
+    // already be current, otherwise this would rewrite the root entry and reproduce the QA bug.
+    entries[currentIndex] = {
+      href: "/?conversation_id=project-chat",
+      state: entries[currentIndex].state
+    };
+
+    expect(calls).toEqual(["push", "flush"]);
+    expect(entries).toHaveLength(2);
+    currentIndex -= 1;
+    expect(entries[currentIndex].href).toBe("/");
+    expect(readMobileHistoryState(entries[currentIndex].state)).toEqual(menu);
+    expect(pageFromHref(entries[currentIndex].href, 99).type).toBe("menu");
+
+    currentIndex += 1;
+    expect(entries[currentIndex].href).toBe("/?conversation_id=project-chat");
+    expect(readMobileHistoryState(entries[currentIndex].state)).toEqual(chat);
+    expect(pageFromHref(entries[currentIndex].href, 99)).toMatchObject({
+      type: "chat",
+      conversationId: "project-chat"
     });
   });
 });
@@ -412,7 +469,7 @@ describe("mobile menu document canvas", () => {
 });
 
 describe("mobile chat navigation ownership", () => {
-  it("assigns URL and runtime ownership only to the committed home chat", () => {
+  it("assigns runtime ownership only when the stack page matches the live URL", () => {
     const currentChat = createInitialMobileNavigation("/?conversation_id=current");
     const parentChat = pushMobilePage(createInitialMobileNavigation("/"), {
       type: "chat",
@@ -420,10 +477,45 @@ describe("mobile chat navigation ownership", () => {
       conversationId: "parent"
     });
     const menu = createInitialMobileNavigation("/");
+    const newChat = pushMobilePage(menu, {
+      type: "new-chat",
+      instanceId: 8,
+      projectId: "project-a"
+    });
 
-    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, null)).toBe(1);
-    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, parentChat)).toBe(7);
-    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, menu)).toBeNull();
-    expect(mobileChatNavigationOwnerInstanceId(false, currentChat, null)).toBeNull();
+    expect(
+      mobileChatNavigationOwnerInstanceId(true, currentChat, null, "/?conversation_id=current")
+    ).toBe(1);
+    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, null, "/")).toBeNull();
+    expect(
+      mobileChatNavigationOwnerInstanceId(true, currentChat, parentChat, "/?conversation_id=parent")
+    ).toBe(7);
+    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, parentChat, "/")).toBeNull();
+    expect(mobileChatNavigationOwnerInstanceId(true, currentChat, menu, "/")).toBeNull();
+    expect(mobileChatNavigationOwnerInstanceId(true, newChat, null, "/")).toBe(8);
+    expect(
+      mobileChatNavigationOwnerInstanceId(false, currentChat, null, "/?conversation_id=current")
+    ).toBeNull();
+  });
+
+  it("leaves conversation href ownership with the compact stack", () => {
+    expect(mobileStackOwnsConversationHref(true, true)).toBe(true);
+    expect(mobileStackOwnsConversationHref(true, false)).toBe(false);
+    expect(mobileStackOwnsConversationHref(false, true)).toBe(false);
+  });
+
+  it("matches each stack page to its canonical live href", () => {
+    const menuPage = createInitialMobileNavigation("/").stack[0];
+    expect(mobilePageMatchesHref(menuPage, "/")).toBe(true);
+    expect(mobilePageMatchesHref(menuPage, "/settings")).toBe(false);
+    expect(
+      mobilePageMatchesHref({ type: "new-chat", instanceId: 2, projectId: "project-a" }, "/")
+    ).toBe(true);
+    expect(
+      mobilePageMatchesHref(
+        { type: "chat", instanceId: 3, conversationId: "chat-a" },
+        "/?conversation_id=chat-b"
+      )
+    ).toBe(false);
   });
 });
