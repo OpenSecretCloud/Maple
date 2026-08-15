@@ -248,7 +248,6 @@ export function MainMenu({
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const chatHistoryContainerRef = historyContainerRef;
   const agentModeAvailable = isTauriDesktop();
   const [agentModeFlag, setAgentModeFlag] = useState<{
     userId: string;
@@ -531,7 +530,7 @@ export function MainMenu({
             )}
           </div>
         )}
-        <div className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col")}>
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <nav
             ref={historyContainerRef}
             className={cn(
@@ -548,7 +547,7 @@ export function MainMenu({
                 onExitSelectionMode={exitSelectionMode}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
-                containerRef={chatHistoryContainerRef}
+                containerRef={historyContainerRef}
                 pagePresentation={isPagePresentation}
                 onOpenConversation={
                   onOpenConversation
@@ -571,9 +570,7 @@ export function MainMenu({
           {/* Bottom scroll fade */}
           <div
             aria-hidden
-            className={cn(
-              "pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
-            )}
+            className="pointer-events-none absolute bottom-0 left-0 z-[8] h-8 w-[calc(100%-10px)] max-w-full bg-gradient-to-b from-transparent to-muted/75 dark:to-[hsl(var(--sidebar)/0.75)]"
           />
         </div>
         {!isPagePresentation && (

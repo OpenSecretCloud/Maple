@@ -3,14 +3,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useCallback, useState, type ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { BillingStatus } from "@/billing/billingApi";
-import { useBillingStatusQuery } from "@/billing/useBillingStatusQuery";
+import {
+  NESTED_BILLING_QUERY_MOUNT_POLICY,
+  useBillingStatusQuery,
+  type BillingStatusQueryDependencies
+} from "@/billing/useBillingStatusQuery";
 import { CreditUsage } from "@/components/CreditUsage";
 import { BillingStateContext } from "@/state/LocalStateContextDef";
-import {
-  NESTED_SETTINGS_BILLING_QUERY_OPTIONS,
-  useSettingsBillingRefresh,
-  type SettingsBillingRefreshDependencies
-} from "./useSettingsBillingRefresh";
+import { useSettingsBillingRefresh } from "./useSettingsBillingRefresh";
 
 function billingStatus(productName: string): BillingStatus {
   return {
@@ -58,7 +58,7 @@ function NestedBillingProbe({
   setBillingStatus
 }: {
   accountId?: string | null;
-  dependencies: SettingsBillingRefreshDependencies;
+  dependencies: BillingStatusQueryDependencies;
   label: string;
   setBillingStatus: (status: BillingStatus) => void;
 }) {
@@ -67,7 +67,7 @@ function NestedBillingProbe({
     billingStatusAccountId: null,
     clearBillingStatus: noopClearBillingStatus,
     dependencies,
-    refetchOnMount: NESTED_SETTINGS_BILLING_QUERY_OPTIONS.refetchOnMount,
+    refetchOnMount: NESTED_BILLING_QUERY_MOUNT_POLICY.refetchOnMount,
     setBillingStatus
   });
 
@@ -82,7 +82,7 @@ function BillingProbe({
   setBillingStatus
 }: {
   accountId?: string | null;
-  dependencies: SettingsBillingRefreshDependencies;
+  dependencies: BillingStatusQueryDependencies;
   label: string;
   rerenderToken?: number;
   setBillingStatus: (status: BillingStatus) => void;
@@ -110,7 +110,7 @@ function UsageProbe({
   onPublish
 }: {
   accountId?: string | null;
-  dependencies: SettingsBillingRefreshDependencies;
+  dependencies: BillingStatusQueryDependencies;
   initialStatus: BillingStatus;
   initialStatusAccountId?: string | null;
   onPublish: (status: BillingStatus, accountId?: string | null) => void;

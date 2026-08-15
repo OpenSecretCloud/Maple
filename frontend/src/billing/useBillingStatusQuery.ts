@@ -9,13 +9,13 @@ export const NESTED_BILLING_QUERY_MOUNT_POLICY = {
 } as const;
 
 export type BillingStatusQueryDependencies = {
-  getBillingStatus: () => Promise<BillingStatus>;
+  getBillingStatus: (accountId: string) => Promise<BillingStatus>;
 };
 
 type BillingStatusSetter = (status: BillingStatus, accountId?: string | null) => void;
 
 const DEFAULT_DEPENDENCIES: BillingStatusQueryDependencies = {
-  getBillingStatus: () => getBillingService().getBillingStatus()
+  getBillingStatus: (accountId) => getBillingService().getBillingStatus(accountId)
 };
 
 const lastPublishedBySetter = new WeakMap<
@@ -48,7 +48,10 @@ export function useBillingStatusQuery({
     // ["billingStatus"] prefix still lets existing invalidations match every
     // account-scoped entry.
     queryKey: [...BILLING_STATUS_QUERY_KEY, accountId],
-    queryFn: dependencies.getBillingStatus,
+    queryFn: () => {
+      if (!accountId) throw new Error("Billing queries require an authenticated account.");
+      return dependencies.getBillingStatus(accountId);
+    },
     enabled: !!accountId,
     refetchOnMount
   });

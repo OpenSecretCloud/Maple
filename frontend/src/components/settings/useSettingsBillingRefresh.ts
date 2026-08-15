@@ -1,16 +1,8 @@
 import type { BillingStatus } from "@/billing/billingApi";
 import {
-  BILLING_STATUS_QUERY_KEY,
-  NESTED_BILLING_QUERY_MOUNT_POLICY,
   useBillingStatusQuery,
   type BillingStatusQueryDependencies
 } from "@/billing/useBillingStatusQuery";
-
-export {
-  BILLING_STATUS_QUERY_KEY,
-  NESTED_BILLING_QUERY_MOUNT_POLICY as NESTED_SETTINGS_BILLING_QUERY_OPTIONS
-};
-export type SettingsBillingRefreshDependencies = BillingStatusQueryDependencies;
 
 /**
  * Makes mounting the Settings shell the explicit billing refresh boundary.
@@ -27,7 +19,7 @@ export function useSettingsBillingRefresh({
   accountId: string | null;
   billingStatusAccountId: string | null;
   clearBillingStatus: () => void;
-  dependencies?: SettingsBillingRefreshDependencies;
+  dependencies?: BillingStatusQueryDependencies;
   setBillingStatus: (status: BillingStatus, accountId?: string | null) => void;
 }) {
   return useBillingStatusQuery({

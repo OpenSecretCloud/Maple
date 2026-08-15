@@ -10,7 +10,8 @@ export const Route = createFileRoute("/payment-success")({
 
 function PaymentSuccessPage() {
   const os = useOpenSecret();
-  const isLoggedIn = !!os.auth.user;
+  const accountId = os.auth.user?.user.id ?? null;
+  const isLoggedIn = accountId !== null;
 
   // Fetch billing status to check if it's a team plan
   const {
@@ -18,10 +19,11 @@ function PaymentSuccessPage() {
     isLoading,
     isError
   } = useQuery({
-    queryKey: ["billingStatus", os.auth.user?.user.id ?? null, "payment-success"],
+    queryKey: ["billingStatus", accountId, "payment-success"],
     queryFn: async () => {
+      if (!accountId) throw new Error("Billing queries require an authenticated account.");
       const billingService = getBillingService();
-      return await billingService.getBillingStatus();
+      return await billingService.getBillingStatus(accountId);
     },
     enabled: isLoggedIn,
     retry: 3, // Retry a few times in case billing status is still updating

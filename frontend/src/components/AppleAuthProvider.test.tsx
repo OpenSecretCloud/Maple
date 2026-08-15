@@ -148,6 +148,7 @@ describe("AppleAuthProvider", () => {
     );
 
     currentOpenSecret = {
+      auth: { user: null },
       initiateAppleAuth,
       handleAppleCallback
     };

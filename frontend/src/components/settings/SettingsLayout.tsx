@@ -190,6 +190,7 @@ function SettingsLayoutContent() {
     isSettingsRoot,
     isSettingsDetailEntering
   });
+  const isUsageNavigationDisabled = isNavigationLocked || isSigningOut || isClosingSettings;
 
   useLayoutEffect(() => {
     const documentRoot = document.documentElement;
@@ -798,7 +799,14 @@ function SettingsLayoutContent() {
           usage={
             <Link
               to="/pricing"
-              className={SETTINGS_USAGE_LINK_CLASS}
+              aria-disabled={isUsageNavigationDisabled || undefined}
+              onClick={(event) => {
+                if (isUsageNavigationDisabled) event.preventDefault();
+              }}
+              className={cn(
+                SETTINGS_USAGE_LINK_CLASS,
+                isUsageNavigationDisabled && "cursor-not-allowed opacity-50"
+              )}
               aria-label={
                 resolvedBillingStatus
                   ? `${resolvedBillingStatus.product_name} plan`

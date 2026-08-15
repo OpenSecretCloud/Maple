@@ -26,7 +26,7 @@ type CreditUsageViewProps = {
   formatCredits: (n: number) => string;
 };
 
-export function CreditUsageView(p: CreditUsageViewProps) {
+function CreditUsageView(p: CreditUsageViewProps) {
   const hasUsageMeter =
     p.percentUsed !== undefined && p.roundedUsed !== undefined && p.used !== undefined;
 

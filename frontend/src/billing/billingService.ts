@@ -50,59 +50,168 @@ import type {
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
 
+type StoredBillingCredential = {
+  accountId: string;
+  token: string;
+};
+
+type BillingOperationScope = {
+  accountId: string;
+  epoch: number;
+  os: OpenSecretContextType;
+};
+
+class BillingSessionChangedError extends Error {
+  constructor() {
+    super("The billing session changed while the request was in progress.");
+    this.name = "BillingSessionChangedError";
+  }
+}
+
+function getAccountId(os: OpenSecretContextType): string | null {
+  return os.auth.user?.user.id ?? null;
+}
+
+function isUnauthorizedError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes("unauthorized") ||
+      error.message.includes("Unauthorized") ||
+      error.message.includes("Invalid JWT token") ||
+      error.message.includes("401"))
+  );
+}
+
 class BillingService {
   private os: OpenSecretContextType;
+  private accountId: string | null;
+  private credentialEpoch = 0;
 
   constructor(os: OpenSecretContextType) {
     this.os = os;
+    this.accountId = getAccountId(os);
   }
 
   updateOpenSecret(os: OpenSecretContextType): void {
+    const nextAccountId = getAccountId(os);
+    if (nextAccountId !== this.accountId) {
+      this.invalidateCredentials();
+    }
+
     this.os = os;
+    this.accountId = nextAccountId;
   }
 
-  private async getStoredToken(): Promise<string | null> {
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+  private removeStoredCredential(): void {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
   }
 
-  private async generateAndStoreToken(): Promise<string> {
-    const token = await this.os.generateThirdPartyToken(import.meta.env.VITE_MAPLE_BILLING_API_URL);
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, token.token);
+  private invalidateCredentials(): void {
+    this.credentialEpoch += 1;
+    this.removeStoredCredential();
+  }
+
+  private captureScope(expectedAccountId?: string): BillingOperationScope {
+    if (
+      !this.accountId ||
+      (expectedAccountId !== undefined && expectedAccountId !== this.accountId)
+    ) {
+      throw new BillingSessionChangedError();
+    }
+
+    return {
+      accountId: this.accountId,
+      epoch: this.credentialEpoch,
+      os: this.os
+    };
+  }
+
+  private assertCurrentScope(scope: BillingOperationScope): void {
+    if (scope.accountId !== this.accountId || scope.epoch !== this.credentialEpoch) {
+      throw new BillingSessionChangedError();
+    }
+  }
+
+  private getStoredToken(scope: BillingOperationScope): string | null {
+    this.assertCurrentScope(scope);
+    const serialized = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    if (!serialized) return null;
+
+    try {
+      const credential = JSON.parse(serialized) as Partial<StoredBillingCredential>;
+      if (
+        credential.accountId === scope.accountId &&
+        typeof credential.token === "string" &&
+        credential.token.length > 0
+      ) {
+        return credential.token;
+      }
+    } catch {
+      // Legacy raw tokens and malformed credentials are intentionally discarded.
+    }
+
+    this.removeStoredCredential();
+    return null;
+  }
+
+  private async generateAndStoreToken(scope: BillingOperationScope): Promise<string> {
+    const token = await scope.os.generateThirdPartyToken(
+      import.meta.env.VITE_MAPLE_BILLING_API_URL
+    );
+    this.assertCurrentScope(scope);
+    sessionStorage.setItem(
+      TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accountId: scope.accountId,
+        token: token.token
+      } satisfies StoredBillingCredential)
+    );
     return token.token;
   }
 
-  private async executeWithToken<T>(apiCall: (token: string) => Promise<T>): Promise<T> {
-    // Try with stored token first
-    const storedToken = await this.getStoredToken();
+  private async callWithToken<T>(
+    scope: BillingOperationScope,
+    token: string,
+    apiCall: (token: string) => Promise<T>
+  ): Promise<T> {
+    this.assertCurrentScope(scope);
+
+    try {
+      const result = await apiCall(token);
+      this.assertCurrentScope(scope);
+      return result;
+    } catch (error) {
+      this.assertCurrentScope(scope);
+      throw error;
+    }
+  }
+
+  private async executeWithToken<T>(
+    apiCall: (token: string) => Promise<T>,
+    expectedAccountId?: string
+  ): Promise<T> {
+    let scope = this.captureScope(expectedAccountId);
+    const storedToken = this.getStoredToken(scope);
     if (storedToken) {
       try {
-        return await apiCall(storedToken);
+        return await this.callWithToken(scope, storedToken, apiCall);
       } catch (error) {
-        // If unauthorized or invalid token, try with new token
-        if (
-          error instanceof Error &&
-          (error.message.includes("unauthorized") ||
-            error.message.includes("Unauthorized") ||
-            error.message.includes("Invalid JWT token") ||
-            error.message.includes("401"))
-        ) {
-          // Clear the invalid token
-          this.clearToken();
-          // Generate new token
-          const newToken = await this.generateAndStoreToken();
-          return await apiCall(newToken);
-        }
-        throw error;
+        this.assertCurrentScope(scope);
+        if (!isUnauthorizedError(error)) throw error;
+
+        this.clearToken();
+        scope = this.captureScope(expectedAccountId);
+        const newToken = await this.generateAndStoreToken(scope);
+        return this.callWithToken(scope, newToken, apiCall);
       }
     }
 
-    // No stored token, generate new one
-    const newToken = await this.generateAndStoreToken();
-    return await apiCall(newToken);
+    const newToken = await this.generateAndStoreToken(scope);
+    return this.callWithToken(scope, newToken, apiCall);
   }
 
-  async getBillingStatus(): Promise<BillingStatus> {
-    return this.executeWithToken((token) => fetchBillingStatus(token));
+  async getBillingStatus(expectedAccountId?: string): Promise<BillingStatus> {
+    return this.executeWithToken((token) => fetchBillingStatus(token), expectedAccountId);
   }
 
   async getPortalUrl(): Promise<string> {
@@ -141,7 +250,7 @@ class BillingService {
   }
 
   clearToken(): void {
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    this.invalidateCredentials();
   }
 
   // Team Management Methods
