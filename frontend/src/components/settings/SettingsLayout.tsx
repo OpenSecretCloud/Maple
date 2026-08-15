@@ -24,6 +24,7 @@ import {
   type ComponentType
 } from "react";
 import { getBillingService } from "@/billing/billingService";
+import { CreditUsage } from "@/components/CreditUsage";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { SettingsNavigationLockProvider } from "@/components/settings/SettingsNavigationLockProvider";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
@@ -92,7 +93,7 @@ function browserHistoryEntryKey(state: unknown) {
   return typeof candidate.key === "string" ? candidate.key : null;
 }
 
-function SettingsNavLink({ item }: { item: SettingsNavItem }) {
+function SettingsNavLink({ item, compact }: { item: SettingsNavItem; compact: boolean }) {
   const Icon = item.icon;
   const isNavigationLocked = useSettingsNavigationLockState();
   const attentionLabel =
@@ -122,12 +123,15 @@ function SettingsNavLink({ item }: { item: SettingsNavItem }) {
         className: "text-muted-foreground hover:bg-background/70 hover:text-foreground"
       }}
       className={cn(
-        "group flex min-h-11 items-center justify-start gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        "group flex min-h-11 items-center justify-start font-medium transition-colors",
+        compact
+          ? "gap-2 rounded-2xl pr-1 text-base leading-6"
+          : "gap-3 rounded-lg px-3 py-2 text-sm",
         isNavigationLocked && "cursor-not-allowed opacity-50"
       )}
     >
       <span className="shrink-0">
-        <Icon className="h-4 w-4" />
+        <Icon className={compact ? "h-5 w-5" : "h-4 w-4"} />
       </span>
       <span className="min-w-0 flex-1 truncate">{item.label}</span>
       {item.badge && (
@@ -708,37 +712,72 @@ function SettingsLayoutContent() {
         )}
         style={isSettingsDetailSwipeActive ? settingsMenuSwipeStyle : undefined}
       >
-        <div className="flex h-16 shrink-0 items-center border-b border-border/30 px-3 sm:px-4">
+        <div
+          className={cn(
+            "flex h-16 shrink-0 items-center",
+            isCompactViewport ? "px-5 pb-2 pt-3" : "border-b border-border/30 px-3 sm:px-4"
+          )}
+        >
           <button
             ref={menuBackButtonRef}
             type="button"
             onClick={() => void closeSettings()}
             disabled={isNavigationLocked || isClosingSettings}
-            className="flex h-10 min-w-0 flex-1 items-center justify-start gap-2 rounded-lg px-2 text-foreground transition-colors hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
+            className={cn(
+              "flex min-w-0 flex-1 items-center justify-start gap-2 rounded-lg text-foreground transition-colors hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50",
+              isCompactViewport ? "min-h-11" : "h-10 px-2"
+            )}
             aria-label="Back to chats"
           >
-            <ArrowLeft className="h-4 w-4 shrink-0" />
-            <MapleWordmark className="h-4 min-w-0 w-auto" aria-hidden />
+            <ArrowLeft className={cn("shrink-0", isCompactViewport ? "h-5 w-5" : "h-4 w-4")} />
+            <MapleWordmark
+              className={cn("min-w-0 w-auto", isCompactViewport ? "h-5" : "h-4")}
+              aria-hidden
+            />
           </button>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
-          <div className="mb-3 flex items-center gap-2 px-3">
-            <Settings className="h-4 w-4 text-muted-foreground" />
-            <p className="text-sm font-semibold">Settings</p>
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col overflow-y-auto",
+            isCompactViewport ? "overscroll-y-contain px-5 pb-4 pt-5" : "px-3 py-3"
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-2",
+              isCompactViewport ? "mb-5 min-h-11" : "mb-3 px-3"
+            )}
+          >
+            <Settings
+              className={cn("text-muted-foreground", isCompactViewport ? "h-5 w-5" : "h-4 w-4")}
+            />
+            <p className={cn("font-semibold", isCompactViewport ? "text-base" : "text-sm")}>
+              Settings
+            </p>
           </div>
 
-          <nav className="space-y-4" aria-label="Settings categories">
+          <nav
+            className={isCompactViewport ? "space-y-5" : "space-y-4"}
+            aria-label="Settings categories"
+          >
             {sections
               .filter((section) => section.items.length > 0)
               .map((section) => (
-                <div key={section.label}>
-                  <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+                <div key={section.label} className={isCompactViewport ? "space-y-2" : undefined}>
+                  <p
+                    className={cn(
+                      "uppercase text-muted-foreground",
+                      isCompactViewport
+                        ? "pb-1.5 text-xs font-medium tracking-wider"
+                        : "mb-1 px-3 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground/80"
+                    )}
+                  >
                     {section.label}
                   </p>
-                  <div className="space-y-0.5">
+                  <div className={isCompactViewport ? "space-y-2" : "space-y-0.5"}>
                     {section.items.map((item) => (
-                      <SettingsNavLink key={item.to} item={item} />
+                      <SettingsNavLink key={item.to} item={item} compact={isCompactViewport} />
                     ))}
                   </div>
                 </div>
@@ -746,19 +785,42 @@ function SettingsLayoutContent() {
           </nav>
         </div>
 
-        <div className="shrink-0 border-t border-border/30 p-3">
-          <div className="mb-2 min-w-0 px-3">
-            <p className="truncate text-xs font-medium">
+        <div
+          className={cn(
+            "shrink-0 border-t border-border/30",
+            isCompactViewport
+              ? "maple-mobile-settings-account-footer px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2"
+              : "p-3"
+          )}
+        >
+          <div className={cn("mb-2 min-w-0", !isCompactViewport && "px-3")}>
+            <p
+              className={cn(
+                "truncate font-medium",
+                isCompactViewport ? "text-base leading-6" : "text-xs"
+              )}
+            >
               {os.auth.user.user.email || "Maple user"}
             </p>
-            <p className="truncate text-[11px] text-muted-foreground">
+            <p
+              className={cn(
+                "truncate text-muted-foreground",
+                isCompactViewport ? "text-xs leading-5" : "text-[11px]"
+              )}
+            >
               {resolvedBillingStatus?.product_name
                 ? `${resolvedBillingStatus.product_name} Plan`
                 : "Loading plan..."}
             </p>
           </div>
           {signOutError && (
-            <p role="alert" className="mb-2 px-3 text-xs leading-relaxed text-destructive">
+            <p
+              role="alert"
+              className={cn(
+                "mb-2 leading-relaxed text-destructive",
+                isCompactViewport ? "text-sm" : "px-3 text-xs"
+              )}
+            >
               {signOutError}
             </p>
           )}
@@ -768,11 +830,29 @@ function SettingsLayoutContent() {
             onClick={signOut}
             disabled={isNavigationLocked || isSigningOut}
             title="Log out"
-            className="h-10 w-full justify-start px-3 text-muted-foreground hover:text-foreground"
+            className={cn(
+              "w-full justify-start text-muted-foreground hover:text-foreground",
+              isCompactViewport ? "h-11 px-0 text-base" : "h-10 px-3"
+            )}
           >
-            <LogOut className="mr-3 h-4 w-4 shrink-0" />
+            <LogOut
+              className={cn("shrink-0", isCompactViewport ? "mr-2 h-5 w-5" : "mr-3 h-4 w-4")}
+            />
             <span>{isSigningOut ? "Logging out..." : "Log out"}</span>
           </Button>
+          {isCompactViewport && (
+            <Link
+              to="/pricing"
+              className="group/credit-link mt-2 flex min-h-11 min-w-0 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              aria-label={
+                resolvedBillingStatus
+                  ? `${resolvedBillingStatus.product_name} plan`
+                  : "Billing status"
+              }
+            >
+              <CreditUsage pagePresentation />
+            </Link>
+          )}
         </div>
       </aside>
 
@@ -792,18 +872,18 @@ function SettingsLayoutContent() {
         style={isSettingsDetailSwipeActive ? settingsDetailSwipeStyle : undefined}
       >
         {isCompactViewport && (
-          <div className="maple-mobile-settings-sticky-header sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/50 bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+          <div className="maple-mobile-settings-sticky-header sticky top-0 z-30 flex h-16 items-center gap-2 border-b border-border/50 bg-background/95 px-5 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <button
               ref={detailBackButtonRef}
               type="button"
               onClick={() => void showSettingsMenu()}
               disabled={isNavigationLocked || isPopping || isSettingsDetailSwipeActive}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Back to settings"
             >
               <ArrowLeft className="h-5 w-5" />
             </button>
-            <p className="text-sm font-semibold">Settings</p>
+            <p className="text-base font-semibold">Settings</p>
           </div>
         )}
         <Outlet />

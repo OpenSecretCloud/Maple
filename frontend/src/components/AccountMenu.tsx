@@ -11,7 +11,13 @@ import { SETTINGS_HOME_PARENT_STATE_KEY } from "@/utils/settingsNavigation";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { cn } from "@/utils/utils";
 
-export function AccountMenu({ pagePresentation = false }: { pagePresentation?: boolean }) {
+export function AccountMenu({
+  pagePresentation = false,
+  showCreditUsage = true
+}: {
+  pagePresentation?: boolean;
+  showCreditUsage?: boolean;
+}) {
   const os = useOpenSecret();
   const { billingStatus, setBillingStatus } = useBillingState();
   const isCompactSettingsLayout = useCompactSettingsLayout();
@@ -44,7 +50,7 @@ export function AccountMenu({ pagePresentation = false }: { pagePresentation?: b
       : undefined;
 
   return (
-    <div className="flex w-full max-w-full items-end gap-2">
+    <div className={cn("flex max-w-full items-end gap-2", showCreditUsage ? "w-full" : "w-auto")}>
       <Link
         to={isCompactSettingsLayout ? "/settings" : "/settings/account"}
         state={
@@ -68,16 +74,18 @@ export function AccountMenu({ pagePresentation = false }: { pagePresentation?: b
           />
         )}
       </Link>
-      <Link
-        to="/pricing"
-        className={cn(
-          "group/credit-link min-w-0 flex-1 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-          pagePresentation && "flex min-h-11"
-        )}
-        aria-label={billingStatus ? `${billingStatus.product_name} plan` : "Billing status"}
-      >
-        <CreditUsage pagePresentation={pagePresentation} />
-      </Link>
+      {showCreditUsage && (
+        <Link
+          to="/pricing"
+          className={cn(
+            "group/credit-link min-w-0 flex-1 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            pagePresentation && "flex min-h-11"
+          )}
+          aria-label={billingStatus ? `${billingStatus.product_name} plan` : "Billing status"}
+        >
+          <CreditUsage pagePresentation={pagePresentation} />
+        </Link>
+      )}
     </div>
   );
 }
