@@ -228,7 +228,11 @@ export const LocalStateProvider = ({
       hasWhisperModel: true // Default to true to avoid hiding button during loading
     };
   });
-  const [billingStatus, setBillingStatusState] = useState<BillingStatus | null>(null);
+  const [billingState, setBillingState] = useState<{
+    status: BillingStatus | null;
+    accountId: string | null;
+  }>({ status: null, accountId: null });
+  const billingStatus = billingState.status;
   const [searchQuery, setSearchQueryState] = useState("");
   const [isSearchVisible, setIsSearchVisibleState] = useState(false);
   const [selectedProjectId, setSelectedProjectIdState] = useState<string | null>(null);
@@ -257,8 +261,8 @@ export const LocalStateProvider = ({
   );
 
   const setBillingStatus = useCallback(
-    (status: BillingStatus) => {
-      setBillingStatusState(status);
+    (status: BillingStatus, accountId: string | null = null) => {
+      setBillingState({ status, accountId });
 
       const planName = status.product_name?.toLowerCase() || "";
       const isPaidPlan =
@@ -334,6 +338,14 @@ export const LocalStateProvider = ({
     [setModelInternal, storage]
   );
 
+  const clearBillingStatus = useCallback(() => {
+    setBillingState((current) =>
+      current.status === null && current.accountId === null
+        ? current
+        : { status: null, accountId: null }
+    );
+  }, []);
+
   const setSearchQuery = useCallback((query: string) => setSearchQueryState(query), []);
 
   const setIsSearchVisible = useCallback(
@@ -406,8 +418,13 @@ export const LocalStateProvider = ({
     [modelState, setAvailableModels, setHasWhisperModel, setModel, setModelAliases]
   );
   const billingValue = useMemo<BillingState>(
-    () => ({ billingStatus, setBillingStatus }),
-    [billingStatus, setBillingStatus]
+    () => ({
+      billingStatus,
+      billingStatusAccountId: billingState.accountId,
+      setBillingStatus,
+      clearBillingStatus
+    }),
+    [billingState.accountId, billingStatus, clearBillingStatus, setBillingStatus]
   );
   const sidebarSearchValue = useMemo<SidebarSearchState>(
     () => ({ searchQuery, setSearchQuery, isSearchVisible, setIsSearchVisible }),

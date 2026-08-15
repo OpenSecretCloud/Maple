@@ -206,6 +206,30 @@ describe("LocalStateProvider", () => {
     expect(snapshots.model?.model).toBe(PAID_DEFAULT_MODEL_ID);
   });
 
+  test("tracks billing ownership and clears only the account-scoped snapshot", () => {
+    const snapshots: DomainSnapshots = {};
+    const counts = createCounts();
+
+    act(() => {
+      renderer = create(
+        <LocalStateProvider storage={null}>
+          <DomainProbes snapshots={snapshots} counts={counts} />
+        </LocalStateProvider>
+      );
+    });
+
+    act(() => snapshots.billing?.setBillingStatus(freeBillingStatus(), "account-a"));
+    expect(snapshots.billing?.billingStatus?.product_name).toBe("Free");
+    expect(snapshots.billing?.billingStatusAccountId).toBe("account-a");
+
+    const before = { ...counts };
+    act(() => snapshots.billing?.clearBillingStatus());
+
+    expect(snapshots.billing?.billingStatus).toBeNull();
+    expect(snapshots.billing?.billingStatusAccountId).toBeNull();
+    expectRenderDelta(counts, before, { billing: 1 });
+  });
+
   test("preserves an in-memory model choice when storage is unavailable", () => {
     const snapshots: DomainSnapshots = {};
     const counts = createCounts();

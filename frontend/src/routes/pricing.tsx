@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
+import { useBillingStatusQuery } from "@/billing/useBillingStatusQuery";
 import { useQuery } from "@tanstack/react-query";
 import {
   Loader2,
@@ -245,7 +246,7 @@ function PricingPage() {
   const [pendingTeamProductId, setPendingTeamProductId] = useState<string | null>(null);
   const navigate = useNavigate();
   const os = useOpenSecret();
-  const { setBillingStatus } = useBillingState();
+  const { billingStatusAccountId, clearBillingStatus, setBillingStatus } = useBillingState();
   const isLoggedIn = !!os.auth.user;
   const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
   const { selected_plan } = Route.useSearch();
@@ -256,15 +257,12 @@ function PricingPage() {
   const isMobilePlatform = isMobile();
 
   // Fetch billing status if user is logged in
-  const { data: freshBillingStatus, isLoading: isBillingStatusLoading } = useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      const status = await billingService.getBillingStatus();
-      setBillingStatus(status);
-      return status;
-    },
-    enabled: isLoggedIn
+  const { data: freshBillingStatus, isLoading: isBillingStatusLoading } = useBillingStatusQuery({
+    accountId: os.auth.user?.user.id ?? null,
+    billingStatusAccountId,
+    clearBillingStatus,
+    refetchOnMount: true,
+    setBillingStatus
   });
 
   // Auto-enable Bitcoin toggle for Zaprite users (except on mobile platforms) and guest users

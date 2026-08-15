@@ -4,12 +4,14 @@ import { useOpenSecret } from "@opensecret/react";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
+import { useBillingStatusQuery } from "@/billing/useBillingStatusQuery";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { MarketingHeader } from "@/components/MarketingHeader";
 import { Loader2, Check, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { VerificationModal } from "@/components/VerificationModal";
+import { useBillingState } from "@/state/useLocalState";
 
 type RedeemSearchParams = {
   code?: string;
@@ -38,6 +40,7 @@ function RedeemPage() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
+  const { billingStatusAccountId, clearBillingStatus, setBillingStatus } = useBillingState();
   const { code: urlCode } = Route.useSearch();
   const [passCode, setPassCode] = useState(urlCode || "");
   const [checkTrigger, setCheckTrigger] = useState(0);
@@ -47,13 +50,12 @@ function RedeemPage() {
   const isLoggedIn = !!os.auth.user;
   const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
 
-  const { data: billingStatus } = useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      return await billingService.getBillingStatus();
-    },
-    enabled: isLoggedIn
+  const { data: billingStatus } = useBillingStatusQuery({
+    accountId: os.auth.user?.user.id ?? null,
+    billingStatusAccountId,
+    clearBillingStatus,
+    refetchOnMount: true,
+    setBillingStatus
   });
 
   const trimmedCode = passCode.trim().toLowerCase();

@@ -8,7 +8,6 @@ import {
   CreditCard,
   Database,
   KeyRound,
-  LogOut,
   MessageSquareText,
   Settings,
   ShieldCheck,
@@ -26,11 +25,15 @@ import {
 import { getBillingService } from "@/billing/billingService";
 import { CreditUsage } from "@/components/CreditUsage";
 import { MapleWordmark } from "@/components/MapleWordmark";
+import {
+  SettingsAccountArea,
+  SETTINGS_USAGE_LINK_CLASS
+} from "@/components/settings/SettingsAccountArea";
 import { SettingsNavigationLockProvider } from "@/components/settings/SettingsNavigationLockProvider";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
+import { useSettingsBillingRefresh } from "@/components/settings/useSettingsBillingRefresh";
 import { useIOSSwipeBack } from "@/components/useIOSSwipeBack";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
 import {
   useSettingsNavigationLock,
@@ -158,7 +161,8 @@ function SettingsLayoutContent() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const { returnToHome } = usePersistentHomeNavigation();
-  const { billingStatus, setBillingStatus } = useBillingState();
+  const { billingStatus, billingStatusAccountId, clearBillingStatus, setBillingStatus } =
+    useBillingState();
   const isNavigationLocked = useSettingsNavigationLockState();
   const isCompactViewport = useCompactSettingsLayout();
   const isSettingsRoot = isSettingsRootPath(location.pathname);
@@ -526,14 +530,11 @@ function SettingsLayoutContent() {
     return () => window.removeEventListener("keydown", dismissOnEscape);
   }, [isCompactViewport, isSettingsRoot, showSettingsMenu]);
 
-  const { data: currentBillingStatus } = useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const status = await getBillingService().getBillingStatus();
-      setBillingStatus(status);
-      return status;
-    },
-    enabled: !!os.auth.user
+  const { data: currentBillingStatus } = useSettingsBillingRefresh({
+    accountId: os.auth.user?.user.id ?? null,
+    billingStatusAccountId,
+    clearBillingStatus,
+    setBillingStatus
   });
 
   const resolvedBillingStatus = currentBillingStatus ?? billingStatus;
@@ -785,75 +786,32 @@ function SettingsLayoutContent() {
           </nav>
         </div>
 
-        <div
-          className={cn(
-            "shrink-0 border-t border-border/30",
-            isCompactViewport
-              ? "maple-mobile-settings-account-footer px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2"
-              : "p-3"
-          )}
-        >
-          <div className={cn("mb-2 min-w-0", !isCompactViewport && "px-3")}>
-            <p
-              className={cn(
-                "truncate font-medium",
-                isCompactViewport ? "text-base leading-6" : "text-xs"
-              )}
-            >
-              {os.auth.user.user.email || "Maple user"}
-            </p>
-            <p
-              className={cn(
-                "truncate text-muted-foreground",
-                isCompactViewport ? "text-xs leading-5" : "text-[11px]"
-              )}
-            >
-              {resolvedBillingStatus?.product_name
-                ? `${resolvedBillingStatus.product_name} Plan`
-                : "Loading plan..."}
-            </p>
-          </div>
-          {signOutError && (
-            <p
-              role="alert"
-              className={cn(
-                "mb-2 leading-relaxed text-destructive",
-                isCompactViewport ? "text-sm" : "px-3 text-xs"
-              )}
-            >
-              {signOutError}
-            </p>
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={signOut}
-            disabled={isNavigationLocked || isSigningOut}
-            title="Log out"
-            className={cn(
-              "w-full justify-start text-muted-foreground hover:text-foreground",
-              isCompactViewport ? "h-11 px-0 text-base" : "h-10 px-3"
-            )}
-          >
-            <LogOut
-              className={cn("shrink-0", isCompactViewport ? "mr-2 h-5 w-5" : "mr-3 h-4 w-4")}
-            />
-            <span>{isSigningOut ? "Logging out..." : "Log out"}</span>
-          </Button>
-          {isCompactViewport && (
+        <SettingsAccountArea
+          compact={isCompactViewport}
+          email={os.auth.user.user.email || "Maple user"}
+          planLabel={
+            resolvedBillingStatus?.product_name
+              ? `${resolvedBillingStatus.product_name} Plan`
+              : "Loading plan..."
+          }
+          signOutError={signOutError}
+          isSigningOut={isSigningOut}
+          signOutDisabled={isNavigationLocked || isSigningOut}
+          onSignOut={signOut}
+          usage={
             <Link
               to="/pricing"
-              className="group/credit-link mt-2 flex min-h-11 min-w-0 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className={SETTINGS_USAGE_LINK_CLASS}
               aria-label={
                 resolvedBillingStatus
                   ? `${resolvedBillingStatus.product_name} plan`
                   : "Billing status"
               }
             >
-              <CreditUsage pagePresentation />
+              <CreditUsage pagePresentation={isCompactViewport} />
             </Link>
-          )}
-        </div>
+          }
+        />
       </aside>
 
       <main

@@ -405,7 +405,7 @@ export function MainMenu({
                 <PanelLeft className="h-4 w-4" />
               </button>
             ) : (
-              <AccountMenu pagePresentation showCreditUsage={false} />
+              <AccountMenu pagePresentation />
             )}
           </div>
           {!isPagePresentation && (showAgentMode || isAgentMode) && (

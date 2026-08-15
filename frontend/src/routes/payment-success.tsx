@@ -18,7 +18,7 @@ function PaymentSuccessPage() {
     isLoading,
     isError
   } = useQuery({
-    queryKey: ["billingStatus", "payment-success"],
+    queryKey: ["billingStatus", os.auth.user?.user.id ?? null, "payment-success"],
     queryFn: async () => {
       const billingService = getBillingService();
       return await billingService.getBillingStatus();

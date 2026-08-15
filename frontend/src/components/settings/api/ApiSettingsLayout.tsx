@@ -1,5 +1,6 @@
 import { Link, Outlet } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useOpenSecret } from "@opensecret/react";
 import {
   AlertCircle,
   CreditCard,
@@ -11,6 +12,10 @@ import {
 } from "lucide-react";
 import { hasApiAccess } from "@/billing/billingAccess";
 import { getBillingService } from "@/billing/billingService";
+import {
+  NESTED_BILLING_QUERY_MOUNT_POLICY,
+  useBillingStatusQuery
+} from "@/billing/useBillingStatusQuery";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useBillingState } from "@/state/useLocalState";
@@ -63,7 +68,9 @@ function ApiSettingsLoading() {
 }
 
 export function ApiSettingsLayout() {
-  const { billingStatus, setBillingStatus } = useBillingState();
+  const os = useOpenSecret();
+  const { billingStatus, billingStatusAccountId, clearBillingStatus, setBillingStatus } =
+    useBillingState();
   const isIOSPlatform = isIOS();
   const isTauriDesktopPlatform = isTauriDesktop();
 
@@ -72,13 +79,14 @@ export function ApiSettingsLayout() {
     isLoading: billingStatusLoading,
     isError: billingStatusError,
     refetch: refetchBillingStatus
-  } = useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const status = await getBillingService().getBillingStatus();
-      setBillingStatus(status);
-      return status;
-    }
+  } = useBillingStatusQuery({
+    accountId: os.auth.user?.user.id ?? null,
+    billingStatusAccountId,
+    clearBillingStatus,
+    // The Settings shell owns the once-per-visit refresh. With an empty cache,
+    // React Query still loads billing data for a direct API Settings entry.
+    refetchOnMount: NESTED_BILLING_QUERY_MOUNT_POLICY.refetchOnMount,
+    setBillingStatus
   });
 
   const {

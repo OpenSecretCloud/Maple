@@ -26,7 +26,7 @@ type CreditUsageViewProps = {
   formatCredits: (n: number) => string;
 };
 
-function CreditUsageView(p: CreditUsageViewProps) {
+export function CreditUsageView(p: CreditUsageViewProps) {
   const hasUsageMeter =
     p.percentUsed !== undefined && p.roundedUsed !== undefined && p.used !== undefined;
 
@@ -43,11 +43,11 @@ function CreditUsageView(p: CreditUsageViewProps) {
         }`}
       >
         <span
-          className={`inline-flex shrink-0 items-center rounded-full border border-border/50 bg-muted px-1.5 py-0.5 font-semibold uppercase tracking-wider text-foreground ${
+          className={`inline-flex min-w-0 max-w-full items-center rounded-full border border-border/50 bg-muted px-1.5 py-0.5 font-semibold uppercase tracking-wider text-foreground ${
             p.pagePresentation ? "text-[11px]" : "text-[9px]"
           }`}
         >
-          {p.planLabel}
+          <span className="min-w-0 truncate">{p.planLabel}</span>
         </span>
         {hasUsageMeter ? (
           <>

@@ -6,6 +6,7 @@ import { PromoDialog, hasSeenPromo, markPromoAsSeen } from "@/components/PromoDi
 import { useOpenSecret } from "@opensecret/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
+import { useBillingStatusQuery } from "@/billing/useBillingStatusQuery";
 import { useBillingState } from "@/state/useLocalState";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { appUrl } from "@/config/domains";
@@ -43,7 +44,8 @@ function Index() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
-  const { setBillingStatus, billingStatus } = useBillingState();
+  const { billingStatus, billingStatusAccountId, clearBillingStatus, setBillingStatus } =
+    useBillingState();
 
   useRouteMeta({
     title: os.auth.user ? "Maple Research" : "Maple Research | Private AI Workspace",
@@ -59,15 +61,12 @@ function Index() {
   const [promoDialogOpen, setPromoDialogOpen] = useState(false);
 
   // Proactively fetch billing status for authenticated users
-  useQuery({
-    queryKey: ["billingStatus"],
-    queryFn: async () => {
-      const billingService = getBillingService();
-      const status = await billingService.getBillingStatus();
-      setBillingStatus(status);
-      return status;
-    },
-    enabled: !!os.auth.user
+  useBillingStatusQuery({
+    accountId: os.auth.user?.user.id ?? null,
+    billingStatusAccountId,
+    clearBillingStatus,
+    refetchOnMount: true,
+    setBillingStatus
   });
 
   // Handle login redirect
