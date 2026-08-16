@@ -321,7 +321,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -2106,7 +2106,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2431,7 +2431,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2523,6 +2523,17 @@ name = "fancy-regex"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "476de73bddf2ef8490aa4ee8f1cf40b430bf1d56c48c22080e5186952cd580e6"
 dependencies = [
  "bit-set",
  "regex-automata",
@@ -3253,8 +3264,8 @@ dependencies = [
 
 [[package]]
 name = "goose"
-version = "1.45.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=064244e6bddf641876676f054a006b7da1da5182#064244e6bddf641876676f054a006b7da1da5182"
+version = "1.46.0"
+source = "git+https://github.com/aaif-goose/goose.git?rev=98c11ce2ee7b9b302978aa64b1eab7d0895607c7#98c11ce2ee7b9b302978aa64b1eab7d0895607c7"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-http",
@@ -3275,6 +3286,7 @@ dependencies = [
  "futures",
  "gethostname",
  "goose-acp-macros",
+ "goose-context-management",
  "goose-download-manager",
  "goose-providers",
  "goose-sdk-types",
@@ -3295,7 +3307,6 @@ dependencies = [
  "once_cell",
  "pastey 0.2.3",
  "process-wrap",
- "pulldown-cmark",
  "rand 0.10.2",
  "rayon",
  "regex",
@@ -3348,17 +3359,33 @@ dependencies = [
 
 [[package]]
 name = "goose-acp-macros"
-version = "1.45.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=064244e6bddf641876676f054a006b7da1da5182#064244e6bddf641876676f054a006b7da1da5182"
+version = "1.46.0"
+source = "git+https://github.com/aaif-goose/goose.git?rev=98c11ce2ee7b9b302978aa64b1eab7d0895607c7#98c11ce2ee7b9b302978aa64b1eab7d0895607c7"
 dependencies = [
  "quote",
  "syn 2.0.108",
 ]
 
 [[package]]
+name = "goose-context-management"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/aaif-goose/goose.git?rev=98c11ce2ee7b9b302978aa64b1eab7d0895607c7#98c11ce2ee7b9b302978aa64b1eab7d0895607c7"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "goose-providers",
+ "include_dir",
+ "minijinja",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "goose-download-manager"
 version = "0.1.0-alpha.5"
-source = "git+https://github.com/aaif-goose/goose.git?rev=064244e6bddf641876676f054a006b7da1da5182#064244e6bddf641876676f054a006b7da1da5182"
+source = "git+https://github.com/aaif-goose/goose.git?rev=98c11ce2ee7b9b302978aa64b1eab7d0895607c7#98c11ce2ee7b9b302978aa64b1eab7d0895607c7"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -3371,7 +3398,7 @@ dependencies = [
 [[package]]
 name = "goose-provider-types"
 version = "0.1.0-alpha.5"
-source = "git+https://github.com/aaif-goose/goose.git?rev=064244e6bddf641876676f054a006b7da1da5182#064244e6bddf641876676f054a006b7da1da5182"
+source = "git+https://github.com/aaif-goose/goose.git?rev=98c11ce2ee7b9b302978aa64b1eab7d0895607c7#98c11ce2ee7b9b302978aa64b1eab7d0895607c7"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3397,7 +3424,7 @@ dependencies = [
 [[package]]
 name = "goose-providers"
 version = "0.1.0-alpha.5"
-source = "git+https://github.com/aaif-goose/goose.git?rev=064244e6bddf641876676f054a006b7da1da5182#064244e6bddf641876676f054a006b7da1da5182"
+source = "git+https://github.com/aaif-goose/goose.git?rev=98c11ce2ee7b9b302978aa64b1eab7d0895607c7#98c11ce2ee7b9b302978aa64b1eab7d0895607c7"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3421,7 +3448,7 @@ dependencies = [
 [[package]]
 name = "goose-sdk-types"
 version = "0.1.0-alpha.5"
-source = "git+https://github.com/aaif-goose/goose.git?rev=064244e6bddf641876676f054a006b7da1da5182#064244e6bddf641876676f054a006b7da1da5182"
+source = "git+https://github.com/aaif-goose/goose.git?rev=98c11ce2ee7b9b302978aa64b1eab7d0895607c7#98c11ce2ee7b9b302978aa64b1eab7d0895607c7"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -3560,6 +3587,12 @@ name = "hashbrown"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5419bdc4f6a9207fbeba6d11b604d481addf78ecd10c11ad51e76c2f6482748d"
+
+[[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "allocator-api2",
  "equivalent",
@@ -3790,7 +3823,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -4372,29 +4405,54 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.46.2"
+version = "0.49.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50180452e7808015fe083eae3efcf1ec98b89b45dd8cc204f7b4a6b7b81ea675"
+checksum = "59ec8a241beed129f06114aa68007e905ca350e7baeb6e17a7631bb7978d91b2"
 dependencies = [
  "ahash 0.8.12",
  "bytecount",
  "data-encoding",
  "email_address",
- "fancy-regex",
+ "fancy-regex 0.19.0",
  "fraction",
  "getrandom 0.3.4",
  "idna",
  "itoa",
+ "jsonschema-regex",
+ "jsonschema-value",
  "num-cmp",
  "num-traits",
  "percent-encoding",
  "referencing",
  "regex",
- "regex-syntax",
  "serde",
  "serde_json",
+ "strum 0.28.0",
  "unicode-general-category",
  "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema-regex"
+version = "0.49.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91994f45017ed5e66aa8e59b8415f4cb033a6380d7200387b7cf117595fbdf85"
+dependencies = [
+ "regex-syntax",
+]
+
+[[package]]
+name = "jsonschema-value"
+version = "0.49.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ec7637f83e510868ae6ed625f7ebfbbde4554ee8ce49854caa5126a8b9b9ecb"
+dependencies = [
+ "ahash 0.8.12",
+ "bytecount",
+ "fraction",
+ "num-cmp",
+ "num-traits",
+ "serde_json",
 ]
 
 [[package]]
@@ -5049,7 +5107,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5202,7 +5260,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.16",
  "http",
@@ -6470,7 +6528,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6735,14 +6793,14 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.46.10"
+version = "0.49.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fbf332a2f81899f6836f22c03da73dae8a664c32e3016b84692c23cddadc95d"
+checksum = "6efa2154ea6f5ce0fdecdd2a8d18f2fa1a39a8fbba91564f555a592e4dce8278"
 dependencies = [
  "ahash 0.8.12",
  "fluent-uri",
  "getrandom 0.3.4",
- "hashbrown 0.16.0",
+ "hashbrown 0.17.1",
  "itoa",
  "micromap",
  "parking_lot",
@@ -6764,9 +6822,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.13"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5276caf25ac86c8d810222b3dbb938e512c55c6831a10f3e6ed1c93b84041f1c"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -7119,7 +7177,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7178,7 +7236,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8815,7 +8873,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8900,7 +8958,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bstr",
- "fancy-regex",
+ "fancy-regex 0.17.0",
  "lazy_static",
  "regex",
  "rustc-hash",
@@ -10236,7 +10294,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
