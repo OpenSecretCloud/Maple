@@ -130,7 +130,10 @@ import { reconcileNewChatMcpServerNames } from "@/services/agentMcpServers";
 import {
   agentComposerCanSend,
   agentComposerShowsStop,
-  canSubmitAgentComposerMessage
+  canSubmitAgentComposerMessage,
+  isAgentComposerSendLocked,
+  planAgentComposerStop,
+  shouldClearStoppingSendLock
 } from "@/services/agentComposerSend";
 import { agentOperationFence } from "@/services/agentOperationFence";
 import { reconcileAgentSessionSnapshot } from "@/services/agentSessionSummaries";
@@ -454,6 +457,7 @@ export function AgentMode({ userId }: { userId: string }) {
   >(null);
   const [projectSkillsTrustError, setProjectSkillsTrustError] = useState<string | null>(null);
   const [pendingSendSessionIds, setPendingSendSessionIds] = useState<Set<string>>(() => new Set());
+  const [stoppingSessionIds, setStoppingSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessionSelectionId, setPendingSessionSelectionId] = useState<string | null>(null);
   const [activeRunsBySession, setActiveRunsBySession] = useState<Record<string, string>>({});
   const [completedUnreadSessionIds, setCompletedUnreadSessionIds] = useState<Set<string>>(
@@ -871,7 +875,13 @@ export function AgentMode({ userId }: { userId: string }) {
     isAgentModelLockedRef.current = isAgentModelLocked;
   }, [isAgentModelLocked]);
   const isAgentModelSelectionDisabled = areAgentSettingsLocked || isAgentModelLocked;
-  const isAgentSendLocked = areAgentSettingsLocked;
+  const isStopping = Boolean(
+    activeSessionId && activeRunId && stoppingSessionIds.has(activeSessionId)
+  );
+  const isAgentSendLocked = isAgentComposerSendLocked({
+    areSettingsLocked: areAgentSettingsLocked,
+    isStopping
+  });
   const isSending = Boolean(activeRunId) || isSubmitting;
   const selectedNewChatMcpServerNames = useMemo(
     () =>
@@ -1011,6 +1021,24 @@ export function AgentMode({ userId }: { userId: string }) {
     [pendingSendTokensRef]
   );
 
+  const markStoppingSession = useCallback((sessionId: string) => {
+    setStoppingSessionIds((current) => {
+      if (current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.add(sessionId);
+      return next;
+    });
+  }, []);
+
+  const clearStoppingSession = useCallback((sessionId: string) => {
+    setStoppingSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+  }, []);
+
   const applyRuntimeStatus = useCallback(
     (status: AgentRuntimeStatus, expectedRunStateGeneration?: number) => {
       if (
@@ -1038,15 +1066,19 @@ export function AgentMode({ userId }: { userId: string }) {
     setActiveRunsBySession(next);
   }, []);
 
-  const clearActiveRun = useCallback((sessionId: string, expectedRunId?: string) => {
-    const current = activeRunsBySessionRef.current;
-    if (expectedRunId && current[sessionId] !== expectedRunId) return;
-    if (!(sessionId in current)) return;
-    const next = { ...current };
-    delete next[sessionId];
-    activeRunsBySessionRef.current = next;
-    setActiveRunsBySession(next);
-  }, []);
+  const clearActiveRun = useCallback(
+    (sessionId: string, expectedRunId?: string) => {
+      const current = activeRunsBySessionRef.current;
+      if (expectedRunId && current[sessionId] !== expectedRunId) return;
+      if (!(sessionId in current)) return;
+      const next = { ...current };
+      delete next[sessionId];
+      activeRunsBySessionRef.current = next;
+      setActiveRunsBySession(next);
+      clearStoppingSession(sessionId);
+    },
+    [clearStoppingSession]
+  );
 
   const bumpTimelineRevision = useCallback(
     (sessionId: string): number => {
@@ -2238,22 +2270,48 @@ export function AgentMode({ userId }: { userId: string }) {
   const cancelPrompt = useCallback(async () => {
     const sessionId = activeSessionIdRef.current;
     const currentRunId = sessionId ? activeRunsBySessionRef.current[sessionId] : activeRunId;
-    if (!currentRunId) {
-      const pendingSessionKey = activeSessionIdRef.current || NEW_SESSION_PENDING_KEY;
-      const pendingSendToken = pendingSendTokensRef.current.get(pendingSessionKey);
-      if (pendingSendToken !== undefined) {
-        cancelledPendingSendTokensRef.current.add(pendingSendToken);
-      }
+    const pendingSessionKey = sessionId || NEW_SESSION_PENDING_KEY;
+    const pendingSendToken = pendingSendTokensRef.current.get(pendingSessionKey);
+    const plan = planAgentComposerStop({
+      hasActiveRun: Boolean(currentRunId),
+      hasInFlightSend: pendingSendToken !== undefined
+    });
+    if (plan.markInFlightSendCancelled && pendingSendToken !== undefined) {
+      cancelledPendingSendTokensRef.current.add(pendingSendToken);
+    }
+    if (!plan.cancelActiveRun || !currentRunId) {
       return;
+    }
+    if (plan.lockSendUntilRunFinished && sessionId) {
+      markStoppingSession(sessionId);
     }
     try {
       await agentRuntimeService.cancelRun(userId, currentRunId);
+      if (
+        sessionId &&
+        shouldClearStoppingSendLock({
+          cancelledRunId: currentRunId,
+          trackedRunId: activeRunsBySessionRef.current[sessionId]
+        })
+      ) {
+        clearStoppingSession(sessionId);
+      }
     } catch (cancelError) {
+      if (sessionId) {
+        clearStoppingSession(sessionId);
+      }
       if (activeSessionIdRef.current === sessionId) {
         setError(errorMessage(cancelError));
       }
     }
-  }, [activeRunId, cancelledPendingSendTokensRef, pendingSendTokensRef, userId]);
+  }, [
+    activeRunId,
+    cancelledPendingSendTokensRef,
+    clearStoppingSession,
+    markStoppingSession,
+    pendingSendTokensRef,
+    userId
+  ]);
 
   const respondToPermission = useCallback(
     async (item: AgentTimelineItem, decision: AgentPermissionDecision) => {

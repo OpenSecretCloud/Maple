@@ -12,6 +12,44 @@ export function canSubmitAgentComposerMessage({
   return Boolean(text.trim()) && !isSendLocked && !isSessionSelectionPending && !hasInFlightSend;
 }
 
+export function isAgentComposerSendLocked({
+  areSettingsLocked,
+  isStopping
+}: {
+  areSettingsLocked: boolean;
+  isStopping: boolean;
+}): boolean {
+  return areSettingsLocked || isStopping;
+}
+
+export function planAgentComposerStop({
+  hasActiveRun,
+  hasInFlightSend
+}: {
+  hasActiveRun: boolean;
+  hasInFlightSend: boolean;
+}): {
+  markInFlightSendCancelled: boolean;
+  cancelActiveRun: boolean;
+  lockSendUntilRunFinished: boolean;
+} {
+  return {
+    markInFlightSendCancelled: hasInFlightSend,
+    cancelActiveRun: hasActiveRun,
+    lockSendUntilRunFinished: hasActiveRun
+  };
+}
+
+export function shouldClearStoppingSendLock({
+  cancelledRunId,
+  trackedRunId
+}: {
+  cancelledRunId: string;
+  trackedRunId: string | undefined;
+}): boolean {
+  return trackedRunId !== cancelledRunId;
+}
+
 export function agentComposerShowsStop(isSending: boolean): boolean {
   return isSending;
 }

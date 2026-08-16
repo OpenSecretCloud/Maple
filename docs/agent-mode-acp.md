@@ -126,6 +126,7 @@ The refactor exposes a transport-neutral Maple service around the existing embed
 - create and delete a Maple task;
 - send and cancel a run;
 - queue a Desktop follow-up onto an active Goose loop through `Agent::steer`; leftover queued messages are retained in history if the loop exits first;
+- keep Desktop Stop from racing a follow-up send: in-flight composer sends are cancelled, and Send stays locked until the cancelled run settles;
 - consume an isolated, bounded event stream for one exact run;
 - receive typed permission requests and resolve them through an opaque responder bound to that exact account, task, and run;
 - observe a retained terminal result when a run stream closes normally; and

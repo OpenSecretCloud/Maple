@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   agentComposerCanSend,
   agentComposerShowsStop,
-  canSubmitAgentComposerMessage
+  canSubmitAgentComposerMessage,
+  isAgentComposerSendLocked,
+  planAgentComposerStop,
+  shouldClearStoppingSendLock
 } from "./agentComposerSend";
 
 describe("agent composer send policy", () => {
@@ -50,6 +53,81 @@ describe("agent composer send policy", () => {
         hasInFlightSend: true
       })
     ).toBe(false);
+  });
+
+  test("locks send while a run is stopping so Stop cannot race a new start", () => {
+    expect(
+      isAgentComposerSendLocked({
+        areSettingsLocked: false,
+        isStopping: false
+      })
+    ).toBe(false);
+    expect(
+      isAgentComposerSendLocked({
+        areSettingsLocked: false,
+        isStopping: true
+      })
+    ).toBe(true);
+    expect(
+      isAgentComposerSendLocked({
+        areSettingsLocked: true,
+        isStopping: false
+      })
+    ).toBe(true);
+  });
+
+  test("Stop cancels an in-flight send even when a run is already active", () => {
+    expect(
+      planAgentComposerStop({
+        hasActiveRun: true,
+        hasInFlightSend: true
+      })
+    ).toEqual({
+      markInFlightSendCancelled: true,
+      cancelActiveRun: true,
+      lockSendUntilRunFinished: true
+    });
+    expect(
+      planAgentComposerStop({
+        hasActiveRun: true,
+        hasInFlightSend: false
+      })
+    ).toEqual({
+      markInFlightSendCancelled: false,
+      cancelActiveRun: true,
+      lockSendUntilRunFinished: true
+    });
+    expect(
+      planAgentComposerStop({
+        hasActiveRun: false,
+        hasInFlightSend: true
+      })
+    ).toEqual({
+      markInFlightSendCancelled: true,
+      cancelActiveRun: false,
+      lockSendUntilRunFinished: false
+    });
+  });
+
+  test("clears the stopping lock if the cancelled run is already gone", () => {
+    expect(
+      shouldClearStoppingSendLock({
+        cancelledRunId: "run-1",
+        trackedRunId: "run-1"
+      })
+    ).toBe(false);
+    expect(
+      shouldClearStoppingSendLock({
+        cancelledRunId: "run-1",
+        trackedRunId: undefined
+      })
+    ).toBe(true);
+    expect(
+      shouldClearStoppingSendLock({
+        cancelledRunId: "run-1",
+        trackedRunId: "run-2"
+      })
+    ).toBe(true);
   });
 
   test("keeps stop visible while a run is active and send enabled when the composer has text", () => {
