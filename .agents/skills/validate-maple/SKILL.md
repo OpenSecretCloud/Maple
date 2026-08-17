@@ -305,6 +305,29 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
 - Verify cold start and already-running behavior where relevant.
 - Exercise real dialogs, filesystem access, keyring, updater, microphone, and packaged resources on each affected platform.
 
+### CUA only: macOS Open/Save
+
+Skip unless you drive the GUI with cua-driver (pid + `window_id`). Codex
+computer use and other full-desktop screenshot drivers should ignore this.
+
+On macOS, Maple's Open/Save sheet is hosted by **Open and Save Panel
+Service** (`com.apple.appkit.xpc.openAndSavePanelService`), not Maple and
+not Finder. After the picker appears, `list_windows` with no pid filter
+and take the panel-service window whose title is `Open` or `Save` and
+whose bounds match Maple's new stub.
+
+Do not act on Maple's `Open`/`Save` window: its AX is empty, background
+pixels fail `off_space_or_ax_unresolved`, and Maple-pid clicks (including
+a correct foreground crosshair) do not change the sheet. Sheet AX on the
+Maple parent is observation-only; presses return
+`element_outside_target_window`.
+
+Act on the panel-service pid/`window_id` (`foreground` pixels). That
+window may be `is_on_screen: false` and screenshot black. Confirm on
+Maple (`Where:`, then Trust/PROJECTS). Do not escalate the CUA session to
+desktop because Maple's stub refused input. After Open, Trust and the
+rest of the UI are Maple AX again.
+
 ## Report evidence without inflation
 
 Write the handoff in five buckets:
