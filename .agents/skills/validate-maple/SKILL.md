@@ -310,11 +310,13 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
 Skip unless you drive the GUI with cua-driver (pid + `window_id`). Codex
 computer use and other full-desktop screenshot drivers should ignore this.
 
-On macOS, Maple's Open/Save sheet is hosted by **Open and Save Panel
-Service** (`com.apple.appkit.xpc.openAndSavePanelService`), not Maple and
-not Finder. After the picker appears, `list_windows` with no pid filter
-and take the panel-service window whose title is `Open` or `Save` and
-whose bounds match Maple's new stub.
+On macOS every Maple native file or folder picker — Agent project folder,
+chat photo/document upload, Save, and any other Tauri `dialog` — is hosted
+by **Open and Save Panel Service**
+(`com.apple.appkit.xpc.openAndSavePanelService`), not Maple and not Finder.
+After the picker appears, `list_windows` with no pid filter and take the
+panel-service window whose title is `Open` or `Save` and whose bounds
+match Maple's new stub.
 
 Do not act on Maple's `Open`/`Save` window: its AX is empty, background
 pixels fail `off_space_or_ax_unresolved`, and Maple-pid clicks (including
@@ -324,9 +326,10 @@ Maple parent is observation-only; presses return
 
 Act on the panel-service pid/`window_id` (`foreground` pixels). That
 window may be `is_on_screen: false` and screenshot black. Confirm on
-Maple (`Where:`, then Trust/PROJECTS). Do not escalate the CUA session to
-desktop because Maple's stub refused input. After Open, Trust and the
-rest of the UI are Maple AX again.
+Maple (`Where:` / selected name, then the product result: Trust/PROJECTS
+for an Agent folder, or the composer attachment for an upload). Do not
+escalate the CUA session to desktop because Maple's stub refused input.
+After the panel closes, Maple web AX is the target again.
 
 ## Report evidence without inflation
 
