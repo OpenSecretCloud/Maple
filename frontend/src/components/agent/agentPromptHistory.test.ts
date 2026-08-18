@@ -3,6 +3,7 @@ import type { AgentTimelineItem } from "@/services/agentRuntimeService";
 import {
   agentPromptHistory,
   agentPromptHistoryDirection,
+  AgentPromptHistoryReplacementTracker,
   navigateAgentPromptHistory,
   type AgentPromptHistoryKeyState,
   type AgentPromptHistoryNavigation
@@ -152,8 +153,120 @@ describe("agentPromptHistory", () => {
     ).toBeNull();
   });
 
+  test("matches the textarea's LF value to recalled CRLF and bare CR entries", () => {
+    const crlfNavigation = navigateAgentPromptHistory(
+      null,
+      ["first", "line one\r\nline two"],
+      "older"
+    )!.navigation;
+    expect(
+      agentPromptHistoryDirection(
+        keyState({ key: "ArrowUp", value: "line one\nline two" }),
+        crlfNavigation
+      )
+    ).toBe("older");
+
+    const crNavigation = navigateAgentPromptHistory(
+      null,
+      ["first", "line one\rline two"],
+      "older"
+    )!.navigation;
+    expect(
+      agentPromptHistoryDirection(
+        keyState({ key: "ArrowDown", value: "line one\nline two" }),
+        crNavigation
+      )
+    ).toBe("newer");
+  });
+
+  test("preserves canonical line endings in the navigation snapshot", () => {
+    const history = ["older\rentry", "newer\r\nentry"];
+    let step = navigateAgentPromptHistory(null, history, "older")!;
+
+    expect(step.value).toBe("newer\r\nentry");
+    expect(step.navigation?.entries).toEqual(history);
+
+    step = navigateAgentPromptHistory(step.navigation, history, "older")!;
+    expect(step.value).toBe("older\rentry");
+    expect(step.navigation?.entries).toEqual(history);
+  });
+
+  test("does not mistake real edits for textarea newline normalization", () => {
+    const navigation = navigateAgentPromptHistory(
+      null,
+      ["first", "line one\r\nline two"],
+      "older"
+    )!.navigation;
+
+    expect(
+      agentPromptHistoryDirection(
+        keyState({ value: "line one\nline two edited", selectionStart: 24, selectionEnd: 24 }),
+        navigation
+      )
+    ).toBeNull();
+  });
+
   test("does not start without history or move newer outside navigation", () => {
     expect(navigateAgentPromptHistory(null, [], "older")).toBeNull();
     expect(navigateAgentPromptHistory(null, ["A"], "newer")).toBeNull();
+  });
+});
+
+describe("AgentPromptHistoryReplacementTracker", () => {
+  test("restores the current attempt fallback after a failed or raced replacement", () => {
+    const tracker = new AgentPromptHistoryReplacementTracker();
+    const attempt = tracker.begin("task-a", ["A", "B"]);
+
+    expect(tracker.isReplacing("task-a")).toBe(true);
+    expect(tracker.recover(attempt, "task-a")).toEqual(["A", "B"]);
+    expect(tracker.isReplacing("task-a")).toBe(false);
+  });
+
+  test("an older same-task attempt cannot release or empty a newer replacement", () => {
+    const tracker = new AgentPromptHistoryReplacementTracker();
+    const older = tracker.begin("task-a", ["A", "B"]);
+    const newer = tracker.begin("task-a", []);
+
+    expect(tracker.recover(older, "task-a")).toBeNull();
+    expect(tracker.isReplacing("task-a")).toBe(true);
+    expect(tracker.recover(newer, "task-a")).toEqual(["A", "B"]);
+    expect(tracker.isReplacing("task-a")).toBe(false);
+  });
+
+  test("does not restore an old task over the newly active task", () => {
+    const tracker = new AgentPromptHistoryReplacementTracker();
+    const taskA = tracker.begin("task-a", ["A"]);
+
+    expect(tracker.recover(taskA, "task-b")).toBeNull();
+    expect(tracker.isReplacing("task-a")).toBe(false);
+
+    const taskB = tracker.begin("task-b", ["B"]);
+    expect(tracker.recover(taskA, "task-b")).toBeNull();
+    expect(tracker.isReplacing("task-b")).toBe(true);
+    expect(tracker.recover(taskB, "task-b")).toEqual(["B"]);
+  });
+
+  test("abandons prompt-bearing fallback state when another task becomes active", () => {
+    const tracker = new AgentPromptHistoryReplacementTracker();
+    const taskA = tracker.begin("task-a", ["A"]);
+
+    tracker.abandonInactive("task-a");
+    expect(tracker.isReplacing("task-a")).toBe(true);
+
+    tracker.abandonInactive("task-b");
+    expect(tracker.isReplacing("task-a")).toBe(false);
+    expect(tracker.recover(taskA, "task-a")).toBeNull();
+  });
+
+  test("only an authoritative replacement for the tracked task clears it", () => {
+    const tracker = new AgentPromptHistoryReplacementTracker();
+    const attempt = tracker.begin("task-a", ["A"]);
+
+    tracker.authoritativeReplace("task-b");
+    expect(tracker.isReplacing("task-a")).toBe(true);
+
+    tracker.authoritativeReplace("task-a");
+    expect(tracker.isReplacing("task-a")).toBe(false);
+    expect(tracker.recover(attempt, "task-a")).toBeNull();
   });
 });

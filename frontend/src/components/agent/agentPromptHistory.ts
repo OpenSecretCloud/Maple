@@ -24,6 +24,65 @@ export interface AgentPromptHistoryStep {
   value: string;
 }
 
+export interface AgentPromptHistoryReplacementAttempt {
+  readonly sessionId: string;
+  readonly fallbackEntries: readonly string[];
+}
+
+export class AgentPromptHistoryReplacementTracker {
+  private current: AgentPromptHistoryReplacementAttempt | null = null;
+
+  isReplacing(sessionId: string): boolean {
+    return this.current?.sessionId === sessionId;
+  }
+
+  begin(
+    sessionId: string,
+    fallbackEntries: readonly string[]
+  ): AgentPromptHistoryReplacementAttempt {
+    const attempt = {
+      sessionId,
+      fallbackEntries:
+        this.current?.sessionId === sessionId ? this.current.fallbackEntries : [...fallbackEntries]
+    };
+    this.current = attempt;
+    return attempt;
+  }
+
+  authoritativeReplace(sessionId: string): void {
+    if (this.current?.sessionId === sessionId) {
+      this.current = null;
+    }
+  }
+
+  abandonInactive(activeSessionId: string | null): void {
+    if (this.current && this.current.sessionId !== activeSessionId) {
+      this.current = null;
+    }
+  }
+
+  recover(
+    attempt: AgentPromptHistoryReplacementAttempt,
+    activeSessionId: string | null
+  ): readonly string[] | null {
+    if (this.current !== attempt) return null;
+    this.current = null;
+    return activeSessionId === attempt.sessionId ? attempt.fallbackEntries : null;
+  }
+}
+
+// The textarea API exposes CRLF and bare CR line breaks as LF.
+function normalizeTextareaNewlines(value: string): string {
+  return value.replace(/\r\n?/g, "\n");
+}
+
+function matchesTextareaValue(value: string, historyEntry: string): boolean {
+  return (
+    value === historyEntry ||
+    normalizeTextareaNewlines(value) === normalizeTextareaNewlines(historyEntry)
+  );
+}
+
 export function agentPromptHistory(items: readonly AgentTimelineItem[]): string[] {
   return items.flatMap((item) => {
     const text = item.text;
@@ -56,7 +115,7 @@ export function agentPromptHistoryDirection(
   if (keyState.key !== "ArrowUp" && keyState.key !== "ArrowDown") return null;
 
   if (navigation) {
-    if (keyState.value !== navigation.entries[navigation.index]) return null;
+    if (!matchesTextareaValue(keyState.value, navigation.entries[navigation.index])) return null;
     return keyState.key === "ArrowUp" ? "older" : "newer";
   }
 
