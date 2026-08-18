@@ -3206,7 +3206,7 @@ impl AgentRuntimeHandle {
         }
 
         let session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (launch_message, mut started_queue, consume_queue_id) = match desktop_send {
+        let (launch_messages, mut started_queue, consume_queue_ids) = match desktop_send {
             DesktopSendDisposition::StageOrStart => {
                 match self.take_desktop_send_plan(&request).await? {
                     DesktopSendPlan::Staged {
@@ -3217,10 +3217,10 @@ impl AgentRuntimeHandle {
                         return Ok(staged_run_handle(run_id, queued, queue));
                     }
                     DesktopSendPlan::Start {
-                        launch_message,
+                        launch_messages,
                         queue,
-                        consume_queue_id,
-                    } => (launch_message, queue, consume_queue_id),
+                        consume_queue_ids,
+                    } => (launch_messages, queue, consume_queue_ids),
                 }
             }
             DesktopSendDisposition::StartOnly => {
@@ -3229,9 +3229,9 @@ impl AgentRuntimeHandle {
                 }
                 reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
                 (
-                    user_message_from_prompt(&text),
+                    vec![user_message_from_prompt(&text)],
                     empty_desktop_queue_snapshot(),
-                    None,
+                    Vec::new(),
                 )
             }
         };
@@ -3255,7 +3255,10 @@ impl AgentRuntimeHandle {
         if cancel_token.is_cancelled() {
             return Err("Agent surface closed before the run could start".to_string());
         }
-        let user_message = launch_message;
+        let user_message = launch_messages
+            .first()
+            .cloned()
+            .ok_or_else(|| "Prompt cannot be empty".to_string())?;
         let launch_text = user_message.as_concat_text();
         let prompt_title = session_title_from_prompt(&launch_text);
         let session_title_prompt = launch_text.clone();
@@ -3288,10 +3291,13 @@ impl AgentRuntimeHandle {
         };
         let requested_permission_mode = parse_user_permission_mode(&mode)?;
 
-        let user_item = message_to_timeline_items(&user_message, false)
+        if message_to_timeline_items(&user_message, false)
             .into_iter()
             .next()
-            .ok_or_else(|| "Failed to create user timeline item".to_string())?;
+            .is_none()
+        {
+            return Err("Failed to create user timeline item".to_string());
+        }
         let live_timelines = Arc::clone(&state.live_timelines);
 
         // Claim the session before changing its title, provider, mode, or
@@ -3485,7 +3491,7 @@ impl AgentRuntimeHandle {
         let task_session_manager = Arc::clone(&session_manager);
         let task_permission_modes = Arc::clone(&permission_modes);
         let task_web_tool_state = Arc::clone(&web_tool_state);
-        let task_user_message = user_message.clone();
+        let task_user_messages = launch_messages.clone();
         let task_cancel_token = cancel_token.clone();
         let task_agent = Arc::clone(&agent);
         let active_agent = Arc::clone(&agent);
@@ -3574,11 +3580,29 @@ impl AgentRuntimeHandle {
                 _ = task_cancel_token.cancelled() => false,
                 start = start_rx => start.is_ok(),
             };
-            let mut current_user_message = task_user_message.clone();
+            let mut pending_user_messages = task_user_messages;
+            let mut current_user_message = pending_user_messages
+                .last()
+                .cloned()
+                .expect("a Desktop or ACP start always has at least one user message");
             let mut session_title_start = session_title_start;
             let mut result = Ok(AgentPromptOutcome::default());
             if should_run {
                 loop {
+                    if let Err(error) = persist_leading_user_messages(
+                        task_session_manager.as_ref(),
+                        &session_id,
+                        &pending_user_messages,
+                    )
+                    .await
+                    {
+                        result = Err(error);
+                        break;
+                    }
+                    current_user_message = pending_user_messages
+                        .last()
+                        .cloned()
+                        .expect("a promoted batch is never empty");
                     result = provider::with_run_cancellation(
                         task_cancel_token.clone(),
                         run_agent_prompt(AgentPromptRun {
@@ -3592,7 +3616,11 @@ impl AgentRuntimeHandle {
                             permission_modes: Arc::clone(&task_permission_modes),
                             web_tool_state: Arc::clone(&task_web_tool_state),
                             web_permission_context: WebPermissionContext::from_user_prompt(
-                                &current_user_message.as_concat_text(),
+                                &pending_user_messages
+                                    .iter()
+                                    .map(|message| message.as_concat_text())
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
                             ),
                             cancel_token: task_cancel_token.clone(),
                             session_title_start: session_title_start.take(),
@@ -3621,12 +3649,14 @@ impl AgentRuntimeHandle {
                             );
                             drop(timelines);
                             // ACP still needs outcome cleanup and Error events.
-                            // Only Desktop may promote the next queued chip.
+                            // Only Desktop may promote leftover chips. Goose
+                            // merges consecutive user roles for the provider
+                            // request, so the model still sees one user turn.
                             if permission_routing != AgentPermissionRouting::Desktop {
                                 task_accepting_queue.store(false, Ordering::Release);
                                 false
                             } else {
-                                match take_next_desktop_queue_item_from_map(
+                                match take_all_desktop_queue_items_from_map(
                                     &task_desktop_queues,
                                     &task_account_scope,
                                     &session_id,
@@ -3634,30 +3664,21 @@ impl AgentRuntimeHandle {
                                 .await
                                 {
                                     Some((queued, snapshot)) => {
-                                        let mut promoted = user_message_from_prompt(&queued.text);
-                                        promoted.id = Some(queued.message_id.clone());
-                                        current_user_message = promoted;
-                                        if let Some(user_item) =
-                                            message_to_timeline_items(&current_user_message, false)
-                                                .into_iter()
-                                                .next()
-                                        {
-                                            record_and_emit_timeline_item(
-                                                &task_events,
-                                                &live_timelines,
-                                                &session_id,
-                                                permission_routing,
-                                                user_item.clone(),
-                                            )
-                                            .await;
-                                            task_events
-                                                .publish(AgentRunEvent::QueuePromoted {
-                                                    snapshot,
-                                                    queue_id: queued.queue_id,
-                                                    item: user_item,
-                                                })
-                                                .await;
-                                        }
+                                        pending_user_messages =
+                                            queued.iter().map(queued_user_message).collect();
+                                        current_user_message = pending_user_messages
+                                            .last()
+                                            .cloned()
+                                            .expect("take_all returns at least one item");
+                                        emit_promoted_queue_items(
+                                            &task_events,
+                                            &live_timelines,
+                                            &session_id,
+                                            permission_routing,
+                                            &queued,
+                                            snapshot,
+                                        )
+                                        .await;
                                         true
                                     }
                                     None => {
@@ -3863,21 +3884,27 @@ impl AgentRuntimeHandle {
                 .await;
             return Err(error);
         }
-        if let Some(queue_id) = consume_queue_id {
-            match remove_desktop_queue_item(state, account_scope, &request.session_id, &queue_id)
-                .await
-            {
-                Ok((_, snapshot)) => {
-                    started_queue = snapshot;
-                    publish_desktop_queue_changed(
-                        state,
-                        account_scope,
-                        &request.session_id,
-                        started_queue.clone(),
-                    )
-                    .await;
+        if !consume_queue_ids.is_empty() {
+            let mut consume_error = None;
+            for queue_id in &consume_queue_ids {
+                match remove_desktop_queue_item(state, account_scope, &request.session_id, queue_id)
+                    .await
+                {
+                    Ok((_, snapshot)) => started_queue = snapshot,
+                    Err(error) => {
+                        consume_error = Some(error);
+                        break;
+                    }
                 }
-                Err(_) => {}
+            }
+            if consume_error.is_none() {
+                publish_desktop_queue_changed(
+                    state,
+                    account_scope,
+                    &request.session_id,
+                    started_queue.clone(),
+                )
+                .await;
             }
         }
         if let Some(registered) = session_title_registered {
@@ -3885,14 +3912,21 @@ impl AgentRuntimeHandle {
         }
         run_events.publish(AgentRunEvent::Started).await;
 
-        record_and_emit_timeline_item(
-            &run_events,
-            &state.live_timelines,
-            &request.session_id,
-            permission_routing,
-            user_item.clone(),
-        )
-        .await;
+        for launch_message in &launch_messages {
+            if let Some(item) = message_to_timeline_items(launch_message, false)
+                .into_iter()
+                .next()
+            {
+                record_and_emit_timeline_item(
+                    &run_events,
+                    &state.live_timelines,
+                    &request.session_id,
+                    permission_routing,
+                    item,
+                )
+                .await;
+            }
+        }
         let _ = start_tx.send(());
         // Keep the session claimed until the optimistic timeline item and start
         // signal are ordered. A cancellation cleanup must not finish and then be
@@ -3959,9 +3993,9 @@ impl AgentRuntimeHandle {
         let launch =
             prepare_desktop_launch(state, account_scope, &request.session_id, text).await?;
         Ok(DesktopSendPlan::Start {
-            launch_message: launch.launch_message,
+            launch_messages: launch.launch_messages,
             queue: launch.queue,
-            consume_queue_id: launch.consume_queue_id,
+            consume_queue_ids: launch.consume_queue_ids,
         })
     }
 
@@ -7484,9 +7518,9 @@ enum DesktopSendPlan {
         queue: AgentDesktopQueueSnapshot,
     },
     Start {
-        launch_message: Message,
+        launch_messages: Vec<Message>,
         queue: AgentDesktopQueueSnapshot,
-        consume_queue_id: Option<String>,
+        consume_queue_ids: Vec<String>,
     },
 }
 
@@ -7572,9 +7606,65 @@ async fn snapshot_desktop_queue(
 }
 
 struct DesktopLaunchPlan {
-    launch_message: Message,
-    consume_queue_id: Option<String>,
+    launch_messages: Vec<Message>,
+    consume_queue_ids: Vec<String>,
     queue: AgentDesktopQueueSnapshot,
+}
+
+fn queued_user_message(queued: &AgentQueuedMessage) -> Message {
+    let mut message = user_message_from_prompt(&queued.text);
+    message.id = Some(queued.message_id.clone());
+    message
+}
+
+async fn persist_leading_user_messages(
+    session_manager: &SessionManager,
+    session_id: &str,
+    messages: &[Message],
+) -> Result<(), String> {
+    if messages.len() < 2 {
+        return Ok(());
+    }
+    for message in &messages[..messages.len() - 1] {
+        session_manager
+            .add_message(session_id, message)
+            .await
+            .map_err(|error| format!("Failed to persist queued Agent message: {error}"))?;
+    }
+    Ok(())
+}
+
+async fn emit_promoted_queue_items(
+    events: &AgentRunEventPublisher,
+    live_timelines: &LiveTimelines,
+    session_id: &str,
+    permission_routing: AgentPermissionRouting,
+    queued: &[AgentQueuedMessage],
+    snapshot: AgentDesktopQueueSnapshot,
+) {
+    for item in queued {
+        let message = queued_user_message(item);
+        if let Some(user_item) = message_to_timeline_items(&message, false)
+            .into_iter()
+            .next()
+        {
+            record_and_emit_timeline_item(
+                events,
+                live_timelines,
+                session_id,
+                permission_routing,
+                user_item.clone(),
+            )
+            .await;
+            events
+                .publish(AgentRunEvent::QueuePromoted {
+                    snapshot: snapshot.clone(),
+                    queue_id: item.queue_id.clone(),
+                    item: user_item,
+                })
+                .await;
+        }
+    }
 }
 
 async fn prepare_desktop_launch(
@@ -7589,8 +7679,8 @@ async fn prepare_desktop_launch(
             return Err("Prompt cannot be empty".to_string());
         }
         return Ok(DesktopLaunchPlan {
-            launch_message: user_message_from_prompt(draft_text),
-            consume_queue_id: None,
+            launch_messages: vec![user_message_from_prompt(draft_text)],
+            consume_queue_ids: Vec::new(),
             queue: leftover,
         });
     }
@@ -7598,16 +7688,16 @@ async fn prepare_desktop_launch(
         enqueue_desktop_queue_item(state, account_scope, session_id, draft_text).await?;
     }
     let snapshot = snapshot_desktop_queue(state, account_scope, session_id).await;
-    let queued = snapshot
-        .items
-        .first()
-        .cloned()
-        .ok_or_else(|| "Prompt cannot be empty".to_string())?;
-    let mut launch_message = user_message_from_prompt(&queued.text);
-    launch_message.id = Some(queued.message_id.clone());
+    if snapshot.items.is_empty() {
+        return Err("Prompt cannot be empty".to_string());
+    }
     Ok(DesktopLaunchPlan {
-        launch_message,
-        consume_queue_id: Some(queued.queue_id),
+        launch_messages: snapshot.items.iter().map(queued_user_message).collect(),
+        consume_queue_ids: snapshot
+            .items
+            .iter()
+            .map(|item| item.queue_id.clone())
+            .collect(),
         queue: snapshot,
     })
 }
@@ -7673,17 +7763,20 @@ async fn remove_desktop_queue_item(
     Ok((removed, queue.snapshot()))
 }
 
-async fn take_next_desktop_queue_item_from_map(
+async fn take_all_desktop_queue_items_from_map(
     queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
     account_scope: &str,
     session_id: &str,
-) -> Option<(AgentQueuedMessage, AgentDesktopQueueSnapshot)> {
+) -> Option<(Vec<AgentQueuedMessage>, AgentDesktopQueueSnapshot)> {
     let mut queues = queues.lock().await;
     let key = desktop_queue_key(account_scope, session_id);
     let queue = queues.get_mut(&key)?;
-    let item = queue.items.pop_front()?;
+    if queue.items.is_empty() {
+        return None;
+    }
+    let items: Vec<AgentQueuedMessage> = queue.items.drain(..).collect();
     queue.revision = queue.revision.saturating_add(1);
-    Some((item, queue.snapshot()))
+    Some((items, queue.snapshot()))
 }
 
 async fn clear_desktop_queue(
@@ -8394,7 +8487,17 @@ mod tests {
             prepare_desktop_launch(&state, &account_scope, &session.id, "draft after stop")
                 .await
                 .unwrap();
-        assert_eq!(launch.launch_message.as_concat_text(), "retry after edit");
+        assert_eq!(
+            launch
+                .launch_messages
+                .iter()
+                .map(|message| message.as_concat_text())
+                .collect::<Vec<_>>(),
+            vec![
+                "retry after edit".to_string(),
+                "draft after stop".to_string()
+            ]
+        );
         assert_eq!(
             launch
                 .queue
@@ -8405,8 +8508,13 @@ mod tests {
             vec!["retry after edit", "draft after stop"]
         );
         assert_eq!(
-            launch.consume_queue_id.as_deref(),
-            Some(launch.queue.items[0].queue_id.as_str())
+            launch.consume_queue_ids,
+            launch
+                .queue
+                .items
+                .iter()
+                .map(|item| item.queue_id.clone())
+                .collect::<Vec<_>>()
         );
 
         let empty_error = match prepare_desktop_launch(&state, &account_scope, "no-queue", "").await
@@ -8535,7 +8643,7 @@ mod tests {
         enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
             .await
             .unwrap();
-        let (_, after_take) = take_next_desktop_queue_item_from_map(
+        let (_, after_take) = take_all_desktop_queue_items_from_map(
             &state.desktop_queues,
             &account_scope,
             session_id,
@@ -8556,6 +8664,45 @@ mod tests {
             after_take.revision,
             restaged.revision
         );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_take_all_drains_every_item_in_order() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) = agent_service_test_context("desktop-queue-take-all", sink);
+        let account_scope = account_scope("desktop-queue-take-all-user").unwrap();
+        let session_id = "session-take-all";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        let (items, after_take) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("both staged items should be taken together");
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert!(after_take.items.is_empty());
+        assert!(take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .is_none());
 
         let _ = fs::remove_dir_all(test_root);
     }
