@@ -93,7 +93,20 @@ import { RenameAgentTaskDialog } from "@/components/RenameAgentTaskDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
 import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
+import {
+  isDeliberateAgentComposerFocusTarget,
+  settleAgentComposerFocusRequest,
+  type AgentComposerFocusRequest
+} from "@/components/agent/agentComposerFocus";
 import { handleAgentModeThoughtRunFinished } from "@/components/agent/agentModeThoughtRun";
+import {
+  agentPromptHistory,
+  agentPromptHistoryDirection,
+  AgentPromptHistoryReplacementTracker,
+  navigateAgentPromptHistory,
+  type AgentPromptHistoryNavigation,
+  type AgentPromptHistoryReplacementAttempt
+} from "@/components/agent/agentPromptHistory";
 import {
   agentRuntimeService,
   awaitAgentAuthUser,
@@ -431,6 +444,13 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isSessionMcpServersLoading, setIsSessionMcpServersLoading] = useState(false);
   const [isMcpServerTogglePending, setIsMcpServerTogglePending] = useState(false);
   const [input, setInput] = useState("");
+  const promptHistoryEntries = useMemo(() => agentPromptHistory(timelineItems), [timelineItems]);
+  const promptHistoryEntriesRef = useRef<readonly string[]>(promptHistoryEntries);
+  const promptHistoryNavigationRef = useRef<AgentPromptHistoryNavigation | null>(null);
+  const promptHistoryGenerationRef = useRef(0);
+  const promptHistoryReplacementTrackerRef = useLazyRef(
+    () => new AgentPromptHistoryReplacementTracker()
+  );
   const [isAgentFullscreen, setIsAgentFullscreen] = useState(
     () => localStorage.getItem("agentFullscreen") === "true"
   );
@@ -455,6 +475,8 @@ export function AgentMode({ userId }: { userId: string }) {
     () => new Set()
   );
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const agentComposerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const agentComposerFocusRequestRef = useRef<AgentComposerFocusRequest | null>(null);
   const activeSessionIdRef = useRef(activeSessionId);
   const deletedSessionIdsRef = useLazyRef(() => new Set<string>());
   const markSessionSummaryChanged = useCallback((sessionId: string) => {
@@ -517,6 +539,68 @@ export function AgentMode({ userId }: { userId: string }) {
     };
     userIdRef.current = userId;
   }, [model, openai, os, setAvailableModels, setHasWhisperModel, setModelAliases, userId]);
+
+  useLayoutEffect(() => {
+    if (
+      activeSessionId === null ||
+      !promptHistoryReplacementTrackerRef.current.isReplacing(activeSessionId)
+    ) {
+      promptHistoryEntriesRef.current = promptHistoryEntries;
+    }
+  }, [activeSessionId, promptHistoryEntries, promptHistoryReplacementTrackerRef]);
+
+  const resetPromptHistoryNavigation = useCallback(() => {
+    promptHistoryNavigationRef.current = null;
+    promptHistoryGenerationRef.current += 1;
+  }, []);
+
+  useLayoutEffect(() => {
+    promptHistoryReplacementTrackerRef.current.abandonInactive(activeSessionId);
+    resetPromptHistoryNavigation();
+  }, [activeSessionId, promptHistoryReplacementTrackerRef, resetPromptHistoryNavigation, userId]);
+
+  const handleAgentInputChange = useCallback(
+    (value: string) => {
+      resetPromptHistoryNavigation();
+      setInput(value);
+    },
+    [resetPromptHistoryNavigation]
+  );
+
+  useEffect(() => {
+    const cancelFocusRequestForPointer = (event: PointerEvent) => {
+      if (
+        agentComposerFocusRequestRef.current &&
+        event.target !== agentComposerTextareaRef.current
+      ) {
+        agentComposerFocusRequestRef.current = null;
+      }
+    };
+    const cancelFocusRequestForWindowBlur = () => {
+      agentComposerFocusRequestRef.current = null;
+    };
+    const cancelFocusRequestForFocus = (event: FocusEvent) => {
+      if (
+        agentComposerFocusRequestRef.current &&
+        isDeliberateAgentComposerFocusTarget(
+          event.target,
+          agentComposerTextareaRef.current,
+          document.body,
+          document
+        )
+      ) {
+        agentComposerFocusRequestRef.current = null;
+      }
+    };
+    window.addEventListener("pointerdown", cancelFocusRequestForPointer, true);
+    window.addEventListener("focusin", cancelFocusRequestForFocus, true);
+    window.addEventListener("blur", cancelFocusRequestForWindowBlur);
+    return () => {
+      window.removeEventListener("pointerdown", cancelFocusRequestForPointer, true);
+      window.removeEventListener("focusin", cancelFocusRequestForFocus, true);
+      window.removeEventListener("blur", cancelFocusRequestForWindowBlur);
+    };
+  }, []);
 
   const restoreNewTaskModel = useCallback(() => {
     const nextModel = newTaskAgentModel(agentModelPreferenceRef.current);
@@ -868,6 +952,22 @@ export function AgentMode({ userId }: { userId: string }) {
   const isAgentModelSelectionDisabled = areAgentSettingsLocked || isAgentModelLocked;
   const isAgentSendLocked = areAgentSettingsLocked;
   const isSending = Boolean(activeRunId) || isSubmitting;
+  useLayoutEffect(() => {
+    const request = agentComposerFocusRequestRef.current;
+    if (!request) return;
+    const settled = settleAgentComposerFocusRequest(request, {
+      currentInteractionGeneration: interactionGenerationRef.current,
+      isSubmitting,
+      hasTimeline: timelineItems.length > 0,
+      textarea: agentComposerTextareaRef.current,
+      activeElement: document.activeElement,
+      documentBody: document.body,
+      documentRoot: document
+    });
+    if (settled && agentComposerFocusRequestRef.current === request) {
+      agentComposerFocusRequestRef.current = null;
+    }
+  });
   const selectedNewChatMcpServerNames = useMemo(
     () =>
       mcpServers
@@ -1061,12 +1161,17 @@ export function AgentMode({ userId }: { userId: string }) {
         return false;
       }
       bumpTimelineRevision(sessionId);
+      promptHistoryReplacementTrackerRef.current.authoritativeReplace(sessionId);
       if (activeSessionIdRef.current === sessionId) {
+        // Routine reconciliation (including runFinished) refreshes entries for
+        // the next navigation session without disturbing the active snapshot.
+        // Edit, send, pointer, task/account, and historyReplaced paths own exits.
+        promptHistoryEntriesRef.current = agentPromptHistory(items);
         setTimelineItems(items);
       }
       return true;
     },
-    [bumpTimelineRevision, timelineRevisionBySessionRef]
+    [bumpTimelineRevision, promptHistoryReplacementTrackerRef, timelineRevisionBySessionRef]
   );
 
   const mergeSessionTimelineItem = useCallback(
@@ -2008,6 +2113,8 @@ export function AgentMode({ userId }: { userId: string }) {
         // Commit the selected session and all of its settings together. Until
         // this point the previous chat remains active and its composer is gated.
         shouldAutoScrollRef.current = true;
+        promptHistoryReplacementTrackerRef.current.abandonInactive(detail.session.id);
+        promptHistoryEntriesRef.current = agentPromptHistory(detail.timeline);
         activeSessionIdRef.current = detail.session.id;
         clearCompletedUnreadSession(detail.session.id);
         setActiveSessionId(detail.session.id);
@@ -2073,6 +2180,7 @@ export function AgentMode({ userId }: { userId: string }) {
       observeActiveThoughtPhase,
       pendingSendTokensRef,
       persistSelectedProjectRoot,
+      promptHistoryReplacementTrackerRef,
       replaceSessionTimeline,
       thoughtPhaseTrackerRef,
       timelineRevisionBySessionRef,
@@ -2106,129 +2214,146 @@ export function AgentMode({ userId }: { userId: string }) {
     userId
   ]);
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
-    const requestedSessionId = activeSessionIdRef.current;
-    let pendingSessionKey = requestedSessionId || NEW_SESSION_PENDING_KEY;
-    if (
-      !text ||
-      isAgentSendLocked ||
-      pendingSessionSelectionIdRef.current !== null ||
-      pendingSendTokensRef.current.has(pendingSessionKey) ||
-      (requestedSessionId && activeRunsBySession[requestedSessionId])
-    ) {
-      return;
-    }
-
-    const selectionGeneration = sessionSelectionGenerationRef.current;
-    const interactionGeneration = interactionGenerationRef.current;
-    const sendToken = nextSendTokenRef.current + 1;
-    nextSendTokenRef.current = sendToken;
-    let targetSessionId = requestedSessionId;
-    markPendingSend(pendingSessionKey, sendToken);
-
-    setError(null);
-    setInput("");
-    shouldAutoScrollRef.current = true;
-    requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
-    try {
-      await trackAgentWorkflow(async () => {
-        const { sessionId, requestModel } = await ensureRuntimeAndSession(
-          selectionGeneration,
-          interactionGeneration,
-          requestedSessionId
-        );
-        targetSessionId = sessionId;
-        if (pendingSessionKey !== sessionId) {
-          movePendingSend(pendingSessionKey, sessionId, sendToken);
-          pendingSessionKey = sessionId;
-        }
-        if (cancelledPendingSendTokensRef.current.has(sendToken)) {
-          throw new PendingAgentSendCancelledError();
-        }
-        // The selector reflects only committed policy. Wait for any in-flight
-        // update so this send cannot replay a stale mode snapshot afterward.
-        await permissionModeUpdateRef.current;
-        if (cancelledPendingSendTokensRef.current.has(sendToken)) {
-          throw new PendingAgentSendCancelledError();
-        }
-        thoughtPhaseTrackerRef.current.prepareUserRequest(sessionId, text);
-        const response = await agentRuntimeService.sendMessage(userId, {
-          sessionId,
-          text,
-          model: requestModel,
-          contextLimit: contextLimitForModel(requestModel),
-          mode: selectedModeRef.current,
-          visionCapable: resolveAgentModelVisionCapability(
-            requestModel,
-            availableModels,
-            modelAliases
-          )
-        });
-        if (cancelledPendingSendTokensRef.current.has(sendToken)) {
-          // The native command may have crossed the start boundary while the
-          // user clicked Cancel. Cancel the concrete run before returning.
-          await agentRuntimeService.cancelRun(userId, response.runId);
-          return;
-        }
-        if (!terminalRunIdsRef.current.has(response.runId)) {
-          recordActiveRun(sessionId, response.runId);
-        }
-      });
-    } catch (sendError) {
-      if (sendError instanceof PendingAgentSendCancelledError) {
-        setInput((current) => (current ? current : text));
+  const sendMessage = useCallback(
+    async (restoreComposerFocus = false) => {
+      const text = input.trim();
+      const requestedSessionId = activeSessionIdRef.current;
+      let pendingSessionKey = requestedSessionId || NEW_SESSION_PENDING_KEY;
+      if (
+        !text ||
+        isAgentSendLocked ||
+        pendingSessionSelectionIdRef.current !== null ||
+        pendingSendTokensRef.current.has(pendingSessionKey) ||
+        (requestedSessionId && activeRunsBySession[requestedSessionId])
+      ) {
         return;
       }
-      const message = errorMessage(sendError);
-      if (
-        (targetSessionId && activeSessionIdRef.current === targetSessionId) ||
-        (!targetSessionId &&
-          activeSessionIdRef.current === null &&
-          sessionSelectionGenerationRef.current === selectionGeneration &&
-          interactionGenerationRef.current === interactionGeneration)
-      ) {
-        setError(message);
+
+      const selectionGeneration = sessionSelectionGenerationRef.current;
+      const interactionGeneration = interactionGenerationRef.current;
+      const sendToken = nextSendTokenRef.current + 1;
+      nextSendTokenRef.current = sendToken;
+      let targetSessionId = requestedSessionId;
+      if (restoreComposerFocus) {
+        agentComposerFocusRequestRef.current = {
+          sendToken,
+          interactionGeneration,
+          waitForTimeline: timelineItems.length === 0
+        };
       }
-      if (targetSessionId && !deletedSessionIdsRef.current.has(targetSessionId)) {
-        mergeSessionTimelineItem(targetSessionId, {
-          id: `error-${Date.now()}-${sendToken}`,
-          itemType: "error",
-          role: "system",
-          title: "Agent error",
-          text: message,
-          status: "failed",
-          createdMs: Date.now(),
-          merge: "replace"
+      markPendingSend(pendingSessionKey, sendToken);
+
+      setError(null);
+      resetPromptHistoryNavigation();
+      setInput("");
+      shouldAutoScrollRef.current = true;
+      requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
+      try {
+        await trackAgentWorkflow(async () => {
+          const { sessionId, requestModel } = await ensureRuntimeAndSession(
+            selectionGeneration,
+            interactionGeneration,
+            requestedSessionId
+          );
+          targetSessionId = sessionId;
+          if (pendingSessionKey !== sessionId) {
+            movePendingSend(pendingSessionKey, sessionId, sendToken);
+            pendingSessionKey = sessionId;
+          }
+          if (cancelledPendingSendTokensRef.current.has(sendToken)) {
+            throw new PendingAgentSendCancelledError();
+          }
+          // The selector reflects only committed policy. Wait for any in-flight
+          // update so this send cannot replay a stale mode snapshot afterward.
+          await permissionModeUpdateRef.current;
+          if (cancelledPendingSendTokensRef.current.has(sendToken)) {
+            throw new PendingAgentSendCancelledError();
+          }
+          thoughtPhaseTrackerRef.current.prepareUserRequest(sessionId, text);
+          const response = await agentRuntimeService.sendMessage(userId, {
+            sessionId,
+            text,
+            model: requestModel,
+            contextLimit: contextLimitForModel(requestModel),
+            mode: selectedModeRef.current,
+            visionCapable: resolveAgentModelVisionCapability(
+              requestModel,
+              availableModels,
+              modelAliases
+            )
+          });
+          if (cancelledPendingSendTokensRef.current.has(sendToken)) {
+            // The native command may have crossed the start boundary while the
+            // user clicked Cancel. Cancel the concrete run before returning.
+            await agentRuntimeService.cancelRun(userId, response.runId);
+            return;
+          }
+          if (!terminalRunIdsRef.current.has(response.runId)) {
+            recordActiveRun(sessionId, response.runId);
+          }
         });
+      } catch (sendError) {
+        const focusRequest = agentComposerFocusRequestRef.current;
+        if (focusRequest?.sendToken === sendToken) {
+          focusRequest.waitForTimeline = false;
+        }
+        if (sendError instanceof PendingAgentSendCancelledError) {
+          setInput((current) => (current ? current : text));
+          return;
+        }
+        const message = errorMessage(sendError);
+        if (
+          (targetSessionId && activeSessionIdRef.current === targetSessionId) ||
+          (!targetSessionId &&
+            activeSessionIdRef.current === null &&
+            sessionSelectionGenerationRef.current === selectionGeneration &&
+            interactionGenerationRef.current === interactionGeneration)
+        ) {
+          setError(message);
+        }
+        if (targetSessionId && !deletedSessionIdsRef.current.has(targetSessionId)) {
+          mergeSessionTimelineItem(targetSessionId, {
+            id: `error-${Date.now()}-${sendToken}`,
+            itemType: "error",
+            role: "system",
+            title: "Agent error",
+            text: message,
+            status: "failed",
+            createdMs: Date.now(),
+            merge: "replace"
+          });
+        }
+      } finally {
+        cancelledPendingSendTokensRef.current.delete(sendToken);
+        clearPendingSend(pendingSessionKey, sendToken);
       }
-    } finally {
-      cancelledPendingSendTokensRef.current.delete(sendToken);
-      clearPendingSend(pendingSessionKey, sendToken);
-    }
-  }, [
-    activeRunsBySession,
-    availableModels,
-    cancelledPendingSendTokensRef,
-    clearPendingSend,
-    contextLimitForModel,
-    deletedSessionIdsRef,
-    ensureRuntimeAndSession,
-    input,
-    isAgentSendLocked,
-    markPendingSend,
-    mergeSessionTimelineItem,
-    modelAliases,
-    movePendingSend,
-    pendingSendTokensRef,
-    permissionModeUpdateRef,
-    recordActiveRun,
-    scrollTimelineToBottom,
-    terminalRunIdsRef,
-    thoughtPhaseTrackerRef,
-    trackAgentWorkflow,
-    userId
-  ]);
+    },
+    [
+      activeRunsBySession,
+      availableModels,
+      cancelledPendingSendTokensRef,
+      clearPendingSend,
+      contextLimitForModel,
+      deletedSessionIdsRef,
+      ensureRuntimeAndSession,
+      input,
+      isAgentSendLocked,
+      markPendingSend,
+      mergeSessionTimelineItem,
+      modelAliases,
+      movePendingSend,
+      pendingSendTokensRef,
+      permissionModeUpdateRef,
+      recordActiveRun,
+      resetPromptHistoryNavigation,
+      scrollTimelineToBottom,
+      terminalRunIdsRef,
+      timelineItems.length,
+      thoughtPhaseTrackerRef,
+      trackAgentWorkflow,
+      userId
+    ]
+  );
 
   const cancelPrompt = useCallback(async () => {
     const sessionId = activeSessionIdRef.current;
@@ -2276,20 +2401,66 @@ export function AgentMode({ userId }: { userId: string }) {
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing) return;
-      if ((event.shiftKey || isCompactLayout) && continueChatComposerList(event, setInput)) {
+      const direction = agentPromptHistoryDirection(
+        {
+          key: event.key,
+          value: event.currentTarget.value,
+          selectionStart: event.currentTarget.selectionStart,
+          selectionEnd: event.currentTarget.selectionEnd,
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          isComposing: event.nativeEvent.isComposing
+        },
+        promptHistoryNavigationRef.current
+      );
+      if (direction) {
+        const step = navigateAgentPromptHistory(
+          promptHistoryNavigationRef.current,
+          promptHistoryEntriesRef.current,
+          direction
+        );
+        if (step) {
+          event.preventDefault();
+          promptHistoryNavigationRef.current = step.navigation;
+          promptHistoryGenerationRef.current += 1;
+          const promptHistoryGeneration = promptHistoryGenerationRef.current;
+          setInput(step.value);
+          const textarea = event.currentTarget;
+          requestAnimationFrame(() => {
+            if (
+              promptHistoryGenerationRef.current === promptHistoryGeneration &&
+              textarea.isConnected &&
+              document.activeElement === textarea
+            ) {
+              const caret = textarea.value.length;
+              textarea.setSelectionRange(caret, caret);
+            }
+          });
+          return;
+        }
+      }
+      if (
+        (event.shiftKey || isCompactLayout) &&
+        continueChatComposerList(event, handleAgentInputChange)
+      ) {
         return;
       }
       if (event.key === "Enter" && !event.shiftKey && !isCompactLayout) {
         event.preventDefault();
-        void sendMessage();
+        void sendMessage(true);
       }
     },
-    [isCompactLayout, sendMessage]
+    [handleAgentInputChange, isCompactLayout, sendMessage]
   );
 
-  const handleBeforeInput = useCallback((event: React.FormEvent<HTMLTextAreaElement>) => {
-    continueChatComposerListBeforeInput(event, setInput);
-  }, []);
+  const handleBeforeInput = useCallback(
+    (event: React.FormEvent<HTMLTextAreaElement>) => {
+      continueChatComposerListBeforeInput(event, handleAgentInputChange);
+    },
+    [handleAgentInputChange]
+  );
 
   const removeSessionFromState = useCallback(
     (sessionId: string) => {
@@ -2575,6 +2746,25 @@ export function AgentMode({ userId }: { userId: string }) {
           void (async () => {
             const id = event.sessionId || activeSessionIdRef.current;
             if (!id) return;
+            let replacementAttempt: AgentPromptHistoryReplacementAttempt | null = null;
+            const recoverPromptHistory = (activeId: string | null) => {
+              if (!replacementAttempt) return;
+              const fallback = promptHistoryReplacementTrackerRef.current.recover(
+                replacementAttempt,
+                activeId
+              );
+              if (fallback !== null) {
+                promptHistoryEntriesRef.current = fallback;
+              }
+            };
+            if (activeSessionIdRef.current === id) {
+              resetPromptHistoryNavigation();
+              replacementAttempt = promptHistoryReplacementTrackerRef.current.begin(
+                id,
+                promptHistoryEntriesRef.current
+              );
+              promptHistoryEntriesRef.current = [];
+            }
             const invalidatedTurnId = thoughtPhaseTrackerRef.current.resetForHistoryReplacement(id);
             if (invalidatedTurnId) {
               invalidateThoughtLabelsForTurn(id, invalidatedTurnId);
@@ -2592,14 +2782,19 @@ export function AgentMode({ userId }: { userId: string }) {
                 userIdRef.current !== userId ||
                 deletedSessionIdsRef.current.has(id)
               ) {
+                recoverPromptHistory(null);
                 return;
               }
               const replaced = replaceSessionTimeline(id, detail.timeline, historyTimelineRevision);
+              if (!replaced) {
+                recoverPromptHistory(activeSessionIdRef.current);
+              }
               if (replaced && activeRunsBySessionRef.current[id]) {
                 thoughtPhaseTrackerRef.current.seedActiveTimeline(id, detail.timeline);
                 observeActiveThoughtPhase(id);
               }
             } catch (historyError) {
+              recoverPromptHistory(activeSessionIdRef.current);
               if (
                 isAgentModeMountedRef.current &&
                 userIdRef.current === userId &&
@@ -2625,10 +2820,12 @@ export function AgentMode({ userId }: { userId: string }) {
       mergeSessionTimelineItem,
       observeLiveThoughtItem,
       observeActiveThoughtPhase,
+      promptHistoryReplacementTrackerRef,
       refreshSessionList,
       recordActiveRun,
       refreshSessionMcpServers,
       replaceSessionTimeline,
+      resetPromptHistoryNavigation,
       terminalRunIdsRef,
       thoughtPhaseSeededRunIdsRef,
       thoughtPhaseTrackerRef,
@@ -3001,9 +3198,11 @@ export function AgentMode({ userId }: { userId: string }) {
                   projectRoot={projectRoot}
                   recentRoots={displayProjectRoots}
                   isExpanded={isAgentFullscreen}
+                  textareaRef={agentComposerTextareaRef}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
-                  onInputChange={setInput}
+                  onInputChange={handleAgentInputChange}
+                  onInputPointerDown={resetPromptHistoryNavigation}
                   onKeyDown={handleKeyDown}
                   onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
@@ -3045,9 +3244,11 @@ export function AgentMode({ userId }: { userId: string }) {
                   model={model}
                   projectRoot={projectRoot}
                   recentRoots={displayProjectRoots}
+                  textareaRef={agentComposerTextareaRef}
                   onCancelPrompt={cancelPrompt}
                   onChooseProjectRoot={chooseProjectRoot}
-                  onInputChange={setInput}
+                  onInputChange={handleAgentInputChange}
+                  onInputPointerDown={resetPromptHistoryNavigation}
                   onKeyDown={handleKeyDown}
                   onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
@@ -4195,9 +4396,11 @@ interface AgentComposerProps {
   projectRoot: string;
   recentRoots: AgentProjectRootView[];
   isExpanded?: boolean;
+  textareaRef: React.RefObject<HTMLTextAreaElement>;
   onCancelPrompt: () => void;
   onChooseProjectRoot: () => void;
   onInputChange: (value: string) => void;
+  onInputPointerDown: () => void;
   onBeforeInput: (event: React.FormEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onManageMcpServers: () => void;
@@ -4225,9 +4428,11 @@ function AgentComposer({
   projectRoot,
   recentRoots,
   isExpanded = false,
+  textareaRef,
   onCancelPrompt,
   onChooseProjectRoot,
   onInputChange,
+  onInputPointerDown,
   onBeforeInput,
   onKeyDown,
   onManageMcpServers,
@@ -4238,7 +4443,6 @@ function AgentComposer({
   onSendMessage,
   onToggleExpanded
 }: AgentComposerProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootOptions = recentRoots;
 
   useLayoutEffect(() => {
@@ -4252,7 +4456,7 @@ function AgentComposer({
 
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
-  }, [input, isExpanded]);
+  }, [input, isExpanded, textareaRef]);
 
   return (
     <ChatComposerSurface
@@ -4276,6 +4480,7 @@ function AgentComposer({
         id="agent-message"
         value={input}
         onChange={(event) => onInputChange(event.target.value)}
+        onPointerDown={onInputPointerDown}
         onBeforeInput={onBeforeInput}
         onKeyDown={onKeyDown}
         disabled={isSendDisabled}
