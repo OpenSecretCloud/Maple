@@ -9,7 +9,7 @@ import {
 } from "./agentComposerSend";
 
 describe("agent composer send policy", () => {
-  test("accepts a mid-run submit so the native runtime can queue a Goose steer", () => {
+  test("accepts a mid-run submit so the native runtime can stage a follow-up", () => {
     expect(
       canSubmitAgentComposerMessage({
         text: "also check the tests",
@@ -51,6 +51,24 @@ describe("agent composer send policy", () => {
         isSendLocked: false,
         isSessionSelectionPending: false,
         hasInFlightSend: true
+      })
+    ).toBe(false);
+    expect(
+      canSubmitAgentComposerMessage({
+        text: "",
+        isSendLocked: false,
+        isSessionSelectionPending: false,
+        hasInFlightSend: false,
+        hasQueuedMessages: true
+      })
+    ).toBe(true);
+    expect(
+      canSubmitAgentComposerMessage({
+        text: "",
+        isSendLocked: false,
+        isSessionSelectionPending: false,
+        hasInFlightSend: false,
+        hasQueuedMessages: false
       })
     ).toBe(false);
   });
@@ -147,5 +165,13 @@ describe("agent composer send policy", () => {
         projectRoot: ""
       })
     ).toBe(false);
+    expect(
+      agentComposerCanSend({
+        text: "",
+        isSendDisabled: false,
+        projectRoot: "/tmp/project",
+        hasQueuedMessages: true
+      })
+    ).toBe(true);
   });
 });

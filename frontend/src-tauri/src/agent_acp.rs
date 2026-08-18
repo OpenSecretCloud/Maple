@@ -939,7 +939,9 @@ impl AcpConnectionContext {
                     AgentRunEvent::SessionUpdated(_)
                     | AgentRunEvent::Started
                     | AgentRunEvent::SetupWarning(_)
-                    | AgentRunEvent::HistoryReplaced,
+                    | AgentRunEvent::HistoryReplaced
+                    | AgentRunEvent::QueueChanged(_)
+                    | AgentRunEvent::QueuePromoted { .. },
                 ) => {}
                 None => {
                     let current_terminal = *terminal.borrow();

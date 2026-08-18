@@ -2,14 +2,21 @@ export function canSubmitAgentComposerMessage({
   text,
   isSendLocked,
   isSessionSelectionPending,
-  hasInFlightSend
+  hasInFlightSend,
+  hasQueuedMessages = false
 }: {
   text: string;
   isSendLocked: boolean;
   isSessionSelectionPending: boolean;
   hasInFlightSend: boolean;
+  hasQueuedMessages?: boolean;
 }): boolean {
-  return Boolean(text.trim()) && !isSendLocked && !isSessionSelectionPending && !hasInFlightSend;
+  return (
+    (Boolean(text.trim()) || hasQueuedMessages) &&
+    !isSendLocked &&
+    !isSessionSelectionPending &&
+    !hasInFlightSend
+  );
 }
 
 export function isAgentComposerSendLocked({
@@ -57,11 +64,13 @@ export function agentComposerShowsStop(isSending: boolean): boolean {
 export function agentComposerCanSend({
   text,
   isSendDisabled,
-  projectRoot
+  projectRoot,
+  hasQueuedMessages = false
 }: {
   text: string;
   isSendDisabled: boolean;
   projectRoot: string;
+  hasQueuedMessages?: boolean;
 }): boolean {
-  return Boolean(text.trim()) && !isSendDisabled && Boolean(projectRoot);
+  return (Boolean(text.trim()) || hasQueuedMessages) && !isSendDisabled && Boolean(projectRoot);
 }

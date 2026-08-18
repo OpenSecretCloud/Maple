@@ -102,12 +102,20 @@ import {
   type AgentMcpServer,
   type AgentPermissionDecision,
   type AgentProjectSkillsTrustStatus,
+  type AgentDesktopQueueSnapshot,
   type AgentRuntimeStatus,
   type AgentSessionMcpServer,
   type AgentSessionSummary,
   type AgentTimelineItem,
   type RecentProjectRoot
 } from "@/services/agentRuntimeService";
+import {
+  applyAgentDesktopQueueSnapshot,
+  emptyAgentDesktopQueueSnapshot,
+  queueSnapshotWithoutItem,
+  restoreQueuedMessageToComposer,
+  shouldPrepareThoughtAfterAgentSend
+} from "@/services/agentComposerQueue";
 import {
   createProjectOrderState,
   groupAgentSessionsByRoot,
@@ -427,6 +435,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const [model, setModel] = useState(() => newTaskAgentModel(agentModelPreferenceRef.current));
   const [mode, setMode] = useState<AgentPermissionMode>(DEFAULT_MODE);
   const [timelineItems, setTimelineItems] = useState<AgentTimelineItem[]>([]);
+  const [queueBySession, setQueueBySession] = useState<Record<string, AgentDesktopQueueSnapshot>>(
+    {}
+  );
+  const queueBySessionRef = useRef(queueBySession);
+  queueBySessionRef.current = queueBySession;
   const [generatedThoughtLabels, setGeneratedThoughtLabels] = useState<
     Record<string, Record<string, string>>
   >({});
@@ -883,6 +896,7 @@ export function AgentMode({ userId }: { userId: string }) {
     isStopping
   });
   const isSending = Boolean(activeRunId) || isSubmitting;
+  const queuedMessages = activeSessionId ? (queueBySession[activeSessionId]?.items ?? []) : [];
   const selectedNewChatMcpServerNames = useMemo(
     () =>
       mcpServers
@@ -1115,6 +1129,28 @@ export function AgentMode({ userId }: { userId: string }) {
     },
     [bumpTimelineRevision]
   );
+
+  const applyQueueSnapshot = useCallback(
+    (sessionId: string, snapshot: AgentDesktopQueueSnapshot) => {
+      setQueueBySession((current) => {
+        const applied = applyAgentDesktopQueueSnapshot(current[sessionId], snapshot);
+        if (current[sessionId] === applied) {
+          return current;
+        }
+        return { ...current, [sessionId]: applied };
+      });
+    },
+    []
+  );
+
+  const forgetSessionQueue = useCallback((sessionId: string) => {
+    setQueueBySession((current) => {
+      if (!current[sessionId]) return current;
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
 
   const clearCompletedUnreadSession = useCallback((sessionId: string) => {
     setCompletedUnreadSessionIds((current) => {
@@ -1880,6 +1916,7 @@ export function AgentMode({ userId }: { userId: string }) {
           ...current.filter((item) => item.id !== detail.session.id)
         ]);
         replaceSessionTimeline(sessionId, detail.timeline);
+        applyQueueSnapshot(sessionId, detail.queue ?? emptyAgentDesktopQueueSnapshot());
 
         // A send that creates a session may finish after the user selects a
         // different chat. Keep the new chat/run, but never steal focus back.
@@ -1898,6 +1935,7 @@ export function AgentMode({ userId }: { userId: string }) {
           setModel(requestModel);
           applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
           replaceSessionTimeline(sessionId, detail.timeline);
+          applyQueueSnapshot(sessionId, detail.queue ?? emptyAgentDesktopQueueSnapshot());
           const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
           if (mcpError) setError(mcpError);
         }
@@ -1908,6 +1946,7 @@ export function AgentMode({ userId }: { userId: string }) {
     [
       agentModelPreferenceRef,
       applyAuthoritativeMode,
+      applyQueueSnapshot,
       agentSessionSelection,
       contextLimitForModel,
       deletedSessionIdsRef,
@@ -1954,6 +1993,7 @@ export function AgentMode({ userId }: { userId: string }) {
           ...current.filter((session) => session.id !== detail.session.id)
         ]);
         replaceSessionTimeline(detail.session.id, detail.timeline);
+        applyQueueSnapshot(detail.session.id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
 
         if (
           isAgentModeMountedRef.current &&
@@ -1970,6 +2010,7 @@ export function AgentMode({ userId }: { userId: string }) {
           setModel(requestModel);
           applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
           replaceSessionTimeline(detail.session.id, detail.timeline);
+          applyQueueSnapshot(detail.session.id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
           const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
           if (mcpError) setError(mcpError);
         }
@@ -1990,6 +2031,7 @@ export function AgentMode({ userId }: { userId: string }) {
     [
       agentModelPreferenceRef,
       applyAuthoritativeMode,
+      applyQueueSnapshot,
       agentSessionSelection,
       beginSessionSelection,
       contextLimitForModel,
@@ -2065,6 +2107,7 @@ export function AgentMode({ userId }: { userId: string }) {
         setModel(sessionModel);
         applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
         setTimelineItems(detail.timeline);
+        applyQueueSnapshot(detail.session.id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
         if (activeRunsBySessionRef.current[detail.session.id]) {
           thoughtPhaseTrackerRef.current.seedActiveTimeline(detail.session.id, detail.timeline);
           observeActiveThoughtPhase(detail.session.id);
@@ -2102,6 +2145,7 @@ export function AgentMode({ userId }: { userId: string }) {
     [
       agentModelPreferenceRef,
       applyAuthoritativeMode,
+      applyQueueSnapshot,
       agentSessionSelection,
       beginSessionSelection,
       clearCompletedUnreadSession,
@@ -2152,7 +2196,8 @@ export function AgentMode({ userId }: { userId: string }) {
         text,
         isSendLocked: isAgentSendLocked,
         isSessionSelectionPending: pendingSessionSelectionIdRef.current !== null,
-        hasInFlightSend: pendingSendTokensRef.current.has(pendingSessionKey)
+        hasInFlightSend: pendingSendTokensRef.current.has(pendingSessionKey),
+        hasQueuedMessages: queuedMessages.length > 0
       })
     ) {
       return;
@@ -2190,7 +2235,6 @@ export function AgentMode({ userId }: { userId: string }) {
         if (cancelledPendingSendTokensRef.current.has(sendToken)) {
           throw new PendingAgentSendCancelledError();
         }
-        thoughtPhaseTrackerRef.current.prepareUserRequest(sessionId, text);
         const response = await agentRuntimeService.sendMessage(userId, {
           sessionId,
           text,
@@ -2208,6 +2252,12 @@ export function AgentMode({ userId }: { userId: string }) {
           // user clicked Cancel. Cancel the concrete run before returning.
           await agentRuntimeService.cancelRun(userId, response.runId);
           return;
+        }
+        if (response.queue) {
+          applyQueueSnapshot(sessionId, response.queue);
+        }
+        if (text && shouldPrepareThoughtAfterAgentSend(response.queued)) {
+          thoughtPhaseTrackerRef.current.prepareUserRequest(sessionId, text);
         }
         if (!terminalRunIdsRef.current.has(response.runId)) {
           recordActiveRun(sessionId, response.runId);
@@ -2245,6 +2295,7 @@ export function AgentMode({ userId }: { userId: string }) {
       clearPendingSend(pendingSessionKey, sendToken);
     }
   }, [
+    applyQueueSnapshot,
     availableModels,
     cancelledPendingSendTokensRef,
     clearPendingSend,
@@ -2259,6 +2310,7 @@ export function AgentMode({ userId }: { userId: string }) {
     movePendingSend,
     pendingSendTokensRef,
     permissionModeUpdateRef,
+    queuedMessages.length,
     recordActiveRun,
     scrollTimelineToBottom,
     terminalRunIdsRef,
@@ -2312,6 +2364,52 @@ export function AgentMode({ userId }: { userId: string }) {
     pendingSendTokensRef,
     userId
   ]);
+
+  const cancelQueuedMessage = useCallback(
+    async (queueId: string) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      applyQueueSnapshot(
+        sessionId,
+        queueSnapshotWithoutItem(queueBySessionRef.current[sessionId], queueId)
+      );
+      try {
+        const snapshot = await agentRuntimeService.cancelQueuedMessage(userId, {
+          sessionId,
+          queueId
+        });
+        applyQueueSnapshot(sessionId, snapshot);
+      } catch (queueError) {
+        if (activeSessionIdRef.current === sessionId) {
+          setError(errorMessage(queueError));
+        }
+      }
+    },
+    [applyQueueSnapshot, userId]
+  );
+
+  const editQueuedMessage = useCallback(
+    async (queueId: string) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      applyQueueSnapshot(
+        sessionId,
+        queueSnapshotWithoutItem(queueBySessionRef.current[sessionId], queueId)
+      );
+      try {
+        const queued = await agentRuntimeService.unqueueMessageForEdit(userId, {
+          sessionId,
+          queueId
+        });
+        setInput((current) => restoreQueuedMessageToComposer(current, queued.text));
+      } catch (queueError) {
+        if (activeSessionIdRef.current === sessionId) {
+          setError(errorMessage(queueError));
+        }
+      }
+    },
+    [applyQueueSnapshot, userId]
+  );
 
   const respondToPermission = useCallback(
     async (item: AgentTimelineItem, decision: AgentPermissionDecision) => {
@@ -2376,6 +2474,7 @@ export function AgentMode({ userId }: { userId: string }) {
         return next;
       });
       clearActiveRun(sessionId);
+      forgetSessionQueue(sessionId);
       setSessionToDelete((current) => (current?.id === sessionId ? null : current));
       setSessionToRename((current) => (current?.id === sessionId ? null : current));
 
@@ -2393,6 +2492,7 @@ export function AgentMode({ userId }: { userId: string }) {
       cancelThoughtLabelDisplays,
       clearActiveRun,
       deletedSessionIdsRef,
+      forgetSessionQueue,
       restoreNewTaskModel,
       thoughtPhaseTrackerRef,
       timelineRevisionBySessionRef,
@@ -2574,6 +2674,16 @@ export function AgentMode({ userId }: { userId: string }) {
             mergeSessionTimelineItem(event.sessionId, event.item);
           }
           break;
+        case "queueChanged":
+          if (event.sessionId && event.queue) {
+            applyQueueSnapshot(event.sessionId, event.queue);
+          }
+          break;
+        case "queuePromoted":
+          if (event.sessionId && event.queue) {
+            applyQueueSnapshot(event.sessionId, event.queue);
+          }
+          break;
         case "runFinished": {
           runStateGenerationRef.current += 1;
           if (event.runId) {
@@ -2658,6 +2768,7 @@ export function AgentMode({ userId }: { userId: string }) {
                 return;
               }
               const replaced = replaceSessionTimeline(id, detail.timeline, historyTimelineRevision);
+              applyQueueSnapshot(id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
               if (replaced && activeRunsBySessionRef.current[id]) {
                 thoughtPhaseTrackerRef.current.seedActiveTimeline(id, detail.timeline);
                 observeActiveThoughtPhase(id);
@@ -2676,6 +2787,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      applyQueueSnapshot,
       applyRuntimeStatus,
       bumpTimelineRevision,
       clearActiveRun,
@@ -3076,6 +3188,9 @@ export function AgentMode({ userId }: { userId: string }) {
                   onProjectRootChange={selectProjectRoot}
                   onSendMessage={handleSendMessage}
                   onToggleExpanded={handleToggleAgentFullscreen}
+                  queuedMessages={queuedMessages}
+                  onCancelQueuedMessage={cancelQueuedMessage}
+                  onEditQueuedMessage={editQueuedMessage}
                 />
               ) : (
                 <AgentTimeline
@@ -3119,6 +3234,9 @@ export function AgentMode({ userId }: { userId: string }) {
                   onModelChange={selectModel}
                   onProjectRootChange={selectProjectRoot}
                   onSendMessage={handleSendMessage}
+                  queuedMessages={queuedMessages}
+                  onCancelQueuedMessage={cancelQueuedMessage}
+                  onEditQueuedMessage={editQueuedMessage}
                 />
                 <p className="mb-2 mt-1 text-center text-[10px] text-muted-foreground/50 landscape-short:mb-1">
                   AI can make mistakes. Check important info.
@@ -4270,6 +4388,9 @@ interface AgentComposerProps {
   onProjectRootChange: (value: string) => void;
   onSendMessage: () => void;
   onToggleExpanded?: () => void;
+  queuedMessages?: AgentDesktopQueueSnapshot["items"];
+  onCancelQueuedMessage?: (queueId: string) => void;
+  onEditQueuedMessage?: (queueId: string) => void;
 }
 
 function AgentComposer({
@@ -4299,7 +4420,10 @@ function AgentComposer({
   onModelChange,
   onProjectRootChange,
   onSendMessage,
-  onToggleExpanded
+  onToggleExpanded,
+  queuedMessages = [],
+  onCancelQueuedMessage,
+  onEditQueuedMessage
 }: AgentComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootOptions = recentRoots;
@@ -4333,6 +4457,40 @@ function AgentComposer({
         >
           {isExpanded ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
         </button>
+      ) : null}
+      {queuedMessages.length > 0 ? (
+        <div className="flex flex-col gap-1 px-3 pt-2">
+          {queuedMessages.map((item) => (
+            <div
+              key={item.queueId}
+              className="flex items-center gap-1 rounded-lg bg-muted/70 px-2 py-1 text-left text-xs text-muted-foreground"
+            >
+              <span className="min-w-0 flex-1 truncate" title={item.text}>
+                {item.text}
+              </span>
+              {onEditQueuedMessage ? (
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                  onClick={() => onEditQueuedMessage(item.queueId)}
+                  aria-label="Edit queued message"
+                >
+                  <FilePenLine className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+              {onCancelQueuedMessage ? (
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                  onClick={() => onCancelQueuedMessage(item.queueId)}
+                  aria-label="Remove queued message"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
       ) : null}
       <Textarea
         ref={textareaRef}
@@ -4423,7 +4581,14 @@ function AgentComposer({
               onToggleExpanded && !isExpanded && "sm:h-9 sm:w-9"
             )}
             onClick={onSendMessage}
-            disabled={!agentComposerCanSend({ text: input, isSendDisabled, projectRoot })}
+            disabled={
+              !agentComposerCanSend({
+                text: input,
+                isSendDisabled,
+                projectRoot,
+                hasQueuedMessages: queuedMessages.length > 0
+              })
+            }
             aria-label="Send agent message"
           >
             {isStarting ? (

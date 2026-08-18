@@ -1,7 +1,8 @@
 use crate::agent::{
-    AgentConfig, AgentCreateSessionRequest, AgentEventSink, AgentMcpServer,
-    AgentPermissionModeRequest, AgentPermissionResponse, AgentProjectRootRegistration,
-    AgentProjectSkillsTrustStatus, AgentRenameSessionRequest, AgentRunEvent, AgentRunResponse,
+    AgentConfig, AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink,
+    AgentMcpServer, AgentPermissionModeRequest, AgentPermissionResponse,
+    AgentProjectRootRegistration, AgentProjectSkillsTrustStatus, AgentQueueControlRequest,
+    AgentQueuedMessage, AgentRenameSessionRequest, AgentRunEvent, AgentRunResponse,
     AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus, AgentSendMessageRequest,
     AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer, AgentSessionSummary,
     AgentSetSessionMcpServerRequest, AgentStartRequest, AgentTimelineItem, MapleAgentService,
@@ -31,6 +32,10 @@ pub(crate) struct AgentEventEnvelope {
     pub(crate) session: Option<AgentSessionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) queue: Option<AgentDesktopQueueSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) promoted_queue_id: Option<String>,
 }
 
 pub(crate) fn project_agent_event(event: &AgentServiceEvent) -> AgentEventEnvelope {
@@ -42,6 +47,8 @@ pub(crate) fn project_agent_event(event: &AgentServiceEvent) -> AgentEventEnvelo
         status: None,
         session: None,
         message: None,
+        queue: None,
+        promoted_queue_id: None,
     };
     match event {
         AgentServiceEvent::RuntimeStatus(status) => {
@@ -121,6 +128,20 @@ pub(crate) fn project_agent_event(event: &AgentServiceEvent) -> AgentEventEnvelo
                         }
                         .to_string(),
                     );
+                }
+                AgentRunEvent::QueueChanged(snapshot) => {
+                    envelope.event_type = "queueChanged".to_string();
+                    envelope.queue = Some(snapshot.clone());
+                }
+                AgentRunEvent::QueuePromoted {
+                    snapshot,
+                    queue_id,
+                    item,
+                } => {
+                    envelope.event_type = "queuePromoted".to_string();
+                    envelope.queue = Some(snapshot.clone());
+                    envelope.promoted_queue_id = Some(queue_id.clone());
+                    envelope.item = Some(item.clone());
                 }
             }
         }
@@ -480,7 +501,39 @@ pub async fn agent_send_message(
         .await?
         .send_message(request)
         .await?;
-    Ok(AgentRunResponse { run_id: run.run_id })
+    Ok(AgentRunResponse {
+        run_id: run.run_id,
+        queued: run.queued,
+        queue: run.queue,
+    })
+}
+
+#[tauri::command]
+pub async fn agent_cancel_queued_message(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    request: AgentQueueControlRequest,
+) -> Result<AgentDesktopQueueSnapshot, String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .cancel_queued_message(request)
+        .await
+}
+
+#[tauri::command]
+pub async fn agent_unqueue_message_for_edit(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    request: AgentQueueControlRequest,
+) -> Result<AgentQueuedMessage, String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .unqueue_message_for_edit(request)
+        .await
 }
 
 #[tauri::command]

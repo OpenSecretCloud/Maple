@@ -193,6 +193,8 @@ pub fn run() {
             agent_tauri::agent_set_session_mcp_server_enabled,
             agent_tauri::agent_delete_session,
             agent_tauri::agent_send_message,
+            agent_tauri::agent_cancel_queued_message,
+            agent_tauri::agent_unqueue_message_for_edit,
             agent_tauri::agent_cancel_run,
             agent_tauri::agent_set_permission_mode,
             agent_tauri::agent_permission_respond,
