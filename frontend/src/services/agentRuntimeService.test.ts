@@ -71,6 +71,8 @@ describe("AgentRuntimeService", () => {
     await service.cancelQueuedMessage("user-a", request);
     await service.unqueueMessageForEdit("user-a", request);
     await service.updateQueuedMessage("user-a", { ...request, text: "revised" });
+    await service.beginQueuedMessageEdit("user-a", request);
+    await service.endQueuedMessageEdit("user-a", request);
 
     expect(bridge.events).toEqual([
       "fence:user-a",
@@ -78,12 +80,13 @@ describe("AgentRuntimeService", () => {
       "fence:user-a",
       "invoke:agent_unqueue_message_for_edit",
       "fence:user-a",
-      "invoke:agent_update_queued_message"
+      "invoke:agent_update_queued_message",
+      "fence:user-a",
+      "invoke:agent_begin_queued_message_edit",
+      "fence:user-a",
+      "invoke:agent_end_queued_message_edit"
     ]);
-    expect(bridge.lastArgs).toEqual({
-      userId: "user-a",
-      request: { ...request, text: "revised" }
-    });
+    expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
   });
 
   test("session creation forwards the selected model context limit", async () => {

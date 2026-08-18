@@ -911,13 +911,19 @@ export function AgentMode({ userId }: { userId: string }) {
     const current = queueEditRef.current;
     if (!current) return;
     if (current.sessionId !== activeSessionId) {
+      void agentRuntimeService
+        .endQueuedMessageEdit(userId, {
+          sessionId: current.sessionId,
+          queueId: current.queueId
+        })
+        .catch(() => undefined);
       setQueueEdit(null);
       return;
     }
     if (!queuedMessageEditStillPresent(current, queuedMessages)) {
       setQueueEdit(null);
     }
-  }, [activeSessionId, queuedMessages]);
+  }, [activeSessionId, queuedMessages, userId]);
   const selectedNewChatMcpServerNames = useMemo(
     () =>
       mcpServers
@@ -2209,7 +2215,7 @@ export function AgentMode({ userId }: { userId: string }) {
   ]);
 
   const sendMessage = useCallback(async () => {
-    const text = input.trim();
+    let text = input.trim();
     const requestedSessionId = activeSessionIdRef.current;
     let pendingSessionKey = requestedSessionId || NEW_SESSION_PENDING_KEY;
     if (
@@ -2232,7 +2238,7 @@ export function AgentMode({ userId }: { userId: string }) {
         ? queueEditRef.current
         : null;
     if (activeEdit && requestedSessionId) {
-      setInput(discardQueuedMessageEdit(activeEdit));
+      const stashedDraft = discardQueuedMessageEdit(activeEdit);
       setQueueEdit(null);
       try {
         const snapshot = await agentRuntimeService.updateQueuedMessage(userId, {
@@ -2246,8 +2252,13 @@ export function AgentMode({ userId }: { userId: string }) {
           setInput(text);
           setError(errorMessage(queueError));
         }
+        return;
       }
-      return;
+      if (activeRunId) {
+        setInput(stashedDraft);
+        return;
+      }
+      text = stashedDraft.trim();
     }
 
     const selectionGeneration = sessionSelectionGenerationRef.current;
@@ -2414,7 +2425,17 @@ export function AgentMode({ userId }: { userId: string }) {
     if (!current) return;
     setInput(discardQueuedMessageEdit(current));
     setQueueEdit(null);
-  }, []);
+    void agentRuntimeService
+      .endQueuedMessageEdit(userId, {
+        sessionId: current.sessionId,
+        queueId: current.queueId
+      })
+      .catch((queueError) => {
+        if (activeSessionIdRef.current === current.sessionId) {
+          setError(errorMessage(queueError));
+        }
+      });
+  }, [userId]);
 
   const cancelQueuedMessage = useCallback(
     async (queueId: string) => {
@@ -2445,7 +2466,7 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   const editQueuedMessage = useCallback(
-    (queueId: string) => {
+    async (queueId: string) => {
       const sessionId = activeSessionIdRef.current;
       if (!sessionId) return;
       const item = (queueBySessionRef.current[sessionId]?.items ?? []).find(
@@ -2462,10 +2483,26 @@ export function AgentMode({ userId }: { userId: string }) {
         discardQueueEdit();
         return;
       }
-      setQueueEdit(next.edit);
-      setInput(next.composer);
+      try {
+        await agentRuntimeService.beginQueuedMessageEdit(userId, {
+          sessionId,
+          queueId
+        });
+        if (activeSessionIdRef.current !== sessionId) {
+          void agentRuntimeService
+            .endQueuedMessageEdit(userId, { sessionId, queueId })
+            .catch(() => undefined);
+          return;
+        }
+        setQueueEdit(next.edit);
+        setInput(next.composer);
+      } catch (queueError) {
+        if (activeSessionIdRef.current === sessionId) {
+          setError(errorMessage(queueError));
+        }
+      }
     },
-    [discardQueueEdit, input]
+    [discardQueueEdit, input, userId]
   );
 
   const respondToPermission = useCallback(

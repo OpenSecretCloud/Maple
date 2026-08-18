@@ -538,6 +538,34 @@ pub async fn agent_unqueue_message_for_edit(
 }
 
 #[tauri::command]
+pub async fn agent_begin_queued_message_edit(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    request: AgentQueueControlRequest,
+) -> Result<(), String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .begin_queued_message_edit(request)
+        .await
+}
+
+#[tauri::command]
+pub async fn agent_end_queued_message_edit(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    request: AgentQueueControlRequest,
+) -> Result<(), String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .end_queued_message_edit(request)
+        .await
+}
+
+#[tauri::command]
 pub async fn agent_update_queued_message(
     app_handle: AppHandle,
     state: State<'_, MapleAgentService>,

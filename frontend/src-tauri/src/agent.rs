@@ -661,6 +661,7 @@ struct ActiveAgentRun {
 struct DesktopSessionQueue {
     revision: u64,
     items: VecDeque<AgentQueuedMessage>,
+    editing_queue_id: Option<String>,
 }
 
 impl DesktopSessionQueue {
@@ -4060,6 +4061,42 @@ impl AgentRuntimeHandle {
         publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot.clone())
             .await;
         Ok(snapshot)
+    }
+
+    pub(crate) async fn begin_queued_message_edit(
+        &self,
+        request: AgentQueueControlRequest,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        begin_desktop_queue_edit(
+            state,
+            account_scope,
+            &request.session_id,
+            &request.queue_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn end_queued_message_edit(
+        &self,
+        request: AgentQueueControlRequest,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        end_desktop_queue_edit(
+            state,
+            account_scope,
+            &request.session_id,
+            &request.queue_id,
+        )
+        .await
     }
 
     pub(crate) async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
@@ -7759,6 +7796,7 @@ async fn enqueue_desktop_queue_item(
         .or_insert_with(|| DesktopSessionQueue {
             revision: 0,
             items: VecDeque::new(),
+            editing_queue_id: None,
         });
     if queue.items.len() >= MAX_DESKTOP_QUEUE_ITEMS {
         return Err("Agent task already has too many queued messages".to_string());
@@ -7789,6 +7827,9 @@ async fn remove_desktop_queue_item(
         .items
         .remove(index)
         .expect("queue index was just resolved");
+    if queue.editing_queue_id.as_deref() == Some(removed.queue_id.as_str()) {
+        queue.editing_queue_id = None;
+    }
     queue.revision = queue.revision.saturating_add(1);
     Ok((removed, queue.snapshot()))
 }
@@ -7819,8 +7860,42 @@ async fn update_desktop_queue_item(
         return Err("Queued Agent message has already been sent".to_string());
     };
     item.text = text.to_string();
+    queue.editing_queue_id = None;
     queue.revision = queue.revision.saturating_add(1);
     Ok((item.clone(), queue.snapshot()))
+}
+
+async fn begin_desktop_queue_edit(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    queue_id: &str,
+) -> Result<(), String> {
+    let mut queues = state.desktop_queues.lock().await;
+    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+        return Err("Queued Agent message is no longer available".to_string());
+    };
+    if !queue.items.iter().any(|item| item.queue_id == queue_id) {
+        return Err("Queued Agent message has already been sent".to_string());
+    }
+    queue.editing_queue_id = Some(queue_id.to_string());
+    Ok(())
+}
+
+async fn end_desktop_queue_edit(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    queue_id: &str,
+) -> Result<(), String> {
+    let mut queues = state.desktop_queues.lock().await;
+    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+        return Ok(());
+    };
+    if queue.editing_queue_id.as_deref() == Some(queue_id) {
+        queue.editing_queue_id = None;
+    }
+    Ok(())
 }
 
 async fn take_all_desktop_queue_items_from_map(
@@ -7831,7 +7906,7 @@ async fn take_all_desktop_queue_items_from_map(
     let mut queues = queues.lock().await;
     let key = desktop_queue_key(account_scope, session_id);
     let queue = queues.get_mut(&key)?;
-    if queue.items.is_empty() {
+    if queue.items.is_empty() || queue.editing_queue_id.is_some() {
         return None;
     }
     let items: Vec<AgentQueuedMessage> = queue.items.drain(..).collect();
@@ -8763,6 +8838,91 @@ mod tests {
         )
         .await
         .is_none());
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_take_all_holds_while_an_item_is_being_edited() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-queue-hold-edit", sink);
+        let account_scope = account_scope("desktop-queue-hold-edit-user").unwrap();
+        let session_id = "session-hold-edit";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        let first_id = snapshot_desktop_queue(&state, &account_scope, session_id)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        begin_desktop_queue_edit(&state, &account_scope, session_id, &first_id)
+            .await
+            .unwrap();
+        assert!(
+            take_all_desktop_queue_items_from_map(
+                &state.desktop_queues,
+                &account_scope,
+                session_id,
+            )
+            .await
+            .is_none(),
+            "an open edit must hold the leftover queue"
+        );
+        end_desktop_queue_edit(&state, &account_scope, session_id, &first_id)
+            .await
+            .unwrap();
+        let (items, _) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("discarding the edit should release the leftover queue");
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "kept")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "also")
+            .await
+            .unwrap();
+        let kept_id = snapshot_desktop_queue(&state, &account_scope, session_id)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        begin_desktop_queue_edit(&state, &account_scope, session_id, &kept_id)
+            .await
+            .unwrap();
+        update_desktop_queue_item(&state, &account_scope, session_id, &kept_id, "kept revised")
+            .await
+            .unwrap();
+        let (updated, _) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("saving the edit should release the leftover queue");
+        assert_eq!(
+            updated
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kept revised", "also"]
+        );
 
         let _ = fs::remove_dir_all(test_root);
     }

@@ -195,6 +195,8 @@ pub fn run() {
             agent_tauri::agent_send_message,
             agent_tauri::agent_cancel_queued_message,
             agent_tauri::agent_unqueue_message_for_edit,
+            agent_tauri::agent_begin_queued_message_edit,
+            agent_tauri::agent_end_queued_message_edit,
             agent_tauri::agent_update_queued_message,
             agent_tauri::agent_cancel_run,
             agent_tauri::agent_set_permission_mode,

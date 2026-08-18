@@ -450,6 +450,20 @@ export class AgentRuntimeService {
     );
   }
 
+  async beginQueuedMessageEdit(userId: string, request: AgentQueueControlRequest): Promise<void> {
+    await this.invokeLocalForUser(userId, "agent_begin_queued_message_edit", {
+      userId,
+      request
+    });
+  }
+
+  async endQueuedMessageEdit(userId: string, request: AgentQueueControlRequest): Promise<void> {
+    await this.invokeLocalForUser(userId, "agent_end_queued_message_edit", {
+      userId,
+      request
+    });
+  }
+
   async cancelRun(userId: string, runId: string): Promise<void> {
     // Cancellation is a local control-plane operation. Keep it account-fenced,
     // but never delay Stop on remote credential validation or token refresh.
