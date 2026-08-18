@@ -404,6 +404,14 @@ pub struct AgentQueueControlRequest {
     pub queue_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQueueUpdateRequest {
+    pub session_id: String,
+    pub queue_id: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentRunTerminal {
     Completed,
@@ -4030,6 +4038,28 @@ impl AgentRuntimeHandle {
                 .await?;
         publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot).await;
         Ok(removed)
+    }
+
+    pub(crate) async fn update_queued_message(
+        &self,
+        request: AgentQueueUpdateRequest,
+    ) -> Result<AgentDesktopQueueSnapshot, String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (_, snapshot) = update_desktop_queue_item(
+            state,
+            account_scope,
+            &request.session_id,
+            &request.queue_id,
+            &request.text,
+        )
+        .await?;
+        publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot.clone())
+            .await;
+        Ok(snapshot)
     }
 
     pub(crate) async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
@@ -7763,6 +7793,36 @@ async fn remove_desktop_queue_item(
     Ok((removed, queue.snapshot()))
 }
 
+async fn update_desktop_queue_item(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    queue_id: &str,
+    text: &str,
+) -> Result<(AgentQueuedMessage, AgentDesktopQueueSnapshot), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Prompt cannot be empty".to_string());
+    }
+    if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
+        return Err("Queued Agent message is too large".to_string());
+    }
+    let mut queues = state.desktop_queues.lock().await;
+    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+        return Err("Queued Agent message is no longer available".to_string());
+    };
+    let Some(item) = queue
+        .items
+        .iter_mut()
+        .find(|item| item.queue_id == queue_id)
+    else {
+        return Err("Queued Agent message has already been sent".to_string());
+    };
+    item.text = text.to_string();
+    queue.revision = queue.revision.saturating_add(1);
+    Ok((item.clone(), queue.snapshot()))
+}
+
 async fn take_all_desktop_queue_items_from_map(
     queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
     account_scope: &str,
@@ -8703,6 +8763,52 @@ mod tests {
         )
         .await
         .is_none());
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_update_keeps_original_position() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-queue-update-in-place", sink);
+        let account_scope = account_scope("desktop-queue-update-user").unwrap();
+        let session_id = "session-update-in-place";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "third")
+            .await
+            .unwrap();
+        let snapshot = snapshot_desktop_queue(&state, &account_scope, session_id).await;
+        let first_id = snapshot.items[0].queue_id.clone();
+        let (updated, after_update) = update_desktop_queue_item(
+            &state,
+            &account_scope,
+            session_id,
+            &first_id,
+            "  first revised  ",
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.queue_id, first_id);
+        assert_eq!(
+            after_update
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first revised", "second", "third"]
+        );
+        assert!(after_update.revision > snapshot.revision);
+        let empty = update_desktop_queue_item(&state, &account_scope, session_id, &first_id, "   ")
+            .await
+            .unwrap_err();
+        assert!(empty.contains("empty"), "{empty}");
 
         let _ = fs::remove_dir_all(test_root);
     }

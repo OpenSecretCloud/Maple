@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyAgentDesktopQueueSnapshot,
+  beginQueuedMessageEdit,
+  discardQueuedMessageEdit,
   emptyAgentDesktopQueueSnapshot,
+  queuedMessageEditStillPresent,
   queueSnapshotWithoutItem,
   restoreQueuedMessageToComposer,
   shouldPrepareThoughtAfterAgentSend,
@@ -51,6 +54,51 @@ describe("agent composer queue projection", () => {
     expect(restoreQueuedMessageToComposer("", "queued")).toBe("queued");
     expect(restoreQueuedMessageToComposer("   ", "queued")).toBe("queued");
     expect(restoreQueuedMessageToComposer("draft", "queued")).toBe("queued\ndraft");
+  });
+
+  test("pencil starts an in-place edit and keeps an unpublished draft stashed", () => {
+    const started = beginQueuedMessageEdit({
+      current: null,
+      sessionId: "session-1",
+      item: queued("q1", "oldest"),
+      composerText: "new draft"
+    });
+    expect(started).toEqual({
+      edit: { sessionId: "session-1", queueId: "q1", stashedDraft: "new draft" },
+      composer: "oldest"
+    });
+    expect(discardQueuedMessageEdit(started!.edit)).toBe("new draft");
+  });
+
+  test("switching chips keeps the original draft and does not restack", () => {
+    const first = beginQueuedMessageEdit({
+      current: null,
+      sessionId: "session-1",
+      item: queued("q1", "oldest"),
+      composerText: "new draft"
+    });
+    const second = beginQueuedMessageEdit({
+      current: first!.edit,
+      sessionId: "session-1",
+      item: queued("q2", "middle"),
+      composerText: "oldest"
+    });
+    expect(second).toEqual({
+      edit: { sessionId: "session-1", queueId: "q2", stashedDraft: "new draft" },
+      composer: "middle"
+    });
+    expect(
+      beginQueuedMessageEdit({
+        current: second!.edit,
+        sessionId: "session-1",
+        item: queued("q2", "middle"),
+        composerText: "middle"
+      })
+    ).toBeNull();
+    expect(
+      queuedMessageEditStillPresent(second!.edit, [queued("q1", "oldest"), queued("q2", "middle")])
+    ).toBe(true);
+    expect(queuedMessageEditStillPresent(second!.edit, [queued("q1", "oldest")])).toBe(false);
   });
 
   test("does not seed thought tracking for a staged follow-up", () => {

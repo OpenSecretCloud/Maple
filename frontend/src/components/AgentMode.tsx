@@ -111,9 +111,12 @@ import {
 } from "@/services/agentRuntimeService";
 import {
   applyAgentDesktopQueueSnapshot,
+  beginQueuedMessageEdit,
+  discardQueuedMessageEdit,
   emptyAgentDesktopQueueSnapshot,
+  queuedMessageEditStillPresent,
   queueSnapshotWithoutItem,
-  restoreQueuedMessageToComposer
+  type AgentQueuedMessageEdit
 } from "@/services/agentComposerQueue";
 import {
   createProjectOrderState,
@@ -439,6 +442,9 @@ export function AgentMode({ userId }: { userId: string }) {
   );
   const queueBySessionRef = useRef(queueBySession);
   queueBySessionRef.current = queueBySession;
+  const [queueEdit, setQueueEdit] = useState<AgentQueuedMessageEdit | null>(null);
+  const queueEditRef = useRef(queueEdit);
+  queueEditRef.current = queueEdit;
   const [generatedThoughtLabels, setGeneratedThoughtLabels] = useState<
     Record<string, Record<string, string>>
   >({});
@@ -896,6 +902,22 @@ export function AgentMode({ userId }: { userId: string }) {
   });
   const isSending = Boolean(activeRunId) || isSubmitting;
   const queuedMessages = activeSessionId ? (queueBySession[activeSessionId]?.items ?? []) : [];
+  const editingQueueId =
+    queueEdit && activeSessionId && queueEdit.sessionId === activeSessionId
+      ? queueEdit.queueId
+      : null;
+
+  useEffect(() => {
+    const current = queueEditRef.current;
+    if (!current) return;
+    if (current.sessionId !== activeSessionId) {
+      setQueueEdit(null);
+      return;
+    }
+    if (!queuedMessageEditStillPresent(current, queuedMessages)) {
+      setQueueEdit(null);
+    }
+  }, [activeSessionId, queuedMessages]);
   const selectedNewChatMcpServerNames = useMemo(
     () =>
       mcpServers
@@ -2203,6 +2225,31 @@ export function AgentMode({ userId }: { userId: string }) {
       return;
     }
 
+    const activeEdit =
+      queueEditRef.current &&
+      requestedSessionId &&
+      queueEditRef.current.sessionId === requestedSessionId
+        ? queueEditRef.current
+        : null;
+    if (activeEdit && requestedSessionId) {
+      setInput(discardQueuedMessageEdit(activeEdit));
+      setQueueEdit(null);
+      try {
+        const snapshot = await agentRuntimeService.updateQueuedMessage(userId, {
+          sessionId: requestedSessionId,
+          queueId: activeEdit.queueId,
+          text
+        });
+        applyQueueSnapshot(requestedSessionId, snapshot);
+      } catch (queueError) {
+        if (activeSessionIdRef.current === requestedSessionId) {
+          setInput(text);
+          setError(errorMessage(queueError));
+        }
+      }
+      return;
+    }
+
     const selectionGeneration = sessionSelectionGenerationRef.current;
     const interactionGeneration = interactionGenerationRef.current;
     const sendToken = nextSendTokenRef.current + 1;
@@ -2362,10 +2409,22 @@ export function AgentMode({ userId }: { userId: string }) {
     userId
   ]);
 
+  const discardQueueEdit = useCallback(() => {
+    const current = queueEditRef.current;
+    if (!current) return;
+    setInput(discardQueuedMessageEdit(current));
+    setQueueEdit(null);
+  }, []);
+
   const cancelQueuedMessage = useCallback(
     async (queueId: string) => {
       const sessionId = activeSessionIdRef.current;
       if (!sessionId) return;
+      const currentEdit = queueEditRef.current;
+      if (currentEdit?.sessionId === sessionId && currentEdit.queueId === queueId) {
+        setInput(discardQueuedMessageEdit(currentEdit));
+        setQueueEdit(null);
+      }
       applyQueueSnapshot(
         sessionId,
         queueSnapshotWithoutItem(queueBySessionRef.current[sessionId], queueId)
@@ -2386,29 +2445,27 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   const editQueuedMessage = useCallback(
-    async (queueId: string) => {
+    (queueId: string) => {
       const sessionId = activeSessionIdRef.current;
       if (!sessionId) return;
-      applyQueueSnapshot(
-        sessionId,
-        queueSnapshotWithoutItem(queueBySessionRef.current[sessionId], queueId)
+      const item = (queueBySessionRef.current[sessionId]?.items ?? []).find(
+        (queued) => queued.queueId === queueId
       );
-      try {
-        const queued = await agentRuntimeService.unqueueMessageForEdit(userId, {
-          sessionId,
-          queueId
-        });
-        if (activeSessionIdRef.current !== sessionId) {
-          return;
-        }
-        setInput((current) => restoreQueuedMessageToComposer(current, queued.text));
-      } catch (queueError) {
-        if (activeSessionIdRef.current === sessionId) {
-          setError(errorMessage(queueError));
-        }
+      if (!item) return;
+      const next = beginQueuedMessageEdit({
+        current: queueEditRef.current,
+        sessionId,
+        item,
+        composerText: input
+      });
+      if (!next) {
+        discardQueueEdit();
+        return;
       }
+      setQueueEdit(next.edit);
+      setInput(next.composer);
     },
-    [applyQueueSnapshot, userId]
+    [discardQueueEdit, input]
   );
 
   const respondToPermission = useCallback(
@@ -2437,6 +2494,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing) return;
+      if (event.key === "Escape" && queueEditRef.current) {
+        event.preventDefault();
+        discardQueueEdit();
+        return;
+      }
       if ((event.shiftKey || isCompactLayout) && continueChatComposerList(event, setInput)) {
         return;
       }
@@ -2445,7 +2507,7 @@ export function AgentMode({ userId }: { userId: string }) {
         void sendMessage();
       }
     },
-    [isCompactLayout, sendMessage]
+    [discardQueueEdit, isCompactLayout, sendMessage]
   );
 
   const handleBeforeInput = useCallback((event: React.FormEvent<HTMLTextAreaElement>) => {
@@ -3189,8 +3251,10 @@ export function AgentMode({ userId }: { userId: string }) {
                   onSendMessage={handleSendMessage}
                   onToggleExpanded={handleToggleAgentFullscreen}
                   queuedMessages={queuedMessages}
+                  editingQueueId={editingQueueId}
                   onCancelQueuedMessage={cancelQueuedMessage}
                   onEditQueuedMessage={editQueuedMessage}
+                  onDiscardQueuedMessageEdit={discardQueueEdit}
                 />
               ) : (
                 <AgentTimeline
@@ -3235,8 +3299,10 @@ export function AgentMode({ userId }: { userId: string }) {
                   onProjectRootChange={selectProjectRoot}
                   onSendMessage={handleSendMessage}
                   queuedMessages={queuedMessages}
+                  editingQueueId={editingQueueId}
                   onCancelQueuedMessage={cancelQueuedMessage}
                   onEditQueuedMessage={editQueuedMessage}
+                  onDiscardQueuedMessageEdit={discardQueueEdit}
                 />
                 <p className="mb-2 mt-1 text-center text-[10px] text-muted-foreground/50 landscape-short:mb-1">
                   AI can make mistakes. Check important info.
@@ -4389,8 +4455,10 @@ interface AgentComposerProps {
   onSendMessage: () => void;
   onToggleExpanded?: () => void;
   queuedMessages?: AgentDesktopQueueSnapshot["items"];
+  editingQueueId?: string | null;
   onCancelQueuedMessage?: (queueId: string) => void;
   onEditQueuedMessage?: (queueId: string) => void;
+  onDiscardQueuedMessageEdit?: () => void;
 }
 
 function AgentComposer({
@@ -4422,8 +4490,10 @@ function AgentComposer({
   onSendMessage,
   onToggleExpanded,
   queuedMessages = [],
+  editingQueueId = null,
   onCancelQueuedMessage,
-  onEditQueuedMessage
+  onEditQueuedMessage,
+  onDiscardQueuedMessageEdit
 }: AgentComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootOptions = recentRoots;
@@ -4463,7 +4533,10 @@ function AgentComposer({
           {queuedMessages.map((item) => (
             <div
               key={item.queueId}
-              className="flex items-center gap-1 rounded-lg bg-muted/70 px-2 py-1 text-left text-xs text-muted-foreground"
+              className={cn(
+                "flex items-center gap-1 rounded-lg bg-muted/70 px-2 py-1 text-left text-xs text-muted-foreground",
+                item.queueId === editingQueueId && "bg-muted text-foreground ring-1 ring-border"
+              )}
             >
               <span className="min-w-0 flex-1 truncate" title={item.text}>
                 {item.text}
@@ -4500,7 +4573,11 @@ function AgentComposer({
         onBeforeInput={onBeforeInput}
         onKeyDown={onKeyDown}
         disabled={isSendDisabled}
-        placeholder="Ask Maple to work in this folder..."
+        placeholder={
+          editingQueueId
+            ? "Edit the queued message, then send to keep its place..."
+            : "Ask Maple to work in this folder..."
+        }
         className={cn(
           CHAT_COMPOSER_TEXTAREA_CLASS,
           onToggleExpanded && "pr-8",
@@ -4562,6 +4639,17 @@ function AgentComposer({
         </div>
 
         <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
+          {editingQueueId && onDiscardQueuedMessageEdit ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 px-2 text-xs text-muted-foreground"
+              onClick={onDiscardQueuedMessageEdit}
+            >
+              Discard
+            </Button>
+          ) : null}
           {agentComposerShowsStop(isSending) ? (
             <Button
               type="button"

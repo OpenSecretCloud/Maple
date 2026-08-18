@@ -70,14 +70,20 @@ describe("AgentRuntimeService", () => {
 
     await service.cancelQueuedMessage("user-a", request);
     await service.unqueueMessageForEdit("user-a", request);
+    await service.updateQueuedMessage("user-a", { ...request, text: "revised" });
 
     expect(bridge.events).toEqual([
       "fence:user-a",
       "invoke:agent_cancel_queued_message",
       "fence:user-a",
-      "invoke:agent_unqueue_message_for_edit"
+      "invoke:agent_unqueue_message_for_edit",
+      "fence:user-a",
+      "invoke:agent_update_queued_message"
     ]);
-    expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
+    expect(bridge.lastArgs).toEqual({
+      userId: "user-a",
+      request: { ...request, text: "revised" }
+    });
   });
 
   test("session creation forwards the selected model context limit", async () => {

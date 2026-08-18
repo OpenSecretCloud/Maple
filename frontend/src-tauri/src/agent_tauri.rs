@@ -2,8 +2,9 @@ use crate::agent::{
     AgentConfig, AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink,
     AgentMcpServer, AgentPermissionModeRequest, AgentPermissionResponse,
     AgentProjectRootRegistration, AgentProjectSkillsTrustStatus, AgentQueueControlRequest,
-    AgentQueuedMessage, AgentRenameSessionRequest, AgentRunEvent, AgentRunResponse,
-    AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus, AgentSendMessageRequest,
+    AgentQueueUpdateRequest, AgentQueuedMessage, AgentRenameSessionRequest, AgentRunEvent,
+    AgentRunResponse, AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus,
+    AgentSendMessageRequest,
     AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer, AgentSessionSummary,
     AgentSetSessionMcpServerRequest, AgentStartRequest, AgentTimelineItem, MapleAgentService,
     RecentProjectRoot,
@@ -533,6 +534,20 @@ pub async fn agent_unqueue_message_for_edit(
     handle_for_user(&state, &user_id)
         .await?
         .unqueue_message_for_edit(request)
+        .await
+}
+
+#[tauri::command]
+pub async fn agent_update_queued_message(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    request: AgentQueueUpdateRequest,
+) -> Result<AgentDesktopQueueSnapshot, String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .update_queued_message(request)
         .await
 }
 

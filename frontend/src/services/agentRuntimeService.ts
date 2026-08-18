@@ -147,6 +147,12 @@ export interface AgentQueueControlRequest {
   queueId: string;
 }
 
+export interface AgentQueueUpdateRequest {
+  sessionId: string;
+  queueId: string;
+  text: string;
+}
+
 export interface AgentSessionDetail {
   session: AgentSessionSummary;
   timeline: AgentTimelineItem[];
@@ -429,6 +435,17 @@ export class AgentRuntimeService {
     return await this.invokeLocalForUser<AgentQueuedMessage>(
       userId,
       "agent_unqueue_message_for_edit",
+      { userId, request }
+    );
+  }
+
+  async updateQueuedMessage(
+    userId: string,
+    request: AgentQueueUpdateRequest
+  ): Promise<AgentDesktopQueueSnapshot> {
+    return await this.invokeLocalForUser<AgentDesktopQueueSnapshot>(
+      userId,
+      "agent_update_queued_message",
       { userId, request }
     );
   }
