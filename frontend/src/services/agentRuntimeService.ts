@@ -129,10 +129,35 @@ export interface AgentTimelineItem {
   merge: "append" | "replace" | string;
 }
 
+export interface AgentQueuedMessage {
+  queueId: string;
+  messageId: string;
+  sessionId: string;
+  text: string;
+  createdMs: number;
+}
+
+export interface AgentDesktopQueueSnapshot {
+  revision: number;
+  items: AgentQueuedMessage[];
+}
+
+export interface AgentQueueControlRequest {
+  sessionId: string;
+  queueId: string;
+}
+
+export interface AgentQueueUpdateRequest {
+  sessionId: string;
+  queueId: string;
+  text: string;
+}
+
 export interface AgentSessionDetail {
   session: AgentSessionSummary;
   timeline: AgentTimelineItem[];
   mcpErrors: AgentMcpConnectionError[];
+  queue: AgentDesktopQueueSnapshot;
 }
 
 export interface AgentSendMessageRequest {
@@ -146,6 +171,8 @@ export interface AgentSendMessageRequest {
 
 export interface AgentRunResponse {
   runId: string;
+  queued?: AgentQueuedMessage | null;
+  queue: AgentDesktopQueueSnapshot;
 }
 
 export type AgentPermissionDecision = "allow_once" | "deny_once" | "cancel";
@@ -158,6 +185,8 @@ export interface AgentEventEnvelope {
   status?: AgentRuntimeStatus | null;
   session?: AgentSessionSummary | null;
   message?: string | null;
+  queue?: AgentDesktopQueueSnapshot | null;
+  promotedQueueId?: string | null;
 }
 
 export type AgentEventHandler = (event: AgentEventEnvelope) => void;
@@ -383,6 +412,53 @@ export class AgentRuntimeService {
 
   async sendMessage(userId: string, request: AgentSendMessageRequest): Promise<AgentRunResponse> {
     return await this.invokeForUser<AgentRunResponse>(userId, "agent_send_message", {
+      userId,
+      request
+    });
+  }
+
+  async cancelQueuedMessage(
+    userId: string,
+    request: AgentQueueControlRequest
+  ): Promise<AgentDesktopQueueSnapshot> {
+    return await this.invokeLocalForUser<AgentDesktopQueueSnapshot>(
+      userId,
+      "agent_cancel_queued_message",
+      { userId, request }
+    );
+  }
+
+  async unqueueMessageForEdit(
+    userId: string,
+    request: AgentQueueControlRequest
+  ): Promise<AgentQueuedMessage> {
+    return await this.invokeLocalForUser<AgentQueuedMessage>(
+      userId,
+      "agent_unqueue_message_for_edit",
+      { userId, request }
+    );
+  }
+
+  async updateQueuedMessage(
+    userId: string,
+    request: AgentQueueUpdateRequest
+  ): Promise<AgentDesktopQueueSnapshot> {
+    return await this.invokeLocalForUser<AgentDesktopQueueSnapshot>(
+      userId,
+      "agent_update_queued_message",
+      { userId, request }
+    );
+  }
+
+  async beginQueuedMessageEdit(userId: string, request: AgentQueueControlRequest): Promise<void> {
+    await this.invokeLocalForUser(userId, "agent_begin_queued_message_edit", {
+      userId,
+      request
+    });
+  }
+
+  async endQueuedMessageEdit(userId: string, request: AgentQueueControlRequest): Promise<void> {
+    await this.invokeLocalForUser(userId, "agent_end_queued_message_edit", {
       userId,
       request
     });
