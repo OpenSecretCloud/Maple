@@ -68,6 +68,16 @@ describe("agent composer send policy", () => {
         isSendLocked: false,
         isSessionSelectionPending: false,
         hasInFlightSend: false,
+        hasQueuedMessages: true,
+        hasActiveRun: true
+      })
+    ).toBe(false);
+    expect(
+      canSubmitAgentComposerMessage({
+        text: "",
+        isSendLocked: false,
+        isSessionSelectionPending: false,
+        hasInFlightSend: false,
         hasQueuedMessages: false
       })
     ).toBe(false);
@@ -173,5 +183,14 @@ describe("agent composer send policy", () => {
         hasQueuedMessages: true
       })
     ).toBe(true);
+    expect(
+      agentComposerCanSend({
+        text: "",
+        isSendDisabled: false,
+        projectRoot: "/tmp/project",
+        hasQueuedMessages: true,
+        hasActiveRun: true
+      })
+    ).toBe(false);
   });
 });

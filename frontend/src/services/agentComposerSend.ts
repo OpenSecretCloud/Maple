@@ -3,16 +3,20 @@ export function canSubmitAgentComposerMessage({
   isSendLocked,
   isSessionSelectionPending,
   hasInFlightSend,
-  hasQueuedMessages = false
+  hasQueuedMessages = false,
+  hasActiveRun = false
 }: {
   text: string;
   isSendLocked: boolean;
   isSessionSelectionPending: boolean;
   hasInFlightSend: boolean;
   hasQueuedMessages?: boolean;
+  hasActiveRun?: boolean;
 }): boolean {
+  const hasSendableText = Boolean(text.trim());
+  const canFlushQueuedOnly = hasQueuedMessages && !hasActiveRun;
   return (
-    (Boolean(text.trim()) || hasQueuedMessages) &&
+    (hasSendableText || canFlushQueuedOnly) &&
     !isSendLocked &&
     !isSessionSelectionPending &&
     !hasInFlightSend
@@ -65,12 +69,16 @@ export function agentComposerCanSend({
   text,
   isSendDisabled,
   projectRoot,
-  hasQueuedMessages = false
+  hasQueuedMessages = false,
+  hasActiveRun = false
 }: {
   text: string;
   isSendDisabled: boolean;
   projectRoot: string;
   hasQueuedMessages?: boolean;
+  hasActiveRun?: boolean;
 }): boolean {
-  return (Boolean(text.trim()) || hasQueuedMessages) && !isSendDisabled && Boolean(projectRoot);
+  const hasSendableText = Boolean(text.trim());
+  const canFlushQueuedOnly = hasQueuedMessages && !hasActiveRun;
+  return (hasSendableText || canFlushQueuedOnly) && !isSendDisabled && Boolean(projectRoot);
 }

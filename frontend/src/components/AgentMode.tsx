@@ -113,8 +113,7 @@ import {
   applyAgentDesktopQueueSnapshot,
   emptyAgentDesktopQueueSnapshot,
   queueSnapshotWithoutItem,
-  restoreQueuedMessageToComposer,
-  shouldPrepareThoughtAfterAgentSend
+  restoreQueuedMessageToComposer
 } from "@/services/agentComposerQueue";
 import {
   createProjectOrderState,
@@ -2197,7 +2196,8 @@ export function AgentMode({ userId }: { userId: string }) {
         isSendLocked: isAgentSendLocked,
         isSessionSelectionPending: pendingSessionSelectionIdRef.current !== null,
         hasInFlightSend: pendingSendTokensRef.current.has(pendingSessionKey),
-        hasQueuedMessages: queuedMessages.length > 0
+        hasQueuedMessages: queuedMessages.length > 0,
+        hasActiveRun: Boolean(activeRunId)
       })
     ) {
       return;
@@ -2256,9 +2256,6 @@ export function AgentMode({ userId }: { userId: string }) {
         if (response.queue) {
           applyQueueSnapshot(sessionId, response.queue);
         }
-        if (text && shouldPrepareThoughtAfterAgentSend(response.queued)) {
-          thoughtPhaseTrackerRef.current.prepareUserRequest(sessionId, text);
-        }
         if (!terminalRunIdsRef.current.has(response.runId)) {
           recordActiveRun(sessionId, response.runId);
         }
@@ -2295,6 +2292,7 @@ export function AgentMode({ userId }: { userId: string }) {
       clearPendingSend(pendingSessionKey, sendToken);
     }
   }, [
+    activeRunId,
     applyQueueSnapshot,
     availableModels,
     cancelledPendingSendTokensRef,
@@ -2314,7 +2312,6 @@ export function AgentMode({ userId }: { userId: string }) {
     recordActiveRun,
     scrollTimelineToBottom,
     terminalRunIdsRef,
-    thoughtPhaseTrackerRef,
     trackAgentWorkflow,
     userId
   ]);
@@ -2401,6 +2398,9 @@ export function AgentMode({ userId }: { userId: string }) {
           sessionId,
           queueId
         });
+        if (activeSessionIdRef.current !== sessionId) {
+          return;
+        }
         setInput((current) => restoreQueuedMessageToComposer(current, queued.text));
       } catch (queueError) {
         if (activeSessionIdRef.current === sessionId) {
@@ -4586,7 +4586,8 @@ function AgentComposer({
                 text: input,
                 isSendDisabled,
                 projectRoot,
-                hasQueuedMessages: queuedMessages.length > 0
+                hasQueuedMessages: queuedMessages.length > 0,
+                hasActiveRun: isSending
               })
             }
             aria-label="Send agent message"

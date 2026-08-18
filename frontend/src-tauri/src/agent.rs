@@ -3206,7 +3206,7 @@ impl AgentRuntimeHandle {
         }
 
         let session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (launch_message, started_queue) = match desktop_send {
+        let (launch_message, mut started_queue, consume_queue_id) = match desktop_send {
             DesktopSendDisposition::StageOrStart => {
                 match self.take_desktop_send_plan(&request).await? {
                     DesktopSendPlan::Staged {
@@ -3219,7 +3219,8 @@ impl AgentRuntimeHandle {
                     DesktopSendPlan::Start {
                         launch_message,
                         queue,
-                    } => (launch_message, queue),
+                        consume_queue_id,
+                    } => (launch_message, queue, consume_queue_id),
                 }
             }
             DesktopSendDisposition::StartOnly => {
@@ -3230,6 +3231,7 @@ impl AgentRuntimeHandle {
                 (
                     user_message_from_prompt(&text),
                     empty_desktop_queue_snapshot(),
+                    None,
                 )
             }
         };
@@ -3605,10 +3607,10 @@ impl AgentRuntimeHandle {
                     if task_cancel_token.is_cancelled() {
                         break;
                     }
-                    let next_queued = {
+                    let should_continue = {
                         let _promote_guard = session_lifecycle.lock().await;
                         if task_cancel_token.is_cancelled() {
-                            None
+                            false
                         } else if let Ok(outcome) = &result {
                             let mut timelines = live_timelines.lock().await;
                             apply_successful_prompt_outcome(
@@ -3618,17 +3620,50 @@ impl AgentRuntimeHandle {
                                 outcome,
                             );
                             drop(timelines);
-                            match take_next_desktop_queue_item_from_map(
-                                &task_desktop_queues,
-                                &task_account_scope,
-                                &session_id,
-                            )
-                            .await
-                            {
-                                Some(next) => Some(next),
-                                None => {
-                                    task_accepting_queue.store(false, Ordering::Release);
-                                    None
+                            // ACP still needs outcome cleanup and Error events.
+                            // Only Desktop may promote the next queued chip.
+                            if permission_routing != AgentPermissionRouting::Desktop {
+                                task_accepting_queue.store(false, Ordering::Release);
+                                false
+                            } else {
+                                match take_next_desktop_queue_item_from_map(
+                                    &task_desktop_queues,
+                                    &task_account_scope,
+                                    &session_id,
+                                )
+                                .await
+                                {
+                                    Some((queued, snapshot)) => {
+                                        let mut promoted = user_message_from_prompt(&queued.text);
+                                        promoted.id = Some(queued.message_id.clone());
+                                        current_user_message = promoted;
+                                        if let Some(user_item) =
+                                            message_to_timeline_items(&current_user_message, false)
+                                                .into_iter()
+                                                .next()
+                                        {
+                                            record_and_emit_timeline_item(
+                                                &task_events,
+                                                &live_timelines,
+                                                &session_id,
+                                                permission_routing,
+                                                user_item.clone(),
+                                            )
+                                            .await;
+                                            task_events
+                                                .publish(AgentRunEvent::QueuePromoted {
+                                                    snapshot,
+                                                    queue_id: queued.queue_id,
+                                                    item: user_item,
+                                                })
+                                                .await;
+                                        }
+                                        true
+                                    }
+                                    None => {
+                                        task_accepting_queue.store(false, Ordering::Release);
+                                        false
+                                    }
                                 }
                             }
                         } else {
@@ -3646,37 +3681,11 @@ impl AgentRuntimeHandle {
                                 task_events.publish(AgentRunEvent::Error(item)).await;
                             }
                             task_accepting_queue.store(false, Ordering::Release);
-                            None
+                            false
                         }
                     };
-                    if task_cancel_token.is_cancelled() {
+                    if !should_continue {
                         break;
-                    }
-                    let Some((queued, snapshot)) = next_queued else {
-                        break;
-                    };
-                    let mut promoted = user_message_from_prompt(&queued.text);
-                    promoted.id = Some(queued.message_id.clone());
-                    current_user_message = promoted;
-                    let user_item = message_to_timeline_items(&current_user_message, false)
-                        .into_iter()
-                        .next();
-                    if let Some(user_item) = user_item {
-                        record_and_emit_timeline_item(
-                            &task_events,
-                            &live_timelines,
-                            &session_id,
-                            permission_routing,
-                            user_item.clone(),
-                        )
-                        .await;
-                        task_events
-                            .publish(AgentRunEvent::QueuePromoted {
-                                snapshot,
-                                queue_id: queued.queue_id,
-                                item: user_item,
-                            })
-                            .await;
                     }
                 }
             }
@@ -3854,6 +3863,23 @@ impl AgentRuntimeHandle {
                 .await;
             return Err(error);
         }
+        if let Some(queue_id) = consume_queue_id {
+            match remove_desktop_queue_item(state, account_scope, &request.session_id, &queue_id)
+                .await
+            {
+                Ok((_, snapshot)) => {
+                    started_queue = snapshot;
+                    publish_desktop_queue_changed(
+                        state,
+                        account_scope,
+                        &request.session_id,
+                        started_queue.clone(),
+                    )
+                    .await;
+                }
+                Err(_) => {}
+            }
+        }
         if let Some(registered) = session_title_registered {
             let _ = registered.send(());
         }
@@ -3930,13 +3956,12 @@ impl AgentRuntimeHandle {
             });
         }
 
-        let (launch_message, queue) =
-            take_desktop_launch_from_queue(state, account_scope, &request.session_id, text).await?;
-        publish_desktop_queue_changed(state, account_scope, &request.session_id, queue.clone())
-            .await;
+        let launch =
+            prepare_desktop_launch(state, account_scope, &request.session_id, text).await?;
         Ok(DesktopSendPlan::Start {
-            launch_message,
-            queue,
+            launch_message: launch.launch_message,
+            queue: launch.queue,
+            consume_queue_id: launch.consume_queue_id,
         })
     }
 
@@ -7461,6 +7486,7 @@ enum DesktopSendPlan {
     Start {
         launch_message: Message,
         queue: AgentDesktopQueueSnapshot,
+        consume_queue_id: Option<String>,
     },
 }
 
@@ -7545,24 +7571,45 @@ async fn snapshot_desktop_queue(
         .unwrap_or_else(empty_desktop_queue_snapshot)
 }
 
-async fn take_desktop_launch_from_queue(
+struct DesktopLaunchPlan {
+    launch_message: Message,
+    consume_queue_id: Option<String>,
+    queue: AgentDesktopQueueSnapshot,
+}
+
+async fn prepare_desktop_launch(
     state: &MapleAgentService,
     account_scope: &str,
     session_id: &str,
     draft_text: &str,
-) -> Result<(Message, AgentDesktopQueueSnapshot), String> {
+) -> Result<DesktopLaunchPlan, String> {
+    let leftover = snapshot_desktop_queue(state, account_scope, session_id).await;
+    if leftover.items.is_empty() {
+        if draft_text.is_empty() {
+            return Err("Prompt cannot be empty".to_string());
+        }
+        return Ok(DesktopLaunchPlan {
+            launch_message: user_message_from_prompt(draft_text),
+            consume_queue_id: None,
+            queue: leftover,
+        });
+    }
     if !draft_text.is_empty() {
         enqueue_desktop_queue_item(state, account_scope, session_id, draft_text).await?;
     }
-    let Some((queued, snapshot)) =
-        take_next_desktop_queue_item_from_map(&state.desktop_queues, account_scope, session_id)
-            .await
-    else {
-        return Err("Prompt cannot be empty".to_string());
-    };
+    let snapshot = snapshot_desktop_queue(state, account_scope, session_id).await;
+    let queued = snapshot
+        .items
+        .first()
+        .cloned()
+        .ok_or_else(|| "Prompt cannot be empty".to_string())?;
     let mut launch_message = user_message_from_prompt(&queued.text);
-    launch_message.id = Some(queued.message_id);
-    Ok((launch_message, snapshot))
+    launch_message.id = Some(queued.message_id.clone());
+    Ok(DesktopLaunchPlan {
+        launch_message,
+        consume_queue_id: Some(queued.queue_id),
+        queue: snapshot,
+    })
 }
 
 async fn enqueue_desktop_queue_item(
@@ -7623,11 +7670,7 @@ async fn remove_desktop_queue_item(
         .remove(index)
         .expect("queue index was just resolved");
     queue.revision = queue.revision.saturating_add(1);
-    let snapshot = queue.snapshot();
-    if queue.items.is_empty() {
-        queues.remove(&desktop_queue_key(account_scope, session_id));
-    }
-    Ok((removed, snapshot))
+    Ok((removed, queue.snapshot()))
 }
 
 async fn take_next_desktop_queue_item_from_map(
@@ -7640,11 +7683,7 @@ async fn take_next_desktop_queue_item_from_map(
     let queue = queues.get_mut(&key)?;
     let item = queue.items.pop_front()?;
     queue.revision = queue.revision.saturating_add(1);
-    let snapshot = queue.snapshot();
-    if queue.items.is_empty() {
-        queues.remove(&key);
-    }
-    Some((item, snapshot))
+    Some((item, queue.snapshot()))
 }
 
 async fn clear_desktop_queue(
@@ -8351,23 +8390,30 @@ mod tests {
             "Stop must leave staged chips so the user can edit, drop, or send them"
         );
 
-        let (launch, flushed) =
-            take_desktop_launch_from_queue(&state, &account_scope, &session.id, "draft after stop")
+        let launch =
+            prepare_desktop_launch(&state, &account_scope, &session.id, "draft after stop")
                 .await
                 .unwrap();
-        assert_eq!(launch.as_concat_text(), "retry after edit");
+        assert_eq!(launch.launch_message.as_concat_text(), "retry after edit");
         assert_eq!(
-            flushed
+            launch
+                .queue
                 .items
                 .iter()
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["draft after stop"]
+            vec!["retry after edit", "draft after stop"]
+        );
+        assert_eq!(
+            launch.consume_queue_id.as_deref(),
+            Some(launch.queue.items[0].queue_id.as_str())
         );
 
-        let empty_error = take_desktop_launch_from_queue(&state, &account_scope, "no-queue", "")
-            .await
-            .expect_err("an empty composer and empty queue cannot start a run");
+        let empty_error = match prepare_desktop_launch(&state, &account_scope, "no-queue", "").await
+        {
+            Ok(_) => panic!("an empty composer and empty queue cannot start a run"),
+            Err(error) => error,
+        };
         assert!(empty_error.contains("empty"), "{empty_error}");
 
         // Isolated Goose managers can block on discard/teardown. The queue
@@ -8476,6 +8522,41 @@ mod tests {
 
         std::mem::forget(state.inner.lock().await.take());
         std::mem::forget(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_revision_stays_monotonic_after_the_queue_empties() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) = agent_service_test_context("desktop-queue-revision", sink);
+        let account_scope = account_scope("desktop-queue-revision-user").unwrap();
+        let session_id = "session-revision";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        let (_, after_take) = take_next_desktop_queue_item_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("the only staged item should be taken");
+        assert!(after_take.items.is_empty());
+        assert!(after_take.revision >= 2);
+
+        let (_, restaged) =
+            enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+                .await
+                .unwrap();
+        assert_eq!(restaged.items.len(), 1);
+        assert!(
+            restaged.revision > after_take.revision,
+            "a later enqueue must not restart the revision at 1: {} then {}",
+            after_take.revision,
+            restaged.revision
+        );
+
         let _ = fs::remove_dir_all(test_root);
     }
 
