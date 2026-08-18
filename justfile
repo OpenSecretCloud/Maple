@@ -23,17 +23,17 @@ format:
 lint:
     cd frontend && bun run lint
 
-# Run Tauri iOS development build (default simulator)
+# Run Tauri iOS development build (default simulator) without the Rust file watcher
 ios-dev:
-    cd frontend && bun run tauri ios dev
+    cd frontend && bun run tauri ios dev --no-watch
 
 # Run Tauri iOS development build on specific simulator (e.g., "iPhone 16 Pro iOS 26")
 ios-dev-sim simulator:
-    cd frontend && bun run tauri ios dev '{{simulator}}'
+    cd frontend && bun run tauri ios dev --no-watch '{{simulator}}'
 
 # Run Tauri iOS development build on physical device (e.g., "Your iPhone")
 ios-dev-device device:
-    cd frontend && bun run tauri ios dev --device '{{device}}'
+    cd frontend && bun run tauri ios dev --no-watch --device '{{device}}'
 
 # Build and verify ONNX Runtime for iOS (device + simulator) - used by PDF OCR
 ios-build-onnxruntime:
@@ -64,9 +64,9 @@ android-build:
 desktop-build:
     cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
 
-# Run Tauri desktop development build, using workspace-local config when available
+# Run Tauri desktop development build without the Rust file watcher, using workspace-local config when available
 desktop-dev:
-    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --config ../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev; fi
+    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch --config ../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch; fi
 
 # Build Tauri desktop debug
 desktop-build-debug:
