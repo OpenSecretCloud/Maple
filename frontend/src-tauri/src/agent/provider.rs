@@ -11,7 +11,10 @@ use goose_providers::http_status::is_context_length_exceeded_message;
 use goose_providers::images::ImageFormat;
 use goose_providers::model::ModelConfig;
 use goose_providers::request_log::{start_log, LoggerHandleExt};
-use goose_providers::retry::{should_retry, RetryConfig};
+use goose_providers::retry::{
+    should_retry, RetryConfig, DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_INITIAL_RETRY_INTERVAL_MS,
+    DEFAULT_MAX_RETRY_INTERVAL_MS,
+};
 use opensecret::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
 use rmcp::model::Tool;
 use serde_json::{json, Value};
@@ -24,6 +27,9 @@ use tokio_util::sync::CancellationToken;
 
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 pub(super) const MAPLE_PROVIDER_NAME: &str = "maple";
+/// Extra transient inference attempts after the first failure. Goose's 1s × 2^n
+/// backoff, capped at 30s, then covers roughly three minutes of provider blips.
+const TRANSIENT_MAX_RETRIES: usize = 10;
 const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 // Agent Mode forwards the selected catalog ID unchanged for direct model
 // selections. Keep Gemma's provider-specific opt-in scoped to that explicit
@@ -450,7 +456,13 @@ impl Provider for MapleProvider {
         // Retrying deterministic client failures can repeat side effects and
         // causes the SDK to repeat its own stale-session recovery for a 400. One
         // shared transient budget covers both setup and pre-first-item failures.
-        RetryConfig::default().transient_only()
+        RetryConfig::new(
+            TRANSIENT_MAX_RETRIES,
+            DEFAULT_INITIAL_RETRY_INTERVAL_MS,
+            DEFAULT_BACKOFF_MULTIPLIER,
+            DEFAULT_MAX_RETRY_INTERVAL_MS,
+        )
+        .transient_only()
     }
 
     async fn stream(
@@ -1582,20 +1594,20 @@ mod tests {
 
     #[tokio::test]
     async fn shares_one_retry_budget_across_status_and_first_item_failures() {
-        let transport = Arc::new(FakeTransport::queued(vec![
-            response(
-                503,
-                vec![br#"{"error":{"message":"temporarily unavailable"}}"#.to_vec()],
-                None,
-            ),
-            malformed_response("invalid-stream-1"),
-            malformed_response("invalid-stream-2"),
-            malformed_response("invalid-stream-3"),
-            fragmented_success_response(),
-        ]));
+        let mut responses = vec![response(
+            503,
+            vec![br#"{"error":{"message":"temporarily unavailable"}}"#.to_vec()],
+            None,
+        )];
+        responses.extend(
+            (0..TRANSIENT_MAX_RETRIES)
+                .map(|index| malformed_response(&format!("invalid-stream-{index}"))),
+        );
+        responses.push(fragmented_success_response());
+        let transport = Arc::new(FakeTransport::queued(responses));
         let provider = MapleProvider::new(Arc::clone(&transport));
         let default_max_retries = Provider::retry_config(&provider).max_retries();
-        assert_eq!(default_max_retries, 3);
+        assert_eq!(default_max_retries, TRANSIENT_MAX_RETRIES);
         let provider = provider.with_test_retry_config(fast_retry_config(default_max_retries));
 
         let result = provider
@@ -1615,7 +1627,7 @@ mod tests {
             error,
             ProviderError::NetworkError("Maple's response stream was invalid".to_string())
         );
-        assert_eq!(transport.request_count(), 4);
+        assert_eq!(transport.request_count(), TRANSIENT_MAX_RETRIES + 1);
         assert_eq!(transport.remaining_response_count(), 1);
     }
 
