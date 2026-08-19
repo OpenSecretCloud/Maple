@@ -1,4 +1,3 @@
-use crate::open_secret_config::configured_pcr0_environment;
 use opensecret::{
     InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest, WebExtractResponse,
     WebSearchRequest, WebSearchResponse,
@@ -505,11 +504,7 @@ fn build_client(
         return Err("Maple API access token is missing".to_string());
     }
     let refresh_token = refresh_token.filter(|token| !token.trim().is_empty());
-    let client = OpenSecretClient::new_with_pcr0_environment(
-        api_url.to_string(),
-        configured_pcr0_environment()?,
-    )
-    .map_err(map_sdk_error)?;
+    let client = OpenSecretClient::new(api_url.to_string()).map_err(map_sdk_error)?;
     client
         .set_tokens(access_token, refresh_token)
         .map_err(map_sdk_error)?;

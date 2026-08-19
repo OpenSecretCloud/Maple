@@ -1,4 +1,3 @@
-use crate::open_secret_config::configured_pcr0_environment;
 use anyhow::{anyhow, Result};
 use axum::{
     body::Body,
@@ -261,7 +260,6 @@ async fn start_proxy_inner(
 
 fn build_proxy_server_config(config: &ProxyConfig, backend_url: String) -> Result<Config, String> {
     let proxy_config = Config::new(config.host.clone(), config.port, backend_url)
-        .with_pcr0_environment(configured_pcr0_environment()?)
         .with_debug(false)
         // Maple owns the browser boundary below so it can both list the
         // non-wildcard Authorization header and reject browser origins when
@@ -464,10 +462,6 @@ mod tests {
 
         assert!(!server_config.enable_cors);
         assert!(server_config.default_api_key.is_none());
-        assert_eq!(
-            server_config.pcr0_environment,
-            configured_pcr0_environment().unwrap()
-        );
     }
 
     #[test]
