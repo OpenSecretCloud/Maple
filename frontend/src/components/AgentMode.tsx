@@ -2344,7 +2344,11 @@ export function AgentMode({ userId }: { userId: string }) {
       ) {
         return;
       }
-      if (isAgentSendLocked || pendingSessionSelectionIdRef.current !== null) {
+      if (
+        isAgentSendLocked ||
+        pendingSessionSelectionIdRef.current !== null ||
+        pendingSendTokensRef.current.has(pendingSessionKey)
+      ) {
         return;
       }
 

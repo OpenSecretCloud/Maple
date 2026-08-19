@@ -3739,6 +3739,17 @@ impl AgentRuntimeHandle {
             // agent_cancel_run. Whichever side acquires it first owns the terminal
             // result, so Stop cannot succeed against an already-settled run.
             task_accepting_queue.store(false, Ordering::Release);
+            // Stop already ran this pair (mem::take makes a second persist a
+            // no-op). Natural completion and provider errors must do the same
+            // so a steer Goose never drained is not dropped or leaked into
+            // the next reply on this pooled session agent.
+            persist_unacked_steers(
+                task_session_manager.as_ref(),
+                &session_id,
+                &task_steered_unacked,
+            )
+            .await;
+            task_agent.discard_pending_steers(&session_id).await;
             let run_was_cancelled = !should_run || task_cancel_token.is_cancelled();
             let terminal_permissions = cancel_pending_permissions_for_runs(
                 &task_pending_permissions,
@@ -4087,13 +4098,7 @@ impl AgentRuntimeHandle {
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        begin_desktop_queue_edit(
-            state,
-            account_scope,
-            &request.session_id,
-            &request.queue_id,
-        )
-        .await
+        begin_desktop_queue_edit(state, account_scope, &request.session_id, &request.queue_id).await
     }
 
     pub(crate) async fn end_queued_message_edit(
@@ -4105,13 +4110,7 @@ impl AgentRuntimeHandle {
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        end_desktop_queue_edit(
-            state,
-            account_scope,
-            &request.session_id,
-            &request.queue_id,
-        )
-        .await
+        end_desktop_queue_edit(state, account_scope, &request.session_id, &request.queue_id).await
     }
 
     pub(crate) async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
@@ -7729,12 +7728,16 @@ async fn take_desktop_steer_plan(
             update_desktop_queue_item(state, account_scope, &request.session_id, queue_id, text)
                 .await?;
         }
-        let (removed, snapshot) =
-            remove_desktop_queue_item(state, account_scope, &request.session_id, queue_id).await?;
+        let snapshot = snapshot_desktop_queue(state, account_scope, &request.session_id).await;
+        let selected = snapshot
+            .items
+            .iter()
+            .find(|item| item.queue_id == queue_id)
+            .ok_or_else(|| "Queued Agent message has already been sent".to_string())?;
         return Ok(DesktopSendPlan::Start {
-            launch_messages: vec![queued_user_message(&removed)],
+            launch_messages: vec![queued_user_message(selected)],
+            consume_queue_ids: vec![queue_id.to_string()],
             queue: snapshot,
-            consume_queue_ids: Vec::new(),
         });
     }
 
@@ -7772,10 +7775,7 @@ async fn steer_into_desktop_run(
     };
     agent.steer(session_id, message.clone()).await;
     steered_unacked.lock().await.push(message.clone());
-    if let Some(mut item) = message_to_timeline_items(message, false)
-        .into_iter()
-        .next()
-    {
+    if let Some(mut item) = message_to_timeline_items(message, false).into_iter().next() {
         // Keep the pending-assistant loader off until Goose starts the next
         // turn. This row is already in the live loop but not yet picked up.
         item.status = Some("steered".to_string());
@@ -7810,7 +7810,37 @@ async fn persist_unacked_steers(
         let mut steered_unacked = steered_unacked.lock().await;
         std::mem::take(&mut *steered_unacked)
     };
+    if pending.is_empty() {
+        return;
+    }
+    let already_persisted: HashSet<String> =
+        match session_manager.get_session(session_id, true).await {
+            Ok(session) => session
+                .conversation
+                .as_ref()
+                .map(|conversation| {
+                    conversation
+                        .messages()
+                        .iter()
+                        .filter_map(|message| message.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(error) => {
+                log::warn!(
+                    "Failed to inspect session before persisting steered Agent messages: {error}"
+                );
+                HashSet::new()
+            }
+        };
     for message in pending {
+        if message
+            .id
+            .as_deref()
+            .is_some_and(|message_id| already_persisted.contains(message_id))
+        {
+            continue;
+        }
         if let Err(error) = session_manager.add_message(session_id, &message).await {
             log::warn!("Failed to persist steered Agent message: {error}");
         }
@@ -8910,10 +8940,7 @@ mod tests {
                 .iter()
                 .map(|message| message.as_concat_text())
                 .collect::<Vec<_>>(),
-            vec![
-                "keep me queued".to_string(),
-                "draft after stop".to_string()
-            ]
+            vec!["keep me queued".to_string(), "draft after stop".to_string()]
         );
         assert_eq!(
             launch
@@ -9241,7 +9268,7 @@ mod tests {
                 mode: None,
                 vision_capable: false,
                 steer: true,
-                queue_id: Some(first_id),
+                queue_id: Some(first_id.clone()),
             },
             "",
         )
@@ -9260,18 +9287,71 @@ mod tests {
                         .collect::<Vec<_>>(),
                     vec!["first".to_string()]
                 );
-                assert!(consume_queue_ids.is_empty());
+                assert_eq!(consume_queue_ids, vec![first_id]);
                 assert_eq!(
                     queue
                         .items
                         .iter()
                         .map(|item| item.text.as_str())
                         .collect::<Vec<_>>(),
-                    vec!["second"]
+                    vec!["first", "second"]
                 );
             }
             _ => panic!("idle chip steer should start a single-message run"),
         }
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn persist_unacked_steers_skips_messages_already_in_history() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, _state) =
+            agent_service_test_context("persist-unacked-steers-skip", sink);
+        let user_id = "persist-unacked-steers-skip-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = account_session_manager(&paths, user_id).unwrap();
+        let session = session_manager
+            .create_session(
+                project_root,
+                "Steer persist skip".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let already = Message::user()
+            .with_text("already persisted")
+            .with_id("steer-already");
+        let fresh = Message::user()
+            .with_text("fresh steer")
+            .with_id("steer-fresh");
+        session_manager
+            .add_message(&session.id, &already)
+            .await
+            .unwrap();
+        persist_unacked_steers(
+            session_manager.as_ref(),
+            &session.id,
+            &Mutex::new(vec![already.clone(), fresh.clone()]),
+        )
+        .await;
+        let loaded = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap();
+        let ids = loaded
+            .conversation
+            .expect("session conversation")
+            .messages()
+            .iter()
+            .filter_map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec!["steer-already".to_string(), "steer-fresh".to_string()]
+        );
 
         let _ = fs::remove_dir_all(test_root);
     }
