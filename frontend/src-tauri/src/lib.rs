@@ -6,9 +6,25 @@ mod agent;
 #[cfg(desktop)]
 mod agent_acp;
 #[cfg(desktop)]
+mod agent_event_journal;
+#[cfg(desktop)]
 mod agent_host;
 #[cfg(desktop)]
+mod agent_live_authority;
+#[cfg(desktop)]
+mod agent_live_binding;
+#[cfg(desktop)]
+mod agent_live_coordinator;
+#[cfg(desktop)]
+mod agent_live_host;
+#[cfg(desktop)]
+mod agent_live_projection;
+#[cfg(desktop)]
+mod agent_live_tauri;
+mod agent_remote_portable;
+#[cfg(desktop)]
 mod agent_tauri;
+mod durable_host_epoch;
 #[cfg(any(desktop, target_os = "ios"))]
 mod legacy_tts_cleanup;
 #[cfg(desktop)]
@@ -18,6 +34,10 @@ mod open_secret_config;
 mod pdf_extractor;
 mod pdf_ocr;
 mod proxy;
+mod remote_agent_rpc;
+mod remote_protocol;
+mod remote_transport;
+mod secure_storage;
 
 #[cfg(desktop)]
 #[tauri::command]
@@ -168,6 +188,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(agent_acp::AgentAcpState::new())
         .manage(agent_host::AgentHostLifecycle::new())
+        // Synchronized attach remains explicitly disabled until a verified
+        // pairing/provider composition installs the native authority runtime.
+        // Keeping managed state and registered commands yields a stable typed
+        // `unavailable` response instead of trusting renderer lease fields.
+        .manage(agent_live_tauri::AgentLiveTauriState::disabled())
         .manage(maple_api::MapleApiAuthState::new())
         .manage(proxy::ProxyState::new())
         .invoke_handler(tauri::generate_handler![
@@ -187,7 +212,9 @@ pub fn run() {
             agent_tauri::agent_save_project_root_order,
             agent_tauri::agent_create_session,
             agent_tauri::agent_list_sessions,
+            agent_tauri::agent_list_sessions_page,
             agent_tauri::agent_load_session,
+            agent_tauri::agent_list_session_records_page,
             agent_tauri::agent_rename_session,
             agent_tauri::agent_list_session_mcp_servers,
             agent_tauri::agent_set_session_mcp_server_enabled,
@@ -198,6 +225,11 @@ pub fn run() {
             agent_tauri::agent_permission_respond,
             agent_tauri::agent_clear_user_history,
             agent_tauri::agent_clear_user_data,
+            agent_live_tauri::agent_begin_session_history_attach,
+            agent_live_tauri::agent_activate_session_history_attach,
+            agent_live_tauri::agent_cancel_session_history_attach,
+            agent_live_tauri::agent_resume_live_events,
+            agent_live_tauri::agent_cancel_live_events,
             agent_acp::agent_acp_load_config,
             agent_acp::agent_acp_save_config,
             agent_acp::agent_acp_start,
@@ -403,7 +435,10 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        // Portable remote reads stay fail-closed until the native mobile auth
+        // owner and verified provider composition are installed together.
+        .manage(agent_remote_portable::tauri::AgentPortableTauriState::disabled());
 
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
@@ -415,6 +450,11 @@ pub fn run() {
     #[cfg(all(not(desktop), target_os = "android"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
+            agent_remote_portable::tauri::agent_portable_refresh_targets,
+            agent_remote_portable::tauri::agent_portable_prepare_target,
+            agent_remote_portable::tauri::agent_portable_get_runtime_status,
+            agent_remote_portable::tauri::agent_portable_list_sessions_page,
+            agent_remote_portable::tauri::agent_portable_list_records_page,
             pdf_extractor::extract_document_content,
         ])
         .setup(|app| {
@@ -437,6 +477,11 @@ pub fn run() {
     #[cfg(all(not(desktop), target_os = "ios"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
+            agent_remote_portable::tauri::agent_portable_refresh_targets,
+            agent_remote_portable::tauri::agent_portable_prepare_target,
+            agent_remote_portable::tauri::agent_portable_get_runtime_status,
+            agent_remote_portable::tauri::agent_portable_list_sessions_page,
+            agent_remote_portable::tauri::agent_portable_list_records_page,
             pdf_extractor::extract_document_content,
         ])
         .setup(|app| {

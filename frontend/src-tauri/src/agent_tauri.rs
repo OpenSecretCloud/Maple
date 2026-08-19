@@ -1,9 +1,10 @@
 use crate::agent::{
-    AgentConfig, AgentCreateSessionRequest, AgentEventSink, AgentMcpServer,
-    AgentPermissionModeRequest, AgentPermissionResponse, AgentProjectRootRegistration,
-    AgentProjectSkillsTrustStatus, AgentRenameSessionRequest, AgentRunEvent, AgentRunResponse,
-    AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus, AgentSendMessageRequest,
-    AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer, AgentSessionSummary,
+    AgentConfig, AgentCreateSessionRequest, AgentEventSink, AgentHistoryPage,
+    AgentHistoryPageRequest, AgentMcpServer, AgentPermissionModeRequest, AgentPermissionResponse,
+    AgentProjectRootRegistration, AgentProjectSkillsTrustStatus, AgentRenameSessionRequest,
+    AgentRunEvent, AgentRunResponse, AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus,
+    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer,
+    AgentSessionPage, AgentSessionPageRequest, AgentSessionSummary,
     AgentSetSessionMcpServerRequest, AgentStartRequest, AgentTimelineItem, MapleAgentService,
     RecentProjectRoot,
 };
@@ -401,6 +402,25 @@ pub async fn agent_list_sessions(
 }
 
 #[tauri::command]
+pub async fn agent_list_sessions_page(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    request: Option<AgentSessionPageRequest>,
+) -> Result<AgentSessionPage, String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .list_sessions_page(request.unwrap_or(AgentSessionPageRequest {
+            project_root: None,
+            cursor: None,
+            limit: None,
+        }))
+        .await
+        .map_err(|error| error.user_message().to_string())
+}
+
+#[tauri::command]
 pub async fn agent_load_session(
     app_handle: AppHandle,
     state: State<'_, MapleAgentService>,
@@ -412,6 +432,21 @@ pub async fn agent_load_session(
         .await?
         .load_session(session_id)
         .await
+}
+
+#[tauri::command]
+pub async fn agent_list_session_records_page(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    request: AgentHistoryPageRequest,
+) -> Result<AgentHistoryPage, String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .list_session_records_page(request)
+        .await
+        .map_err(|error| error.user_message().to_string())
 }
 
 #[tauri::command]
@@ -546,6 +581,7 @@ mod tests {
             project_root: "/tmp/project".to_string(),
             created_ms: 1,
             updated_ms: 2,
+            page_sort_ms: 2,
             message_count: 3,
             model: Some("maple-model".to_string()),
             mode: "smart_approve".to_string(),
@@ -620,6 +656,7 @@ mod tests {
                         "projectRoot": "/tmp/project",
                         "createdMs": 1,
                         "updatedMs": 2,
+                        "pageSortMs": 2,
                         "messageCount": 3,
                         "model": "maple-model",
                         "mode": "smart_approve"
@@ -635,6 +672,7 @@ mod tests {
                         "projectRoot": "/tmp/project",
                         "createdMs": 1,
                         "updatedMs": 2,
+                        "pageSortMs": 2,
                         "messageCount": 3,
                         "model": "maple-model",
                         "mode": "smart_approve"

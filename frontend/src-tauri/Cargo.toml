@@ -47,6 +47,11 @@ base64 = "0.22"
 reqwest = { version = "0.13", features = ["stream"] }
 futures-util = "0.3"
 sha2 = "0.10"
+iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring"] }
+zeroize = { version = "1", features = ["derive"] }
+ciborium = "0.2"
+getrandom = "0.3"
+fs2 = "0.4"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android"))'.dependencies]
 # PDF OCR uses Maple's explicitly packaged ONNX Runtime. The loader policy
@@ -57,8 +62,10 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 # Pin Goose to an exact official upstream commit. Keep this as a git dependency
 # instead of a submodule so ordinary Maple checkouts do not need the full Goose
 # history.
-goose = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose-providers", default-features = false }
+# Temporary immutable OpenSecretCloud fork pin for bounded Agent history paging.
+# Replace with an upstream release once the public Goose paging API lands.
+goose = { git = "https://github.com/OpenSecretCloud/goose.git", rev = "7c989fd13213e1c31d77d2d4bf298660ec5fdca0", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/OpenSecretCloud/goose.git", rev = "7c989fd13213e1c31d77d2d4bf298660ec5fdca0", package = "goose-providers", default-features = false }
 opensecret = "3.6.0"
 rand = "0.8.6"
 async-trait = "0.1"
@@ -80,6 +87,9 @@ libc = "0.2"
 # avoids physical-pixel scaling errors on Retina and mixed-DPI displays.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+security-framework = { version = "=3.5.1", features = ["OSX_10_15"] }
+core-foundation = "0.10"
+dirs = "6"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # We build ONNX Runtime 1.23.2 from source for iOS (see scripts/build-ios-onnxruntime.sh)
@@ -99,8 +109,6 @@ webpki-roots = "1"
 keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
-[dev-dependencies]
-ciborium = "0.2"
 [patch.crates-io]
 # Local patch for tao 0.35.2 Android intent crashes:
 # https://github.com/tauri-apps/tao/issues/1217

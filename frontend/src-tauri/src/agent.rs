@@ -28,8 +28,10 @@ use goose::conversation::{fix_conversation, Conversation};
 use goose::execution::manager::{AgentManager, AgentManagerGetResult, RuntimeContext};
 use goose::permission::permission_confirmation::PrincipalType;
 use goose::permission::{Permission, PermissionConfirmation};
-use goose::session::session_manager::{Session, SessionType};
-use goose::session::SessionManager;
+use goose::session::{
+    MessageHistoryCursor, MessageHistoryPageError, MessageHistoryPageQuery, Session,
+    SessionListCursor, SessionListPageError, SessionListPageQuery, SessionManager, SessionType,
+};
 use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
 use icu_properties::{props::DefaultIgnorableCodePoint, CodePointSetData};
 use provider::{MapleProvider, MAPLE_PROVIDER_NAME};
@@ -104,6 +106,9 @@ const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
 const MAX_AGENT_ERROR_CHARS: usize = 1_200;
+pub(crate) const DEFAULT_AGENT_PAGE_SIZE: usize = 25;
+pub(crate) const MAX_AGENT_PAGE_SIZE: usize = 50;
+const MAX_AGENT_PAGE_CURSOR_BYTES: usize = 512;
 const MAX_MCP_CONNECTION_ERRORS: usize = 3;
 const MAX_MCP_SERVER_NAME_CHARS: usize = 64;
 const MAX_MCP_CONNECTION_ERROR_CHARS: usize = 200;
@@ -549,7 +554,7 @@ pub(crate) enum AgentServiceEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
     pub id: String,
@@ -557,6 +562,9 @@ pub struct AgentSessionSummary {
     pub project_root: String,
     pub created_ms: i64,
     pub updated_ms: i64,
+    /// Exact native keyset sort timestamp used by Goose's session pager.
+    /// Frontends merge event upserts using `(pageSortMs DESC, id DESC)`.
+    pub page_sort_ms: i64,
     pub message_count: usize,
     pub model: Option<String>,
     pub mode: String,
@@ -569,6 +577,111 @@ pub struct AgentSessionDetail {
     pub timeline: Vec<AgentTimelineItem>,
     pub mcp_errors: Vec<AgentMcpConnectionError>,
 }
+
+/// One count-bounded page request over Goose's native persisted message rows.
+///
+/// A row remains the pagination unit even when Goose stores several visible
+/// content blocks in it. The opaque cursor is owned and validated by Goose; it
+/// is never interpreted by the renderer or Maple's remote protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHistoryPageRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHistoryRecord {
+    /// Stable source-row identity supplied by Goose. This deliberately differs
+    /// from nullable provider message IDs and from presentation item IDs.
+    pub record_id: String,
+    pub role: String,
+    pub created_ms: u64,
+    /// User-safe Maple projection of every visible block in this one row.
+    /// Hidden provider rows remain present with an empty item list so a cursor
+    /// advances over the exact native storage order without leaking content.
+    pub items: Vec<AgentTimelineItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHistoryPage {
+    /// Newest-first, matching Goose's storage keyset pager.
+    pub records: Vec<AgentHistoryRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Opaque storage generation. Append preserves it; replace/truncate rotates
+    /// it so delayed A -> B -> A page loads cannot merge into a new history.
+    pub history_revision: String,
+    /// Authoritative absolute live suffix captured with the event watermark.
+    /// `Some([])` deliberately clears a cached overlay; `None` means this
+    /// response did not establish a synchronized live checkpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_items: Option<Vec<AgentTimelineItem>>,
+    /// Reserved for the independent live-event replay journal. Historical
+    /// cursors must never double as event acknowledgement cursors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub through_event_cursor: Option<AgentLiveEventCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLiveEventCursor {
+    pub journal_id: String,
+    pub sequence: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionPageRequest {
+    #[serde(default)]
+    pub project_root: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionPage {
+    pub items: Vec<AgentSessionSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentPagingError {
+    InvalidRequest(&'static str),
+    StaleHistory,
+    HistoryRecordTooLarge,
+    Unavailable,
+}
+
+impl AgentPagingError {
+    pub(crate) fn user_message(&self) -> &'static str {
+        match self {
+            Self::InvalidRequest(message) => message,
+            Self::StaleHistory => "Agent task history changed; reload its newest page",
+            Self::HistoryRecordTooLarge => {
+                "One Agent history record is too large to display safely"
+            }
+            Self::Unavailable => "Agent task history is unavailable",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentPagingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.user_message())
+    }
+}
+
+impl std::error::Error for AgentPagingError {}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2445,6 +2558,81 @@ impl AgentRuntimeHandle {
         Ok(sessions)
     }
 
+    /// Read one newest-first session-summary page directly through Goose's
+    /// storage keyset pager. This never loads all task rows and slices in Maple.
+    pub(crate) async fn list_sessions_page(
+        &self,
+        request: AgentSessionPageRequest,
+    ) -> Result<AgentSessionPage, AgentPagingError> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let limit = request.limit.unwrap_or(DEFAULT_AGENT_PAGE_SIZE);
+        if !(1..=MAX_AGENT_PAGE_SIZE).contains(&limit) {
+            return Err(AgentPagingError::InvalidRequest(
+                "Agent task page limit must be between 1 and 50",
+            ));
+        }
+        validate_agent_page_cursor(request.cursor.as_deref())?;
+        let filter_root = request
+            .project_root
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|path| normalize_project_root(Path::new(path)))
+            .transpose()
+            .map_err(|_| AgentPagingError::InvalidRequest("Agent project path is invalid"))?;
+        let cursor = request
+            .cursor
+            .as_deref()
+            .map(SessionListCursor::from_str)
+            .transpose()
+            .map_err(|_| AgentPagingError::InvalidRequest("Agent task cursor is invalid"))?;
+
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation()
+            .await
+            .map_err(|_| AgentPagingError::StaleHistory)?;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)
+                        .map_err(|_| AgentPagingError::StaleHistory)?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)
+                    .map_err(|_| AgentPagingError::Unavailable)?,
+            }
+        };
+        let page = session_manager
+            .list_sessions_paged(SessionListPageQuery {
+                cursor,
+                page_size: Some(limit),
+                working_dir: filter_root,
+                session_types: Some(vec![SessionType::User]),
+                keyword: None,
+                only_sessions_with_messages: false,
+                include_last_message_snippet: false,
+            })
+            .await
+            .map_err(map_goose_session_page_error)?;
+        let items = page
+            .sessions
+            .into_iter()
+            .map(|session| session_summary(&session))
+            .collect::<Vec<_>>();
+        if items.len() > limit {
+            return Err(AgentPagingError::Unavailable);
+        }
+        self.verify_generation()
+            .await
+            .map_err(|_| AgentPagingError::StaleHistory)?;
+        Ok(AgentSessionPage {
+            items,
+            next_cursor: page.next_cursor.map(|cursor| cursor.to_string()),
+        })
+    }
+
     pub(crate) async fn load_session(
         &self,
         session_id: String,
@@ -2509,6 +2697,91 @@ impl AgentRuntimeHandle {
             session: session_summary(&session),
             timeline,
             mcp_errors: Vec::new(),
+        })
+    }
+
+    /// Read one newest-first page directly from Goose storage without loading
+    /// the complete conversation. Embedded Tauri and authenticated remote RPC
+    /// both call this exact host method.
+    pub(crate) async fn list_session_records_page(
+        &self,
+        request: AgentHistoryPageRequest,
+    ) -> Result<AgentHistoryPage, AgentPagingError> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let session_id = request.session_id.trim();
+        if session_id.is_empty() {
+            return Err(AgentPagingError::InvalidRequest(
+                "Agent task ID cannot be empty",
+            ));
+        }
+        let limit = request.limit.unwrap_or(DEFAULT_AGENT_PAGE_SIZE);
+        if !(1..=MAX_AGENT_PAGE_SIZE).contains(&limit) {
+            return Err(AgentPagingError::InvalidRequest(
+                "Agent history page limit must be between 1 and 50",
+            ));
+        }
+        validate_agent_page_cursor(request.cursor.as_deref())?;
+
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation()
+            .await
+            .map_err(|_| AgentPagingError::StaleHistory)?;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)
+                        .map_err(|_| AgentPagingError::StaleHistory)?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)
+                    .map_err(|_| AgentPagingError::Unavailable)?,
+            }
+        };
+
+        // Parse the opaque token only through Goose's public contract. Maple
+        // never decodes storage anchors or accepts an unscoped tuple cursor.
+        let cursor = request
+            .cursor
+            .as_deref()
+            .map(MessageHistoryCursor::from_str)
+            .transpose()
+            .map_err(|_| AgentPagingError::InvalidRequest("Agent history cursor is invalid"))?;
+        let page = session_manager
+            .list_messages_paged(
+                session_id,
+                MessageHistoryPageQuery {
+                    cursor,
+                    page_size: Some(limit),
+                },
+            )
+            .await
+            .map_err(map_goose_history_page_error)?;
+
+        let records = page
+            .messages
+            .into_iter()
+            .map(|record| project_history_record(record.record_id, record.message))
+            .collect::<Vec<_>>();
+
+        if records.len() > limit {
+            return Err(AgentPagingError::Unavailable);
+        }
+        for record in &records {
+            validate_local_history_record_bound(record)?;
+        }
+        self.verify_generation()
+            .await
+            .map_err(|_| AgentPagingError::StaleHistory)?;
+
+        Ok(AgentHistoryPage {
+            records,
+            next_cursor: page.next_cursor.map(|cursor| cursor.to_string()),
+            history_revision: page.history_revision.to_string(),
+            live_items: None,
+            through_event_cursor: None,
         })
     }
 
@@ -2832,6 +3105,182 @@ impl AgentRuntimeHandle {
         }
 
         Ok(())
+    }
+}
+
+fn normalized_agent_message_created_ms(created: i64) -> u64 {
+    const MILLISECOND_TIMESTAMP_THRESHOLD: i64 = 10_000_000_000;
+    let milliseconds = if created > MILLISECOND_TIMESTAMP_THRESHOLD {
+        created
+    } else {
+        created.saturating_mul(1_000)
+    };
+    u64::try_from(milliseconds).unwrap_or_default()
+}
+
+fn project_history_record(record_id: String, mut source_message: Message) -> AgentHistoryRecord {
+    let role = message_role(&source_message);
+    let created_ms = normalized_agent_message_created_ms(source_message.created);
+    if source_message.id.is_none() {
+        source_message.id = Some(record_id.clone());
+    }
+    let visible = source_message.user_visible_content();
+    let mut items = message_to_timeline_items(&visible, false);
+    for item in &mut items {
+        if item.item_type == "permission" && item.status.as_deref() == Some("pending") {
+            item.status = Some("cancelled".to_string());
+        }
+    }
+    AgentHistoryRecord {
+        record_id,
+        role,
+        created_ms,
+        items,
+    }
+}
+
+fn validate_local_history_record_bound(
+    record: &AgentHistoryRecord,
+) -> Result<(), AgentPagingError> {
+    // The embedded adapter still carries Maple's richer local presentation.
+    // Enforce the universal single-record ceiling on that exact DTO before it
+    // can cross Tauri, even though the authenticated remote adapter projects a
+    // narrower secret-free representation below.
+    let mut local_encoded = SerializedByteCounter::default();
+    ciborium::ser::into_writer(record, &mut local_encoded)
+        .map_err(|_| AgentPagingError::Unavailable)?;
+    if local_encoded.bytes > crate::remote_protocol::MAX_HISTORY_RECORD_PRESENTATION_BYTES {
+        return Err(AgentPagingError::HistoryRecordTooLarge);
+    }
+    // Match the remote transport's universal single-frame limit at the shared
+    // host boundary. Embedded Tauri must not succeed with a record that the
+    // authenticated remote adapter must reject.
+    let remote = crate::remote_protocol::RemoteAgentHistoryRecord {
+        record_id: record.record_id.clone(),
+        role: record.role.clone(),
+        created_ms: record.created_ms,
+        items: record
+            .items
+            .iter()
+            .map(project_safe_remote_history_item)
+            .collect::<Result<Vec<_>, AgentPagingError>>()?,
+    };
+    remote.validate().map_err(|error| match error.code {
+        crate::remote_protocol::ErrorCode::HistoryRecordTooLarge
+        | crate::remote_protocol::ErrorCode::InvalidFrame => {
+            AgentPagingError::HistoryRecordTooLarge
+        }
+        _ => AgentPagingError::Unavailable,
+    })?;
+    let mut encoded = SerializedByteCounter::default();
+    ciborium::ser::into_writer(&remote, &mut encoded).map_err(|_| AgentPagingError::Unavailable)?;
+    if encoded.bytes > crate::remote_protocol::MAX_HISTORY_RECORD_PRESENTATION_BYTES {
+        Err(AgentPagingError::HistoryRecordTooLarge)
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn project_safe_remote_history_item(
+    item: &AgentTimelineItem,
+) -> Result<crate::remote_protocol::RemoteAgentTimelineItem, AgentPagingError> {
+    let safe = crate::agent_live_projection::project_timeline_item(item)
+        .map_err(|_| AgentPagingError::Unavailable)?;
+    let item = crate::remote_protocol::RemoteAgentTimelineItem {
+        id: safe.id,
+        item_type: match safe.item_type {
+            crate::agent_live_coordinator::MapleLiveItemType::Message => "message",
+            crate::agent_live_coordinator::MapleLiveItemType::Thinking => "thinking",
+            crate::agent_live_coordinator::MapleLiveItemType::Tool => "tool",
+            crate::agent_live_coordinator::MapleLiveItemType::Permission => "permission",
+            crate::agent_live_coordinator::MapleLiveItemType::System => "system",
+            crate::agent_live_coordinator::MapleLiveItemType::Error => "error",
+        }
+        .to_string(),
+        role: safe.role.map(|role| {
+            match role {
+                crate::agent_live_coordinator::MapleLiveRole::User => "user",
+                crate::agent_live_coordinator::MapleLiveRole::Assistant => "assistant",
+                crate::agent_live_coordinator::MapleLiveRole::Thought => "thought",
+                crate::agent_live_coordinator::MapleLiveRole::System => "system",
+            }
+            .to_string()
+        }),
+        title: safe.title,
+        text: safe.text,
+        status: safe.status,
+        created_ms: safe.created_ms,
+        merge: match safe.merge {
+            crate::agent_live_coordinator::MapleLiveMerge::Append => "append",
+            crate::agent_live_coordinator::MapleLiveMerge::Replace => "replace",
+        }
+        .to_string(),
+    };
+    item.validate().map_err(|error| match error.code {
+        crate::remote_protocol::ErrorCode::HistoryRecordTooLarge
+        | crate::remote_protocol::ErrorCode::InvalidFrame => {
+            AgentPagingError::HistoryRecordTooLarge
+        }
+        _ => AgentPagingError::Unavailable,
+    })?;
+    Ok(item)
+}
+
+#[derive(Default)]
+struct SerializedByteCounter {
+    bytes: usize,
+}
+
+impl Write for SerializedByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(buffer.len())
+            .ok_or_else(|| std::io::Error::other("serialized history record length overflow"))?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_agent_page_cursor(cursor: Option<&str>) -> Result<(), AgentPagingError> {
+    if cursor.is_some_and(|cursor| {
+        cursor.is_empty()
+            || cursor.len() > MAX_AGENT_PAGE_CURSOR_BYTES
+            || !cursor.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+            })
+    }) {
+        Err(AgentPagingError::InvalidRequest(
+            "Agent page cursor is invalid",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn map_goose_history_page_error(error: anyhow::Error) -> AgentPagingError {
+    match error.downcast_ref::<MessageHistoryPageError>() {
+        Some(
+            MessageHistoryPageError::InvalidCursor
+            | MessageHistoryPageError::CursorSessionMismatch
+            | MessageHistoryPageError::InvalidPageSize,
+        ) => AgentPagingError::InvalidRequest("Agent history cursor or limit is invalid"),
+        Some(MessageHistoryPageError::StaleRevision) => AgentPagingError::StaleHistory,
+        Some(MessageHistoryPageError::SessionNotFound) | None => AgentPagingError::Unavailable,
+    }
+}
+
+fn map_goose_session_page_error(error: anyhow::Error) -> AgentPagingError {
+    match error.downcast_ref::<SessionListPageError>() {
+        Some(
+            SessionListPageError::InvalidCursor
+            | SessionListPageError::CursorFilterMismatch
+            | SessionListPageError::InvalidPageSize,
+        ) => AgentPagingError::InvalidRequest("Agent task cursor or limit is invalid"),
+        None => AgentPagingError::Unavailable,
     }
 }
 
@@ -5483,7 +5932,7 @@ fn message_to_timeline_items_with_thinking(
         .clone()
         .unwrap_or_else(|| format!("message-{}-{}", role, message.created));
     let created_ms = if message.created > 0 {
-        (message.created as u128) * 1000
+        u128::from(normalized_agent_message_created_ms(message.created))
     } else {
         unix_ms()
     };
@@ -6055,6 +6504,10 @@ fn session_summary(session: &Session) -> AgentSessionSummary {
         project_root: path_string(&session.working_dir),
         created_ms: session.created_at.timestamp_millis(),
         updated_ms: session.updated_at.timestamp_millis(),
+        page_sort_ms: session
+            .last_message_at
+            .unwrap_or(session.updated_at)
+            .timestamp_millis(),
         message_count: session.message_count,
         model: session
             .model_config
@@ -6065,7 +6518,11 @@ fn session_summary(session: &Session) -> AgentSessionSummary {
 }
 
 fn sort_sessions_newest_first(sessions: &mut [AgentSessionSummary]) {
-    sessions.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+    sessions.sort_by(|a, b| {
+        b.page_sort_ms
+            .cmp(&a.page_sort_ms)
+            .then_with(|| b.id.cmp(&a.id))
+    });
 }
 
 async fn record_and_emit_timeline_item(
@@ -9039,6 +9496,7 @@ mod tests {
             project_root: test_project_path("session-sort"),
             created_ms: 0,
             updated_ms,
+            page_sort_ms: updated_ms,
             message_count: 0,
             model: None,
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -9061,6 +9519,36 @@ mod tests {
                 "middle".to_string(),
                 "oldest".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn agent_session_page_sort_uses_native_timestamp_then_stable_id() {
+        let summary = |id: &str, updated_ms: i64, page_sort_ms: i64| AgentSessionSummary {
+            id: id.to_string(),
+            title: id.to_string(),
+            project_root: test_project_path("session-page-sort"),
+            created_ms: 0,
+            updated_ms,
+            page_sort_ms,
+            message_count: 0,
+            model: None,
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+        };
+        let mut sessions = vec![
+            summary("a", 100, 300),
+            summary("b", 200, 300),
+            summary("z", 999, 250),
+        ];
+
+        sort_sessions_newest_first(&mut sessions);
+
+        assert_eq!(
+            sessions
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            vec!["b".to_string(), "a".to_string(), "z".to_string()]
         );
     }
 
@@ -10355,6 +10843,92 @@ mod tests {
     }
 
     #[test]
+    fn remote_history_projection_matches_safe_live_redaction_and_drops_tool_secrets() {
+        let rich = AgentTimelineItem {
+            id: "tool-secret".to_string(),
+            item_type: "tool".to_string(),
+            role: Some("assistant".to_string()),
+            title: Some("Shell: cat /Users/private/.env".to_string()),
+            text: Some("parser failed with DATABASE_URL=postgres://secret".to_string()),
+            status: Some("failed".to_string()),
+            input: Some(serde_json::json!({"command": "cat /Users/private/.env"})),
+            output: Some(serde_json::json!({"token": "sk-secret"})),
+            created_ms: 1_700_000_000_000,
+            merge: "replace".to_string(),
+        };
+
+        let safe_history = project_safe_remote_history_item(&rich).expect("safe history item");
+        let safe_live =
+            crate::agent_live_projection::project_timeline_item(&rich).expect("safe live item");
+        assert_eq!(safe_history.title, safe_live.title);
+        assert_eq!(safe_history.text, safe_live.text);
+        assert_eq!(safe_history.status, safe_live.status);
+        let encoded = serde_json::to_string(&safe_history).expect("encode safe item");
+        for secret in [
+            "/Users/private",
+            "DATABASE_URL",
+            "postgres://",
+            "sk-secret",
+            "command",
+        ] {
+            assert!(!encoded.contains(secret), "leaked {secret}");
+        }
+        assert!(!encoded.contains("input"));
+        assert!(!encoded.contains("output"));
+    }
+
+    #[test]
+    fn paged_null_id_rows_with_the_same_role_and_timestamp_remain_distinct() {
+        let mut first_message = Message::assistant().with_text("first");
+        first_message.created = 1_700_000_000;
+        let mut second_message = Message::assistant().with_text("second");
+        second_message.created = 1_700_000_000;
+        let first = project_history_record("mhrw_epoch-row-1".to_string(), first_message);
+        let second = project_history_record("mhrw_epoch-row-2".to_string(), second_message);
+
+        assert_eq!(first.items.len(), 1);
+        assert_eq!(second.items.len(), 1);
+        assert_ne!(first.items[0].id, second.items[0].id);
+        assert_eq!(first.items[0].id, "mhrw_epoch-row-1-text");
+        assert_eq!(second.items[0].id, "mhrw_epoch-row-2-text");
+        assert_eq!(first.created_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn paged_message_timestamp_normalization_preserves_legacy_milliseconds() {
+        assert_eq!(
+            normalized_agent_message_created_ms(1_700_000_000),
+            1_700_000_000_000
+        );
+        assert_eq!(
+            normalized_agent_message_created_ms(1_700_000_000_123),
+            1_700_000_000_123
+        );
+        let mut message = Message::assistant()
+            .with_id("legacy-millis")
+            .with_text("stored in milliseconds");
+        message.created = 1_700_000_000_123;
+        let record = project_history_record("mhrw_timestamp".to_string(), message);
+        assert_eq!(record.created_ms, 1_700_000_000_123);
+        assert_eq!(record.items[0].created_ms, 1_700_000_000_123_u128);
+    }
+
+    #[test]
+    fn embedded_history_rejects_one_oversized_record_explicitly() {
+        let record = project_history_record(
+            "mhrw_oversized".to_string(),
+            Message::assistant().with_id("oversized-message").with_text(
+                "x".repeat(crate::remote_protocol::MAX_HISTORY_RECORD_PRESENTATION_BYTES),
+            ),
+        );
+
+        assert_eq!(
+            validate_local_history_record_bound(&record),
+            Err(AgentPagingError::HistoryRecordTooLarge)
+        );
+    }
+
+    #[test]
     fn hidden_usage_boundary_resets_visible_inference_state() {
         let first = "First visible thought.";
         let second = "Second visible thought.";
@@ -11454,6 +12028,200 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &same));
         assert!(!Arc::ptr_eq(&first, &other_task));
         assert!(!Arc::ptr_eq(&first, &other_account));
+    }
+
+    #[tokio::test]
+    async fn paged_history_adapter_preserves_native_rows_and_maps_cursor_errors() {
+        let sink = Arc::new(NoopAgentEventSink);
+        let (test_root, paths, state) = agent_service_test_context("native-history-pager", sink);
+        let user_id = "native-history-pager-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = account_session_manager(&paths, user_id).unwrap();
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "Paged task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let other = session_manager
+            .create_session(
+                project_root,
+                "Other task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .add_message(
+                &session.id,
+                &Message::assistant()
+                    .with_id("hidden-native-row")
+                    .with_text("provider-private")
+                    .with_visibility(false, true),
+            )
+            .await
+            .unwrap();
+        session_manager
+            .add_message(
+                &session.id,
+                &assistant_tool_message(
+                    "multi-content-native-row",
+                    "tool-call-one",
+                    "inspect the file",
+                    "",
+                ),
+            )
+            .await
+            .unwrap();
+        let handle = state.handle_for_user(user_id).await.unwrap();
+
+        let first = handle
+            .list_session_records_page(AgentHistoryPageRequest {
+                session_id: session.id.clone(),
+                cursor: None,
+                limit: Some(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.records.len(), 1);
+        assert_eq!(first.records[0].items.len(), 2);
+        let cursor = first.next_cursor.clone().expect("older native row exists");
+
+        let second = handle
+            .list_session_records_page(AgentHistoryPageRequest {
+                session_id: session.id.clone(),
+                cursor: Some(cursor.clone()),
+                limit: Some(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.records.len(), 1);
+        assert!(second.records[0].items.is_empty());
+        assert_eq!(second.history_revision, first.history_revision);
+
+        assert!(matches!(
+            handle
+                .list_session_records_page(AgentHistoryPageRequest {
+                    session_id: other.id,
+                    cursor: Some(cursor.clone()),
+                    limit: Some(1),
+                })
+                .await,
+            Err(AgentPagingError::InvalidRequest(_))
+        ));
+
+        session_manager
+            .replace_conversation(
+                &session.id,
+                &Conversation::new_unvalidated(vec![
+                    Message::user().with_text("replacement history")
+                ]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            handle
+                .list_session_records_page(AgentHistoryPageRequest {
+                    session_id: session.id,
+                    cursor: Some(cursor),
+                    limit: Some(1),
+                })
+                .await,
+            Err(AgentPagingError::StaleHistory)
+        );
+
+        drop(handle);
+        drop(state);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn paged_session_adapter_filters_before_limit_and_binds_cursor_scope() {
+        let sink = Arc::new(NoopAgentEventSink);
+        let (test_root, paths, state) = agent_service_test_context("native-session-pager", sink);
+        let user_id = "native-session-pager-user";
+        let mut project_a = test_root.join("project-a");
+        let mut project_b = test_root.join("project-b");
+        fs::create_dir_all(&project_a).unwrap();
+        fs::create_dir_all(&project_b).unwrap();
+        // Production task creation stores Maple's normalized root. macOS's
+        // temporary directory is exposed through `/var` but canonicalizes to
+        // `/private/var`, so make the fixture exercise that same contract.
+        project_a = normalize_project_root(&project_a).unwrap();
+        project_b = normalize_project_root(&project_b).unwrap();
+        let session_manager = account_session_manager(&paths, user_id).unwrap();
+        let first_a = session_manager
+            .create_session(
+                project_a.clone(),
+                "A one".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let _only_b = session_manager
+            .create_session(
+                project_b.clone(),
+                "B only".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let second_a = session_manager
+            .create_session(
+                project_a.clone(),
+                "A two".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let first = handle
+            .list_sessions_page(AgentSessionPageRequest {
+                project_root: Some(path_string(&project_a)),
+                cursor: None,
+                limit: Some(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.items.len(), 1);
+        let cursor = first.next_cursor.clone().expect("second A task exists");
+        let second = handle
+            .list_sessions_page(AgentSessionPageRequest {
+                project_root: Some(path_string(&project_a)),
+                cursor: Some(cursor.clone()),
+                limit: Some(1),
+            })
+            .await
+            .unwrap();
+        let returned = [first.items[0].id.clone(), second.items[0].id.clone()];
+        assert!(returned.contains(&first_a.id));
+        assert!(returned.contains(&second_a.id));
+        assert!(second.next_cursor.is_none());
+
+        assert!(matches!(
+            handle
+                .list_sessions_page(AgentSessionPageRequest {
+                    project_root: Some(path_string(&project_b)),
+                    cursor: Some(cursor),
+                    limit: Some(1),
+                })
+                .await,
+            Err(AgentPagingError::InvalidRequest(_))
+        ));
+
+        drop(handle);
+        drop(state);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[tokio::test]
