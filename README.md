@@ -34,6 +34,7 @@ Select the intended OpenSecret API in the ignored `frontend/.env.local`:
 
 ```dotenv
 VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
+VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT=dev
 ```
 
 The public Maple client ID is already present in `.env.example`. All `VITE_*`
@@ -55,9 +56,9 @@ present.
 `frontend/.env.example` documents Maple's public configuration surface:
 
 - `VITE_OPEN_SECRET_API_URL` selects the required OpenSecret backend.
-- `VITE_OPEN_SECRET_PCR_ENVIRONMENT` selects the matching PCR0 trust roots;
-  it defaults to `production`, so hosted development enclaves must set
-  `development` explicitly.
+- `VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT` selects the matching tagged-release
+  policy; it defaults to `prod`, so hosted development enclaves must set `dev`
+  explicitly.
 - `VITE_CLIENT_ID` overrides Maple's public project ID when developing against
   another OpenSecret project.
 - `VITE_OS_FLAGS_BASE_URL` selects an optional feature-flags API.
@@ -201,9 +202,12 @@ Use `.agents/skills/release-maple/` for version parity, tag safety, workflow
 monitoring, artifact verification, and explicit store handoff. Do not use the
 legacy `just release` recipe to create an unreviewed local tag.
 
-When the OpenSecret enclave changes, update and review the corresponding
-`pcr0DevValues` or `pcr0Values` in `frontend/src/app.tsx` as part of the
-attestation compatibility change.
+When the OpenSecret enclave changes, publish and verify its tagged Sigstore
+release evidence, then update the trusted-release snapshot in the OpenSecret
+SDK. Maple does not maintain its own PCR allowlist: before key exchange, the SDK
+requires the complete PCR0/PCR1/PCR2 tuple to match a release authorized for the
+configured environment. Runtime clients do not fetch this policy from GitHub,
+Sigstore, or Rekor.
 
 Version changes update:
 
