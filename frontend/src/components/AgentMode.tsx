@@ -4826,6 +4826,16 @@ function AgentComposer({
               <span className="min-w-0 flex-1 truncate" title={item.text}>
                 {item.text}
               </span>
+              {onCancelQueuedMessage ? (
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                  onClick={() => onCancelQueuedMessage(item.queueId)}
+                  aria-label="Remove queued message"
+                >
+                  <Trash className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
               {onEditQueuedMessage ? (
                 <button
                   type="button"
@@ -4846,16 +4856,6 @@ function AgentComposer({
                   aria-label="Send queued message into the current turn"
                 >
                   <ArrowUp className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-              {onCancelQueuedMessage ? (
-                <button
-                  type="button"
-                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                  onClick={() => onCancelQueuedMessage(item.queueId)}
-                  aria-label="Remove queued message"
-                >
-                  <X className="h-3.5 w-3.5" />
                 </button>
               ) : null}
             </div>
