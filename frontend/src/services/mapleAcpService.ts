@@ -40,7 +40,8 @@ export interface BuzzCustomHarnessDefinition {
 
 export const BUZZ_MAPLE_HARNESS_ID = "maple" as const;
 export const BUZZ_MAPLE_HARNESS_NAME = "Maple" as const;
-export const BUZZ_MAPLE_AGENT_PARALLELISM = 1 as const;
+export const MAX_MAPLE_ACP_CONNECTIONS = 8 as const;
+export const BUZZ_MAPLE_AGENT_PARALLELISM = MAX_MAPLE_ACP_CONNECTIONS;
 export const BUZZ_DEFAULT_AGENT_PARALLELISM = 10 as const;
 
 export interface MapleAcpBridge {
@@ -54,7 +55,7 @@ export const DEFAULT_MAPLE_ACP_CONFIG: MapleAcpConfig = Object.freeze({
   enabled: false,
   permissionMode: "read_only",
   allowedProjectRoots: [],
-  maxConnections: 1
+  maxConnections: MAX_MAPLE_ACP_CONNECTIONS
 });
 
 const defaultBridge: MapleAcpBridge = {
@@ -136,14 +137,17 @@ export function normalizeMapleAcpConfig(value: unknown): MapleAcpConfig {
         (root): root is string => typeof root === "string" && root.trim().length > 0
       )
     : DEFAULT_MAPLE_ACP_CONFIG.allowedProjectRoots;
-  const maxConnections = safeCount(record?.maxConnections, DEFAULT_MAPLE_ACP_CONFIG.maxConnections);
+  const maxConnections =
+    typeof record?.maxConnections === "number" && Number.isSafeInteger(record.maxConnections)
+      ? record.maxConnections
+      : DEFAULT_MAPLE_ACP_CONFIG.maxConnections;
 
   return {
     enabled:
       typeof record?.enabled === "boolean" ? record.enabled : DEFAULT_MAPLE_ACP_CONFIG.enabled,
     permissionMode: normalizePermissionMode(record?.permissionMode),
     allowedProjectRoots: [...new Set(roots.map((root) => root.trim()))],
-    maxConnections: Math.max(1, maxConnections)
+    maxConnections: Math.min(MAX_MAPLE_ACP_CONNECTIONS, Math.max(1, maxConnections))
   };
 }
 

@@ -247,6 +247,14 @@ impl MapleApiSession {
         Ok(())
     }
 
+    pub(crate) async fn model_ids(&self) -> Result<Vec<String>, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.get_models().await;
+        self.record_refresh(&snapshot).await?;
+        let response = response.map_err(map_sdk_error)?;
+        Ok(response.data.into_iter().map(|model| model.id).collect())
+    }
+
     pub(crate) async fn send_inference_request(
         self: Arc<Self>,
         request: InferenceRequest,

@@ -4,10 +4,9 @@ use crate::agent::{
     AgentProjectRootRegistration, AgentProjectSkillsTrustStatus, AgentQueueControlRequest,
     AgentQueueUpdateRequest, AgentQueuedMessage, AgentRenameSessionRequest, AgentRunEvent,
     AgentRunResponse, AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus,
-    AgentSendMessageRequest,
-    AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer, AgentSessionSummary,
-    AgentSetSessionMcpServerRequest, AgentStartRequest, AgentTimelineItem, MapleAgentService,
-    RecentProjectRoot,
+    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer,
+    AgentSessionSummary, AgentSetSessionMcpServerRequest, AgentStartRequest, AgentTimelineItem,
+    MapleAgentService, RecentProjectRoot,
 };
 use crate::agent_host::{AgentHostLifecycle, AgentRuntimeLifecycleOutcome};
 use crate::maple_api::MapleApiAuthState;

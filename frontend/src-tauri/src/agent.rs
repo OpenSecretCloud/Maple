@@ -5,11 +5,14 @@ pub(crate) mod provider;
 mod shell_permission;
 mod system_prompt;
 mod tool_context;
+mod transient_mcp;
 mod web_permission;
 mod web_tools;
 
 use crate::maple_api::{account_scope, MapleApiSession};
 use developer_tools::MapleDeveloperClient;
+#[cfg(test)]
+use developer_tools::EXTERNAL_MCP_TOOL_NAME;
 use futures_util::StreamExt;
 use goose::agents::extension::Envs;
 use goose::agents::{
@@ -51,6 +54,7 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 pub(crate) use tool_context::AgentToolContextSpec;
 use tool_context::SharedAgentToolContext;
+use transient_mcp::{TransientMcpConfig, TransientMcpRouter};
 use web_permission::{
     web_search_request_id, OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext,
     WebPermissionOutcome,
@@ -63,7 +67,8 @@ const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // Keep Goose on its ActionRequired path so Maple can apply the currently selected
 // policy at every tool boundary, including when the user changes it mid-run.
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
-const MAPLE_DEVELOPER_TOOLS: [&str; 7] = [
+#[cfg(test)]
+const MAPLE_DEVELOPER_TOOLS: [&str; 8] = [
     "read",
     "shell",
     "edit",
@@ -71,6 +76,7 @@ const MAPLE_DEVELOPER_TOOLS: [&str; 7] = [
     "read_image",
     "web_search",
     "open_url",
+    EXTERNAL_MCP_TOOL_NAME,
 ];
 const MAPLE_SKILLS_TOOLS: [&str; 1] = ["load_skill"];
 // Goose currently renders the runtime registration key as the model-facing
@@ -87,6 +93,7 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   - read_image
   - web_search
   - open_url
+  - external_mcp
   never_allow: []
 "#;
 const RUN_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -158,6 +165,21 @@ fn default_agent_model() -> String {
     DEFAULT_AGENT_MODEL.to_string()
 }
 
+fn selectable_agent_model_id(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    ![
+        "whisper",
+        "embed",
+        "rerank",
+        "transcription",
+        "text-to-speech",
+        "tts",
+        "image-generation",
+    ]
+    .iter()
+    .any(|marker| model.contains(marker))
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -220,6 +242,28 @@ pub struct AgentMcpServer {
     #[serde(default = "default_mcp_timeout_seconds")]
     pub timeout_seconds: u64,
     pub transport: AgentMcpTransport,
+}
+
+/// An MCP server supplied by an external Agent surface for one leased session.
+///
+/// Unlike [`AgentMcpServer`], this type is never serialized into Maple's user
+/// configuration or Goose session metadata. It may contain short-lived bearer
+/// headers owned by the calling surface, so the lease that installs it also
+/// owns its removal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentTransientMcpServer {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) timeout_seconds: u64,
+    pub(crate) transport: AgentTransientMcpTransport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentTransientMcpTransport {
+    StreamableHttp {
+        url: String,
+        headers: Vec<AgentMcpKeyValue>,
+    },
 }
 
 fn default_mcp_timeout_seconds() -> u64 {
@@ -427,11 +471,65 @@ pub(crate) struct AgentRunHandle {
     pub run_id: String,
     pub events: mpsc::Receiver<AgentRunEvent>,
     pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
+    pub usage: watch::Receiver<Option<AgentRunUsage>>,
     pub event_overflowed: Arc<AtomicBool>,
     pub permission_responder: Option<AgentRunPermissionResponder>,
     pub cancellation: Option<AgentRunCancellation>,
     pub queued: Option<AgentQueuedMessage>,
     pub queue: AgentDesktopQueueSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AgentRunUsage {
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) total_tokens: u64,
+    pub(crate) cached_read_tokens: u64,
+    pub(crate) cached_write_tokens: u64,
+}
+
+type AgentRunSetup = (
+    Arc<Agent>,
+    Vec<AgentMcpConnectionError>,
+    SharedAgentToolContext,
+    bool,
+    AgentRunUsage,
+);
+
+impl AgentRunUsage {
+    fn from_accumulated_session(session: &Session) -> Self {
+        Self {
+            input_tokens: nonnegative_tokens(session.accumulated_usage.input_tokens),
+            output_tokens: nonnegative_tokens(session.accumulated_usage.output_tokens),
+            total_tokens: nonnegative_tokens(session.accumulated_usage.total_tokens),
+            cached_read_tokens: nonnegative_tokens(
+                session.accumulated_usage.cache_read_input_tokens,
+            ),
+            cached_write_tokens: nonnegative_tokens(
+                session.accumulated_usage.cache_write_input_tokens,
+            ),
+        }
+    }
+
+    fn saturating_delta(self, before: Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens.saturating_sub(before.input_tokens),
+            output_tokens: self.output_tokens.saturating_sub(before.output_tokens),
+            total_tokens: self.total_tokens.saturating_sub(before.total_tokens),
+            cached_read_tokens: self
+                .cached_read_tokens
+                .saturating_sub(before.cached_read_tokens),
+            cached_write_tokens: self
+                .cached_write_tokens
+                .saturating_sub(before.cached_write_tokens),
+        }
+    }
+}
+
+fn nonnegative_tokens(tokens: Option<i32>) -> u64 {
+    tokens
+        .and_then(|tokens| u64::try_from(tokens).ok())
+        .unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -516,6 +614,16 @@ impl AgentHostEventPolicy {
 pub(crate) struct AgentToolContextLease {
     service: MapleAgentService,
     access: AgentToolContextAccess,
+    created_cleanup: Option<CreatedAgentSessionCleanup>,
+    discard_created_on_drop: bool,
+    cleanup_started: bool,
+}
+
+#[derive(Clone)]
+struct CreatedAgentSessionCleanup {
+    agent_manager: Arc<AgentManager>,
+    session_manager: Arc<SessionManager>,
+    expected: Session,
 }
 
 #[derive(Clone)]
@@ -535,33 +643,206 @@ impl AgentToolContextLease {
         self.access.context.revoke();
     }
 
-    pub(crate) async fn release(self) {
-        self.revoke();
-        let _session_lifecycle = self.service.session_lifecycle.lock().await;
-        let removed = {
-            let mut runtime = self.service.inner.lock().await;
-            let Some(current) = runtime.as_mut() else {
-                return;
-            };
-            if current.account_scope != self.access.account_scope.as_ref() {
-                return;
-            }
-            take_matching_tool_context(
-                &mut current.session_tool_contexts,
-                self.access.session_id.as_ref(),
-                self.access.installation_id,
-                &self.access.context,
+    pub(crate) async fn release(mut self) {
+        // Stop credential-bearing calls synchronously before waiting for the
+        // session lifecycle fence and cached-Agent unload.
+        self.access.context.revoke();
+        release_tool_context_lease(self.service.clone(), self.access.clone()).await;
+        // Mark completion only after the awaited cleanup. If this future is
+        // cancelled while waiting for the lifecycle fence, Drop schedules an
+        // exact-match retry instead of stranding a revoked leased entry.
+        self.cleanup_started = true;
+    }
+
+    pub(crate) async fn discard_created_if_untouched(mut self) {
+        self.discard_created_on_drop = true;
+        self.access.context.revoke();
+        if let Some(cleanup) = self.created_cleanup.as_ref() {
+            cleanup_provisional_created_session(
+                self.service.clone(),
+                self.access.clone(),
+                Arc::clone(&cleanup.agent_manager),
+                Arc::clone(&cleanup.session_manager),
+                cleanup.expected.clone(),
             )
-        };
-        if let Some(installed) = removed {
-            installed.context.revoke();
+            .await;
+        } else {
+            release_tool_context_lease(self.service.clone(), self.access.clone()).await;
         }
+        self.cleanup_started = true;
+    }
+}
+
+async fn release_tool_context_lease(service: MapleAgentService, access: AgentToolContextAccess) {
+    // A revoked leased entry remains authoritative until this lifecycle
+    // section removes it. Desktop callers must never garbage-collect it and
+    // reuse the still-cached Agent while transient caller state is attached.
+    let _session_lifecycle = service.session_lifecycle.lock().await;
+    let (removed, agent_manager) = {
+        let mut runtime = service.inner.lock().await;
+        let Some(current) = runtime.as_mut() else {
+            return;
+        };
+        if current.account_scope != access.account_scope.as_ref() {
+            return;
+        }
+        let removed = take_matching_tool_context(
+            &mut current.session_tool_contexts,
+            access.session_id.as_ref(),
+            access.installation_id,
+            &access.context,
+        );
+        (removed, Arc::clone(&current.agent_manager))
+    };
+    if let Some(installed) = removed {
+        installed.context.revoke();
+        // Dropping the cached Agent is the fail-closed way to remove every
+        // transient MCP client (and any secret-bearing HTTP headers) without
+        // mutating the persisted extension set. A later Desktop or ACP use
+        // reconstructs the Agent from durable, non-transient metadata.
+        if let Err(error) = agent_manager
+            .remove_session_if_loaded(access.session_id.as_ref())
+            .await
+        {
+            log::warn!(
+                "Failed to unload Agent task {} after external lease release: {error}",
+                access.session_id
+            );
+        }
+    }
+}
+
+async fn cleanup_provisional_created_session(
+    service: MapleAgentService,
+    access: AgentToolContextAccess,
+    agent_manager: Arc<AgentManager>,
+    session_manager: Arc<SessionManager>,
+    expected: Session,
+) {
+    // Keep the task fenced until both the secret-bearing cached Agent and the
+    // untouched provisional row are gone. If the exact reservation no longer
+    // belongs to us, fail closed and leave the durable task alone.
+    let _session_lifecycle = service.session_lifecycle.lock().await;
+    let permission_modes = {
+        let mut runtime = service.inner.lock().await;
+        match runtime.as_mut() {
+            Some(current) if current.account_scope == access.account_scope.as_ref() => {
+                if has_active_session_run(&current.active_runs, access.session_id.as_ref()) {
+                    return;
+                }
+                if let Some(installed) = current
+                    .session_tool_contexts
+                    .get(access.session_id.as_ref())
+                {
+                    let exact = installed.installation_id == access.installation_id
+                        && installed.context.ptr_eq(&access.context);
+                    if !exact {
+                        // A replacement owner won the task. Never unload or
+                        // delete underneath it.
+                        return;
+                    }
+                }
+                if let Some(installed) = take_matching_tool_context(
+                    &mut current.session_tool_contexts,
+                    access.session_id.as_ref(),
+                    access.installation_id,
+                    &access.context,
+                ) {
+                    installed.context.revoke();
+                }
+                Some(Arc::clone(&current.permission_modes))
+            }
+            // Runtime stop/replacement drains the old registry. The captured
+            // account-scoped managers still let us remove only the untouched
+            // row that this setup created.
+            _ => None,
+        }
+    };
+    access.context.revoke();
+    if let Err(error) = agent_manager
+        .remove_session_if_loaded(access.session_id.as_ref())
+        .await
+    {
+        log::warn!(
+            "Failed to unload provisional Agent task {} after setup error: {error}",
+            access.session_id
+        );
+    }
+    if let Some(permission_modes) = permission_modes {
+        permission_modes
+            .lock()
+            .await
+            .remove(access.session_id.as_ref());
+    }
+
+    let current = match session_manager
+        .get_session(access.session_id.as_ref(), true)
+        .await
+    {
+        Ok(session) => session,
+        Err(_) => return,
+    };
+    let conversation_is_empty = current
+        .conversation
+        .as_ref()
+        .is_none_or(|conversation| conversation.messages().is_empty());
+    let untouched = current.id == expected.id
+        && current.created_at == expected.created_at
+        && current.working_dir == expected.working_dir
+        && current.session_type == expected.session_type
+        && current.name == expected.name
+        && !current.user_set_name
+        && current.message_count == 0
+        && conversation_is_empty
+        && current.archived_at == expected.archived_at;
+    if !untouched {
+        log::warn!(
+            "Preserving provisional Agent task {} after setup error because it changed while setup was pending",
+            access.session_id
+        );
+        return;
+    }
+    if let Err(error) = session_manager
+        .delete_session(access.session_id.as_ref())
+        .await
+    {
+        log::warn!(
+            "Failed to remove provisional Agent task {} after setup error: {error}",
+            access.session_id
+        );
     }
 }
 
 impl Drop for AgentToolContextLease {
     fn drop(&mut self) {
         self.access.context.revoke();
+        if self.cleanup_started {
+            return;
+        }
+        let service = self.service.clone();
+        let access = self.access.clone();
+        let created_cleanup = self.created_cleanup.clone();
+        let discard_created = self.discard_created_on_drop;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if discard_created {
+                    if let Some(cleanup) = created_cleanup {
+                        cleanup_provisional_created_session(
+                            service,
+                            access,
+                            cleanup.agent_manager,
+                            cleanup.session_manager,
+                            cleanup.expected,
+                        )
+                        .await;
+                    } else {
+                        release_tool_context_lease(service, access).await;
+                    }
+                } else {
+                    release_tool_context_lease(service, access).await;
+                }
+            });
+        }
     }
 }
 
@@ -737,15 +1018,52 @@ enum AgentToolContextOwner {
 
 struct PendingAgentToolContextInstallation {
     context: SharedAgentToolContext,
+    cleanup: Option<PendingAgentToolContextCleanup>,
     committed: bool,
+}
+
+enum PendingAgentToolContextCleanup {
+    Lease {
+        service: MapleAgentService,
+        access: AgentToolContextAccess,
+    },
+    Created {
+        service: MapleAgentService,
+        access: AgentToolContextAccess,
+        agent_manager: Arc<AgentManager>,
+        session_manager: Arc<SessionManager>,
+        expected: Box<Session>,
+    },
 }
 
 impl PendingAgentToolContextInstallation {
     fn new(context: SharedAgentToolContext) -> Self {
         Self {
             context,
+            cleanup: None,
             committed: false,
         }
+    }
+
+    fn arm_lease_cleanup(&mut self, service: MapleAgentService, access: AgentToolContextAccess) {
+        self.cleanup = Some(PendingAgentToolContextCleanup::Lease { service, access });
+    }
+
+    fn arm_created_cleanup(
+        &mut self,
+        service: MapleAgentService,
+        access: AgentToolContextAccess,
+        agent_manager: Arc<AgentManager>,
+        session_manager: Arc<SessionManager>,
+        expected: Session,
+    ) {
+        self.cleanup = Some(PendingAgentToolContextCleanup::Created {
+            service,
+            access,
+            agent_manager,
+            session_manager,
+            expected: Box::new(expected),
+        });
     }
 
     fn commit(&mut self) {
@@ -757,7 +1075,55 @@ impl Drop for PendingAgentToolContextInstallation {
     fn drop(&mut self) {
         if !self.committed {
             self.context.revoke();
+            let Some(cleanup) = self.cleanup.take() else {
+                return;
+            };
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    match cleanup {
+                        PendingAgentToolContextCleanup::Lease { service, access } => {
+                            release_tool_context_lease(service, access).await;
+                        }
+                        PendingAgentToolContextCleanup::Created {
+                            service,
+                            access,
+                            agent_manager,
+                            session_manager,
+                            expected,
+                        } => {
+                            cleanup_provisional_created_session(
+                                service,
+                                access,
+                                agent_manager,
+                                session_manager,
+                                *expected,
+                            )
+                            .await;
+                        }
+                    }
+                });
+            }
         }
+    }
+}
+
+async fn run_external_surface_setup<T>(
+    setup_cancel: &CancellationToken,
+    tool_context: &SharedAgentToolContext,
+    cancellation_error: &'static str,
+    setup: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    // The exact lease is installed before setup releases Maple's lifecycle
+    // fences. Make every later await cancellation-selectable, not just the MCP
+    // handshake, so a close/disconnect cannot strand an unpublished leased
+    // context while session reload or Agent configuration is stalled.
+    tokio::select! {
+        biased;
+        _ = setup_cancel.cancelled() => {
+            tool_context.revoke();
+            Err(cancellation_error.to_string())
+        }
+        result = setup => result,
     }
 }
 
@@ -775,6 +1141,61 @@ fn take_matching_tool_context(
             .remove(session_id)
             .expect("matching Agent tool context must still exist")
     })
+}
+
+fn matching_leased_tool_context(
+    contexts: &HashMap<String, InstalledAgentToolContext>,
+    session_id: &str,
+    installation_id: u64,
+    context: &SharedAgentToolContext,
+) -> bool {
+    contexts.get(session_id).is_some_and(|installed| {
+        installed.owner == AgentToolContextOwner::Leased
+            && installed.installation_id == installation_id
+            && installed.context.ptr_eq(context)
+            && !installed.context.is_revoked()
+    })
+}
+
+fn ensure_external_surface_loadable_session(session: &Session) -> Result<(), String> {
+    if session.goose_mode == GooseMode::SmartApprove {
+        Ok(())
+    } else {
+        Err(
+            "Maple ACP can load only Read only tasks; this task's saved approval mode was left unchanged"
+                .to_string(),
+        )
+    }
+}
+
+fn is_unprompted_acp_session(session: &Session) -> bool {
+    session.session_type == SessionType::Acp
+        && session.message_count == 0
+        && !session.user_set_name
+        && session
+            .conversation
+            .as_ref()
+            .is_none_or(|conversation| conversation.messages().is_empty())
+}
+
+async fn sweep_unprompted_acp_sessions(session_manager: &SessionManager) {
+    let sessions = match session_manager.list_all_sessions().await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            log::warn!("Failed to inspect stale provisional ACP tasks: {error}");
+            return;
+        }
+    };
+    for session in sessions {
+        if is_unprompted_acp_session(&session) {
+            if let Err(error) = session_manager.delete_session(&session.id).await {
+                log::warn!(
+                    "Failed to remove stale provisional ACP task {}: {error}",
+                    session.id
+                );
+            }
+        }
+    }
 }
 
 fn resolve_session_tool_context(
@@ -802,19 +1223,16 @@ fn resolve_session_tool_context(
         return Ok(installed.context.clone());
     }
 
-    if contexts
-        .get(session_id)
-        .is_some_and(|installed| installed.context.is_revoked())
-    {
-        contexts.remove(session_id);
-    }
     if let Some(installed) = contexts.get(session_id) {
         if installed.owner == AgentToolContextOwner::Leased {
             return Err("Agent task is controlled by another Agent surface".to_string());
         }
-        return Ok(installed.context.clone());
+        if installed.context.is_revoked() {
+            contexts.remove(session_id);
+        } else {
+            return Ok(installed.context.clone());
+        }
     }
-
     let context = SharedAgentToolContext::new(default_spec.clone());
     contexts.insert(
         session_id.to_string(),
@@ -1911,6 +2329,10 @@ async fn start_runtime_for_user(
         login_shell_search_paths,
     )?;
     let session_manager = Arc::new(SessionManager::new(goose_path_root.join("data")));
+    // A crash can strand a zero-message ACP probe before its connection-owned
+    // rollback runs. Such rows have never admitted user work; sweep them before
+    // the runtime becomes visible, while renamed or messaged tasks survive.
+    sweep_unprompted_acp_sessions(session_manager.as_ref()).await;
     let permission_manager = Arc::new(PermissionManager::new(goose_path_root.join("config")));
     let goose_config = GooseAgentConfig::new(
         Arc::clone(&session_manager),
@@ -2310,16 +2732,38 @@ impl AgentRuntimeHandle {
         tool_context: Option<AgentToolContextSpec>,
         host_events: AgentHostEventPolicy,
     ) -> Result<CreatedAgentSession, String> {
+        self.create_session_with_surface_context(
+            request,
+            tool_context,
+            Vec::new(),
+            CancellationToken::new(),
+            host_events,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_session_with_surface_context(
+        &self,
+        request: Option<AgentCreateSessionRequest>,
+        tool_context: Option<AgentToolContextSpec>,
+        transient_mcp_servers: Vec<AgentTransientMcpServer>,
+        setup_cancel: CancellationToken,
+        host_events: AgentHostEventPolicy,
+    ) -> Result<CreatedAgentSession, String> {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
         let account_scope = self.account_scope.as_ref();
         let has_external_tool_context = tool_context.is_some();
+        if !has_external_tool_context && !transient_mcp_servers.is_empty() {
+            return Err("Transient MCP servers require a leased Agent surface".to_string());
+        }
+        let transient_mcp_servers = normalize_transient_mcp_servers(transient_mcp_servers)?;
         let tool_context = SharedAgentToolContext::new(
             tool_context.unwrap_or_else(|| state.host.default_tool_context.clone()),
         );
         let mut tool_context_installation =
             PendingAgentToolContextInstallation::new(tool_context.clone());
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let request = request.unwrap_or(AgentCreateSessionRequest {
@@ -2370,6 +2814,12 @@ impl AgentRuntimeHandle {
             .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
         let mode = request.mode.unwrap_or(runtime_mode);
         let permission_mode = parse_user_permission_mode(&mode)?;
+        if has_external_tool_context && permission_mode != GooseMode::SmartApprove {
+            return Err(
+                "External Agent surfaces require Maple's caller-mediated Read only mode"
+                    .to_string(),
+            );
+        }
         let model = request.model.unwrap_or(runtime_model);
         let configured_mcp = normalize_mcp_servers(config.mcp_servers)?;
         let selected_mcp =
@@ -2379,71 +2829,221 @@ impl AgentRuntimeHandle {
             .map(mcp_server_to_extension)
             .collect::<Result<Vec<_>, _>>()?;
         let selected_extension_keys = mcp_extension_keys(&selected_extensions);
+        ensure_extension_sets_do_not_conflict(&selected_extensions, &transient_mcp_servers)?;
+        let session_type = if has_external_tool_context {
+            SessionType::Acp
+        } else {
+            SessionType::User
+        };
         let session = session_manager
-            .create_session(root.clone(), title, SessionType::User, permission_mode)
+            .create_session(root.clone(), title, session_type, permission_mode)
             .await
             .map_err(|e| format!("Failed to create Agent task: {e}"))?;
-
+        let expected_provisional_session = session.clone();
         let installation_id = next_tool_context_installation_id();
-        let setup_result: Result<Vec<AgentMcpConnectionError>, String> = async {
-            let (agent, mut mcp_errors) = configure_session_agent(
-                AgentSkillsScope {
-                    paths: &state.host.paths,
-                    user_id,
-                },
-                &agent_manager,
-                &session_manager,
-                &maple_api_session,
-                SessionAgentConfiguration {
-                    web_tool_state: &web_tool_state,
-                    session: &session,
-                    model: &model,
-                    context_limit: request.context_limit,
-                    mode: &mode,
-                    primary_model_supports_vision: false,
-                    tool_context: &tool_context,
+        let tool_context_access = AgentToolContextAccess {
+            account_scope: Arc::clone(&self.account_scope),
+            session_id: Arc::from(session.id.as_str()),
+            installation_id,
+            context: tool_context.clone(),
+        };
+        // Fence the newly durable row before releasing Maple's lifecycle
+        // lock. Desktop operations now see an authoritative lease rather than
+        // a runnable/deletable task during the caller-controlled MCP handshake.
+        let reservation_error = {
+            let mut runtime = state.inner.lock().await;
+            match runtime.as_mut() {
+                Some(current) if current.account_scope == account_scope => {
+                    match current.session_tool_contexts.entry(session.id.clone()) {
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(InstalledAgentToolContext {
+                                installation_id,
+                                context: tool_context.clone(),
+                                owner: AgentToolContextOwner::Leased,
+                            });
+                            None
+                        }
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            Some("Agent task context already existed during creation".to_string())
+                        }
+                    }
+                }
+                _ => Some("Agent runtime changed during session creation".to_string()),
+            }
+        };
+        if let Some(error) = reservation_error {
+            tool_context.revoke();
+            if let Err(cleanup_error) = session_manager.delete_session(&session.id).await {
+                log::warn!(
+                    "Failed to remove unreserved Agent task {} after setup error: {cleanup_error}",
+                    session.id
+                );
+            }
+            return Err(error);
+        }
+        tool_context_installation.arm_created_cleanup(
+            state.clone(),
+            tool_context_access.clone(),
+            Arc::clone(&agent_manager),
+            Arc::clone(&session_manager),
+            expected_provisional_session.clone(),
+        );
+        // A caller-controlled MCP endpoint must not hold Maple's global
+        // runtime lifecycle fence while it initializes.
+        drop(runtime_lifecycle_guard);
+
+        let setup_result: Result<(Session, Vec<AgentMcpConnectionError>), String> =
+            run_external_surface_setup(
+                &setup_cancel,
+                &tool_context,
+                "Agent surface closed during session setup",
+                async {
+                    install_transient_mcp_router(
+                        &tool_context,
+                        &session,
+                        transient_mcp_servers,
+                        &setup_cancel,
+                    )
+                    .await?;
+                    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+                    self.verify_generation().await?;
+                    self.ensure_accepting_new_work()?;
+                    {
+                        let runtime = state.inner.lock().await;
+                        let current = runtime
+                            .as_ref()
+                            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                        ensure_runtime_account(current, account_scope)?;
+                        if !Arc::ptr_eq(&current.agent_manager, &agent_manager)
+                            || !Arc::ptr_eq(&current.session_manager, &session_manager)
+                            || !Arc::ptr_eq(&current.maple_api_session, &maple_api_session)
+                        {
+                            return Err("Agent runtime changed during session setup".to_string());
+                        }
+                        if has_active_session_run(&current.active_runs, &session.id)
+                            || !matching_leased_tool_context(
+                                &current.session_tool_contexts,
+                                &session.id,
+                                installation_id,
+                                &tool_context,
+                            )
+                        {
+                            return Err(
+                                "Agent task ownership changed during session setup".to_string()
+                            );
+                        }
+                    }
+                    let session = session_manager
+                        .get_session(&session.id, true)
+                        .await
+                        .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
+                    if session.working_dir != root || session.session_type != session_type {
+                        return Err("Agent task changed during session setup".to_string());
+                    }
+                    let (agent, mut mcp_errors) = configure_session_agent(
+                        AgentSkillsScope {
+                            paths: &state.host.paths,
+                            user_id,
+                        },
+                        &agent_manager,
+                        &session_manager,
+                        &maple_api_session,
+                        SessionAgentConfiguration {
+                            web_tool_state: &web_tool_state,
+                            session: &session,
+                            model: &model,
+                            context_limit: request.context_limit,
+                            mode: &mode,
+                            primary_model_supports_vision: false,
+                            tool_context: &tool_context,
+                        },
+                    )
+                    .await?;
+                    if !selected_extensions.is_empty() {
+                        // Resolve every fallible part of restoring Maple's transient Skills client before
+                        // Goose persists the MCP mutation. Reattachment after this point is infallible.
+                        let skills_client = prepare_transient_skills_client(
+                            &state.host.paths,
+                            user_id,
+                            &agent,
+                            &session,
+                        )?;
+                        detach_transient_skills_client(&agent).await;
+                        let extension_result = agent
+                            .add_extensions_bulk(selected_extensions, &session.id)
+                            .await;
+                        attach_prepared_skills_client(&agent, skills_client).await;
+                        match extension_result {
+                            Ok(results) => mcp_errors
+                                .extend(mcp_connection_errors(results, &selected_extension_keys)),
+                            Err(error) => mcp_errors.push(AgentMcpConnectionError {
+                                name: "MCP servers".to_string(),
+                                error: error.to_string(),
+                            }),
+                        }
+                    }
+                    {
+                        let mut runtime = state.inner.lock().await;
+                        let current = runtime
+                            .as_mut()
+                            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                        ensure_runtime_account(current, account_scope)?;
+                        if has_active_session_run(&current.active_runs, &session.id)
+                            || !matching_leased_tool_context(
+                                &current.session_tool_contexts,
+                                &session.id,
+                                installation_id,
+                                &tool_context,
+                            )
+                        {
+                            return Err(
+                                "Agent task ownership changed during session setup".to_string()
+                            );
+                        }
+                        let mut modes = permission_modes.lock().await;
+                        current
+                            .session_tool_contexts
+                            .get_mut(&session.id)
+                            .expect("the exact provisional context was just verified")
+                            .owner = if has_external_tool_context {
+                            AgentToolContextOwner::Leased
+                        } else {
+                            AgentToolContextOwner::Maple
+                        };
+                        modes.insert(session.id.clone(), permission_mode);
+                    }
+                    let session = session_manager
+                        .get_session(&session.id, true)
+                        .await
+                        .map_err(|error| {
+                            format!("Failed to load configured Agent task: {error}")
+                        })?;
+                    if setup_cancel.is_cancelled() {
+                        return Err("Agent surface closed during session setup".to_string());
+                    }
+                    tool_context_installation.commit();
+                    Ok((session, mcp_errors))
                 },
             )
-            .await?;
-            if !selected_extensions.is_empty() {
-                // Resolve every fallible part of restoring Maple's transient Skills client before
-                // Goose persists the MCP mutation. Reattachment after this point is infallible.
-                let skills_client =
-                    prepare_transient_skills_client(&state.host.paths, user_id, &agent, &session)?;
-                detach_transient_skills_client(&agent).await;
-                let extension_result = agent
-                    .add_extensions_bulk(selected_extensions, &session.id)
-                    .await;
-                attach_prepared_skills_client(&agent, skills_client).await;
-                match extension_result {
-                    Ok(results) => {
-                        mcp_errors.extend(mcp_connection_errors(results, &selected_extension_keys))
-                    }
-                    Err(error) => mcp_errors.push(AgentMcpConnectionError {
-                        name: "MCP servers".to_string(),
-                        error: error.to_string(),
-                    }),
-                }
-            }
-            Ok(mcp_errors)
-        }
-        .await;
-        let mcp_errors = match setup_result {
-            Ok(mcp_errors) => mcp_errors,
+            .await;
+        let (session, mcp_errors) = match setup_result {
+            Ok(result) => result,
             Err(error) => {
-                if let Err(cleanup_error) = session_manager.delete_session(&session.id).await {
-                    log::warn!(
-                        "Failed to remove Agent task {} after setup error: {cleanup_error}",
-                        session.id
-                    );
-                }
-                if let Err(cleanup_error) =
-                    agent_manager.remove_session_if_loaded(&session.id).await
-                {
-                    log::warn!(
-                        "Failed to unload Agent task {} after setup error: {cleanup_error}",
-                        session.id
-                    );
+                tool_context.revoke();
+                let cleanup = cleanup_provisional_created_session(
+                    state.clone(),
+                    tool_context_access.clone(),
+                    Arc::clone(&agent_manager),
+                    Arc::clone(&session_manager),
+                    expected_provisional_session,
+                );
+                let cleaned = tokio::select! {
+                    biased;
+                    _ = setup_cancel.cancelled() => false,
+                    _ = cleanup => true,
+                };
+                if cleaned {
+                    tool_context_installation.commit();
                 }
                 return Err(error);
             }
@@ -2459,41 +3059,18 @@ impl AgentRuntimeHandle {
         };
         let tool_context_lease = has_external_tool_context.then(|| AgentToolContextLease {
             service: state.clone(),
-            access: AgentToolContextAccess {
-                account_scope: Arc::clone(&self.account_scope),
-                session_id: Arc::from(detail.session.id.as_str()),
-                installation_id,
-                context: tool_context.clone(),
-            },
+            access: tool_context_access,
+            created_cleanup: Some(CreatedAgentSessionCleanup {
+                agent_manager: Arc::clone(&agent_manager),
+                session_manager: Arc::clone(&session_manager),
+                expected: expected_provisional_session.clone(),
+            }),
+            discard_created_on_drop: false,
+            cleanup_started: false,
         });
 
-        // Publish the configured context only after every fallible setup await.
-        // Once inserted, the lease is committed and returned without yielding,
-        // so cancellation cannot strand a secret-bearing registry entry.
-        {
-            let mut runtime = state.inner.lock().await;
-            let current = runtime
-                .as_mut()
-                .ok_or_else(|| "Agent runtime is not running".to_string())?;
-            ensure_runtime_account(current, account_scope)?;
-            let mut modes = permission_modes.lock().await;
-            if let Some(replaced) = current.session_tool_contexts.insert(
-                session.id.clone(),
-                InstalledAgentToolContext {
-                    installation_id,
-                    context: tool_context,
-                    owner: if has_external_tool_context {
-                        AgentToolContextOwner::Leased
-                    } else {
-                        AgentToolContextOwner::Maple
-                    },
-                },
-            ) {
-                replaced.context.revoke();
-            }
-            modes.insert(session.id.clone(), permission_mode);
-        }
-        tool_context_installation.commit();
+        // The context was published only after every fallible setup await and
+        // committed without yielding while the lifecycle fence was held.
         if host_events.publishes() {
             emit_agent_event(
                 &state.host.events,
@@ -2503,6 +3080,293 @@ impl AgentRuntimeHandle {
         Ok(CreatedAgentSession {
             detail,
             tool_context_lease,
+        })
+    }
+
+    /// Attach an external Agent surface to an existing durable task.
+    ///
+    /// This is intentionally distinct from the Desktop-facing `load_session`:
+    /// it atomically acquires the task's external tool/MCP lease, rejects live
+    /// or already-leased tasks, and returns persisted history without Desktop
+    /// overlays or actionable permission routing.
+    pub(crate) async fn attach_session_with_surface_context(
+        &self,
+        session_id: String,
+        project_root: String,
+        tool_context: AgentToolContextSpec,
+        transient_mcp_servers: Vec<AgentTransientMcpServer>,
+        setup_cancel: CancellationToken,
+    ) -> Result<CreatedAgentSession, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let session_id = session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("Agent task ID cannot be empty".to_string());
+        }
+        let tool_context = SharedAgentToolContext::new(tool_context);
+        let mut tool_context_installation =
+            PendingAgentToolContextInstallation::new(tool_context.clone());
+        let transient_mcp_servers = normalize_transient_mcp_servers(transient_mcp_servers)?;
+        let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let root = normalize_project_root(Path::new(&project_root))?;
+        let config = load_agent_config_inner(&state.host.paths, user_id)
+            .map_err(|error| error.to_string())?;
+        ensure_session_project_root_is_visible(&root, &config.removed_project_roots)?;
+        let session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (
+            agent_manager,
+            session_manager,
+            maple_api_session,
+            permission_modes,
+            web_tool_state,
+            runtime_model,
+        ) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            if has_active_session_run(&current.active_runs, &session_id) {
+                return Err("This Agent task is already running".to_string());
+            }
+            if current
+                .session_tool_contexts
+                .get(&session_id)
+                .is_some_and(|installed| installed.owner == AgentToolContextOwner::Leased)
+            {
+                return Err("This Agent task is controlled by another Agent surface".to_string());
+            }
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&current.maple_api_session),
+                Arc::clone(&current.permission_modes),
+                Arc::clone(&current.web_tool_state),
+                current.model.clone(),
+            )
+        };
+        let session = session_manager
+            .get_session(session_id.trim(), true)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        if session.working_dir != root {
+            return Err("ACP session cwd does not match the persisted Agent task".to_string());
+        }
+        ensure_external_surface_loadable_session(&session)?;
+        let transient_keys = transient_mcp_servers
+            .iter()
+            .map(|server| goose::config::extensions::name_to_key(&server.name))
+            .collect::<HashSet<_>>();
+        if let Some(conflict) = session_mcp_extension_keys(&session)
+            .into_iter()
+            .find(|key| transient_keys.contains(key))
+        {
+            return Err(format!(
+                "Transient MCP server '{conflict}' conflicts with this task's persisted MCP configuration"
+            ));
+        }
+        let installation_id = next_tool_context_installation_id();
+        let tool_context_access = AgentToolContextAccess {
+            account_scope: Arc::clone(&self.account_scope),
+            session_id: Arc::from(session_id.as_str()),
+            installation_id,
+            context: tool_context.clone(),
+        };
+        {
+            let mut runtime = state.inner.lock().await;
+            let current = runtime
+                .as_mut()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, account_scope)?;
+            if has_active_session_run(&current.active_runs, &session_id)
+                || current
+                    .session_tool_contexts
+                    .get(&session_id)
+                    .is_some_and(|installed| installed.owner == AgentToolContextOwner::Leased)
+            {
+                return Err("This Agent task became active while ACP was attaching".to_string());
+            }
+            if let Some(replaced) = current.session_tool_contexts.insert(
+                session_id.clone(),
+                InstalledAgentToolContext {
+                    installation_id,
+                    context: tool_context.clone(),
+                    owner: AgentToolContextOwner::Leased,
+                },
+            ) {
+                replaced.context.revoke();
+            }
+        }
+        tool_context_installation.arm_lease_cleanup(state.clone(), tool_context_access.clone());
+        // The endpoint can be caller-controlled. Release both global fences
+        // while its bounded, cancellation-linked MCP handshake runs. The
+        // exact provisional lease remains authoritative for Desktop callers.
+        drop(session_lifecycle_guard);
+        drop(runtime_lifecycle_guard);
+        let setup_result: Result<AgentSessionDetail, String> = run_external_surface_setup(
+            &setup_cancel,
+            &tool_context,
+            "ACP session closed while attaching",
+            async {
+                install_transient_mcp_router(
+                    &tool_context,
+                    &session,
+                    transient_mcp_servers,
+                    &setup_cancel,
+                )
+                .await?;
+                let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+                self.verify_generation().await?;
+                self.ensure_accepting_new_work()?;
+                let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+                {
+                    let runtime = state.inner.lock().await;
+                    let current = runtime
+                        .as_ref()
+                        .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                    ensure_runtime_account(current, account_scope)?;
+                    if !Arc::ptr_eq(&current.agent_manager, &agent_manager)
+                        || !Arc::ptr_eq(&current.session_manager, &session_manager)
+                        || !Arc::ptr_eq(&current.maple_api_session, &maple_api_session)
+                    {
+                        return Err("Agent runtime changed while ACP was attaching".to_string());
+                    }
+                    if has_active_session_run(&current.active_runs, &session_id)
+                        || !matching_leased_tool_context(
+                            &current.session_tool_contexts,
+                            &session_id,
+                            installation_id,
+                            &tool_context,
+                        )
+                    {
+                        return Err(
+                            "Agent task ownership changed while ACP was attaching".to_string()
+                        );
+                    }
+                }
+                let session = session_manager
+                    .get_session(&session_id, true)
+                    .await
+                    .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
+                if session.working_dir != root {
+                    return Err(
+                        "ACP session cwd does not match the persisted Agent task".to_string()
+                    );
+                }
+                ensure_external_surface_loadable_session(&session)?;
+                if let Some(conflict) = session_mcp_extension_keys(&session)
+                    .into_iter()
+                    .find(|key| transient_keys.contains(key))
+                {
+                    return Err(format!(
+                        "Transient MCP server '{conflict}' conflicts with this task's persisted MCP configuration"
+                    ));
+                }
+                let model = session
+                    .model_config
+                    .as_ref()
+                    .map(|model| model.model_name.clone())
+                    .unwrap_or(runtime_model);
+                let mode = session.goose_mode.to_string();
+                let (agent, mcp_errors) = configure_session_agent(
+                    AgentSkillsScope {
+                        paths: &state.host.paths,
+                        user_id,
+                    },
+                    &agent_manager,
+                    &session_manager,
+                    &maple_api_session,
+                    SessionAgentConfiguration {
+                        web_tool_state: &web_tool_state,
+                        session: &session,
+                        model: &model,
+                        context_limit: session
+                            .model_config
+                            .as_ref()
+                            .and_then(|model| model.context_limit),
+                        mode: &mode,
+                        primary_model_supports_vision: false,
+                        tool_context: &tool_context,
+                    },
+                )
+                .await?;
+                drop(agent);
+
+                let session = session_manager
+                    .get_session(&session_id, true)
+                    .await
+                    .map_err(|error| format!("Failed to load configured Agent task: {error}"))?;
+                let detail = AgentSessionDetail {
+                    session: session_summary(&session),
+                    timeline: session
+                        .conversation
+                        .as_ref()
+                        .map(conversation_to_timeline_items)
+                        .unwrap_or_default(),
+                    mcp_errors,
+                    queue: empty_desktop_queue_snapshot(),
+                };
+                {
+                    let mut runtime = state.inner.lock().await;
+                    let current = runtime
+                        .as_mut()
+                        .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                    ensure_runtime_account(current, account_scope)?;
+                    if has_active_session_run(&current.active_runs, &detail.session.id)
+                        || !matching_leased_tool_context(
+                            &current.session_tool_contexts,
+                            &detail.session.id,
+                            installation_id,
+                            &tool_context,
+                        )
+                    {
+                        return Err(
+                            "Agent task ownership changed while ACP was attaching".to_string()
+                        );
+                    }
+                    permission_modes
+                        .lock()
+                        .await
+                        .insert(detail.session.id.clone(), session.goose_mode);
+                }
+                if setup_cancel.is_cancelled() {
+                    return Err("ACP session closed while attaching".to_string());
+                }
+                tool_context_installation.commit();
+                Ok(detail)
+            },
+        )
+        .await;
+        let detail = match setup_result {
+            Ok(detail) => detail,
+            Err(error) => {
+                tool_context.revoke();
+                let cleanup =
+                    release_tool_context_lease(state.clone(), tool_context_access.clone());
+                let cleaned = tokio::select! {
+                    biased;
+                    _ = setup_cancel.cancelled() => false,
+                    _ = cleanup => true,
+                };
+                if cleaned {
+                    tool_context_installation.commit();
+                }
+                return Err(error);
+            }
+        };
+        let lease = AgentToolContextLease {
+            service: state.clone(),
+            access: tool_context_access,
+            created_cleanup: None,
+            discard_created_on_drop: false,
+            cleanup_started: false,
+        };
+        Ok(CreatedAgentSession {
+            detail,
+            tool_context_lease: Some(lease),
         })
     }
 
@@ -2538,16 +3402,65 @@ impl AgentRuntimeHandle {
             .map_err(|e| format!("Failed to list Agent tasks: {e}"))?
             .into_iter()
             .filter(|session| {
-                if let Some(root) = filter_root.as_ref() {
-                    session.working_dir == *root
-                } else {
-                    true
-                }
+                !is_unprompted_acp_session(session)
+                    && if let Some(root) = filter_root.as_ref() {
+                        session.working_dir == *root
+                    } else {
+                        true
+                    }
             })
             .map(|session| session_summary(&session))
             .collect::<Vec<_>>();
         sort_sessions_newest_first(&mut sessions);
         Ok(sessions)
+    }
+
+    pub(crate) async fn available_model_ids(&self) -> Result<Vec<String>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let (maple_api_session, default_model) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, self.account_scope.as_ref())?;
+            (
+                Arc::clone(&current.maple_api_session),
+                current.model.clone(),
+            )
+        };
+        drop(_runtime_lifecycle_guard);
+
+        let mut models = match maple_api_session.model_ids().await {
+            Ok(models) => models,
+            Err(error) => {
+                log::warn!("Failed to refresh Maple Agent model catalog: {error}");
+                Vec::new()
+            }
+        };
+        // A catalog request can outlive logout or runtime replacement. Recheck
+        // the exact account generation and transport before publishing a
+        // response that may have come from the former signed-in account.
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, self.account_scope.as_ref())?;
+            if !Arc::ptr_eq(&current.maple_api_session, &maple_api_session) {
+                return Err("Agent runtime changed while refreshing models".to_string());
+            }
+        }
+        models.retain(|model| selectable_agent_model_id(model));
+        models.retain(|model| !model.trim().is_empty());
+        let mut seen = HashSet::new();
+        models.retain(|model| seen.insert(model.clone()));
+        models.retain(|model| model != &default_model);
+        models.insert(0, default_model.clone());
+        Ok(models)
     }
 
     pub(crate) async fn load_session(
@@ -2747,6 +3660,15 @@ impl AgentRuntimeHandle {
             if has_active_session_run(&current.active_runs, &session_id) {
                 return Err("Stop the running agent before changing MCP servers".to_string());
             }
+            if current
+                .session_tool_contexts
+                .get(&session_id)
+                .is_some_and(|installed| installed.owner == AgentToolContextOwner::Leased)
+            {
+                return Err(
+                    "Disconnect the external Agent surface before changing MCP servers".to_string(),
+                );
+            }
             (
                 Arc::clone(&current.agent_manager),
                 Arc::clone(&current.session_manager),
@@ -2847,15 +3769,6 @@ impl AgentRuntimeHandle {
         self.delete_session_inner(session_id, true).await
     }
 
-    /// Remove a session that an adapter failed to publish. This cleanup path is
-    /// intentionally available while the service is draining.
-    pub(crate) async fn discard_session_during_cleanup(
-        &self,
-        session_id: String,
-    ) -> Result<(), String> {
-        self.delete_session_inner(session_id, false).await
-    }
-
     async fn delete_session_inner(
         &self,
         session_id: String,
@@ -2882,6 +3795,16 @@ impl AgentRuntimeHandle {
                     ensure_runtime_account(current, account_scope)?;
                     if has_active_session_run(&current.active_runs, &session_id) {
                         return Err("Stop the running agent before deleting this task".to_string());
+                    }
+                    if current
+                        .session_tool_contexts
+                        .get(&session_id)
+                        .is_some_and(|installed| installed.owner == AgentToolContextOwner::Leased)
+                    {
+                        return Err(
+                            "Disconnect the external Agent surface before deleting this task"
+                                .to_string(),
+                        );
                     }
                     (
                         Some(Arc::clone(&current.agent_manager)),
@@ -3307,6 +4230,14 @@ impl AgentRuntimeHandle {
             )
         };
         let requested_permission_mode = parse_user_permission_mode(&mode)?;
+        if permission_routing == AgentPermissionRouting::CallingSurface
+            && requested_permission_mode != GooseMode::SmartApprove
+        {
+            return Err(
+                "External Agent surfaces require Maple's caller-mediated Read only mode"
+                    .to_string(),
+            );
+        }
 
         if message_to_timeline_items(&user_message, false)
             .into_iter()
@@ -3339,19 +4270,11 @@ impl AgentRuntimeHandle {
         let effective_mode = permission_mode.to_string();
 
         let mut fallback_title_applied = false;
-        let setup_result: Result<
-            (
-                Arc<Agent>,
-                Vec<AgentMcpConnectionError>,
-                SharedAgentToolContext,
-                bool,
-            ),
-            String,
-        > = async {
+        let setup_result: Result<AgentRunSetup, String> = async {
             // External surfaces present an opaque exact-match capability. Check
             // it before any persisted-session work so deletion that won the
             // session lifecycle race is reported as an expired surface task.
-            let external_tool_context = if tool_context_access.is_some() {
+            let external_tool_context = if let Some(access) = tool_context_access.as_ref() {
                 let mut runtime = state.inner.lock().await;
                 let current = runtime
                     .as_mut()
@@ -3361,7 +4284,7 @@ impl AgentRuntimeHandle {
                     &mut current.session_tool_contexts,
                     account_scope,
                     &request.session_id,
-                    tool_context_access.as_ref(),
+                    Some(access),
                     &state.host.default_tool_context,
                 )?)
             } else {
@@ -3371,6 +4294,7 @@ impl AgentRuntimeHandle {
                 .get_session(&request.session_id, true)
                 .await
                 .map_err(|e| format!("Failed to load Agent task: {e}"))?;
+            let usage_before = AgentRunUsage::from_accumulated_session(&session);
             validate_session_model_lock(
                 session.message_count,
                 session
@@ -3432,38 +4356,45 @@ impl AgentRuntimeHandle {
                 },
             )
             .await?;
-            Ok((agent, mcp_errors, tool_context, should_name_from_prompt))
+            Ok((
+                agent,
+                mcp_errors,
+                tool_context,
+                should_name_from_prompt,
+                usage_before,
+            ))
         }
         .await;
-        let (agent, mcp_errors, tool_context, generate_session_title) = match setup_result {
-            Ok(setup) => setup,
-            Err(error) => {
-                if fallback_title_applied {
-                    match restore_unused_agent_session_fallback_under_lifecycle(
-                        session_manager.as_ref(),
-                        &request.session_id,
-                        &prompt_title,
-                    )
-                    .await
-                    {
-                        Ok(Some(session)) => {
-                            run_events
-                                .publish(AgentRunEvent::SessionUpdated(session))
-                                .await;
+        let (agent, mcp_errors, tool_context, generate_session_title, usage_before) =
+            match setup_result {
+                Ok(setup) => setup,
+                Err(error) => {
+                    if fallback_title_applied {
+                        match restore_unused_agent_session_fallback_under_lifecycle(
+                            session_manager.as_ref(),
+                            &request.session_id,
+                            &prompt_title,
+                        )
+                        .await
+                        {
+                            Ok(Some(session)) => {
+                                run_events
+                                    .publish(AgentRunEvent::SessionUpdated(session))
+                                    .await;
+                            }
+                            Ok(None) => {}
+                            Err(restore_error) => log::warn!("{restore_error}"),
                         }
-                        Ok(None) => {}
-                        Err(restore_error) => log::warn!("{restore_error}"),
                     }
+                    if seeded_permission_mode {
+                        permission_modes.lock().await.remove(&request.session_id);
+                    }
+                    agent_manager
+                        .unregister_cancel_token(&request.session_id)
+                        .await;
+                    return Err(error);
                 }
-                if seeded_permission_mode {
-                    permission_modes.lock().await.remove(&request.session_id);
-                }
-                agent_manager
-                    .unregister_cancel_token(&request.session_id)
-                    .await;
-                return Err(error);
-            }
-        };
+            };
         if !mcp_errors.is_empty() {
             run_events
                 .publish(AgentRunEvent::SetupWarning(format_mcp_connection_errors(
@@ -3593,6 +4524,7 @@ impl AgentRuntimeHandle {
         };
         let (start_tx, start_rx) = oneshot::channel();
         let (terminal_tx, terminal_rx) = watch::channel(None);
+        let (usage_tx, usage_rx) = watch::channel(None);
         let task = tokio::spawn(async move {
             let should_run = tokio::select! {
                 biased;
@@ -3832,6 +4764,14 @@ impl AgentRuntimeHandle {
                 "failed" => AgentRunTerminal::Failed,
                 _ => AgentRunTerminal::Completed,
             };
+            let usage = task_session_manager
+                .get_session(&session_id, false)
+                .await
+                .map(|session| {
+                    AgentRunUsage::from_accumulated_session(&session).saturating_delta(usage_before)
+                })
+                .unwrap_or_default();
+            let _ = usage_tx.send(Some(usage));
             task_events.publish(AgentRunEvent::Finished(terminal)).await;
             let _ = terminal_tx.send(Some(terminal));
             // Remove the stored JoinHandle only after the final externally visible
@@ -3984,6 +4924,7 @@ impl AgentRuntimeHandle {
             run_id,
             events: run_events_rx,
             terminal: terminal_rx,
+            usage: usage_rx,
             event_overflowed: run_events.overflow_flag(),
             permission_responder,
             cancellation,
@@ -5625,6 +6566,10 @@ async fn configure_session_agent(
         prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
     let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
+    // All transient MCP operations are hidden behind Maple's one static
+    // `external_mcp` tool, which is permanently ask-before in Maple's owned
+    // permission file. Keeping Goose in SmartApprove preserves native behavior
+    // without persisting caller-controlled tool names or a lease-only mode.
     agent
         .update_goose_mode(GOOSE_PERMISSION_ROUTING_MODE, &session.id)
         .await
@@ -5635,10 +6580,10 @@ async fn configure_session_agent(
         display_name: Some("Developer".to_string()),
         timeout: Some(DEFAULT_EXTENSION_TIMEOUT),
         bundled: Some(true),
-        available_tools: MAPLE_DEVELOPER_TOOLS
-            .iter()
-            .map(|tool| tool.to_string())
-            .collect(),
+        // MapleDeveloperClient owns the exact native catalog and may add a
+        // frozen lease-scoped MCP catalog. Persisting dynamic tool names would
+        // either hide those tools or leak transient session state.
+        available_tools: Vec::new(),
     };
     let mut developer_context = agent.extension_manager.get_context().clone();
     if !primary_model_supports_vision {
@@ -5670,7 +6615,6 @@ async fn configure_session_agent(
     let persist_result = agent.persist_extension_state(&session.id).await;
     attach_prepared_skills_client(&agent, skills_client).await;
     persist_result.map_err(|e| format!("Failed to persist Maple built-in tools: {e}"))?;
-    // Goose's live mode remains SmartApprove so every sensitive call reaches Maple.
     // Persist the user-facing policy separately for session restoration and display.
     session_manager
         .update(&session.id)
@@ -7021,6 +7965,210 @@ fn mcp_server_to_extension(server: &AgentMcpServer) -> Result<ExtensionConfig, S
     }
 }
 
+fn normalize_transient_mcp_servers(
+    servers: Vec<AgentTransientMcpServer>,
+) -> Result<Vec<AgentTransientMcpServer>, String> {
+    const MAX_TRANSIENT_MCP_SERVERS: usize = 16;
+    const MAX_TRANSIENT_MCP_TOTAL_BYTES: usize = 64 * 1024;
+    const MAX_TRANSIENT_MCP_DESCRIPTION_BYTES: usize = 1024;
+    const MAX_TRANSIENT_MCP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
+
+    if servers.len() > MAX_TRANSIENT_MCP_SERVERS {
+        return Err(format!(
+            "An Agent surface may provide at most {MAX_TRANSIENT_MCP_SERVERS} transient MCP servers"
+        ));
+    }
+
+    let mut keys = HashSet::new();
+    let mut normalized = Vec::with_capacity(servers.len());
+    for mut server in servers {
+        server.name = server.name.trim().to_string();
+        server.description = server.description.trim().to_string();
+        if server.name.is_empty() || server.name.chars().count() > MAX_MCP_SERVER_NAME_CHARS {
+            return Err(
+                "Transient MCP server names must be between 1 and 64 characters".to_string(),
+            );
+        }
+        let key = goose::config::extensions::name_to_key(&server.name);
+        if key.is_empty() || maple_reserved_extension_key(&key) {
+            return Err(format!(
+                "The transient MCP server name '{}' is invalid or reserved by Maple",
+                server.name
+            ));
+        }
+        if !keys.insert(key) {
+            return Err(format!(
+                "Transient MCP server '{}' conflicts with another supplied server",
+                server.name
+            ));
+        }
+        if server.timeout_seconds == 0 {
+            return Err(format!(
+                "Transient MCP server '{}' must have a timeout greater than zero",
+                server.name
+            ));
+        }
+        if server.description.len() > MAX_TRANSIENT_MCP_DESCRIPTION_BYTES {
+            return Err(format!(
+                "Transient MCP server '{}' description exceeds the {MAX_TRANSIENT_MCP_DESCRIPTION_BYTES} byte limit",
+                server.name
+            ));
+        }
+        server.timeout_seconds = server
+            .timeout_seconds
+            .min(MAX_TRANSIENT_MCP_REQUEST_TIMEOUT_SECONDS);
+
+        let AgentTransientMcpTransport::StreamableHttp { url, headers } = &mut server.transport;
+        *url = url.trim().to_string();
+        validate_transient_mcp_url(url, &server.name)?;
+        validate_transient_mcp_key_values(
+            headers,
+            &server.name,
+            "HTTP header",
+            true,
+            MAX_TRANSIENT_MCP_TOTAL_BYTES,
+        )?;
+        normalized.push(server);
+    }
+    Ok(normalized)
+}
+
+fn validate_transient_mcp_key_values(
+    entries: &mut [AgentMcpKeyValue],
+    server_name: &str,
+    label: &str,
+    case_insensitive: bool,
+    max_total_bytes: usize,
+) -> Result<(), String> {
+    let mut keys = HashSet::new();
+    let mut total_bytes = 0usize;
+    for entry in entries {
+        entry.key = entry.key.trim().to_string();
+        let comparison_key = if case_insensitive {
+            entry.key.to_ascii_lowercase()
+        } else {
+            entry.key.clone()
+        };
+        if entry.key.is_empty()
+            || entry.key.contains(['\0', '='])
+            || (label == "HTTP header"
+                && (entry.key.chars().any(char::is_whitespace)
+                    || entry.value.contains(['\r', '\n'])))
+            || entry.value.contains('\0')
+            || entry.value.len() > 16 * 1024
+            || !keys.insert(comparison_key)
+        {
+            return Err(format!(
+                "Transient MCP server '{server_name}' has an invalid or duplicate {label}"
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(entry.key.len())
+            .and_then(|total| total.checked_add(entry.value.len()))
+            .ok_or_else(|| format!("Transient MCP server '{server_name}' metadata is too large"))?;
+        if total_bytes > max_total_bytes {
+            return Err(format!(
+                "Transient MCP server '{server_name}' metadata exceeds the {max_total_bytes} byte limit"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_transient_mcp_url(url: &str, server_name: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| format!("Transient MCP server '{server_name}' has an invalid URL"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("Transient MCP server '{server_name}' URL requires a host"))?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !loopback || parsed.scheme() != "http" {
+        return Err(format!(
+            "Transient MCP server '{server_name}' must use loopback HTTP"
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
+        return Err(format!(
+            "Transient MCP server '{server_name}' URL cannot contain credentials or a fragment"
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_extension_sets_do_not_conflict(
+    persisted: &[ExtensionConfig],
+    transient: &[AgentTransientMcpServer],
+) -> Result<(), String> {
+    let persisted = persisted
+        .iter()
+        .map(ExtensionConfig::key)
+        .collect::<HashSet<_>>();
+    if let Some(conflict) = transient
+        .iter()
+        .find(|server| persisted.contains(&goose::config::extensions::name_to_key(&server.name)))
+    {
+        return Err(format!(
+            "Transient MCP server '{}' conflicts with this task's persisted MCP configuration",
+            conflict.name
+        ));
+    }
+    Ok(())
+}
+
+async fn install_transient_mcp_router(
+    tool_context: &SharedAgentToolContext,
+    session: &Session,
+    servers: Vec<AgentTransientMcpServer>,
+    setup_cancel: &CancellationToken,
+) -> Result<(), String> {
+    if servers.is_empty() {
+        return Ok(());
+    }
+
+    let configs = servers
+        .into_iter()
+        .map(|server| {
+            let AgentTransientMcpTransport::StreamableHttp { url, headers } = server.transport;
+            TransientMcpConfig {
+                name: server.name,
+                session_id: session.id.clone(),
+                request_timeout: std::time::Duration::from_secs(server.timeout_seconds),
+                url,
+                headers: headers
+                    .into_iter()
+                    .map(|entry| (entry.key, entry.value))
+                    .collect(),
+            }
+        })
+        .collect();
+    let lease_cancel = tool_context.lifetime_token();
+    let connect = TransientMcpRouter::connect(configs, lease_cancel.clone());
+    tokio::pin!(connect);
+    let router = tokio::select! {
+        biased;
+        _ = setup_cancel.cancelled() => {
+            tool_context.revoke();
+            return Err("Transient MCP setup was cancelled".to_string());
+        }
+        _ = lease_cancel.cancelled() => {
+            return Err("Agent tool context was revoked during MCP setup".to_string());
+        }
+        result = &mut connect => result.map_err(|error| format!("Failed to connect transient MCP: {error}"))?,
+        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+            tool_context.revoke();
+            return Err("Transient MCP setup timed out".to_string());
+        }
+    };
+    if let Err(error) = tool_context.install_transient_mcp(router.clone()) {
+        router.shutdown().await;
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn select_mcp_servers(
     configured: &[AgentMcpServer],
     requested_names: Option<&[String]>,
@@ -7850,10 +8998,12 @@ async fn persist_unacked_steers(
 fn steered_run_handle(run_id: String, queue: AgentDesktopQueueSnapshot) -> AgentRunHandle {
     let (_events_tx, events) = mpsc::channel(1);
     let (_terminal_tx, terminal) = watch::channel(None);
+    let (_usage_tx, usage) = watch::channel(None);
     AgentRunHandle {
         run_id,
         events,
         terminal,
+        usage,
         event_overflowed: Arc::new(AtomicBool::new(false)),
         permission_responder: None,
         cancellation: None,
@@ -7869,10 +9019,12 @@ fn staged_run_handle(
 ) -> AgentRunHandle {
     let (_events_tx, events) = mpsc::channel(1);
     let (_terminal_tx, terminal) = watch::channel(None);
+    let (_usage_tx, usage) = watch::channel(None);
     AgentRunHandle {
         run_id,
         events,
         terminal,
+        usage,
         event_overflowed: Arc::new(AtomicBool::new(false)),
         permission_responder: None,
         cancellation: None,
@@ -8352,6 +9504,7 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
     use goose_providers::base::{stream_from_single_message, MessageStream, Provider};
     use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
     use goose_providers::errors::ProviderError;
@@ -8359,6 +9512,109 @@ mod tests {
     use rmcp::model::{Annotations, Role as McpRole, TextContent};
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::AtomicUsize;
+
+    struct BlockingMcpCatalogServer {
+        url: String,
+        catalog_entered: Arc<tokio::sync::Notify>,
+        catalog_release: Arc<tokio::sync::Notify>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for BlockingMcpCatalogServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn blocking_mcp_catalog_server() -> BlockingMcpCatalogServer {
+        let catalog_entered = Arc::new(tokio::sync::Notify::new());
+        let catalog_release = Arc::new(tokio::sync::Notify::new());
+        let handler_entered = Arc::clone(&catalog_entered);
+        let handler_release = Arc::clone(&catalog_release);
+        let app = axum::Router::new().route(
+            "/mcp",
+            axum::routing::post(move |axum::Json(payload): axum::Json<Value>| {
+                let handler_entered = Arc::clone(&handler_entered);
+                let handler_release = Arc::clone(&handler_release);
+                async move {
+                    let method = payload["method"].as_str().unwrap_or_default();
+                    if method == "notifications/initialized" {
+                        return axum::http::StatusCode::ACCEPTED.into_response();
+                    }
+
+                    let id = payload["id"].clone();
+                    let result = match method {
+                        "initialize" => json!({
+                            "protocolVersion": payload["params"]["protocolVersion"],
+                            "capabilities": { "tools": {} },
+                            "serverInfo": {
+                                "name": "blocking-maple-setup-test",
+                                "version": "1.0.0"
+                            }
+                        }),
+                        "tools/list" => {
+                            handler_entered.notify_one();
+                            handler_release.notified().await;
+                            json!({
+                                "tools": [{
+                                    "name": "lookup",
+                                    "description": "Exercise post-install setup cancellation",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {}
+                                    }
+                                }]
+                            })
+                        }
+                        _ => {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                axum::Json(json!({ "error": "unexpected method" })),
+                            )
+                                .into_response();
+                        }
+                    };
+                    axum::Json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }))
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        BlockingMcpCatalogServer {
+            url: format!("http://{address}/mcp"),
+            catalog_entered,
+            catalog_release,
+            task,
+        }
+    }
+
+    fn blocking_transient_mcp(server: &BlockingMcpCatalogServer) -> AgentTransientMcpServer {
+        AgentTransientMcpServer {
+            name: "paseo-test".to_string(),
+            description: "Deterministic setup cancellation fixture".to_string(),
+            timeout_seconds: 2,
+            transport: AgentTransientMcpTransport::StreamableHttp {
+                url: server.url.clone(),
+                headers: Vec::new(),
+            },
+        }
+    }
+
+    fn leased_test_tool_context() -> AgentToolContextSpec {
+        AgentToolContextSpec::try_new(
+            BTreeMap::from([("TOKEN".to_string(), "lease-secret".to_string())]),
+            BTreeSet::from(["TOKEN".to_string()]),
+            true,
+        )
+        .unwrap()
+    }
 
     struct NoopAgentEventSink;
 
@@ -8610,6 +9866,60 @@ mod tests {
             AgentToolContextSpec::default(),
         ));
         (test_root, paths, service)
+    }
+
+    async fn tool_context_cleanup_test_context(
+        label: &str,
+    ) -> (
+        PathBuf,
+        MapleAgentService,
+        Arc<SessionManager>,
+        PathBuf,
+        Arc<str>,
+    ) {
+        let (test_root, _paths, service) =
+            agent_service_test_context(label, Arc::new(NoopAgentEventSink));
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).expect("project directory should be created");
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let goose_config = GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        );
+        let agent_manager = Arc::new(
+            AgentManager::new(goose_config, None)
+                .await
+                .expect("test Agent manager should start"),
+        );
+        let user_id = format!("{label}-user");
+        let account_scope: Arc<str> = Arc::from(account_scope(&user_id).unwrap());
+        let runtime = AgentRuntime {
+            agent_manager,
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(&user_id),
+            active_runs: HashMap::new(),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root: project_root.clone(),
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope: account_scope.to_string(),
+        };
+        *service.inner.lock().await = Some(runtime);
+        (
+            test_root,
+            service,
+            session_manager,
+            project_root,
+            account_scope,
+        )
     }
 
     fn persisted_session_except_title(session: &Session) -> Value {
@@ -11206,7 +12516,7 @@ mod tests {
         let path = root.join("permission.yaml");
         fs::write(
             &path,
-            "user:\n  always_allow:\n  - shell\n  ask_before: []\n  never_allow: []\n",
+            "user:\n  always_allow:\n  - shell\n  - external_mcp\n  ask_before: []\n  never_allow: []\n",
         )
         .unwrap();
 
@@ -13339,16 +14649,19 @@ mod tests {
         .ptr_eq(&leased));
 
         leased.revoke();
-        let local = resolve_session_tool_context(
+        let error = match resolve_session_tool_context(
             &mut contexts,
             "account-1",
             "session-1",
             None,
             &AgentToolContextSpec::default(),
-        )
-        .expect("a revoked external context should be recoverable as a local task");
-        assert!(!local.ptr_eq(&leased));
-        assert_eq!(contexts["session-1"].owner, AgentToolContextOwner::Maple);
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("a revoked lease must remain authoritative until explicit release"),
+        };
+        assert!(error.contains("controlled by another Agent surface"));
+        assert!(contexts["session-1"].context.ptr_eq(&leased));
+        assert_eq!(contexts["session-1"].owner, AgentToolContextOwner::Leased);
     }
 
     #[test]
@@ -13366,6 +14679,455 @@ mod tests {
         }
         assert!(context.is_revoked());
         assert!(context.snapshot().values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn external_surface_setup_cancellation_interrupts_later_awaits() {
+        let context = SharedAgentToolContext::new(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
+                BTreeSet::from(["TOKEN".to_string()]),
+                true,
+            )
+            .unwrap(),
+        );
+        let cancellation = CancellationToken::new();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let blocker = Arc::new(tokio::sync::Notify::new());
+        let task_context = context.clone();
+        let task_cancellation = cancellation.clone();
+        let task_entered = Arc::clone(&entered);
+        let task_blocker = Arc::clone(&blocker);
+        let setup = tokio::spawn(async move {
+            run_external_surface_setup(
+                &task_cancellation,
+                &task_context,
+                "surface closed",
+                async move {
+                    task_entered.notify_one();
+                    task_blocker.notified().await;
+                    Ok::<_, String>(())
+                },
+            )
+            .await
+        });
+
+        entered.notified().await;
+        cancellation.cancel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), setup)
+            .await
+            .expect("surface cancellation must not wait for a stalled setup phase")
+            .unwrap()
+            .unwrap_err();
+
+        assert_eq!(error, "surface closed");
+        assert!(context.is_revoked());
+        assert!(context.snapshot().values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_tool_context_release_retries_after_session_lifecycle_fence() {
+        let (test_root, service, session_manager, project_root, account_scope) =
+            tool_context_cleanup_test_context("cancelled-tool-context-release").await;
+        let session = session_manager
+            .create_session(
+                project_root,
+                "Cancelled lease release".to_string(),
+                SessionType::Acp,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let context = SharedAgentToolContext::new(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("TOKEN".to_string(), "lease-secret".to_string())]),
+                BTreeSet::from(["TOKEN".to_string()]),
+                true,
+            )
+            .unwrap(),
+        );
+        let installation_id = next_tool_context_installation_id();
+        let access = AgentToolContextAccess {
+            account_scope,
+            session_id: Arc::from(session.id.as_str()),
+            installation_id,
+            context: context.clone(),
+        };
+        service
+            .inner
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .session_tool_contexts
+            .insert(
+                session.id.clone(),
+                InstalledAgentToolContext {
+                    installation_id,
+                    context: context.clone(),
+                    owner: AgentToolContextOwner::Leased,
+                },
+            );
+        let lease = AgentToolContextLease {
+            service: service.clone(),
+            access: access.clone(),
+            created_cleanup: None,
+            discard_created_on_drop: false,
+            cleanup_started: false,
+        };
+
+        let session_lifecycle_guard = service.session_lifecycle.lock().await;
+        let release_task = tokio::spawn(lease.release());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !context.is_revoked() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lease release should revoke before waiting for the lifecycle fence");
+        release_task.abort();
+        assert!(release_task.await.unwrap_err().is_cancelled());
+
+        let exact_lease_remains_fenced = service
+            .inner
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .session_tool_contexts
+            .get(&session.id)
+            .is_some_and(|installed| {
+                installed.installation_id == installation_id
+                    && installed.context.ptr_eq(&context)
+                    && installed.owner == AgentToolContextOwner::Leased
+            });
+        assert!(exact_lease_remains_fenced);
+
+        drop(session_lifecycle_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let removed = service
+                    .inner
+                    .lock()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .session_tool_contexts
+                    .get(&session.id)
+                    .is_none();
+                if removed {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Drop should retry exact lease cleanup after cancellation");
+
+        drop(service);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn dropped_armed_pending_lease_cleans_registry_after_lifecycle_fence() {
+        let (test_root, service, session_manager, project_root, account_scope) =
+            tool_context_cleanup_test_context("dropped-pending-lease").await;
+        let session = session_manager
+            .create_session(
+                project_root,
+                "Pending attached lease".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let context = SharedAgentToolContext::new(AgentToolContextSpec::default());
+        let installation_id = next_tool_context_installation_id();
+        let access = AgentToolContextAccess {
+            account_scope,
+            session_id: Arc::from(session.id.as_str()),
+            installation_id,
+            context: context.clone(),
+        };
+        service
+            .inner
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .session_tool_contexts
+            .insert(
+                session.id.clone(),
+                InstalledAgentToolContext {
+                    installation_id,
+                    context: context.clone(),
+                    owner: AgentToolContextOwner::Leased,
+                },
+            );
+        let mut pending = PendingAgentToolContextInstallation::new(context.clone());
+        pending.arm_lease_cleanup(service.clone(), access);
+
+        let session_lifecycle_guard = service.session_lifecycle.lock().await;
+        drop(pending);
+        assert!(context.is_revoked());
+        assert!(service
+            .inner
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .session_tool_contexts
+            .contains_key(&session.id));
+
+        drop(session_lifecycle_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let removed = service
+                    .inner
+                    .lock()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .session_tool_contexts
+                    .get(&session.id)
+                    .is_none();
+                if removed {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropping an armed pending installation should clean its exact lease");
+        assert!(session_manager
+            .get_session(&session.id, false)
+            .await
+            .is_ok());
+
+        drop(service);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn dropped_pending_created_cleanup_deletes_only_untouched_provisional_session() {
+        let (test_root, service, session_manager, project_root, account_scope) =
+            tool_context_cleanup_test_context("dropped-pending-created").await;
+        let agent_manager = Arc::clone(&service.inner.lock().await.as_ref().unwrap().agent_manager);
+        let untouched = session_manager
+            .create_session(
+                project_root.clone(),
+                "Untouched provisional task".to_string(),
+                SessionType::Acp,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let modified = session_manager
+            .create_session(
+                project_root,
+                "Modified provisional task".to_string(),
+                SessionType::Acp,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .add_message(
+                &modified.id,
+                &Message::user()
+                    .with_text("Preserve this concurrent change")
+                    .with_generated_id(),
+            )
+            .await
+            .unwrap();
+
+        let untouched_context = SharedAgentToolContext::new(AgentToolContextSpec::default());
+        let untouched_installation_id = next_tool_context_installation_id();
+        let untouched_access = AgentToolContextAccess {
+            account_scope: Arc::clone(&account_scope),
+            session_id: Arc::from(untouched.id.as_str()),
+            installation_id: untouched_installation_id,
+            context: untouched_context.clone(),
+        };
+        let modified_context = SharedAgentToolContext::new(AgentToolContextSpec::default());
+        let modified_installation_id = next_tool_context_installation_id();
+        let modified_access = AgentToolContextAccess {
+            account_scope,
+            session_id: Arc::from(modified.id.as_str()),
+            installation_id: modified_installation_id,
+            context: modified_context.clone(),
+        };
+        {
+            let mut runtime = service.inner.lock().await;
+            let contexts = &mut runtime.as_mut().unwrap().session_tool_contexts;
+            contexts.insert(
+                untouched.id.clone(),
+                InstalledAgentToolContext {
+                    installation_id: untouched_installation_id,
+                    context: untouched_context.clone(),
+                    owner: AgentToolContextOwner::Leased,
+                },
+            );
+            contexts.insert(
+                modified.id.clone(),
+                InstalledAgentToolContext {
+                    installation_id: modified_installation_id,
+                    context: modified_context.clone(),
+                    owner: AgentToolContextOwner::Leased,
+                },
+            );
+        }
+        let mut untouched_pending =
+            PendingAgentToolContextInstallation::new(untouched_context.clone());
+        untouched_pending.arm_created_cleanup(
+            service.clone(),
+            untouched_access,
+            Arc::clone(&agent_manager),
+            Arc::clone(&session_manager),
+            untouched.clone(),
+        );
+        let mut modified_pending =
+            PendingAgentToolContextInstallation::new(modified_context.clone());
+        modified_pending.arm_created_cleanup(
+            service.clone(),
+            modified_access,
+            agent_manager,
+            Arc::clone(&session_manager),
+            modified.clone(),
+        );
+
+        let session_lifecycle_guard = service.session_lifecycle.lock().await;
+        drop(untouched_pending);
+        drop(modified_pending);
+        assert!(untouched_context.is_revoked());
+        assert!(modified_context.is_revoked());
+        assert_eq!(
+            service
+                .inner
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .session_tool_contexts
+                .len(),
+            2
+        );
+
+        drop(session_lifecycle_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let contexts_removed = service
+                    .inner
+                    .lock()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .session_tool_contexts
+                    .is_empty();
+                let untouched_deleted = session_manager
+                    .get_session(&untouched.id, false)
+                    .await
+                    .is_err();
+                if contexts_removed && untouched_deleted {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("created cleanup should remove the untouched provisional task");
+
+        let preserved = session_manager
+            .get_session(&modified.id, true)
+            .await
+            .expect("cleanup must preserve a provisional task changed by another owner");
+        assert_eq!(preserved.message_count, 1);
+        assert!(preserved.conversation.is_some_and(|conversation| {
+            conversation
+                .messages()
+                .iter()
+                .any(|message| message.as_concat_text() == "Preserve this concurrent change")
+        }));
+
+        drop(service);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn dropped_pending_created_cleanup_survives_runtime_removal() {
+        let (test_root, service, session_manager, project_root, account_scope) =
+            tool_context_cleanup_test_context("dropped-pending-created-runtime-removal").await;
+        let agent_manager = Arc::clone(&service.inner.lock().await.as_ref().unwrap().agent_manager);
+        let provisional = session_manager
+            .create_session(
+                project_root,
+                "Runtime-stopped provisional task".to_string(),
+                SessionType::Acp,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let context = SharedAgentToolContext::new(AgentToolContextSpec::default());
+        let installation_id = next_tool_context_installation_id();
+        let access = AgentToolContextAccess {
+            account_scope,
+            session_id: Arc::from(provisional.id.as_str()),
+            installation_id,
+            context: context.clone(),
+        };
+        service
+            .inner
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .session_tool_contexts
+            .insert(
+                provisional.id.clone(),
+                InstalledAgentToolContext {
+                    installation_id,
+                    context: context.clone(),
+                    owner: AgentToolContextOwner::Leased,
+                },
+            );
+        let mut pending = PendingAgentToolContextInstallation::new(context.clone());
+        pending.arm_created_cleanup(
+            service.clone(),
+            access,
+            agent_manager,
+            Arc::clone(&session_manager),
+            provisional.clone(),
+        );
+
+        // Runtime shutdown drains the in-memory registry before the abandoned
+        // handshake's Drop cleanup can run. The captured account-scoped
+        // managers must still remove only the untouched provisional row.
+        let removed_runtime = service.inner.lock().await.take();
+        drop(removed_runtime);
+        drop(pending);
+        assert!(context.is_revoked());
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if session_manager
+                    .get_session(&provisional.id, false)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("captured managers should clean the provisional row after runtime removal");
+
+        drop(service);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]

@@ -5,6 +5,7 @@ import {
   BUZZ_MAPLE_HARNESS_ID,
   BUZZ_MAPLE_HARNESS_NAME,
   DEFAULT_MAPLE_ACP_CONFIG,
+  MAX_MAPLE_ACP_CONNECTIONS,
   MapleAcpService,
   buildBuzzCustomHarness,
   isMapleAcpConfigReady,
@@ -136,6 +137,17 @@ describe("Maple ACP response normalization", () => {
     });
   });
 
+  test("keeps explicit connection limits inside the native range", () => {
+    expect(normalizeMapleAcpConfig({ maxConnections: 0 }).maxConnections).toBe(1);
+    expect(normalizeMapleAcpConfig({ maxConnections: 1 }).maxConnections).toBe(1);
+    expect(
+      normalizeMapleAcpConfig({ maxConnections: MAX_MAPLE_ACP_CONNECTIONS }).maxConnections
+    ).toBe(MAX_MAPLE_ACP_CONNECTIONS);
+    expect(normalizeMapleAcpConfig({ maxConnections: 999 }).maxConnections).toBe(
+      MAX_MAPLE_ACP_CONNECTIONS
+    );
+  });
+
   test("migrates the former Maple-owned allow-all bypass to caller-owned approvals", () => {
     expect(
       normalizeMapleAcpConfig({
@@ -202,8 +214,8 @@ describe("Buzz custom harness output", () => {
     expect(serialized).not.toContain("endpoint");
   });
 
-  test("documents Buzz parallelism that matches Maple's default connection limit", () => {
-    expect(BUZZ_MAPLE_AGENT_PARALLELISM).toBe(1);
+  test("keeps Buzz parallelism within Maple's default connection limit", () => {
+    expect(BUZZ_MAPLE_AGENT_PARALLELISM).toBe(MAX_MAPLE_ACP_CONNECTIONS);
     expect(BUZZ_DEFAULT_AGENT_PARALLELISM).toBe(10);
     expect(DEFAULT_MAPLE_ACP_CONFIG.maxConnections).toBe(Number(BUZZ_MAPLE_AGENT_PARALLELISM));
   });
