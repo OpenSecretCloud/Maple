@@ -4,11 +4,42 @@ import {
   agentComposerShowsStop,
   canSubmitAgentComposerMessage,
   isAgentComposerSendLocked,
+  isAgentComposerSteerHotkey,
   planAgentComposerStop,
   shouldClearStoppingSendLock
 } from "./agentComposerSend";
 
 describe("agent composer send policy", () => {
+  test("treats Command or Control Enter as a steer bypass", () => {
+    expect(
+      isAgentComposerSteerHotkey({
+        key: "Enter",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false
+      })
+    ).toBe(true);
+    expect(
+      isAgentComposerSteerHotkey({
+        key: "Enter",
+        metaKey: false,
+        ctrlKey: true,
+        altKey: false,
+        shiftKey: false
+      })
+    ).toBe(true);
+    expect(
+      isAgentComposerSteerHotkey({
+        key: "Enter",
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false
+      })
+    ).toBe(false);
+  });
+
   test("accepts a mid-run submit so the native runtime can stage a follow-up", () => {
     expect(
       canSubmitAgentComposerMessage({

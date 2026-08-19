@@ -308,6 +308,10 @@ pub struct AgentSendMessageRequest {
     pub mode: Option<String>,
     #[serde(default)]
     pub vision_capable: bool,
+    #[serde(default)]
+    pub steer: bool,
+    #[serde(default)]
+    pub queue_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -655,6 +659,7 @@ struct ActiveAgentRun {
     events: AgentRunEventPublisher,
     cancelled_permission_ids: CancelledPermissionIds,
     accepting_queue: Arc<AtomicBool>,
+    steered_unacked: Arc<Mutex<Vec<Message>>>,
     task_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -3225,6 +3230,9 @@ impl AgentRuntimeHandle {
                     } => {
                         return Ok(staged_run_handle(run_id, queued, queue));
                     }
+                    DesktopSendPlan::Steered { run_id, queue } => {
+                        return Ok(steered_run_handle(run_id, queue));
+                    }
                     DesktopSendPlan::Start {
                         launch_messages,
                         queue,
@@ -3507,6 +3515,8 @@ impl AgentRuntimeHandle {
         let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
         let accepting_queue = Arc::new(AtomicBool::new(true));
+        let steered_unacked = Arc::new(Mutex::new(Vec::new()));
+        let task_steered_unacked = Arc::clone(&steered_unacked);
         let task_accepting_queue = Arc::clone(&accepting_queue);
         let task_desktop_queues = Arc::clone(&state.desktop_queues);
         let task_account_scope = account_scope.to_string();
@@ -3638,6 +3648,7 @@ impl AgentRuntimeHandle {
                             cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
                             run_id: task_run_id.clone(),
                             permission_routing,
+                            steered_unacked: Arc::clone(&task_steered_unacked),
                         }),
                     )
                     .await;
@@ -3849,6 +3860,7 @@ impl AgentRuntimeHandle {
                                 events: run_events.clone(),
                                 cancelled_permission_ids: Arc::clone(&cancelled_permission_ids),
                                 accepting_queue: Arc::clone(&accepting_queue),
+                                steered_unacked: Arc::clone(&steered_unacked),
                                 task_handle: task.take().expect("task handle must be available"),
                             },
                         );
@@ -3977,6 +3989,9 @@ impl AgentRuntimeHandle {
         let account_scope = self.account_scope.as_ref();
         reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
         let text = request.text.trim();
+        if request.steer {
+            return take_desktop_steer_plan(state, account_scope, request, text).await;
+        }
         if let Some(run_id) =
             desktop_run_id_for_session(state, account_scope, &request.session_id).await?
         {
@@ -4120,6 +4135,9 @@ impl AgentRuntimeHandle {
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
         let (
             agent,
+            session_id,
+            session_manager,
+            steered_unacked,
             cancel_token,
             tool_context,
             run_events,
@@ -4142,6 +4160,9 @@ impl AgentRuntimeHandle {
             )?;
             (
                 Arc::clone(&active_run.agent),
+                active_run.session_id.clone(),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&active_run.steered_unacked),
                 active_run.token.clone(),
                 active_run.tool_context.clone(),
                 active_run.events.clone(),
@@ -4149,6 +4170,8 @@ impl AgentRuntimeHandle {
                 Arc::clone(&active_run.accepting_queue),
             )
         };
+        persist_unacked_steers(session_manager.as_ref(), &session_id, &steered_unacked).await;
+        agent.discard_pending_steers(&session_id).await;
         accepting_queue.store(false, Ordering::Release);
         tool_context.cancel_run(&cancel_token);
         let run_id = run_id.to_string();
@@ -4566,6 +4589,7 @@ struct AgentPromptRun {
     cancelled_permission_ids: CancelledPermissionIds,
     run_id: String,
     permission_routing: AgentPermissionRouting,
+    steered_unacked: Arc<Mutex<Vec<Message>>>,
 }
 
 #[derive(Default)]
@@ -4989,6 +5013,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         cancelled_permission_ids,
         run_id,
         permission_routing,
+        steered_unacked,
     } = run;
     let mut terminal_message = None;
     let session_config = SessionConfig {
@@ -5068,6 +5093,9 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 }
                 // Steered user rows are emitted when queued. Goose later yields
                 // the same complete message; replace it instead of appending.
+                if message_role(&message) == "user" {
+                    ack_steered_message(&steered_unacked, &message).await;
+                }
                 let live = message_role(&message) != "user";
                 let mut items = message_to_timeline_items(&message, live);
                 items.retain(|item| {
@@ -7584,6 +7612,10 @@ enum DesktopSendPlan {
         queued: AgentQueuedMessage,
         queue: AgentDesktopQueueSnapshot,
     },
+    Steered {
+        run_id: String,
+        queue: AgentDesktopQueueSnapshot,
+    },
     Start {
         launch_messages: Vec<Message>,
         queue: AgentDesktopQueueSnapshot,
@@ -7593,6 +7625,165 @@ enum DesktopSendPlan {
 
 fn user_message_from_prompt(text: &str) -> Message {
     Message::user().with_text(text).with_generated_id()
+}
+
+async fn take_desktop_steer_plan(
+    state: &MapleAgentService,
+    account_scope: &str,
+    request: &AgentSendMessageRequest,
+    text: &str,
+) -> Result<DesktopSendPlan, String> {
+    reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
+    if let Some(run_id) =
+        desktop_run_id_for_session(state, account_scope, &request.session_id).await?
+    {
+        let (message, snapshot) = if let Some(queue_id) = request.queue_id.as_deref() {
+            if !text.is_empty() {
+                update_desktop_queue_item(
+                    state,
+                    account_scope,
+                    &request.session_id,
+                    queue_id,
+                    text,
+                )
+                .await?;
+            }
+            let (removed, snapshot) =
+                remove_desktop_queue_item(state, account_scope, &request.session_id, queue_id)
+                    .await?;
+            publish_desktop_queue_changed(
+                state,
+                account_scope,
+                &request.session_id,
+                snapshot.clone(),
+            )
+            .await;
+            (queued_user_message(&removed), snapshot)
+        } else {
+            if text.is_empty() {
+                return Err("Prompt cannot be empty".to_string());
+            }
+            if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
+                return Err("Queued Agent message is too large".to_string());
+            }
+            (
+                user_message_from_prompt(text),
+                snapshot_desktop_queue(state, account_scope, &request.session_id).await,
+            )
+        };
+        steer_into_desktop_run(state, account_scope, &request.session_id, &message).await?;
+        return Ok(DesktopSendPlan::Steered {
+            run_id,
+            queue: snapshot,
+        });
+    }
+
+    if let Some(queue_id) = request.queue_id.as_deref() {
+        if !text.is_empty() {
+            update_desktop_queue_item(state, account_scope, &request.session_id, queue_id, text)
+                .await?;
+        }
+        let (removed, snapshot) =
+            remove_desktop_queue_item(state, account_scope, &request.session_id, queue_id).await?;
+        return Ok(DesktopSendPlan::Start {
+            launch_messages: vec![queued_user_message(&removed)],
+            queue: snapshot,
+            consume_queue_ids: Vec::new(),
+        });
+    }
+
+    let launch = prepare_desktop_launch(state, account_scope, &request.session_id, text).await?;
+    Ok(DesktopSendPlan::Start {
+        launch_messages: launch.launch_messages,
+        queue: launch.queue,
+        consume_queue_ids: launch.consume_queue_ids,
+    })
+}
+
+async fn steer_into_desktop_run(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    message: &Message,
+) -> Result<(), String> {
+    let (agent, events, permission_routing, steered_unacked) = {
+        let runtime = state.inner.lock().await;
+        let current = runtime
+            .as_ref()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, account_scope)?;
+        let active_run = current
+            .active_runs
+            .values()
+            .find(|run| run.session_id == session_id && desktop_run_is_stageable(run))
+            .ok_or_else(|| "No active Agent run to steer".to_string())?;
+        (
+            Arc::clone(&active_run.agent),
+            active_run.events.clone(),
+            active_run.permission_routing,
+            Arc::clone(&active_run.steered_unacked),
+        )
+    };
+    agent.steer(session_id, message.clone()).await;
+    steered_unacked.lock().await.push(message.clone());
+    if let Some(mut item) = message_to_timeline_items(message, false)
+        .into_iter()
+        .next()
+    {
+        // Keep the pending-assistant loader off until Goose starts the next
+        // turn. This row is already in the live loop but not yet picked up.
+        item.status = Some("steered".to_string());
+        record_and_emit_timeline_item(
+            &events,
+            &state.live_timelines,
+            session_id,
+            permission_routing,
+            item,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+async fn ack_steered_message(steered_unacked: &Mutex<Vec<Message>>, message: &Message) {
+    let Some(message_id) = message.id.as_deref() else {
+        return;
+    };
+    steered_unacked
+        .lock()
+        .await
+        .retain(|pending| pending.id.as_deref() != Some(message_id));
+}
+
+async fn persist_unacked_steers(
+    session_manager: &SessionManager,
+    session_id: &str,
+    steered_unacked: &Mutex<Vec<Message>>,
+) {
+    let pending = {
+        let mut steered_unacked = steered_unacked.lock().await;
+        std::mem::take(&mut *steered_unacked)
+    };
+    for message in pending {
+        if let Err(error) = session_manager.add_message(session_id, &message).await {
+            log::warn!("Failed to persist steered Agent message: {error}");
+        }
+    }
+}
+
+fn steered_run_handle(run_id: String, queue: AgentDesktopQueueSnapshot) -> AgentRunHandle {
+    let (_events_tx, events) = mpsc::channel(1);
+    let (_terminal_tx, terminal) = watch::channel(None);
+    AgentRunHandle {
+        run_id,
+        events,
+        terminal,
+        event_overflowed: Arc::new(AtomicBool::new(false)),
+        permission_responder: None,
+        cancellation: None,
+        queued: None,
+        queue,
+    }
 }
 
 fn staged_run_handle(
@@ -8485,6 +8676,7 @@ mod tests {
                     events: run_events,
                     cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                     accepting_queue: Arc::new(AtomicBool::new(true)),
+                    steered_unacked: Arc::new(Mutex::new(Vec::new())),
                     task_handle: tokio::spawn(async {}),
                 },
             )]),
@@ -8519,6 +8711,8 @@ mod tests {
                 context_limit: None,
                 mode: None,
                 vision_capable: false,
+                steer: false,
+                queue_id: None,
             }),
         )
         .await
@@ -8532,6 +8726,8 @@ mod tests {
                 context_limit: None,
                 mode: None,
                 vision_capable: false,
+                steer: false,
+                queue_id: None,
             })
             .await
             .unwrap();
@@ -8595,12 +8791,52 @@ mod tests {
                 context_limit: None,
                 mode: None,
                 vision_capable: false,
+                steer: false,
+                queue_id: None,
             })
             .await
             .unwrap();
         assert_eq!(
             restaged.queued.as_ref().map(|item| item.text.as_str()),
             Some("retry after edit")
+        );
+        let later = handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "keep me queued".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: false,
+                queue_id: None,
+            })
+            .await
+            .unwrap();
+        let first_chip = later.queue.items[0].queue_id.clone();
+        let steered = handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: String::new(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: true,
+                queue_id: Some(first_chip),
+            })
+            .await
+            .unwrap();
+        assert_eq!(steered.run_id, "desktop-steer-run");
+        assert!(steered.queued.is_none());
+        assert_eq!(
+            steered
+                .queue
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["keep me queued"]
         );
         handle
             .cancel_desktop_run("desktop-steer-run".to_string())
@@ -8614,7 +8850,7 @@ mod tests {
                 .iter()
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["retry after edit"],
+            vec!["keep me queued"],
             "Stop must leave staged chips so the user can edit, drop, or send them"
         );
 
@@ -8629,7 +8865,7 @@ mod tests {
                 .map(|message| message.as_concat_text())
                 .collect::<Vec<_>>(),
             vec![
-                "retry after edit".to_string(),
+                "keep me queued".to_string(),
                 "draft after stop".to_string()
             ]
         );
@@ -8640,7 +8876,7 @@ mod tests {
                 .iter()
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["retry after edit", "draft after stop"]
+            vec!["keep me queued", "draft after stop"]
         );
         assert_eq!(
             launch.consume_queue_ids,
@@ -8730,6 +8966,7 @@ mod tests {
                     events: run_events,
                     cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                     accepting_queue: Arc::new(AtomicBool::new(true)),
+                    steered_unacked: Arc::new(Mutex::new(Vec::new())),
                     task_handle: tokio::spawn(async {}),
                 },
             )]),
@@ -8752,6 +8989,8 @@ mod tests {
                 context_limit: None,
                 mode: None,
                 vision_capable: false,
+                steer: false,
+                queue_id: None,
             })
             .await
         {
@@ -8923,6 +9162,70 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["kept revised", "also"]
         );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_steer_of_one_idle_chip_leaves_the_rest_queued() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-steer-one-idle-chip", sink);
+        let account_scope = account_scope("desktop-steer-one-idle-user").unwrap();
+        let session_id = "session-steer-one-idle";
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        let first_id = snapshot_desktop_queue(&state, &account_scope, session_id)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        let plan = take_desktop_steer_plan(
+            &state,
+            &account_scope,
+            &AgentSendMessageRequest {
+                session_id: session_id.to_string(),
+                text: String::new(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: true,
+                queue_id: Some(first_id),
+            },
+            "",
+        )
+        .await
+        .unwrap();
+        match plan {
+            DesktopSendPlan::Start {
+                launch_messages,
+                queue,
+                consume_queue_ids,
+            } => {
+                assert_eq!(
+                    launch_messages
+                        .iter()
+                        .map(|message| message.as_concat_text())
+                        .collect::<Vec<_>>(),
+                    vec!["first".to_string()]
+                );
+                assert!(consume_queue_ids.is_empty());
+                assert_eq!(
+                    queue
+                        .items
+                        .iter()
+                        .map(|item| item.text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["second"]
+                );
+            }
+            _ => panic!("idle chip steer should start a single-message run"),
+        }
 
         let _ = fs::remove_dir_all(test_root);
     }
@@ -13359,6 +13662,7 @@ mod tests {
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                 run_id: "fast-reply-run".to_string(),
                 permission_routing: AgentPermissionRouting::Desktop,
+                steered_unacked: Arc::new(Mutex::new(Vec::new())),
             }),
         )
         .await
@@ -13484,6 +13788,7 @@ mod tests {
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
             run_id: "rename-during-run-summary".to_string(),
             permission_routing: AgentPermissionRouting::Desktop,
+            steered_unacked: Arc::new(Mutex::new(Vec::new())),
         }));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -13624,6 +13929,7 @@ mod tests {
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
             run_id: "reply-poll-session-isolation".to_string(),
             permission_routing: AgentPermissionRouting::Desktop,
+            steered_unacked: Arc::new(Mutex::new(Vec::new())),
         }));
 
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), prompt_task)
@@ -13706,6 +14012,7 @@ mod tests {
                     events: run_events,
                     cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                     accepting_queue: Arc::new(AtomicBool::new(true)),
+                    steered_unacked: Arc::new(Mutex::new(Vec::new())),
                     task_handle: tokio::spawn(async {}),
                 },
             )]),

@@ -167,6 +167,8 @@ export interface AgentSendMessageRequest {
   contextLimit?: number | null;
   mode?: string | null;
   visionCapable: boolean;
+  steer?: boolean;
+  queueId?: string | null;
 }
 
 export interface AgentRunResponse {
