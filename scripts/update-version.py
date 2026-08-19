@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def replace_once(path: Path, pattern: str, replacement: str) -> None:
     contents = path.read_text()
-    updated, count = re.subn(pattern, replacement, contents, count=1, flags=re.MULTILINE)
+    updated, count = re.subn(pattern, replacement, contents, flags=re.MULTILINE)
     if count != 1:
         raise SystemExit(f"Expected one version field in {path.relative_to(ROOT)}, found {count}.")
     path.write_text(updated)
@@ -22,9 +22,9 @@ def main() -> None:
         raise SystemExit("Usage: update-version.py X.Y.Z ANDROID_VERSION_CODE")
 
     version, android_version_code = sys.argv[1:]
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise SystemExit(f"Invalid version: {version}")
-    if not android_version_code.isdecimal():
+    if not re.fullmatch(r"[0-9]+", android_version_code):
         raise SystemExit(f"Invalid Android version code: {android_version_code}")
 
     replace_once(
