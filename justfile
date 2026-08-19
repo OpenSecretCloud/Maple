@@ -130,24 +130,7 @@ update-version version:
     echo "Calculated Android versionCode: $android_version_code (previous + 1)"
     
     # Update package.json
-    sed -i 's/"version": "[^"]*"/"version": "{{version}}"/' frontend/package.json
-    
-    # Update tauri.conf.json version
-    sed -i 's/"version": "[^"]*"/"version": "{{version}}"/' frontend/src-tauri/tauri.conf.json
-    
-    # Update tauri.conf.json Android versionCode
-    sed -i "s/\"versionCode\": [0-9]*/\"versionCode\": $android_version_code/" frontend/src-tauri/tauri.conf.json
-    
-    # Update Cargo.toml
-    sed -i 's/^version = "[^"]*"/version = "{{version}}"/' frontend/src-tauri/Cargo.toml
-    
-    # Update project.yml
-    sed -i 's/CFBundleShortVersionString: .*/CFBundleShortVersionString: {{version}}/' frontend/src-tauri/gen/apple/project.yml
-    sed -i 's/CFBundleVersion: .*/CFBundleVersion: {{version}}/' frontend/src-tauri/gen/apple/project.yml
-    
-    # Update Info.plist
-    sed -i '/<key>CFBundleShortVersionString<\/key>/{n;s/<string>[^<]*<\/string>/<string>{{version}}<\/string>/;}' frontend/src-tauri/gen/apple/maple_iOS/Info.plist
-    sed -i '/<key>CFBundleVersion<\/key>/{n;s/<string>[^<]*<\/string>/<string>{{version}}<\/string>/;}' frontend/src-tauri/gen/apple/maple_iOS/Info.plist
+    python3 scripts/update-version.py "{{version}}" "$android_version_code"
     
     # Run cargo check to update Cargo.lock
     echo "Running cargo check to update Cargo.lock..."
