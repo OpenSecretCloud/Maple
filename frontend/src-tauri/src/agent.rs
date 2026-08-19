@@ -7637,7 +7637,7 @@ async fn take_desktop_steer_plan(
     if let Some(run_id) =
         desktop_run_id_for_session(state, account_scope, &request.session_id).await?
     {
-        let (message, snapshot) = if let Some(queue_id) = request.queue_id.as_deref() {
+        if let Some(queue_id) = request.queue_id.as_deref() {
             if !text.is_empty() {
                 update_desktop_queue_item(
                     state,
@@ -7658,20 +7658,66 @@ async fn take_desktop_steer_plan(
                 snapshot.clone(),
             )
             .await;
-            (queued_user_message(&removed), snapshot)
-        } else {
-            if text.is_empty() {
-                return Err("Prompt cannot be empty".to_string());
-            }
-            if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
-                return Err("Queued Agent message is too large".to_string());
-            }
-            (
-                user_message_from_prompt(text),
-                snapshot_desktop_queue(state, account_scope, &request.session_id).await,
+            steer_into_desktop_run(
+                state,
+                account_scope,
+                &request.session_id,
+                &queued_user_message(&removed),
             )
-        };
-        steer_into_desktop_run(state, account_scope, &request.session_id, &message).await?;
+            .await?;
+            return Ok(DesktopSendPlan::Steered {
+                run_id,
+                queue: snapshot,
+            });
+        }
+        if text.is_empty() {
+            let Some((items, snapshot)) = take_all_desktop_queue_items_from_map(
+                &state.desktop_queues,
+                account_scope,
+                &request.session_id,
+            )
+            .await
+            else {
+                let leftover =
+                    snapshot_desktop_queue(state, account_scope, &request.session_id).await;
+                return Err(if leftover.items.is_empty() {
+                    "Prompt cannot be empty".to_string()
+                } else {
+                    "Queued messages cannot be steered while one is being edited".to_string()
+                });
+            };
+            publish_desktop_queue_changed(
+                state,
+                account_scope,
+                &request.session_id,
+                snapshot.clone(),
+            )
+            .await;
+            for item in &items {
+                steer_into_desktop_run(
+                    state,
+                    account_scope,
+                    &request.session_id,
+                    &queued_user_message(item),
+                )
+                .await?;
+            }
+            return Ok(DesktopSendPlan::Steered {
+                run_id,
+                queue: snapshot,
+            });
+        }
+        if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
+            return Err("Queued Agent message is too large".to_string());
+        }
+        let snapshot = snapshot_desktop_queue(state, account_scope, &request.session_id).await;
+        steer_into_desktop_run(
+            state,
+            account_scope,
+            &request.session_id,
+            &user_message_from_prompt(text),
+        )
+        .await?;
         return Ok(DesktopSendPlan::Steered {
             run_id,
             queue: snapshot,
@@ -9226,6 +9272,191 @@ mod tests {
             }
             _ => panic!("idle chip steer should start a single-message run"),
         }
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn desktop_empty_steer_sends_the_whole_leftover_stack() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("desktop-steer-empty-stack", sink.clone());
+        let user_id = "desktop-steer-empty-stack-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "Steer stack task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let (run_events, _run_events_rx) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink.clone()),
+            session.id.clone(),
+            "desktop-steer-empty-stack-run".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        let steered_unacked = Arc::new(Mutex::new(Vec::new()));
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager,
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::from([(
+                "desktop-steer-empty-stack-run".to_string(),
+                ActiveAgentRun {
+                    agent,
+                    permission_routing: AgentPermissionRouting::Desktop,
+                    token: CancellationToken::new(),
+                    tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
+                    session_id: session.id.clone(),
+                    events: run_events,
+                    cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    accepting_queue: Arc::new(AtomicBool::new(true)),
+                    steered_unacked: Arc::clone(&steered_unacked),
+                    task_handle: tokio::spawn(async {}),
+                },
+            )]),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root,
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope: account_scope.clone(),
+        });
+
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let empty_error = match handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: String::new(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: true,
+                queue_id: None,
+            })
+            .await
+        {
+            Ok(_) => panic!("empty steer without chips should fail"),
+            Err(error) => error,
+        };
+        assert_eq!(empty_error, "Prompt cannot be empty");
+
+        handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "first leftover".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: false,
+                queue_id: None,
+            })
+            .await
+            .unwrap();
+        handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "second leftover".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: false,
+                queue_id: None,
+            })
+            .await
+            .unwrap();
+        let first_id = snapshot_desktop_queue(&state, &account_scope, &session.id)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        begin_desktop_queue_edit(&state, &account_scope, &session.id, &first_id)
+            .await
+            .unwrap();
+        let held_error = match handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: String::new(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: true,
+                queue_id: None,
+            })
+            .await
+        {
+            Ok(_) => panic!("empty steer should hold while a chip is being edited"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            held_error,
+            "Queued messages cannot be steered while one is being edited"
+        );
+        end_desktop_queue_edit(&state, &account_scope, &session.id, &first_id)
+            .await
+            .unwrap();
+
+        let steered = handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: String::new(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+                steer: true,
+                queue_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(steered.run_id, "desktop-steer-empty-stack-run");
+        assert!(steered.queued.is_none());
+        assert!(steered.queue.items.is_empty());
+        assert_eq!(
+            steered_unacked
+                .lock()
+                .await
+                .iter()
+                .map(|message| message.as_concat_text())
+                .collect::<Vec<_>>(),
+            vec!["first leftover".to_string(), "second leftover".to_string()]
+        );
 
         let _ = fs::remove_dir_all(test_root);
     }

@@ -2338,7 +2338,8 @@ export function AgentMode({ userId }: { userId: string }) {
           isSessionSelectionPending: pendingSessionSelectionIdRef.current !== null,
           hasInFlightSend: pendingSendTokensRef.current.has(pendingSessionKey),
           hasQueuedMessages: queuedMessages.length > 0,
-          hasActiveRun: Boolean(activeRunId)
+          hasActiveRun: Boolean(activeRunId),
+          steerNow
         })
       ) {
         return;

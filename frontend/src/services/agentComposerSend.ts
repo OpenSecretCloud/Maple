@@ -16,7 +16,8 @@ export function canSubmitAgentComposerMessage({
   isSessionSelectionPending,
   hasInFlightSend,
   hasQueuedMessages = false,
-  hasActiveRun = false
+  hasActiveRun = false,
+  steerNow = false
 }: {
   text: string;
   isSendLocked: boolean;
@@ -24,11 +25,13 @@ export function canSubmitAgentComposerMessage({
   hasInFlightSend: boolean;
   hasQueuedMessages?: boolean;
   hasActiveRun?: boolean;
+  steerNow?: boolean;
 }): boolean {
   const hasSendableText = Boolean(text.trim());
   const canFlushQueuedOnly = hasQueuedMessages && !hasActiveRun;
+  const canSteerQueuedStack = steerNow && hasQueuedMessages && !hasSendableText;
   return (
-    (hasSendableText || canFlushQueuedOnly) &&
+    (hasSendableText || canFlushQueuedOnly || canSteerQueuedStack) &&
     !isSendLocked &&
     !isSessionSelectionPending &&
     !hasInFlightSend

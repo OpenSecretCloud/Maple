@@ -109,6 +109,28 @@ describe("agent composer send policy", () => {
         isSendLocked: false,
         isSessionSelectionPending: false,
         hasInFlightSend: false,
+        hasQueuedMessages: true,
+        hasActiveRun: true,
+        steerNow: true
+      })
+    ).toBe(true);
+    expect(
+      canSubmitAgentComposerMessage({
+        text: "",
+        isSendLocked: false,
+        isSessionSelectionPending: false,
+        hasInFlightSend: false,
+        hasQueuedMessages: false,
+        hasActiveRun: true,
+        steerNow: true
+      })
+    ).toBe(false);
+    expect(
+      canSubmitAgentComposerMessage({
+        text: "",
+        isSendLocked: false,
+        isSessionSelectionPending: false,
+        hasInFlightSend: false,
         hasQueuedMessages: false
       })
     ).toBe(false);
