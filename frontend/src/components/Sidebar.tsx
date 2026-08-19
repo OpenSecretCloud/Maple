@@ -33,8 +33,9 @@ import {
   useSidebarSearchState
 } from "@/state/useLocalState";
 import { SIDEBAR_MAX_WIDTH_CLASS, SIDEBAR_WIDTH_CLASS } from "@/constants/layout";
-import { isTauriDesktop } from "@/utils/platform";
+import { isTauriDesktop, isTauriMobile } from "@/utils/platform";
 import { useOpenSecret } from "@opensecret/react";
+import { useAgentPortableRuntime } from "@/contexts/AgentPortableRuntimeContext";
 import { FEATURE_FLAGS, flagsClient, isForcedOn } from "@/services/flags";
 import { rememberWorkspaceMode } from "@/services/workspaceModePreference";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
@@ -73,6 +74,7 @@ export function Sidebar({
   const router = useRouter();
   const location = useLocation();
   const { returnToHome } = usePersistentHomeNavigation();
+  const portableAgentRuntime = useAgentPortableRuntime();
   const os = useOpenSecret();
   const runtimeStore = useChatRuntimeStore<unknown, unknown>();
   const userId = os.auth.user?.user.id;
@@ -219,7 +221,10 @@ export function Sidebar({
   const isMobile = useIsMobile();
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
-  const agentModeAvailable = isTauriDesktop();
+  // Portable clients expose the switch only when the account-scoped pairing
+  // provider is actually installed. Its unavailable state still routes to the
+  // honest explanation instead of silently falling back to local execution.
+  const agentModeAvailable = isTauriDesktop() || (isTauriMobile() && portableAgentRuntime !== null);
   const [agentModeFlag, setAgentModeFlag] = useState<{
     userId: string;
     enabled: boolean;
