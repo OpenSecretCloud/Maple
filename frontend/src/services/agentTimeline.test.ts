@@ -10,6 +10,7 @@ import {
   groupAgentTimelineItems,
   hasAgentUserMessage,
   hasRenderableThinkingText,
+  agentPendingAssistantLoader,
   shouldShowAgentAssistantLoader
 } from "./agentTimeline";
 
@@ -531,6 +532,48 @@ describe("shouldShowAgentAssistantLoader", () => {
 
   test("shows while a sent user turn is waiting for its first assistant activity", () => {
     expect(shouldShowAgentAssistantLoader([userTurn], true)).toBe(true);
+  });
+
+  test("hides under a steered follow-up until Goose starts that turn", () => {
+    expect(
+      shouldShowAgentAssistantLoader(
+        [
+          userTurn,
+          assistantTurn,
+          {
+            ...userTurn,
+            id: "steered",
+            item: { ...userTurn.item, id: "steered", status: "steered" }
+          }
+        ],
+        true
+      )
+    ).toBe(false);
+  });
+
+  test("keeps the first-send pending indicator above a fast steer", () => {
+    const steered = {
+      ...userTurn,
+      id: "steered",
+      item: { ...userTurn.item, id: "steered", status: "steered" }
+    };
+    expect(agentPendingAssistantLoader([userTurn, steered], true)).toEqual({
+      type: "afterUser",
+      turnId: "user"
+    });
+    expect(shouldShowAgentAssistantLoader([userTurn, steered], true)).toBe(true);
+  });
+
+  test("keeps a post-tool pending indicator above a later steer", () => {
+    const steered = {
+      ...userTurn,
+      id: "steered",
+      item: { ...userTurn.item, id: "steered", status: "steered" }
+    };
+    expect(agentPendingAssistantLoader([userTurn, toolTurn("completed"), steered], true)).toEqual({
+      type: "inAssistant",
+      turnId: "assistant-after-user"
+    });
   });
 
   test("hides when the response is no longer pending or assistant activity has arrived", () => {

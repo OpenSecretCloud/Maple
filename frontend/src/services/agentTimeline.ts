@@ -355,15 +355,16 @@ export function groupAgentTimelineItems(items: AgentTimelineItem[]): AgentTimeli
   return turns;
 }
 
-export function shouldShowAgentAssistantLoader(
-  turns: AgentTimelineTurn[],
-  isResponsePending: boolean
-): boolean {
-  if (!isResponsePending) return false;
+export type AgentPendingAssistantLoader =
+  | { type: "none" }
+  | { type: "afterUser"; turnId: string }
+  | { type: "inAssistant"; turnId: string };
 
+function assistantTurnNeedsPendingLoader(turns: AgentTimelineTurn[]): boolean {
   const trailingTurn = turns[turns.length - 1];
-  if (trailingTurn?.type === "user") return true;
-  if (trailingTurn?.type !== "assistant" || turns[turns.length - 2]?.type !== "user") return false;
+  if (trailingTurn?.type !== "assistant" || turns[turns.length - 2]?.type !== "user") {
+    return false;
+  }
 
   let trailingItemIndex = trailingTurn.items.length - 1;
   while (trailingItemIndex >= 0) {
@@ -378,4 +379,36 @@ export function shouldShowAgentAssistantLoader(
     trailingItem?.itemType === "tool" &&
     ["completed", "failed", "error"].includes(trailingItem.status ?? "")
   );
+}
+
+export function agentPendingAssistantLoader(
+  turns: AgentTimelineTurn[],
+  isResponsePending: boolean
+): AgentPendingAssistantLoader {
+  if (!isResponsePending) return { type: "none" };
+
+  let lastLiveIndex = turns.length - 1;
+  while (lastLiveIndex >= 0) {
+    const turn = turns[lastLiveIndex];
+    if (turn.type !== "user" || turn.item.status !== "steered") break;
+    lastLiveIndex -= 1;
+  }
+  if (lastLiveIndex < 0) return { type: "none" };
+
+  const liveTurns = turns.slice(0, lastLiveIndex + 1);
+  const liveTrailing = liveTurns[liveTurns.length - 1];
+  if (liveTrailing.type === "user") {
+    return { type: "afterUser", turnId: liveTrailing.id };
+  }
+  if (assistantTurnNeedsPendingLoader(liveTurns)) {
+    return { type: "inAssistant", turnId: liveTrailing.id };
+  }
+  return { type: "none" };
+}
+
+export function shouldShowAgentAssistantLoader(
+  turns: AgentTimelineTurn[],
+  isResponsePending: boolean
+): boolean {
+  return agentPendingAssistantLoader(turns, isResponsePending).type !== "none";
 }

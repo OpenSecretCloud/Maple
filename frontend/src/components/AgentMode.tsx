@@ -156,6 +156,7 @@ import {
   agentComposerShowsStop,
   canSubmitAgentComposerMessage,
   isAgentComposerSendLocked,
+  isAgentComposerSteerHotkey,
   planAgentComposerStop,
   shouldClearStoppingSendLock
 } from "@/services/agentComposerSend";
@@ -181,7 +182,7 @@ import {
   groupAgentTimelineItems,
   hasAgentUserMessage,
   isRenderableAgentTimelineItem,
-  shouldShowAgentAssistantLoader,
+  agentPendingAssistantLoader,
   type AgentThoughtPhase
 } from "@/services/agentTimeline";
 import {
@@ -2324,19 +2325,29 @@ export function AgentMode({ userId }: { userId: string }) {
   ]);
 
   const sendMessage = useCallback(
-    async (restoreComposerFocus = false) => {
+    async (restoreComposerFocus = false, steerNow = false, steerQueueId?: string) => {
       let text = input.trim();
       const requestedSessionId = activeSessionIdRef.current;
       let pendingSessionKey = requestedSessionId || NEW_SESSION_PENDING_KEY;
+      const canSteerExistingChip = Boolean(steerQueueId);
       if (
+        !canSteerExistingChip &&
         !canSubmitAgentComposerMessage({
           text,
           isSendLocked: isAgentSendLocked,
           isSessionSelectionPending: pendingSessionSelectionIdRef.current !== null,
           hasInFlightSend: pendingSendTokensRef.current.has(pendingSessionKey),
           hasQueuedMessages: queuedMessages.length > 0,
-          hasActiveRun: Boolean(activeRunId)
+          hasActiveRun: Boolean(activeRunId),
+          steerNow
         })
+      ) {
+        return;
+      }
+      if (
+        isAgentSendLocked ||
+        pendingSessionSelectionIdRef.current !== null ||
+        pendingSendTokensRef.current.has(pendingSessionKey)
       ) {
         return;
       }
@@ -2347,8 +2358,16 @@ export function AgentMode({ userId }: { userId: string }) {
         queueEditRef.current.sessionId === requestedSessionId
           ? queueEditRef.current
           : null;
-      if (activeEdit && requestedSessionId) {
-        const stashedDraft = discardQueuedMessageEdit(activeEdit);
+      const editingSteeredChip =
+        steerNow && activeEdit && (!steerQueueId || activeEdit.queueId === steerQueueId)
+          ? activeEdit
+          : null;
+      const stashedDraft = editingSteeredChip
+        ? discardQueuedMessageEdit(editingSteeredChip)
+        : activeEdit && !steerNow
+          ? discardQueuedMessageEdit(activeEdit)
+          : "";
+      if (activeEdit && requestedSessionId && !steerNow) {
         setQueueEdit(null);
         try {
           const snapshot = await agentRuntimeService.updateQueuedMessage(userId, {
@@ -2370,6 +2389,9 @@ export function AgentMode({ userId }: { userId: string }) {
         }
         text = stashedDraft.trim();
       }
+      if (editingSteeredChip) {
+        setQueueEdit(null);
+      }
 
       const selectionGeneration = sessionSelectionGenerationRef.current;
       const interactionGeneration = interactionGenerationRef.current;
@@ -2385,9 +2407,13 @@ export function AgentMode({ userId }: { userId: string }) {
       }
       markPendingSend(pendingSessionKey, sendToken);
 
+      const keepComposerDraft = Boolean(steerQueueId) && !editingSteeredChip;
+      const requestText = keepComposerDraft ? "" : text;
       setError(null);
       resetPromptHistoryNavigation();
-      setInput("");
+      if (!keepComposerDraft) {
+        setInput(editingSteeredChip ? stashedDraft : "");
+      }
       shouldAutoScrollRef.current = true;
       requestAnimationFrame(() => scrollTimelineToBottom("smooth"));
       try {
@@ -2413,7 +2439,7 @@ export function AgentMode({ userId }: { userId: string }) {
           }
           const response = await agentRuntimeService.sendMessage(userId, {
             sessionId,
-            text,
+            text: requestText,
             model: requestModel,
             contextLimit: contextLimitForModel(requestModel),
             mode: selectedModeRef.current,
@@ -2421,7 +2447,9 @@ export function AgentMode({ userId }: { userId: string }) {
               requestModel,
               availableModels,
               modelAliases
-            )
+            ),
+            steer: steerNow,
+            queueId: steerQueueId ?? editingSteeredChip?.queueId
           });
           if (cancelledPendingSendTokensRef.current.has(sendToken)) {
             // The native command may have crossed the start boundary while the
@@ -2429,7 +2457,7 @@ export function AgentMode({ userId }: { userId: string }) {
             await agentRuntimeService.cancelRun(userId, response.runId);
             return;
           }
-          if (shouldPrepareThoughtAfterAgentSend(response.queued)) {
+          if (!steerNow && shouldPrepareThoughtAfterAgentSend(response.queued)) {
             thoughtPhaseTrackerRef.current.prepareUserRequest(sessionId, text);
           }
           if (response.queue) {
@@ -2664,6 +2692,11 @@ export function AgentMode({ userId }: { userId: string }) {
       if (event.key === "Escape" && queueEditRef.current) {
         event.preventDefault();
         discardQueueEdit();
+        return;
+      }
+      if (isAgentComposerSteerHotkey(event)) {
+        event.preventDefault();
+        void sendMessage(true, true);
         return;
       }
       const direction = agentPromptHistoryDirection(
@@ -3213,6 +3246,12 @@ export function AgentMode({ userId }: { userId: string }) {
   const handleSendMessage = useCallback(() => {
     void sendMessage();
   }, [sendMessage]);
+  const handleSteerQueuedMessage = useCallback(
+    (queueId: string) => {
+      void sendMessage(false, true, queueId);
+    },
+    [sendMessage]
+  );
   const handleToggleAgentFullscreen = useCallback(() => {
     setIsAgentFullscreen((current) => !current);
   }, []);
@@ -3495,6 +3534,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   editingQueueId={editingQueueId}
                   onCancelQueuedMessage={cancelQueuedMessage}
                   onEditQueuedMessage={editQueuedMessage}
+                  onSteerQueuedMessage={handleSteerQueuedMessage}
                   onDiscardQueuedMessageEdit={discardQueueEdit}
                 />
               ) : (
@@ -3545,6 +3585,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   editingQueueId={editingQueueId}
                   onCancelQueuedMessage={cancelQueuedMessage}
                   onEditQueuedMessage={editQueuedMessage}
+                  onSteerQueuedMessage={handleSteerQueuedMessage}
                   onDiscardQueuedMessageEdit={discardQueueEdit}
                 />
                 <p className="mb-2 mt-1 text-center text-[10px] text-muted-foreground/50 landscape-short:mb-1">
@@ -4703,6 +4744,7 @@ interface AgentComposerProps {
   editingQueueId?: string | null;
   onCancelQueuedMessage?: (queueId: string) => void;
   onEditQueuedMessage?: (queueId: string) => void;
+  onSteerQueuedMessage?: (queueId: string) => void;
   onDiscardQueuedMessageEdit?: () => void;
 }
 
@@ -4740,6 +4782,7 @@ function AgentComposer({
   editingQueueId = null,
   onCancelQueuedMessage,
   onEditQueuedMessage,
+  onSteerQueuedMessage,
   onDiscardQueuedMessageEdit
 }: AgentComposerProps) {
   const rootOptions = recentRoots;
@@ -4787,6 +4830,16 @@ function AgentComposer({
               <span className="min-w-0 flex-1 truncate" title={item.text}>
                 {item.text}
               </span>
+              {onCancelQueuedMessage ? (
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                  onClick={() => onCancelQueuedMessage(item.queueId)}
+                  aria-label="Remove queued message"
+                >
+                  <Trash className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
               {onEditQueuedMessage ? (
                 <button
                   type="button"
@@ -4797,14 +4850,16 @@ function AgentComposer({
                   <FilePenLine className="h-3.5 w-3.5" />
                 </button>
               ) : null}
-              {onCancelQueuedMessage ? (
+              {onSteerQueuedMessage ? (
                 <button
                   type="button"
-                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                  onClick={() => onCancelQueuedMessage(item.queueId)}
-                  aria-label="Remove queued message"
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                  onClick={() => onSteerQueuedMessage(item.queueId)}
+                  disabled={isSendDisabled}
+                  title="Send into the current turn"
+                  aria-label="Send queued message into the current turn"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <ArrowUp className="h-3.5 w-3.5" />
                 </button>
               ) : null}
             </div>
@@ -5329,10 +5384,9 @@ function AgentTimeline({
   const visibleItems = coalesceAdjacentThinkingItems(items).filter(isRenderableAgentTimelineItem);
   const turns = groupAgentTimelineItems(visibleItems);
   const activeThinkingItemId = activeAgentThinkingItemId(visibleItems, isRunActive);
-  const showAssistantLoader = shouldShowAgentAssistantLoader(turns, isResponsePending);
-  const trailingTurn = turns[turns.length - 1];
-  const pendingIndicatorTurnId =
-    showAssistantLoader && trailingTurn?.type === "assistant" ? trailingTurn.id : null;
+  const pendingLoader = agentPendingAssistantLoader(turns, isResponsePending);
+  const pendingIndicatorTurnId = pendingLoader.type === "inAssistant" ? pendingLoader.turnId : null;
+  const pendingAfterUserTurnId = pendingLoader.type === "afterUser" ? pendingLoader.turnId : null;
 
   return (
     <div className="space-y-1">
@@ -5340,13 +5394,24 @@ function AgentTimeline({
         const copyText = getAgentTurnCopyText(turn);
 
         if (turn.type === "user") {
+          const previousTurn = turnIndex > 0 ? turns[turnIndex - 1] : undefined;
+          const nextTurn = turns[turnIndex + 1];
+          const previousShowsPending =
+            previousTurn?.type === "user" && pendingAfterUserTurnId === previousTurn.id;
+          const stackedTop = previousTurn?.type === "user" && !previousShowsPending;
+          const stackedBottom = nextTurn?.type === "user" && pendingAfterUserTurnId !== turn.id;
+
           return (
-            <ChatUserTurn
-              key={turn.id}
-              actions={copyText ? <ChatCopyButton text={copyText} /> : undefined}
-            >
-              <Markdown content={turn.item.text || ""} />
-            </ChatUserTurn>
+            <div key={turn.id} className="space-y-1">
+              <ChatUserTurn
+                stackedTop={stackedTop}
+                stackedBottom={stackedBottom}
+                actions={copyText ? <ChatCopyButton text={copyText} /> : undefined}
+              >
+                <Markdown content={turn.item.text || ""} />
+              </ChatUserTurn>
+              {pendingAfterUserTurnId === turn.id ? <ChatAssistantPendingTurn /> : null}
+            </div>
           );
         }
 
@@ -5383,7 +5448,6 @@ function AgentTimeline({
           </ChatAssistantTurn>
         );
       })}
-      {showAssistantLoader && pendingIndicatorTurnId === null ? <ChatAssistantPendingTurn /> : null}
     </div>
   );
 }
@@ -5648,6 +5712,7 @@ function mergeTimelineItem(
     ...previous,
     ...incoming,
     title: incoming.title ?? previous.title,
+    status: incoming.status ?? previous.status,
     input: incoming.input ?? previous.input,
     output: incoming.output ?? previous.output,
     text: appendText

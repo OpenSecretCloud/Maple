@@ -1480,17 +1480,21 @@ const MessageList = memo(
 
     return (
       <>
-        {groupedMessages.map((group) => {
+        {groupedMessages.map((group, groupIndex) => {
           if (group.type === "user") {
             const message = group.message;
             if (!message.content || message.content.length === 0) return null;
 
             const userText = getUserMessageText(message);
+            const stackedTop = groupedMessages[groupIndex - 1]?.type === "user";
+            const stackedBottom = groupedMessages[groupIndex + 1]?.type === "user";
 
             return (
               <ChatUserTurn
                 key={group.id}
                 historyAnchorIds={message.id}
+                stackedTop={stackedTop}
+                stackedBottom={stackedBottom}
                 actions={userText ? <ChatCopyButton text={userText} /> : undefined}
               >
                 {message.content.map((part, partIdx) => {

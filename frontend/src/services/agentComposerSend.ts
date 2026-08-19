@@ -1,10 +1,23 @@
+export function isAgentComposerSteerHotkey(event: {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}): boolean {
+  return (
+    event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
+  );
+}
+
 export function canSubmitAgentComposerMessage({
   text,
   isSendLocked,
   isSessionSelectionPending,
   hasInFlightSend,
   hasQueuedMessages = false,
-  hasActiveRun = false
+  hasActiveRun = false,
+  steerNow = false
 }: {
   text: string;
   isSendLocked: boolean;
@@ -12,11 +25,13 @@ export function canSubmitAgentComposerMessage({
   hasInFlightSend: boolean;
   hasQueuedMessages?: boolean;
   hasActiveRun?: boolean;
+  steerNow?: boolean;
 }): boolean {
   const hasSendableText = Boolean(text.trim());
   const canFlushQueuedOnly = hasQueuedMessages && !hasActiveRun;
+  const canSteerQueuedStack = steerNow && hasQueuedMessages && !hasSendableText;
   return (
-    (hasSendableText || canFlushQueuedOnly) &&
+    (hasSendableText || canFlushQueuedOnly || canSteerQueuedStack) &&
     !isSendLocked &&
     !isSessionSelectionPending &&
     !hasInFlightSend

@@ -125,7 +125,7 @@ The refactor exposes a transport-neutral Maple service around the existing embed
 - ensure the account-scoped runtime exists;
 - create and delete a Maple task;
 - send and cancel a run;
-- stage a Desktop follow-up onto Maple's per-task FIFO and promote it with a later sequential `Agent::reply` on the same outer run; Stop cancels only the live Goose turn and leaves staged chips; X drops a chip; pencil edits a chip in place; an open edit holds leftover promotion until save or discard; Discard leaves that chip unchanged; a later Send flushes leftover chips plus any composer draft;
+- stage a Desktop follow-up onto Maple's per-task FIFO and promote it with a later sequential `Agent::reply` on the same outer run; Stop cancels only the live Goose turn and leaves staged chips; X drops a chip; pencil edits a chip in place; an open edit holds leftover promotion until save or discard; Discard leaves that chip unchanged; a chip up-arrow steers that one follow-up into the current Goose turn; Command/Control-Enter steers a composer draft, or the whole leftover chip stack when the composer is empty; a later Send flushes leftover chips plus any composer draft;
 - keep Desktop Stop from racing a follow-up send: in-flight composer sends are cancelled, and Send stays locked until the cancelled run settles;
 - consume an isolated, bounded event stream for one exact run;
 - receive typed permission requests and resolve them through an opaque responder bound to that exact account, task, and run;

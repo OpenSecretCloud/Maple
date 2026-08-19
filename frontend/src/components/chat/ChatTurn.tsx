@@ -9,6 +9,8 @@ type ChatTurnProps = {
   containerRef?: Ref<HTMLDivElement>;
   className?: string;
   historyAnchorIds?: string;
+  stackedTop?: boolean;
+  stackedBottom?: boolean;
 };
 
 function MapleChatAvatar() {
@@ -29,27 +31,34 @@ export function ChatUserTurn({
   actions,
   containerRef,
   className,
-  historyAnchorIds
+  historyAnchorIds,
+  stackedTop = false,
+  stackedBottom = false
 }: ChatTurnProps) {
   return (
     <div
       ref={containerRef}
       data-history-anchor-ids={historyAnchorIds}
+      data-stacked-user={stackedTop || stackedBottom ? "true" : undefined}
       className={cn(
-        "chat-typography group/user flex flex-col items-end py-4 landscape-short:py-1.5",
+        "chat-typography group/user relative flex flex-col items-end",
+        stackedTop ? "pt-1 -mt-1 landscape-short:pt-0.5" : "pt-4 landscape-short:pt-1.5",
+        stackedBottom ? "pb-0" : "pb-4 landscape-short:pb-1.5",
         className
       )}
     >
-      <div className="max-w-[min(100%,42rem)] rounded-2xl border border-border bg-muted px-4 py-3 dark:bg-card landscape-short:px-3 landscape-short:py-2">
-        <div className="prose prose-sm max-w-none text-left dark:prose-invert">
-          <div className="space-y-3">{children}</div>
+      <div className="relative max-w-[min(100%,42rem)]">
+        <div className="rounded-2xl border border-border bg-muted px-4 py-3 dark:bg-card landscape-short:px-3 landscape-short:py-2">
+          <div className="prose prose-sm max-w-none text-left dark:prose-invert">
+            <div className="space-y-3">{children}</div>
+          </div>
         </div>
+        {actions ? (
+          <div className="absolute bottom-0 right-full mr-0.5 flex justify-end opacity-100 transition-opacity md:opacity-0 md:group-hover/user:opacity-100 md:group-focus-within/user:opacity-100 landscape-short:opacity-100">
+            {actions}
+          </div>
+        ) : null}
       </div>
-      {actions ? (
-        <div className="flex justify-end pr-1 pt-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/user:opacity-100 md:group-focus-within/user:opacity-100 landscape-short:opacity-100">
-          {actions}
-        </div>
-      ) : null}
     </div>
   );
 }

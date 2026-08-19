@@ -693,6 +693,8 @@ impl AcpConnectionContext {
                     context_limit: None,
                     mode: Some(config.permission_mode.maple_mode().to_string()),
                     vision_capable: false,
+                    steer: false,
+                    queue_id: None,
                 },
                 tool_context_access,
                 prompt_lifetime.clone(),
