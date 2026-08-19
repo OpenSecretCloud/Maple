@@ -1,30 +1,36 @@
 export class AgentSessionSelectionMemory {
-  private readonly sessionIdsByUser = new Map<string, string>();
+  private readonly sessionIdsByOwner = new Map<string, string>();
 
-  remember(userId: string, sessionId: string): void {
-    this.sessionIdsByUser.set(userId, sessionId);
+  remember(ownerKey: string, sessionId: string): void {
+    this.sessionIdsByOwner.set(ownerKey, sessionId);
   }
 
-  forget(userId: string, expectedSessionId?: string): void {
+  forget(ownerKey: string, expectedSessionId?: string): void {
     if (
       expectedSessionId !== undefined &&
-      this.sessionIdsByUser.get(userId) !== expectedSessionId
+      this.sessionIdsByOwner.get(ownerKey) !== expectedSessionId
     ) {
       return;
     }
 
-    this.sessionIdsByUser.delete(userId);
+    this.sessionIdsByOwner.delete(ownerKey);
   }
 
-  resolve(userId: string, sessions: readonly { id: string }[]): string | null {
-    const rememberedSessionId = this.sessionIdsByUser.get(userId);
+  resolve(
+    ownerKey: string,
+    sessions: readonly { id: string }[],
+    { historyComplete = true }: { historyComplete?: boolean } = {}
+  ): string | null {
+    const rememberedSessionId = this.sessionIdsByOwner.get(ownerKey);
     if (rememberedSessionId === undefined) return null;
 
     if (sessions.some((session) => session.id === rememberedSessionId)) {
       return rememberedSessionId;
     }
 
-    this.sessionIdsByUser.delete(userId);
+    // A paged sidebar cannot distinguish a deleted task from one beyond the
+    // loaded head until its cursor is exhausted. Preserve the memory meanwhile.
+    if (historyComplete) this.sessionIdsByOwner.delete(ownerKey);
     return null;
   }
 }

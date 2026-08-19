@@ -17,6 +17,16 @@ describe("AgentSessionSelectionMemory", () => {
     expect(memory.resolve("user-a", [{ id: "deleted-session" }])).toBeNull();
   });
 
+  test("does not clear a remembered session while older task pages remain", () => {
+    const memory = new AgentSessionSelectionMemory();
+    memory.remember("user-a", "session-older");
+
+    expect(
+      memory.resolve("user-a", [{ id: "session-head" }], { historyComplete: false })
+    ).toBeNull();
+    expect(memory.resolve("user-a", [{ id: "session-older" }])).toBe("session-older");
+  });
+
   test("forgets conditionally when an expected session is supplied", () => {
     const memory = new AgentSessionSelectionMemory();
     memory.remember("user-a", "session-a");

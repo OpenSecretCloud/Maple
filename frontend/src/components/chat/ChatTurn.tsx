@@ -54,10 +54,17 @@ export function ChatUserTurn({
   );
 }
 
-export function ChatAssistantTurn({ children, actions, containerRef, className }: ChatTurnProps) {
+export function ChatAssistantTurn({
+  children,
+  actions,
+  containerRef,
+  className,
+  historyAnchorIds
+}: ChatTurnProps) {
   return (
     <div
       ref={containerRef}
+      data-history-anchor-ids={historyAnchorIds}
       className={cn(
         "chat-typography group px-0 py-4 md:p-4 landscape-short:px-2 landscape-short:py-1.5",
         className
