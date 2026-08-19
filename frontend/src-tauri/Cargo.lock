@@ -4639,7 +4639,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation 0.3.2",
  "once_cell",
- "opensecret 3.6.1",
+ "opensecret",
  "openssl",
  "ort",
  "pdf_oxide",
@@ -4675,8 +4675,8 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.2.0"
-source = "git+https://github.com/OpenSecretCloud/maple-proxy?rev=4df602bca0c99f7a9b8fa2fa2500c95453585ac8#4df602bca0c99f7a9b8fa2fa2500c95453585ac8"
+version = "0.3.1"
+source = "git+https://github.com/OpenSecretCloud/maple-proxy?rev=1fbcd9195a467a5b13fad6720c123360084ad7a3#1fbcd9195a467a5b13fad6720c123360084ad7a3"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4686,7 +4686,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "http",
- "opensecret 3.4.0",
+ "opensecret",
  "serde",
  "serde_json",
  "tokio",
@@ -5519,45 +5519,8 @@ dependencies = [
 
 [[package]]
 name = "opensecret"
-version = "3.4.0"
-source = "git+https://github.com/OpenSecretCloud/OpenSecret-SDK?rev=1bd7196043b26b3a2f8080534bd14031afcd5cc8#1bd7196043b26b3a2f8080534bd14031afcd5cc8"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "async-stream",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "chacha20poly1305",
- "chrono",
- "ciborium",
- "eventsource-stream",
- "futures",
- "hex",
- "hkdf",
- "http",
- "p256",
- "percent-encoding",
- "pin-project",
- "reqwest 0.12.28",
- "ring",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "x25519-dalek",
- "x509-parser",
- "yasna",
-]
-
-[[package]]
-name = "opensecret"
 version = "3.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86d9a35e5dd1ee761d3449d9e2db722eb1ebbab0eef02d3bb8601fd6b23d6bd9"
+source = "git+https://github.com/OpenSecretCloud/OpenSecret-SDK?rev=8ecd1a31803f45753ed6ac457a4d8553389b2336#8ecd1a31803f45753ed6ac457a4d8553389b2336"
 dependencies = [
  "aes-gcm",
  "anyhow",
