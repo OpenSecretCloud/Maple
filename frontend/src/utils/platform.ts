@@ -12,7 +12,7 @@
 /**
  * Platform types supported by the application
  */
-export type PlatformType = "ios" | "android" | "macos" | "windows" | "linux" | "web";
+export type PlatformType = "ios" | "android" | "macos" | "windows" | "linux" | "web" | "unknown";
 
 /**
  * Comprehensive platform information
@@ -42,6 +42,24 @@ export interface PlatformInfo {
   isTauriDesktop: boolean;
   /** Whether the app is running in Tauri mobile environment */
   isTauriMobile: boolean;
+}
+
+/** Fail-closed state used when Tauri is present but its OS cannot be proven. */
+export function unclassifiedTauriPlatformInfo(): PlatformInfo {
+  return {
+    platform: "unknown",
+    isTauri: true,
+    isIOS: false,
+    isAndroid: false,
+    isMobile: false,
+    isDesktop: false,
+    isMacOS: false,
+    isWindows: false,
+    isLinux: false,
+    isWeb: false,
+    isTauriDesktop: false,
+    isTauriMobile: false
+  };
 }
 
 /**
@@ -89,21 +107,10 @@ const platformReady = (async () => {
         // This shouldn't happen in practice, but we handle it gracefully
         console.error("[Platform] Failed to get Tauri platform type:", error);
 
-        // Default to desktop Linux as a safe fallback for Tauri environments
-        platformInfo = {
-          platform: "linux",
-          isTauri: true,
-          isIOS: false,
-          isAndroid: false,
-          isMobile: false,
-          isDesktop: true,
-          isMacOS: false,
-          isWindows: false,
-          isLinux: true,
-          isWeb: false,
-          isTauriDesktop: true,
-          isTauriMobile: false
-        };
+        // Keep an unknown Tauri platform unclassified. Guessing Desktop here
+        // could expose local-only capabilities on a portable client when the
+        // OS plugin is temporarily unavailable.
+        platformInfo = unclassifiedTauriPlatformInfo();
       }
     } else {
       // We're in a web browser

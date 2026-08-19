@@ -1,4 +1,13 @@
+import type { AgentExecutionTarget } from "./agentRuntimeService";
+
 export type AgentProjectFolderRevealer = (projectPath: string) => Promise<void>;
+
+export function canUseLocalAgentProjectFolderActions(
+  target: AgentExecutionTarget,
+  isTauriDesktop: boolean
+): boolean {
+  return target.kind === "local" && isTauriDesktop;
+}
 
 async function revealProjectFolderWithTauri(projectPath: string): Promise<void> {
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");

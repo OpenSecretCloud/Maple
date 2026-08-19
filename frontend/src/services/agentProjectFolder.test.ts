@@ -1,6 +1,24 @@
 import { describe, expect, test } from "bun:test";
 
-import { revealAgentProjectFolder } from "./agentProjectFolder";
+import {
+  canUseLocalAgentProjectFolderActions,
+  revealAgentProjectFolder
+} from "./agentProjectFolder";
+import {
+  LOCAL_AGENT_EXECUTION_TARGET,
+  createRemoteAgentExecutionTarget
+} from "./agentRuntimeService";
+
+describe("canUseLocalAgentProjectFolderActions", () => {
+  test("allows host folder actions only for the local desktop target", () => {
+    const remoteTarget = createRemoteAgentExecutionTarget("paired-mac", "Paired Mac");
+
+    expect(canUseLocalAgentProjectFolderActions(LOCAL_AGENT_EXECUTION_TARGET, true)).toBe(true);
+    expect(canUseLocalAgentProjectFolderActions(LOCAL_AGENT_EXECUTION_TARGET, false)).toBe(false);
+    expect(canUseLocalAgentProjectFolderActions(remoteTarget, true)).toBe(false);
+    expect(canUseLocalAgentProjectFolderActions(remoteTarget, false)).toBe(false);
+  });
+});
 
 describe("revealAgentProjectFolder", () => {
   test("reveals the exact canonical project path once", async () => {

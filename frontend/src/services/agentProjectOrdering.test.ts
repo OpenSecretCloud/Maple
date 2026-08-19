@@ -26,6 +26,7 @@ function session(id: string, projectRoot: string, updatedMs: number): AgentSessi
     projectRoot,
     createdMs: updatedMs,
     updatedMs,
+    pageSortMs: updatedMs,
     messageCount: 1,
     mode: "smart_approve"
   };

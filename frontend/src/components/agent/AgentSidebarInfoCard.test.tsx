@@ -83,4 +83,23 @@ describe("AgentSidebarInfoCard", () => {
     expect(onOpenProjectFolder).toHaveBeenCalledTimes(1);
     expect(callOrder).toEqual(["dismiss", "open"]);
   });
+
+  test("shows a remote project path without an open-folder affordance", () => {
+    const markup = renderToStaticMarkup(
+      <AgentSidebarInfoCard
+        folderPath="/remote/workspace/maple"
+        icon={Folder}
+        isInProgress={false}
+        metadata="Remote Mac"
+        metadataIcon={MessageSquare}
+        onDismiss={() => {}}
+        progressLabel="Not in progress"
+        title="Maple"
+      />
+    );
+
+    expect(markup).toContain('aria-label="Project folder: /remote/workspace/maple"');
+    expect(markup).not.toContain("Open project folder");
+    expect(markup).not.toContain("<button");
+  });
 });

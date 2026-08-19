@@ -10,7 +10,7 @@ interface AgentSidebarInfoCardProps {
   metadata: string;
   metadataIcon: LucideIcon;
   onDismiss: () => void;
-  onOpenProjectFolder: () => void;
+  onOpenProjectFolder?: () => void;
   progressLabel: string;
   title: string;
 }
@@ -26,6 +26,19 @@ export function AgentSidebarInfoCard({
   progressLabel,
   title
 }: AgentSidebarInfoCardProps) {
+  const folderPathContent = (
+    <>
+      <FolderOpen
+        aria-hidden="true"
+        className="mt-px h-3.5 w-3.5 shrink-0 transition-colors group-hover/folder:text-foreground"
+      />
+      <span className="min-w-0 whitespace-nowrap font-mono leading-4">
+        <span className="sr-only">{folderPath}</span>
+        <span aria-hidden="true">{truncatePathMiddle(folderPath, 40)}</span>
+      </span>
+    </>
+  );
+
   return (
     <div>
       <div className="flex min-w-0 items-start gap-2.5">
@@ -58,26 +71,28 @@ export function AgentSidebarInfoCard({
         <span>{progressLabel}</span>
       </div>
 
-      <button
-        type="button"
-        className="group/folder -mx-1 mt-1 flex w-[calc(100%+0.5rem)] items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:bg-muted/70 focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/70"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onDismiss();
-          onOpenProjectFolder();
-        }}
-        aria-label={`Open project folder: ${folderPath}`}
-      >
-        <FolderOpen
-          aria-hidden="true"
-          className="mt-px h-3.5 w-3.5 shrink-0 transition-colors group-hover/folder:text-foreground"
-        />
-        <span className="min-w-0 whitespace-nowrap font-mono leading-4">
-          <span className="sr-only">{folderPath}</span>
-          <span aria-hidden="true">{truncatePathMiddle(folderPath, 40)}</span>
-        </span>
-      </button>
+      {onOpenProjectFolder ? (
+        <button
+          type="button"
+          className="group/folder -mx-1 mt-1 flex w-[calc(100%+0.5rem)] items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:bg-muted/70 focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/70"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onDismiss();
+            onOpenProjectFolder();
+          }}
+          aria-label={`Open project folder: ${folderPath}`}
+        >
+          {folderPathContent}
+        </button>
+      ) : (
+        <div
+          className="-mx-1 mt-1 flex w-[calc(100%+0.5rem)] items-start gap-2 px-2 py-1.5 text-xs text-muted-foreground"
+          aria-label={`Project folder: ${folderPath}`}
+        >
+          {folderPathContent}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,8 +1,99 @@
 import type { AgentTimelineItem } from "./agentRuntimeService";
 
+type AgentTimelineSourceIds =
+  | { readonly kind: "item"; readonly id: string }
+  | {
+      readonly kind: "concat";
+      readonly left: AgentTimelineSourceIds;
+      readonly right: AgentTimelineSourceIds;
+    };
+
+const agentTimelineSourceIds = new WeakMap<AgentTimelineItem, AgentTimelineSourceIds>();
+
+function agentTimelineSourceIdTree(item: AgentTimelineItem): AgentTimelineSourceIds {
+  return agentTimelineSourceIds.get(item) ?? { kind: "item", id: item.id };
+}
+
+export function agentTimelineHistoryAnchorIds(item: AgentTimelineItem): string[] {
+  const ids: string[] = [];
+  const pending = [agentTimelineSourceIdTree(item)];
+  while (pending.length > 0) {
+    const source = pending.pop()!;
+    if (source.kind === "item") {
+      ids.push(source.id);
+    } else {
+      // Push right first so the iterative traversal preserves source order.
+      pending.push(source.right, source.left);
+    }
+  }
+  return ids;
+}
+
 export type AgentTimelineTurn =
   | { type: "user"; item: AgentTimelineItem; id: string }
   | { type: "assistant"; items: AgentTimelineItem[]; id: string };
+
+/**
+ * React identity for assistant groups cannot come from the preceding user row:
+ * that row may arrive only when an older record page is prepended. Reuse an
+ * existing key whenever any stable source item remains in the group, and drop
+ * mappings for items no longer present so replacement history stays bounded.
+ */
+export class AgentAssistantTurnKeyRegistry {
+  private sessionId: string | null | undefined;
+  private sessionGeneration = 0;
+  private nextKey = 0;
+  private keyBySourceItemId = new Map<string, string>();
+
+  resolve(
+    sessionId: string | null,
+    turns: readonly AgentTimelineTurn[]
+  ): ReadonlyMap<AgentTimelineTurn, string> {
+    if (this.sessionId !== sessionId) {
+      this.sessionId = sessionId;
+      this.sessionGeneration += 1;
+      this.nextKey = 0;
+      this.keyBySourceItemId.clear();
+    }
+
+    const previousKeys = this.keyBySourceItemId;
+    const nextKeys = new Map<string, string>();
+    const keyByTurn = new Map<AgentTimelineTurn, string>();
+    const claimedKeys = new Set<string>();
+    // Prefer the newest/current assistant fragment when a replacement splits
+    // one former group. Older fragments receive a fresh key instead of
+    // remounting the active tool/thought subtree.
+    for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+      const turn = turns[turnIndex];
+      if (turn.type !== "assistant") continue;
+      const sourceItemIds = [
+        ...new Set(turn.items.flatMap((item) => agentTimelineHistoryAnchorIds(item)))
+      ];
+      let key: string | undefined;
+      for (let index = sourceItemIds.length - 1; index >= 0; index -= 1) {
+        const sourceItemId = sourceItemIds[index];
+        const candidate = nextKeys.get(sourceItemId) ?? previousKeys.get(sourceItemId);
+        if (candidate && !claimedKeys.has(candidate)) {
+          key = candidate;
+          break;
+        }
+      }
+      if (!key) {
+        this.nextKey += 1;
+        key = `agent-assistant-group-${this.sessionGeneration}-${this.nextKey}`;
+      }
+      claimedKeys.add(key);
+      for (const sourceItemId of sourceItemIds) nextKeys.set(sourceItemId, key);
+      keyByTurn.set(turn, key);
+    }
+    this.keyBySourceItemId = nextKeys;
+    return keyByTurn;
+  }
+}
+
+export function agentUserTurnReactKey(itemId: string): string {
+  return `agent-user-item:${itemId}`;
+}
 
 export interface AgentThoughtPhase {
   sessionId: string;
@@ -315,10 +406,16 @@ export function coalesceAdjacentThinkingItems(items: AgentTimelineItem[]): Agent
   return items.reduce<AgentTimelineItem[]>((projected, item) => {
     const previous = projected[projected.length - 1];
     if (item.itemType === "thinking" && previous?.itemType === "thinking") {
-      projected[projected.length - 1] = {
+      const merged = {
         ...previous,
         text: `${previous.text ?? ""}${item.text ?? ""}`
       };
+      agentTimelineSourceIds.set(merged, {
+        kind: "concat",
+        left: agentTimelineSourceIdTree(previous),
+        right: agentTimelineSourceIdTree(item)
+      });
+      projected[projected.length - 1] = merged;
       return projected;
     }
     projected.push(item);

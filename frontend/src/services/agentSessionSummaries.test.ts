@@ -9,6 +9,7 @@ function session(id: string, title: string, updatedMs = 1): AgentSessionSummary 
     projectRoot: "/tmp/project",
     createdMs: 0,
     updatedMs,
+    pageSortMs: updatedMs,
     messageCount: 1,
     model: "glm-5-2",
     mode: "smart_approve"

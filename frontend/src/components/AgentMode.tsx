@@ -108,20 +108,43 @@ import {
   type AgentPromptHistoryReplacementAttempt
 } from "@/components/agent/agentPromptHistory";
 import {
-  agentRuntimeService,
+  DEFAULT_AGENT_PAGE_SIZE,
+  agentRuntimeService as defaultAgentRuntimeService,
   awaitAgentAuthUser,
   type AgentConfig,
   type AgentEventEnvelope,
+  type AgentLiveChannelFrame,
+  type AgentLiveEventCursor,
+  type AgentPendingHistoryAttach,
   type AgentMcpServer,
   type AgentPermissionDecision,
+  isAgentPageStaleError,
+  isAgentLiveSnapshotRequiredError,
   type AgentProjectSkillsTrustStatus,
   type AgentDesktopQueueSnapshot,
   type AgentRuntimeStatus,
+  type AgentRuntimeService,
   type AgentSessionMcpServer,
   type AgentSessionSummary,
   type AgentTimelineItem,
   type RecentProjectRoot
 } from "@/services/agentRuntimeService";
+import { AgentHistoryPaginationCache } from "@/services/agentHistoryPagination";
+import {
+  AgentLiveConnectionRegistry,
+  recoverAgentLiveConnectionAfterReplacementFailure
+} from "@/services/agentLiveConnectionLifecycle";
+import { AgentSessionPaginationCache } from "@/services/agentSessionPagination";
+import {
+  CHAT_HISTORY_TOP_MARGIN_PX,
+  ChatHistoryPaginationGate,
+  type ChatHistoryScrollSnapshot,
+  preferredChatHistoryScrollSnapshot,
+  requiredChatHistoryBottomCompensation,
+  restoredChatHistoryAnchorScrollTop,
+  restoredChatHistoryScrollTop,
+  usesFirstCancelableWheelGestureStart
+} from "@/components/chatHistoryPagination";
 import {
   applyAgentDesktopQueueSnapshot,
   beginQueuedMessageEdit,
@@ -160,7 +183,6 @@ import {
   shouldClearStoppingSendLock
 } from "@/services/agentComposerSend";
 import { agentOperationFence } from "@/services/agentOperationFence";
-import { reconcileAgentSessionSnapshot } from "@/services/agentSessionSummaries";
 import {
   agentToolKind,
   agentToolKindLabel,
@@ -173,9 +195,12 @@ import {
   startAgentThoughtLabelDisplay
 } from "@/services/agentThoughtLabels";
 import {
+  AgentAssistantTurnKeyRegistry,
   AgentLiveThoughtPhaseTracker,
   activeAgentThinkingItemId,
+  agentTimelineHistoryAnchorIds,
   agentThinkingPhaseId,
+  agentUserTurnReactKey,
   coalesceAdjacentThinkingItems,
   getAgentTurnCopyText,
   groupAgentTimelineItems,
@@ -201,9 +226,12 @@ import {
   useIsLandscapeMobile,
   useIsMobile
 } from "@/utils/utils";
-import { isTauriDesktop } from "@/utils/platform";
+import { isMacOS, isTauri, isTauriDesktop } from "@/utils/platform";
 import { useLazyRef } from "@/utils/useLazyRef";
-import { revealAgentProjectFolder } from "@/services/agentProjectFolder";
+import {
+  canUseLocalAgentProjectFolderActions,
+  revealAgentProjectFolder
+} from "@/services/agentProjectFolder";
 import {
   aggregateAgentSidebarStatus,
   agentProjectProgressLabel,
@@ -238,7 +266,6 @@ const DEFAULT_MODEL = DEFAULT_AGENT_MODEL;
 const DEFAULT_MODE = "smart_approve";
 const NEW_SESSION_PENDING_KEY = "__maple-agent-new-session__";
 const NEW_PROJECT_OPTION_VALUE = "__maple-agent-new-project__";
-const MAX_STABLE_SESSION_LOAD_ATTEMPTS = 3;
 const THOUGHT_PHASE_SEED_RETRY_MS = 250;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
 const SIDEBAR_REORDER_ANIMATION_MS = 150;
@@ -405,9 +432,20 @@ function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAl
   });
 }
 
-export function AgentMode({ userId }: { userId: string }) {
+export function AgentMode({
+  userId,
+  agentRuntimeService = defaultAgentRuntimeService
+}: {
+  userId: string;
+  agentRuntimeService?: AgentRuntimeService;
+}) {
   const openai = useOpenAI();
   const os = useOpenSecret();
+  const agentOwnerKey = JSON.stringify([userId, String(agentRuntimeService.target.id)]);
+  const localProjectFolderActionsAvailable = canUseLocalAgentProjectFolderActions(
+    agentRuntimeService.target,
+    isTauriDesktop()
+  );
   const { availableModels, setAvailableModels, modelAliases, setModelAliases, setHasWhisperModel } =
     useModelState();
   const { agentSessionSelection } = usePersistentHomeNavigation();
@@ -431,10 +469,9 @@ export function AgentMode({ userId }: { userId: string }) {
   const recentRoots = projectOrderState.visible;
   const [removedProjectRoots, setRemovedProjectRoots] = useState<Set<string>>(() => new Set());
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
-  const sessionSummaryRevisionRef = useRef(0);
-  const sessionSummaryRevisionsRef = useRef(new Map<string, number>());
-  const sessionListRefreshGenerationRef = useRef(0);
-  const sessionListAppliedGenerationRef = useRef(0);
+  const sessionPaginationCacheRef = useLazyRef(() => new AgentSessionPaginationCache());
+  const [hasMoreSessions, setHasMoreSessions] = useState(false);
+  const [isLoadingOlderSessions, setIsLoadingOlderSessions] = useState(false);
   const [isSessionHistoryReady, setIsSessionHistoryReady] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<AgentSessionSummary | null>(null);
   const [sessionToRename, setSessionToRename] = useState<AgentSessionSummary | null>(null);
@@ -451,6 +488,15 @@ export function AgentMode({ userId }: { userId: string }) {
   const [model, setModel] = useState(() => newTaskAgentModel(agentModelPreferenceRef.current));
   const [mode, setMode] = useState<AgentPermissionMode>(DEFAULT_MODE);
   const [timelineItems, setTimelineItems] = useState<AgentTimelineItem[]>([]);
+  const historyPaginationCacheRef = useLazyRef(
+    () =>
+      new AgentHistoryPaginationCache({
+        accountId: userId,
+        targetId: String(agentRuntimeService.target.id)
+      })
+  );
+  const [hasMoreOlderHistory, setHasMoreOlderHistory] = useState(false);
+  const [isLoadingOlderHistory, setIsLoadingOlderHistory] = useState(false);
   const [queueBySession, setQueueBySession] = useState<Record<string, AgentDesktopQueueSnapshot>>(
     {}
   );
@@ -503,14 +549,34 @@ export function AgentMode({ userId }: { userId: string }) {
     () => new Set()
   );
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const historyTopSentinelRef = useRef<HTMLDivElement>(null);
+  const historyBottomCompensationRef = useRef<HTMLDivElement>(null);
+  const pendingHistoryScrollRestoreRef = useRef<ChatHistoryScrollSnapshot | null>(null);
+  const pendingHistoryScrollRestoreSessionIdRef = useRef<string | null>(null);
+  const historyGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyTouchGestureEndTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyKeyIntentTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyWheelGestureStartPendingRef = useRef(false);
+  const historyPreviousWheelCancelableRef = useRef<boolean | null>(null);
+  const previousHistoryTouchYRef = useRef<number | null>(null);
+  const historyTouchGestureActiveRef = useRef(false);
+  const historyPointerGestureActiveRef = useRef(false);
+  const previousHistoryPointerScrollTopRef = useRef(0);
+  const suppressedHistoryScrollEndsRef = useRef(0);
+  const eventGapRecoveryRef = useRef<Promise<void> | null>(null);
+  const pendingEventGapSessionIdsRef = useLazyRef(() => new Set<string>());
+  const hasUnknownEventGapRef = useRef(false);
+  const liveConnectionsRef = useLazyRef(() => new AgentLiveConnectionRegistry());
+  const liveRetirementRef = useRef<Promise<void> | null>(null);
+  const liveResumeInFlightRef = useRef<Promise<void> | null>(null);
+  const liveStreamGenerationRef = useRef(0);
+  const liveChannelHandlerRef = useRef<(frame: AgentLiveChannelFrame) => void>(() => {});
+  const agentOwnerKeyRef = useRef(agentOwnerKey);
+  agentOwnerKeyRef.current = agentOwnerKey;
   const agentComposerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const agentComposerFocusRequestRef = useRef<AgentComposerFocusRequest | null>(null);
   const activeSessionIdRef = useRef(activeSessionId);
   const deletedSessionIdsRef = useLazyRef(() => new Set<string>());
-  const markSessionSummaryChanged = useCallback((sessionId: string) => {
-    sessionSummaryRevisionRef.current += 1;
-    sessionSummaryRevisionsRef.current.set(sessionId, sessionSummaryRevisionRef.current);
-  }, []);
   const shouldAutoScrollRef = useRef(true);
   const permissionModeUpdateRef = useLazyRef<Promise<void>>(() => Promise.resolve());
   const permissionModeUpdateGenerationRef = useRef(0);
@@ -554,6 +620,10 @@ export function AgentMode({ userId }: { userId: string }) {
   const userIdRef = useRef(userId);
   const thoughtLabelProvisionalSchedulerRef = useRef<AgentThoughtLabelProvisionalScheduler | null>(
     null
+  );
+  const historyPaginationLifecycle = useMemo(
+    () => ({ sessionId: activeSessionId, gate: new ChatHistoryPaginationGate() }),
+    [activeSessionId]
   );
 
   useLayoutEffect(() => {
@@ -766,6 +836,239 @@ export function AgentMode({ userId }: { userId: string }) {
     [generateThoughtLabel]
   );
 
+  const publishHistorySnapshot = useCallback(
+    (sessionId: string) => {
+      if (activeSessionIdRef.current !== sessionId) return;
+      const snapshot = historyPaginationCacheRef.current.snapshot(sessionId);
+      setTimelineItems([...snapshot.timeline]);
+      setHasMoreOlderHistory(snapshot.hasMore);
+      setIsLoadingOlderHistory(snapshot.isLoading);
+    },
+    [historyPaginationCacheRef]
+  );
+
+  const reconcileHistoryRetention = useCallback(() => {
+    const protectedSessionIds = new Set<string>();
+    if (activeSessionIdRef.current) protectedSessionIds.add(activeSessionIdRef.current);
+    const pendingSelection = pendingSessionSelectionIdRef.current;
+    if (pendingSelection && pendingSelection !== NEW_SESSION_PENDING_KEY) {
+      protectedSessionIds.add(pendingSelection);
+    }
+    historyPaginationCacheRef.current.reconcileRetention(protectedSessionIds);
+  }, [historyPaginationCacheRef]);
+
+  const retireAgentLiveConnection = useCallback(async () => {
+    liveStreamGenerationRef.current += 1;
+    const previousRetirement = liveRetirementRef.current;
+    // With no predecessor, invoke retirement synchronously so every service
+    // handle publishes close intent before a same-commit remount can open. A
+    // later caller still waits for and then retries handles retained by an
+    // earlier failed cancellation.
+    const retirement = previousRetirement
+      ? (async () => {
+          await previousRetirement.catch(() => {});
+          await liveConnectionsRef.current.retire();
+        })()
+      : liveConnectionsRef.current.retire();
+    liveRetirementRef.current = retirement;
+    try {
+      await retirement;
+    } finally {
+      if (liveRetirementRef.current === retirement) liveRetirementRef.current = null;
+    }
+  }, [liveConnectionsRef]);
+
+  const resumeAgentLiveConnection = useCallback(
+    async (retainedCursor?: AgentLiveEventCursor) => {
+      if (agentRuntimeService.target.kind !== "remote") return;
+      const existingResume = liveResumeInFlightRef.current;
+      if (existingResume) {
+        if (!retainedCursor) return await existingResume;
+        // A replacement attach may have fenced this older resume while it was
+        // opening. Wait for its owned cleanup, then make a fresh attempt from
+        // the replacement's retained cursor instead of treating it as recovery.
+        await existingResume.catch(() => {});
+        if (liveResumeInFlightRef.current === existingResume) {
+          liveResumeInFlightRef.current = null;
+        }
+      }
+      const cursor = retainedCursor ?? historyPaginationCacheRef.current.eventCursor();
+      if (!cursor) throw new Error("Agent live resume requires an event cursor");
+
+      const resume = (async () => {
+        // Cursor replay closes the short retirement gap without fetching any
+        // history page. Snapshot-required failures are recovered separately by
+        // the existing bounded head coordinator.
+        await retireAgentLiveConnection();
+        const generation = ++liveStreamGenerationRef.current;
+        const resumeOwnerKey = agentOwnerKey;
+        const active = await agentRuntimeService.resumeLiveEvents(userId, cursor, (frame) => {
+          if (
+            generation === liveStreamGenerationRef.current &&
+            resumeOwnerKey === agentOwnerKeyRef.current &&
+            isAgentModeMountedRef.current
+          ) {
+            liveChannelHandlerRef.current(frame);
+          }
+        });
+        if (
+          generation !== liveStreamGenerationRef.current ||
+          resumeOwnerKey !== agentOwnerKeyRef.current ||
+          !isAgentModeMountedRef.current ||
+          userIdRef.current !== userId
+        ) {
+          await liveConnectionsRef.current.cancelActive(active);
+          return;
+        }
+        liveConnectionsRef.current.trackActive(active);
+      })();
+      liveResumeInFlightRef.current = resume;
+      try {
+        await resume;
+      } finally {
+        if (liveResumeInFlightRef.current === resume) liveResumeInFlightRef.current = null;
+      }
+    },
+    [
+      agentOwnerKey,
+      agentRuntimeService,
+      historyPaginationCacheRef,
+      liveConnectionsRef,
+      retireAgentLiveConnection,
+      userId
+    ]
+  );
+
+  const loadHistoryHead = useCallback(
+    async (sessionId: string): Promise<AgentTimelineItem[]> => {
+      if (agentRuntimeService.target.kind === "remote") {
+        await retireAgentLiveConnection();
+        const attachGeneration = ++liveStreamGenerationRef.current;
+        const attachOwnerKey = agentOwnerKey;
+        const token = historyPaginationCacheRef.current.beginHead(sessionId);
+        if (activeSessionIdRef.current === sessionId) setIsLoadingOlderHistory(true);
+        let pending: AgentPendingHistoryAttach | null = null;
+        try {
+          pending = await agentRuntimeService.beginSessionHistoryAttach(
+            userId,
+            { sessionId, limit: DEFAULT_AGENT_PAGE_SIZE },
+            (frame) => {
+              if (
+                attachGeneration === liveStreamGenerationRef.current &&
+                attachOwnerKey === agentOwnerKeyRef.current &&
+                isAgentModeMountedRef.current
+              ) {
+                liveChannelHandlerRef.current(frame);
+              }
+            }
+          );
+          liveConnectionsRef.current.trackPending(pending);
+          if (
+            attachGeneration !== liveStreamGenerationRef.current ||
+            !isAgentModeMountedRef.current ||
+            userIdRef.current !== userId
+          ) {
+            historyPaginationCacheRef.current.fail(token);
+            publishHistorySnapshot(sessionId);
+            await liveConnectionsRef.current.cancelPending(pending);
+            return [...historyPaginationCacheRef.current.snapshot(sessionId).timeline];
+          }
+          const response = pending.response;
+          const result = historyPaginationCacheRef.current.installSynchronizedAccountHead(
+            token,
+            response.page,
+            {
+              liveSessionsComplete: response.liveSessionsComplete,
+              liveSessionCount: response.liveSessionCount,
+              liveSessions: response.liveSessions,
+              throughEventCursor: response.throughEventCursor
+            }
+          );
+          if (result !== "applied") {
+            historyPaginationCacheRef.current.fail(token);
+            publishHistorySnapshot(sessionId);
+            await liveConnectionsRef.current.cancelPending(pending);
+            return [...historyPaginationCacheRef.current.snapshot(sessionId).timeline];
+          }
+          publishHistorySnapshot(sessionId);
+          const active = await pending.activate();
+          if (
+            attachGeneration !== liveStreamGenerationRef.current ||
+            !isAgentModeMountedRef.current ||
+            userIdRef.current !== userId
+          ) {
+            historyPaginationCacheRef.current.fail(token);
+            publishHistorySnapshot(sessionId);
+            await liveConnectionsRef.current.cancelPending(pending);
+            return [...historyPaginationCacheRef.current.snapshot(sessionId).timeline];
+          }
+          liveConnectionsRef.current.promote(pending, active);
+          return [...historyPaginationCacheRef.current.snapshot(sessionId).timeline];
+        } catch (loadError) {
+          historyPaginationCacheRef.current.fail(token);
+          if (pending) liveConnectionsRef.current.trackPending(pending);
+          publishHistorySnapshot(sessionId);
+          const resumeCursor = historyPaginationCacheRef.current.eventCursor();
+          const canResume =
+            resumeCursor !== null &&
+            isAgentModeMountedRef.current &&
+            userIdRef.current === userId &&
+            agentOwnerKeyRef.current === agentOwnerKey;
+          return await recoverAgentLiveConnectionAfterReplacementFailure({
+            replacementError: loadError,
+            cursor: canResume ? resumeCursor : null,
+            retire: retireAgentLiveConnection,
+            resume: async (retainedCursor) => {
+              try {
+                await resumeAgentLiveConnection(retainedCursor);
+              } catch (resumeError) {
+                historyPaginationCacheRef.current.requireSynchronizedReload();
+                throw resumeError;
+              }
+            }
+          });
+        } finally {
+          reconcileHistoryRetention();
+        }
+      }
+
+      const token = historyPaginationCacheRef.current.beginHead(sessionId);
+      if (activeSessionIdRef.current === sessionId) setIsLoadingOlderHistory(true);
+      try {
+        const page = await agentRuntimeService.listSessionRecordsPage(userId, {
+          sessionId,
+          limit: DEFAULT_AGENT_PAGE_SIZE
+        });
+        // Ordinary head loads commit persisted records only. Installing an
+        // absolute live snapshot/checkpoint requires the attach coordinator's
+        // subscribe-buffer-replay ordering and must not be inferred from a page.
+        const result = historyPaginationCacheRef.current.commit(token, page);
+        if (result === "stale") {
+          return [...historyPaginationCacheRef.current.snapshot(sessionId).timeline];
+        }
+        publishHistorySnapshot(sessionId);
+        return [...historyPaginationCacheRef.current.snapshot(sessionId).timeline];
+      } catch (loadError) {
+        historyPaginationCacheRef.current.fail(token);
+        publishHistorySnapshot(sessionId);
+        throw loadError;
+      } finally {
+        reconcileHistoryRetention();
+      }
+    },
+    [
+      agentRuntimeService,
+      agentOwnerKey,
+      historyPaginationCacheRef,
+      liveConnectionsRef,
+      publishHistorySnapshot,
+      reconcileHistoryRetention,
+      retireAgentLiveConnection,
+      resumeAgentLiveConnection,
+      userId
+    ]
+  );
+
   const observeActiveThoughtPhase = useCallback(
     (sessionId: string) => {
       const activePhase = thoughtPhaseTrackerRef.current.activePhase(sessionId);
@@ -782,7 +1085,7 @@ export function AgentMode({ userId }: { userId: string }) {
         void (async () => {
           const timelineRevision = timelineRevisionBySessionRef.current.get(sessionId) || 0;
           try {
-            const detail = await agentRuntimeService.loadSession(userId, sessionId);
+            const timeline = await loadHistoryHead(sessionId);
             if (
               !isAgentModeMountedRef.current ||
               userIdRef.current !== userId ||
@@ -793,7 +1096,7 @@ export function AgentMode({ userId }: { userId: string }) {
               return;
             }
             if ((timelineRevisionBySessionRef.current.get(sessionId) || 0) === timelineRevision) {
-              thoughtPhaseTrackerRef.current.seedActiveTimeline(sessionId, detail.timeline);
+              thoughtPhaseTrackerRef.current.seedActiveTimeline(sessionId, timeline);
               observeActiveThoughtPhase(sessionId);
               return;
             }
@@ -816,6 +1119,7 @@ export function AgentMode({ userId }: { userId: string }) {
     },
     [
       deletedSessionIdsRef,
+      loadHistoryHead,
       observeActiveThoughtPhase,
       thoughtPhaseSeededRunIdsRef,
       thoughtPhaseTrackerRef,
@@ -866,9 +1170,12 @@ export function AgentMode({ userId }: { userId: string }) {
     isAgentModeMountedRef.current = true;
     return () => {
       isAgentModeMountedRef.current = false;
+      void retireAgentLiveConnection().catch(() => {
+        console.error("Unable to retire the Agent live connection during unmount");
+      });
       cancelThoughtLabelDisplays();
     };
-  }, [cancelThoughtLabelDisplays]);
+  }, [cancelThoughtLabelDisplays, retireAgentLiveConnection]);
 
   useEffect(() => {
     const wasCompactLayout = previousIsCompactLayoutRef.current;
@@ -904,6 +1211,500 @@ export function AgentMode({ userId }: { userId: string }) {
       behavior
     });
   }, []);
+
+  const clearHistoryBottomCompensation = useCallback(() => {
+    if (historyBottomCompensationRef.current) {
+      historyBottomCompensationRef.current.style.height = "0px";
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const ownerBinding = historyPaginationCacheRef.current.bindOwner({
+      accountId: userId,
+      targetId: String(agentRuntimeService.target.id)
+    });
+    if (ownerBinding === "reset") {
+      void retireAgentLiveConnection().catch((retirementError) => {
+        setError(errorMessage(retirementError));
+      });
+      sessionPaginationCacheRef.current.clear();
+      sessionSelectionGenerationRef.current += 1;
+      interactionGenerationRef.current += 1;
+      pendingSessionSelectionIdRef.current = null;
+      deletedSessionIdsRef.current.clear();
+      activeSessionIdRef.current = null;
+      setActiveSessionId(null);
+      setSessions([]);
+      setTimelineItems([]);
+      setHasMoreSessions(false);
+      setHasMoreOlderHistory(false);
+      setIsSessionHistoryReady(false);
+    }
+    clearHistoryBottomCompensation();
+    pendingHistoryScrollRestoreRef.current = null;
+    pendingHistoryScrollRestoreSessionIdRef.current = null;
+    previousHistoryTouchYRef.current = null;
+    historyTouchGestureActiveRef.current = false;
+    historyPointerGestureActiveRef.current = false;
+    suppressedHistoryScrollEndsRef.current = 0;
+    historyPaginationLifecycle.gate.resetIntent();
+  }, [
+    agentOwnerKey,
+    agentRuntimeService.target.id,
+    clearHistoryBottomCompensation,
+    deletedSessionIdsRef,
+    historyPaginationCacheRef,
+    historyPaginationLifecycle,
+    retireAgentLiveConnection,
+    sessionPaginationCacheRef,
+    userId
+  ]);
+
+  useEffect(() => {
+    const protectedSessionIds = new Set<string>();
+    if (activeSessionId) protectedSessionIds.add(activeSessionId);
+    if (pendingSessionSelectionId && pendingSessionSelectionId !== NEW_SESSION_PENDING_KEY) {
+      protectedSessionIds.add(pendingSessionSelectionId);
+    }
+    historyPaginationCacheRef.current.reconcileRetention(protectedSessionIds);
+  }, [activeSessionId, historyPaginationCacheRef, pendingSessionSelectionId]);
+
+  const captureHistoryScrollSnapshot = useCallback(
+    (sessionId: string): ChatHistoryScrollSnapshot | null => {
+      if (activeSessionIdRef.current !== sessionId) return null;
+      const container = chatContainerRef.current;
+      if (!container) return null;
+      const containerRect = container.getBoundingClientRect();
+      const anchor = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-history-anchor-ids]")
+      ).find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return rect.bottom > containerRect.top && rect.top < containerRect.bottom;
+      });
+      return {
+        scrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        anchorId: anchor?.dataset.historyAnchorIds?.split(" ").find(Boolean),
+        anchorOffset: anchor ? anchor.getBoundingClientRect().top - containerRect.top : undefined
+      };
+    },
+    []
+  );
+
+  const isHistoryTopBoundaryNear = useCallback(() => {
+    const container = chatContainerRef.current;
+    const sentinel = historyTopSentinelRef.current;
+    if (!container || !sentinel) return false;
+    if (container.scrollHeight <= container.clientHeight + 1) return true;
+    const containerRect = container.getBoundingClientRect();
+    const sentinelRect = sentinel.getBoundingClientRect();
+    return (
+      sentinelRect.bottom >= containerRect.top - CHAT_HISTORY_TOP_MARGIN_PX &&
+      sentinelRect.top <= containerRect.top + CHAT_HISTORY_TOP_MARGIN_PX
+    );
+  }, []);
+
+  const loadOlderHistory = useCallback(async () => {
+    const { gate, sessionId } = historyPaginationLifecycle;
+    if (!sessionId) {
+      gate.finishLoad();
+      return;
+    }
+    const token = historyPaginationCacheRef.current.beginOlder(sessionId);
+    if (!token || !token.cursor) {
+      gate.finishLoad();
+      return;
+    }
+
+    const requestStartSnapshot = captureHistoryScrollSnapshot(sessionId);
+    publishHistorySnapshot(sessionId);
+    let pageProgressed = false;
+    try {
+      const page = await agentRuntimeService.listSessionRecordsPage(userId, {
+        sessionId,
+        cursor: token.cursor,
+        limit: DEFAULT_AGENT_PAGE_SIZE
+      });
+      const commitSnapshot = captureHistoryScrollSnapshot(sessionId);
+      const result = historyPaginationCacheRef.current.commit(token, page);
+      if (result === "history-replaced") {
+        await loadHistoryHead(sessionId);
+      } else if (result === "applied") {
+        pageProgressed = page.records.length > 0;
+        if (pageProgressed && activeSessionIdRef.current === sessionId) {
+          pendingHistoryScrollRestoreRef.current = preferredChatHistoryScrollSnapshot({
+            requestStartSnapshot,
+            commitSnapshot
+          });
+          pendingHistoryScrollRestoreSessionIdRef.current = sessionId;
+        }
+      }
+    } catch (loadError) {
+      if (isAgentPageStaleError(loadError)) {
+        historyPaginationCacheRef.current.invalidate(sessionId);
+        try {
+          await loadHistoryHead(sessionId);
+        } catch (headError) {
+          if (activeSessionIdRef.current === sessionId) setError(errorMessage(headError));
+        }
+      } else {
+        historyPaginationCacheRef.current.fail(token);
+        if (activeSessionIdRef.current === sessionId) setError(errorMessage(loadError));
+      }
+    } finally {
+      gate.finishLoad({ preserveQueuedLoad: pageProgressed });
+      publishHistorySnapshot(sessionId);
+      reconcileHistoryRetention();
+    }
+  }, [
+    agentRuntimeService,
+    captureHistoryScrollSnapshot,
+    historyPaginationCacheRef,
+    historyPaginationLifecycle,
+    loadHistoryHead,
+    publishHistorySnapshot,
+    reconcileHistoryRetention,
+    userId
+  ]);
+
+  const maybeLoadOlderHistory = useCallback(() => {
+    const { gate, sessionId } = historyPaginationLifecycle;
+    const shouldLoad = gate.tryStartLoad({
+      canLoad: Boolean(sessionId && hasMoreOlderHistory),
+      topBoundaryVisible: isHistoryTopBoundaryNear(),
+      requestInFlight: isLoadingOlderHistory
+    });
+    if (shouldLoad) void loadOlderHistory();
+  }, [
+    hasMoreOlderHistory,
+    historyPaginationLifecycle,
+    isHistoryTopBoundaryNear,
+    isLoadingOlderHistory,
+    loadOlderHistory
+  ]);
+
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    const sessionId = historyPaginationLifecycle.sessionId;
+    if (!container || !sessionId) return;
+    const gate = historyPaginationLifecycle.gate;
+    const usesMacOSWheelGestureStart = usesFirstCancelableWheelGestureStart({
+      isTauriEnvironment: isTauri(),
+      browserPlatform: navigator.platform
+    });
+    const delaysWheelGestureEndAfterScrollEnd = isTauri() && isMacOS();
+
+    const finishWheelGesture = () => {
+      historyWheelGestureStartPendingRef.current = false;
+      historyPreviousWheelCancelableRef.current = null;
+      gate.endGesture();
+      historyGestureEndTimeoutRef.current = null;
+    };
+    const finishTouchGesture = () => {
+      historyTouchGestureActiveRef.current = false;
+      gate.endGesture();
+      historyTouchGestureEndTimeoutRef.current = null;
+    };
+    const scheduleTouchGestureEnd = () => {
+      if (historyTouchGestureEndTimeoutRef.current) {
+        clearTimeout(historyTouchGestureEndTimeoutRef.current);
+      }
+      historyTouchGestureEndTimeoutRef.current = setTimeout(finishTouchGesture, 250);
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return;
+
+      const startsMacOSWheelGesture =
+        usesMacOSWheelGestureStart &&
+        event.cancelable &&
+        historyPreviousWheelCancelableRef.current !== true;
+      if (usesMacOSWheelGestureStart) {
+        historyPreviousWheelCancelableRef.current = event.cancelable;
+      }
+
+      if (usesMacOSWheelGestureStart && event.deltaY === 0) {
+        if (startsMacOSWheelGesture) historyWheelGestureStartPendingRef.current = true;
+        if (historyGestureEndTimeoutRef.current) {
+          clearTimeout(historyGestureEndTimeoutRef.current);
+        }
+        historyGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 180);
+        return;
+      }
+
+      if (event.deltaY >= 0) {
+        if (event.deltaY > 0) {
+          historyWheelGestureStartPendingRef.current = false;
+          historyPreviousWheelCancelableRef.current = null;
+          gate.endGesture();
+          clearHistoryBottomCompensation();
+          if (historyGestureEndTimeoutRef.current) {
+            clearTimeout(historyGestureEndTimeoutRef.current);
+            historyGestureEndTimeoutRef.current = null;
+          }
+        }
+        return;
+      }
+
+      if (usesMacOSWheelGestureStart) {
+        const isNewWheelGesture =
+          startsMacOSWheelGesture || historyWheelGestureStartPendingRef.current;
+        historyWheelGestureStartPendingRef.current = false;
+        gate.beginWheelGesture(isNewWheelGesture);
+      } else {
+        gate.beginGesture();
+      }
+      if (container.scrollTop <= CHAT_HISTORY_TOP_MARGIN_PX) maybeLoadOlderHistory();
+      if (historyGestureEndTimeoutRef.current) {
+        clearTimeout(historyGestureEndTimeoutRef.current);
+      }
+      historyGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 180);
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      if (historyTouchGestureEndTimeoutRef.current) {
+        clearTimeout(historyTouchGestureEndTimeoutRef.current);
+        historyTouchGestureEndTimeoutRef.current = null;
+      }
+      historyTouchGestureActiveRef.current = true;
+      previousHistoryTouchYRef.current = event.touches[0]?.clientY ?? null;
+      gate.endGesture();
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const nextY = event.touches[0]?.clientY;
+      const previousY = previousHistoryTouchYRef.current;
+      if (nextY === undefined || previousY === null) return;
+      previousHistoryTouchYRef.current = nextY;
+      if (nextY > previousY + 2) {
+        gate.beginGesture();
+        maybeLoadOlderHistory();
+      } else if (nextY < previousY - 2) {
+        gate.endGesture();
+        clearHistoryBottomCompensation();
+      }
+    };
+    const handleTouchEnd = () => {
+      previousHistoryTouchYRef.current = null;
+      maybeLoadOlderHistory();
+      scheduleTouchGestureEnd();
+    };
+    const handleTouchCancel = () => {
+      previousHistoryTouchYRef.current = null;
+      finishTouchGesture();
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== "mouse" || !event.isPrimary || event.button !== 0) return;
+      if (historyGestureEndTimeoutRef.current) {
+        clearTimeout(historyGestureEndTimeoutRef.current);
+        historyGestureEndTimeoutRef.current = null;
+      }
+      gate.endGesture();
+      historyPointerGestureActiveRef.current = true;
+      previousHistoryPointerScrollTopRef.current = container.scrollTop;
+    };
+    const handlePointerEnd = () => {
+      if (!historyPointerGestureActiveRef.current) return;
+      historyPointerGestureActiveRef.current = false;
+      gate.endGesture();
+    };
+    const isBackwardKey = (event: KeyboardEvent) =>
+      event.key === "ArrowUp" ||
+      event.key === "PageUp" ||
+      event.key === "Home" ||
+      (event.shiftKey && (event.key === " " || event.key === "Spacebar"));
+    const isForwardKey = (event: KeyboardEvent) =>
+      event.key === "ArrowDown" ||
+      event.key === "PageDown" ||
+      event.key === "End" ||
+      (!event.shiftKey && (event.key === " " || event.key === "Spacebar"));
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(
+          "input, textarea, select, button, a, [contenteditable='true'], [role='button'], [role='textbox']"
+        )
+      ) {
+        return;
+      }
+      if (isForwardKey(event)) {
+        gate.endGesture();
+        clearHistoryBottomCompensation();
+        if (historyKeyIntentTimeoutRef.current) {
+          clearTimeout(historyKeyIntentTimeoutRef.current);
+          historyKeyIntentTimeoutRef.current = null;
+        }
+        return;
+      }
+      if (!isBackwardKey(event)) return;
+      gate.beginGesture();
+      maybeLoadOlderHistory();
+      if (historyKeyIntentTimeoutRef.current) {
+        clearTimeout(historyKeyIntentTimeoutRef.current);
+      }
+      historyKeyIntentTimeoutRef.current = setTimeout(() => {
+        gate.endGesture();
+        historyKeyIntentTimeoutRef.current = null;
+      }, 500);
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (!isBackwardKey(event)) return;
+      if (historyKeyIntentTimeoutRef.current) {
+        clearTimeout(historyKeyIntentTimeoutRef.current);
+        historyKeyIntentTimeoutRef.current = null;
+      }
+      gate.endGesture();
+    };
+    const handleScroll = () => {
+      const nextScrollTop = container.scrollTop;
+      if (
+        historyPointerGestureActiveRef.current &&
+        nextScrollTop < previousHistoryPointerScrollTopRef.current
+      ) {
+        gate.beginGesture();
+        maybeLoadOlderHistory();
+      } else if (
+        (historyPointerGestureActiveRef.current ||
+          (historyTouchGestureActiveRef.current && previousHistoryTouchYRef.current === null)) &&
+        nextScrollTop > previousHistoryPointerScrollTopRef.current
+      ) {
+        clearHistoryBottomCompensation();
+      }
+      previousHistoryPointerScrollTopRef.current = nextScrollTop;
+      if (historyTouchGestureActiveRef.current && previousHistoryTouchYRef.current === null) {
+        maybeLoadOlderHistory();
+        scheduleTouchGestureEnd();
+      }
+    };
+    const handleScrollEnd = () => {
+      if (suppressedHistoryScrollEndsRef.current > 0) {
+        suppressedHistoryScrollEndsRef.current -= 1;
+        return;
+      }
+      if (historyPointerGestureActiveRef.current) return;
+      if (historyTouchGestureActiveRef.current) {
+        if (historyTouchGestureEndTimeoutRef.current) {
+          clearTimeout(historyTouchGestureEndTimeoutRef.current);
+        }
+        finishTouchGesture();
+        return;
+      }
+      if (historyGestureEndTimeoutRef.current) {
+        clearTimeout(historyGestureEndTimeoutRef.current);
+        if (delaysWheelGestureEndAfterScrollEnd) {
+          historyGestureEndTimeoutRef.current = setTimeout(finishWheelGesture, 80);
+        } else {
+          finishWheelGesture();
+        }
+        return;
+      }
+      if (historyKeyIntentTimeoutRef.current) {
+        clearTimeout(historyKeyIntentTimeoutRef.current);
+        historyKeyIntentTimeoutRef.current = null;
+      }
+      gate.endGesture();
+    };
+
+    container.addEventListener("wheel", handleWheel, {
+      passive: !usesMacOSWheelGestureStart
+    });
+    container.addEventListener("touchstart", handleTouchStart, { passive: true });
+    container.addEventListener("touchmove", handleTouchMove, { passive: true });
+    container.addEventListener("touchend", handleTouchEnd, { passive: true });
+    container.addEventListener("touchcancel", handleTouchCancel, { passive: true });
+    container.addEventListener("pointerdown", handlePointerDown);
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    container.addEventListener("scrollend", handleScrollEnd);
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      container.removeEventListener("wheel", handleWheel);
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("touchcancel", handleTouchCancel);
+      container.removeEventListener("pointerdown", handlePointerDown);
+      container.removeEventListener("scroll", handleScroll);
+      container.removeEventListener("scrollend", handleScrollEnd);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      if (historyGestureEndTimeoutRef.current) {
+        clearTimeout(historyGestureEndTimeoutRef.current);
+        historyGestureEndTimeoutRef.current = null;
+      }
+      if (historyTouchGestureEndTimeoutRef.current) {
+        clearTimeout(historyTouchGestureEndTimeoutRef.current);
+        historyTouchGestureEndTimeoutRef.current = null;
+      }
+      if (historyKeyIntentTimeoutRef.current) {
+        clearTimeout(historyKeyIntentTimeoutRef.current);
+        historyKeyIntentTimeoutRef.current = null;
+      }
+      historyWheelGestureStartPendingRef.current = false;
+      historyPreviousWheelCancelableRef.current = null;
+      historyTouchGestureActiveRef.current = false;
+      historyPointerGestureActiveRef.current = false;
+      gate.resetIntent();
+    };
+  }, [clearHistoryBottomCompensation, historyPaginationLifecycle, maybeLoadOlderHistory]);
+
+  useLayoutEffect(() => {
+    if (isLoadingOlderHistory || !pendingHistoryScrollRestoreRef.current) return;
+    const sessionId = pendingHistoryScrollRestoreSessionIdRef.current;
+    const snapshot = pendingHistoryScrollRestoreRef.current;
+    pendingHistoryScrollRestoreRef.current = null;
+    pendingHistoryScrollRestoreSessionIdRef.current = null;
+    const container = chatContainerRef.current;
+    if (!container || !sessionId || activeSessionIdRef.current !== sessionId) return;
+
+    let restoredTop = restoredChatHistoryScrollTop(snapshot, container.scrollHeight);
+    if (snapshot.anchorId && snapshot.anchorOffset !== undefined) {
+      const anchor = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-history-anchor-ids]")
+      ).find((candidate) =>
+        candidate.dataset.historyAnchorIds?.split(" ").includes(snapshot.anchorId!)
+      );
+      if (anchor) {
+        restoredTop = restoredChatHistoryAnchorScrollTop(
+          container.scrollTop,
+          snapshot.anchorOffset,
+          anchor.getBoundingClientRect().top - container.getBoundingClientRect().top
+        );
+      }
+    }
+    const compensation = historyBottomCompensationRef.current;
+    const currentCompensation = compensation?.offsetHeight ?? 0;
+    const missingRange = requiredChatHistoryBottomCompensation(
+      restoredTop,
+      container.scrollHeight - currentCompensation,
+      container.clientHeight
+    );
+    if (compensation)
+      compensation.style.height = missingRange > 0 ? `${missingRange + 1}px` : "0px";
+    const previousScrollTop = container.scrollTop;
+    container.scrollTop = restoredTop;
+    if (Math.abs(container.scrollTop - previousScrollTop) > 0.5) {
+      suppressedHistoryScrollEndsRef.current += 1;
+    }
+  }, [isLoadingOlderHistory, timelineItems]);
+
+  useLayoutEffect(() => {
+    if (isLoadingOlderHistory) return;
+    if (
+      historyPaginationLifecycle.gate.tryStartQueuedLoad({
+        canLoad: Boolean(activeSessionId && hasMoreOlderHistory)
+      })
+    ) {
+      void loadOlderHistory();
+    }
+  }, [
+    activeSessionId,
+    hasMoreOlderHistory,
+    historyPaginationLifecycle,
+    isLoadingOlderHistory,
+    loadOlderHistory
+  ]);
 
   useEffect(() => {
     if (!shouldAutoScrollRef.current) return;
@@ -986,7 +1787,10 @@ export function AgentMode({ userId }: { userId: string }) {
     isStopping
   });
   const isSending = Boolean(activeRunId) || isSubmitting;
-  const queuedMessages = activeSessionId ? (queueBySession[activeSessionId]?.items ?? []) : [];
+  const queuedMessages = useMemo(
+    () => (activeSessionId ? (queueBySession[activeSessionId]?.items ?? []) : []),
+    [activeSessionId, queueBySession]
+  );
   const editingQueueId =
     queueEdit && activeSessionId && queueEdit.sessionId === activeSessionId
       ? queueEdit.queueId
@@ -1008,7 +1812,7 @@ export function AgentMode({ userId }: { userId: string }) {
     if (!queuedMessageEditStillPresent(current, queuedMessages)) {
       setQueueEdit(null);
     }
-  }, [activeSessionId, queuedMessages, userId]);
+  }, [activeSessionId, agentRuntimeService, queuedMessages, userId]);
   useLayoutEffect(() => {
     const request = agentComposerFocusRequestRef.current;
     if (!request) return;
@@ -1098,14 +1902,21 @@ export function AgentMode({ userId }: { userId: string }) {
 
   const toggleSidebar = useCallback(() => setIsSidebarOpen((prev) => !prev), [setIsSidebarOpen]);
 
-  const beginSessionSelection = useCallback((sessionId: string): number => {
-    interactionGenerationRef.current += 1;
-    const generation = sessionSelectionGenerationRef.current + 1;
-    sessionSelectionGenerationRef.current = generation;
-    pendingSessionSelectionIdRef.current = sessionId;
-    setPendingSessionSelectionId(sessionId);
-    return generation;
-  }, []);
+  const beginSessionSelection = useCallback(
+    (sessionId: string): number => {
+      interactionGenerationRef.current += 1;
+      const generation = sessionSelectionGenerationRef.current + 1;
+      sessionSelectionGenerationRef.current = generation;
+      pendingSessionSelectionIdRef.current = sessionId;
+      setPendingSessionSelectionId(sessionId);
+      const protectedSessionIds = new Set<string>();
+      if (activeSessionIdRef.current) protectedSessionIds.add(activeSessionIdRef.current);
+      if (sessionId !== NEW_SESSION_PENDING_KEY) protectedSessionIds.add(sessionId);
+      historyPaginationCacheRef.current.reconcileRetention(protectedSessionIds);
+      return generation;
+    },
+    [historyPaginationCacheRef]
+  );
 
   const finishSessionSelection = useCallback((generation: number): boolean => {
     if (sessionSelectionGenerationRef.current !== generation) return false;
@@ -1256,11 +2067,11 @@ export function AgentMode({ userId }: { userId: string }) {
   const mergeSessionTimelineItem = useCallback(
     (sessionId: string, item: AgentTimelineItem) => {
       bumpTimelineRevision(sessionId);
-      if (activeSessionIdRef.current === sessionId) {
-        setTimelineItems((current) => mergeTimelineItem(current, item));
-      }
+      const result = historyPaginationCacheRef.current.mergeLiveItem(sessionId, item);
+      publishHistorySnapshot(sessionId);
+      return result;
     },
-    [bumpTimelineRevision]
+    [bumpTimelineRevision, historyPaginationCacheRef, publishHistorySnapshot]
   );
 
   const applyQueueSnapshot = useCallback(
@@ -1343,7 +2154,7 @@ export function AgentMode({ userId }: { userId: string }) {
         await agentRuntimeService.saveConfig(userId, nextConfig);
       });
     },
-    [enqueueProjectRootMutation, userId]
+    [agentRuntimeService, enqueueProjectRootMutation, userId]
   );
 
   const registerProjectRoot = useCallback(
@@ -1371,7 +2182,7 @@ export function AgentMode({ userId }: { userId: string }) {
         return { projectRoot: path, roots, config: nextConfig };
       });
     },
-    [enqueueProjectRootMutation, projectOrderState.confirmed, userId]
+    [agentRuntimeService, enqueueProjectRootMutation, projectOrderState.confirmed, userId]
   );
 
   const persistProjectRootOrder = useCallback(
@@ -1383,7 +2194,7 @@ export function AgentMode({ userId }: { userId: string }) {
         );
       });
     },
-    [enqueueProjectRootMutation, userId]
+    [agentRuntimeService, enqueueProjectRootMutation, userId]
   );
 
   const saveProjectRootOrder = useCallback(
@@ -1435,7 +2246,14 @@ export function AgentMode({ userId }: { userId: string }) {
           setIsProjectSkillsTrustLoading(false);
         }
       });
-  }, [isAuthTransitionReady, isInitializing, projectRoot, trackAgentWorkflow, userId]);
+  }, [
+    agentRuntimeService,
+    isAuthTransitionReady,
+    isInitializing,
+    projectRoot,
+    trackAgentWorkflow,
+    userId
+  ]);
 
   const saveProjectSkillsTrust = useCallback(
     async (trusted: boolean) => {
@@ -1455,38 +2273,86 @@ export function AgentMode({ userId }: { userId: string }) {
         setProjectSkillsTrustSavingDecision(null);
       }
     },
-    [projectSkillsTrustPrompt, projectSkillsTrustSavingDecision, trackAgentWorkflow, userId]
+    [
+      agentRuntimeService,
+      projectSkillsTrustPrompt,
+      projectSkillsTrustSavingDecision,
+      trackAgentWorkflow,
+      userId
+    ]
   );
+
+  const publishSessionPageSnapshot = useCallback(() => {
+    const snapshot = sessionPaginationCacheRef.current.snapshot();
+    setSessions([...snapshot.items]);
+    setHasMoreSessions(snapshot.hasMore);
+    setIsLoadingOlderSessions(snapshot.isLoading && snapshot.headLoaded);
+  }, [sessionPaginationCacheRef]);
 
   const refreshSessionList = useCallback(async () => {
     return await trackAgentWorkflow(async () => {
-      if (!isTauriDesktop()) return;
-      const refreshGeneration = sessionListRefreshGenerationRef.current + 1;
-      sessionListRefreshGenerationRef.current = refreshGeneration;
-      const summaryRevisionAtStart = sessionSummaryRevisionRef.current;
-      const nextSessions = await agentRuntimeService.listSessions(userId, null);
-      if (refreshGeneration < sessionListAppliedGenerationRef.current) return;
-      sessionListAppliedGenerationRef.current = refreshGeneration;
-      const changedAfterRequest = new Set(
-        [...sessionSummaryRevisionsRef.current.entries()]
-          .filter(([, revision]) => revision > summaryRevisionAtStart)
-          .map(([sessionId]) => sessionId)
-      );
-      setSessions((current) =>
-        reconcileAgentSessionSnapshot(
-          nextSessions,
-          current,
-          changedAfterRequest,
-          deletedSessionIdsRef.current
-        )
-      );
-      setIsSessionHistoryReady(true);
+      const token = sessionPaginationCacheRef.current.beginHead();
+      try {
+        const page = await agentRuntimeService.listSessionsPage(userId, {
+          projectRoot: null,
+          limit: DEFAULT_AGENT_PAGE_SIZE
+        });
+        sessionPaginationCacheRef.current.commit(token, page);
+        publishSessionPageSnapshot();
+        setIsSessionHistoryReady(true);
+      } catch (loadError) {
+        sessionPaginationCacheRef.current.fail(token);
+        publishSessionPageSnapshot();
+        throw loadError;
+      }
     });
-  }, [deletedSessionIdsRef, trackAgentWorkflow, userId]);
+  }, [
+    agentRuntimeService,
+    publishSessionPageSnapshot,
+    sessionPaginationCacheRef,
+    trackAgentWorkflow,
+    userId
+  ]);
+
+  const loadOlderSessions = useCallback(async () => {
+    const token = sessionPaginationCacheRef.current.beginOlder();
+    if (!token) return;
+    publishSessionPageSnapshot();
+    try {
+      const page = await trackAgentWorkflow(() =>
+        agentRuntimeService.listSessionsPage(userId, {
+          projectRoot: null,
+          cursor: token.cursor,
+          limit: DEFAULT_AGENT_PAGE_SIZE
+        })
+      );
+      sessionPaginationCacheRef.current.commit(token, page);
+    } catch (loadError) {
+      if (isAgentPageStaleError(loadError)) {
+        sessionPaginationCacheRef.current.clear();
+        try {
+          await refreshSessionList();
+        } catch (headError) {
+          setError(errorMessage(headError));
+        }
+      } else {
+        sessionPaginationCacheRef.current.fail(token);
+        setError(errorMessage(loadError));
+      }
+    } finally {
+      publishSessionPageSnapshot();
+    }
+  }, [
+    agentRuntimeService,
+    publishSessionPageSnapshot,
+    refreshSessionList,
+    sessionPaginationCacheRef,
+    trackAgentWorkflow,
+    userId
+  ]);
 
   const refreshSessions = useCallback(async () => {
     return await trackAgentWorkflow(async () => {
-      if (!isTauriDesktop()) return;
       const runStateGeneration = runStateGenerationRef.current;
       const status = await agentRuntimeService.getRuntimeStatus(userId);
       applyRuntimeStatus(status, runStateGeneration);
@@ -1497,7 +2363,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
       await refreshSessionList();
     });
-  }, [applyRuntimeStatus, refreshSessionList, trackAgentWorkflow, userId]);
+  }, [agentRuntimeService, applyRuntimeStatus, refreshSessionList, trackAgentWorkflow, userId]);
 
   const refreshSessionMcpServers = useCallback(
     async (sessionId: string) => {
@@ -1520,7 +2386,7 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       }
     },
-    [userId]
+    [agentRuntimeService, userId]
   );
 
   const saveMcpServers = useCallback(
@@ -1541,7 +2407,7 @@ export function AgentMode({ userId }: { userId: string }) {
         });
       }
     },
-    [mcpServers, refreshSessionMcpServers, userId]
+    [agentRuntimeService, mcpServers, refreshSessionMcpServers, userId]
   );
 
   const toggleMcpServer = useCallback(
@@ -1583,7 +2449,7 @@ export function AgentMode({ userId }: { userId: string }) {
           }
         });
     },
-    [userId]
+    [agentRuntimeService, userId]
   );
 
   useEffect(() => {
@@ -1609,7 +2475,6 @@ export function AgentMode({ userId }: { userId: string }) {
     const initializationGeneration = interactionGenerationRef.current;
     setIsInitializing(true);
     async function loadInitialState() {
-      if (!isTauriDesktop()) return;
       try {
         // A mode switch can remount AgentMode while the previous mount is still saving a selected
         // root or manual order. Read only after that user-scoped queue reaches its latest tail.
@@ -1705,6 +2570,7 @@ export function AgentMode({ userId }: { userId: string }) {
       cancelled = true;
     };
   }, [
+    agentRuntimeService,
     agentModelPreferenceRef,
     applyAuthoritativeMode,
     applyRuntimeStatus,
@@ -1717,7 +2583,7 @@ export function AgentMode({ userId }: { userId: string }) {
   ]);
 
   const chooseProjectRoot = useCallback(async () => {
-    if (!isTauriDesktop()) return;
+    if (!localProjectFolderActionsAvailable) return;
     try {
       await trackAgentWorkflow(async () => {
         const { open } = await import("@tauri-apps/plugin-dialog");
@@ -1734,7 +2600,7 @@ export function AgentMode({ userId }: { userId: string }) {
               visibleProjectRootsRef.current
             );
             invalidateSessionSelection();
-            agentSessionSelection.forget(userId);
+            agentSessionSelection.forget(agentOwnerKey);
             shouldAutoScrollRef.current = true;
             setProjectRoot(registration.projectRoot);
             activeSessionIdRef.current = null;
@@ -1752,18 +2618,19 @@ export function AgentMode({ userId }: { userId: string }) {
       setError(errorMessage(chooseError));
     }
   }, [
+    agentOwnerKey,
     agentSessionSelection,
     invalidateSessionSelection,
+    localProjectFolderActionsAvailable,
     registerProjectRoot,
     restoreNewTaskModel,
-    trackAgentWorkflow,
-    userId
+    trackAgentWorkflow
   ]);
 
   const selectProjectRoot = useCallback(
     (value: string) => {
       invalidateSessionSelection();
-      agentSessionSelection.forget(userId);
+      agentSessionSelection.forget(agentOwnerKey);
       const interactionGeneration = interactionGenerationRef.current;
       setProjectRoot(value);
       setActiveSessionId(null);
@@ -1785,12 +2652,12 @@ export function AgentMode({ userId }: { userId: string }) {
       })();
     },
     [
+      agentOwnerKey,
       agentSessionSelection,
       invalidateSessionSelection,
       persistSelectedProjectRoot,
       refreshSessions,
-      restoreNewTaskModel,
-      userId
+      restoreNewTaskModel
     ]
   );
 
@@ -1939,7 +2806,7 @@ export function AgentMode({ userId }: { userId: string }) {
           }
         });
     },
-    [applyAuthoritativeMode, permissionModeUpdateRef, userId]
+    [agentRuntimeService, applyAuthoritativeMode, permissionModeUpdateRef, userId]
   );
 
   const startRuntime = useCallback(
@@ -2000,6 +2867,7 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      agentRuntimeService,
       agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyRuntimeStatus,
@@ -2042,13 +2910,20 @@ export function AgentMode({ userId }: { userId: string }) {
         // Goose may reuse the newest deleted session ID. This detail represents
         // a new persisted session, so it supersedes any local deletion tombstone.
         deletedSessionIdsRef.current.delete(detail.session.id);
-        markSessionSummaryChanged(detail.session.id);
         sessionId = detail.session.id;
-        setSessions((current) => [
-          detail.session,
-          ...current.filter((item) => item.id !== detail.session.id)
-        ]);
-        replaceSessionTimeline(sessionId, detail.timeline);
+        sessionPaginationCacheRef.current.upsert(detail.session);
+        publishSessionPageSnapshot();
+        let createdTimeline = detail.timeline;
+        if (
+          historyPaginationCacheRef.current.seedLiveTimeline(sessionId, detail.timeline) ===
+          "synchronized-reload-required"
+        ) {
+          throw new Error("Agent live history requires a synchronized reconnect");
+        }
+        if (agentRuntimeService.target.kind === "remote") {
+          createdTimeline = await loadHistoryHead(sessionId);
+        }
+        replaceSessionTimeline(sessionId, createdTimeline);
         applyQueueSnapshot(sessionId, detail.queue ?? emptyAgentDesktopQueueSnapshot());
 
         // A send that creates a session may finish after the user selects a
@@ -2062,12 +2937,12 @@ export function AgentMode({ userId }: { userId: string }) {
           shouldAutoScrollRef.current = true;
           activeSessionIdRef.current = sessionId;
           setActiveSessionId(sessionId);
-          agentSessionSelection.remember(userId, sessionId);
+          agentSessionSelection.remember(agentOwnerKey, sessionId);
           isAgentModelLockedRef.current = false;
           currentAgentModelRef.current = requestModel;
           setModel(requestModel);
           applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
-          replaceSessionTimeline(sessionId, detail.timeline);
+          replaceSessionTimeline(sessionId, createdTimeline);
           applyQueueSnapshot(sessionId, detail.queue ?? emptyAgentDesktopQueueSnapshot());
           const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
           if (mcpError) setError(mcpError);
@@ -2077,15 +2952,20 @@ export function AgentMode({ userId }: { userId: string }) {
       return { sessionId, requestModel };
     },
     [
+      agentOwnerKey,
+      agentRuntimeService,
       agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyQueueSnapshot,
       agentSessionSelection,
       contextLimitForModel,
       deletedSessionIdsRef,
-      markSessionSummaryChanged,
+      historyPaginationCacheRef,
+      loadHistoryHead,
       projectRoot,
+      publishSessionPageSnapshot,
       replaceSessionTimeline,
+      sessionPaginationCacheRef,
       selectedNewChatMcpServerNames,
       startRuntime,
       userId
@@ -2120,12 +3000,19 @@ export function AgentMode({ userId }: { userId: string }) {
           });
         });
         deletedSessionIdsRef.current.delete(detail.session.id);
-        markSessionSummaryChanged(detail.session.id);
-        setSessions((current) => [
-          detail.session,
-          ...current.filter((session) => session.id !== detail.session.id)
-        ]);
-        replaceSessionTimeline(detail.session.id, detail.timeline);
+        sessionPaginationCacheRef.current.upsert(detail.session);
+        publishSessionPageSnapshot();
+        let createdTimeline = detail.timeline;
+        if (
+          historyPaginationCacheRef.current.seedLiveTimeline(detail.session.id, detail.timeline) ===
+          "synchronized-reload-required"
+        ) {
+          throw new Error("Agent live history requires a synchronized reconnect");
+        }
+        if (agentRuntimeService.target.kind === "remote") {
+          createdTimeline = await loadHistoryHead(detail.session.id);
+        }
+        replaceSessionTimeline(detail.session.id, createdTimeline);
         applyQueueSnapshot(detail.session.id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
 
         if (
@@ -2136,13 +3023,13 @@ export function AgentMode({ userId }: { userId: string }) {
           shouldAutoScrollRef.current = true;
           activeSessionIdRef.current = detail.session.id;
           setActiveSessionId(detail.session.id);
-          agentSessionSelection.remember(userId, detail.session.id);
+          agentSessionSelection.remember(agentOwnerKey, detail.session.id);
           setProjectRoot(detail.session.projectRoot);
           isAgentModelLockedRef.current = false;
           currentAgentModelRef.current = requestModel;
           setModel(requestModel);
           applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
-          replaceSessionTimeline(detail.session.id, detail.timeline);
+          replaceSessionTimeline(detail.session.id, createdTimeline);
           applyQueueSnapshot(detail.session.id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
           const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
           if (mcpError) setError(mcpError);
@@ -2162,6 +3049,8 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      agentOwnerKey,
+      agentRuntimeService,
       agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyQueueSnapshot,
@@ -2171,11 +3060,14 @@ export function AgentMode({ userId }: { userId: string }) {
       deletedSessionIdsRef,
       finishSessionSelection,
       isAgentModelCatalogLoading,
-      markSessionSummaryChanged,
+      historyPaginationCacheRef,
+      loadHistoryHead,
       projectRoot,
+      publishSessionPageSnapshot,
       replaceSessionTimeline,
       runtimeStatus?.running,
       selectedNewChatMcpServerNames,
+      sessionPaginationCacheRef,
       startRuntime,
       trackAgentWorkflow,
       userId
@@ -2189,17 +3081,18 @@ export function AgentMode({ userId }: { userId: string }) {
       setError(null);
       clearCompletedUnreadSession(sessionId);
       try {
-        const loaded = await trackAgentWorkflow(async () => {
-          for (let attempt = 0; attempt < MAX_STABLE_SESSION_LOAD_ATTEMPTS; attempt += 1) {
-            const timelineRevision = timelineRevisionBySessionRef.current.get(sessionId) || 0;
-            const detail = await agentRuntimeService.loadSession(userId, sessionId);
-            if ((timelineRevisionBySessionRef.current.get(sessionId) || 0) === timelineRevision) {
-              return { detail, timelineRevision };
-            }
-          }
-          throw new Error("This task is still updating. Try selecting it again shortly.");
+        const session = sessionPaginationCacheRef.current
+          .snapshot()
+          .items.find((candidate) => candidate.id === sessionId);
+        if (!session) throw new Error("This task is not in the loaded task history.");
+        const [timeline, queue] = await trackAgentWorkflow(async () => {
+          return await Promise.all([
+            loadHistoryHead(sessionId),
+            agentRuntimeService.target.kind === "local"
+              ? agentRuntimeService.getDesktopQueueSnapshot(userId, sessionId)
+              : Promise.resolve(emptyAgentDesktopQueueSnapshot())
+          ]);
         });
-        const { detail, timelineRevision } = loaded;
         if (
           !isAgentModeMountedRef.current ||
           sessionSelectionGenerationRef.current !== selectionGeneration ||
@@ -2209,56 +3102,46 @@ export function AgentMode({ userId }: { userId: string }) {
           return;
         }
 
-        // Validate and install the snapshot before switching focus. A live
-        // event can arrive between the native read and this continuation; in
-        // that case leave the previous chat intact instead of overwriting the
-        // newer timeline with a stale snapshot.
-        if (!replaceSessionTimeline(detail.session.id, detail.timeline, timelineRevision)) {
-          throw new Error("This task changed while loading. Try selecting it again.");
-        }
-
         // Commit the selected session and all of its settings together. Until
         // this point the previous chat remains active and its composer is gated.
         shouldAutoScrollRef.current = true;
-        promptHistoryReplacementTrackerRef.current.abandonInactive(detail.session.id);
-        promptHistoryEntriesRef.current = agentPromptHistory(detail.timeline);
-        activeSessionIdRef.current = detail.session.id;
-        clearCompletedUnreadSession(detail.session.id);
-        setActiveSessionId(detail.session.id);
-        agentSessionSelection.remember(userId, detail.session.id);
-        setProjectRoot(detail.session.projectRoot);
+        promptHistoryReplacementTrackerRef.current.abandonInactive(session.id);
+        promptHistoryEntriesRef.current = agentPromptHistory(timeline);
+        activeSessionIdRef.current = session.id;
+        clearCompletedUnreadSession(session.id);
+        setActiveSessionId(session.id);
+        agentSessionSelection.remember(agentOwnerKey, session.id);
+        setProjectRoot(session.projectRoot);
         const isModelLocked =
-          detail.session.messageCount > 0 ||
-          hasAgentUserMessage(detail.timeline) ||
-          Boolean(activeRunsBySessionRef.current[detail.session.id]) ||
-          pendingSendTokensRef.current.has(detail.session.id);
+          session.messageCount > 0 ||
+          hasAgentUserMessage(timeline) ||
+          Boolean(activeRunsBySessionRef.current[session.id]) ||
+          pendingSendTokensRef.current.has(session.id);
         isAgentModelLockedRef.current = isModelLocked;
         const sessionModel = resolveAgentModelForSession(
           newTaskAgentModel(agentModelPreferenceRef.current),
-          detail.session.model,
+          session.model,
           isModelLocked
         );
         currentAgentModelRef.current = sessionModel;
         setModel(sessionModel);
-        applyAuthoritativeMode(normalizeAgentPermissionMode(detail.session.mode));
-        setTimelineItems(detail.timeline);
-        applyQueueSnapshot(detail.session.id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
-        if (activeRunsBySessionRef.current[detail.session.id]) {
-          thoughtPhaseTrackerRef.current.seedActiveTimeline(detail.session.id, detail.timeline);
-          observeActiveThoughtPhase(detail.session.id);
+        applyAuthoritativeMode(normalizeAgentPermissionMode(session.mode));
+        publishHistorySnapshot(session.id);
+        applyQueueSnapshot(session.id, queue);
+        if (activeRunsBySessionRef.current[session.id]) {
+          thoughtPhaseTrackerRef.current.seedActiveTimeline(session.id, timeline);
+          observeActiveThoughtPhase(session.id);
         }
-        const mcpError = mcpConnectionErrorMessage(detail.mcpErrors);
-        if (mcpError) setError(mcpError);
         finishSessionSelection(selectionGeneration);
 
         try {
-          await persistSelectedProjectRoot(detail.session.projectRoot);
+          await persistSelectedProjectRoot(session.projectRoot);
         } catch (persistError) {
           if (
             isAgentModeMountedRef.current &&
             sessionSelectionGenerationRef.current === selectionGeneration &&
             interactionGenerationRef.current === interactionGeneration &&
-            activeSessionIdRef.current === detail.session.id
+            activeSessionIdRef.current === session.id
           ) {
             setError(errorMessage(persistError));
           }
@@ -2278,6 +3161,8 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      agentOwnerKey,
+      agentRuntimeService,
       agentModelPreferenceRef,
       applyAuthoritativeMode,
       applyQueueSnapshot,
@@ -2289,10 +3174,11 @@ export function AgentMode({ userId }: { userId: string }) {
       observeActiveThoughtPhase,
       pendingSendTokensRef,
       persistSelectedProjectRoot,
+      loadHistoryHead,
+      publishHistorySnapshot,
+      sessionPaginationCacheRef,
       promptHistoryReplacementTrackerRef,
-      replaceSessionTimeline,
       thoughtPhaseTrackerRef,
-      timelineRevisionBySessionRef,
       trackAgentWorkflow,
       userId
     ]
@@ -2308,16 +3194,22 @@ export function AgentMode({ userId }: { userId: string }) {
       return;
     }
 
-    hasAttemptedSessionRestoreRef.current = true;
-    const rememberedSessionId = agentSessionSelection.resolve(userId, visibleSessions);
+    const rememberedSessionId = agentSessionSelection.resolve(agentOwnerKey, visibleSessions, {
+      historyComplete: !hasMoreSessions
+    });
     if (rememberedSessionId) {
+      hasAttemptedSessionRestoreRef.current = true;
       void loadSession(rememberedSessionId);
+    } else if (!hasMoreSessions) {
+      hasAttemptedSessionRestoreRef.current = true;
     }
   }, [
+    agentOwnerKey,
     agentSessionSelection,
     isAuthTransitionReady,
     isInitializing,
     isSessionHistoryReady,
+    hasMoreSessions,
     loadSession,
     visibleSessions,
     userId
@@ -2477,6 +3369,7 @@ export function AgentMode({ userId }: { userId: string }) {
     },
     [
       activeRunId,
+      agentRuntimeService,
       applyQueueSnapshot,
       availableModels,
       cancelledPendingSendTokensRef,
@@ -2543,6 +3436,7 @@ export function AgentMode({ userId }: { userId: string }) {
     }
   }, [
     activeRunId,
+    agentRuntimeService,
     cancelledPendingSendTokensRef,
     clearStoppingSession,
     markStoppingSession,
@@ -2565,7 +3459,7 @@ export function AgentMode({ userId }: { userId: string }) {
           setError(errorMessage(queueError));
         }
       });
-  }, [userId]);
+  }, [agentRuntimeService, userId]);
 
   const cancelQueuedMessage = useCallback(
     async (queueId: string) => {
@@ -2592,7 +3486,7 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       }
     },
-    [applyQueueSnapshot, userId]
+    [agentRuntimeService, applyQueueSnapshot, userId]
   );
 
   const editQueuedMessage = useCallback(
@@ -2632,7 +3526,7 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       }
     },
-    [discardQueueEdit, input, userId]
+    [agentRuntimeService, discardQueueEdit, input, userId]
   );
 
   const respondToPermission = useCallback(
@@ -2655,7 +3549,7 @@ export function AgentMode({ userId }: { userId: string }) {
         }
       }
     },
-    [userId]
+    [agentRuntimeService, userId]
   );
 
   const handleKeyDown = useCallback(
@@ -2730,12 +3624,13 @@ export function AgentMode({ userId }: { userId: string }) {
   const removeSessionFromState = useCallback(
     (sessionId: string) => {
       deletedSessionIdsRef.current.add(sessionId);
-      sessionSummaryRevisionsRef.current.delete(sessionId);
+      sessionPaginationCacheRef.current.remove(sessionId);
+      historyPaginationCacheRef.current.remove(sessionId);
       thoughtPhaseTrackerRef.current.forgetSession(sessionId);
       cancelThoughtLabelDisplays(sessionId);
-      agentSessionSelection.forget(userId, sessionId);
+      agentSessionSelection.forget(agentOwnerKey, sessionId);
       timelineRevisionBySessionRef.current.delete(sessionId);
-      setSessions((current) => current.filter((session) => session.id !== sessionId));
+      publishSessionPageSnapshot();
       setCompletedUnreadSessionIds((current) => {
         if (!current.has(sessionId)) return current;
         const next = new Set(current);
@@ -2763,15 +3658,18 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      agentOwnerKey,
       agentSessionSelection,
       cancelThoughtLabelDisplays,
       clearActiveRun,
       deletedSessionIdsRef,
       forgetSessionQueue,
+      historyPaginationCacheRef,
+      publishSessionPageSnapshot,
       restoreNewTaskModel,
+      sessionPaginationCacheRef,
       thoughtPhaseTrackerRef,
-      timelineRevisionBySessionRef,
-      userId
+      timelineRevisionBySessionRef
     ]
   );
 
@@ -2790,7 +3688,7 @@ export function AgentMode({ userId }: { userId: string }) {
         setError(errorMessage(deleteError));
       }
     },
-    [removeSessionFromState, userId]
+    [agentRuntimeService, removeSessionFromState, userId]
   );
 
   const removeProjectRoot = useCallback(
@@ -2811,7 +3709,7 @@ export function AgentMode({ userId }: { userId: string }) {
 
         if (projectRoot === root.path) {
           invalidateSessionSelection();
-          agentSessionSelection.forget(userId);
+          agentSessionSelection.forget(agentOwnerKey);
           activeSessionIdRef.current = null;
           setActiveSessionId(null);
           setTimelineItems([]);
@@ -2831,6 +3729,8 @@ export function AgentMode({ userId }: { userId: string }) {
       }
     },
     [
+      agentOwnerKey,
+      agentRuntimeService,
       agentSessionSelection,
       enqueueProjectRootMutation,
       invalidateSessionSelection,
@@ -2860,35 +3760,33 @@ export function AgentMode({ userId }: { userId: string }) {
   const upsertSessionSummary = useCallback(
     (summary: AgentSessionSummary) => {
       if (deletedSessionIdsRef.current.has(summary.id)) return;
-      markSessionSummaryChanged(summary.id);
-      setSessions((current) => {
-        let replaced = false;
-        const next = current.map((session) => {
-          if (session.id !== summary.id) return session;
-          replaced = true;
-          return summary;
-        });
-        return replaced ? next : [summary, ...current];
-      });
+      sessionPaginationCacheRef.current.upsert(summary);
+      publishSessionPageSnapshot();
     },
-    [deletedSessionIdsRef, markSessionSummaryChanged]
+    [deletedSessionIdsRef, publishSessionPageSnapshot, sessionPaginationCacheRef]
   );
 
   const renameAgentSession = useCallback(
     async (sessionId: string, title: string) => {
-      const revision = sessionSummaryRevisionsRef.current.get(sessionId);
+      const revision = sessionPaginationCacheRef.current.summaryRevision(sessionId);
       const summary = await agentRuntimeService.renameSession(userId, { sessionId, title });
       if (
         !isAgentModeMountedRef.current ||
         userIdRef.current !== userId ||
         deletedSessionIdsRef.current.has(sessionId) ||
-        sessionSummaryRevisionsRef.current.get(sessionId) !== revision
+        sessionPaginationCacheRef.current.summaryRevision(sessionId) !== revision
       ) {
         return;
       }
       upsertSessionSummary(summary);
     },
-    [deletedSessionIdsRef, upsertSessionSummary, userId]
+    [
+      agentRuntimeService,
+      deletedSessionIdsRef,
+      sessionPaginationCacheRef,
+      upsertSessionSummary,
+      userId
+    ]
   );
 
   const observeLiveThoughtItem = useCallback(
@@ -2911,9 +3809,147 @@ export function AgentMode({ userId }: { userId: string }) {
     [completeThoughtPhase, observeActiveThoughtPhase, thoughtPhaseTrackerRef]
   );
 
+  const reconcileAgentEventGap = useCallback(
+    (affectedSessionId: string | null) => {
+      if (affectedSessionId) {
+        pendingEventGapSessionIdsRef.current.add(affectedSessionId);
+      } else {
+        hasUnknownEventGapRef.current = true;
+      }
+      if (eventGapRecoveryRef.current) return;
+      const recovery = (async () => {
+        do {
+          const sessionIds = new Set(pendingEventGapSessionIdsRef.current);
+          pendingEventGapSessionIdsRef.current.clear();
+          const hadUnknownGap = hasUnknownEventGapRef.current;
+          hasUnknownEventGapRef.current = false;
+          try {
+            const runStateGeneration = runStateGenerationRef.current;
+            const status = await agentRuntimeService.getRuntimeStatus(userId);
+            applyRuntimeStatus(status, runStateGeneration);
+            await refreshSessionList();
+            if (activeSessionIdRef.current) sessionIds.add(activeSessionIdRef.current);
+            if (hadUnknownGap && sessionIds.size === 0) {
+              const newestSession = sessionPaginationCacheRef.current.snapshot().items[0];
+              if (newestSession) sessionIds.add(newestSession.id);
+            }
+            const reloadableSessionIds = [...sessionIds].filter(
+              (sessionId) => !deletedSessionIdsRef.current.has(sessionId)
+            );
+            if (agentRuntimeService.target.kind === "remote") {
+              // One synchronized remote attach replaces every account live
+              // overlay at the same C0. Loading multiple heads would only
+              // churn the single account stream and cannot improve recovery.
+              const sessionId =
+                activeSessionIdRef.current &&
+                reloadableSessionIds.includes(activeSessionIdRef.current)
+                  ? activeSessionIdRef.current
+                  : reloadableSessionIds[0];
+              if (sessionId) await loadHistoryHead(sessionId);
+            } else {
+              await Promise.all(
+                reloadableSessionIds.map((sessionId) => loadHistoryHead(sessionId))
+              );
+            }
+          } catch (gapError) {
+            if (isAgentModeMountedRef.current && userIdRef.current === userId) {
+              setError(errorMessage(gapError));
+            }
+          }
+        } while (pendingEventGapSessionIdsRef.current.size > 0 || hasUnknownEventGapRef.current);
+      })();
+      eventGapRecoveryRef.current = recovery;
+      void recovery.finally(() => {
+        if (eventGapRecoveryRef.current === recovery) eventGapRecoveryRef.current = null;
+      });
+    },
+    [
+      agentRuntimeService,
+      applyRuntimeStatus,
+      deletedSessionIdsRef,
+      loadHistoryHead,
+      pendingEventGapSessionIdsRef,
+      refreshSessionList,
+      sessionPaginationCacheRef,
+      userId
+    ]
+  );
+
+  const settleFinishedAgentRun = useCallback(
+    (sessionId: string, runId: string, terminal: "completed" | "cancelled" | "failed") => {
+      runStateGenerationRef.current += 1;
+      terminalRunIdsRef.current.add(runId);
+      thoughtPhaseSeededRunIdsRef.current.delete(runId);
+      const finishedTimelineRevision = bumpTimelineRevision(sessionId);
+      clearActiveRun(sessionId, runId);
+      // The terminal event is authoritative for run state. Refresh only
+      // persisted session metadata here: a concurrent status snapshot could
+      // otherwise resurrect the completed run.
+      void refreshSessionList().catch(() => {});
+      const thoughtRunFinished = handleAgentModeThoughtRunFinished({
+        event: {
+          eventType: "runFinished",
+          sessionId,
+          runId,
+          message: terminal
+        },
+        timelineRevision: finishedTimelineRevision,
+        tracker: thoughtPhaseTrackerRef.current,
+        finalizePhase: completeThoughtPhase,
+        releaseProvisional: (phase) => {
+          thoughtLabelProvisionalSchedulerRef.current?.complete(phase.sessionId, phase.phaseId);
+        },
+        cancelAndInvalidateLabels: (finishedSessionId, assistantTurnId) => {
+          if (assistantTurnId) {
+            invalidateThoughtLabelsForTurn(finishedSessionId, assistantTurnId);
+          } else {
+            invalidateThoughtLabelsForSession(finishedSessionId);
+          }
+        },
+        loadTimeline: async (finishedSessionId) => await loadHistoryHead(finishedSessionId),
+        canApplyTimeline: (finishedSessionId) =>
+          isAgentModeMountedRef.current &&
+          userIdRef.current === userId &&
+          !deletedSessionIdsRef.current.has(finishedSessionId),
+        replaceTimeline: replaceSessionTimeline
+      });
+      if (thoughtRunFinished) {
+        if (terminal === "completed" && sessionId !== activeSessionIdRef.current) {
+          markCompletedUnreadSession(sessionId);
+        }
+        void thoughtRunFinished.catch(() => {});
+      }
+    },
+    [
+      bumpTimelineRevision,
+      clearActiveRun,
+      completeThoughtPhase,
+      deletedSessionIdsRef,
+      invalidateThoughtLabelsForSession,
+      invalidateThoughtLabelsForTurn,
+      loadHistoryHead,
+      markCompletedUnreadSession,
+      refreshSessionList,
+      replaceSessionTimeline,
+      terminalRunIdsRef,
+      thoughtPhaseSeededRunIdsRef,
+      thoughtPhaseTrackerRef,
+      userId
+    ]
+  );
+
   const handleAgentEvent = useCallback(
     (event: AgentEventEnvelope) => {
       const eventSessionId = event.sessionId || event.session?.id;
+      const acceptance = historyPaginationCacheRef.current.acceptEvent(event);
+      if (acceptance === "duplicate" || acceptance === "invalid") return;
+      if (acceptance === "gap") {
+        // Event sequence is account-wide, so reconcile account/runtime and
+        // bounded affected heads together. The replay journal will become the
+        // first recovery step when its attach contract is wired.
+        reconcileAgentEventGap(eventSessionId ?? null);
+        return;
+      }
       if (eventSessionId && deletedSessionIdsRef.current.has(eventSessionId)) {
         return;
       }
@@ -2938,6 +3974,7 @@ export function AgentMode({ userId }: { userId: string }) {
         case "runStarted":
           runStateGenerationRef.current += 1;
           if (event.sessionId && event.runId && !terminalRunIdsRef.current.has(event.runId)) {
+            historyPaginationCacheRef.current.startLiveSuffix(event.sessionId);
             bumpTimelineRevision(event.sessionId);
             clearCompletedUnreadSession(event.sessionId);
             recordActiveRun(event.sessionId, event.runId);
@@ -2945,8 +3982,15 @@ export function AgentMode({ userId }: { userId: string }) {
           break;
         case "timelineItem":
           if (event.item && event.sessionId) {
-            observeLiveThoughtItem(event.sessionId, event.item);
-            mergeSessionTimelineItem(event.sessionId, event.item);
+            const mergeResult = mergeSessionTimelineItem(event.sessionId, event.item);
+            if (mergeResult === "applied") {
+              observeLiveThoughtItem(event.sessionId, event.item);
+            } else {
+              setError(
+                "Agent live history exceeded its safe cache window. Reconnect to reload this task."
+              );
+              reconcileAgentEventGap(event.sessionId);
+            }
           }
           break;
         case "queueChanged":
@@ -2960,49 +4004,14 @@ export function AgentMode({ userId }: { userId: string }) {
           }
           break;
         case "runFinished": {
-          runStateGenerationRef.current += 1;
-          if (event.runId) {
-            terminalRunIdsRef.current.add(event.runId);
-            thoughtPhaseSeededRunIdsRef.current.delete(event.runId);
-          }
-          let finishedTimelineRevision: number | undefined;
-          if (event.sessionId) {
-            finishedTimelineRevision = bumpTimelineRevision(event.sessionId);
-            clearActiveRun(event.sessionId, event.runId || undefined);
-          }
-          // The terminal event is authoritative for run state. Refresh only
-          // persisted session metadata here: the native task removes its
-          // active-run entry immediately after emitting this event, so a
-          // concurrent status snapshot could otherwise resurrect the run.
-          void refreshSessionList().catch(() => {});
-          const thoughtRunFinished = handleAgentModeThoughtRunFinished({
-            event,
-            timelineRevision: finishedTimelineRevision,
-            tracker: thoughtPhaseTrackerRef.current,
-            finalizePhase: completeThoughtPhase,
-            releaseProvisional: (phase) => {
-              thoughtLabelProvisionalSchedulerRef.current?.complete(phase.sessionId, phase.phaseId);
-            },
-            cancelAndInvalidateLabels: (sessionId, assistantTurnId) => {
-              if (assistantTurnId) {
-                invalidateThoughtLabelsForTurn(sessionId, assistantTurnId);
-              } else {
-                invalidateThoughtLabelsForSession(sessionId);
-              }
-            },
-            loadTimeline: async (sessionId) =>
-              (await agentRuntimeService.loadSession(userId, sessionId)).timeline,
-            canApplyTimeline: (sessionId) =>
-              isAgentModeMountedRef.current &&
-              userIdRef.current === userId &&
-              !deletedSessionIdsRef.current.has(sessionId),
-            replaceTimeline: replaceSessionTimeline
-          });
-          if (thoughtRunFinished) {
-            if (event.message === "completed" && event.sessionId !== activeSessionIdRef.current) {
-              markCompletedUnreadSession(event.sessionId!);
-            }
-            void thoughtRunFinished.catch(() => {});
+          if (
+            event.sessionId &&
+            event.runId &&
+            (event.message === "completed" ||
+              event.message === "cancelled" ||
+              event.message === "failed")
+          ) {
+            settleFinishedAgentRun(event.sessionId, event.runId, event.message);
           }
           break;
         }
@@ -3015,8 +4024,15 @@ export function AgentMode({ userId }: { userId: string }) {
             }
           }
           if (event.item && event.sessionId) {
-            observeLiveThoughtItem(event.sessionId, event.item);
-            mergeSessionTimelineItem(event.sessionId, event.item);
+            const mergeResult = mergeSessionTimelineItem(event.sessionId, event.item);
+            if (mergeResult === "applied") {
+              observeLiveThoughtItem(event.sessionId, event.item);
+            } else {
+              setError(
+                "Agent live history exceeded its safe cache window. Reconnect to reload this task."
+              );
+              reconcileAgentEventGap(event.sessionId);
+            }
           }
           break;
         case "historyReplaced":
@@ -3053,7 +4069,8 @@ export function AgentMode({ userId }: { userId: string }) {
             }
             const historyTimelineRevision = bumpTimelineRevision(id);
             try {
-              const detail = await agentRuntimeService.loadSession(userId, id);
+              historyPaginationCacheRef.current.invalidate(id);
+              const timeline = await loadHistoryHead(id);
               if (
                 !isAgentModeMountedRef.current ||
                 userIdRef.current !== userId ||
@@ -3062,13 +4079,12 @@ export function AgentMode({ userId }: { userId: string }) {
                 recoverPromptHistory(null);
                 return;
               }
-              const replaced = replaceSessionTimeline(id, detail.timeline, historyTimelineRevision);
-              applyQueueSnapshot(id, detail.queue ?? emptyAgentDesktopQueueSnapshot());
+              const replaced = replaceSessionTimeline(id, timeline, historyTimelineRevision);
               if (!replaced) {
                 recoverPromptHistory(activeSessionIdRef.current);
               }
               if (replaced && activeRunsBySessionRef.current[id]) {
-                thoughtPhaseTrackerRef.current.seedActiveTimeline(id, detail.timeline);
+                thoughtPhaseTrackerRef.current.seedActiveTimeline(id, timeline);
                 observeActiveThoughtPhase(id);
               }
             } catch (historyError) {
@@ -3089,36 +4105,178 @@ export function AgentMode({ userId }: { userId: string }) {
       applyQueueSnapshot,
       applyRuntimeStatus,
       bumpTimelineRevision,
-      clearActiveRun,
       clearCompletedUnreadSession,
-      completeThoughtPhase,
       deletedSessionIdsRef,
       invalidateThoughtLabelsForSession,
       invalidateThoughtLabelsForTurn,
-      markCompletedUnreadSession,
+      historyPaginationCacheRef,
+      loadHistoryHead,
       mergeSessionTimelineItem,
       observeLiveThoughtItem,
       observeActiveThoughtPhase,
       promptHistoryReplacementTrackerRef,
-      refreshSessionList,
       recordActiveRun,
       refreshSessionMcpServers,
+      reconcileAgentEventGap,
       replaceSessionTimeline,
+      settleFinishedAgentRun,
       resetPromptHistoryNavigation,
       terminalRunIdsRef,
-      thoughtPhaseSeededRunIdsRef,
       thoughtPhaseTrackerRef,
       upsertSessionSummary,
       userId
     ]
   );
 
+  const handleAgentLiveChannelFrame = useCallback(
+    (frame: AgentLiveChannelFrame) => {
+      if (frame.eventType === "snapshotRequired") {
+        historyPaginationCacheRef.current.requireSynchronizedReload();
+        reconcileAgentEventGap(null);
+        return;
+      }
+
+      // The closed stream is account-wide. Consume ordering before deciding
+      // whether this session is selected, deleted, or has a visible mutation.
+      const acceptance = historyPaginationCacheRef.current.acceptEvent(frame);
+      if (acceptance === "duplicate" || acceptance === "invalid") return;
+      if (acceptance === "gap") {
+        reconcileAgentEventGap(frame.sessionId);
+        return;
+      }
+      if (
+        frame.eventType !== "sessionDeleted" &&
+        deletedSessionIdsRef.current.has(frame.sessionId)
+      ) {
+        return;
+      }
+
+      switch (frame.eventType) {
+        case "runStarted":
+          // runStarted is lifecycle only. The durable stream publishes a
+          // distinct timelineCleared event when the overlay is obsolete.
+          runStateGenerationRef.current += 1;
+          if (!terminalRunIdsRef.current.has(frame.runId)) {
+            clearCompletedUnreadSession(frame.sessionId);
+            recordActiveRun(frame.sessionId, frame.runId);
+          }
+          break;
+        case "timelineUpsert":
+        case "userFacingError":
+          if (mergeSessionTimelineItem(frame.sessionId, frame.item) === "applied") {
+            observeLiveThoughtItem(frame.sessionId, frame.item);
+          } else {
+            setError(
+              "Agent live history exceeded its safe cache window. Reconnect to reload this task."
+            );
+            reconcileAgentEventGap(frame.sessionId);
+          }
+          break;
+        case "timelineCleared": {
+          historyPaginationCacheRef.current.clearLiveTimeline(frame.sessionId);
+          const invalidatedTurnId = thoughtPhaseTrackerRef.current.resetForHistoryReplacement(
+            frame.sessionId
+          );
+          if (invalidatedTurnId) {
+            invalidateThoughtLabelsForTurn(frame.sessionId, invalidatedTurnId);
+          } else {
+            invalidateThoughtLabelsForSession(frame.sessionId);
+          }
+          bumpTimelineRevision(frame.sessionId);
+          publishHistorySnapshot(frame.sessionId);
+          break;
+        }
+        case "historyReplaced":
+          void (async () => {
+            const invalidatedTurnId = thoughtPhaseTrackerRef.current.resetForHistoryReplacement(
+              frame.sessionId
+            );
+            if (invalidatedTurnId) {
+              invalidateThoughtLabelsForTurn(frame.sessionId, invalidatedTurnId);
+            } else {
+              invalidateThoughtLabelsForSession(frame.sessionId);
+            }
+            const historyTimelineRevision = bumpTimelineRevision(frame.sessionId);
+            try {
+              historyPaginationCacheRef.current.invalidate(frame.sessionId);
+              const timeline = await loadHistoryHead(frame.sessionId);
+              if (
+                !isAgentModeMountedRef.current ||
+                userIdRef.current !== userId ||
+                deletedSessionIdsRef.current.has(frame.sessionId)
+              ) {
+                return;
+              }
+              const replaced = replaceSessionTimeline(
+                frame.sessionId,
+                timeline,
+                historyTimelineRevision
+              );
+              if (replaced && activeRunsBySessionRef.current[frame.sessionId]) {
+                thoughtPhaseTrackerRef.current.seedActiveTimeline(frame.sessionId, timeline);
+                observeActiveThoughtPhase(frame.sessionId);
+              }
+            } catch (historyError) {
+              if (
+                isAgentModeMountedRef.current &&
+                userIdRef.current === userId &&
+                activeSessionIdRef.current === frame.sessionId
+              ) {
+                setError(errorMessage(historyError));
+              }
+            }
+          })();
+          break;
+        case "cursorAdvanced":
+          // Ordering-only storage acknowledgement; no presentation mutation.
+          break;
+        case "sessionUpdated":
+          upsertSessionSummary(frame.session);
+          break;
+        case "runFinished":
+          settleFinishedAgentRun(frame.sessionId, frame.runId, frame.terminal);
+          break;
+        case "sessionDeleted":
+          removeSessionFromState(frame.sessionId);
+          break;
+        default: {
+          const exhaustiveFrame: never = frame;
+          return exhaustiveFrame;
+        }
+      }
+    },
+    [
+      bumpTimelineRevision,
+      clearCompletedUnreadSession,
+      deletedSessionIdsRef,
+      historyPaginationCacheRef,
+      invalidateThoughtLabelsForSession,
+      invalidateThoughtLabelsForTurn,
+      loadHistoryHead,
+      mergeSessionTimelineItem,
+      observeActiveThoughtPhase,
+      observeLiveThoughtItem,
+      publishHistorySnapshot,
+      reconcileAgentEventGap,
+      recordActiveRun,
+      removeSessionFromState,
+      replaceSessionTimeline,
+      settleFinishedAgentRun,
+      terminalRunIdsRef,
+      thoughtPhaseTrackerRef,
+      upsertSessionSummary,
+      userId
+    ]
+  );
+  liveChannelHandlerRef.current = handleAgentLiveChannelFrame;
+
   useEffect(() => {
+    if (agentRuntimeService.target.kind === "remote") return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void awaitAgentAuthUser(userId)
       .then(async () => {
-        return await agentRuntimeService.listenToEvents((event) => {
+        return await agentRuntimeService.listenToEvents(userId, (event) => {
           if (!cancelled) handleAgentEvent(event);
         });
       })
@@ -3137,7 +4295,47 @@ export function AgentMode({ userId }: { userId: string }) {
       cancelled = true;
       unlisten?.();
     };
-  }, [handleAgentEvent, userId]);
+  }, [agentRuntimeService, handleAgentEvent, userId]);
+
+  useEffect(() => {
+    if (agentRuntimeService.target.kind !== "remote") return;
+    const resume = () => {
+      if (document.visibilityState !== "visible" || liveConnectionsRef.current.hasPending) {
+        return;
+      }
+      const cursor = historyPaginationCacheRef.current.eventCursor();
+      const sessionId = activeSessionIdRef.current;
+      if (!cursor || !sessionId) return;
+      const resumeOwnerKey = agentOwnerKey;
+      void resumeAgentLiveConnection().catch((resumeError) => {
+        if (
+          resumeOwnerKey === agentOwnerKeyRef.current &&
+          isAgentModeMountedRef.current &&
+          userIdRef.current === userId
+        ) {
+          historyPaginationCacheRef.current.requireSynchronizedReload();
+          reconcileAgentEventGap(sessionId);
+          if (!isAgentLiveSnapshotRequiredError(resumeError)) {
+            setError(errorMessage(resumeError));
+          }
+        }
+      });
+    };
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("online", resume);
+    return () => {
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("online", resume);
+    };
+  }, [
+    agentOwnerKey,
+    agentRuntimeService.target.kind,
+    historyPaginationCacheRef,
+    liveConnectionsRef,
+    reconcileAgentEventGap,
+    resumeAgentLiveConnection,
+    userId
+  ]);
 
   const handleCreateSession = useCallback(() => {
     void createSession(projectRoot);
@@ -3189,6 +4387,7 @@ export function AgentMode({ userId }: { userId: string }) {
   );
   const handleRevealProjectRoot = useCallback(
     (path: string) => {
+      if (!localProjectFolderActionsAvailable) return;
       void revealAgentProjectFolder(path).catch((revealError) => {
         console.error("Unable to reveal Agent project folder", revealError);
         showNotification({
@@ -3199,7 +4398,7 @@ export function AgentMode({ userId }: { userId: string }) {
         });
       });
     },
-    [showNotification]
+    [localProjectFolderActionsAvailable, showNotification]
   );
   const handleSelectSession = useCallback(
     (sessionId: string) => {
@@ -3217,7 +4416,7 @@ export function AgentMode({ userId }: { userId: string }) {
     setIsAgentFullscreen((current) => !current);
   }, []);
 
-  if (!isTauriDesktop()) {
+  if (!isTauriDesktop() && agentRuntimeService.target.kind !== "remote") {
     return (
       <div className="flex h-dvh items-center justify-center bg-background p-6 text-center">
         <div className="max-w-sm space-y-3">
@@ -3256,6 +4455,9 @@ export function AgentMode({ userId }: { userId: string }) {
               inProgressSessionIds={agentRunningSessionIds}
               runningSessionIds={runningSessionIds}
               sessions={visibleSessions}
+              hasMoreSessions={hasMoreSessions}
+              isLoadingOlderSessions={isLoadingOlderSessions}
+              localProjectFolderActionsAvailable={localProjectFolderActionsAvailable}
               onChooseProjectRoot={chooseProjectRoot}
               onCreateSession={handleCreateSessionForProject}
               onProjectDisclosureToggle={handleToggleProjectDisclosure}
@@ -3266,6 +4468,7 @@ export function AgentMode({ userId }: { userId: string }) {
               onSessionDelete={setSessionToDelete}
               onSessionRename={handlePromptSessionRename}
               onSessionSelect={handleSelectSession}
+              onLoadOlderSessions={() => void loadOlderSessions()}
             />
           }
           isNewItemTemporarilyDisabled={isTaskTransitionPending}
@@ -3426,7 +4629,7 @@ export function AgentMode({ userId }: { userId: string }) {
           </div>
         )}
 
-        {timelineItems.length > 0 ? (
+        {activeSessionId ? (
           <ChatDesktopConversationHeader
             title={activeSessionTitle}
             isSidebarOpen={isSidebarOpen}
@@ -3449,18 +4652,19 @@ export function AgentMode({ userId }: { userId: string }) {
             ref={chatContainerRef}
             className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain"
             onScroll={updateAutoScrollFromPosition}
+            tabIndex={0}
           >
             <div
               className={cn(
                 "mx-auto w-full",
-                timelineItems.length > 0
+                activeSessionId
                   ? "max-w-4xl p-4 md:p-6 landscape-short:p-2"
                   : isAgentFullscreen
                     ? "flex min-h-full max-w-6xl flex-col p-4 md:p-6 landscape-short:p-2"
                     : "flex min-h-full flex-col px-4"
               )}
             >
-              {timelineItems.length === 0 ? (
+              {!activeSessionId ? (
                 <EmptyAgentState
                   activeRootLabel={activeRootLabel}
                   areSettingsDisabled={areAgentSettingsLocked}
@@ -3471,6 +4675,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   isMcpLoading={isComposerMcpLoading}
                   isMcpToggleDisabled={isMcpToggleDisabled}
                   isModelSelectionDisabled={isAgentModelSelectionDisabled}
+                  localProjectFolderActionsAvailable={localProjectFolderActionsAvailable}
                   mcpServers={composerMcpServers}
                   mode={mode}
                   model={model}
@@ -3498,19 +4703,32 @@ export function AgentMode({ userId }: { userId: string }) {
                   onDiscardQueuedMessageEdit={discardQueueEdit}
                 />
               ) : (
-                <AgentTimeline
-                  items={timelineItems}
-                  isResponsePending={isSending}
-                  isRunActive={Boolean(activeRunId) && !isSubmitting}
-                  generatedThoughtLabels={generatedThoughtLabels}
-                  sessionId={activeSessionId}
-                  onPermissionDecision={respondToPermission}
-                />
+                <>
+                  <div ref={historyTopSentinelRef} className="h-px" aria-hidden="true" />
+                  {isLoadingOlderHistory ? (
+                    <div
+                      className="flex h-8 items-center justify-center text-muted-foreground"
+                      role="status"
+                      aria-label="Loading older task history"
+                    >
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                  ) : null}
+                  <AgentTimeline
+                    items={timelineItems}
+                    isResponsePending={isSending}
+                    isRunActive={Boolean(activeRunId) && !isSubmitting}
+                    generatedThoughtLabels={generatedThoughtLabels}
+                    sessionId={activeSessionId}
+                    onPermissionDecision={respondToPermission}
+                  />
+                  <div ref={historyBottomCompensationRef} className="h-0" aria-hidden="true" />
+                </>
               )}
             </div>
           </div>
 
-          {timelineItems.length > 0 ? (
+          {activeSessionId ? (
             <div className="shrink-0 bg-background pb-[env(safe-area-inset-bottom)]">
               <div className="mx-auto max-w-4xl px-4 landscape-short:px-3">
                 <MemoizedAgentComposer
@@ -3523,6 +4741,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   isMcpLoading={isComposerMcpLoading}
                   isMcpToggleDisabled={isMcpToggleDisabled}
                   isModelSelectionDisabled={isAgentModelSelectionDisabled}
+                  localProjectFolderActionsAvailable={localProjectFolderActionsAvailable}
                   mcpServers={composerMcpServers}
                   mode={mode}
                   model={model}
@@ -3602,6 +4821,9 @@ interface AgentSidebarContentProps {
   inProgressSessionIds: Set<string>;
   runningSessionIds: Set<string>;
   sessions: AgentSessionSummary[];
+  hasMoreSessions: boolean;
+  isLoadingOlderSessions: boolean;
+  localProjectFolderActionsAvailable: boolean;
   onChooseProjectRoot: () => void;
   onCreateSession: (projectRoot: string) => void;
   onProjectDisclosureToggle: (path: string) => void;
@@ -3612,6 +4834,7 @@ interface AgentSidebarContentProps {
   onSessionDelete: (session: AgentSessionSummary) => void;
   onSessionRename: (session: AgentSessionSummary, menuTrigger: HTMLButtonElement) => void;
   onSessionSelect: (sessionId: string) => void;
+  onLoadOlderSessions: () => void;
 }
 
 interface PendingProjectPointer {
@@ -3641,6 +4864,7 @@ interface AgentSidebarTaskRowProps {
   isRunning: boolean;
   isTouchLayout: boolean;
   isUnreadCompleted: boolean;
+  localProjectFolderActionsAvailable: boolean;
   onDelete: (session: AgentSessionSummary) => void;
   onRename: (session: AgentSessionSummary, menuTrigger: HTMLButtonElement) => void;
   onRevealProjectRoot: (projectRoot: string) => void;
@@ -3657,6 +4881,7 @@ function AgentSidebarTaskRow({
   isRunning,
   isTouchLayout,
   isUnreadCompleted,
+  localProjectFolderActionsAvailable,
   onDelete,
   onRename,
   onRevealProjectRoot,
@@ -3776,7 +5001,11 @@ function AgentSidebarTaskRow({
               metadata={projectDisplayName}
               metadataIcon={Folder}
               onDismiss={() => setInfoCardOpen(false)}
-              onOpenProjectFolder={() => onRevealProjectRoot(session.projectRoot)}
+              onOpenProjectFolder={
+                localProjectFolderActionsAvailable
+                  ? () => onRevealProjectRoot(session.projectRoot)
+                  : undefined
+              }
               progressLabel={isInProgress ? "In progress" : "Not in progress"}
               title={title}
             />
@@ -3895,6 +5124,9 @@ function AgentSidebarContent({
   inProgressSessionIds,
   runningSessionIds,
   sessions,
+  hasMoreSessions,
+  isLoadingOlderSessions,
+  localProjectFolderActionsAvailable,
   onChooseProjectRoot,
   onCreateSession,
   onProjectDisclosureToggle,
@@ -3904,7 +5136,8 @@ function AgentSidebarContent({
   onRevealProjectRoot,
   onSessionDelete,
   onSessionRename,
-  onSessionSelect
+  onSessionSelect,
+  onLoadOlderSessions
 }: AgentSidebarContentProps) {
   const rowElementsRef = useLazyRef(() => new Map<string, HTMLElement>());
   const previousRowTopsRef = useLazyRef(() => new Map<string, number>());
@@ -4303,29 +5536,37 @@ function AgentSidebarContent({
         <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Projects
         </p>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 text-muted-foreground hover:text-foreground"
-          onClick={onChooseProjectRoot}
-          disabled={disabled}
-          aria-label="Add project folder"
-        >
-          <FolderPlus className="h-4 w-4" />
-        </Button>
+        {localProjectFolderActionsAvailable ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            onClick={onChooseProjectRoot}
+            disabled={disabled}
+            aria-label="Add project folder"
+          >
+            <FolderPlus className="h-4 w-4" />
+          </Button>
+        ) : null}
       </div>
 
       {projectRows.length === 0 ? (
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 rounded-2xl py-1.5 pr-1 text-left text-sm text-foreground/95 transition-colors hover:text-foreground"
-          onClick={onChooseProjectRoot}
-          disabled={disabled}
-        >
-          <FolderOpen className="h-4 w-4 shrink-0" />
-          Select a folder
-        </button>
+        localProjectFolderActionsAvailable ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-2xl py-1.5 pr-1 text-left text-sm text-foreground/95 transition-colors hover:text-foreground"
+            onClick={onChooseProjectRoot}
+            disabled={disabled}
+          >
+            <FolderOpen className="h-4 w-4 shrink-0" />
+            Select a folder
+          </button>
+        ) : (
+          <p className="text-xs text-muted-foreground/75">
+            No projects are available on this host.
+          </p>
+        )
       ) : (
         <div ref={projectListRef} className="relative -mt-3 pb-4 pt-3">
           {projectRows.map((root, rootIndex) => {
@@ -4448,7 +5689,11 @@ function AgentSidebarContent({
                           )}
                           metadataIcon={MessageSquare}
                           onDismiss={() => setOpenProjectInfoCardPath(null)}
-                          onOpenProjectFolder={() => onRevealProjectRoot(root.path)}
+                          onOpenProjectFolder={
+                            localProjectFolderActionsAvailable
+                              ? () => onRevealProjectRoot(root.path)
+                              : undefined
+                          }
                           progressLabel={agentProjectProgressLabel(inProgressSessionCount)}
                           title={root.displayName}
                         />
@@ -4539,13 +5784,15 @@ function AgentSidebarContent({
                             />
                             Rename Project
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => onRevealProjectRoot(root.path)}>
-                            <FolderOpen
-                              className="mr-2 h-4 w-4 shrink-0"
-                              strokeWidth={SIDEBAR_ICON_STROKE}
-                            />
-                            <span className="whitespace-nowrap">Open Project Folder</span>
-                          </DropdownMenuItem>
+                          {localProjectFolderActionsAvailable ? (
+                            <DropdownMenuItem onClick={() => onRevealProjectRoot(root.path)}>
+                              <FolderOpen
+                                className="mr-2 h-4 w-4 shrink-0"
+                                strokeWidth={SIDEBAR_ICON_STROKE}
+                              />
+                              <span className="whitespace-nowrap">Open Project Folder</span>
+                            </DropdownMenuItem>
+                          ) : null}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             disabled={disabled || hasRunningSession}
@@ -4611,6 +5858,7 @@ function AgentSidebarContent({
                           isRunning={isRunning}
                           isTouchLayout={isTouchLayout}
                           isUnreadCompleted={isUnreadCompleted}
+                          localProjectFolderActionsAvailable={localProjectFolderActionsAvailable}
                           onDelete={onSessionDelete}
                           onRename={onSessionRename}
                           onRevealProjectRoot={onRevealProjectRoot}
@@ -4657,6 +5905,20 @@ function AgentSidebarContent({
         </div>
       ) : null}
 
+      {hasMoreSessions ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-2 w-full text-xs text-muted-foreground"
+          disabled={disabled || isLoadingOlderSessions}
+          onClick={onLoadOlderSessions}
+        >
+          {isLoadingOlderSessions ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+          {isLoadingOlderSessions ? "Loading older tasks…" : "Load older tasks"}
+        </Button>
+      ) : null}
+
       <div className="mt-7">
         <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Tasks
@@ -4679,6 +5941,7 @@ interface AgentComposerProps {
   isMcpLoading: boolean;
   isMcpToggleDisabled: boolean;
   isModelSelectionDisabled: boolean;
+  localProjectFolderActionsAvailable: boolean;
   mcpServers: AgentSessionMcpServer[];
   mode: AgentPermissionMode;
   model: string;
@@ -4716,6 +5979,7 @@ function AgentComposer({
   isMcpLoading,
   isMcpToggleDisabled,
   isModelSelectionDisabled,
+  localProjectFolderActionsAvailable,
   mcpServers,
   mode,
   model,
@@ -4858,31 +6122,45 @@ function AgentComposer({
             onManage={onManageMcpServers}
           />
 
-          <Select
-            disabled={areSettingsDisabled}
-            value={projectRoot || undefined}
-            onValueChange={(value) => {
-              if (value === NEW_PROJECT_OPTION_VALUE) {
-                onChooseProjectRoot();
-                return;
-              }
-              onProjectRootChange(value);
-            }}
-          >
-            <SelectTrigger className="h-8 w-auto max-w-[12rem] gap-1 border-0 bg-transparent px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))] focus:ring-0 focus:ring-offset-0">
+          {localProjectFolderActionsAvailable || rootOptions.length > 0 ? (
+            <Select
+              disabled={areSettingsDisabled}
+              value={projectRoot || undefined}
+              onValueChange={(value) => {
+                if (value === NEW_PROJECT_OPTION_VALUE) {
+                  onChooseProjectRoot();
+                  return;
+                }
+                onProjectRootChange(value);
+              }}
+            >
+              <SelectTrigger className="h-8 w-auto max-w-[12rem] gap-1 border-0 bg-transparent px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))] focus:ring-0 focus:ring-offset-0">
+                <FolderOpen className="h-4 w-4 shrink-0" />
+                <SelectValue placeholder={activeRootLabel} />
+              </SelectTrigger>
+              <SelectContent>
+                {localProjectFolderActionsAvailable ? (
+                  <>
+                    <SelectItem value={NEW_PROJECT_OPTION_VALUE}>New project…</SelectItem>
+                    {rootOptions.length > 0 ? <SelectSeparator /> : null}
+                  </>
+                ) : null}
+                {rootOptions.map((root) => (
+                  <SelectItem key={root.path} value={root.path}>
+                    {root.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <span
+              className="flex h-8 items-center gap-1 px-2 text-xs font-medium text-muted-foreground"
+              aria-label="No projects are available on this host"
+            >
               <FolderOpen className="h-4 w-4 shrink-0" />
-              <SelectValue placeholder={activeRootLabel} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NEW_PROJECT_OPTION_VALUE}>New project…</SelectItem>
-              {rootOptions.length > 0 ? <SelectSeparator /> : null}
-              {rootOptions.map((root) => (
-                <SelectItem key={root.path} value={root.path}>
-                  {root.displayName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              No host projects
+            </span>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
@@ -5326,8 +6604,10 @@ function AgentTimeline({
   sessionId: string | null;
   onPermissionDecision: (item: AgentTimelineItem, decision: AgentPermissionDecision) => void;
 }) {
+  const assistantTurnKeyRegistryRef = useLazyRef(() => new AgentAssistantTurnKeyRegistry());
   const visibleItems = coalesceAdjacentThinkingItems(items).filter(isRenderableAgentTimelineItem);
   const turns = groupAgentTimelineItems(visibleItems);
+  const assistantTurnKeys = assistantTurnKeyRegistryRef.current.resolve(sessionId, turns);
   const activeThinkingItemId = activeAgentThinkingItemId(visibleItems, isRunActive);
   const showAssistantLoader = shouldShowAgentAssistantLoader(turns, isResponsePending);
   const trailingTurn = turns[turns.length - 1];
@@ -5342,7 +6622,8 @@ function AgentTimeline({
         if (turn.type === "user") {
           return (
             <ChatUserTurn
-              key={turn.id}
+              key={agentUserTurnReactKey(turn.id)}
+              historyAnchorIds={turn.item.id}
               actions={copyText ? <ChatCopyButton text={copyText} /> : undefined}
             >
               <Markdown content={turn.item.text || ""} />
@@ -5363,7 +6644,8 @@ function AgentTimeline({
 
         return (
           <ChatAssistantTurn
-            key={turn.id}
+            key={assistantTurnKeys.get(turn)}
+            historyAnchorIds={turn.items.flatMap(agentTimelineHistoryAnchorIds).join(" ")}
             actions={
               copyText && !(isRunActive && turnIndex === turns.length - 1) ? (
                 <ChatCopyButton text={copyText} />
@@ -5628,34 +6910,6 @@ function ToolDetail({ label, value }: { label: string; value: string }) {
       </pre>
     </div>
   );
-}
-
-function mergeTimelineItem(
-  current: AgentTimelineItem[],
-  incoming: AgentTimelineItem
-): AgentTimelineItem[] {
-  const index = current.findIndex((item) => item.id === incoming.id);
-  if (index < 0) return [...current, incoming];
-
-  const next = [...current];
-  const previous = next[index];
-  const appendText =
-    incoming.merge === "append" &&
-    (incoming.itemType === "message" || incoming.itemType === "thinking") &&
-    incoming.text;
-
-  next[index] = {
-    ...previous,
-    ...incoming,
-    title: incoming.title ?? previous.title,
-    input: incoming.input ?? previous.input,
-    output: incoming.output ?? previous.output,
-    text: appendText
-      ? `${previous.text || ""}${incoming.text || ""}`
-      : (incoming.text ?? previous.text)
-  };
-
-  return next;
 }
 
 function permissionRequestId(item: AgentTimelineItem): string {

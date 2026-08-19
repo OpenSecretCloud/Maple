@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentTimelineItem } from "./agentRuntimeService";
 import {
+  AgentAssistantTurnKeyRegistry,
   AgentLiveThoughtPhaseTracker,
   activeAgentThinkingItemId,
+  agentTimelineHistoryAnchorIds,
   agentThinkingPhaseId,
   agentThoughtPhasesForLatestTurn,
+  agentUserTurnReactKey,
   coalesceAdjacentThinkingItems,
   getAgentTurnCopyText,
   groupAgentTimelineItems,
@@ -84,6 +87,7 @@ describe("coalesceAdjacentThinkingItems", () => {
 
     expect(projected).toHaveLength(1);
     expect(projected[0].text).toBe("Inspecting.");
+    expect(agentTimelineHistoryAnchorIds(projected[0])).toEqual(["reasoning", "punctuation"]);
   });
 
   test("keeps reasoning phases separated by a tool row distinct", () => {
@@ -100,6 +104,16 @@ describe("coalesceAdjacentThinkingItems", () => {
     ]);
 
     expect(projected.map((item) => item.text)).toEqual(["Before", undefined, "After"]);
+  });
+
+  test("retains long thought source history without rebuilding a growing source array per chunk", () => {
+    const sourceItems = Array.from({ length: 4_096 }, (_, index) =>
+      thinking(`thought-${index}`, "x")
+    );
+    const [projected] = coalesceAdjacentThinkingItems(sourceItems);
+
+    expect(projected.text?.length).toBe(sourceItems.length);
+    expect(agentTimelineHistoryAnchorIds(projected)).toEqual(sourceItems.map((item) => item.id));
   });
 });
 
@@ -441,6 +455,17 @@ describe("activeAgentThinkingItemId", () => {
 });
 
 describe("groupAgentTimelineItems", () => {
+  test("namespaces raw user IDs away from generated assistant React keys", () => {
+    const registry = new AgentAssistantTurnKeyRegistry();
+    const assistantTurn = groupAgentTimelineItems([
+      item("assistant-source", "message", "assistant", "answer")
+    ])[0];
+    const assistantKey = registry.resolve("session", [assistantTurn]).get(assistantTurn)!;
+
+    expect(agentUserTurnReactKey(assistantKey)).not.toBe(assistantKey);
+    expect(agentUserTurnReactKey(assistantKey)).toBe(`agent-user-item:${assistantKey}`);
+  });
+
   test("groups a complete agent response under one assistant turn", () => {
     const turns = groupAgentTimelineItems([
       item("user", "message", "user"),
@@ -495,6 +520,77 @@ describe("groupAgentTimelineItems", () => {
 
     expect(before[1].id).toBe("assistant-after-user");
     expect(after[1].id).toBe(before[1].id);
+  });
+
+  test("keeps assistant render identity when an older page supplies its preceding user", () => {
+    const registry = new AgentAssistantTurnKeyRegistry();
+    const initialTurns = groupAgentTimelineItems([
+      item("thought-newer", "thinking", "thought"),
+      item("tool", "tool"),
+      item("answer", "message", "assistant")
+    ]);
+    const initialKeys = registry.resolve("session", initialTurns);
+    const initialAssistant = initialTurns[0];
+    expect(initialAssistant.type).toBe("assistant");
+    const initialKey = initialKeys.get(initialAssistant);
+
+    const prependedTurns = groupAgentTimelineItems([
+      item("user", "message", "user"),
+      item("thought-older", "thinking", "thought"),
+      item("thought-newer", "thinking", "thought"),
+      item("tool", "tool"),
+      item("answer", "message", "assistant")
+    ]);
+    const prependedKeys = registry.resolve("session", prependedTurns);
+    const prependedAssistant = prependedTurns[1];
+
+    expect(initialAssistant).toMatchObject({ id: "assistant-leading" });
+    expect(prependedAssistant).toMatchObject({ id: "assistant-after-user" });
+    expect(prependedKeys.get(prependedAssistant)).toBe(initialKey);
+  });
+
+  test("keeps a group key across live appends and resets it across sessions", () => {
+    const registry = new AgentAssistantTurnKeyRegistry();
+    const initialTurns = groupAgentTimelineItems([
+      item("user", "message", "user"),
+      item("tool", "tool")
+    ]);
+    const initialKey = registry.resolve("session-a", initialTurns).get(initialTurns[1]);
+    const appendedTurns = groupAgentTimelineItems([
+      item("user", "message", "user"),
+      item("tool", "tool"),
+      item("answer", "message", "assistant")
+    ]);
+    const appendedKey = registry.resolve("session-a", appendedTurns).get(appendedTurns[1]);
+    const replacementKey = registry.resolve("session-b", appendedTurns).get(appendedTurns[1]);
+
+    expect(appendedKey).toBe(initialKey);
+    expect(replacementKey).not.toBe(initialKey);
+  });
+
+  test("never reuses one prior assistant key for two groups after history replacement splits it", () => {
+    const registry = new AgentAssistantTurnKeyRegistry();
+    const initialItems = coalesceAdjacentThinkingItems([
+      thinking("thought-a", "A"),
+      thinking("thought-b", "B")
+    ]);
+    const initialTurns = groupAgentTimelineItems(initialItems);
+    const initialKey = registry.resolve("session", initialTurns).get(initialTurns[0]);
+
+    const splitTurns = groupAgentTimelineItems([
+      thinking("thought-a", "A"),
+      item("replacement-user", "message", "user", "new boundary"),
+      thinking("thought-b", "B")
+    ]);
+    const splitKeys = registry.resolve("session", splitTurns);
+    const assistantKeys = splitTurns
+      .filter((turn) => turn.type === "assistant")
+      .map((turn) => splitKeys.get(turn));
+
+    expect(assistantKeys).toHaveLength(2);
+    expect(assistantKeys[0]).not.toBe(initialKey);
+    expect(assistantKeys[1]).toBe(initialKey);
+    expect(new Set(assistantKeys).size).toBe(2);
   });
 });
 

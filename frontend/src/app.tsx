@@ -18,6 +18,7 @@ import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
 import { TTSProvider } from "./services/tts/TTSContext";
 import { openSecretPcrEnvironment } from "./config/openSecretPcrEnvironment";
+import { AgentPortableRuntimeControllerProvider } from "./contexts/AgentPortableRuntimeControllerProvider";
 
 const DEFAULT_OPEN_SECRET_CLIENT_ID = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
 
@@ -40,7 +41,11 @@ declare module "@tanstack/react-router" {
 
 function InnerApp() {
   const os = useOpenSecret();
-  return <RouterProvider router={router} context={{ os }} />;
+  return (
+    <AgentPortableRuntimeControllerProvider accountId={os.auth.user?.user.id ?? null}>
+      <RouterProvider router={router} context={{ os }} />
+    </AgentPortableRuntimeControllerProvider>
+  );
 }
 
 const queryClient = new QueryClient({
