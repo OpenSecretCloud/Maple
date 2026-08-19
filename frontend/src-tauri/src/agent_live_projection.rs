@@ -190,6 +190,12 @@ fn project_rich_service_event(
                 AgentRunEvent::PermissionRequested { .. } => {
                     return Err(AgentLiveProjectionBoundaryError::ControlPlaneOnly);
                 }
+                AgentRunEvent::QueueChanged(_) | AgentRunEvent::QueuePromoted { .. } => {
+                    // Desktop queues are not part of the reviewed remote wire
+                    // contract. Keep them local until that protocol gains an
+                    // explicit bounded projection and authorization model.
+                    return Err(AgentLiveProjectionBoundaryError::ControlPlaneOnly);
+                }
                 AgentRunEvent::SetupWarning(message) => {
                     MapleLiveEvent::UserFacingError {
                         event_id: presentation_id.clone(),
@@ -508,6 +514,36 @@ mod tests {
             ),
             Err(AgentLiveProjectionBoundaryError::ControlPlaneOnly)
         );
+    }
+
+    #[test]
+    fn desktop_queue_events_are_control_plane_only() {
+        let snapshot = crate::agent::AgentDesktopQueueSnapshot {
+            revision: 1,
+            items: Vec::new(),
+        };
+        for event in [
+            AgentRunEvent::QueueChanged(snapshot.clone()),
+            AgentRunEvent::QueuePromoted {
+                snapshot: snapshot.clone(),
+                queue_id: "queue-1".to_string(),
+                item: item("message", None),
+            },
+        ] {
+            let source = AgentServiceEvent::Run {
+                session_id: "session".to_string(),
+                run_id: "run".to_string(),
+                event,
+            };
+            assert_eq!(
+                project_agent_service_event(
+                    AgentLiveProjectionSource::Service(&source),
+                    "event-queue",
+                    123,
+                ),
+                Err(AgentLiveProjectionBoundaryError::ControlPlaneOnly)
+            );
+        }
     }
 
     #[test]

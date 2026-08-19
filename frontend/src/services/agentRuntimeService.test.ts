@@ -605,6 +605,47 @@ describe("AgentRuntimeService", () => {
     expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
   });
 
+  test("queue control stays account-fenced without waiting for remote auth sync", async () => {
+    const bridge = new RecordingBridge();
+    const service = new AgentRuntimeService(bridge);
+    const request = { sessionId: "session-1", queueId: "queue-1" };
+
+    await service.getDesktopQueueSnapshot("user-a", request.sessionId);
+    await service.cancelQueuedMessage("user-a", request);
+    await service.unqueueMessageForEdit("user-a", request);
+    await service.updateQueuedMessage("user-a", { ...request, text: "revised" });
+    await service.beginQueuedMessageEdit("user-a", request);
+    await service.endQueuedMessageEdit("user-a", request);
+
+    expect(bridge.events).toEqual([
+      "fence:user-a",
+      "invoke:agent_get_desktop_queue_snapshot",
+      "fence:user-a",
+      "invoke:agent_cancel_queued_message",
+      "fence:user-a",
+      "invoke:agent_unqueue_message_for_edit",
+      "fence:user-a",
+      "invoke:agent_update_queued_message",
+      "fence:user-a",
+      "invoke:agent_begin_queued_message_edit",
+      "fence:user-a",
+      "invoke:agent_end_queued_message_edit"
+    ]);
+    expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
+  });
+
+  test("desktop queue snapshots fail closed for remote targets", async () => {
+    const bridge = new RecordingTargetBridge();
+    const remote = createRemoteAgentExecutionTarget("dev_remote_queue_snapshot");
+    const service = new AgentRuntimeService(bridge, remote);
+
+    await expect(service.getDesktopQueueSnapshot("user-a", "session-1")).rejects.toThrow(
+      "only available for the local target"
+    );
+    expect(bridge.preparedTargets).toEqual([]);
+    expect(bridge.invocations).toEqual([]);
+  });
+
   test("session creation forwards the selected model context limit", async () => {
     const bridge = new RecordingBridge();
     const service = new AgentRuntimeService(bridge);
@@ -1341,7 +1382,7 @@ describe("AgentRuntimeService", () => {
     bridge.createSessionResult = rawDetail;
 
     const detail = await service.createSession("user-a");
-    expect(detail).toEqual(rawDetail);
+    expect(detail).toEqual({ ...rawDetail, queue: { revision: 0, items: [] } });
     expect(detail).not.toBe(rawDetail);
     expect(detail.session).not.toBe(rawSummary);
 
@@ -2428,6 +2469,12 @@ describe("AgentRuntimeService", () => {
       sessionId: "session-1",
       runId: "run-1"
     });
+    bridge.emit(LOCAL_AGENT_EXECUTION_TARGET, {
+      eventType: "queueChanged",
+      sessionId: "session-1",
+      runId: "run-1",
+      queue: { revision: 2, items: [] }
+    });
 
     expect(events).toEqual([
       {
@@ -2436,6 +2483,14 @@ describe("AgentRuntimeService", () => {
         connectionGeneration: 0,
         sessionId: "session-1",
         runId: "run-1"
+      },
+      {
+        eventType: "queueChanged",
+        targetId: LOCAL_AGENT_EXECUTION_TARGET.id,
+        connectionGeneration: 0,
+        sessionId: "session-1",
+        runId: "run-1",
+        queue: { revision: 2, items: [] }
       }
     ]);
     expect(bridge.subscriptions).toEqual([{ lease: null, target: LOCAL_AGENT_EXECUTION_TARGET }]);

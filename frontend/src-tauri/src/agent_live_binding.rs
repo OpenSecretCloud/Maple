@@ -261,6 +261,10 @@ impl AgentLiveRotationObligation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "rotation deliberately carries both complete move-only binding leases"
+)]
 pub(crate) enum AgentLiveBindOutcome {
     Bound(AgentLiveBindingLease),
     RotationRequired(AgentLiveRotationObligation),
@@ -355,8 +359,13 @@ impl ActiveBinding {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "transition states retain complete previous and proposed authorization bindings"
+)]
 enum RegistryBindingState {
+    #[default]
     Unbound,
     Active(ActiveBinding),
     Transition {
@@ -378,12 +387,6 @@ enum RegistryBindingState {
         previous: Option<ActiveBinding>,
         account_epoch: u64,
     },
-}
-
-impl Default for RegistryBindingState {
-    fn default() -> Self {
-        Self::Unbound
-    }
 }
 
 #[derive(Clone, Default)]
@@ -421,9 +424,7 @@ impl AgentLiveBindingRegistry {
                     .as_ref()
                     .map(|authority| authority.authorization_domain()),
             )?;
-            if let Err(error) = validate_authorization_floor(&mut state, &verified.authorization) {
-                return Err(error);
-            }
+            validate_authorization_floor(&mut state, &verified.authorization)?;
             if verified.authorization.account_epoch < state.authorization_epoch_floor {
                 return Err(AgentLiveBindingError::StaleBinding);
             }

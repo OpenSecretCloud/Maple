@@ -921,6 +921,10 @@ struct ActivationReservation {
     done: Option<oneshot::Sender<()>>,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "pending activation retains all cleanup authority until stream installation"
+)]
 enum ActivationSource {
     Pending(PendingAttach),
     Resume {
@@ -1437,6 +1441,10 @@ impl AgentLiveAttachManager {
         result
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "the error must return the complete pending attach so the caller can clean it up"
+    )]
     fn finish_reservation(
         &self,
         attach_id: &str,
@@ -1960,11 +1968,7 @@ async fn execute_activation(
     }
 
     let provider_stream = stream.take()?;
-    if let Err(error) =
-        install_reserved_active(inner, reservation, sender, through.clone(), provider_stream).await
-    {
-        return Err(error);
-    }
+    install_reserved_active(inner, reservation, sender, through.clone(), provider_stream).await?;
     Ok(AgentLiveBarrierResponse {
         through_event_cursor: cursor_to_wire(&through),
         live_stream_id: reservation.operation_id.clone(),
@@ -2209,6 +2213,10 @@ fn project_ordered_event(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each explicit argument is part of the stream ownership and stale-send fence"
+)]
 async fn run_active_stream(
     weak: Weak<AgentLiveAttachManagerInner>,
     owner: &AgentLiveLeaseOwner,
@@ -2340,6 +2348,10 @@ async fn run_active_stream(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "snapshot notices retain the same explicit owner and stream identity checks as events"
+)]
 fn send_snapshot_notice_if_current(
     inner: &AgentLiveAttachManagerInner,
     key: &AccountTargetKey,

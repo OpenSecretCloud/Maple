@@ -41,7 +41,7 @@ use shell_permission::{
     local_read_image_request_id, local_read_request_id, ShellPermissionClassifier,
     ShellPermissionOutcome, ShellPermissionRequest,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -121,7 +121,10 @@ const AGENT_SERVICE_DRAINING_ERROR: &str =
 pub(crate) const AGENT_TOOL_CONTEXT_INACTIVE_ERROR: &str =
     "Agent tool context access is no longer active";
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_QUEUE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TOOL_CONTEXT_INSTALLATION_ID: AtomicU64 = AtomicU64::new(1);
+const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
+const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 
 fn validate_session_model_lock(
     message_count: usize,
@@ -377,6 +380,41 @@ pub struct AgentPermissionModeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunResponse {
     pub run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued: Option<AgentQueuedMessage>,
+    pub queue: AgentDesktopQueueSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQueuedMessage {
+    pub queue_id: String,
+    pub message_id: String,
+    pub session_id: String,
+    pub text: String,
+    pub created_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDesktopQueueSnapshot {
+    pub revision: u64,
+    pub items: Vec<AgentQueuedMessage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQueueControlRequest {
+    pub session_id: String,
+    pub queue_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQueueUpdateRequest {
+    pub session_id: String,
+    pub queue_id: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +431,8 @@ pub(crate) struct AgentRunHandle {
     pub event_overflowed: Arc<AtomicBool>,
     pub permission_responder: Option<AgentRunPermissionResponder>,
     pub cancellation: Option<AgentRunCancellation>,
+    pub queued: Option<AgentQueuedMessage>,
+    pub queue: AgentDesktopQueueSnapshot,
 }
 
 #[derive(Clone)]
@@ -458,6 +498,14 @@ pub(crate) struct CreatedAgentSession {
 pub(crate) enum AgentHostEventPolicy {
     Publish,
     Suppress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopSendDisposition {
+    /// Desktop send: stage onto the live run when one exists, otherwise start.
+    StageOrStart,
+    /// ACP and other exclusive surfaces must not join another run.
+    StartOnly,
 }
 
 impl AgentHostEventPolicy {
@@ -531,6 +579,12 @@ pub(crate) enum AgentRunEvent {
     HistoryReplaced,
     Error(AgentTimelineItem),
     Finished(AgentRunTerminal),
+    QueueChanged(AgentDesktopQueueSnapshot),
+    QueuePromoted {
+        snapshot: AgentDesktopQueueSnapshot,
+        queue_id: String,
+        item: AgentTimelineItem,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -576,6 +630,7 @@ pub struct AgentSessionDetail {
     pub session: AgentSessionSummary,
     pub timeline: Vec<AgentTimelineItem>,
     pub mcp_errors: Vec<AgentMcpConnectionError>,
+    pub queue: AgentDesktopQueueSnapshot,
 }
 
 /// One count-bounded page request over Goose's native persisted message rows.
@@ -712,7 +767,30 @@ struct ActiveAgentRun {
     session_id: String,
     events: AgentRunEventPublisher,
     cancelled_permission_ids: CancelledPermissionIds,
+    accepting_queue: Arc<AtomicBool>,
     task_handle: tokio::task::JoinHandle<()>,
+}
+
+struct DesktopSessionQueue {
+    revision: u64,
+    items: VecDeque<AgentQueuedMessage>,
+    editing_queue_id: Option<String>,
+}
+
+impl DesktopSessionQueue {
+    fn snapshot(&self) -> AgentDesktopQueueSnapshot {
+        AgentDesktopQueueSnapshot {
+            revision: self.revision,
+            items: self.items.iter().cloned().collect(),
+        }
+    }
+}
+
+fn empty_desktop_queue_snapshot() -> AgentDesktopQueueSnapshot {
+    AgentDesktopQueueSnapshot {
+        revision: 0,
+        items: Vec::new(),
+    }
 }
 
 struct ActiveAgentSessionTitleTask {
@@ -1013,6 +1091,7 @@ pub struct MapleAgentService {
     session_title_lifecycles: SessionTitleLifecycles,
     pending_permissions: PendingPermissions,
     live_timelines: LiveTimelines,
+    desktop_queues: Arc<Mutex<HashMap<(String, String), DesktopSessionQueue>>>,
     admission: Arc<AtomicU8>,
 }
 
@@ -1097,6 +1176,7 @@ impl MapleAgentService {
             session_title_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
+            desktop_queues: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(AtomicU8::new(AGENT_SERVICE_OPEN)),
         }
     }
@@ -1192,6 +1272,15 @@ async fn advance_account_generation(state: &MapleAgentService, account_scope: &s
         .checked_add(1)
         .expect("Agent Mode exhausted its account operation generation");
     *generation
+}
+
+fn next_queue_id() -> String {
+    let sequence = NEXT_QUEUE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .expect("Agent Mode exhausted its queue ID sequence");
+    format!("queue_{}_{sequence}", unix_ms())
 }
 
 fn next_run_id() -> String {
@@ -1757,6 +1846,15 @@ async fn stop_runtime_inner(
     for installed in tool_contexts.into_values() {
         installed.context.revoke();
     }
+    {
+        let mut queues = state.desktop_queues.lock().await;
+        match requested_scope {
+            Some(account_scope) => {
+                queues.retain(|(scope, _), _| scope != account_scope);
+            }
+            None => queues.clear(),
+        }
+    }
 
     let run_ids = active_runs.keys().cloned().collect::<Vec<_>>();
     let agents_by_run = active_runs
@@ -1771,6 +1869,7 @@ async fn stop_runtime_inner(
     for (_, active_run) in active_runs {
         // Cancel first so an ActionRequired event racing this snapshot will
         // take the immediate-cancel path in register_pending_permission.
+        active_run.accepting_queue.store(false, Ordering::Release);
         active_run.tool_context.cancel_run(&active_run.token);
         task_handles.push(active_run.task_handle);
     }
@@ -2464,6 +2563,7 @@ impl AgentRuntimeHandle {
             session: summary.clone(),
             timeline: Vec::new(),
             mcp_errors,
+            queue: empty_desktop_queue_snapshot(),
         };
         let tool_context_lease = has_external_tool_context.then(|| AgentToolContextLease {
             service: state.clone(),
@@ -2697,6 +2797,7 @@ impl AgentRuntimeHandle {
             session: session_summary(&session),
             timeline,
             mcp_errors: Vec::new(),
+            queue: snapshot_desktop_queue(state, account_scope, &session_id).await,
         })
     }
 
@@ -3091,6 +3192,7 @@ impl AgentRuntimeHandle {
         if let Some(permission_modes) = permission_modes {
             permission_modes.lock().await.remove(&session_id);
         }
+        let _ = clear_desktop_queue(state, account_scope, &session_id).await;
         let removed_tool_context = {
             let mut runtime = state.inner.lock().await;
             if let Some(current) = runtime.as_mut() {
@@ -3518,6 +3620,7 @@ impl AgentRuntimeHandle {
             None,
             AgentHostEventPolicy::Publish,
             AgentPermissionRouting::Desktop,
+            DesktopSendDisposition::StageOrStart,
         )
         .await
     }
@@ -3535,6 +3638,7 @@ impl AgentRuntimeHandle {
             Some(surface_lifetime),
             host_events,
             AgentPermissionRouting::CallingSurface,
+            DesktopSendDisposition::StartOnly,
         )
         .await
     }
@@ -3546,6 +3650,7 @@ impl AgentRuntimeHandle {
         surface_lifetime: Option<CancellationToken>,
         host_events: AgentHostEventPolicy,
         permission_routing: AgentPermissionRouting,
+        desktop_send: DesktopSendDisposition,
     ) -> Result<AgentRunHandle, String> {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
@@ -3554,11 +3659,40 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let text = request.text.trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && desktop_send == DesktopSendDisposition::StartOnly {
             return Err("Prompt cannot be empty".to_string());
         }
 
         let session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (launch_messages, mut started_queue, consume_queue_ids) = match desktop_send {
+            DesktopSendDisposition::StageOrStart => {
+                match self.take_desktop_send_plan(&request).await? {
+                    DesktopSendPlan::Staged {
+                        run_id,
+                        queued,
+                        queue,
+                    } => {
+                        return Ok(staged_run_handle(run_id, queued, queue));
+                    }
+                    DesktopSendPlan::Start {
+                        launch_messages,
+                        queue,
+                        consume_queue_ids,
+                    } => (launch_messages, queue, consume_queue_ids),
+                }
+            }
+            DesktopSendDisposition::StartOnly => {
+                if text.is_empty() {
+                    return Err("Prompt cannot be empty".to_string());
+                }
+                reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
+                (
+                    vec![user_message_from_prompt(&text)],
+                    empty_desktop_queue_snapshot(),
+                    Vec::new(),
+                )
+            }
+        };
         let session_title_lifecycle = resolve_session_title_lifecycle(
             &state.session_title_lifecycles,
             account_scope,
@@ -3579,10 +3713,13 @@ impl AgentRuntimeHandle {
         if cancel_token.is_cancelled() {
             return Err("Agent surface closed before the run could start".to_string());
         }
-        let prompt_title = session_title_from_prompt(&text);
-        let session_title_prompt = text.clone();
-        let web_permission_context = WebPermissionContext::from_user_prompt(&text);
-        let user_message = Message::user().with_text(text).with_generated_id();
+        let user_message = launch_messages
+            .first()
+            .cloned()
+            .ok_or_else(|| "Prompt cannot be empty".to_string())?;
+        let launch_text = user_message.as_concat_text();
+        let prompt_title = session_title_from_prompt(&launch_text);
+        let session_title_prompt = launch_text.clone();
         let (
             agent_manager,
             session_manager,
@@ -3612,10 +3749,13 @@ impl AgentRuntimeHandle {
         };
         let requested_permission_mode = parse_user_permission_mode(&mode)?;
 
-        let user_item = message_to_timeline_items(&user_message, false)
+        if message_to_timeline_items(&user_message, false)
             .into_iter()
             .next()
-            .ok_or_else(|| "Failed to create user timeline item".to_string())?;
+            .is_none()
+        {
+            return Err("Failed to create user timeline item".to_string());
+        }
         let live_timelines = Arc::clone(&state.live_timelines);
 
         // Claim the session before changing its title, provider, mode, or
@@ -3809,12 +3949,16 @@ impl AgentRuntimeHandle {
         let task_session_manager = Arc::clone(&session_manager);
         let task_permission_modes = Arc::clone(&permission_modes);
         let task_web_tool_state = Arc::clone(&web_tool_state);
-        let task_user_message = user_message.clone();
+        let task_user_messages = launch_messages.clone();
         let task_cancel_token = cancel_token.clone();
         let task_agent = Arc::clone(&agent);
         let active_agent = Arc::clone(&agent);
         let cancelled_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let task_cancelled_permission_ids = Arc::clone(&cancelled_permission_ids);
+        let accepting_queue = Arc::new(AtomicBool::new(true));
+        let task_accepting_queue = Arc::clone(&accepting_queue);
+        let task_desktop_queues = Arc::clone(&state.desktop_queues);
+        let task_account_scope = account_scope.to_string();
         let task_issued_permission_ids = Arc::new(Mutex::new(HashSet::new()));
         let (
             session_title_start,
@@ -3894,33 +4038,136 @@ impl AgentRuntimeHandle {
                 _ = task_cancel_token.cancelled() => false,
                 start = start_rx => start.is_ok(),
             };
-            let result = if should_run {
-                provider::with_run_cancellation(
-                    task_cancel_token.clone(),
-                    run_agent_prompt(AgentPromptRun {
-                        events: task_events.clone(),
-                        agent: Arc::clone(&task_agent),
-                        session_manager: Arc::clone(&task_session_manager),
-                        session_title_lifecycle: Arc::clone(&session_title_lifecycle),
-                        live_timelines: live_timelines.clone(),
-                        session_id: session_id.clone(),
-                        user_message: task_user_message.clone(),
-                        permission_modes: task_permission_modes,
-                        web_tool_state: Arc::clone(&task_web_tool_state),
-                        web_permission_context,
-                        cancel_token: task_cancel_token.clone(),
-                        session_title_start,
-                        pending_permissions: Arc::clone(&task_pending_permissions),
-                        issued_permission_ids: task_issued_permission_ids,
-                        cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
-                        run_id: task_run_id.clone(),
-                        permission_routing,
-                    }),
-                )
-                .await
-            } else {
-                Ok(AgentPromptOutcome::default())
-            };
+            let mut pending_user_messages = task_user_messages;
+            let mut current_user_message = pending_user_messages
+                .last()
+                .cloned()
+                .expect("a Desktop or ACP start always has at least one user message");
+            let mut session_title_start = session_title_start;
+            let mut result = Ok(AgentPromptOutcome::default());
+            if should_run {
+                loop {
+                    if let Err(error) = persist_leading_user_messages(
+                        task_session_manager.as_ref(),
+                        &session_id,
+                        &pending_user_messages,
+                    )
+                    .await
+                    {
+                        result = Err(error);
+                        break;
+                    }
+                    current_user_message = pending_user_messages
+                        .last()
+                        .cloned()
+                        .expect("a promoted batch is never empty");
+                    result = provider::with_run_cancellation(
+                        task_cancel_token.clone(),
+                        run_agent_prompt(AgentPromptRun {
+                            events: task_events.clone(),
+                            agent: Arc::clone(&task_agent),
+                            session_manager: Arc::clone(&task_session_manager),
+                            session_title_lifecycle: Arc::clone(&session_title_lifecycle),
+                            live_timelines: live_timelines.clone(),
+                            session_id: session_id.clone(),
+                            user_message: current_user_message.clone(),
+                            permission_modes: Arc::clone(&task_permission_modes),
+                            web_tool_state: Arc::clone(&task_web_tool_state),
+                            web_permission_context: WebPermissionContext::from_user_prompt(
+                                &pending_user_messages
+                                    .iter()
+                                    .map(|message| message.as_concat_text())
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            ),
+                            cancel_token: task_cancel_token.clone(),
+                            session_title_start: session_title_start.take(),
+                            pending_permissions: Arc::clone(&task_pending_permissions),
+                            issued_permission_ids: Arc::clone(&task_issued_permission_ids),
+                            cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
+                            run_id: task_run_id.clone(),
+                            permission_routing,
+                        }),
+                    )
+                    .await;
+                    if task_cancel_token.is_cancelled() {
+                        break;
+                    }
+                    let should_continue = {
+                        let _promote_guard = session_lifecycle.lock().await;
+                        if task_cancel_token.is_cancelled() {
+                            false
+                        } else if let Ok(outcome) = &result {
+                            let mut timelines = live_timelines.lock().await;
+                            apply_successful_prompt_outcome(
+                                &mut timelines,
+                                &session_id,
+                                permission_routing,
+                                outcome,
+                            );
+                            drop(timelines);
+                            // ACP still needs outcome cleanup and Error events.
+                            // Only Desktop may promote leftover chips. Goose
+                            // merges consecutive user roles for the provider
+                            // request, so the model still sees one user turn.
+                            if permission_routing != AgentPermissionRouting::Desktop {
+                                task_accepting_queue.store(false, Ordering::Release);
+                                false
+                            } else {
+                                match take_all_desktop_queue_items_from_map(
+                                    &task_desktop_queues,
+                                    &task_account_scope,
+                                    &session_id,
+                                )
+                                .await
+                                {
+                                    Some((queued, snapshot)) => {
+                                        pending_user_messages =
+                                            queued.iter().map(queued_user_message).collect();
+                                        current_user_message = pending_user_messages
+                                            .last()
+                                            .cloned()
+                                            .expect("take_all returns at least one item");
+                                        emit_promoted_queue_items(
+                                            &task_events,
+                                            &live_timelines,
+                                            &session_id,
+                                            permission_routing,
+                                            &queued,
+                                            snapshot,
+                                        )
+                                        .await;
+                                        true
+                                    }
+                                    None => {
+                                        task_accepting_queue.store(false, Ordering::Release);
+                                        false
+                                    }
+                                }
+                            }
+                        } else {
+                            if let Err(error) = &result {
+                                let item = error_item(error.clone());
+                                {
+                                    let mut timelines = live_timelines.lock().await;
+                                    apply_failed_prompt_outcome(
+                                        &mut timelines,
+                                        &session_id,
+                                        permission_routing,
+                                        item.clone(),
+                                    );
+                                }
+                                task_events.publish(AgentRunEvent::Error(item)).await;
+                            }
+                            task_accepting_queue.store(false, Ordering::Release);
+                            false
+                        }
+                    };
+                    if !should_continue {
+                        break;
+                    }
+                }
+            }
 
             // Keep deletion serialized until every terminal write and event for
             // this run has completed. The active-run entry stays visible while
@@ -3929,6 +4176,7 @@ impl AgentRuntimeHandle {
             // Completion and cancellation linearize under the same lock used by
             // agent_cancel_run. Whichever side acquires it first owns the terminal
             // result, so Stop cannot succeed against an already-settled run.
+            task_accepting_queue.store(false, Ordering::Release);
             let run_was_cancelled = !should_run || task_cancel_token.is_cancelled();
             let terminal_permissions = cancel_pending_permissions_for_runs(
                 &task_pending_permissions,
@@ -3964,7 +4212,7 @@ impl AgentRuntimeHandle {
                     task_web_tool_state.as_ref(),
                     &session_id,
                     permission_routing,
-                    &task_user_message,
+                    &current_user_message,
                     &cancelled_permission_ids,
                 )
                 .await
@@ -3981,35 +4229,26 @@ impl AgentRuntimeHandle {
             task_agent_manager
                 .unregister_cancel_token(&session_id)
                 .await;
-            if !run_was_cancelled {
-                if let Ok(outcome) = &result {
-                    let mut timelines = live_timelines.lock().await;
-                    apply_successful_prompt_outcome(
-                        &mut timelines,
-                        &session_id,
-                        permission_routing,
-                        outcome,
-                    );
-                }
-            }
 
             let (status, message) = match result {
                 Ok(_) if run_was_cancelled => ("cancelled", None),
                 Ok(_) => ("completed", None),
                 Err(error) => ("failed", Some(error)),
             };
-            if let Some(error) = message.as_ref() {
-                let item = error_item(error.clone());
-                {
-                    let mut timelines = live_timelines.lock().await;
-                    apply_failed_prompt_outcome(
-                        &mut timelines,
-                        &session_id,
-                        permission_routing,
-                        item.clone(),
-                    );
+            if run_was_cancelled {
+                if let Some(error) = message.as_ref() {
+                    let item = error_item(error.clone());
+                    {
+                        let mut timelines = live_timelines.lock().await;
+                        apply_failed_prompt_outcome(
+                            &mut timelines,
+                            &session_id,
+                            permission_routing,
+                            item.clone(),
+                        );
+                    }
+                    task_events.publish(AgentRunEvent::Error(item)).await;
                 }
-                task_events.publish(AgentRunEvent::Error(item)).await;
             }
             // This retained per-run signal is authoritative for non-UI consumers.
             // It is deliberately published after runFinished so a receiver that
@@ -4058,6 +4297,7 @@ impl AgentRuntimeHandle {
                                 session_id: request.session_id.clone(),
                                 events: run_events.clone(),
                                 cancelled_permission_ids: Arc::clone(&cancelled_permission_ids),
+                                accepting_queue: Arc::clone(&accepting_queue),
                                 task_handle: task.take().expect("task handle must be available"),
                             },
                         );
@@ -4102,19 +4342,49 @@ impl AgentRuntimeHandle {
                 .await;
             return Err(error);
         }
+        if !consume_queue_ids.is_empty() {
+            let mut consume_error = None;
+            for queue_id in &consume_queue_ids {
+                match remove_desktop_queue_item(state, account_scope, &request.session_id, queue_id)
+                    .await
+                {
+                    Ok((_, snapshot)) => started_queue = snapshot,
+                    Err(error) => {
+                        consume_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            if consume_error.is_none() {
+                publish_desktop_queue_changed(
+                    state,
+                    account_scope,
+                    &request.session_id,
+                    started_queue.clone(),
+                )
+                .await;
+            }
+        }
         if let Some(registered) = session_title_registered {
             let _ = registered.send(());
         }
         run_events.publish(AgentRunEvent::Started).await;
 
-        record_and_emit_timeline_item(
-            &run_events,
-            &state.live_timelines,
-            &request.session_id,
-            permission_routing,
-            user_item.clone(),
-        )
-        .await;
+        for launch_message in &launch_messages {
+            if let Some(item) = message_to_timeline_items(launch_message, false)
+                .into_iter()
+                .next()
+            {
+                record_and_emit_timeline_item(
+                    &run_events,
+                    &state.live_timelines,
+                    &request.session_id,
+                    permission_routing,
+                    item,
+                )
+                .await;
+            }
+        }
         let _ = start_tx.send(());
         // Keep the session claimed until the optimistic timeline item and start
         // signal are ordered. A cancellation cleanup must not finish and then be
@@ -4143,7 +4413,139 @@ impl AgentRuntimeHandle {
             event_overflowed: run_events.overflow_flag(),
             permission_responder,
             cancellation,
+            queued: None,
+            queue: started_queue,
         })
+    }
+
+    async fn take_desktop_send_plan(
+        &self,
+        request: &AgentSendMessageRequest,
+    ) -> Result<DesktopSendPlan, String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
+        let text = request.text.trim();
+        if let Some(run_id) =
+            desktop_run_id_for_session(state, account_scope, &request.session_id).await?
+        {
+            if text.is_empty() {
+                return Err("Prompt cannot be empty".to_string());
+            }
+            let (queued, snapshot) =
+                enqueue_desktop_queue_item(state, account_scope, &request.session_id, text).await?;
+            publish_desktop_queue_changed(
+                state,
+                account_scope,
+                &request.session_id,
+                snapshot.clone(),
+            )
+            .await;
+            return Ok(DesktopSendPlan::Staged {
+                run_id,
+                queue: snapshot,
+                queued,
+            });
+        }
+
+        let launch =
+            prepare_desktop_launch(state, account_scope, &request.session_id, text).await?;
+        Ok(DesktopSendPlan::Start {
+            launch_messages: launch.launch_messages,
+            queue: launch.queue,
+            consume_queue_ids: launch.consume_queue_ids,
+        })
+    }
+
+    pub(crate) async fn desktop_queue_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<AgentDesktopQueueSnapshot, String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        Ok(snapshot_desktop_queue(state, account_scope, session_id).await)
+    }
+
+    pub(crate) async fn cancel_queued_message(
+        &self,
+        request: AgentQueueControlRequest,
+    ) -> Result<AgentDesktopQueueSnapshot, String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (_, snapshot) =
+            remove_desktop_queue_item(state, account_scope, &request.session_id, &request.queue_id)
+                .await?;
+        publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot.clone())
+            .await;
+        Ok(snapshot)
+    }
+
+    pub(crate) async fn unqueue_message_for_edit(
+        &self,
+        request: AgentQueueControlRequest,
+    ) -> Result<AgentQueuedMessage, String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (removed, snapshot) =
+            remove_desktop_queue_item(state, account_scope, &request.session_id, &request.queue_id)
+                .await?;
+        publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot).await;
+        Ok(removed)
+    }
+
+    pub(crate) async fn update_queued_message(
+        &self,
+        request: AgentQueueUpdateRequest,
+    ) -> Result<AgentDesktopQueueSnapshot, String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (_, snapshot) = update_desktop_queue_item(
+            state,
+            account_scope,
+            &request.session_id,
+            &request.queue_id,
+            &request.text,
+        )
+        .await?;
+        publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot.clone())
+            .await;
+        Ok(snapshot)
+    }
+
+    pub(crate) async fn begin_queued_message_edit(
+        &self,
+        request: AgentQueueControlRequest,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        begin_desktop_queue_edit(state, account_scope, &request.session_id, &request.queue_id).await
+    }
+
+    pub(crate) async fn end_queued_message_edit(
+        &self,
+        request: AgentQueueControlRequest,
+    ) -> Result<(), String> {
+        let state = &self.service;
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        end_desktop_queue_edit(state, account_scope, &request.session_id, &request.queue_id).await
     }
 
     pub(crate) async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
@@ -4165,7 +4567,14 @@ impl AgentRuntimeHandle {
         // terminal event. If the worker settled first, its active-run entry will
         // already be gone by the time this command inspects it.
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (agent, cancel_token, tool_context, run_events, cancelled_permission_ids) = {
+        let (
+            agent,
+            cancel_token,
+            tool_context,
+            run_events,
+            cancelled_permission_ids,
+            accepting_queue,
+        ) = {
             let runtime = state.inner.lock().await;
             let Some(current) = runtime.as_ref() else {
                 return Ok(());
@@ -4186,8 +4595,10 @@ impl AgentRuntimeHandle {
                 active_run.tool_context.clone(),
                 active_run.events.clone(),
                 Arc::clone(&active_run.cancelled_permission_ids),
+                Arc::clone(&active_run.accepting_queue),
             )
         };
+        accepting_queue.store(false, Ordering::Release);
         tool_context.cancel_run(&cancel_token);
         let run_id = run_id.to_string();
         let cancelled_permissions = cancel_pending_permissions_for_runs(
@@ -5104,7 +5515,10 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         .await
                         .extend(automatically_handled.iter().cloned());
                 }
-                let mut items = message_to_timeline_items(&message, true);
+                // Steered user rows are emitted when queued. Goose later yields
+                // the same complete message; replace it instead of appending.
+                let live = message_role(&message) != "user";
+                let mut items = message_to_timeline_items(&message, live);
                 items.retain(|item| {
                     pending_permission_request_id(item)
                         .is_none_or(|request_id| !automatically_handled.contains(&request_id))
@@ -7621,6 +8035,388 @@ fn has_active_session_run(active_runs: &HashMap<String, ActiveAgentRun>, session
     active_runs.values().any(|run| run.session_id == session_id)
 }
 
+enum DesktopSendPlan {
+    Staged {
+        run_id: String,
+        queued: AgentQueuedMessage,
+        queue: AgentDesktopQueueSnapshot,
+    },
+    Start {
+        launch_messages: Vec<Message>,
+        queue: AgentDesktopQueueSnapshot,
+        consume_queue_ids: Vec<String>,
+    },
+}
+
+fn user_message_from_prompt(text: &str) -> Message {
+    Message::user().with_text(text).with_generated_id()
+}
+
+fn staged_run_handle(
+    run_id: String,
+    queued: AgentQueuedMessage,
+    queue: AgentDesktopQueueSnapshot,
+) -> AgentRunHandle {
+    let (_events_tx, events) = mpsc::channel(1);
+    let (_terminal_tx, terminal) = watch::channel(None);
+    AgentRunHandle {
+        run_id,
+        events,
+        terminal,
+        event_overflowed: Arc::new(AtomicBool::new(false)),
+        permission_responder: None,
+        cancellation: None,
+        queued: Some(queued),
+        queue,
+    }
+}
+
+fn desktop_run_is_stageable(run: &ActiveAgentRun) -> bool {
+    run.permission_routing == AgentPermissionRouting::Desktop
+        && !run.token.is_cancelled()
+        && run.accepting_queue.load(Ordering::Acquire)
+}
+
+fn desktop_queue_key(account_scope: &str, session_id: &str) -> (String, String) {
+    (account_scope.to_string(), session_id.to_string())
+}
+
+async fn reject_foreign_surface_session(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    let runtime = state.inner.lock().await;
+    let Some(current) = runtime.as_ref() else {
+        return Ok(());
+    };
+    ensure_runtime_account(current, account_scope)?;
+    if current.active_runs.values().any(|run| {
+        run.session_id == session_id
+            && run.permission_routing == AgentPermissionRouting::CallingSurface
+    }) {
+        return Err("This Agent task is controlled by another Agent surface".to_string());
+    }
+    Ok(())
+}
+
+async fn desktop_run_id_for_session(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    let runtime = state.inner.lock().await;
+    let Some(current) = runtime.as_ref() else {
+        return Ok(None);
+    };
+    ensure_runtime_account(current, account_scope)?;
+    Ok(current.active_runs.iter().find_map(|(run_id, run)| {
+        (run.session_id == session_id && desktop_run_is_stageable(run)).then(|| run_id.clone())
+    }))
+}
+
+async fn snapshot_desktop_queue(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+) -> AgentDesktopQueueSnapshot {
+    state
+        .desktop_queues
+        .lock()
+        .await
+        .get(&desktop_queue_key(account_scope, session_id))
+        .map(DesktopSessionQueue::snapshot)
+        .unwrap_or_else(empty_desktop_queue_snapshot)
+}
+
+struct DesktopLaunchPlan {
+    launch_messages: Vec<Message>,
+    consume_queue_ids: Vec<String>,
+    queue: AgentDesktopQueueSnapshot,
+}
+
+fn queued_user_message(queued: &AgentQueuedMessage) -> Message {
+    let mut message = user_message_from_prompt(&queued.text);
+    message.id = Some(queued.message_id.clone());
+    message
+}
+
+async fn persist_leading_user_messages(
+    session_manager: &SessionManager,
+    session_id: &str,
+    messages: &[Message],
+) -> Result<(), String> {
+    if messages.len() < 2 {
+        return Ok(());
+    }
+    for message in &messages[..messages.len() - 1] {
+        session_manager
+            .add_message(session_id, message)
+            .await
+            .map_err(|error| format!("Failed to persist queued Agent message: {error}"))?;
+    }
+    Ok(())
+}
+
+async fn emit_promoted_queue_items(
+    events: &AgentRunEventPublisher,
+    live_timelines: &LiveTimelines,
+    session_id: &str,
+    permission_routing: AgentPermissionRouting,
+    queued: &[AgentQueuedMessage],
+    snapshot: AgentDesktopQueueSnapshot,
+) {
+    for item in queued {
+        let message = queued_user_message(item);
+        if let Some(user_item) = message_to_timeline_items(&message, false)
+            .into_iter()
+            .next()
+        {
+            record_and_emit_timeline_item(
+                events,
+                live_timelines,
+                session_id,
+                permission_routing,
+                user_item.clone(),
+            )
+            .await;
+            events
+                .publish(AgentRunEvent::QueuePromoted {
+                    snapshot: snapshot.clone(),
+                    queue_id: item.queue_id.clone(),
+                    item: user_item,
+                })
+                .await;
+        }
+    }
+}
+
+async fn prepare_desktop_launch(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    draft_text: &str,
+) -> Result<DesktopLaunchPlan, String> {
+    let leftover = snapshot_desktop_queue(state, account_scope, session_id).await;
+    if leftover.items.is_empty() {
+        if draft_text.is_empty() {
+            return Err("Prompt cannot be empty".to_string());
+        }
+        return Ok(DesktopLaunchPlan {
+            launch_messages: vec![user_message_from_prompt(draft_text)],
+            consume_queue_ids: Vec::new(),
+            queue: leftover,
+        });
+    }
+    if !draft_text.is_empty() {
+        enqueue_desktop_queue_item(state, account_scope, session_id, draft_text).await?;
+    }
+    let snapshot = snapshot_desktop_queue(state, account_scope, session_id).await;
+    if snapshot.items.is_empty() {
+        return Err("Prompt cannot be empty".to_string());
+    }
+    Ok(DesktopLaunchPlan {
+        launch_messages: snapshot.items.iter().map(queued_user_message).collect(),
+        consume_queue_ids: snapshot
+            .items
+            .iter()
+            .map(|item| item.queue_id.clone())
+            .collect(),
+        queue: snapshot,
+    })
+}
+
+async fn enqueue_desktop_queue_item(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    text: &str,
+) -> Result<(AgentQueuedMessage, AgentDesktopQueueSnapshot), String> {
+    if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
+        return Err("Queued Agent message is too large".to_string());
+    }
+    let message = user_message_from_prompt(text);
+    let message_id = message
+        .id
+        .clone()
+        .ok_or_else(|| "Failed to identify queued Agent message".to_string())?;
+    let queued = AgentQueuedMessage {
+        queue_id: next_queue_id(),
+        message_id,
+        session_id: session_id.to_string(),
+        text: text.to_string(),
+        created_ms: unix_ms(),
+    };
+    let mut queues = state.desktop_queues.lock().await;
+    let queue = queues
+        .entry(desktop_queue_key(account_scope, session_id))
+        .or_insert_with(|| DesktopSessionQueue {
+            revision: 0,
+            items: VecDeque::new(),
+            editing_queue_id: None,
+        });
+    if queue.items.len() >= MAX_DESKTOP_QUEUE_ITEMS {
+        return Err("Agent task already has too many queued messages".to_string());
+    }
+    queue.revision = queue.revision.saturating_add(1);
+    queue.items.push_back(queued.clone());
+    Ok((queued, queue.snapshot()))
+}
+
+async fn remove_desktop_queue_item(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    queue_id: &str,
+) -> Result<(AgentQueuedMessage, AgentDesktopQueueSnapshot), String> {
+    let mut queues = state.desktop_queues.lock().await;
+    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+        return Err("Queued Agent message is no longer available".to_string());
+    };
+    let Some(index) = queue
+        .items
+        .iter()
+        .position(|item| item.queue_id == queue_id)
+    else {
+        return Err("Queued Agent message has already been sent".to_string());
+    };
+    let removed = queue
+        .items
+        .remove(index)
+        .expect("queue index was just resolved");
+    if queue.editing_queue_id.as_deref() == Some(removed.queue_id.as_str()) {
+        queue.editing_queue_id = None;
+    }
+    queue.revision = queue.revision.saturating_add(1);
+    Ok((removed, queue.snapshot()))
+}
+
+async fn update_desktop_queue_item(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    queue_id: &str,
+    text: &str,
+) -> Result<(AgentQueuedMessage, AgentDesktopQueueSnapshot), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Prompt cannot be empty".to_string());
+    }
+    if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
+        return Err("Queued Agent message is too large".to_string());
+    }
+    let mut queues = state.desktop_queues.lock().await;
+    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+        return Err("Queued Agent message is no longer available".to_string());
+    };
+    let Some(item) = queue
+        .items
+        .iter_mut()
+        .find(|item| item.queue_id == queue_id)
+    else {
+        return Err("Queued Agent message has already been sent".to_string());
+    };
+    item.text = text.to_string();
+    queue.editing_queue_id = None;
+    queue.revision = queue.revision.saturating_add(1);
+    Ok((item.clone(), queue.snapshot()))
+}
+
+async fn begin_desktop_queue_edit(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    queue_id: &str,
+) -> Result<(), String> {
+    let mut queues = state.desktop_queues.lock().await;
+    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+        return Err("Queued Agent message is no longer available".to_string());
+    };
+    if !queue.items.iter().any(|item| item.queue_id == queue_id) {
+        return Err("Queued Agent message has already been sent".to_string());
+    }
+    queue.editing_queue_id = Some(queue_id.to_string());
+    Ok(())
+}
+
+async fn end_desktop_queue_edit(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    queue_id: &str,
+) -> Result<(), String> {
+    let mut queues = state.desktop_queues.lock().await;
+    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+        return Ok(());
+    };
+    if queue.editing_queue_id.as_deref() == Some(queue_id) {
+        queue.editing_queue_id = None;
+    }
+    Ok(())
+}
+
+async fn take_all_desktop_queue_items_from_map(
+    queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
+    account_scope: &str,
+    session_id: &str,
+) -> Option<(Vec<AgentQueuedMessage>, AgentDesktopQueueSnapshot)> {
+    let mut queues = queues.lock().await;
+    let key = desktop_queue_key(account_scope, session_id);
+    let queue = queues.get_mut(&key)?;
+    if queue.items.is_empty() || queue.editing_queue_id.is_some() {
+        return None;
+    }
+    let items: Vec<AgentQueuedMessage> = queue.items.drain(..).collect();
+    queue.revision = queue.revision.saturating_add(1);
+    Some((items, queue.snapshot()))
+}
+
+async fn clear_desktop_queue(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+) -> AgentDesktopQueueSnapshot {
+    clear_desktop_queue_in_map(&state.desktop_queues, account_scope, session_id).await
+}
+
+async fn clear_desktop_queue_in_map(
+    queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
+    account_scope: &str,
+    session_id: &str,
+) -> AgentDesktopQueueSnapshot {
+    let mut queues = queues.lock().await;
+    let Some(mut queue) = queues.remove(&desktop_queue_key(account_scope, session_id)) else {
+        return empty_desktop_queue_snapshot();
+    };
+    queue.revision = queue.revision.saturating_add(1);
+    queue.items.clear();
+    queue.snapshot()
+}
+
+async fn publish_desktop_queue_changed(
+    state: &MapleAgentService,
+    account_scope: &str,
+    session_id: &str,
+    snapshot: AgentDesktopQueueSnapshot,
+) {
+    let events = {
+        let runtime = state.inner.lock().await;
+        runtime.as_ref().and_then(|current| {
+            if current.account_scope != account_scope {
+                return None;
+            }
+            current
+                .active_runs
+                .values()
+                .find(|run| run.session_id == session_id)
+                .map(|run| run.events.clone())
+        })
+    };
+    if let Some(events) = events {
+        events.publish(AgentRunEvent::QueueChanged(snapshot)).await;
+    }
+}
+
 fn project_has_active_session_run(
     session_roots: &HashMap<String, String>,
     active_session_ids: &HashSet<String>,
@@ -8080,6 +8876,589 @@ mod tests {
             status,
             HashMap::from([("desktop-session".to_string(), "desktop-run".to_string())])
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn desktop_send_during_active_run_stages_a_native_queue() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("desktop-steer-queue", sink.clone());
+        let user_id = "desktop-steer-queue-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "Steer task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let (run_events, _run_events_rx) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink.clone()),
+            session.id.clone(),
+            "desktop-steer-run".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager,
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::from([(
+                "desktop-steer-run".to_string(),
+                ActiveAgentRun {
+                    agent,
+                    permission_routing: AgentPermissionRouting::Desktop,
+                    token: CancellationToken::new(),
+                    tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
+                    session_id: session.id.clone(),
+                    events: run_events,
+                    cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    accepting_queue: Arc::new(AtomicBool::new(true)),
+                    task_handle: tokio::spawn(async {}),
+                },
+            )]),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root,
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope: account_scope.clone(),
+        });
+
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        {
+            let runtime = state.inner.lock().await;
+            let current = runtime.as_ref().expect("runtime");
+            assert!(
+                current
+                    .active_runs
+                    .values()
+                    .any(|run| { run.session_id == session.id && desktop_run_is_stageable(run) }),
+                "test fixture must expose a stageable desktop run"
+            );
+        }
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            handle.send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "also check the tests".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+            }),
+        )
+        .await
+        .expect("desktop queue stage should return")
+        .unwrap();
+        let second = handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "then open the readme".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(first.run_id, "desktop-steer-run");
+        assert_eq!(second.run_id, "desktop-steer-run");
+        let first_queued = first.queued.expect("first mid-run send should stage");
+        let second_queued = second.queued.expect("second mid-run send should stage");
+        assert_eq!(first_queued.text, "also check the tests");
+        assert_eq!(second_queued.text, "then open the readme");
+        assert_eq!(
+            second
+                .queue
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["also check the tests", "then open the readme"]
+        );
+
+        let loaded = handle.load_session(session.id.clone()).await.unwrap();
+        assert_eq!(loaded.queue.items, second.queue.items);
+
+        let remaining = handle
+            .cancel_queued_message(AgentQueueControlRequest {
+                session_id: session.id.clone(),
+                queue_id: first_queued.queue_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["then open the readme"]
+        );
+
+        let edited = handle
+            .unqueue_message_for_edit(AgentQueueControlRequest {
+                session_id: session.id.clone(),
+                queue_id: second_queued.queue_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(edited.text, "then open the readme");
+        assert!(handle
+            .load_session(session.id.clone())
+            .await
+            .unwrap()
+            .queue
+            .items
+            .is_empty());
+
+        let restaged = handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "retry after edit".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            restaged.queued.as_ref().map(|item| item.text.as_str()),
+            Some("retry after edit")
+        );
+        handle
+            .cancel_desktop_run("desktop-steer-run".to_string())
+            .await
+            .unwrap();
+        let after_stop = handle.load_session(session.id.clone()).await.unwrap();
+        assert_eq!(
+            after_stop
+                .queue
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["retry after edit"],
+            "Stop must leave staged chips so the user can edit, drop, or send them"
+        );
+
+        let launch =
+            prepare_desktop_launch(&state, &account_scope, &session.id, "draft after stop")
+                .await
+                .unwrap();
+        assert_eq!(
+            launch
+                .launch_messages
+                .iter()
+                .map(|message| message.as_concat_text())
+                .collect::<Vec<_>>(),
+            vec![
+                "retry after edit".to_string(),
+                "draft after stop".to_string()
+            ]
+        );
+        assert_eq!(
+            launch
+                .queue
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["retry after edit", "draft after stop"]
+        );
+        assert_eq!(
+            launch.consume_queue_ids,
+            launch
+                .queue
+                .items
+                .iter()
+                .map(|item| item.queue_id.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let empty_error = match prepare_desktop_launch(&state, &account_scope, "no-queue", "").await
+        {
+            Ok(_) => panic!("an empty composer and empty queue cannot start a run"),
+            Err(error) => error,
+        };
+        assert!(empty_error.contains("empty"), "{empty_error}");
+
+        // Isolated Goose managers can block on discard/teardown. The queue
+        // contents above are the Maple-owned contract for this fixture.
+        std::mem::forget(state.inner.lock().await.take());
+        std::mem::forget(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn desktop_send_rejects_staging_onto_an_acp_run() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("desktop-steer-rejects-acp", sink.clone());
+        let user_id = "desktop-steer-rejects-acp-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "ACP task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::clone(&permission_manager),
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        let (run_events, _run_events_rx) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink),
+            session.id.clone(),
+            "acp-steer-run".to_string(),
+            AgentHostEventPolicy::Suppress,
+        );
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager,
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::from([(
+                "acp-steer-run".to_string(),
+                ActiveAgentRun {
+                    agent,
+                    permission_routing: AgentPermissionRouting::CallingSurface,
+                    token: CancellationToken::new(),
+                    tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
+                    session_id: session.id.clone(),
+                    events: run_events,
+                    cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    accepting_queue: Arc::new(AtomicBool::new(true)),
+                    task_handle: tokio::spawn(async {}),
+                },
+            )]),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root,
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope,
+        });
+
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let error = match handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "should not join the ACP run".to_string(),
+                model: None,
+                context_limit: None,
+                mode: None,
+                vision_capable: false,
+            })
+            .await
+        {
+            Ok(_) => panic!("desktop send should not join an ACP-owned run"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("another Agent surface"),
+            "unexpected error: {error}"
+        );
+
+        std::mem::forget(state.inner.lock().await.take());
+        std::mem::forget(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_revision_stays_monotonic_after_the_queue_empties() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) = agent_service_test_context("desktop-queue-revision", sink);
+        let account_scope = account_scope("desktop-queue-revision-user").unwrap();
+        let session_id = "session-revision";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        let (_, after_take) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("the only staged item should be taken");
+        assert!(after_take.items.is_empty());
+        assert!(after_take.revision >= 2);
+
+        let (_, restaged) =
+            enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+                .await
+                .unwrap();
+        assert_eq!(restaged.items.len(), 1);
+        assert!(
+            restaged.revision > after_take.revision,
+            "a later enqueue must not restart the revision at 1: {} then {}",
+            after_take.revision,
+            restaged.revision
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_take_all_drains_every_item_in_order() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) = agent_service_test_context("desktop-queue-take-all", sink);
+        let account_scope = account_scope("desktop-queue-take-all-user").unwrap();
+        let session_id = "session-take-all";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        let (items, after_take) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("both staged items should be taken together");
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert!(after_take.items.is_empty());
+        assert!(take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .is_none());
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_take_all_holds_while_an_item_is_being_edited() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-queue-hold-edit", sink);
+        let account_scope = account_scope("desktop-queue-hold-edit-user").unwrap();
+        let session_id = "session-hold-edit";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        let first_id = snapshot_desktop_queue(&state, &account_scope, session_id)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        begin_desktop_queue_edit(&state, &account_scope, session_id, &first_id)
+            .await
+            .unwrap();
+        assert!(
+            take_all_desktop_queue_items_from_map(
+                &state.desktop_queues,
+                &account_scope,
+                session_id,
+            )
+            .await
+            .is_none(),
+            "an open edit must hold the leftover queue"
+        );
+        end_desktop_queue_edit(&state, &account_scope, session_id, &first_id)
+            .await
+            .unwrap();
+        let (items, _) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("discarding the edit should release the leftover queue");
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "kept")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "also")
+            .await
+            .unwrap();
+        let kept_id = snapshot_desktop_queue(&state, &account_scope, session_id)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        begin_desktop_queue_edit(&state, &account_scope, session_id, &kept_id)
+            .await
+            .unwrap();
+        update_desktop_queue_item(&state, &account_scope, session_id, &kept_id, "kept revised")
+            .await
+            .unwrap();
+        let (updated, _) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("saving the edit should release the leftover queue");
+        assert_eq!(
+            updated
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kept revised", "also"]
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_update_keeps_original_position() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-queue-update-in-place", sink);
+        let account_scope = account_scope("desktop-queue-update-user").unwrap();
+        let session_id = "session-update-in-place";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "third")
+            .await
+            .unwrap();
+        let snapshot = snapshot_desktop_queue(&state, &account_scope, session_id).await;
+        let first_id = snapshot.items[0].queue_id.clone();
+        let (updated, after_update) = update_desktop_queue_item(
+            &state,
+            &account_scope,
+            session_id,
+            &first_id,
+            "  first revised  ",
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.queue_id, first_id);
+        assert_eq!(
+            after_update
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first revised", "second", "third"]
+        );
+        assert!(after_update.revision > snapshot.revision);
+        let empty = update_desktop_queue_item(&state, &account_scope, session_id, &first_id, "   ")
+            .await
+            .unwrap_err();
+        assert!(empty.contains("empty"), "{empty}");
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_rejects_oversized_and_excess_items() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) = agent_service_test_context("desktop-queue-bounds", sink);
+        let account_scope = account_scope("desktop-queue-bounds-user").unwrap();
+        let session_id = "session-bounds";
+
+        let oversized = "x".repeat(MAX_DESKTOP_QUEUE_TEXT_BYTES + 1);
+        let error = enqueue_desktop_queue_item(&state, &account_scope, session_id, &oversized)
+            .await
+            .expect_err("oversized staged text must be rejected");
+        assert!(error.contains("too large"), "{error}");
+
+        for index in 0..MAX_DESKTOP_QUEUE_ITEMS {
+            enqueue_desktop_queue_item(
+                &state,
+                &account_scope,
+                session_id,
+                &format!("queued {index}"),
+            )
+            .await
+            .unwrap();
+        }
+        let error = enqueue_desktop_queue_item(&state, &account_scope, session_id, "one more")
+            .await
+            .expect_err("the 17th staged message must be rejected");
+        assert!(error.contains("too many"), "{error}");
+
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]
@@ -13094,6 +14473,7 @@ mod tests {
                     session_id: session.id.clone(),
                     events: run_events,
                     cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                    accepting_queue: Arc::new(AtomicBool::new(true)),
                     task_handle: tokio::spawn(async {}),
                 },
             )]),

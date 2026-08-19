@@ -1348,6 +1348,10 @@ impl PeerAdmission {
     /// slot. The host's current generation and the queue's prior entry remain
     /// unchanged/hidden until the controller proves installation with the
     /// final CommitObserved frame.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "bootstrap commit keeps every authenticated correlation value explicit"
+    )]
     fn commit_and_publish_incoming(
         &self,
         connection: &iroh::endpoint::Connection,
@@ -3196,6 +3200,10 @@ impl BootstrapReconciled {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the verifier compares every signed bootstrap field with its expected authority"
+)]
 fn validate_bootstrap_handover(
     protocol_version: u16,
     request_id: &str,
@@ -3735,10 +3743,10 @@ impl AcceptedPeerQueue {
     ) -> Result<Option<ConnectedPeer>, ProtocolError> {
         let mut state = self.state.lock().map_err(|_| internal_state_error())?;
         if state.closed
-            || !state
+            || state
                 .pending
                 .get(&peer)
-                .is_some_and(|candidate| candidate.connection_stamp() == stamp)
+                .is_none_or(|candidate| candidate.connection_stamp() != stamp)
         {
             return Err(ProtocolError::new(
                 ErrorCode::StaleGeneration,
@@ -3869,6 +3877,10 @@ impl GenerationLineageSnapshot {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "lineage validation deliberately receives the full immutable connection state"
+)]
 fn validate_generation_lineage(
     expected_controller: Option<iroh::EndpointId>,
     expected_remote: iroh::EndpointId,
@@ -4231,10 +4243,12 @@ impl GenerationConnectionManager {
                 .handover
                 .take()
                 .expect("validated pending reconciliation");
-            if let ManagedHandover::AwaitingFinalized { fallback, .. } = handover {
-                if let Some(fallback) = fallback {
-                    fallback.close();
-                }
+            if let ManagedHandover::AwaitingFinalized {
+                fallback: Some(fallback),
+                ..
+            } = handover
+            {
+                fallback.close();
             }
             if let Some(candidate) = state.current.take() {
                 if candidate.connection_stamp() == pending.candidate_connection_stamp
@@ -5378,9 +5392,7 @@ impl MapleIrohEndpoint {
             Some(awaiting) => awaiting.finalize(),
             None => Ok(candidate),
         };
-        if let Err(error) = expect_stream_end(&mut recv, bootstrap_deadline).await {
-            return Err(error);
-        }
+        expect_stream_end(&mut recv, bootstrap_deadline).await?;
         installed
     }
 
@@ -5760,6 +5772,10 @@ fn spawn_accept_pump(
     });
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the accept task owns explicit bounded policy, clock, queue, and permit capabilities"
+)]
 async fn handle_incoming_bootstrap(
     incoming: iroh::endpoint::Incoming,
     local_endpoint_id: iroh::EndpointId,

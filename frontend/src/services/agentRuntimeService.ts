@@ -147,10 +147,35 @@ export interface AgentPresentedTimelineItem {
   merge: "append" | "replace";
 }
 
+export interface AgentQueuedMessage {
+  queueId: string;
+  messageId: string;
+  sessionId: string;
+  text: string;
+  createdMs: number;
+}
+
+export interface AgentDesktopQueueSnapshot {
+  revision: number;
+  items: AgentQueuedMessage[];
+}
+
+export interface AgentQueueControlRequest {
+  sessionId: string;
+  queueId: string;
+}
+
+export interface AgentQueueUpdateRequest {
+  sessionId: string;
+  queueId: string;
+  text: string;
+}
+
 export interface AgentSessionDetail {
   session: AgentSessionSummary;
   timeline: AgentTimelineItem[];
   mcpErrors: AgentMcpConnectionError[];
+  queue: AgentDesktopQueueSnapshot;
 }
 
 export interface AgentPageRequest {
@@ -322,6 +347,8 @@ export interface AgentSendMessageRequest {
 
 export interface AgentRunResponse {
   runId: string;
+  queued?: AgentQueuedMessage | null;
+  queue: AgentDesktopQueueSnapshot;
 }
 
 export type AgentPermissionDecision = "allow_once" | "deny_once" | "cancel";
@@ -368,6 +395,8 @@ const MAX_AGENT_LIVE_STATUS_BYTES = 256;
 const MAX_AGENT_LIVE_PROJECT_ROOT_BYTES = 4_096;
 const MAX_AGENT_LIVE_MODEL_BYTES = 256;
 const MAX_AGENT_LIVE_MODE_BYTES = 64;
+const MAX_AGENT_DESKTOP_QUEUE_ITEMS = 16;
+const MAX_AGENT_DESKTOP_QUEUE_TEXT_BYTES = 32 * 1024;
 export const MAX_AGENT_HISTORY_RECORD_PRESENTATION_BYTES = 1_048_576 - 8_192;
 const AGENT_SAFE_HISTORY_TOKEN_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const SAFE_REMOTE_SETUP_WARNING =
@@ -420,6 +449,8 @@ interface AgentEventCommonFields {
   status?: AgentRuntimeStatus | null;
   session?: AgentSessionSummary | null;
   message?: string | null;
+  queue?: AgentDesktopQueueSnapshot | null;
+  promotedQueueId?: string | null;
 }
 
 export type AgentEventPayload = AgentEventCommonFields &
@@ -439,6 +470,20 @@ export type AgentEventPayload = AgentEventCommonFields &
         item: AgentTimelineItem;
       }
     | { eventType: "runStarted"; sessionId: string; runId: string }
+    | {
+        eventType: "queueChanged";
+        sessionId: string;
+        runId: string;
+        queue: AgentDesktopQueueSnapshot;
+      }
+    | {
+        eventType: "queuePromoted";
+        sessionId: string;
+        runId: string;
+        queue: AgentDesktopQueueSnapshot;
+        promotedQueueId: string;
+        item: AgentTimelineItem;
+      }
     | { eventType: "error"; runId: string; message: string }
     | {
         eventType: "error";
@@ -1407,6 +1452,64 @@ export class AgentRuntimeService {
     });
   }
 
+  async getDesktopQueueSnapshot(
+    userId: string,
+    sessionId: string
+  ): Promise<AgentDesktopQueueSnapshot> {
+    return await this.invokeLocalForUser<AgentDesktopQueueSnapshot>(
+      userId,
+      "agent_get_desktop_queue_snapshot",
+      { userId, sessionId }
+    );
+  }
+
+  async cancelQueuedMessage(
+    userId: string,
+    request: AgentQueueControlRequest
+  ): Promise<AgentDesktopQueueSnapshot> {
+    return await this.invokeLocalForUser<AgentDesktopQueueSnapshot>(
+      userId,
+      "agent_cancel_queued_message",
+      { userId, request }
+    );
+  }
+
+  async unqueueMessageForEdit(
+    userId: string,
+    request: AgentQueueControlRequest
+  ): Promise<AgentQueuedMessage> {
+    return await this.invokeLocalForUser<AgentQueuedMessage>(
+      userId,
+      "agent_unqueue_message_for_edit",
+      { userId, request }
+    );
+  }
+
+  async updateQueuedMessage(
+    userId: string,
+    request: AgentQueueUpdateRequest
+  ): Promise<AgentDesktopQueueSnapshot> {
+    return await this.invokeLocalForUser<AgentDesktopQueueSnapshot>(
+      userId,
+      "agent_update_queued_message",
+      { userId, request }
+    );
+  }
+
+  async beginQueuedMessageEdit(userId: string, request: AgentQueueControlRequest): Promise<void> {
+    await this.invokeLocalForUser(userId, "agent_begin_queued_message_edit", {
+      userId,
+      request
+    });
+  }
+
+  async endQueuedMessageEdit(userId: string, request: AgentQueueControlRequest): Promise<void> {
+    await this.invokeLocalForUser(userId, "agent_end_queued_message_edit", {
+      userId,
+      request
+    });
+  }
+
   async cancelRun(userId: string, runId: string): Promise<void> {
     // Cancellation is a target control-plane operation. Keep it account- and
     // target-fenced, but never delay Stop on credential validation or refresh.
@@ -2123,6 +2226,27 @@ export class AgentRuntimeService {
     } finally {
       opening?.settle();
     }
+  }
+
+  private async invokeLocalForUser<T>(
+    userId: string,
+    command: string,
+    args?: Record<string, unknown>
+  ): Promise<T> {
+    if (this.target.kind !== "local") {
+      throw new Error("Agent desktop queue operations are only available for the local target");
+    }
+    if (this.target.id !== LOCAL_AGENT_EXECUTION_TARGET_ID) {
+      throw new Error(`Unknown local Agent execution target "${this.target.id as string}"`);
+    }
+    if (!this.bridge.invoke) {
+      throw new Error("Agent runtime bridge does not support the local execution target");
+    }
+    return await this.bridge.runForUser(
+      userId,
+      async () => await this.bridge.invoke!(command, { userId, ...args }),
+      this.target
+    );
   }
 
   private async invokeControlForUser<Operation extends AgentRuntimeOperation>(
@@ -3565,6 +3689,32 @@ function decodeAgentEventPayload(value: Record<string, unknown>): AgentEventPayl
       return isString(value.sessionId) && isString(value.runId)
         ? { eventType: "runStarted", sessionId: value.sessionId, runId: value.runId }
         : null;
+    case "queueChanged":
+      return isString(value.sessionId) &&
+        isString(value.runId) &&
+        isAgentDesktopQueueSnapshot(value.queue)
+        ? {
+            eventType: "queueChanged",
+            sessionId: value.sessionId,
+            runId: value.runId,
+            queue: value.queue
+          }
+        : null;
+    case "queuePromoted":
+      return isString(value.sessionId) &&
+        isString(value.runId) &&
+        isAgentDesktopQueueSnapshot(value.queue) &&
+        isString(value.promotedQueueId) &&
+        isAgentTimelineItem(value.item)
+        ? {
+            eventType: "queuePromoted",
+            sessionId: value.sessionId,
+            runId: value.runId,
+            queue: value.queue,
+            promotedQueueId: value.promotedQueueId,
+            item: value.item
+          }
+        : null;
     case "error":
       if (!isString(value.runId)) return null;
       if (isString(value.message) && value.sessionId === undefined && value.item === undefined) {
@@ -3641,7 +3791,14 @@ function decodeAgentPresentedCreatedSession(value: unknown): AgentSessionDetail 
     return null;
   }
   const session = decodeAgentPresentedSessionSummary(value.session);
-  return session ? { session, timeline: [], mcpErrors: [] } : null;
+  return session
+    ? {
+        session,
+        timeline: [],
+        mcpErrors: [],
+        queue: { revision: 0, items: [] }
+      }
+    : null;
 }
 
 function decodeAgentPresentedSessionPage(value: unknown): AgentPage<AgentSessionSummary> | null {
@@ -3804,6 +3961,25 @@ function isAgentTimelineItem(value: unknown): value is AgentTimelineItem {
   );
 }
 
+function isAgentDesktopQueueSnapshot(value: unknown): value is AgentDesktopQueueSnapshot {
+  return (
+    isRecord(value) &&
+    isNonnegativeSafeInteger(value.revision) &&
+    Array.isArray(value.items) &&
+    value.items.length <= MAX_AGENT_DESKTOP_QUEUE_ITEMS &&
+    value.items.every(
+      (item) =>
+        isRecord(item) &&
+        isBoundedLiveIdentifier(item.queueId, MAX_AGENT_LIVE_ID_BYTES) &&
+        isBoundedLiveIdentifier(item.messageId, MAX_AGENT_LIVE_ID_BYTES) &&
+        isBoundedLiveIdentifier(item.sessionId, MAX_AGENT_LIVE_ID_BYTES) &&
+        isString(item.text) &&
+        utf8ByteLength(item.text) <= MAX_AGENT_DESKTOP_QUEUE_TEXT_BYTES &&
+        isNonnegativeSafeInteger(item.createdMs)
+    )
+  );
+}
+
 function isAgentSessionDetail(value: unknown): value is AgentSessionDetail {
   return (
     isRecord(value) &&
@@ -3813,7 +3989,8 @@ function isAgentSessionDetail(value: unknown): value is AgentSessionDetail {
     Array.isArray(value.mcpErrors) &&
     value.mcpErrors.every(
       (error) => isRecord(error) && isString(error.name) && isString(error.error)
-    )
+    ) &&
+    isAgentDesktopQueueSnapshot(value.queue)
   );
 }
 

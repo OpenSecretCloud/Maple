@@ -181,7 +181,7 @@ impl MapleLiveTimelineItem {
         Ok(())
     }
 
-    fn as_absolute(mut self) -> Self {
+    fn into_absolute(mut self) -> Self {
         self.merge = MapleLiveMerge::Replace;
         self
     }
@@ -709,7 +709,7 @@ pub(crate) enum AgentLiveCoordinatorError {
     StaleHistoryCommit,
     Projection(AgentLiveProjectionError),
     Journal(LiveEventJournalError),
-    ReseedRequired(LiveEventJournalReseedRequired),
+    ReseedRequired(Box<LiveEventJournalReseedRequired>),
     HeadReloadRequired(HeadReloadReason),
     Sealed(AgentLiveSealReason),
     WorkerUnavailable,
@@ -1494,6 +1494,10 @@ struct BeginResumeResult {
     through_cursor: LiveEventCursor,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the bounded FIFO command owns complete attach state until the actor accepts it"
+)]
 enum CoordinatorCommand {
     BeginIngress {
         session_id: String,
@@ -2745,7 +2749,7 @@ impl SessionLiveProjection {
         if self.items.len() >= MAX_LIVE_ITEMS_PER_SESSION {
             return Err(AgentLiveProjectionError::TooManyTimelineItems);
         }
-        let incoming = incoming.as_absolute();
+        let incoming = incoming.into_absolute();
         self.checkpoint_wire_bytes = self
             .checkpoint_wire_bytes
             .checked_add(live_item_checkpoint_wire_bytes(&incoming)?)
@@ -2758,7 +2762,7 @@ impl SessionLiveProjection {
         self.items
             .iter()
             .cloned()
-            .map(MapleLiveTimelineItem::as_absolute)
+            .map(MapleLiveTimelineItem::into_absolute)
             .collect()
     }
 }
@@ -2840,7 +2844,7 @@ fn merge_live_item(
     incoming: MapleLiveTimelineItem,
 ) -> Result<MapleLiveTimelineItem, AgentLiveProjectionError> {
     if incoming.merge == MapleLiveMerge::Replace {
-        return Ok(incoming.as_absolute());
+        return Ok(incoming.into_absolute());
     }
     if existing.item_type != incoming.item_type || existing.role != incoming.role {
         return Err(AgentLiveProjectionError::ConflictingItemIdentity);
@@ -5861,7 +5865,7 @@ mod tests {
                 AgentLiveSessionProjection {
                     session_id: "session-a".to_string(),
                     live_items: vec![match first {
-                        MapleLiveEvent::TimelineUpsert { item, .. } => item.as_absolute(),
+                        MapleLiveEvent::TimelineUpsert { item, .. } => item.into_absolute(),
                         _ => unreachable!(),
                     }],
                 },

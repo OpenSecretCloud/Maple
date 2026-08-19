@@ -188,7 +188,7 @@ pub(crate) enum AgentLiveHostError {
     Paging(AgentPagingError),
     Coordinator(AgentLiveCoordinatorError),
     Journal(LiveEventJournalError),
-    JournalReseedRequired(LiveEventJournalReseedRequired),
+    JournalReseedRequired(Box<LiveEventJournalReseedRequired>),
     RuntimeOwnerMismatch,
     OrdinaryPageContainedLiveState,
     SynchronizedPageProjectionRejected,
@@ -1642,6 +1642,10 @@ impl AgentLiveHost {
     }
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "rotation owns the complete fail-closed binding and journal transition obligation"
+)]
 pub(crate) enum AgentLiveHostBindOutcome {
     Bound(AgentLiveBindingLease),
     RotationRequired(AgentLiveHostRotation),

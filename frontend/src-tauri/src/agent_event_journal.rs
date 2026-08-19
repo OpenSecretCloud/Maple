@@ -338,7 +338,7 @@ pub(crate) struct LiveEventJournalReseedRequired {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LiveEventJournalActivationError {
     Journal(LiveEventJournalError),
-    ReseedRequired(LiveEventJournalReseedRequired),
+    ReseedRequired(Box<LiveEventJournalReseedRequired>),
 }
 
 impl From<LiveEventJournalError> for LiveEventJournalActivationError {
@@ -1198,13 +1198,13 @@ impl<T: LiveReplayPayload> LiveEventJournal<T> {
                 observation_token,
             }) if generation == owner.account_generation => {
                 let observed = self.observe_journal_generation(owner)?;
-                return Err(LiveEventJournalActivationError::ReseedRequired(
+                return Err(LiveEventJournalActivationError::ReseedRequired(Box::new(
                     LiveEventJournalReseedRequired {
                         owner: owner.clone(),
                         observed,
                         observation_token,
                     },
-                ));
+                )));
             }
             Some(JournalOwnerState::Reseeding { generation, .. })
                 if generation == owner.account_generation =>
@@ -1243,13 +1243,13 @@ impl<T: LiveReplayPayload> LiveEventJournal<T> {
                     },
                 );
                 let observed = self.observe_journal_generation(owner)?;
-                Err(LiveEventJournalActivationError::ReseedRequired(
+                Err(LiveEventJournalActivationError::ReseedRequired(Box::new(
                     LiveEventJournalReseedRequired {
                         owner: owner.clone(),
                         observed,
                         observation_token,
                     },
-                ))
+                )))
             }
             Err(error) => Err(error.into()),
         }
@@ -2290,12 +2290,10 @@ impl<T: LiveReplayPayload> LiveEventJournal<T> {
                 commitment: bytes_commitment(&checkpoint_bytes),
                 bytes: checkpoint_bytes,
             });
-            if let Err(error) = self.replace_account_file(&obligation.owner, &mut replacement) {
-                // Preserve the sealed obligation state for an exact retry. The
-                // next commit re-observes old or new and accepts only this
-                // preselected journal ID and exact absolute projection.
-                return Err(error);
-            }
+            // Preserve the sealed obligation state for an exact retry. The
+            // next commit re-observes old or new and accepts only this
+            // preselected journal ID and exact absolute projection.
+            self.replace_account_file(&obligation.owner, &mut replacement)?;
             replacement
         } else {
             let replacement = self.load_account(&obligation.owner)?;
@@ -4987,7 +4985,7 @@ mod tests {
         result: Result<LiveEventJournalLease, LiveEventJournalActivationError>,
     ) -> LiveEventJournalReseedRequired {
         match result {
-            Err(LiveEventJournalActivationError::ReseedRequired(required)) => required,
+            Err(LiveEventJournalActivationError::ReseedRequired(required)) => *required,
             result => panic!("expected authoritative reseed requirement, got {result:?}"),
         }
     }
