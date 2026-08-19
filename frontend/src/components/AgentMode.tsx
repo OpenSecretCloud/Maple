@@ -5390,9 +5390,20 @@ function AgentTimeline({
         const copyText = getAgentTurnCopyText(turn);
 
         if (turn.type === "user") {
+          const previousTurn = turnIndex > 0 ? turns[turnIndex - 1] : undefined;
+          const nextTurn = turns[turnIndex + 1];
+          const previousShowsPending =
+            previousTurn?.type === "user" && pendingAfterUserTurnId === previousTurn.id;
+          const stackedTop = previousTurn?.type === "user" && !previousShowsPending;
+          const stackedBottom = nextTurn?.type === "user" && pendingAfterUserTurnId !== turn.id;
+
           return (
             <div key={turn.id} className="space-y-1">
-              <ChatUserTurn actions={copyText ? <ChatCopyButton text={copyText} /> : undefined}>
+              <ChatUserTurn
+                stackedTop={stackedTop}
+                stackedBottom={stackedBottom}
+                actions={copyText ? <ChatCopyButton text={copyText} /> : undefined}
+              >
                 <Markdown content={turn.item.text || ""} />
               </ChatUserTurn>
               {pendingAfterUserTurnId === turn.id ? <ChatAssistantPendingTurn /> : null}
