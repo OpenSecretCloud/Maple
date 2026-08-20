@@ -1,5 +1,10 @@
 import { FolderOpen, type LucideIcon } from "lucide-react";
 
+import {
+  agentSidebarDateTime,
+  agentSidebarDateTitle,
+  formatAgentSidebarDate
+} from "@/components/agent/agentSidebarInfoCardDate";
 import { truncatePathMiddle } from "@/utils/path";
 import { cn } from "@/utils/utils";
 
@@ -13,6 +18,7 @@ interface AgentSidebarInfoCardProps {
   onOpenProjectFolder: () => void;
   progressLabel: string;
   title: string;
+  updatedMs?: number | null;
 }
 
 export function AgentSidebarInfoCard({
@@ -24,8 +30,13 @@ export function AgentSidebarInfoCard({
   onDismiss,
   onOpenProjectFolder,
   progressLabel,
-  title
+  title,
+  updatedMs
 }: AgentSidebarInfoCardProps) {
+  const dateLabel = updatedMs == null ? null : formatAgentSidebarDate(updatedMs);
+  const dateTime = updatedMs == null ? null : agentSidebarDateTime(updatedMs);
+  const dateTitle = updatedMs == null ? null : agentSidebarDateTitle(updatedMs);
+
   return (
     <div>
       <div className="flex min-w-0 items-start gap-2.5">
@@ -33,7 +44,20 @@ export function AgentSidebarInfoCard({
           <Icon aria-hidden="true" className="h-4 w-4" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="break-words text-[13px] font-semibold leading-5">{title}</p>
+          <div className="flex min-w-0 items-start gap-2">
+            <p className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-5">
+              {title}
+            </p>
+            {dateLabel && dateTime ? (
+              <time
+                className="mt-0.5 shrink-0 whitespace-nowrap text-[11px] font-medium leading-4 text-muted-foreground"
+                dateTime={dateTime}
+                title={dateTitle ?? undefined}
+              >
+                {dateLabel}
+              </time>
+            ) : null}
+          </div>
           <div className="mt-0.5 flex min-w-0 items-start gap-1.5 text-xs leading-4 text-muted-foreground">
             <MetadataIcon aria-hidden="true" className="mt-px h-3.5 w-3.5 shrink-0" />
             <span className="min-w-0 break-words">{metadata}</span>
