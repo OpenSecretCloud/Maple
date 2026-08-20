@@ -2121,6 +2121,22 @@ pub async fn agent_acp_start(
 }
 
 #[tauri::command]
+pub async fn agent_acp_restore_enabled(
+    app_handle: AppHandle,
+    lifecycle: tauri::State<'_, AgentHostLifecycle>,
+    user_id: String,
+) -> Result<AgentAcpStatus, String> {
+    let _guard = lifecycle.lock().await;
+    if load_config(&app_handle, &user_id)?.enabled {
+        app_handle
+            .state::<MapleAgentService>()
+            .ensure_accepting_new_work()?;
+        start_service_locked(&app_handle, &user_id).await?;
+    }
+    status(&app_handle, &user_id).await
+}
+
+#[tauri::command]
 pub async fn agent_acp_stop(
     app_handle: AppHandle,
     lifecycle: tauri::State<'_, AgentHostLifecycle>,

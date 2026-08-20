@@ -76,7 +76,7 @@ Use the active authenticated Paseo daemon for end-to-end testing:
 1. Launch the exact Maple build that Paseo will invoke and sign in.
 2. Ensure Maple Agent Mode is running.
 3. Enable the `agent_connections` feature and open **Settings -> Agent connections** in Maple.
-4. Leave **ACP client decides** selected, save the policy if needed, and start the ACP service.
+4. Leave **ACP client decides** selected, save the policy if needed, and start the ACP service once.
 5. In Paseo Desktop, add or edit a Generic ACP provider. Set Command to the exact Maple executable and add `acp` as its one separate argument.
 6. Enable MCP-server support for that provider. Do not add a Maple API key or copy Maple credentials into Paseo.
 7. Let Paseo discover Maple's authenticated model list and interactive mode. A static model list is unnecessary.
@@ -92,7 +92,7 @@ VITE_FORCE_FEATURE_FLAGS=agent_connections
 
 Restart the frontend development process after changing the flag. On macOS, use the executable belonging to the exact development app being tested; do not point Paseo at an installed release while validating a development build.
 
-The settings surface is available only in macOS and Linux Tauri Desktop builds and is disabled by default. Web, mobile, and Windows builds do not expose it. The feature flag controls discovery of the settings page, not service activation. ACP must be started manually after each Maple launch.
+The settings surface is available only in macOS and Linux Tauri Desktop builds and is disabled by default. Web, mobile, and Windows builds do not expose it. The feature flag controls discovery of the settings page, not service activation. After the user starts ACP once, Maple persists that enabled choice and restores the listener after a later authenticated Desktop launch. **Stop service** persists the disabled choice and prevents that restoration.
 
 The default maximum is eight simultaneous ACP connections. The current settings UI exposes neither that limit nor the allowed-project-root list. Its saved default has an empty root list, which accepts any absolute working directory Maple can access. The backend configuration still validates both fields, and changes require **Stop -> Save -> Start**, but the preview UI must not be described as a root-policy editor.
 

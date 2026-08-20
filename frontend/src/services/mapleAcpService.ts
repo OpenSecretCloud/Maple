@@ -86,6 +86,11 @@ export class MapleAcpService {
     return normalizeMapleAcpStatus(raw);
   }
 
+  async restoreEnabled(userId: string): Promise<MapleAcpStatus> {
+    const raw = await this.invokeAuthenticated<unknown>(userId, "agent_acp_restore_enabled");
+    return normalizeMapleAcpStatus(raw);
+  }
+
   async stop(userId: string): Promise<MapleAcpStatus> {
     // Stopping is a local control-plane operation. It must remain available
     // when credentials are expired or are being cleared during logout.

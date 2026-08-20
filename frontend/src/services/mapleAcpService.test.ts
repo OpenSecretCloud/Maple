@@ -60,6 +60,24 @@ describe("MapleAcpService", () => {
     expect(bridge.lastArgs).toEqual({ userId: "user-a" });
   });
 
+  test("saved service restoration stays authenticated and account-fenced", async () => {
+    const bridge = new RecordingBridge();
+    bridge.result = { running: true, enabled: true, harness };
+    const service = new MapleAcpService(bridge);
+
+    expect(await service.restoreEnabled("user-a")).toMatchObject({
+      running: true,
+      enabled: true
+    });
+
+    expect(bridge.events).toEqual([
+      "fence:user-a",
+      "sync:user-a",
+      "invoke:agent_acp_restore_enabled"
+    ]);
+    expect(bridge.lastArgs).toEqual({ userId: "user-a" });
+  });
+
   test("stop and polling remain account-fenced without refreshing credentials", async () => {
     const bridge = new RecordingBridge();
     bridge.result = { running: false };
@@ -114,6 +132,7 @@ describe("MapleAcpService", () => {
       "available in Maple Desktop"
     );
     await expect(service.start("user-a")).rejects.toThrow("available in Maple Desktop");
+    await expect(service.restoreEnabled("user-a")).rejects.toThrow("available in Maple Desktop");
     await expect(service.stop("user-a")).rejects.toThrow("available in Maple Desktop");
     await expect(service.getStatus("user-a")).rejects.toThrow("available in Maple Desktop");
     expect(bridge.events).toEqual([]);
