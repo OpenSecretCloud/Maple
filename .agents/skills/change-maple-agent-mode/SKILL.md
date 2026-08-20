@@ -192,7 +192,7 @@ the changed boundary and classify it by behavior, not file path:
 For changes requiring full lifecycle coverage, continue through the remaining
 baseline:
 
-4. Sign in, open Agent Mode, select the disposable project, choose the intended model, keep `Read only`, and start a new task. CUA only: the native picker is not a Maple window — see `$validate-maple` **CUA only: macOS Open/Save**.
+4. Sign in, open Agent Mode, select the disposable project, choose the intended model, keep `Read only`, and start a new task. Codex must use its built-in Computer Use instead of CUA, even when CUA is installed. CUA only: the native picker is not a Maple window — see `$validate-maple` **CUA only: macOS Open/Save**.
 5. Send: `Read README.md using the read tool. Reply only with the exact marker. Do not use shell.` Confirm the visible user row, tool activity, exact marker result, final answer, and completed terminal state.
 6. Send: `Create agent-smoke-output.txt containing exactly <marker> using the write tool. Do not use shell.` Confirm a single pending permission card. Choose `Deny once`; verify the card settles as denied, the run terminates coherently, and the file does not exist.
 7. Repeat the write request and choose `Allow once`. Verify one settled permission card, exact on-disk contents, a visible tool result, final answer, and completed state. Do not use `Allow all` merely to make the smoke easier.

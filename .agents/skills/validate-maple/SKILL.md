@@ -307,8 +307,9 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
 
 ### CUA only: macOS Open/Save
 
-Skip unless you drive the GUI with cua-driver (pid + `window_id`). Codex
-computer use and other full-desktop screenshot drivers should ignore this.
+Codex must use its built-in Computer Use instead of CUA, even when CUA is
+installed. Other agents should skip this unless driving the GUI with
+cua-driver (pid + `window_id`).
 
 On macOS every Maple native file or folder picker — Agent project folder,
 chat photo/document upload, Save, and any other Tauri `dialog` — is hosted
