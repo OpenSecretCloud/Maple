@@ -1,7 +1,7 @@
 use crate::agent::{
     AgentConfig, AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink,
     AgentMcpServer, AgentPermissionModeRequest, AgentPermissionResponse,
-    AgentProjectRootRegistration, AgentProjectSkillsTrustStatus, AgentQueueControlRequest,
+    AgentProjectRootRegistration, AgentProjectTrustStatus, AgentQueueControlRequest,
     AgentQueueUpdateRequest, AgentQueuedMessage, AgentRenameSessionRequest, AgentRunEvent,
     AgentRunResponse, AgentRunTerminal, AgentRuntimeHandle, AgentRuntimeStatus,
     AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionMcpServer,
@@ -351,31 +351,31 @@ pub async fn agent_remove_project_root(
 }
 
 #[tauri::command]
-pub async fn agent_get_project_skills_trust(
+pub async fn agent_get_project_trust(
     app_handle: AppHandle,
     state: State<'_, MapleAgentService>,
     user_id: String,
     path: String,
-) -> Result<AgentProjectSkillsTrustStatus, String> {
+) -> Result<AgentProjectTrustStatus, String> {
     let _ = app_handle;
     handle_for_user(&state, &user_id)
         .await?
-        .get_project_skills_trust(path)
+        .get_project_trust(path)
         .await
 }
 
 #[tauri::command]
-pub async fn agent_set_project_skills_trust(
+pub async fn agent_set_project_trust(
     app_handle: AppHandle,
     state: State<'_, MapleAgentService>,
     user_id: String,
     path: String,
     trusted: bool,
-) -> Result<AgentProjectSkillsTrustStatus, String> {
+) -> Result<AgentProjectTrustStatus, String> {
     let _ = app_handle;
     handle_for_user(&state, &user_id)
         .await?
-        .set_project_skills_trust(path, trusted)
+        .set_project_trust(path, trusted)
         .await
 }
 

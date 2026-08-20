@@ -9,11 +9,13 @@ use crate::agent::{
 use crate::agent_host::AgentHostLifecycle;
 use crate::maple_api::{account_scope, MapleApiAuthState};
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
-    ConfigOptionUpdate, ContentBlock, ContentChunk, Implementation, InitializeRequest,
-    InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-    LoadSessionResponse, McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
+    AgentCapabilities, BooleanPropertySchema, CancelNotification, CloseSessionRequest,
+    CloseSessionResponse, ConfigOptionUpdate, ContentBlock, ContentChunk, CreateElicitationRequest,
+    ElicitationAction, ElicitationContentValue, ElicitationFormMode, ElicitationSchema,
+    ElicitationSessionScope, Implementation, InitializeRequest, InitializeResponse,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities,
     SessionCloseCapabilities, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOption, SessionId, SessionInfo, SessionListCapabilities, SessionMode,
@@ -290,6 +292,7 @@ struct AcpConnectionContext {
     lifetime: CancellationToken,
     closed: AtomicBool,
     has_credentials: AtomicBool,
+    client_supports_form_elicitation: AtomicBool,
     outbound: Arc<AcpOutboundTracker>,
 }
 
@@ -300,6 +303,8 @@ struct AcpSession {
     message_count: usize,
     created_here: bool,
     prompted: bool,
+    project_root: PathBuf,
+    project_trust_decision: Option<bool>,
 }
 
 struct UnpublishedAcpSession {
@@ -412,6 +417,12 @@ enum AcpPermissionResolution {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpProjectTrustResolution {
+    Continue,
+    Cancelled,
+}
+
 impl AcpOutboundTracker {
     fn new() -> Arc<Self> {
         Self::with_limits(
@@ -515,6 +526,7 @@ impl AcpConnectionContext {
             lifetime: CancellationToken::new(),
             closed: AtomicBool::new(false),
             has_credentials: AtomicBool::new(false),
+            client_supports_form_elicitation: AtomicBool::new(false),
             outbound: AcpOutboundTracker::new(),
         })
     }
@@ -553,6 +565,11 @@ impl AcpConnectionContext {
         let config = self.config.read().await.clone();
         let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
             .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
+        let project_trust = self
+            .agent
+            .get_project_trust(project_root.to_string_lossy().into_owned())
+            .await
+            .map_err(internal_acp_error)?;
 
         let available_models = self.available_models().await?;
         let model = available_models
@@ -617,6 +634,8 @@ impl AcpConnectionContext {
                 message_count: created.detail.session.message_count,
                 created_here: true,
                 prompted: false,
+                project_root: project_root.clone(),
+                project_trust_decision: project_trust.decision,
             },
         );
         operations.insert(session_id.clone(), AcpSessionOperation::new(&self.lifetime));
@@ -693,11 +712,16 @@ impl AcpConnectionContext {
         let config = self.config.read().await.clone();
         let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
             .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
-        let project_root = project_root.to_string_lossy().into_owned();
+        let project_root_text = project_root.to_string_lossy().into_owned();
+        let project_trust = self
+            .agent
+            .get_project_trust(project_root_text.clone())
+            .await
+            .map_err(internal_acp_error)?;
         let session_id = canonical_session_id(&request.session_id)?;
         let persisted_sessions = self
             .agent
-            .list_sessions(Some(project_root.clone()))
+            .list_sessions(Some(project_root_text.clone()))
             .await
             .map_err(internal_acp_error)?;
         let persisted = ensure_acp_session_is_loadable(&persisted_sessions, &session_id)
@@ -746,7 +770,7 @@ impl AcpConnectionContext {
             .agent
             .attach_session_with_surface_context(
                 session_id.clone(),
-                project_root,
+                project_root_text,
                 tool_context,
                 transient_mcp_servers,
                 operation.cancellation.child_token(),
@@ -807,6 +831,8 @@ impl AcpConnectionContext {
                 message_count,
                 created_here: false,
                 prompted: false,
+                project_root,
+                project_trust_decision: project_trust.decision,
             },
         );
         drop(sessions);
@@ -1193,6 +1219,210 @@ impl AcpConnectionContext {
         .await
     }
 
+    async fn request_project_trust_with_elicitation(
+        &self,
+        cx: &ConnectionTo<Client>,
+        session_id: SessionId,
+        project_root: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<bool>, AcpOutboundSendError> {
+        let request = project_trust_elicitation_request(session_id, project_root);
+        let encoded_bytes = serde_json::to_vec(&request)
+            .map_err(|error| {
+                AcpOutboundSendError::Transport(internal_acp_error(format!(
+                    "Failed to encode Maple ACP project trust elicitation: {error}"
+                )))
+            })?
+            .len();
+        let reservation = self.outbound.reserve(encoded_bytes, cancellation).await?;
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
+        let sent_request = cx.send_request(request);
+        let mut response_future = Box::pin(sent_request.block_task());
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => None,
+            response = &mut response_future => Some(response),
+        };
+        let Some(response) = response else {
+            retain_cancelled_permission_request(response_future, reservation);
+            return Ok(None);
+        };
+        drop(reservation);
+        let response = response.map_err(AcpOutboundSendError::Transport)?;
+        match response.action {
+            ElicitationAction::Accept(action) => {
+                let trusted = action
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.get("trustProject"))
+                    .and_then(|value| match value {
+                        ElicitationContentValue::Boolean(value) => Some(*value),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        AcpOutboundSendError::Transport(internal_acp_error(
+                            "ACP client returned an invalid project trust elicitation response"
+                                .to_string(),
+                        ))
+                    })?;
+                Ok(Some(trusted))
+            }
+            ElicitationAction::Decline => Ok(Some(false)),
+            ElicitationAction::Cancel => Ok(None),
+            _ => Ok(None),
+        }
+    }
+
+    async fn request_project_trust_with_chooser(
+        &self,
+        cx: &ConnectionTo<Client>,
+        session_id: SessionId,
+        project_root: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<bool>, AcpOutboundSendError> {
+        let request_id = format!(
+            "maple-project-trust-{}",
+            NEXT_ACP_MESSAGE_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let tool_call = ToolCall::new(request_id, "Trust this project?")
+            .kind(ToolKind::Other)
+            .status(ToolCallStatus::Pending)
+            .content(vec![ToolCallContent::from(ContentBlock::Text(
+                TextContent::new(format!(
+                    "Trusting '{}' allows Maple to use project-provided guidance, including agent skills. These instructions can influence how agents work and use tools. Normal tool permissions still apply.",
+                    project_root.display()
+                )),
+            ))]);
+        let request = RequestPermissionRequest::new(
+            session_id,
+            tool_call.into(),
+            project_trust_permission_options(),
+        );
+        let encoded_bytes = serde_json::to_vec(&request)
+            .map_err(|error| {
+                AcpOutboundSendError::Transport(internal_acp_error(format!(
+                    "Failed to encode Maple ACP project trust request: {error}"
+                )))
+            })?
+            .len();
+        let reservation = self.outbound.reserve(encoded_bytes, cancellation).await?;
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
+        let sent_request = cx.send_request(request);
+        let mut response_future = Box::pin(sent_request.block_task());
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => None,
+            response = &mut response_future => Some(response),
+        };
+        let Some(response) = response else {
+            retain_cancelled_permission_request(response_future, reservation);
+            return Ok(None);
+        };
+        drop(reservation);
+        let response = response.map_err(AcpOutboundSendError::Transport)?;
+        project_trust_permission_decision(&response.outcome)
+            .map_err(|error| AcpOutboundSendError::Transport(internal_acp_error(error)))
+    }
+
+    async fn resolve_project_trust_before_prompt(
+        &self,
+        cx: &ConnectionTo<Client>,
+        session_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<AcpProjectTrustResolution, agent_client_protocol::Error> {
+        let (project_root, configured_decision, tool_context_access) = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions.get(session_id).ok_or_else(|| {
+                agent_client_protocol::Error::resource_not_found(Some(session_id.to_string()))
+                    .data("ACP session is no longer owned by this connection")
+            })?;
+            (
+                session.project_root.clone(),
+                session.project_trust_decision,
+                session
+                    .lease
+                    .as_ref()
+                    .expect("a runnable ACP session must own a lease")
+                    .access(),
+            )
+        };
+        let mut status = self
+            .agent
+            .get_project_trust(project_root.to_string_lossy().into_owned())
+            .await
+            .map_err(internal_acp_error)?;
+        if status.decision.is_none() && !status.protected_features.is_empty() {
+            let protocol_session_id = SessionId::new(session_id.to_string());
+            let decision = if self.client_supports_form_elicitation.load(Ordering::SeqCst) {
+                match self
+                    .request_project_trust_with_elicitation(
+                        cx,
+                        protocol_session_id.clone(),
+                        &project_root,
+                        cancellation,
+                    )
+                    .await
+                {
+                    Ok(decision) => decision,
+                    Err(error) if !cancellation.is_cancelled() => {
+                        log::warn!(
+                            "ACP client advertised form elicitation but project trust elicitation failed; using the permission chooser fallback: {error:?}"
+                        );
+                        self.request_project_trust_with_chooser(
+                            cx,
+                            protocol_session_id,
+                            &project_root,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(outbound_error)?
+                    }
+                    Err(error) => return Err(outbound_error(error)),
+                }
+            } else {
+                self.request_project_trust_with_chooser(
+                    cx,
+                    protocol_session_id,
+                    &project_root,
+                    cancellation,
+                )
+                .await
+                .map_err(outbound_error)?
+            };
+            let Some(trusted) = decision else {
+                return Ok(AcpProjectTrustResolution::Cancelled);
+            };
+            status = self
+                .agent
+                .set_project_trust_for_surface_session(
+                    project_root.to_string_lossy().into_owned(),
+                    trusted,
+                    tool_context_access.clone(),
+                )
+                .await
+                .map_err(internal_acp_error)?;
+        } else if status.decision != configured_decision {
+            let trusted = status.decision.unwrap_or(false);
+            status = self
+                .agent
+                .set_project_trust_for_surface_session(
+                    project_root.to_string_lossy().into_owned(),
+                    trusted,
+                    tool_context_access,
+                )
+                .await
+                .map_err(internal_acp_error)?;
+        }
+        if let Some(session) = self.sessions.lock().await.get_mut(session_id) {
+            session.project_trust_decision = status.decision;
+        }
+        Ok(AcpProjectTrustResolution::Continue)
+    }
+
     async fn request_permission_from_caller(
         &self,
         cx: &ConnectionTo<Client>,
@@ -1279,6 +1509,20 @@ impl AcpConnectionContext {
         let mut operation_guard = Some(operation_guard);
         let protocol_session_id = SessionId::new(session_id.clone());
         let config = self.config.read().await.clone();
+        match self
+            .resolve_project_trust_before_prompt(cx, &session_id, &prompt_lifetime)
+            .await
+        {
+            Ok(AcpProjectTrustResolution::Continue) => {}
+            Ok(AcpProjectTrustResolution::Cancelled) => {
+                self.prompt_states.lock().await.remove(&session_id);
+                return Ok(PromptResponse::new(StopReason::Cancelled));
+            }
+            Err(error) => {
+                self.prompt_states.lock().await.remove(&session_id);
+                return Err(error);
+            }
+        }
         let (tool_context_access, model) = {
             let sessions = self.sessions.lock().await;
             match sessions.get(&session_id) {
@@ -1888,8 +2132,13 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                     }
                 })
                 .await
-                .if_request(
-                    |_request: InitializeRequest, responder: Responder<InitializeResponse>| async {
+                .if_request({
+                    let context = Arc::clone(&context);
+                    move |request: InitializeRequest, responder: Responder<InitializeResponse>| async move {
+                        context.client_supports_form_elicitation.store(
+                            client_supports_form_elicitation(&request),
+                            Ordering::SeqCst,
+                        );
                         let capabilities = AgentCapabilities::new()
                             .load_session(true)
                             .prompt_capabilities(
@@ -1911,8 +2160,8 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                             .agent_info(Implementation::new("maple", env!("CARGO_PKG_VERSION")))
                             .agent_capabilities(capabilities),
                         )
-                    },
-                )
+                    }
+                })
                 .await
                 .if_request({
                     let context = Arc::clone(&context);
@@ -2954,6 +3203,85 @@ fn acp_permission_options() -> Vec<PermissionOption> {
     ]
 }
 
+fn client_supports_form_elicitation(request: &InitializeRequest) -> bool {
+    request
+        .client_capabilities
+        .elicitation
+        .as_ref()
+        .is_some_and(|capabilities| capabilities.form.is_some())
+}
+
+fn project_trust_elicitation_request(
+    session_id: SessionId,
+    project_root: &Path,
+) -> CreateElicitationRequest {
+    let schema = ElicitationSchema::new()
+        .title("Trust this project?")
+        .description(
+            "Choose whether Maple may use guidance supplied by this project. The decision is remembered and reversible.",
+        )
+        .property(
+            "trustProject",
+            BooleanPropertySchema::new()
+                .title("Trust this project")
+                .description(
+                    "Allow Maple to use project-provided guidance, including agent skills. These instructions can influence how agents work and use tools.",
+                )
+                .default_value(false),
+            true,
+        );
+    CreateElicitationRequest::new(
+        ElicitationFormMode::new(ElicitationSessionScope::new(session_id), schema),
+        format!(
+            "Trust project '{}'? Normal tool permissions still apply.",
+            project_root.display()
+        ),
+    )
+}
+
+fn project_trust_permission_options() -> Vec<PermissionOption> {
+    vec![
+        // Keep the fail-closed choice first for clients that present a default.
+        // Two AllowOnce options deliberately make this a chooser in Paseo, so
+        // its generic auto-accept feature cannot silently resolve project trust.
+        PermissionOption::new(
+            "keep_untrusted",
+            "Keep project trust disabled",
+            PermissionOptionKind::AllowOnce,
+        ),
+        PermissionOption::new(
+            "trust_project",
+            "Trust this project",
+            PermissionOptionKind::AllowOnce,
+        ),
+        PermissionOption::new("cancel", "Cancel turn", PermissionOptionKind::RejectOnce),
+    ]
+}
+
+fn project_trust_permission_decision(
+    outcome: &RequestPermissionOutcome,
+) -> Result<Option<bool>, String> {
+    match outcome {
+        RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == "keep_untrusted" =>
+        {
+            Ok(Some(false))
+        }
+        RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == "trust_project" =>
+        {
+            Ok(Some(true))
+        }
+        RequestPermissionOutcome::Cancelled => Ok(None),
+        RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == "cancel" =>
+        {
+            Ok(None)
+        }
+        _ => Err("ACP client selected an unknown Maple project trust option".to_string()),
+    }
+}
+
 fn acp_permission_decision(
     outcome: &RequestPermissionOutcome,
 ) -> Result<AgentPermissionDecision, String> {
@@ -3345,7 +3673,11 @@ async fn run_acp_connector_async() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{McpServerStdio, SelectedPermissionOutcome};
+    use agent_client_protocol::schema::v1::{
+        ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, McpServerStdio,
+        SelectedPermissionOutcome,
+    };
+    use serde_json::json;
 
     #[test]
     fn default_config_is_disabled_and_caller_mediated() {
@@ -3643,6 +3975,95 @@ mod tests {
                 { "optionId": "reject_once", "name": "Reject once", "kind": "reject_once" }
             ])
         );
+    }
+
+    #[test]
+    fn project_trust_chooser_is_fail_closed_and_cannot_be_auto_accepted() {
+        let encoded = serde_json::to_value(project_trust_permission_options()).unwrap();
+
+        assert_eq!(
+            encoded,
+            serde_json::json!([
+                {
+                    "optionId": "keep_untrusted",
+                    "name": "Keep project trust disabled",
+                    "kind": "allow_once"
+                },
+                {
+                    "optionId": "trust_project",
+                    "name": "Trust this project",
+                    "kind": "allow_once"
+                },
+                { "optionId": "cancel", "name": "Cancel turn", "kind": "reject_once" }
+            ])
+        );
+        assert_eq!(
+            project_trust_permission_decision(&RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new("keep_untrusted")
+            )),
+            Ok(Some(false))
+        );
+        assert_eq!(
+            project_trust_permission_decision(&RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new("trust_project")
+            )),
+            Ok(Some(true))
+        );
+        assert_eq!(
+            project_trust_permission_decision(&RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new("cancel")
+            )),
+            Ok(None)
+        );
+        assert_eq!(
+            project_trust_permission_decision(&RequestPermissionOutcome::Cancelled),
+            Ok(None)
+        );
+        assert!(
+            project_trust_permission_decision(&RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new("allow_always")
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn project_trust_elicitation_is_session_scoped_reversible_and_defaults_off() {
+        let request = project_trust_elicitation_request(
+            SessionId::new("session-1"),
+            Path::new("/tmp/maple-project"),
+        );
+        let encoded = serde_json::to_value(request).unwrap();
+
+        assert_eq!(encoded["mode"], "form");
+        assert_eq!(encoded["sessionId"], "session-1");
+        assert_eq!(
+            encoded["requestedSchema"]["required"],
+            json!(["trustProject"])
+        );
+        assert_eq!(
+            encoded["requestedSchema"]["properties"]["trustProject"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            encoded["requestedSchema"]["properties"]["trustProject"]["default"],
+            false
+        );
+        assert!(encoded["message"]
+            .as_str()
+            .unwrap()
+            .contains("Normal tool permissions still apply"));
+    }
+
+    #[test]
+    fn form_elicitation_is_used_only_when_the_client_advertises_it() {
+        let plain = InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1);
+        assert!(!client_supports_form_elicitation(&plain));
+
+        let mut form = InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1);
+        form.client_capabilities = ClientCapabilities::new()
+            .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
+        assert!(client_supports_form_elicitation(&form));
     }
 
     #[test]

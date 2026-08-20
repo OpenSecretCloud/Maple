@@ -89,6 +89,7 @@ import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { RenameAgentProjectDialog } from "@/components/RenameAgentProjectDialog";
+import { AgentProjectSettingsDialog } from "@/components/agent/AgentProjectSettingsDialog";
 import { RenameAgentTaskDialog } from "@/components/RenameAgentTaskDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
@@ -115,7 +116,7 @@ import {
   type AgentEventEnvelope,
   type AgentMcpServer,
   type AgentPermissionDecision,
-  type AgentProjectSkillsTrustStatus,
+  type AgentProjectTrustStatus,
   type AgentDesktopQueueSnapshot,
   type AgentRuntimeStatus,
   type AgentSessionMcpServer,
@@ -490,13 +491,18 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isAgentModelCatalogLoading, setIsAgentModelCatalogLoading] = useState(true);
   const [isPermissionModeUpdating, setIsPermissionModeUpdating] = useState(false);
   const [isProjectRootRegistrationPending, setIsProjectRootRegistrationPending] = useState(false);
-  const [projectSkillsTrustPrompt, setProjectSkillsTrustPrompt] =
-    useState<AgentProjectSkillsTrustStatus | null>(null);
-  const [isProjectSkillsTrustLoading, setIsProjectSkillsTrustLoading] = useState(false);
-  const [projectSkillsTrustSavingDecision, setProjectSkillsTrustSavingDecision] = useState<
-    boolean | null
-  >(null);
-  const [projectSkillsTrustError, setProjectSkillsTrustError] = useState<string | null>(null);
+  const [projectTrustPrompt, setProjectTrustPrompt] = useState<AgentProjectTrustStatus | null>(
+    null
+  );
+  const [projectSettingsRoot, setProjectSettingsRoot] = useState<AgentProjectRootView | null>(null);
+  const [projectSettingsTrust, setProjectSettingsTrust] = useState<AgentProjectTrustStatus | null>(
+    null
+  );
+  const [isProjectTrustLoading, setIsProjectTrustLoading] = useState(false);
+  const [projectTrustSavingDecision, setProjectTrustSavingDecision] = useState<boolean | null>(
+    null
+  );
+  const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
   const [pendingSendSessionIds, setPendingSendSessionIds] = useState<Set<string>>(() => new Set());
   const [stoppingSessionIds, setStoppingSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessionSelectionId, setPendingSessionSelectionId] = useState<string | null>(null);
@@ -537,7 +543,8 @@ export function AgentMode({ userId }: { userId: string }) {
   const isAgentModeMountedRef = useRef(true);
   const renameTaskMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const projectOrderRequestIdRef = useRef(0);
-  const projectSkillsTrustGenerationRef = useRef(0);
+  const projectTrustGenerationRef = useRef(0);
+  const projectSettingsGenerationRef = useRef(0);
   const thoughtPhaseTrackerRef = useLazyRef(() => new AgentLiveThoughtPhaseTracker());
   const thoughtLabelFinalRequestRegistryRef = useLazyRef(
     () => new AgentThoughtLabelFinalRequestRegistry()
@@ -954,9 +961,9 @@ export function AgentMode({ userId }: { userId: string }) {
   const isNewTaskCreationPending = pendingSessionSelectionId === NEW_SESSION_PENDING_KEY;
   // Existing-task loads and their follow-up project trust lookup block actions without
   // visually dimming the global New Task control.
-  const isTaskTransitionPending = isTaskSelectionPending || isProjectSkillsTrustLoading;
+  const isTaskTransitionPending = isTaskSelectionPending || isProjectTrustLoading;
   const isProjectOrderSaving = projectOrderState.pendingRequestId !== null;
-  const isProjectSkillsTrustSaving = projectSkillsTrustSavingDecision !== null;
+  const isProjectTrustSaving = projectTrustSavingDecision !== null;
   const areAgentSettingsLockedOutsideTaskTransition =
     !isAuthTransitionReady ||
     isInitializing ||
@@ -968,8 +975,8 @@ export function AgentMode({ userId }: { userId: string }) {
     isProjectRootRegistrationPending ||
     isProjectRemovalPending ||
     isAgentModelCatalogLoading ||
-    isProjectSkillsTrustSaving ||
-    projectSkillsTrustPrompt !== null;
+    isProjectTrustSaving ||
+    projectTrustPrompt !== null;
   const areAgentSettingsLocked =
     areAgentSettingsLockedOutsideTaskTransition || isTaskTransitionPending;
   const hasStartedAgentSession =
@@ -1410,54 +1417,71 @@ export function AgentMode({ userId }: { userId: string }) {
   );
 
   useEffect(() => {
-    const generation = projectSkillsTrustGenerationRef.current + 1;
-    projectSkillsTrustGenerationRef.current = generation;
-    setProjectSkillsTrustPrompt(null);
-    setProjectSkillsTrustError(null);
+    // A task boundary is also a project-capability discovery boundary. This
+    // catches skills added after the project was first opened without polling
+    // or changing the capabilities of an already-open task mid-conversation.
+    const generation = projectTrustGenerationRef.current + 1;
+    projectTrustGenerationRef.current = generation;
+    setProjectTrustPrompt(null);
+    setProjectTrustError(null);
     if (!isAuthTransitionReady || isInitializing || !projectRoot) {
-      setIsProjectSkillsTrustLoading(false);
+      setIsProjectTrustLoading(false);
       return;
     }
 
-    setIsProjectSkillsTrustLoading(true);
-    void trackAgentWorkflow(() => agentRuntimeService.getProjectSkillsTrust(userId, projectRoot))
+    setIsProjectTrustLoading(true);
+    void trackAgentWorkflow(() => agentRuntimeService.getProjectTrust(userId, projectRoot))
       .then((status) => {
-        if (projectSkillsTrustGenerationRef.current !== generation) return;
-        if (status.available && status.decision == null) {
-          setProjectSkillsTrustPrompt(status);
+        if (projectTrustGenerationRef.current !== generation) return;
+        if (status.available && status.protectedFeatures.length > 0 && status.decision == null) {
+          setProjectTrustPrompt(status);
         }
       })
       .catch((trustError) => {
-        if (projectSkillsTrustGenerationRef.current === generation) {
+        if (projectTrustGenerationRef.current === generation) {
           setError(errorMessage(trustError));
         }
       })
       .finally(() => {
-        if (projectSkillsTrustGenerationRef.current === generation) {
-          setIsProjectSkillsTrustLoading(false);
+        if (projectTrustGenerationRef.current === generation) {
+          setIsProjectTrustLoading(false);
         }
       });
-  }, [isAuthTransitionReady, isInitializing, projectRoot, trackAgentWorkflow, userId]);
+  }, [
+    activeSessionId,
+    isAuthTransitionReady,
+    isInitializing,
+    projectRoot,
+    trackAgentWorkflow,
+    userId
+  ]);
 
-  const saveProjectSkillsTrust = useCallback(
+  const saveProjectTrust = useCallback(
     async (trusted: boolean) => {
-      const prompt = projectSkillsTrustPrompt;
-      if (!prompt || projectSkillsTrustSavingDecision !== null) return;
+      const target = projectSettingsTrust ?? projectTrustPrompt;
+      if (!target || projectTrustSavingDecision !== null) return;
       setError(null);
-      setProjectSkillsTrustError(null);
-      setProjectSkillsTrustSavingDecision(trusted);
+      setProjectTrustError(null);
+      setProjectTrustSavingDecision(trusted);
       try {
-        await trackAgentWorkflow(() =>
-          agentRuntimeService.setProjectSkillsTrust(userId, prompt.path, trusted)
+        const status = await trackAgentWorkflow(() =>
+          agentRuntimeService.setProjectTrust(userId, target.path, trusted)
         );
-        setProjectSkillsTrustPrompt((current) => (current?.path === prompt.path ? null : current));
+        setProjectTrustPrompt((current) => (current?.path === target.path ? null : current));
+        setProjectSettingsTrust((current) => (current?.path === target.path ? status : current));
       } catch (trustError) {
-        setProjectSkillsTrustError(errorMessage(trustError));
+        setProjectTrustError(errorMessage(trustError));
       } finally {
-        setProjectSkillsTrustSavingDecision(null);
+        setProjectTrustSavingDecision(null);
       }
     },
-    [projectSkillsTrustPrompt, projectSkillsTrustSavingDecision, trackAgentWorkflow, userId]
+    [
+      projectSettingsTrust,
+      projectTrustPrompt,
+      projectTrustSavingDecision,
+      trackAgentWorkflow,
+      userId
+    ]
   );
 
   const refreshSessionList = useCallback(async () => {
@@ -3192,6 +3216,28 @@ export function AgentMode({ userId }: { userId: string }) {
   const handlePromptProjectRename = useCallback((root: AgentProjectRootView) => {
     setProjectToRename(root);
   }, []);
+  const handleOpenProjectSettings = useCallback(
+    (root: AgentProjectRootView) => {
+      const generation = projectSettingsGenerationRef.current + 1;
+      projectSettingsGenerationRef.current = generation;
+      setProjectSettingsRoot(root);
+      setProjectSettingsTrust(null);
+      setProjectTrustError(null);
+      void trackAgentWorkflow(() => agentRuntimeService.getProjectTrust(userId, root.path)).then(
+        (status) => {
+          if (projectSettingsGenerationRef.current === generation) {
+            setProjectSettingsTrust(status);
+          }
+        },
+        (settingsError) => {
+          if (projectSettingsGenerationRef.current === generation) {
+            setProjectTrustError(errorMessage(settingsError));
+          }
+        }
+      );
+    },
+    [trackAgentWorkflow, userId]
+  );
   const handlePromptSessionRename = useCallback(
     (session: AgentSessionSummary, menuTrigger: HTMLButtonElement) => {
       renameTaskMenuTriggerRef.current = menuTrigger;
@@ -3301,6 +3347,7 @@ export function AgentMode({ userId }: { userId: string }) {
               onProjectDisclosureToggle={handleToggleProjectDisclosure}
               onProjectOrderChange={saveProjectRootOrder}
               onProjectRename={handlePromptProjectRename}
+              onProjectSettings={handleOpenProjectSettings}
               onProjectRemove={handlePromptProjectRemoval}
               onRevealProjectRoot={handleRevealProjectRoot}
               onSessionDelete={setSessionToDelete}
@@ -3327,6 +3374,27 @@ export function AgentMode({ userId }: { userId: string }) {
             if (!open) setProjectToRename(null);
           }}
           onRename={(displayName) => handleRenameProject(projectToRename, displayName)}
+        />
+      ) : null}
+
+      {projectSettingsRoot ? (
+        <AgentProjectSettingsDialog
+          key={projectSettingsRoot.path}
+          open
+          projectName={projectSettingsRoot.displayName}
+          projectPath={projectSettingsRoot.path}
+          trustStatus={projectSettingsTrust}
+          isSaving={isProjectTrustSaving}
+          error={projectTrustError}
+          onOpenChange={(open) => {
+            if (!open) {
+              projectSettingsGenerationRef.current += 1;
+              setProjectSettingsRoot(null);
+              setProjectSettingsTrust(null);
+              setProjectTrustError(null);
+            }
+          }}
+          onTrustChange={(trusted) => void saveProjectTrust(trusted)}
         />
       ) : null}
 
@@ -3411,45 +3479,45 @@ export function AgentMode({ userId }: { userId: string }) {
         onSave={saveMcpServers}
       />
 
-      <AlertDialog open={projectSkillsTrustPrompt !== null}>
+      <AlertDialog open={projectTrustPrompt !== null}>
         <AlertDialogContent onEscapeKeyDown={(event) => event.preventDefault()}>
           <AlertDialogHeader>
-            <AlertDialogTitle>Trust this folder?</AlertDialogTitle>
+            <AlertDialogTitle>Trust this project?</AlertDialogTitle>
             <AlertDialogDescription>
-              Project skills can add local instructions and supporting files that guide the agent.
-              Maple&apos;s existing tool permissions still apply to anything those instructions ask
-              it to do. Personal skills remain available either way, and Maple remembers this choice
-              for this folder.
+              Trusting a project allows Maple to use project-provided guidance, including agent
+              skills. These instructions can influence how agents work and use tools. Maple&apos;s
+              existing tool permissions still apply, and you can change this choice later in Project
+              Settings.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {projectSkillsTrustPrompt ? (
+          {projectTrustPrompt ? (
             <div className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs break-all">
-              {projectSkillsTrustPrompt.path}
+              {projectTrustPrompt.path}
             </div>
           ) : null}
-          {projectSkillsTrustError ? (
+          {projectTrustError ? (
             <p className="text-sm text-destructive" role="alert" aria-live="assertive">
-              {projectSkillsTrustError}
+              {projectTrustError}
             </p>
           ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel
-              disabled={isProjectSkillsTrustSaving}
-              onClick={() => void saveProjectSkillsTrust(false)}
+              disabled={isProjectTrustSaving}
+              onClick={() => void saveProjectTrust(false)}
             >
-              {projectSkillsTrustSavingDecision === false ? (
+              {projectTrustSavingDecision === false ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : null}
-              Continue without project skills
+              Keep untrusted
             </AlertDialogCancel>
             <AlertDialogAction
-              disabled={isProjectSkillsTrustSaving}
-              onClick={() => void saveProjectSkillsTrust(true)}
+              disabled={isProjectTrustSaving}
+              onClick={() => void saveProjectTrust(true)}
             >
-              {projectSkillsTrustSavingDecision === true ? (
+              {projectTrustSavingDecision === true ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : null}
-              Trust folder
+              Trust project
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -3649,6 +3717,7 @@ interface AgentSidebarContentProps {
   onProjectDisclosureToggle: (path: string) => void;
   onProjectOrderChange: (roots: AgentProjectRootView[]) => void;
   onProjectRename: (root: AgentProjectRootView) => void;
+  onProjectSettings: (root: AgentProjectRootView) => void;
   onProjectRemove: (root: AgentProjectRootView) => void;
   onRevealProjectRoot: (projectRoot: string) => void;
   onSessionDelete: (session: AgentSessionSummary) => void;
@@ -3943,6 +4012,7 @@ function AgentSidebarContent({
   onProjectDisclosureToggle,
   onProjectOrderChange,
   onProjectRename,
+  onProjectSettings,
   onProjectRemove,
   onRevealProjectRoot,
   onSessionDelete,
@@ -4584,6 +4654,20 @@ function AgentSidebarContent({
                               strokeWidth={SIDEBAR_ICON_STROKE}
                             />
                             Rename Project
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={disabled || hasRunningSession}
+                            onClick={() => onProjectSettings(root)}
+                          >
+                            <ShieldCheck
+                              className="mr-2 h-4 w-4 shrink-0"
+                              strokeWidth={SIDEBAR_ICON_STROKE}
+                            />
+                            <span className="min-w-0 whitespace-normal leading-snug">
+                              {hasRunningSession
+                                ? "Stop Agent Before Changing Project Settings"
+                                : "Project Settings"}
+                            </span>
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => onRevealProjectRoot(root.path)}>
                             <FolderOpen
