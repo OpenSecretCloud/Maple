@@ -7,19 +7,22 @@ import { mapleApiAuthService } from "@/services/mapleApiAuthService";
 export interface AgentConfig {
   defaultProjectRoot?: string | null;
   defaultModel: string;
-  projectSkillsTrust?: AgentProjectSkillsTrust[];
+  projectTrust?: AgentProjectTrust[];
   removedProjectRoots?: string[];
 }
 
-export interface AgentProjectSkillsTrust {
+export interface AgentProjectTrust {
   path: string;
   trusted: boolean;
 }
 
-export interface AgentProjectSkillsTrustStatus {
+export type AgentProjectTrustFeature = "skills";
+
+export interface AgentProjectTrustStatus {
   path: string;
   decision?: boolean | null;
   available: boolean;
+  protectedFeatures: AgentProjectTrustFeature[];
 }
 
 export interface AgentMcpKeyValue {
@@ -345,27 +348,23 @@ export class AgentRuntimeService {
     });
   }
 
-  async getProjectSkillsTrust(
-    userId: string,
-    path: string
-  ): Promise<AgentProjectSkillsTrustStatus> {
-    return await this.invokeForUser<AgentProjectSkillsTrustStatus>(
+  async getProjectTrust(userId: string, path: string): Promise<AgentProjectTrustStatus> {
+    return await this.invokeForUser<AgentProjectTrustStatus>(userId, "agent_get_project_trust", {
       userId,
-      "agent_get_project_skills_trust",
-      { userId, path }
-    );
+      path
+    });
   }
 
-  async setProjectSkillsTrust(
+  async setProjectTrust(
     userId: string,
     path: string,
     trusted: boolean
-  ): Promise<AgentProjectSkillsTrustStatus> {
-    return await this.invokeForUser<AgentProjectSkillsTrustStatus>(
+  ): Promise<AgentProjectTrustStatus> {
+    return await this.invokeForUser<AgentProjectTrustStatus>(userId, "agent_set_project_trust", {
       userId,
-      "agent_set_project_skills_trust",
-      { userId, path, trusted }
-    );
+      path,
+      trusted
+    });
   }
 
   async saveProjectRootOrder(userId: string, paths: string[]): Promise<RecentProjectRoot[]> {

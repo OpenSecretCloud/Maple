@@ -15,9 +15,10 @@ use developer_tools::MapleDeveloperClient;
 use developer_tools::EXTERNAL_MCP_TOOL_NAME;
 use futures_util::StreamExt;
 use goose::agents::extension::Envs;
+use goose::agents::mcp_client::McpClientTrait;
 use goose::agents::{
     Agent, AgentConfig as GooseAgentConfig, AgentEvent, ExtensionConfig, GoosePlatform,
-    SessionConfig,
+    SessionConfig, ToolCallContext,
 };
 use goose::config::{
     ConfigError, GooseMode, PermissionManager, DEFAULT_EXTENSION_DESCRIPTION,
@@ -36,6 +37,9 @@ use goose::session::SessionManager;
 use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
 use icu_properties::{props::DefaultIgnorableCodePoint, CodePointSetData};
 use provider::{MapleProvider, MAPLE_PROVIDER_NAME};
+use rmcp::model::{
+    CallToolResult, ContentBlock, InitializeResult, JsonObject, ListToolsResult, ServerNotification,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shell_permission::{
@@ -155,8 +159,13 @@ pub struct AgentConfig {
     pub default_model: String,
     #[serde(default)]
     pub mcp_servers: Vec<AgentMcpServer>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub project_skills_trust: Vec<AgentProjectSkillsTrust>,
+    #[serde(
+        default,
+        rename = "projectTrust",
+        alias = "projectSkillsTrust",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub project_trust: Vec<AgentProjectTrust>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed_project_roots: Vec<String>,
 }
@@ -186,7 +195,7 @@ impl Default for AgentConfig {
             default_project_root: None,
             default_model: default_agent_model(),
             mcp_servers: Vec::new(),
-            project_skills_trust: Vec::new(),
+            project_trust: Vec::new(),
             removed_project_roots: Vec::new(),
         }
     }
@@ -194,17 +203,24 @@ impl Default for AgentConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentProjectSkillsTrust {
+pub struct AgentProjectTrust {
     pub path: String,
     pub trusted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProjectTrustFeature {
+    Skills,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentProjectSkillsTrustStatus {
+pub struct AgentProjectTrustStatus {
     pub path: String,
     pub decision: Option<bool>,
     pub available: bool,
+    pub protected_features: Vec<AgentProjectTrustFeature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2663,43 +2679,170 @@ impl AgentRuntimeHandle {
         Ok(config)
     }
 
-    pub(crate) async fn get_project_skills_trust(
+    pub(crate) async fn get_project_trust(
         &self,
         path: String,
-    ) -> Result<AgentProjectSkillsTrustStatus, String> {
+    ) -> Result<AgentProjectTrustStatus, String> {
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         let requested = Path::new(path.trim());
         if !requested.is_dir() {
-            return Ok(AgentProjectSkillsTrustStatus {
+            return Ok(AgentProjectTrustStatus {
                 path: path_string(requested),
                 decision: None,
                 available: false,
+                protected_features: Vec::new(),
             });
         }
         let project_root = normalize_project_root(requested)?;
         let config =
             load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
-        Ok(project_skills_trust_status(&config, &project_root, true))
+        Ok(project_trust_status(&config, &project_root, true))
     }
 
-    pub(crate) async fn set_project_skills_trust(
+    pub(crate) async fn set_project_trust(
         &self,
         path: String,
         trusted: bool,
-    ) -> Result<AgentProjectSkillsTrustStatus, String> {
+    ) -> Result<AgentProjectTrustStatus, String> {
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let project_root = normalize_project_root(Path::new(&path))?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (agent_manager, session_manager, active_session_ids, leased_session_ids) = {
+            let runtime = state.inner.lock().await;
+            let Some(current) = runtime.as_ref() else {
+                let mut config = load_agent_config_inner(&state.host.paths, &self.user_id)
+                    .map_err(|error| error.to_string())?;
+                apply_project_trust(&mut config, &project_root, trusted);
+                save_agent_config_inner(&state.host.paths, &self.user_id, &config)
+                    .map_err(|error| error.to_string())?;
+                return Ok(project_trust_status(&config, &project_root, true));
+            };
+            ensure_runtime_account(current, &self.account_scope)?;
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                current
+                    .active_runs
+                    .values()
+                    .map(|run| run.session_id.clone())
+                    .collect::<HashSet<_>>(),
+                current
+                    .session_tool_contexts
+                    .iter()
+                    .filter(|(_, installed)| installed.owner == AgentToolContextOwner::Leased)
+                    .map(|(session_id, _)| session_id.clone())
+                    .collect::<HashSet<_>>(),
+            )
+        };
+        let project_session_ids = session_manager
+            .list_all_sessions()
+            .await
+            .map_err(|error| format!("Failed to inspect Agent tasks: {error}"))?
+            .into_iter()
+            .filter(|session| session.working_dir == project_root)
+            .map(|session| session.id)
+            .collect::<Vec<_>>();
+        if project_session_ids
+            .iter()
+            .any(|session_id| active_session_ids.contains(session_id))
+        {
+            return Err(
+                "Stop running agents in this project before changing project trust".to_string(),
+            );
+        }
+        if project_session_ids
+            .iter()
+            .any(|session_id| leased_session_ids.contains(session_id))
+        {
+            return Err(
+                "Close externally controlled Agent tasks in this project before changing project trust"
+                    .to_string(),
+            );
+        }
         let mut config =
             load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
-        apply_project_skills_trust(&mut config, &project_root, trusted)?;
+        apply_project_trust(&mut config, &project_root, trusted);
         save_agent_config_inner(&state.host.paths, &self.user_id, &config)
             .map_err(|e| e.to_string())?;
-        Ok(project_skills_trust_status(&config, &project_root, true))
+        for session_id in project_session_ids {
+            agent_manager
+                .remove_session_if_loaded(&session_id)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Project trust was saved, but Maple could not refresh Agent task {session_id}: {error}"
+                    )
+                })?;
+        }
+        Ok(project_trust_status(&config, &project_root, true))
+    }
+
+    /// Save a project trust decision for an exact externally leased task and
+    /// evict its cached Goose agent so the next prompt rebuilds project-scoped
+    /// capabilities from that decision. The lease-owned tool context remains
+    /// installed; only the derived Agent/tool catalog is refreshed.
+    pub(crate) async fn set_project_trust_for_surface_session(
+        &self,
+        path: String,
+        trusted: bool,
+        access: AgentToolContextAccess,
+    ) -> Result<AgentProjectTrustStatus, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let project_root = normalize_project_root(Path::new(&path))?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let (agent_manager, session_manager) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, &self.account_scope)?;
+            if has_active_session_run(&current.active_runs, access.session_id.as_ref()) {
+                return Err(
+                    "Project trust cannot change while this Agent task is running".to_string(),
+                );
+            }
+            if !matching_leased_tool_context(
+                &current.session_tool_contexts,
+                access.session_id.as_ref(),
+                access.installation_id,
+                &access.context,
+            ) {
+                return Err(AGENT_TOOL_CONTEXT_INACTIVE_ERROR.to_string());
+            }
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+            )
+        };
+        let session = session_manager
+            .get_session(access.session_id.as_ref(), true)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        if session.working_dir != project_root {
+            return Err("Project trust path does not match this Agent task".to_string());
+        }
+        let mut config =
+            load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
+        apply_project_trust(&mut config, &project_root, trusted);
+        save_agent_config_inner(&state.host.paths, &self.user_id, &config)
+            .map_err(|e| e.to_string())?;
+        agent_manager
+            .remove_session_if_loaded(access.session_id.as_ref())
+            .await
+            .map_err(|error| {
+                format!(
+                    "Project trust was saved, but Maple could not refresh this Agent task: {error}"
+                )
+            })?;
+        Ok(project_trust_status(&config, &project_root, true))
     }
 
     pub(crate) async fn save_project_root_order(
@@ -6318,14 +6461,12 @@ fn pending_permission_request_id(item: &AgentTimelineItem) -> Option<String> {
     None
 }
 
-fn project_skills_are_trusted(paths: &AgentPathLayout, user_id: &str, project_root: &Path) -> bool {
+fn project_is_trusted(paths: &AgentPathLayout, user_id: &str, project_root: &Path) -> bool {
     match load_agent_config_inner(paths, user_id) {
-        Ok(config) => {
-            project_skills_trust_status(&config, project_root, true).decision == Some(true)
-        }
+        Ok(config) => project_trust_status(&config, project_root, true).decision == Some(true),
         Err(error) => {
             log::warn!(
-                "Failed to load Agent Mode project skills trust; keeping project skills disabled: {error}"
+                "Failed to load Agent Mode project trust; keeping project-provided capabilities disabled: {error}"
             );
             false
         }
@@ -6339,14 +6480,22 @@ fn project_skills_root_is_available(project_root: &Path) -> bool {
     canonical == project_root && canonical.is_dir() && fs::read_dir(canonical).is_ok()
 }
 
-fn skills_discovery_working_dir(
+struct SkillsDiscoveryScope {
+    working_dir: PathBuf,
+    blocked_project_root: Option<PathBuf>,
+}
+
+fn skills_discovery_scope(
     paths: &AgentPathLayout,
     user_id: &str,
     session: &Session,
-) -> Result<PathBuf, String> {
-    if project_skills_are_trusted(paths, user_id, &session.working_dir) {
+) -> Result<SkillsDiscoveryScope, String> {
+    if project_is_trusted(paths, user_id, &session.working_dir) {
         if project_skills_root_is_available(&session.working_dir) {
-            return Ok(session.working_dir.clone());
+            return Ok(SkillsDiscoveryScope {
+                working_dir: session.working_dir.clone(),
+                blocked_project_root: None,
+            });
         }
         log::warn!(
             "Trusted project skills folder is unavailable; keeping project skills disabled: {}",
@@ -6360,7 +6509,10 @@ fn skills_discovery_working_dir(
     fs::create_dir_all(&root)
         .map_err(|error| format!("Failed to create Maple skills data directory: {error}"))?;
     set_owner_only_dir_permissions(&root);
-    Ok(root)
+    Ok(SkillsDiscoveryScope {
+        working_dir: root,
+        blocked_project_root: Some(session.working_dir.clone()),
+    })
 }
 
 async fn detach_transient_skills_client(agent: &Agent) {
@@ -6398,17 +6550,87 @@ fn skills_client_for_working_dir(
         .map_err(|error| format!("Failed to create Maple skills tools: {error}"))
 }
 
+struct TrustAwareSkillsClient {
+    inner: SkillsClient,
+    blocked_project_root: Option<PathBuf>,
+}
+
+#[async_trait::async_trait]
+impl McpClientTrait for TrustAwareSkillsClient {
+    async fn list_tools(
+        &self,
+        session_id: &str,
+        next_cursor: Option<String>,
+        cancel_token: CancellationToken,
+    ) -> Result<ListToolsResult, rmcp::ServiceError> {
+        self.inner
+            .list_tools(session_id, next_cursor, cancel_token)
+            .await
+    }
+
+    async fn call_tool(
+        &self,
+        context: &ToolCallContext,
+        name: &str,
+        arguments: Option<JsonObject>,
+        cancel_token: CancellationToken,
+    ) -> Result<CallToolResult, rmcp::ServiceError> {
+        let requested_skill = arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let result = self
+            .inner
+            .call_tool(context, name, arguments, cancel_token)
+            .await?;
+        let skill_missing = result.is_error == Some(true)
+            && result.content.iter().any(|content| {
+                content.as_text().is_some_and(|text| {
+                    text.text.starts_with("Skill '") && text.text.contains(" not found")
+                })
+            });
+        let Some(project_root) = self
+            .blocked_project_root
+            .as_ref()
+            .filter(|_| skill_missing && !requested_skill.is_empty())
+        else {
+            return Ok(result);
+        };
+        Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+            "No trusted skill named '{requested_skill}' was found. Project trust is disabled for '{}', so project-provided skills are unavailable. Ask the user to trust this project or continue without the skill. Do not read project skill files directly unless the user explicitly asks.",
+            project_root.display()
+        ))]))
+    }
+
+    fn get_info(&self) -> Option<&InitializeResult> {
+        self.inner.get_info()
+    }
+
+    fn get_instructions(&self) -> Option<String> {
+        self.inner.get_instructions()
+    }
+
+    async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+        self.inner.subscribe().await
+    }
+}
+
 fn prepare_transient_skills_client(
     paths: &AgentPathLayout,
     user_id: &str,
     agent: &Arc<Agent>,
     session: &Session,
-) -> Result<SkillsClient, String> {
-    let working_dir = skills_discovery_working_dir(paths, user_id, session)?;
-    skills_client_for_working_dir(agent, session, working_dir)
+) -> Result<TrustAwareSkillsClient, String> {
+    let scope = skills_discovery_scope(paths, user_id, session)?;
+    Ok(TrustAwareSkillsClient {
+        inner: skills_client_for_working_dir(agent, session, scope.working_dir)?,
+        blocked_project_root: scope.blocked_project_root,
+    })
 }
 
-async fn attach_prepared_skills_client(agent: &Arc<Agent>, skills_client: SkillsClient) {
+async fn attach_prepared_skills_client(agent: &Arc<Agent>, skills_client: TrustAwareSkillsClient) {
     agent
         .extension_manager
         .add_client(
@@ -8433,6 +8655,7 @@ fn load_agent_config_files(
     config_path: &Path,
     removed_project_roots_path: &Path,
 ) -> Result<AgentConfig, anyhow::Error> {
+    let had_legacy_project_skills_trust = config_file_uses_legacy_project_skills_trust(config_path);
     let mut config = load_agent_config_file(config_path)?;
     // This field was introduced by the unshipped remove-project work. Never
     // adopt it from the roaming config: on Windows it may have come from a
@@ -8440,10 +8663,17 @@ fn load_agent_config_files(
     let had_roaming_removed_project_roots = !config.removed_project_roots.is_empty();
     let migrated = migrate_agent_config(&mut config);
     config.removed_project_roots = load_removed_project_roots_file(removed_project_roots_path)?;
-    if migrated || had_roaming_removed_project_roots {
+    if migrated || had_roaming_removed_project_roots || had_legacy_project_skills_trust {
         save_agent_config_file(config_path, &config)?;
     }
     Ok(config)
+}
+
+fn config_file_uses_legacy_project_skills_trust(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .is_some_and(|config| config.get("projectSkillsTrust").is_some())
 }
 
 fn load_agent_config_file(path: &Path) -> Result<AgentConfig, anyhow::Error> {
@@ -8503,45 +8733,79 @@ fn save_removed_project_roots_inner(
     write_device_local_json_file(&path, roots)
 }
 
-fn project_skills_trust_status(
+fn project_trust_status(
     config: &AgentConfig,
     project_root: &Path,
     available: bool,
-) -> AgentProjectSkillsTrustStatus {
+) -> AgentProjectTrustStatus {
     let path = path_string(project_root);
     let decision = config
-        .project_skills_trust
+        .project_trust
         .iter()
         .find(|entry| entry.path == path)
         .map(|entry| entry.trusted);
-    AgentProjectSkillsTrustStatus {
+    AgentProjectTrustStatus {
         path,
         decision,
         available,
+        protected_features: if available {
+            project_trust_features(project_root)
+        } else {
+            Vec::new()
+        },
     }
 }
 
-fn apply_project_skills_trust(
-    config: &mut AgentConfig,
-    project_root: &Path,
-    trusted: bool,
-) -> Result<(), String> {
+fn project_trust_features(project_root: &Path) -> Vec<AgentProjectTrustFeature> {
+    const MAX_SKILL_ENTRIES: usize = 4_096;
+    let skills_root = project_root.join(".agents").join("skills");
+    let mut pending = vec![skills_root];
+    let mut visited = 0usize;
+    while let Some(directory) = pending.pop() {
+        if visited >= MAX_SKILL_ENTRIES {
+            break;
+        }
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if visited >= MAX_SKILL_ENTRIES {
+                break;
+            }
+            visited += 1;
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_file()
+                && path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
+            {
+                return vec![AgentProjectTrustFeature::Skills];
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn apply_project_trust(config: &mut AgentConfig, project_root: &Path, trusted: bool) {
     let path = path_string(project_root);
     if let Some(existing) = config
-        .project_skills_trust
-        .iter()
+        .project_trust
+        .iter_mut()
         .find(|entry| entry.path == path)
     {
-        return if existing.trusted == trusted {
-            Ok(())
-        } else {
-            Err("This folder's project skills trust decision has already been saved".to_string())
-        };
+        existing.trusted = trusted;
+        return;
     }
     config
-        .project_skills_trust
-        .push(AgentProjectSkillsTrust { path, trusted });
-    Ok(())
+        .project_trust
+        .push(AgentProjectTrust { path, trusted });
 }
 
 fn load_recent_project_roots_inner(
@@ -10965,7 +11229,43 @@ mod tests {
         .expect("legacy config without a model should deserialize");
         assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
         assert!(config.mcp_servers.is_empty());
-        assert!(config.project_skills_trust.is_empty());
+        assert!(config.project_trust.is_empty());
+    }
+
+    #[test]
+    fn legacy_project_skills_trust_migrates_to_generic_project_trust() {
+        let test_root = recent_roots_test_dir("legacy-project-trust");
+        let config_path = test_root.join("config.json");
+        let removed_roots_path = test_root.join("removed-project-roots.json");
+        write_json_file(
+            &config_path,
+            &json!({
+                "defaultProjectRoot": null,
+                "defaultModel": DEFAULT_AGENT_MODEL,
+                "mcpServers": [],
+                "projectSkillsTrust": [
+                    { "path": "/tmp/maple-project", "trusted": true }
+                ]
+            }),
+        )
+        .unwrap();
+        let config = load_agent_config_files(&config_path, &removed_roots_path)
+            .expect("legacy project skills trust should deserialize");
+
+        assert_eq!(
+            config.project_trust,
+            vec![AgentProjectTrust {
+                path: "/tmp/maple-project".to_string(),
+                trusted: true,
+            }]
+        );
+        let encoded = serde_json::from_slice::<Value>(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            encoded["projectTrust"],
+            json!([{ "path": "/tmp/maple-project", "trusted": true }])
+        );
+        assert!(encoded.get("projectSkillsTrust").is_none());
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[test]
@@ -11370,7 +11670,7 @@ mod tests {
     }
 
     #[test]
-    fn project_skills_trust_persists_both_decisions_and_is_one_time() {
+    fn project_trust_is_reversible_and_persists_both_decisions() {
         let test_root = recent_roots_test_dir("skills-trust");
         let project = test_root.join("project");
         let config_path = test_root.join("config.json");
@@ -11378,20 +11678,53 @@ mod tests {
         let project = normalize_project_root(&project).unwrap();
         let mut config = AgentConfig::default();
 
-        assert_eq!(
-            project_skills_trust_status(&config, &project, true).decision,
-            None
-        );
-        apply_project_skills_trust(&mut config, &project, false).unwrap();
-        apply_project_skills_trust(&mut config, &project, false).unwrap();
-        assert!(apply_project_skills_trust(&mut config, &project, true).is_err());
+        assert_eq!(project_trust_status(&config, &project, true).decision, None);
+        apply_project_trust(&mut config, &project, false);
+        apply_project_trust(&mut config, &project, false);
+        apply_project_trust(&mut config, &project, true);
         write_json_file(&config_path, &config).unwrap();
 
         let loaded = load_agent_config_file(&config_path).unwrap();
-        let status = project_skills_trust_status(&loaded, &project, true);
+        let status = project_trust_status(&loaded, &project, true);
         assert_eq!(status.path, path_string(&project));
-        assert_eq!(status.decision, Some(false));
+        assert_eq!(status.decision, Some(true));
         assert!(status.available);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn project_trust_detects_skills_only_from_real_skill_files() {
+        let test_root = recent_roots_test_dir("project-trust-features");
+        let project = test_root.join("project");
+        let skill = project.join(".agents/skills/review-maple");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("README.md"), "not a skill").unwrap();
+
+        assert!(project_trust_features(&project).is_empty());
+        fs::write(skill.join("SKILL.md"), "# Review Maple").unwrap();
+        assert_eq!(
+            project_trust_features(&project),
+            vec![AgentProjectTrustFeature::Skills]
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_trust_feature_detection_does_not_follow_skill_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let test_root = recent_roots_test_dir("project-trust-symlink-features");
+        let project = test_root.join("project");
+        let external = test_root.join("external");
+        fs::create_dir_all(project.join(".agents/skills")).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("SKILL.md"), "# External skill").unwrap();
+        symlink(&external, project.join(".agents/skills/external")).unwrap();
+
+        assert!(project_trust_features(&project).is_empty());
+
         let _ = fs::remove_dir_all(test_root);
     }
 
@@ -11430,7 +11763,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn project_skills_trust_uses_the_canonical_folder_path() {
+    fn project_trust_uses_the_canonical_folder_path() {
         use std::os::unix::fs::symlink;
 
         let test_root = recent_roots_test_dir("skills-trust-symlink");
@@ -11443,9 +11776,9 @@ mod tests {
         let canonical_alias = normalize_project_root(&alias).unwrap();
         assert_eq!(canonical_project, canonical_alias);
         let mut config = AgentConfig::default();
-        apply_project_skills_trust(&mut config, &canonical_project, true).unwrap();
+        apply_project_trust(&mut config, &canonical_project, true);
         assert_eq!(
-            project_skills_trust_status(&config, &canonical_alias, true).decision,
+            project_trust_status(&config, &canonical_alias, true).decision,
             Some(true)
         );
         let _ = fs::remove_dir_all(test_root);
@@ -11496,7 +11829,10 @@ mod tests {
         assert!(trusted_instructions.contains(&description));
         assert!(!trusted_instructions.contains(&body));
 
-        let untrusted = make_client(inert);
+        let untrusted = TrustAwareSkillsClient {
+            inner: make_client(inert),
+            blocked_project_root: Some(test_root.join("project")),
+        };
         let untrusted_instructions = untrusted.get_instructions().unwrap_or_default();
         assert!(!untrusted_instructions.contains(&skill_name));
         assert!(!untrusted_instructions.contains(&description));
@@ -11511,6 +11847,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
+        let message = result.content[0]
+            .as_text()
+            .expect("missing skill response should be text")
+            .text
+            .as_str();
+        assert!(message.contains("No trusted skill named"), "{message}");
+        assert!(message.contains("Project trust is disabled"), "{message}");
+        assert!(
+            message.contains("Do not read project skill files directly"),
+            "{message}"
+        );
         let _ = fs::remove_dir_all(test_root);
     }
 
@@ -11585,8 +11932,10 @@ mod tests {
                 None,
             )
             .await;
-        let initial_skills =
-            skills_client_for_working_dir(&agent, &session, project.clone()).unwrap();
+        let initial_skills = TrustAwareSkillsClient {
+            inner: skills_client_for_working_dir(&agent, &session, project.clone()).unwrap(),
+            blocked_project_root: None,
+        };
         let skills_instructions = initial_skills.get_instructions().unwrap_or_default();
         assert!(skills_instructions.contains(&project_skill_name));
         assert!(!skills_instructions.contains("goose-doc-guide"));
@@ -11647,7 +11996,10 @@ mod tests {
             1
         );
 
-        let prepared_skills = skills_client_for_working_dir(&agent, &session, project).unwrap();
+        let prepared_skills = TrustAwareSkillsClient {
+            inner: skills_client_for_working_dir(&agent, &session, project).unwrap(),
+            blocked_project_root: None,
+        };
         detach_transient_skills_client(&agent).await;
         agent.persist_extension_state(&session.id).await.unwrap();
         let persisted = session_manager
@@ -12005,7 +12357,7 @@ mod tests {
             default_project_root: Some(removed.clone()),
             default_model: "test-model".to_string(),
             mcp_servers: vec![stdio_mcp("kept-mcp", true)],
-            project_skills_trust: vec![AgentProjectSkillsTrust {
+            project_trust: vec![AgentProjectTrust {
                 path: removed.clone(),
                 trusted: true,
             }],
@@ -12021,8 +12373,8 @@ mod tests {
         assert_eq!(config.removed_project_roots, vec![removed.clone()]);
         assert_eq!(config.mcp_servers, vec![stdio_mcp("kept-mcp", true)]);
         assert_eq!(
-            config.project_skills_trust,
-            vec![AgentProjectSkillsTrust {
+            config.project_trust,
+            vec![AgentProjectTrust {
                 path: removed,
                 trusted: true,
             }]
@@ -12617,7 +12969,7 @@ mod tests {
             default_project_root: Some("/tmp/project".to_string()),
             default_model: LEGACY_AGENT_DEFAULT_MODEL.to_string(),
             mcp_servers: Vec::new(),
-            project_skills_trust: Vec::new(),
+            project_trust: Vec::new(),
             removed_project_roots: Vec::new(),
         };
 
@@ -12633,7 +12985,7 @@ mod tests {
                 default_project_root: None,
                 default_model: model.to_string(),
                 mcp_servers: Vec::new(),
-                project_skills_trust: Vec::new(),
+                project_trust: Vec::new(),
                 removed_project_roots: Vec::new(),
             };
 
