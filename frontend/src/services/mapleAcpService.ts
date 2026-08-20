@@ -38,8 +38,26 @@ export interface BuzzCustomHarnessDefinition {
   env: Record<string, never>;
 }
 
+export interface PaseoCustomProviderConfig {
+  agents: {
+    providers: {
+      "maple-acp": {
+        extends: "acp";
+        label: "Maple Agent";
+        description: string;
+        command: string[];
+        params: {
+          supportsMcpServers: true;
+        };
+      };
+    };
+  };
+}
+
 export const BUZZ_MAPLE_HARNESS_ID = "maple" as const;
 export const BUZZ_MAPLE_HARNESS_NAME = "Maple" as const;
+export const PASEO_MAPLE_PROVIDER_ID = "maple-acp" as const;
+export const PASEO_MAPLE_PROVIDER_NAME = "Maple Agent" as const;
 export const MAX_MAPLE_ACP_CONNECTIONS = 8 as const;
 export const BUZZ_MAPLE_AGENT_PARALLELISM = MAX_MAPLE_ACP_CONNECTIONS;
 export const BUZZ_DEFAULT_AGENT_PARALLELISM = 10 as const;
@@ -197,20 +215,35 @@ export function serializeBuzzCustomHarness(harness: MapleAcpHarness): string {
   return JSON.stringify(buildBuzzCustomHarness(harness), null, 2);
 }
 
+export function buildPaseoCustomProviderConfig(
+  harness: MapleAcpHarness
+): PaseoCustomProviderConfig {
+  return {
+    agents: {
+      providers: {
+        [PASEO_MAPLE_PROVIDER_ID]: {
+          extends: "acp",
+          label: PASEO_MAPLE_PROVIDER_NAME,
+          description: "Maple's signed-in Agent Mode over local ACP",
+          command: [harness.command, ...harness.args],
+          params: {
+            supportsMcpServers: true
+          }
+        }
+      }
+    }
+  };
+}
+
+export function serializePaseoCustomProviderConfig(harness: MapleAcpHarness): string {
+  return JSON.stringify(buildPaseoCustomProviderConfig(harness), null, 2);
+}
+
 export function isMapleAcpConfigReady(
   config: MapleAcpConfig | null,
   savedConfig: MapleAcpConfig | null
 ): boolean {
   return config !== null && savedConfig !== null;
-}
-
-export function isMapleAcpPolicyDirty(
-  config: MapleAcpConfig | null,
-  savedConfig: MapleAcpConfig | null
-): boolean {
-  return (
-    config !== null && savedConfig !== null && config.permissionMode !== savedConfig.permissionMode
-  );
 }
 
 async function invokeMapleAcp<T>(command: string, args?: Record<string, unknown>): Promise<T> {
