@@ -29,7 +29,7 @@ import packageJson from "../../package.json";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
-const SUPPORTED_DOCUMENT_FORMATS = [".pdf", ".txt", ".md"];
+const SUPPORTED_DOCUMENT_FORMATS = [".pdf", ".doc", ".docx", ".txt", ".md"];
 const pricingPageClassName =
   "min-h-dvh bg-[#e2e2e2] py-12 pt-10 text-[#221a18] dark:bg-background dark:text-foreground sm:pt-14";
 

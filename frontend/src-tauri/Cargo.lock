@@ -1184,6 +1184,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfb"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8a4f8e55be323b378facfcf1f06aa97f6ec17cf4ac84fb17325093aaf62da41"
+dependencies = [
+ "byteorder",
+ "fnv",
+ "uuid",
+]
+
+[[package]]
 name = "cfg-expr"
 version = "0.15.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4087,7 +4098,7 @@ version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a588916bfdfd92e71cacef98a63d9b1f0d74d6599980d11894290e7ddefffcf7"
 dependencies = [
- "cfb",
+ "cfb 0.7.3",
 ]
 
 [[package]]
@@ -4625,6 +4636,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "cfb 0.10.0",
  "ciborium",
  "futures-util",
  "goose",
@@ -4638,6 +4650,7 @@ dependencies = [
  "maple-proxy",
  "objc2-app-kit",
  "objc2-foundation 0.3.2",
+ "office_oxide",
  "once_cell",
  "opensecret",
  "openssl",
@@ -4646,6 +4659,7 @@ dependencies = [
  "plist",
  "process-wrap",
  "pulldown-cmark",
+ "quick-xml",
  "rand 0.8.6",
  "reqwest 0.13.2",
  "rmcp",
@@ -4671,6 +4685,7 @@ dependencies = [
  "tower-http 0.6.8",
  "webpki-roots",
  "windows 0.62.2",
+ "zip 8.6.0",
 ]
 
 [[package]]

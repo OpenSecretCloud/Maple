@@ -130,7 +130,7 @@ export function UpgradePromptDialog({
         benefits: [
           "Documents are processed securely with end-to-end encryption",
           "Your files are never stored or used for AI training",
-          "Support for PDF, TXT, and Markdown formats",
+          "Support for PDF, DOC, DOCX, TXT, and Markdown formats",
           "Extract and analyze text while maintaining complete privacy",
           "Local processing ensures your sensitive data never leaves your device"
         ]

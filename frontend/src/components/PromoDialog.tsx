@@ -29,7 +29,7 @@ const PROMO_BENEFITS = [
   },
   {
     icon: <FileText className="h-4 w-4" />,
-    text: "Document processing (PDF, TXT, MD)"
+    text: "Document processing (PDF, DOC, DOCX, TXT, MD)"
   },
   {
     icon: <Mic className="h-4 w-4" />,

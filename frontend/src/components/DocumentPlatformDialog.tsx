@@ -69,11 +69,11 @@ export function DocumentPlatformDialog({
             <ul className="space-y-2">
               <li className="flex items-start gap-2 text-sm">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
-                <span>Local PDF processing - files are processed on your device</span>
+                <span>Local PDF and Word processing - files are processed on your device</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />
-                <span>Support for PDF, TXT, and Markdown files</span>
+                <span>Support for PDF, DOC, DOCX, TXT, and Markdown files</span>
               </li>
               <li className="flex items-start gap-2 text-sm">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-maple-success" />

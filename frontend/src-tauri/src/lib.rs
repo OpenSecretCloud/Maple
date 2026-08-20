@@ -18,6 +18,7 @@ mod open_secret_config;
 mod pdf_extractor;
 mod pdf_ocr;
 mod proxy;
+mod word_extractor;
 
 #[cfg(desktop)]
 #[tauri::command]

@@ -48,7 +48,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       },
       { text: "Image Upload", included: false, icon: <X className="w-4 h-4 text-maple-error" /> },
       {
-        text: "Document Upload (PDF, TXT, MD)",
+        text: "Document Upload (PDF, DOC, DOCX, TXT, MD)",
         included: false,
         icon: <X className="w-4 h-4 text-maple-error" />
       },
@@ -87,7 +87,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
-        text: "Document Upload (PDF, TXT, MD)",
+        text: "Document Upload (PDF, DOC, DOCX, TXT, MD)",
         included: true,
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
@@ -141,7 +141,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
-        text: "Document Upload (PDF, TXT, MD)",
+        text: "Document Upload (PDF, DOC, DOCX, TXT, MD)",
         included: true,
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
@@ -204,7 +204,7 @@ export const PRICING_PLANS: PricingPlan[] = [
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
       {
-        text: "Document Upload (PDF, TXT, MD)",
+        text: "Document Upload (PDF, DOC, DOCX, TXT, MD)",
         included: true,
         icon: <Check className="w-4 h-4 text-maple-success" />
       },
