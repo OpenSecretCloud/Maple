@@ -6,13 +6,16 @@ import {
   BUZZ_MAPLE_HARNESS_NAME,
   DEFAULT_MAPLE_ACP_CONFIG,
   MAX_MAPLE_ACP_CONNECTIONS,
+  PASEO_MAPLE_PROVIDER_ID,
+  PASEO_MAPLE_PROVIDER_NAME,
   MapleAcpService,
   buildBuzzCustomHarness,
+  buildPaseoCustomProviderConfig,
   isMapleAcpConfigReady,
-  isMapleAcpPolicyDirty,
   normalizeMapleAcpConfig,
   normalizeMapleAcpStatus,
   serializeBuzzCustomHarness,
+  serializePaseoCustomProviderConfig,
   type MapleAcpBridge,
   type MapleAcpHarness
 } from "./mapleAcpService";
@@ -240,6 +243,30 @@ describe("Buzz custom harness output", () => {
   });
 });
 
+describe("Paseo custom provider output", () => {
+  test("builds a dynamic ACP provider with Paseo tool injection enabled", () => {
+    const config = buildPaseoCustomProviderConfig(harness);
+    const provider = config.agents.providers[PASEO_MAPLE_PROVIDER_ID];
+
+    expect(provider).toEqual({
+      extends: "acp",
+      label: PASEO_MAPLE_PROVIDER_NAME,
+      description: "Maple's signed-in Agent Mode over local ACP",
+      command: [harness.command, "acp"],
+      params: {
+        supportsMcpServers: true
+      }
+    });
+    expect(provider).not.toHaveProperty("models");
+
+    const serialized = serializePaseoCustomProviderConfig(harness);
+    expect(JSON.parse(serialized)).toEqual(config);
+    expect(serialized).toContain(harness.command);
+    expect(serialized).not.toContain("accessToken");
+    expect(serialized).not.toContain("apiKey");
+  });
+});
+
 describe("Agent connections policy state", () => {
   const savedConfig = {
     enabled: true,
@@ -253,14 +280,5 @@ describe("Agent connections policy state", () => {
     expect(isMapleAcpConfigReady(savedConfig, null)).toBe(false);
     expect(isMapleAcpConfigReady(null, savedConfig)).toBe(false);
     expect(isMapleAcpConfigReady(savedConfig, savedConfig)).toBe(true);
-  });
-
-  test("never treats a missing config as a dirty default policy", () => {
-    const editedConfig = { ...savedConfig, permissionMode: "read_only" as const };
-
-    expect(isMapleAcpPolicyDirty(null, savedConfig)).toBe(false);
-    expect(isMapleAcpPolicyDirty(editedConfig, null)).toBe(false);
-    expect(isMapleAcpPolicyDirty(savedConfig, savedConfig)).toBe(false);
-    expect(isMapleAcpPolicyDirty(editedConfig, savedConfig)).toBe(true);
   });
 });
