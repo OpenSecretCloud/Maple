@@ -1,4 +1,5 @@
 use crate::pdf_ocr;
+use crate::word_extractor::{self, WordFileType, WORD_PANIC_MESSAGE};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use once_cell::sync::Lazy;
 use pdf_oxide::extractors::auto::PageKind;
@@ -17,7 +18,7 @@ const MAX_OCR_SOURCE_IMAGE_PIXELS: u64 = 24_000_000;
 const MAX_OCR_PAGE_SOURCE_PIXELS: u64 = 64_000_000;
 const MAX_OCR_PAGE_IMAGES: usize = 256;
 const PDF_PANIC_MESSAGE: &str = "Maple couldn't process this PDF because its parser stopped unexpectedly. The app is still running; try a different PDF.";
-static PDF_JOB_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(1));
+static DOCUMENT_JOB_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(1));
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DocumentData {
@@ -64,12 +65,17 @@ async fn extract_document_content_impl(
     let file_bytes = BASE64
         .decode(&file_base64)
         .map_err(|e| format!("Failed to decode base64 file: {e}"))?;
+    drop(file_base64);
     if file_bytes.len() > MAX_DOCUMENT_BYTES {
         return Err("Document too large (max 10MB)".to_string());
     }
 
     let text_content = match file_type.to_ascii_lowercase().as_str() {
         "pdf" | "application/pdf" => extract_pdf(app, file_bytes).await?,
+        "doc" | "application/msword" => extract_word(file_bytes, WordFileType::Doc).await?,
+        "docx" | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
+            extract_word(file_bytes, WordFileType::Docx).await?
+        }
         "txt" | "text/plain" | "md" | "text/markdown" => {
             String::from_utf8(file_bytes).map_err(|e| format!("Failed to decode text file: {e}"))?
         }
@@ -89,7 +95,7 @@ async fn extract_pdf(app: Option<&AppHandle>, file_bytes: Vec<u8>) -> Result<Str
     // PDF rendering and OCR can each use substantial memory. Serializing these
     // user-initiated jobs keeps concurrent invokes from multiplying that peak,
     // particularly on iOS and Android.
-    let _job_permit = PDF_JOB_SEMAPHORE
+    let _job_permit = DOCUMENT_JOB_SEMAPHORE
         .acquire()
         .await
         .map_err(|_| "Maple's PDF processor is unavailable. Please try again.".to_string())?;
@@ -129,6 +135,20 @@ async fn extract_pdf(app: Option<&AppHandle>, file_bytes: Vec<u8>) -> Result<Str
     }
 }
 
+async fn extract_word(file_bytes: Vec<u8>, file_type: WordFileType) -> Result<String, String> {
+    // Word parsers can expand compressed package parts and allocate document
+    // models. Share PDF's one-at-a-time boundary so mixed attachment jobs do
+    // not multiply peak memory on iOS or Android.
+    let _job_permit = DOCUMENT_JOB_SEMAPHORE.acquire().await.map_err(|_| {
+        "Maple's Word document processor is unavailable. Please try again.".to_string()
+    })?;
+
+    run_word_job(move || {
+        word_extractor::extract_word_document(file_bytes, file_type, MAX_EXTRACTED_TEXT_BYTES)
+    })
+    .await
+}
+
 async fn run_pdf_job<T, F>(operation: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -143,6 +163,27 @@ where
         Err(error) => {
             log::error!("PDF processing worker could not complete: {error}");
             Err("Maple couldn't finish processing this PDF. Please try again.".to_string())
+        }
+    }
+}
+
+async fn run_word_job<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(result) => result,
+        Err(error) if error.is_panic() => {
+            log::error!("Word processing panicked inside its isolated worker: {error}");
+            Err(WORD_PANIC_MESSAGE.to_string())
+        }
+        Err(error) => {
+            log::error!("Word processing worker could not complete: {error}");
+            Err(
+                "Maple couldn't finish processing this Word document. Please try again."
+                    .to_string(),
+            )
         }
     }
 }
@@ -456,10 +497,13 @@ fn ensure_document_has_text(text: String) -> Result<String, String> {
 mod tests {
     use super::{
         extract_document_content_impl, extract_pdf_with_ocr, merge_native_and_ocr, run_pdf_job,
-        validate_ocr_source_budget, PDF_PANIC_MESSAGE,
+        run_word_job, validate_ocr_source_budget, PDF_PANIC_MESSAGE,
     };
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    use office_oxide::core::opc::{OpcWriter, PartName};
+    use office_oxide::core::relationships::rel_types;
     use pdf_oxide::ocr::{OcrConfig, OcrEngine};
+    use std::io::Cursor;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -495,6 +539,42 @@ mod tests {
         .expect("native PDF should not require OCR models");
 
         assert!(resp.document.text_content.contains("MAPLE NATIVE PDF"));
+    }
+
+    #[tokio::test]
+    async fn extracts_docx_through_the_tauri_contract() {
+        let response = extract_document_content_impl(
+            None,
+            BASE64.encode(native_text_docx("MAPLE DOCX CONTRACT")),
+            "contract.docx".to_string(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(),
+        )
+        .await
+        .expect("DOCX MIME type should extract");
+
+        assert_eq!(response.status, "completed");
+        assert_eq!(response.document.filename, "contract.docx");
+        assert!(response
+            .document
+            .text_content
+            .contains("MAPLE DOCX CONTRACT"));
+    }
+
+    #[tokio::test]
+    async fn extracts_legacy_doc_through_the_tauri_contract() {
+        let response = extract_document_content_impl(
+            None,
+            BASE64.encode(legacy_doc_fixture()),
+            "nested-tables.doc".to_string(),
+            "application/msword".to_string(),
+        )
+        .await
+        .expect("legacy DOC MIME type should extract");
+
+        assert_eq!(response.status, "completed");
+        assert_eq!(response.document.filename, "nested-tables.doc");
+        assert!(response.document.text_content.contains("Outer cell text"));
+        assert!(response.document.text_content.contains("Inner cell text"));
     }
 
     #[tokio::test]
@@ -561,6 +641,19 @@ mod tests {
         assert_eq!(panic_error, PDF_PANIC_MESSAGE);
 
         let result = run_pdf_job(|| Ok::<_, String>("worker recovered".to_string()))
+            .await
+            .expect("a later worker should still run");
+        assert_eq!(result, "worker recovered");
+    }
+
+    #[tokio::test]
+    async fn word_parser_panic_is_contained_and_a_later_job_still_runs() {
+        let panic_error = run_word_job::<(), _>(|| panic!("synthetic Word parser panic"))
+            .await
+            .expect_err("panic should become an ordinary error");
+        assert_eq!(panic_error, crate::word_extractor::WORD_PANIC_MESSAGE);
+
+        let result = run_word_job(|| Ok::<_, String>("worker recovered".to_string()))
             .await
             .expect("a later worker should still run");
         assert_eq!(result, "worker recovered");
@@ -688,6 +781,34 @@ mod tests {
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
             format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
         ])
+    }
+
+    fn native_text_docx(text: &str) -> Vec<u8> {
+        let document_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+              <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                <w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body>
+              </w:document>"#
+        );
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = OpcWriter::new(cursor).expect("create OPC package");
+        let document_part = PartName::new("/word/document.xml").expect("valid document part");
+        writer
+            .add_part(
+                &document_part,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+                document_xml.as_bytes(),
+            )
+            .expect("add document part");
+        writer.add_package_rel(rel_types::OFFICE_DOCUMENT, "word/document.xml");
+        writer.finish().expect("finish OPC package").into_inner()
+    }
+
+    fn legacy_doc_fixture() -> Vec<u8> {
+        let encoded = include_str!("../tests/fixtures/nested_tables.doc.b64")
+            .split_whitespace()
+            .collect::<String>();
+        BASE64.decode(encoded).expect("decode legacy DOC fixture")
     }
 
     fn native_text_and_image_pdf(text: &str) -> Vec<u8> {

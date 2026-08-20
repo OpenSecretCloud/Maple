@@ -48,6 +48,8 @@ import { useVisibleExternalStore } from "@/utils/useVisibleExternalStore";
 import {
   getDocumentProcessingErrorMessage,
   getSupportedDocumentType,
+  isNativeDocumentType,
+  prepareExtractedDocumentText,
   prepareExtractedPdfText
 } from "@/utils/documentUpload";
 import { useOpenAI } from "@/ai/useOpenAi";
@@ -75,6 +77,7 @@ import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
 import { RecordingOverlay } from "@/components/RecordingOverlay";
 import { useTTS } from "@/services/tts/TTSContext";
+import { extractDocumentContent } from "@/services/documentExtractionService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import {
@@ -3809,41 +3812,22 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             documentText: JSON.stringify(documentData),
             documentName: file.name
           }));
-        } else if (documentType === "pdf" && isTauriEnv) {
-          const reader = new FileReader();
-          const base64Data = await new Promise<string>((resolve, reject) => {
-            reader.onload = () => {
-              const base64 = (reader.result as string).split(",")[1];
-              resolve(base64);
-            };
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
-          });
-
-          const { invoke } = await import("@tauri-apps/api/core");
-
-          interface RustDocumentResponse {
-            document: {
-              filename: string;
-              text_content: string;
-            };
-            status: string;
-          }
-
-          const result = await invoke<RustDocumentResponse>("extract_document_content", {
-            fileBase64: base64Data,
-            filename: file.name,
-            fileType: "pdf"
-          });
+        } else if (documentType && isNativeDocumentType(documentType) && isTauriEnv) {
+          const result = await extractDocumentContent(file, documentType);
           if (runtimeStore.get(ownerKey)?.composer.documentUploadGeneration !== uploadGeneration)
             return;
 
-          const cleanedText = prepareExtractedPdfText(result.document?.text_content);
+          const cleanedText =
+            documentType === "pdf"
+              ? prepareExtractedPdfText(result.document?.text_content)
+              : prepareExtractedDocumentText(result.document?.text_content);
           if (cleanedText === null) {
             setComposerErrorForKey(
               ownerKey,
               "attachmentError",
-              "No readable text was found in this PDF"
+              documentType === "pdf"
+                ? "No readable text was found in this PDF"
+                : "No readable text was found in this Word document"
             );
             return;
           }
@@ -3860,17 +3844,17 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             documentText: JSON.stringify(cleanedParsed),
             documentName: file.name
           }));
-        } else if (documentType === "pdf") {
+        } else if (documentType && isNativeDocumentType(documentType)) {
           setComposerErrorForKey(
             ownerKey,
             "attachmentError",
-            "PDF files can only be processed in the Maple app"
+            "PDF and Word files can only be processed in the Maple app"
           );
         } else {
           setComposerErrorForKey(
             ownerKey,
             "attachmentError",
-            "Only PDF, TXT, and Markdown files are supported"
+            "Only PDF, DOC, DOCX, TXT, and Markdown files are supported"
           );
         }
       } catch (error) {
@@ -5699,7 +5683,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         <input
           type="file"
           ref={documentInputRef}
-          accept=".pdf,.txt,.md"
+          accept=".pdf,.doc,.docx,.txt,.md"
           onChange={handleDocumentUpload}
           className="hidden"
         />
