@@ -93,6 +93,7 @@ import { RenameAgentTaskDialog } from "@/components/RenameAgentTaskDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
 import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
+import { latestAgentSidebarUpdatedMs } from "@/components/agent/agentSidebarInfoCardDate";
 import {
   isDeliberateAgentComposerFocusTarget,
   settleAgentComposerFocusRequest,
@@ -3820,6 +3821,7 @@ function AgentSidebarTaskRow({
               onOpenProjectFolder={() => onRevealProjectRoot(session.projectRoot)}
               progressLabel={isInProgress ? "In progress" : "Not in progress"}
               title={title}
+              updatedMs={session.updatedMs}
             />
           </HoverCardContent>
         ) : null}
@@ -4492,6 +4494,9 @@ function AgentSidebarContent({
                           onOpenProjectFolder={() => onRevealProjectRoot(root.path)}
                           progressLabel={agentProjectProgressLabel(inProgressSessionCount)}
                           title={root.displayName}
+                          updatedMs={latestAgentSidebarUpdatedMs(
+                            projectSessions.map((session) => session.updatedMs)
+                          )}
                         />
                       </HoverCardContent>
                     ) : null}
