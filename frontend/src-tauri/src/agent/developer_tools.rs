@@ -62,6 +62,7 @@ const IMAGE_DESCRIPTION_MODEL: &str = "gemma4-31b";
 const IMAGE_DESCRIPTION_TEMPERATURE: f32 = 0.0;
 const IMAGE_DESCRIPTION_MAX_TOKENS: i32 = 2_048;
 const IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS: usize = 12_000;
+pub(super) const EXTERNAL_MCP_TOOL_NAME: &str = "external_mcp";
 const IMAGE_DESCRIPTION_SYSTEM_PROMPT: &str = r#"You are the visual perception helper for a coding agent that cannot inspect images directly.
 
 Use the supplied task context only to determine which visual details are relevant. Do not continue
@@ -116,6 +117,13 @@ struct EditParams {
 struct WriteParams {
     path: String,
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalMcpParams {
+    tool: String,
+    arguments: JsonObject,
 }
 
 fn deserialize_edits<'de, D>(deserializer: D) -> Result<Vec<Replacement>, D::Error>
@@ -393,6 +401,47 @@ impl MapleDeveloperClient {
         ))
     }
 
+    fn external_mcp_tool(tools: &[Tool]) -> Tool {
+        let tool_names = tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        let catalog = serde_json::Value::Array(
+            tools
+                .iter()
+                .map(|tool| {
+                    serde_json::json!({
+                        "tool": tool.name.as_ref(),
+                        "description": tool.description.as_ref(),
+                        "arguments": tool.input_schema.as_ref(),
+                    })
+                })
+                .collect(),
+        );
+        Tool::new(
+            EXTERNAL_MCP_TOOL_NAME.to_string(),
+            format!(
+                "Call one tool supplied by the current external ACP host. Select an exact tool ID and provide an arguments object matching its catalog contract. Calls are lease-scoped and require the host's permission policy.\n\nFrozen tool catalog:\n{catalog}"
+            ),
+            object!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "tool": {
+                        "type": "string",
+                        "enum": tool_names,
+                        "description": "Exact frozen external tool ID"
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments for the selected tool, matching its catalog contract"
+                    }
+                },
+                "required": ["tool", "arguments"],
+            }),
+        )
+    }
+
     fn parse_args<T: serde::de::DeserializeOwned>(
         arguments: Option<JsonObject>,
     ) -> Result<T, String> {
@@ -446,6 +495,17 @@ impl McpClientTrait for MapleDeveloperClient {
         }
         tools.push(web_search_tool());
         tools.push(open_url_tool());
+
+        if let Some(router) = self.tool_context.transient_mcp() {
+            if tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == EXTERNAL_MCP_TOOL_NAME)
+            {
+                log::error!("Maple developer tools collided with the external MCP wrapper");
+                return Err(Error::UnexpectedResponse);
+            }
+            tools.push(Self::external_mcp_tool(router.tools()));
+        }
 
         Ok(ListToolsResult {
             tools,
@@ -558,6 +618,18 @@ impl McpClientTrait for MapleDeveloperClient {
                 }
                 Err(error) => error_result(bound_open_url_tool_error(error)),
             },
+            EXTERNAL_MCP_TOOL_NAME => {
+                let params = match Self::parse_args::<ExternalMcpParams>(arguments) {
+                    Ok(params) => params,
+                    Err(error) => return Ok(error_result(error)),
+                };
+                let Some(router) = self.tool_context.transient_mcp() else {
+                    return Ok(error_result("External MCP tools are no longer available"));
+                };
+                return router
+                    .call(&params.tool, ctx, Some(params.arguments), cancel_token)
+                    .await;
+            }
             _ => error_result(format!("Unknown tool: {name}")),
         };
         Ok(result)
@@ -2352,6 +2424,8 @@ fn mutation_key(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::agent::tool_context::AgentToolContextSpec;
+    use crate::agent::transient_mcp::{TransientMcpConfig, TransientMcpRouter};
+    use axum::response::IntoResponse;
     use goose::config::GooseMode;
     use goose::providers::base::{ProviderUsage, Usage};
     use goose::session::SessionManager;
@@ -2442,6 +2516,103 @@ mod tests {
         test_tool_context_snapshot(BTreeMap::new(), BTreeSet::new(), false)
     }
 
+    async fn install_test_transient_mcp(
+        tool_context: &SharedAgentToolContext,
+    ) -> (
+        TransientMcpRouter,
+        tokio::task::JoinHandle<()>,
+        Arc<AtomicU64>,
+    ) {
+        let call_count = Arc::new(AtomicU64::new(0));
+        let handler_call_count = Arc::clone(&call_count);
+        let app = axum::Router::new().route(
+            "/mcp",
+            axum::routing::post(move |axum::Json(payload): axum::Json<serde_json::Value>| {
+                let handler_call_count = Arc::clone(&handler_call_count);
+                async move {
+                    let method = payload["method"].as_str().unwrap_or_default();
+                    if method == "notifications/initialized" {
+                        return axum::http::StatusCode::ACCEPTED.into_response();
+                    }
+
+                    let id = payload["id"].clone();
+                    let result = match method {
+                        "initialize" => serde_json::json!({
+                            "protocolVersion": payload["params"]["protocolVersion"],
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "test-transient-mcp", "version": "1.0.0" }
+                        }),
+                        "tools/list" => serde_json::json!({
+                            "tools": [
+                                {
+                                    "name": "lookup",
+                                    "description": "Look up an exact value",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "query": { "type": "string", "minLength": 2 }
+                                        },
+                                        "required": ["query"]
+                                    },
+                                    "annotations": { "readOnlyHint": true },
+                                    "_meta": { "untrusted": "catalog metadata" },
+                                    "icons": [{ "src": "https://example.com/untrusted.png" }]
+                                },
+                                {
+                                    "name": "mutate",
+                                    "description": "Mutate an exact value",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "value": { "type": "integer", "minimum": 1 }
+                                        },
+                                        "required": ["value"]
+                                    }
+                                }
+                            ]
+                        }),
+                        "tools/call" => {
+                            handler_call_count.fetch_add(1, Ordering::Relaxed);
+                            serde_json::json!({ "content": [{ "type": "text", "text": "called" }] })
+                        }
+                        _ => {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                axum::Json(serde_json::json!({ "error": "unexpected method" })),
+                            )
+                                .into_response();
+                        }
+                    };
+                    axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }))
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let router = TransientMcpRouter::connect(
+            vec![TransientMcpConfig {
+                name: "paseo".to_string(),
+                session_id: "maple-test-session".to_string(),
+                request_timeout: Duration::from_secs(2),
+                url: format!("http://{address}/mcp"),
+                headers: Vec::new(),
+            }],
+            tool_context.lifetime_token(),
+        )
+        .await
+        .unwrap();
+        tool_context.install_transient_mcp(router.clone()).unwrap();
+        (router, server, call_count)
+    }
+
     struct TestDir(PathBuf);
 
     impl TestDir {
@@ -2528,6 +2699,7 @@ mod tests {
             ]
         );
         assert!(!names.contains(&"tree"));
+        assert!(!names.contains(&EXTERNAL_MCP_TOOL_NAME));
 
         let read = serde_json::to_value(&result.tools[0]).unwrap();
         assert_eq!(read["annotations"]["readOnlyHint"], false);
@@ -2569,6 +2741,116 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("purpose")));
+    }
+
+    #[tokio::test]
+    async fn transient_catalog_is_exposed_only_through_one_static_external_mcp_wrapper() {
+        let temp = TestDir::new();
+        let tool_context = test_tool_context(BTreeMap::new(), BTreeSet::new(), false);
+        let (router, server, call_count) = install_test_transient_mcp(&tool_context).await;
+        let client = MapleDeveloperClient::new(
+            test_context(temp.path().join("sessions")),
+            true,
+            Arc::new(TestWebTransport),
+            Arc::new(WebToolState::default()),
+            tool_context.clone(),
+        )
+        .unwrap();
+
+        let result = client
+            .list_tools("session", None, CancellationToken::new())
+            .await
+            .unwrap();
+        let names = result
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "read",
+                "shell",
+                "edit",
+                "write",
+                "read_image",
+                "web_search",
+                "open_url",
+                EXTERNAL_MCP_TOOL_NAME,
+            ]
+        );
+        assert!(!names.contains(&"paseo__lookup"));
+        assert!(!names.contains(&"paseo__mutate"));
+
+        let wrapper = result.tools.last().unwrap();
+        assert!(wrapper.annotations.is_none());
+        assert!(wrapper.meta.is_none());
+        assert!(wrapper.icons.is_none());
+        assert_eq!(wrapper.input_schema["type"], "object");
+        assert_eq!(wrapper.input_schema["additionalProperties"], false);
+        assert!(wrapper.input_schema.get("oneOf").is_none());
+        assert_eq!(
+            wrapper.input_schema["required"],
+            serde_json::json!(["tool", "arguments"])
+        );
+        let properties = wrapper.input_schema["properties"].as_object().unwrap();
+        assert_eq!(properties["tool"]["type"], "string");
+        assert_eq!(
+            properties["tool"]["enum"],
+            serde_json::json!(["paseo__lookup", "paseo__mutate"])
+        );
+        assert_eq!(properties["arguments"]["type"], "object");
+        assert!(properties["arguments"].get("oneOf").is_none());
+        assert!(properties["arguments"].get("properties").is_none());
+        let description = wrapper.description.as_deref().unwrap();
+        assert!(description.contains("Look up an exact value"));
+        assert!(description.contains("\"query\""));
+        assert!(description.contains("\"minLength\":2"));
+        assert!(description.contains("Mutate an exact value"));
+        assert!(description.contains("\"value\""));
+        assert!(description.contains("\"minimum\":1"));
+        let serialized = serde_json::to_string(wrapper).unwrap();
+        assert!(!serialized.contains("annotations"));
+        assert!(!serialized.contains("_meta"));
+        assert!(!serialized.contains("icons"));
+
+        let valid = client
+            .call_tool(
+                &ToolCallContext::new("session".to_string(), None, None),
+                EXTERNAL_MCP_TOOL_NAME,
+                Some(object!({
+                    "tool": "paseo__lookup",
+                    "arguments": { "query": "maple" }
+                })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!valid.is_error.unwrap_or(false));
+        assert_eq!(call_count.load(Ordering::Relaxed), 1);
+
+        let calls_before_unknown = call_count.load(Ordering::Relaxed);
+        let unknown = client
+            .call_tool(
+                &ToolCallContext::new("session".to_string(), None, None),
+                EXTERNAL_MCP_TOOL_NAME,
+                Some(object!({
+                    "tool": "paseo__missing",
+                    "arguments": {}
+                })),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(unknown.is_err());
+        assert_eq!(
+            call_count.load(Ordering::Relaxed),
+            calls_before_unknown,
+            "an unknown public tool ID must be rejected before any server call"
+        );
+
+        tool_context.revoke();
+        router.shutdown().await;
+        server.abort();
     }
 
     #[tokio::test]

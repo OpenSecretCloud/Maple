@@ -596,8 +596,8 @@ export function AgentConnectionsSettings() {
             <Server className="h-4 w-4" />
             <AlertDescription>
               In Buzz managed-agent settings, set parallelism to {BUZZ_MAPLE_AGENT_PARALLELISM}.
-              Buzz defaults to {BUZZ_DEFAULT_AGENT_PARALLELISM}, while Maple accepts one local ACP
-              connection by default.
+              Buzz defaults to {BUZZ_DEFAULT_AGENT_PARALLELISM}; Maple's default local ACP limit is{" "}
+              {BUZZ_MAPLE_AGENT_PARALLELISM}.
             </AlertDescription>
           </Alert>
 

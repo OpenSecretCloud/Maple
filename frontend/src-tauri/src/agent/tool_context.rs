@@ -1,3 +1,4 @@
+use super::transient_mcp::TransientMcpRouter;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -82,6 +83,7 @@ struct AgentToolContextState {
     values: BTreeMap<String, String>,
     scrub_from_parent: BTreeSet<String>,
     ephemeral: bool,
+    transient_mcp: Option<TransientMcpRouter>,
 }
 
 #[derive(Clone)]
@@ -98,6 +100,7 @@ impl SharedAgentToolContext {
                 values: spec.values,
                 scrub_from_parent: spec.scrub_from_parent,
                 ephemeral: spec.ephemeral,
+                transient_mcp: None,
             })),
             revoked: CancellationToken::new(),
             launch_gate: Arc::new(Mutex::new(())),
@@ -118,6 +121,35 @@ impl SharedAgentToolContext {
         }
     }
 
+    pub(crate) fn lifetime_token(&self) -> CancellationToken {
+        self.revoked.clone()
+    }
+
+    pub(crate) fn install_transient_mcp(&self, router: TransientMcpRouter) -> Result<(), String> {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.revoked.is_cancelled() {
+            return Err("Agent tool context was revoked during MCP setup".to_string());
+        }
+        if state.transient_mcp.is_some() {
+            return Err("Agent tool context already has transient MCP tools".to_string());
+        }
+        if !router.is_empty() {
+            state.transient_mcp = Some(router);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn transient_mcp(&self) -> Option<TransientMcpRouter> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .transient_mcp
+            .clone()
+    }
+
     pub(crate) fn revoke(&self) {
         // Linearize revocation with command construction and spawn. Once this
         // method returns, no snapshot taken before revocation can launch a new
@@ -133,6 +165,7 @@ impl SharedAgentToolContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.values.clear();
         state.ephemeral = false;
+        state.transient_mcp.take();
         // Retain inherited-key scrubbing after revocation. A removed explicit
         // credential must never reveal a same-named ambient process value.
     }

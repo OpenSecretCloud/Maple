@@ -69,10 +69,11 @@ goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "0642
 opensecret = "3.6.1"
 rand = "0.8.6"
 async-trait = "0.1"
-rmcp = { version = "=3.1.2", default-features = false }
+rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
 tauri-plugin-dialog = "2.7.1"
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
-agent-client-protocol = { version = "=1.0.1", default-features = false }
+agent-client-protocol = { version = "=1.0.1", default-features = false, features = ["unstable_end_turn_token_usage"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 pulldown-cmark = { version = "0.13", default-features = false }

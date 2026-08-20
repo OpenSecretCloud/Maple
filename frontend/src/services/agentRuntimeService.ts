@@ -1,6 +1,7 @@
 import { isTauriDesktop } from "@/utils/platform";
 import { agentOperationFence, type AgentOperationBlock } from "@/services/agentOperationFence";
 import { AgentAuthLifecycleCoordinator } from "@/services/agentAuthLifecycle";
+import { mapleAcpService } from "@/services/mapleAcpService";
 import { mapleApiAuthService } from "@/services/mapleApiAuthService";
 
 export interface AgentConfig {
@@ -552,6 +553,13 @@ const agentAuthLifecycle = new AgentAuthLifecycleCoordinator(
   async (userId) => {
     await mapleApiAuthService.activate(userId);
     agentOperationFence.activateUserSession(userId);
+    try {
+      await mapleAcpService.restoreEnabled(userId);
+    } catch {
+      // ACP is optional. Keep ordinary Agent Mode available when its saved
+      // listener cannot be restored; Settings exposes the explicit retry.
+      console.warn("Maple could not restore the enabled ACP service");
+    }
   }
 );
 

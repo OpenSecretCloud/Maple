@@ -5,6 +5,7 @@ import {
   BUZZ_MAPLE_HARNESS_ID,
   BUZZ_MAPLE_HARNESS_NAME,
   DEFAULT_MAPLE_ACP_CONFIG,
+  MAX_MAPLE_ACP_CONNECTIONS,
   MapleAcpService,
   buildBuzzCustomHarness,
   isMapleAcpConfigReady,
@@ -56,6 +57,24 @@ describe("MapleAcpService", () => {
     await service.start("user-a");
 
     expect(bridge.events).toEqual(["fence:user-a", "sync:user-a", "invoke:agent_acp_start"]);
+    expect(bridge.lastArgs).toEqual({ userId: "user-a" });
+  });
+
+  test("saved service restoration stays authenticated and account-fenced", async () => {
+    const bridge = new RecordingBridge();
+    bridge.result = { running: true, enabled: true, harness };
+    const service = new MapleAcpService(bridge);
+
+    expect(await service.restoreEnabled("user-a")).toMatchObject({
+      running: true,
+      enabled: true
+    });
+
+    expect(bridge.events).toEqual([
+      "fence:user-a",
+      "sync:user-a",
+      "invoke:agent_acp_restore_enabled"
+    ]);
     expect(bridge.lastArgs).toEqual({ userId: "user-a" });
   });
 
@@ -113,6 +132,7 @@ describe("MapleAcpService", () => {
       "available in Maple Desktop"
     );
     await expect(service.start("user-a")).rejects.toThrow("available in Maple Desktop");
+    await expect(service.restoreEnabled("user-a")).rejects.toThrow("available in Maple Desktop");
     await expect(service.stop("user-a")).rejects.toThrow("available in Maple Desktop");
     await expect(service.getStatus("user-a")).rejects.toThrow("available in Maple Desktop");
     expect(bridge.events).toEqual([]);
@@ -134,6 +154,17 @@ describe("Maple ACP response normalization", () => {
       allowedProjectRoots: ["/tmp/a", "/tmp/b"],
       maxConnections: 1
     });
+  });
+
+  test("keeps explicit connection limits inside the native range", () => {
+    expect(normalizeMapleAcpConfig({ maxConnections: 0 }).maxConnections).toBe(1);
+    expect(normalizeMapleAcpConfig({ maxConnections: 1 }).maxConnections).toBe(1);
+    expect(
+      normalizeMapleAcpConfig({ maxConnections: MAX_MAPLE_ACP_CONNECTIONS }).maxConnections
+    ).toBe(MAX_MAPLE_ACP_CONNECTIONS);
+    expect(normalizeMapleAcpConfig({ maxConnections: 999 }).maxConnections).toBe(
+      MAX_MAPLE_ACP_CONNECTIONS
+    );
   });
 
   test("migrates the former Maple-owned allow-all bypass to caller-owned approvals", () => {
@@ -202,8 +233,8 @@ describe("Buzz custom harness output", () => {
     expect(serialized).not.toContain("endpoint");
   });
 
-  test("documents Buzz parallelism that matches Maple's default connection limit", () => {
-    expect(BUZZ_MAPLE_AGENT_PARALLELISM).toBe(1);
+  test("keeps Buzz parallelism within Maple's default connection limit", () => {
+    expect(BUZZ_MAPLE_AGENT_PARALLELISM).toBe(MAX_MAPLE_ACP_CONNECTIONS);
     expect(BUZZ_DEFAULT_AGENT_PARALLELISM).toBe(10);
     expect(DEFAULT_MAPLE_ACP_CONFIG.maxConnections).toBe(Number(BUZZ_MAPLE_AGENT_PARALLELISM));
   });

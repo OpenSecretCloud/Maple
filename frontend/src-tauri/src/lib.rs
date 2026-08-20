@@ -207,6 +207,7 @@ pub fn run() {
             agent_acp::agent_acp_load_config,
             agent_acp::agent_acp_save_config,
             agent_acp::agent_acp_start,
+            agent_acp::agent_acp_restore_enabled,
             agent_acp::agent_acp_stop,
             agent_acp::agent_acp_get_status,
             maple_api::maple_api_set_auth,

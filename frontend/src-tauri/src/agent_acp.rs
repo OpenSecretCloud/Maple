@@ -1,18 +1,26 @@
 use crate::agent::{
-    AgentCreateSessionRequest, AgentHostEventPolicy, AgentPermissionDecision,
+    AgentCreateSessionRequest, AgentHostEventPolicy, AgentMcpKeyValue, AgentPermissionDecision,
     AgentPermissionRequest, AgentRunCancellation, AgentRunEvent, AgentRunPermissionResponder,
-    AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTimelineItem,
-    AgentToolContextLease, AgentToolContextSpec, MapleAgentService,
+    AgentRunTerminal, AgentRunUsage, AgentRuntimeHandle, AgentSendMessageRequest,
+    AgentSessionSummary, AgentTimelineItem, AgentToolContextLease, AgentToolContextSpec,
+    AgentTransientMcpServer, AgentTransientMcpTransport, MapleAgentService,
     AGENT_TOOL_CONTEXT_INACTIVE_ERROR,
 };
 use crate::agent_host::AgentHostLifecycle;
 use crate::maple_api::{account_scope, MapleApiAuthState};
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Implementation,
-    InitializeRequest, InitializeResponse, McpServer, NewSessionRequest, NewSessionResponse,
+    AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
+    ConfigOptionUpdate, ContentBlock, ContentChunk, Implementation, InitializeRequest,
+    InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse,
     PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionNotification,
-    SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolKind,
+    RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities,
+    SessionCloseCapabilities, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionId, SessionInfo, SessionListCapabilities, SessionMode,
+    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    TextContent, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind, Usage,
 };
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
@@ -22,7 +30,7 @@ use agent_client_protocol::{
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -47,6 +55,9 @@ const MAX_ACP_OUTBOUND_BYTES_IN_FLIGHT: usize = 4 * 1024 * 1024;
 const ACP_OUTBOUND_FRAME_OVERHEAD_BYTES: usize = 256;
 const ACP_CONNECTION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const ACP_SYNTHETIC_STOP_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const ACP_SESSION_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const ACP_TRANSIENT_MCP_TIMEOUT_SECONDS: u64 = 30;
+const ACP_LOADABLE_GOOSE_MODE: &str = "smart_approve";
 const BRIDGE_HELLO_METHOD: &str = "_maple/bridge/hello";
 const ALLOWED_BRIDGE_ENV: [&str; 6] = [
     "BUZZ_RELAY_URL",
@@ -63,6 +74,7 @@ const SENSITIVE_BRIDGE_ENV: [&str; 5] = [
     "BUZZ_API_TOKEN",
     "BUZZ_ACP_DISPLAY_NAME",
 ];
+static NEXT_ACP_MESSAGE_ID: AtomicUsize = AtomicUsize::new(1);
 
 #[cfg(unix)]
 struct BoundedLineReader<R> {
@@ -190,7 +202,7 @@ fn default_permission_mode() -> AgentAcpPermissionMode {
 }
 
 fn default_max_connections() -> usize {
-    1
+    8
 }
 
 impl Default for AgentAcpConfig {
@@ -269,7 +281,9 @@ struct AcpConnectionContext {
     config: Arc<RwLock<AgentAcpConfig>>,
     stats: Arc<AgentAcpStats>,
     bridge_environment: Mutex<HashMap<String, String>>,
-    sessions: Mutex<HashMap<String, AgentToolContextLease>>,
+    sessions: Mutex<HashMap<String, AcpSession>>,
+    session_operations: Mutex<HashMap<String, Arc<AcpSessionOperation>>>,
+    closing_sessions: Mutex<HashSet<String>>,
     prompt_states: Mutex<HashMap<String, AcpPromptState>>,
     background_tasks: Mutex<tokio::task::JoinSet<()>>,
     finalization: Mutex<()>,
@@ -277,6 +291,91 @@ struct AcpConnectionContext {
     closed: AtomicBool,
     has_credentials: AtomicBool,
     outbound: Arc<AcpOutboundTracker>,
+}
+
+struct AcpSession {
+    lease: Option<AgentToolContextLease>,
+    model: String,
+    available_models: Vec<String>,
+    message_count: usize,
+    created_here: bool,
+    prompted: bool,
+}
+
+struct UnpublishedAcpSession {
+    lease: Option<AgentToolContextLease>,
+    published: bool,
+}
+
+impl UnpublishedAcpSession {
+    fn new(lease: AgentToolContextLease) -> Self {
+        Self {
+            lease: Some(lease),
+            published: false,
+        }
+    }
+
+    fn publish(mut self) -> AgentToolContextLease {
+        self.published = true;
+        self.lease
+            .take()
+            .expect("an unpublished ACP session must still own its lease")
+    }
+}
+
+impl Drop for UnpublishedAcpSession {
+    fn drop(&mut self) {
+        if self.published {
+            return;
+        }
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        lease.revoke();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                lease.discard_created_if_untouched().await;
+            });
+        }
+    }
+}
+
+struct AcpSessionOperation {
+    gate: Arc<Mutex<()>>,
+    cancellation: CancellationToken,
+}
+
+fn close_registration_may_be_released(
+    cancellation_completed: bool,
+    operation_drained: bool,
+    cleanup_completed: bool,
+) -> bool {
+    // A timed-out load may already have passed its final core cancellation
+    // check. Keep both its exact operation registration and the closing
+    // tombstone until connection teardown so it can never publish a lease
+    // after session/close has returned. The same fence stays in place while
+    // run cancellation or exact-match lease cleanup is still settling.
+    cancellation_completed && operation_drained && cleanup_completed
+}
+
+impl AcpSessionOperation {
+    fn new(connection_lifetime: &CancellationToken) -> Arc<Self> {
+        Arc::new(Self {
+            gate: Arc::new(Mutex::new(())),
+            cancellation: connection_lifetime.child_token(),
+        })
+    }
+}
+
+impl AcpSession {
+    fn config_options(&self) -> Vec<SessionConfigOption> {
+        acp_session_config_options(&self.model, &self.available_models, self.message_count)
+    }
+}
+
+#[derive(Default)]
+struct AcpToolProjection {
+    seen: HashSet<String>,
 }
 
 enum AcpPromptState {
@@ -408,6 +507,8 @@ impl AcpConnectionContext {
             stats,
             bridge_environment: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            session_operations: Mutex::new(HashMap::new()),
+            closing_sessions: Mutex::new(HashSet::new()),
             prompt_states: Mutex::new(HashMap::new()),
             background_tasks: Mutex::new(tokio::task::JoinSet::new()),
             finalization: Mutex::new(()),
@@ -445,26 +546,38 @@ impl AcpConnectionContext {
             return Err(agent_client_protocol::Error::invalid_params()
                 .data("ACP session cwd must be an absolute path"));
         }
+        if !request.additional_directories.is_empty() {
+            return Err(agent_client_protocol::Error::invalid_params()
+                .data("Maple ACP does not support additional session directories"));
+        }
         let config = self.config.read().await.clone();
         let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
             .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
 
-        let mut environment = self.bridge_environment.lock().await.clone();
-        merge_mcp_environment(&mut environment, &request.mcp_servers)?;
+        let available_models = self.available_models().await?;
+        let model = available_models
+            .first()
+            .cloned()
+            .ok_or_else(|| internal_acp_error("Maple returned no models".to_string()))?;
+        let bridge_environment = self.bridge_environment.lock().await.clone();
+        let (environment, transient_mcp_servers) =
+            prepare_session_mcp(&bridge_environment, &request.mcp_servers)?;
         let tool_context = bridge_tool_context_spec(&environment).map_err(internal_acp_error)?;
         let mode = config.permission_mode.maple_mode().to_string();
         let created = self
             .agent
-            .create_session_with_tool_context(
+            .create_session_with_surface_context(
                 Some(AgentCreateSessionRequest {
                     project_root: Some(project_root.to_string_lossy().into_owned()),
-                    title: Some("Buzz ACP".to_string()),
-                    model: None,
+                    title: Some("Maple ACP".to_string()),
+                    model: Some(model.clone()),
                     context_limit: None,
                     mode: Some(mode),
                     mcp_server_names: None,
                 }),
                 Some(tool_context),
+                transient_mcp_servers,
+                self.lifetime.child_token(),
                 // The ACP caller is the only interactive surface for this task.
                 // Persisted history remains loadable in Maple Desktop, but live
                 // permission cards must never create a second approval broker.
@@ -472,26 +585,42 @@ impl AcpConnectionContext {
             )
             .await
             .map_err(internal_acp_error)?;
-        let session_id = created.detail.session.id;
+        let session_id = canonical_session_id_text(&created.detail.session.id)?;
         let lease = created
             .tool_context_lease
             .expect("an explicit Agent tool context must return a lease");
+        let unpublished = UnpublishedAcpSession::new(lease);
         let finalization = self.finalization.lock().await;
         if self.closed.load(Ordering::SeqCst) {
             drop(finalization);
-            self.discard_uncommitted_session(&session_id, lease).await;
+            drop(unpublished);
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection closed while configuring the session"));
         }
         let mut sessions = self.sessions.lock().await;
-        if sessions.contains_key(&session_id) {
+        let mut operations = self.session_operations.lock().await;
+        if sessions.contains_key(&session_id) || operations.contains_key(&session_id) {
+            drop(operations);
             drop(sessions);
             drop(finalization);
-            self.discard_uncommitted_session(&session_id, lease).await;
+            drop(unpublished);
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection duplicated a new session"));
         }
-        sessions.insert(session_id.clone(), lease);
+        let lease = unpublished.publish();
+        sessions.insert(
+            session_id.clone(),
+            AcpSession {
+                lease: Some(lease),
+                model: model.clone(),
+                available_models: available_models.clone(),
+                message_count: created.detail.session.message_count,
+                created_here: true,
+                prompted: false,
+            },
+        );
+        operations.insert(session_id.clone(), AcpSessionOperation::new(&self.lifetime));
+        drop(operations);
         drop(sessions);
         self.stats.active_sessions.fetch_add(1, Ordering::SeqCst);
         if has_buzz_credentials(&environment) && !self.has_credentials.swap(true, Ordering::SeqCst)
@@ -501,54 +630,524 @@ impl AcpConnectionContext {
                 .fetch_add(1, Ordering::SeqCst);
         }
         drop(finalization);
-        Ok(NewSessionResponse::new(session_id))
-    }
-
-    async fn discard_uncommitted_session(&self, session_id: &str, lease: AgentToolContextLease) {
-        lease.release().await;
-        let _ = self
-            .agent
-            .discard_session_during_cleanup(session_id.to_string())
-            .await;
+        Ok(NewSessionResponse::new(session_id)
+            .modes(acp_session_modes())
+            .config_options(acp_config_options(&model, &available_models)))
     }
 
     async fn retire_session(&self, session_id: &str) {
-        let lease = self.sessions.lock().await.remove(session_id);
-        if let Some(lease) = lease {
-            self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);
-            lease.release().await;
+        let session = self.sessions.lock().await.remove(session_id);
+        if let Some(operation) = self.session_operations.lock().await.remove(session_id) {
+            operation.cancellation.cancel();
         }
+        if let Some(mut session) = session {
+            self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);
+            if let Some(lease) = session.lease.take() {
+                lease.release().await;
+            }
+        }
+    }
+
+    async fn available_models(&self) -> Result<Vec<String>, agent_client_protocol::Error> {
+        tokio::select! {
+            biased;
+            _ = self.lifetime.cancelled() => Err(
+                agent_client_protocol::Error::internal_error()
+                    .data("The Maple ACP connection closed while loading models")
+            ),
+            result = self.agent.available_model_ids() => result.map_err(internal_acp_error),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => Err(
+                agent_client_protocol::Error::internal_error()
+                    .data("Maple model discovery timed out")
+            ),
+        }
+    }
+
+    async fn remove_session_operation_if_same(
+        &self,
+        session_id: &str,
+        operation: &Arc<AcpSessionOperation>,
+    ) {
+        let mut operations = self.session_operations.lock().await;
+        if operations
+            .get(session_id)
+            .is_some_and(|registered| Arc::ptr_eq(registered, operation))
+        {
+            operations.remove(session_id);
+        }
+    }
+
+    async fn load_session(
+        &self,
+        cx: &ConnectionTo<Client>,
+        request: LoadSessionRequest,
+    ) -> Result<LoadSessionResponse, agent_client_protocol::Error> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(agent_client_protocol::Error::internal_error()
+                .data("The Maple ACP connection is closing"));
+        }
+        if !request.cwd.is_absolute() || !request.additional_directories.is_empty() {
+            return Err(agent_client_protocol::Error::invalid_params()
+                .data("Maple ACP load requires one absolute cwd and no additional directories"));
+        }
+        let config = self.config.read().await.clone();
+        let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
+            .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
+        let project_root = project_root.to_string_lossy().into_owned();
+        let session_id = canonical_session_id(&request.session_id)?;
+        let persisted_sessions = self
+            .agent
+            .list_sessions(Some(project_root.clone()))
+            .await
+            .map_err(internal_acp_error)?;
+        let persisted = ensure_acp_session_is_loadable(&persisted_sessions, &session_id)
+            .map_err(|error| agent_client_protocol::Error::invalid_request().data(error))?;
+        let persisted_model = persisted.model.clone();
+        let available_models = self.available_models().await?;
+        if let Some(model) = persisted_model.as_ref() {
+            if !available_models.iter().any(|available| available == model) {
+                return Err(agent_client_protocol::Error::invalid_request().data(format!(
+                    "This Maple Agent task uses model '{model}', which is no longer available; the task remains available in Maple Desktop"
+                )));
+            }
+        }
+        let bridge_environment = self.bridge_environment.lock().await.clone();
+        let (environment, transient_mcp_servers) =
+            prepare_session_mcp(&bridge_environment, &request.mcp_servers)?;
+        let tool_context = bridge_tool_context_spec(&environment).map_err(internal_acp_error)?;
+        let protocol_session_id = SessionId::new(session_id.clone());
+        let operation = AcpSessionOperation::new(&self.lifetime);
+        let operation_guard = Arc::clone(&operation.gate).lock_owned().await;
+        {
+            // Register the operation before the fallible core attach. Close can
+            // now mark it closing and wait, while disconnect linearizes through
+            // the same finalization barrier used by session creation.
+            let _finalization = self.finalization.lock().await;
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(agent_client_protocol::Error::internal_error()
+                    .data("The Maple ACP connection is closing"));
+            }
+            if self.closing_sessions.lock().await.contains(&session_id) {
+                return Err(agent_client_protocol::Error::invalid_request()
+                    .data("This ACP session is closing"));
+            }
+            if self.sessions.lock().await.contains_key(&session_id) {
+                return Err(agent_client_protocol::Error::invalid_request()
+                    .data("This ACP connection already owns the requested session"));
+            }
+            let mut operations = self.session_operations.lock().await;
+            if operations.contains_key(&session_id) {
+                return Err(agent_client_protocol::Error::invalid_request()
+                    .data("This ACP connection is already loading the requested session"));
+            }
+            operations.insert(session_id.clone(), Arc::clone(&operation));
+        }
+        let attached = match self
+            .agent
+            .attach_session_with_surface_context(
+                session_id.clone(),
+                project_root,
+                tool_context,
+                transient_mcp_servers,
+                operation.cancellation.child_token(),
+            )
+            .await
+        {
+            Ok(attached) => attached,
+            Err(error) => {
+                self.remove_session_operation_if_same(&session_id, &operation)
+                    .await;
+                return Err(internal_acp_error(error));
+            }
+        };
+        let lease = attached
+            .tool_context_lease
+            .expect("an attached ACP task must return a tool-context lease");
+        let Some(model) = attached
+            .detail
+            .session
+            .model
+            .clone()
+            .or_else(|| available_models.first().cloned())
+        else {
+            lease.release().await;
+            self.remove_session_operation_if_same(&session_id, &operation)
+                .await;
+            return Err(internal_acp_error("Maple returned no models".to_string()));
+        };
+        let timeline = attached.detail.timeline;
+        let message_count = attached.detail.session.message_count;
+        let finalization = self.finalization.lock().await;
+        if self.closed.load(Ordering::SeqCst)
+            || self.closing_sessions.lock().await.contains(&session_id)
+        {
+            drop(finalization);
+            lease.release().await;
+            self.remove_session_operation_if_same(&session_id, &operation)
+                .await;
+            return Err(agent_client_protocol::Error::internal_error()
+                .data("The Maple ACP session closed while it was loading"));
+        }
+        let mut sessions = self.sessions.lock().await;
+        if sessions.contains_key(&session_id) {
+            drop(sessions);
+            drop(finalization);
+            lease.release().await;
+            self.remove_session_operation_if_same(&session_id, &operation)
+                .await;
+            return Err(agent_client_protocol::Error::invalid_request()
+                .data("This ACP connection duplicated the requested session"));
+        }
+        sessions.insert(
+            session_id.clone(),
+            AcpSession {
+                lease: Some(lease),
+                model: model.clone(),
+                available_models: available_models.clone(),
+                message_count,
+                created_here: false,
+                prompted: false,
+            },
+        );
+        drop(sessions);
+        self.stats.active_sessions.fetch_add(1, Ordering::SeqCst);
+        drop(finalization);
+
+        let mut projection = AcpToolProjection::default();
+        for item in &timeline {
+            if let Some(update) = timeline_update(item, &mut projection, true) {
+                if let Err(error) = self
+                    .send_session_update(
+                        cx,
+                        SessionNotification::new(protocol_session_id.clone(), update),
+                        &operation.cancellation,
+                    )
+                    .await
+                {
+                    self.retire_session(&session_id).await;
+                    return Err(outbound_error(error));
+                }
+            }
+        }
+        drop(operation_guard);
+        Ok(LoadSessionResponse::new()
+            .modes(acp_session_modes())
+            .config_options(acp_session_config_options(
+                &model,
+                &available_models,
+                message_count,
+            )))
+    }
+
+    async fn list_sessions(
+        &self,
+        request: ListSessionsRequest,
+    ) -> Result<ListSessionsResponse, agent_client_protocol::Error> {
+        let config = self.config.read().await.clone();
+        let project_root = match request.cwd.as_deref() {
+            Some(cwd) => {
+                if !cwd.is_absolute() {
+                    return Err(agent_client_protocol::Error::invalid_params()
+                        .data("ACP session-list cwd must be an absolute path"));
+                }
+                Some(
+                    ensure_allowed_project_root(cwd, &config.allowed_project_roots).map_err(
+                        |error| agent_client_protocol::Error::invalid_params().data(error),
+                    )?,
+                )
+            }
+            None => None,
+        };
+        let sessions = self
+            .agent
+            .list_sessions(
+                project_root
+                    .as_ref()
+                    .map(|root| root.to_string_lossy().into_owned()),
+            )
+            .await
+            .map_err(internal_acp_error)?;
+        let visible = sessions
+            .into_iter()
+            .filter(|session| {
+                is_acp_loadable_session_mode(&session.mode)
+                    && ensure_allowed_project_root(
+                        Path::new(&session.project_root),
+                        &config.allowed_project_roots,
+                    )
+                    .is_ok()
+            })
+            .collect::<Vec<_>>();
+        let start = request
+            .cursor
+            .as_deref()
+            .map(str::parse::<usize>)
+            .transpose()
+            .map_err(|_| {
+                agent_client_protocol::Error::invalid_params()
+                    .data("Invalid Maple ACP session-list cursor")
+            })?
+            .unwrap_or(0);
+        if start > visible.len() {
+            return Err(agent_client_protocol::Error::invalid_params()
+                .data("Maple ACP session-list cursor is out of range"));
+        }
+        let end = start.saturating_add(100).min(visible.len());
+        let listed = visible[start..end]
+            .iter()
+            .map(|session| {
+                let mut info =
+                    SessionInfo::new(session.id.clone(), PathBuf::from(&session.project_root))
+                        .title(session.title.clone());
+                if let Some(updated_at) =
+                    chrono::DateTime::from_timestamp_millis(session.updated_ms)
+                {
+                    info = info.updated_at(updated_at.to_rfc3339());
+                }
+                info
+            })
+            .collect();
+        let mut response = ListSessionsResponse::new(listed);
+        if end < visible.len() {
+            response = response.next_cursor(end.to_string());
+        }
+        Ok(response)
+    }
+
+    async fn close_session(
+        &self,
+        request: CloseSessionRequest,
+    ) -> Result<CloseSessionResponse, agent_client_protocol::Error> {
+        let session_id = canonical_session_id(&request.session_id)?;
+        let operation = self
+            .session_operations
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| {
+                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                    .data("ACP session is not owned by this connection")
+            })?;
+        self.closing_sessions
+            .lock()
+            .await
+            .insert(session_id.clone());
+        operation.cancellation.cancel();
+        // Use one absolute deadline for every potentially blocking close
+        // phase. Paseo awaits this response before terminating the ACP child,
+        // so a fresh timeout per phase could still hang it for multiples of
+        // the advertised close bound.
+        let close_deadline = tokio::time::Instant::now() + ACP_SESSION_CLOSE_TIMEOUT;
+        let cancel_result =
+            tokio::time::timeout_at(close_deadline, self.cancel_session(&session_id)).await;
+        let cancellation_completed = matches!(&cancel_result, Ok(Ok(())));
+        // Starting and running prompts normally retain this guard through their
+        // terminal barrier. A broken provider must not make ACP close hang
+        // forever, though: after the bound, revoke the lease synchronously and
+        // let its Drop retry exact-match cleanup while Paseo can terminate the
+        // child process.
+        let operation_guard =
+            tokio::time::timeout_at(close_deadline, Arc::clone(&operation.gate).lock_owned())
+                .await
+                .ok();
+        let operation_drained = operation_guard.is_some();
+        let Some(mut session) = self.sessions.lock().await.remove(&session_id) else {
+            if close_registration_may_be_released(cancellation_completed, operation_drained, true) {
+                self.remove_session_operation_if_same(&session_id, &operation)
+                    .await;
+                self.closing_sessions.lock().await.remove(&session_id);
+            }
+            if let Ok(cancel_result) = cancel_result {
+                cancel_result?;
+            }
+            return Ok(CloseSessionResponse::new());
+        };
+        self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);
+        let discard = operation_drained && session.created_here && !session.prompted;
+        let cleanup_completed = if let Some(lease) = session.lease.take() {
+            if operation_drained {
+                tokio::time::timeout_at(close_deadline, async move {
+                    if discard {
+                        lease.discard_created_if_untouched().await;
+                    } else {
+                        lease.release().await;
+                    }
+                })
+                .await
+                .is_ok()
+            } else {
+                lease.revoke();
+                drop(lease);
+                false
+            }
+        } else {
+            operation_drained
+        };
+        if close_registration_may_be_released(
+            cancellation_completed,
+            operation_drained,
+            cleanup_completed,
+        ) {
+            self.remove_session_operation_if_same(&session_id, &operation)
+                .await;
+            self.closing_sessions.lock().await.remove(&session_id);
+        }
+        if let Ok(cancel_result) = cancel_result {
+            cancel_result?;
+        }
+        Ok(CloseSessionResponse::new())
+    }
+
+    async fn set_config_option(
+        &self,
+        request: SetSessionConfigOptionRequest,
+    ) -> Result<SetSessionConfigOptionResponse, agent_client_protocol::Error> {
+        let session_id = canonical_session_id(&request.session_id)?;
+        let operation = self
+            .session_operations
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| {
+                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                    .data("ACP session is not owned by this connection")
+            })?;
+        let _operation_guard = Arc::clone(&operation.gate).lock_owned().await;
+        if self.closed.load(Ordering::SeqCst)
+            || self.closing_sessions.lock().await.contains(&session_id)
+        {
+            return Err(
+                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                    .data("ACP session is closing"),
+            );
+        }
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions.get_mut(&session_id).ok_or_else(|| {
+            agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                .data("ACP session is not owned by this connection")
+        })?;
+        let selected_value = request.value.as_value_id().ok_or_else(|| {
+            agent_client_protocol::Error::invalid_params()
+                .data("Maple ACP configuration options require a select value")
+        })?;
+        match request.config_id.0.as_ref() {
+            "model" => {
+                let model = selected_value.0.as_ref();
+                if !session
+                    .available_models
+                    .iter()
+                    .any(|candidate| candidate == model)
+                {
+                    return Err(
+                        agent_client_protocol::Error::invalid_params().data("Unknown Maple model")
+                    );
+                }
+                if session.message_count > 0 && session.model != model {
+                    return Err(agent_client_protocol::Error::invalid_params()
+                        .data("Maple tasks are model-locked after their first message"));
+                }
+                session.model = model.to_string();
+            }
+            "mode" if selected_value.0.as_ref() == "interactive" => {}
+            "mode" => {
+                return Err(agent_client_protocol::Error::invalid_params()
+                    .data("Maple ACP supports only caller-mediated interactive mode"));
+            }
+            _ => {
+                return Err(agent_client_protocol::Error::invalid_params()
+                    .data("Unknown Maple ACP configuration option"));
+            }
+        }
+        Ok(SetSessionConfigOptionResponse::new(
+            session.config_options(),
+        ))
+    }
+
+    async fn set_mode(
+        &self,
+        request: SetSessionModeRequest,
+    ) -> Result<SetSessionModeResponse, agent_client_protocol::Error> {
+        let session_id = canonical_session_id(&request.session_id)?;
+        let operation = self
+            .session_operations
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| {
+                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                    .data("ACP session is not owned by this connection")
+            })?;
+        let _operation_guard = Arc::clone(&operation.gate).lock_owned().await;
+        if self.closed.load(Ordering::SeqCst)
+            || self.closing_sessions.lock().await.contains(&session_id)
+            || !self.sessions.lock().await.contains_key(&session_id)
+        {
+            return Err(
+                agent_client_protocol::Error::resource_not_found(Some(session_id))
+                    .data("ACP session is not available on this connection"),
+            );
+        }
+        if request.mode_id.0.as_ref() != "interactive" {
+            return Err(agent_client_protocol::Error::invalid_params()
+                .data("Maple ACP supports only caller-mediated interactive mode"));
+        }
+        Ok(SetSessionModeResponse::new())
     }
 
     async fn begin_prompt(
         &self,
         request: &PromptRequest,
-    ) -> Result<(String, CancellationToken), agent_client_protocol::Error> {
+    ) -> Result<
+        (
+            String,
+            String,
+            CancellationToken,
+            tokio::sync::OwnedMutexGuard<()>,
+        ),
+        agent_client_protocol::Error,
+    > {
         if self.closed.load(Ordering::SeqCst) {
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP connection is closing"));
         }
-        let session_id = request.session_id.0.to_string();
-        if !self.sessions.lock().await.contains_key(&session_id) {
+        let session_id = canonical_session_id(&request.session_id)?;
+        let prompt = prompt_text(&request.prompt)?;
+        let operation = self
+            .session_operations
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| {
+                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
+                    .data("ACP session is not owned by this connection")
+            })?;
+        let operation_guard = Arc::clone(&operation.gate).lock_owned().await;
+        if self.closed.load(Ordering::SeqCst)
+            || self.closing_sessions.lock().await.contains(&session_id)
+            || !self.sessions.lock().await.contains_key(&session_id)
+        {
             return Err(
                 agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
-                    .data("ACP session is not owned by this connection"),
+                    .data("ACP session is not available on this connection"),
             );
         }
-        let prompt = prompt_text(&request.prompt)?;
         let mut states = self.prompt_states.lock().await;
         if states.contains_key(&session_id) {
             return Err(agent_client_protocol::Error::invalid_request()
                 .data("This ACP session already has an active prompt"));
         }
-        let cancellation = self.lifetime.child_token();
+        let cancellation = operation.cancellation.child_token();
         states.insert(
-            session_id,
+            session_id.clone(),
             AcpPromptState::Starting {
                 cancellation: cancellation.clone(),
             },
         );
-        Ok((prompt, cancellation))
+        Ok((prompt, session_id, cancellation, operation_guard))
     }
 
     async fn send_session_update(
@@ -576,13 +1175,18 @@ impl AcpConnectionContext {
         message: &str,
         cancellation: &CancellationToken,
     ) -> Result<(), AcpOutboundSendError> {
+        let message_id = format!(
+            "maple-acp-notice-{}",
+            NEXT_ACP_MESSAGE_ID.fetch_add(1, Ordering::Relaxed)
+        );
         self.send_session_update(
             cx,
             SessionNotification::new(
                 session_id,
-                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                    TextContent::new(message.to_string()),
-                ))),
+                SessionUpdate::AgentMessageChunk(
+                    ContentChunk::new(ContentBlock::Text(TextContent::new(message.to_string())))
+                        .message_id(message_id.as_str()),
+                ),
             ),
             cancellation,
         )
@@ -667,20 +1271,33 @@ impl AcpConnectionContext {
     async fn prompt(
         self: &Arc<Self>,
         cx: &ConnectionTo<Client>,
-        request: PromptRequest,
+        session_id: String,
         prompt: String,
         prompt_lifetime: CancellationToken,
+        operation_guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<PromptResponse, agent_client_protocol::Error> {
-        let session_id = request.session_id.0.to_string();
+        let mut operation_guard = Some(operation_guard);
+        let protocol_session_id = SessionId::new(session_id.clone());
         let config = self.config.read().await.clone();
-        let tool_context_access = match self.sessions.lock().await.get(&session_id) {
-            Some(lease) => lease.access(),
-            None => {
-                self.prompt_states.lock().await.remove(&session_id);
-                return Err(agent_client_protocol::Error::resource_not_found(Some(
-                    session_id.clone(),
-                ))
-                .data("ACP session is no longer owned by this connection"));
+        let (tool_context_access, model) = {
+            let sessions = self.sessions.lock().await;
+            match sessions.get(&session_id) {
+                Some(session) => (
+                    session
+                        .lease
+                        .as_ref()
+                        .expect("a runnable ACP session must own a lease")
+                        .access(),
+                    session.model.clone(),
+                ),
+                None => {
+                    drop(sessions);
+                    self.prompt_states.lock().await.remove(&session_id);
+                    return Err(agent_client_protocol::Error::resource_not_found(Some(
+                        session_id.clone(),
+                    ))
+                    .data("ACP session is no longer owned by this connection"));
+                }
             }
         };
         let run = match self
@@ -689,7 +1306,7 @@ impl AcpConnectionContext {
                 AgentSendMessageRequest {
                     session_id: session_id.clone(),
                     text: prompt,
-                    model: None,
+                    model: Some(model),
                     context_limit: None,
                     mode: Some(config.permission_mode.maple_mode().to_string()),
                     vision_capable: false,
@@ -703,6 +1320,10 @@ impl AcpConnectionContext {
             .await
         {
             Ok(run) => run,
+            Err(_) if prompt_lifetime.is_cancelled() => {
+                self.prompt_states.lock().await.remove(&session_id);
+                return Ok(PromptResponse::new(StopReason::Cancelled));
+            }
             Err(error) if error == AGENT_TOOL_CONTEXT_INACTIVE_ERROR => {
                 self.prompt_states.lock().await.remove(&session_id);
                 self.retire_session(&session_id).await;
@@ -716,8 +1337,18 @@ impl AcpConnectionContext {
                 return Err(internal_acp_error(error));
             }
         };
+        let locked_config_options = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.get_mut(&session_id).and_then(|session| {
+                session.prompted = true;
+                let first_message = session.message_count == 0;
+                session.message_count = session.message_count.saturating_add(1);
+                first_message.then(|| session.config_options())
+            })
+        };
         let mut events = run.events;
         let mut terminal = run.terminal;
+        let usage = run.usage;
         let event_overflowed = run.event_overflowed;
         let Some(run_cancellation) = run.cancellation else {
             prompt_lifetime.cancel();
@@ -757,7 +1388,55 @@ impl AcpConnectionContext {
             let _ = run_cancellation.cancel().await;
         }
 
+        if let Some(config_options) = locked_config_options {
+            match self
+                .send_session_update(
+                    cx,
+                    SessionNotification::new(
+                        protocol_session_id.clone(),
+                        SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(config_options)),
+                    ),
+                    &prompt_lifetime,
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(AcpOutboundSendError::Cancelled) => {
+                    let _ = run_cancellation.cancel().await;
+                    if matches!(
+                        self.prompt_states.lock().await.remove(&session_id),
+                        Some(AcpPromptState::Running { .. })
+                    ) {
+                        self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    return Ok(PromptResponse::new(StopReason::Cancelled));
+                }
+                Err(AcpOutboundSendError::UpdateTooLarge) => {
+                    let _ = run_cancellation.cancel().await;
+                    if matches!(
+                        self.prompt_states.lock().await.remove(&session_id),
+                        Some(AcpPromptState::Running { .. })
+                    ) {
+                        self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    return Err(agent_client_protocol::Error::internal_error()
+                        .data("Maple's locked model selector exceeded the ACP update limit"));
+                }
+                Err(AcpOutboundSendError::Transport(error)) => {
+                    let _ = run_cancellation.cancel().await;
+                    if matches!(
+                        self.prompt_states.lock().await.remove(&session_id),
+                        Some(AcpPromptState::Running { .. })
+                    ) {
+                        self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
         let mut cancel_after_result = false;
+        let mut tool_projection = AcpToolProjection::default();
         let result = loop {
             if event_overflowed.load(Ordering::Acquire) {
                 cancel_after_result = true;
@@ -765,7 +1444,7 @@ impl AcpConnectionContext {
                 match self
                     .send_final_agent_message(
                         cx,
-                        request.session_id.clone(),
+                        protocol_session_id.clone(),
                         "Maple stopped this turn because its bounded ACP event stream overflowed.",
                         &self.lifetime,
                     )
@@ -787,7 +1466,7 @@ impl AcpConnectionContext {
                 match self
                     .send_final_agent_message(
                         cx,
-                        request.session_id.clone(),
+                        protocol_session_id.clone(),
                         "Maple stopped this turn because its bounded ACP event stream overflowed.",
                         &self.lifetime,
                     )
@@ -804,11 +1483,11 @@ impl AcpConnectionContext {
             }
             match event {
                 Some(AgentRunEvent::TimelineItem(item)) => {
-                    if let Some(update) = timeline_update(&item) {
+                    if let Some(update) = timeline_update(&item, &mut tool_projection, false) {
                         match self
                             .send_session_update(
                                 cx,
-                                SessionNotification::new(request.session_id.clone(), update),
+                                SessionNotification::new(protocol_session_id.clone(), update),
                                 &prompt_lifetime,
                             )
                             .await
@@ -819,7 +1498,7 @@ impl AcpConnectionContext {
                                 let _ = run_cancellation.cancel().await;
                                 match self.send_final_agent_message(
                                     cx,
-                                    request.session_id.clone(),
+                                    protocol_session_id.clone(),
                                     "Maple stopped this turn because one ACP update exceeded the 4 MiB transport limit.",
                                     &self.lifetime,
                                 )
@@ -849,7 +1528,7 @@ impl AcpConnectionContext {
                     match self
                         .request_permission_from_caller(
                             cx,
-                            request.session_id.clone(),
+                            protocol_session_id.clone(),
                             permission,
                             &item,
                             &permission_responder,
@@ -868,7 +1547,7 @@ impl AcpConnectionContext {
                             match self
                                 .send_final_agent_message(
                                     cx,
-                                    request.session_id.clone(),
+                                    protocol_session_id.clone(),
                                     "Maple stopped this turn because one ACP permission request exceeded the 4 MiB transport limit.",
                                     &self.lifetime,
                                 )
@@ -896,10 +1575,13 @@ impl AcpConnectionContext {
                             .send_session_update(
                                 cx,
                                 SessionNotification::new(
-                                    request.session_id.clone(),
-                                    SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                                        ContentBlock::Text(TextContent::new(message)),
-                                    )),
+                                    protocol_session_id.clone(),
+                                    SessionUpdate::AgentMessageChunk(
+                                        ContentChunk::new(ContentBlock::Text(TextContent::new(
+                                            message,
+                                        )))
+                                        .message_id(item.id.as_str()),
+                                    ),
                                 ),
                                 &prompt_lifetime,
                             )
@@ -911,7 +1593,7 @@ impl AcpConnectionContext {
                                 let _ = run_cancellation.cancel().await;
                                 match self.send_final_agent_message(
                                     cx,
-                                    request.session_id.clone(),
+                                    protocol_session_id.clone(),
                                     "Maple stopped this turn because one ACP update exceeded the 4 MiB transport limit.",
                                     &self.lifetime,
                                 )
@@ -962,6 +1644,11 @@ impl AcpConnectionContext {
                 }
             }
         };
+        let turn_usage = usage.borrow().as_ref().copied().unwrap_or_default();
+        // ACP defines PromptResponse.usage as usage for this prompt turn. Paseo
+        // stores it as currentTurnUsage, so cumulative session totals would be
+        // double-counted on every later turn.
+        let result = result.map(|response| response.usage(acp_usage(turn_usage)));
         let mut deferred_prompt_cleanup = false;
         if cancel_after_result {
             // Synthetic stream stops settle only after the underlying run has
@@ -982,8 +1669,12 @@ impl AcpConnectionContext {
                 deferred_prompt_cleanup = true;
                 let context = Arc::clone(self);
                 let draining_session_id = session_id.clone();
+                let draining_operation_guard = operation_guard
+                    .take()
+                    .expect("a deferred ACP prompt must retain its session operation fence");
                 let mut tasks = self.background_tasks.lock().await;
                 tasks.spawn(async move {
+                    let _operation_guard = draining_operation_guard;
                     wait_for_retained_terminal(&mut terminal).await;
                     if matches!(
                         context
@@ -1008,6 +1699,7 @@ impl AcpConnectionContext {
         {
             self.stats.active_runs.fetch_sub(1, Ordering::SeqCst);
         }
+        drop(operation_guard);
         result
     }
 
@@ -1015,10 +1707,14 @@ impl AcpConnectionContext {
         &self,
         notification: CancelNotification,
     ) -> Result<(), agent_client_protocol::Error> {
-        let session_id = notification.session_id.0.to_string();
+        let session_id = canonical_session_id(&notification.session_id)?;
+        self.cancel_session(&session_id).await
+    }
+
+    async fn cancel_session(&self, session_id: &str) -> Result<(), agent_client_protocol::Error> {
         let (cancellation, run_cancellation) = {
             let states = self.prompt_states.lock().await;
-            match states.get(&session_id) {
+            match states.get(session_id) {
                 Some(AcpPromptState::Starting { cancellation }) => {
                     (Some(cancellation.clone()), None)
                 }
@@ -1074,32 +1770,80 @@ impl AcpConnectionContext {
                 }
             }
         }
-        let sessions = std::mem::take(&mut *self.sessions.lock().await);
-        let session_count = sessions.len();
         // Revoke every capability synchronously before awaiting registry cleanup.
         // No queued or detached task can launch another credential-bearing tool
         // after this barrier returns.
-        for lease in sessions.values() {
-            lease.revoke();
+        let session_ids = {
+            let sessions = self.sessions.lock().await;
+            for session in sessions.values() {
+                if let Some(lease) = session.lease.as_ref() {
+                    lease.revoke();
+                }
+            }
+            sessions.keys().cloned().collect::<Vec<_>>()
+        };
+        let mut retired_sessions = Vec::with_capacity(session_ids.len());
+        for session_id in session_ids {
+            let operation = self
+                .session_operations
+                .lock()
+                .await
+                .get(&session_id)
+                .cloned();
+            // A prompt marks the session as prompted while holding this gate.
+            // Waiting here closes the admission gap before deciding whether a
+            // newly created empty task may be discarded. At the cleanup
+            // deadline we preserve the durable row rather than risk deleting
+            // work whose admission is still settling.
+            let operation_drained = match operation {
+                Some(operation) => {
+                    tokio::time::timeout_at(deadline, Arc::clone(&operation.gate).lock_owned())
+                        .await
+                        .is_ok()
+                }
+                None => true,
+            };
+            let session = self.sessions.lock().await.remove(&session_id);
+            if let Some(session) = session {
+                let discard = operation_drained && session.created_here && !session.prompted;
+                retired_sessions.push((session_id, session, discard));
+                self.stats.active_sessions.fetch_sub(1, Ordering::SeqCst);
+            }
         }
-        self.stats
-            .active_sessions
-            .fetch_sub(session_count, Ordering::SeqCst);
-        let mut tasks = self.background_tasks.lock().await;
+        // Take ownership of the current task set before awaiting it. A prompt
+        // that is itself in this set may need to publish a retained drain task;
+        // leaving an empty shared set lets that path proceed without a mutex
+        // self-deadlock. Newly published tasks are collected on the next pass.
+        let mut tasks = {
+            let mut shared = self.background_tasks.lock().await;
+            std::mem::take(&mut *shared)
+        };
         for run_cancellation in running_cancellations {
             tasks.spawn(async move {
                 let _ = run_cancellation.cancel().await;
             });
         }
-        for lease in sessions.into_values() {
+        for (_session_id, mut session, discard) in retired_sessions {
             tasks.spawn(async move {
-                lease.release().await;
+                if let Some(lease) = session.lease.take() {
+                    if discard {
+                        lease.discard_created_if_untouched().await;
+                    } else {
+                        lease.release().await;
+                    }
+                }
             });
         }
-        loop {
+        'drain: loop {
             match tokio::time::timeout_at(deadline, tasks.join_next()).await {
                 Ok(Some(_)) => {}
-                Ok(None) => break,
+                Ok(None) => {
+                    let mut shared = self.background_tasks.lock().await;
+                    if shared.is_empty() {
+                        break 'drain;
+                    }
+                    tasks = std::mem::take(&mut *shared);
+                }
                 Err(_) => {
                     // Session creation and the pre-run prompt path both cross
                     // persistent core state before returning an ID. Aborting
@@ -1107,11 +1851,13 @@ impl AcpConnectionContext {
                     // their existing closed checks and rollback/cancel paths
                     // while keeping connection shutdown bounded.
                     tasks.detach_all();
-                    break;
+                    self.background_tasks.lock().await.detach_all();
+                    break 'drain;
                 }
             }
         }
-        drop(tasks);
+        self.session_operations.lock().await.clear();
+        self.closing_sessions.lock().await.clear();
     }
 }
 
@@ -1144,12 +1890,20 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                 .await
                 .if_request(
                     |_request: InitializeRequest, responder: Responder<InitializeResponse>| async {
-                        let capabilities = AgentCapabilities::new().prompt_capabilities(
-                            PromptCapabilities::new()
-                                .image(false)
-                                .audio(false)
-                                .embedded_context(false),
-                        );
+                        let capabilities = AgentCapabilities::new()
+                            .load_session(true)
+                            .prompt_capabilities(
+                                PromptCapabilities::new()
+                                    .image(false)
+                                    .audio(false)
+                                    .embedded_context(false),
+                            )
+                            .mcp_capabilities(McpCapabilities::new().http(true))
+                            .session_capabilities(
+                                SessionCapabilities::new()
+                                    .list(SessionListCapabilities::new())
+                                    .close(SessionCloseCapabilities::new()),
+                            );
                         responder.respond(
                             InitializeResponse::new(
                                 agent_client_protocol::schema::ProtocolVersion::V1,
@@ -1184,8 +1938,61 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                 .if_request({
                     let context = Arc::clone(&context);
                     let cx = cx.clone();
+                    |request: LoadSessionRequest, responder: Responder<LoadSessionResponse>| async move {
+                        let task_context = Arc::clone(&context);
+                        let task_cx = cx.clone();
+                        let mut tasks = context.background_tasks.lock().await;
+                        while tasks.try_join_next().is_some() {}
+                        if context.closed.load(Ordering::SeqCst) {
+                            responder.respond_with_error(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("The Maple ACP connection is closing"),
+                            )?;
+                            return Ok(());
+                        }
+                        tasks.spawn(async move {
+                            let _ = responder.respond_with_result(
+                                task_context.load_session(&task_cx, request).await,
+                            );
+                        });
+                        Ok(())
+                    }
+                })
+                .await
+                .if_request({
+                    let context = Arc::clone(&context);
+                    |request: ListSessionsRequest, responder: Responder<ListSessionsResponse>| async move {
+                        responder.respond_with_result(context.list_sessions(request).await)
+                    }
+                })
+                .await
+                .if_request({
+                    let context = Arc::clone(&context);
+                    |request: CloseSessionRequest, responder: Responder<CloseSessionResponse>| async move {
+                        responder.respond_with_result(context.close_session(request).await)
+                    }
+                })
+                .await
+                .if_request({
+                    let context = Arc::clone(&context);
+                    |request: SetSessionConfigOptionRequest, responder: Responder<SetSessionConfigOptionResponse>| async move {
+                        responder.respond_with_result(context.set_config_option(request).await)
+                    }
+                })
+                .await
+                .if_request({
+                    let context = Arc::clone(&context);
+                    |request: SetSessionModeRequest, responder: Responder<SetSessionModeResponse>| async move {
+                        responder.respond_with_result(context.set_mode(request).await)
+                    }
+                })
+                .await
+                .if_request({
+                    let context = Arc::clone(&context);
+                    let cx = cx.clone();
                     |request: PromptRequest, responder: Responder<PromptResponse>| async move {
-                        let (prompt, prompt_lifetime) = match context.begin_prompt(&request).await {
+                        let (prompt, session_id, prompt_lifetime, operation_guard) =
+                            match context.begin_prompt(&request).await {
                             Ok(prepared) => prepared,
                             Err(error) => {
                                 responder.respond_with_error(error)?;
@@ -1197,9 +2004,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                         let mut tasks = context.background_tasks.lock().await;
                         while tasks.try_join_next().is_some() {}
                         if context.closed.load(Ordering::SeqCst) {
-                            context.prompt_states.lock().await.remove(
-                                &request.session_id.0.to_string(),
-                            );
+                            context.prompt_states.lock().await.remove(&session_id);
                             responder.respond_with_error(
                                 agent_client_protocol::Error::internal_error()
                                     .data("The Maple ACP connection is closing"),
@@ -1209,7 +2014,13 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                         tasks.spawn(async move {
                             let _ = responder.respond_with_result(
                                 prompt_context
-                                    .prompt(&prompt_cx, request, prompt, prompt_lifetime)
+                                    .prompt(
+                                        &prompt_cx,
+                                        session_id,
+                                        prompt,
+                                        prompt_lifetime,
+                                        operation_guard,
+                                    )
                                     .await,
                             );
                         });
@@ -1306,6 +2117,22 @@ pub async fn agent_acp_start(
         .state::<MapleAgentService>()
         .ensure_accepting_new_work()?;
     start_service_locked(&app_handle, &user_id).await?;
+    status(&app_handle, &user_id).await
+}
+
+#[tauri::command]
+pub async fn agent_acp_restore_enabled(
+    app_handle: AppHandle,
+    lifecycle: tauri::State<'_, AgentHostLifecycle>,
+    user_id: String,
+) -> Result<AgentAcpStatus, String> {
+    let _guard = lifecycle.lock().await;
+    if load_config(&app_handle, &user_id)?.enabled {
+        app_handle
+            .state::<MapleAgentService>()
+            .ensure_accepting_new_work()?;
+        start_service_locked(&app_handle, &user_id).await?;
+    }
     status(&app_handle, &user_id).await
 }
 
@@ -1806,6 +2633,9 @@ fn normalize_config(mut config: AgentAcpConfig) -> Result<AgentAcpConfig, String
 }
 
 fn ensure_allowed_project_root(cwd: &Path, allowed_roots: &[String]) -> Result<PathBuf, String> {
+    if !cwd.is_absolute() {
+        return Err("ACP session cwd must be an absolute path".to_string());
+    }
     let cwd = cwd
         .canonicalize()
         .map_err(|error| format!("Failed to resolve ACP session cwd: {error}"))?;
@@ -1822,60 +2652,102 @@ fn ensure_allowed_project_root(cwd: &Path, allowed_roots: &[String]) -> Result<P
     Err("ACP session cwd is outside the configured project roots".to_string())
 }
 
-fn merge_mcp_environment(
-    environment: &mut HashMap<String, String>,
+fn prepare_session_mcp(
+    bridge_environment: &HashMap<String, String>,
     servers: &[McpServer],
-) -> Result<(), agent_client_protocol::Error> {
+) -> Result<(HashMap<String, String>, Vec<AgentTransientMcpServer>), agent_client_protocol::Error> {
+    let mut environment = bridge_environment.clone();
+    let mut transient = Vec::new();
     for server in servers {
-        let McpServer::Stdio(server) = server else {
-            return Err(agent_client_protocol::Error::invalid_params()
-                .data("Maple ACP currently supports only stdio MCP session definitions"));
-        };
-        let command = Path::new(&server.command);
-        let is_buzz_dev_mcp = server.name == "buzz-dev-mcp"
-            && command
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name == "buzz-dev-mcp" || name == "buzz-dev-mcp.exe")
-            && server.args.is_empty();
-        if !is_buzz_dev_mcp || !command.is_absolute() {
-            return Err(agent_client_protocol::Error::invalid_params().data(
-                "Maple ACP currently adapts only Buzz's absolute buzz-dev-mcp stdio definition",
-            ));
-        }
-        let metadata = std::fs::metadata(command).map_err(|_| {
-            agent_client_protocol::Error::invalid_params()
-                .data("Buzz buzz-dev-mcp command does not exist")
-        })?;
-        if !metadata.is_file() {
-            return Err(agent_client_protocol::Error::invalid_params()
-                .data("Buzz buzz-dev-mcp command is not a file"));
-        }
-        #[cfg(unix)]
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(agent_client_protocol::Error::invalid_params()
-                .data("Buzz buzz-dev-mcp command is not executable"));
-        }
-        // Maple already exposes a tightly controlled shell tool. For Buzz's
-        // dev MCP, adapt the exact child environment into that per-session
-        // shell rather than launching a second general-purpose shell server.
-        for variable in &server.env {
-            if !ALLOWED_BRIDGE_ENV.contains(&variable.name.as_str()) {
-                continue;
-            }
-            if let Some(existing) = environment.get(&variable.name) {
-                if existing != &variable.value {
-                    return Err(agent_client_protocol::Error::invalid_params().data(format!(
-                        "Conflicting ACP environment value for {}",
-                        variable.name
-                    )));
+        match server {
+            McpServer::Stdio(server) => {
+                let command = server.command.as_path();
+                let is_buzz_dev_mcp = server.name == "buzz-dev-mcp"
+                    && command
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name == "buzz-dev-mcp" || name == "buzz-dev-mcp.exe")
+                    && server.args.is_empty();
+                if is_buzz_dev_mcp {
+                    if !command.is_absolute() {
+                        return Err(agent_client_protocol::Error::invalid_params()
+                            .data("Buzz buzz-dev-mcp command must be absolute"));
+                    }
+                    let metadata = std::fs::metadata(command).map_err(|_| {
+                        agent_client_protocol::Error::invalid_params()
+                            .data("Buzz buzz-dev-mcp command does not exist")
+                    })?;
+                    if !metadata.is_file() {
+                        return Err(agent_client_protocol::Error::invalid_params()
+                            .data("Buzz buzz-dev-mcp command is not a file"));
+                    }
+                    #[cfg(unix)]
+                    if metadata.permissions().mode() & 0o111 == 0 {
+                        return Err(agent_client_protocol::Error::invalid_params()
+                            .data("Buzz buzz-dev-mcp command is not executable"));
+                    }
+                    // Preserve the historical Buzz adapter: its exact MCP
+                    // definition contributes only the allowlisted shell env.
+                    for variable in &server.env {
+                        if !ALLOWED_BRIDGE_ENV.contains(&variable.name.as_str()) {
+                            continue;
+                        }
+                        if let Some(existing) = environment.get(&variable.name) {
+                            if existing != &variable.value {
+                                return Err(agent_client_protocol::Error::invalid_params().data(
+                                    format!(
+                                        "Conflicting ACP environment value for {}",
+                                        variable.name
+                                    ),
+                                ));
+                            }
+                        } else {
+                            environment.insert(variable.name.clone(), variable.value.clone());
+                        }
+                    }
+                    continue;
                 }
-            } else {
-                environment.insert(variable.name.clone(), variable.value.clone());
+                return Err(agent_client_protocol::Error::invalid_params().data(format!(
+                    "Transient stdio MCP server '{}' is disabled because it would execute caller-supplied native code without a Maple approval boundary",
+                    server.name
+                )));
+            }
+            McpServer::Http(server) => {
+                let mut headers = Vec::new();
+                let mut header_names = HashSet::new();
+                for header in &server.headers {
+                    if !header_names.insert(header.name.to_ascii_lowercase()) {
+                        return Err(agent_client_protocol::Error::invalid_params().data(format!(
+                            "Duplicate HTTP header in MCP server '{}'",
+                            server.name
+                        )));
+                    }
+                    headers.push(AgentMcpKeyValue {
+                        key: header.name.clone(),
+                        value: header.value.clone(),
+                    });
+                }
+                transient.push(AgentTransientMcpServer {
+                    name: server.name.clone(),
+                    description: "ACP session MCP server".to_string(),
+                    timeout_seconds: ACP_TRANSIENT_MCP_TIMEOUT_SECONDS,
+                    transport: AgentTransientMcpTransport::StreamableHttp {
+                        url: server.url.clone(),
+                        headers,
+                    },
+                });
+            }
+            McpServer::Sse(_) => {
+                return Err(agent_client_protocol::Error::invalid_params()
+                    .data("Maple ACP does not support legacy SSE MCP servers"));
+            }
+            _ => {
+                return Err(agent_client_protocol::Error::invalid_params()
+                    .data("Maple ACP does not support this MCP transport"));
             }
         }
     }
-    Ok(())
+    Ok((environment, transient))
 }
 
 fn filter_bridge_environment(environment: HashMap<String, String>) -> HashMap<String, String> {
@@ -1926,15 +2798,113 @@ fn has_buzz_credentials(environment: &HashMap<String, String>) -> bool {
             .is_some_and(|value| !value.is_empty())
 }
 
-fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol::Error> {
-    let text = blocks
+fn canonical_session_id(session_id: &SessionId) -> Result<String, agent_client_protocol::Error> {
+    canonical_session_id_text(&session_id.0)
+}
+
+fn canonical_session_id_text(session_id: &str) -> Result<String, agent_client_protocol::Error> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err(agent_client_protocol::Error::invalid_params()
+            .data("Maple ACP requires a non-empty session ID"));
+    }
+    Ok(session_id.to_string())
+}
+
+fn is_acp_loadable_session_mode(mode: &str) -> bool {
+    mode == ACP_LOADABLE_GOOSE_MODE
+}
+
+fn ensure_acp_session_is_loadable<'a>(
+    sessions: &'a [AgentSessionSummary],
+    session_id: &str,
+) -> Result<&'a AgentSessionSummary, String> {
+    let session = sessions
         .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| {
+            "The requested Maple Agent task does not exist in the supplied project directory"
+                .to_string()
+        })?;
+    if !is_acp_loadable_session_mode(&session.mode) {
+        return Err(
+            "Maple ACP can load only Read only Agent tasks; this task remains available in Maple Desktop"
+                .to_string(),
+        );
+    }
+    Ok(session)
+}
+
+fn acp_session_modes() -> SessionModeState {
+    SessionModeState::new(
+        "interactive",
+        vec![SessionMode::new("interactive", "Interactive")
+            .description("Maple asks the ACP caller to approve sensitive tools")],
+    )
+}
+
+fn acp_config_options(model: &str, available_models: &[String]) -> Vec<SessionConfigOption> {
+    let model_options = available_models
+        .iter()
+        .map(|model| SessionConfigSelectOption::new(model.clone(), model.clone()))
+        .collect::<Vec<_>>();
+    vec![
+        SessionConfigOption::select("model", "Model", model.to_string(), model_options)
+            .category(SessionConfigOptionCategory::Model),
+        SessionConfigOption::select(
+            "mode",
+            "Mode",
+            "interactive",
+            vec![SessionConfigSelectOption::new("interactive", "Interactive")],
+        )
+        .category(SessionConfigOptionCategory::Mode),
+    ]
+}
+
+fn acp_session_config_options(
+    model: &str,
+    available_models: &[String],
+    message_count: usize,
+) -> Vec<SessionConfigOption> {
+    if message_count == 0 {
+        acp_config_options(model, available_models)
+    } else {
+        let locked_models = [model.to_string()];
+        acp_config_options(model, &locked_models)
+    }
+}
+
+fn acp_usage(usage: AgentRunUsage) -> Usage {
+    Usage::new(usage.total_tokens, usage.input_tokens, usage.output_tokens)
+        .cached_read_tokens(usage.cached_read_tokens)
+        .cached_write_tokens(usage.cached_write_tokens)
+}
+
+fn outbound_error(error: AcpOutboundSendError) -> agent_client_protocol::Error {
+    match error {
+        AcpOutboundSendError::Transport(error) => error,
+        AcpOutboundSendError::UpdateTooLarge => agent_client_protocol::Error::internal_error()
+            .data("A Maple ACP history update exceeded the transport limit"),
+        AcpOutboundSendError::Cancelled => agent_client_protocol::Error::internal_error()
+            .data("The Maple ACP connection closed while replaying history"),
+    }
+}
+
+fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol::Error> {
+    let mut parts = Vec::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text(text) => parts.push(text.text.clone()),
+            ContentBlock::ResourceLink(link) => {
+                parts.push(format!("[Resource: {}]\n{}", link.name, link.uri));
+            }
+            _ => {
+                return Err(agent_client_protocol::Error::invalid_params()
+                    .data("Maple ACP currently accepts text and resource-link prompt blocks"));
+            }
+        }
+    }
+    let text = parts.join("\n\n");
     if text.trim().is_empty() {
         return Err(agent_client_protocol::Error::invalid_params()
             .data("Maple ACP requires at least one text prompt block"));
@@ -1965,7 +2935,8 @@ fn acp_permission_tool_call(
 fn acp_tool_kind(tool_name: &str) -> ToolKind {
     match tool_name.rsplit("__").next().unwrap_or(tool_name) {
         "shell" | "computer" => ToolKind::Execute,
-        "text_editor" => ToolKind::Edit,
+        "read" | "read_image" => ToolKind::Read,
+        "edit" | "write" | "text_editor" => ToolKind::Edit,
         "search" | "web_search" => ToolKind::Search,
         "open_url" => ToolKind::Fetch,
         _ => ToolKind::Other,
@@ -2027,18 +2998,196 @@ where
     });
 }
 
-fn timeline_update(item: &AgentTimelineItem) -> Option<SessionUpdate> {
-    let text = item.text.as_deref()?.to_string();
+fn timeline_update(
+    item: &AgentTimelineItem,
+    tools: &mut AcpToolProjection,
+    include_user_messages: bool,
+) -> Option<SessionUpdate> {
     match item.item_type.as_str() {
-        "message" if item.role.as_deref() == Some("assistant") => {
-            Some(SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                ContentBlock::Text(TextContent::new(text)),
-            )))
+        "message" if include_user_messages && item.role.as_deref() == Some("user") => {
+            item.text.as_ref().map(|text| {
+                SessionUpdate::UserMessageChunk(
+                    ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
+                        .message_id(item.id.as_str()),
+                )
+            })
         }
-        "thinking" => Some(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-            ContentBlock::Text(TextContent::new(text)),
-        ))),
+        "message" if item.role.as_deref() == Some("assistant") => item.text.as_ref().map(|text| {
+            SessionUpdate::AgentMessageChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
+                    .message_id(item.id.as_str()),
+            )
+        }),
+        "thinking" => item.text.as_ref().map(|text| {
+            SessionUpdate::AgentThoughtChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
+                    .message_id(item.id.as_str()),
+            )
+        }),
+        "tool" => Some(acp_tool_update(item, tools)),
         _ => None,
+    }
+}
+
+fn acp_tool_update(item: &AgentTimelineItem, tools: &mut AcpToolProjection) -> SessionUpdate {
+    let status = match item.status.as_deref() {
+        Some("completed") => ToolCallStatus::Completed,
+        Some("failed" | "cancelled") => ToolCallStatus::Failed,
+        Some("pending") => ToolCallStatus::Pending,
+        _ => ToolCallStatus::InProgress,
+    };
+    let kind = timeline_tool_kind(item);
+    let content = timeline_tool_text(item).map(|text| {
+        vec![ToolCallContent::from(ContentBlock::Text(TextContent::new(
+            text,
+        )))]
+    });
+    let locations = timeline_tool_locations(item);
+    let raw_input = item.input.as_ref().map(bounded_raw_json);
+    let raw_output = timeline_tool_raw_output(item);
+    let title = item
+        .title
+        .clone()
+        .unwrap_or_else(|| "Maple tool".to_string());
+    if tools.seen.insert(item.id.clone()) {
+        let mut call = ToolCall::new(item.id.clone(), title)
+            .kind(kind)
+            .status(status);
+        if let Some(content) = content {
+            call = call.content(content);
+        }
+        if !locations.is_empty() {
+            call = call.locations(locations);
+        }
+        if let Some(raw_input) = raw_input {
+            call = call.raw_input(raw_input);
+        }
+        if let Some(raw_output) = raw_output {
+            call = call.raw_output(raw_output);
+        }
+        SessionUpdate::ToolCall(call)
+    } else {
+        let mut fields = ToolCallUpdateFields::new()
+            .title(title)
+            .kind(kind)
+            .status(status);
+        if let Some(content) = content {
+            fields = fields.content(content);
+        }
+        if !locations.is_empty() {
+            fields = fields.locations(locations);
+        }
+        if let Some(raw_input) = raw_input {
+            fields = fields.raw_input(raw_input);
+        }
+        if let Some(raw_output) = raw_output {
+            fields = fields.raw_output(raw_output);
+        }
+        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(item.id.clone(), fields))
+    }
+}
+
+fn timeline_tool_kind(item: &AgentTimelineItem) -> ToolKind {
+    let title = item
+        .title
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let input = item.input.as_ref();
+    if input.and_then(|value| value.get("command")).is_some() || title.contains("terminal") {
+        ToolKind::Execute
+    } else if input.and_then(|value| value.get("url")).is_some()
+        || title.contains("web")
+        || title.contains("url")
+    {
+        ToolKind::Fetch
+    } else if input.and_then(|value| value.get("query")).is_some()
+        || input.and_then(|value| value.get("pattern")).is_some()
+        || title.contains("search")
+        || title.contains("find")
+    {
+        ToolKind::Search
+    } else if title.contains("read") {
+        ToolKind::Read
+    } else if input.and_then(tool_path).is_some()
+        || title.contains("edit")
+        || title.contains("write")
+    {
+        ToolKind::Edit
+    } else {
+        ToolKind::Other
+    }
+}
+
+fn timeline_tool_text(item: &AgentTimelineItem) -> Option<String> {
+    let output_text = || {
+        item.output
+            .as_ref()
+            .and_then(|output| output.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let text = if matches!(
+        item.status.as_deref(),
+        Some("completed" | "failed" | "cancelled")
+    ) {
+        // Coalesced replay items retain the original request summary in
+        // item.text while the terminal tool result lives in output.text.
+        // Paseo renders ACP text content before rawOutput, so preferring the
+        // summary here would hide the actual imported result.
+        output_text().or_else(|| item.text.clone())
+    } else {
+        item.text.clone().or_else(output_text)
+    };
+    text.map(|text| text.chars().take(16_000).collect())
+}
+
+fn tool_path(value: &serde_json::Value) -> Option<&str> {
+    ["path", "file_path", "file"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
+}
+
+fn timeline_tool_locations(item: &AgentTimelineItem) -> Vec<ToolCallLocation> {
+    item.input
+        .as_ref()
+        .and_then(tool_path)
+        .filter(|path| Path::new(path).is_absolute())
+        .map(|path| vec![ToolCallLocation::new(PathBuf::from(path))])
+        .unwrap_or_default()
+}
+
+fn timeline_tool_raw_output(item: &AgentTimelineItem) -> Option<serde_json::Value> {
+    let output = item.output.as_ref()?;
+    let failure_message = matches!(item.status.as_deref(), Some("failed" | "cancelled"))
+        .then(|| {
+            output
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(|text| text.chars().take(MAX_ACP_ERROR_CHARS).collect::<String>())
+        })
+        .flatten()
+        .filter(|message| !message.trim().is_empty());
+    let mut bounded = bounded_raw_json(output);
+    if let (Some(message), serde_json::Value::Object(fields)) = (failure_message, &mut bounded) {
+        // Paseo derives the failure badge from rawOutput.message/error. Maple's
+        // persisted tool shape uses output.text, so provide a bounded alias
+        // without changing the canonical result or exposing any extra data.
+        if !fields.contains_key("message") && !fields.contains_key("error") {
+            fields.insert("message".to_string(), serde_json::Value::String(message));
+        }
+    }
+    Some(bounded)
+}
+
+fn bounded_raw_json(value: &serde_json::Value) -> serde_json::Value {
+    match serde_json::to_vec(value) {
+        Ok(encoded) if encoded.len() <= 64 * 1024 => value.clone(),
+        Ok(encoded) => serde_json::json!({
+            "truncated": true,
+            "encodedBytes": encoded.len(),
+        }),
+        Err(_) => serde_json::json!({ "unavailable": true }),
     }
 }
 
@@ -2196,14 +3345,242 @@ async fn run_acp_connector_async() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::SelectedPermissionOutcome;
+    use agent_client_protocol::schema::v1::{McpServerStdio, SelectedPermissionOutcome};
 
     #[test]
     fn default_config_is_disabled_and_caller_mediated() {
         let config = AgentAcpConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.permission_mode, AgentAcpPermissionMode::ReadOnly);
-        assert_eq!(config.max_connections, 1);
+        assert_eq!(config.max_connections, 8);
+    }
+
+    #[test]
+    fn explicit_connection_limits_remain_configurable_below_the_default() {
+        let one = normalize_config(AgentAcpConfig {
+            max_connections: 1,
+            ..AgentAcpConfig::default()
+        })
+        .unwrap();
+        assert_eq!(one.max_connections, 1);
+
+        let capped = normalize_config(AgentAcpConfig {
+            max_connections: usize::MAX,
+            ..AgentAcpConfig::default()
+        })
+        .unwrap();
+        assert_eq!(capped.max_connections, MAX_ACP_CONNECTIONS);
+    }
+
+    #[test]
+    fn session_ids_are_canonicalized_and_empty_ids_are_rejected() {
+        assert_eq!(
+            canonical_session_id(&SessionId::new("  task-123  ")).unwrap(),
+            "task-123"
+        );
+        assert!(canonical_session_id(&SessionId::new(" \n\t ")).is_err());
+    }
+
+    fn session_summary_with_mode(id: &str, mode: &str) -> AgentSessionSummary {
+        AgentSessionSummary {
+            id: id.to_string(),
+            title: id.to_string(),
+            project_root: "/tmp/project".to_string(),
+            created_ms: 1,
+            updated_ms: 1,
+            message_count: 0,
+            model: Some("model".to_string()),
+            mode: mode.to_string(),
+        }
+    }
+
+    #[test]
+    fn session_list_loadability_is_fail_closed_to_read_only_tasks() {
+        let sessions = [
+            session_summary_with_mode("read-only", "smart_approve"),
+            session_summary_with_mode("allow-all", "auto"),
+            session_summary_with_mode("approval", "approve"),
+            session_summary_with_mode("chat", "chat"),
+            session_summary_with_mode("unknown", "future_mode"),
+        ];
+
+        let visible = sessions
+            .iter()
+            .filter(|session| is_acp_loadable_session_mode(&session.mode))
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible, vec!["read-only"]);
+    }
+
+    #[test]
+    fn session_load_preflight_rejects_non_read_only_and_missing_tasks() {
+        let sessions = [
+            session_summary_with_mode("read-only", "smart_approve"),
+            session_summary_with_mode("allow-all", "auto"),
+        ];
+
+        assert_eq!(
+            ensure_acp_session_is_loadable(&sessions, "read-only")
+                .unwrap()
+                .id,
+            "read-only"
+        );
+        assert!(ensure_acp_session_is_loadable(&sessions, "allow-all")
+            .unwrap_err()
+            .contains("only Read only"));
+        assert!(ensure_acp_session_is_loadable(&sessions, "missing")
+            .unwrap_err()
+            .contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn session_operation_cancellation_keeps_close_behind_the_active_fence() {
+        let connection_lifetime = CancellationToken::new();
+        let operation = AcpSessionOperation::new(&connection_lifetime);
+        let active = Arc::clone(&operation.gate).lock_owned().await;
+        let waiting_gate = Arc::clone(&operation.gate);
+        let waiting = tokio::spawn(async move { waiting_gate.lock_owned().await });
+
+        operation.cancellation.cancel();
+        assert!(operation.cancellation.is_cancelled());
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        drop(active);
+        let closing = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(closing);
+    }
+
+    #[test]
+    fn timed_out_close_keeps_its_resurrection_fence() {
+        assert!(close_registration_may_be_released(true, true, true));
+        assert!(!close_registration_may_be_released(false, true, true));
+        assert!(!close_registration_may_be_released(true, false, true));
+        assert!(!close_registration_may_be_released(true, true, false));
+    }
+
+    #[test]
+    fn completed_replayed_tool_prefers_result_over_request_summary() {
+        let item = AgentTimelineItem {
+            id: "tool-1".to_string(),
+            item_type: "tool".to_string(),
+            role: Some("assistant".to_string()),
+            title: Some("Terminal".to_string()),
+            text: Some("listing project root".to_string()),
+            status: Some("completed".to_string()),
+            input: Some(serde_json::json!({ "command": "pwd" })),
+            output: Some(serde_json::json!({ "text": "/tmp/project" })),
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let mut projection = AcpToolProjection::default();
+        let encoded = serde_json::to_value(acp_tool_update(&item, &mut projection)).unwrap();
+
+        assert_eq!(timeline_tool_text(&item).as_deref(), Some("/tmp/project"));
+        assert_eq!(encoded["content"][0]["content"]["text"], "/tmp/project");
+        assert_eq!(encoded["rawInput"]["command"], "pwd");
+    }
+
+    #[test]
+    fn failed_replayed_tool_preserves_result_and_failure_badge_message() {
+        let mut projection = AcpToolProjection::default();
+        let pending = AgentTimelineItem {
+            id: "tool-1".to_string(),
+            item_type: "tool".to_string(),
+            role: Some("assistant".to_string()),
+            title: Some("Terminal".to_string()),
+            text: Some("running command".to_string()),
+            status: Some("pending".to_string()),
+            input: Some(serde_json::json!({ "command": "false" })),
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let _ = acp_tool_update(&pending, &mut projection);
+        let failed = AgentTimelineItem {
+            text: Some("running command".to_string()),
+            status: Some("failed".to_string()),
+            output: Some(serde_json::json!({
+                "text": "command exited with status 1",
+                "isError": true,
+            })),
+            ..pending
+        };
+        let encoded = serde_json::to_value(acp_tool_update(&failed, &mut projection)).unwrap();
+
+        assert_eq!(encoded["sessionUpdate"], "tool_call_update");
+        assert_eq!(
+            encoded["content"][0]["content"]["text"],
+            "command exited with status 1"
+        );
+        assert_eq!(
+            encoded["rawOutput"]["message"],
+            "command exited with status 1"
+        );
+    }
+
+    #[test]
+    fn prompt_usage_serializes_one_turn_without_session_accumulation() {
+        let turn = AgentRunUsage {
+            input_tokens: 10,
+            output_tokens: 4,
+            total_tokens: 14,
+            cached_read_tokens: 3,
+            cached_write_tokens: 1,
+        };
+        let encoded = serde_json::to_value(acp_usage(turn)).unwrap();
+
+        assert_eq!(encoded["inputTokens"], 10);
+        assert_eq!(encoded["outputTokens"], 4);
+        assert_eq!(encoded["totalTokens"], 14);
+        assert_eq!(encoded["cachedReadTokens"], 3);
+        assert_eq!(encoded["cachedWriteTokens"], 1);
+    }
+
+    #[test]
+    fn model_selector_locks_to_the_persisted_model_after_first_message() {
+        let models = vec!["model-a".to_string(), "model-b".to_string()];
+        let fresh = serde_json::to_value(acp_session_config_options("model-b", &models, 0))
+            .expect("fresh model options should serialize");
+        let locked = serde_json::to_value(acp_session_config_options("model-b", &models, 1))
+            .expect("locked model options should serialize");
+
+        assert_eq!(fresh[0]["currentValue"], "model-b");
+        assert_eq!(fresh[0]["options"].as_array().unwrap().len(), 2);
+        assert_eq!(locked[0]["currentValue"], "model-b");
+        assert_eq!(locked[0]["options"].as_array().unwrap().len(), 1);
+        assert_eq!(locked[0]["options"][0]["value"], "model-b");
+    }
+
+    #[test]
+    fn streamed_message_chunks_keep_the_timeline_item_id() {
+        let mut projection = AcpToolProjection::default();
+        for (role, item_type, expected_variant) in [
+            (Some("user"), "message", "user_message_chunk"),
+            (Some("assistant"), "message", "agent_message_chunk"),
+            (None, "thinking", "agent_thought_chunk"),
+        ] {
+            let item = AgentTimelineItem {
+                id: format!("stable-{expected_variant}"),
+                item_type: item_type.to_string(),
+                role: role.map(str::to_string),
+                title: None,
+                text: Some("delta".to_string()),
+                status: None,
+                input: None,
+                output: None,
+                created_ms: 1,
+                merge: "append".to_string(),
+            };
+            let update = timeline_update(&item, &mut projection, true).unwrap();
+            let encoded = serde_json::to_value(update).unwrap();
+            assert_eq!(encoded["sessionUpdate"], expected_variant);
+            assert_eq!(encoded["messageId"], item.id);
+        }
     }
 
     #[test]
@@ -2381,6 +3758,11 @@ mod tests {
     }
 
     #[test]
+    fn allowed_project_root_rejects_relative_paths() {
+        assert!(ensure_allowed_project_root(Path::new("relative/project"), &[]).is_err());
+    }
+
+    #[test]
     fn bridge_environment_is_strictly_allowlisted() {
         let filtered = filter_bridge_environment(HashMap::from([
             (
@@ -2391,6 +3773,16 @@ mod tests {
         ]));
         assert_eq!(filtered.len(), 1);
         assert!(filtered.contains_key("BUZZ_RELAY_URL"));
+    }
+
+    #[test]
+    fn arbitrary_stdio_mcp_is_rejected_before_any_process_can_start() {
+        let server = McpServer::Stdio(
+            McpServerStdio::new("untrusted", "/bin/sh")
+                .args(vec!["-c".to_string(), "exit 0".to_string()]),
+        );
+
+        assert!(prepare_session_mcp(&HashMap::new(), &[server]).is_err());
     }
 
     #[test]
