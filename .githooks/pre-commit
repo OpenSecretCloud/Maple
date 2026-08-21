@@ -19,19 +19,19 @@ if git diff --cached --name-only | grep -q "^rust/"; then
     fi
     
     echo "🔧 Running clippy..."
-    if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    if ! cargo clippy --locked --all-targets --all-features -- -D warnings; then
         echo "❌ Clippy check failed. Fix the warnings above."
         exit 1
     fi
     
     echo "✅ Running cargo check..."
-    if ! cargo check --all-features; then
+    if ! cargo check --locked --all-features; then
         echo "❌ Cargo check failed."
         exit 1
     fi
     
     echo "🧪 Running tests..."
-    if ! cargo test --all-features; then
+    if ! cargo test --locked --all-features; then
         echo "❌ Tests failed."
         exit 1
     fi
