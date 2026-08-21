@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 print_source_provenance
+verify_rust_lockfile
 
 install_frontend_deps
 configure_sccache
@@ -48,7 +49,7 @@ case "$(host_os)" in
 
     release_config="$(linux_tauri_release_config)"
     run_with_nix_usr_bin pkg-config --modversion glib-2.0
-    (cd "${TAURI_DIR}" && cargo build --bins --features tauri/custom-protocol --release)
+    (cd "${TAURI_DIR}" && cargo build --locked --bins --features tauri/custom-protocol --release)
     sanitize_linux_target_release_executable
     run_with_nix_usr_bin bun tauri build --verbose --config "${release_config}"
     restore_linux_runtime_library_path

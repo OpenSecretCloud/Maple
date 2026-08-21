@@ -53,7 +53,7 @@ jobs:
             ${{ runner.os }}-sccache-
 
       - name: Build Tauri App (macOS, signed)
-        run: nix develop .#ci -c ./scripts/ci/desktop-release.sh
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/desktop-release.sh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -65,11 +65,11 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#ci -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#ci -c sccache --show-stats
 
       - name: Collect macOS release checksums
         run: |
-          nix develop .#ci -c ./scripts/ci/attestation-manifest.sh \
+          nix develop --no-update-lock-file .#ci -c ./scripts/ci/attestation-manifest.sh \
             desktop-macos-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-macos-final.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-macos-*.sha256
@@ -131,7 +131,7 @@ jobs:
           fi
 
       - name: Build Tauri App (Linux, signed updater)
-        run: nix develop .#desktop-linux -c ./scripts/ci/desktop-release.sh
+        run: nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/desktop-release.sh
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           NO_STRIP: "true"
@@ -140,11 +140,11 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#desktop-linux -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#desktop-linux -c sccache --show-stats
 
       - name: Collect Linux release checksums
         run: |
-          nix develop .#desktop-linux -c ./scripts/ci/attestation-manifest.sh \
+          nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/attestation-manifest.sh \
             desktop-linux-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-linux-final.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-linux-*.sha256
@@ -194,7 +194,7 @@ jobs:
           path: artifacts
 
       - name: Verify Linux desktop artifact reproducibility proofs
-        run: nix develop .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
+        run: nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
 
   verify-macos-desktop-artifacts:
     needs:
@@ -219,7 +219,7 @@ jobs:
           path: artifacts
 
       - name: Verify macOS desktop artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
 
   build-windows:
     runs-on: windows-2025
@@ -367,7 +367,7 @@ jobs:
           path: artifacts
 
       - name: Verify Windows desktop artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
 
   verify-desktop-artifacts:
     needs:

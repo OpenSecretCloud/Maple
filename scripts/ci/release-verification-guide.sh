@@ -92,7 +92,7 @@ For a broad check of every proof file present in your download:
 
 \`\`\`bash
 MAPLE_VERIFY_ALLOW_PLATFORM_SKIPS=1 \\
-  nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts present
+  nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts present
 \`\`\`
 
 That command verifies portable hashes and skips host-specific checks that cannot run on your current operating system. For stronger platform checks, run the command for your target platform:
@@ -100,27 +100,27 @@ That command verifies portable hashes and skips host-specific checks that cannot
 \`\`\`bash
 # Linux desktop installers: verifies final hashes, Tauri updater signatures,
 # AppImage executable metadata, and .deb executable metadata.
-nix develop .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
+nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
 
 # macOS desktop installers: run on macOS with Xcode selected.
-nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
 
 # Windows desktop installer: verifies final hashes, pinned runtime DLL proofs,
 # canonical app/runtime payload proofs, and the Tauri updater signature for the
 # signed NSIS installer.
-nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
 
 # iOS IPA: run on macOS with Xcode selected.
 MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY=1 \\
-  nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts ios
+  nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts ios
 
 # Android APK/AAB: verifies final hashes, signed-vs-unsigned canonical payloads,
 # and Android signatures when Android SDK tools are available.
 MAPLE_REQUIRE_ANDROID_SIGNATURE_VERIFICATION=1 \\
-  nix develop .#android -c ./scripts/ci/verify-release-artifacts.sh artifacts android
+  nix develop --no-update-lock-file .#android -c ./scripts/ci/verify-release-artifacts.sh artifacts android
 
 # Web archive and Tauri updater metadata.
-nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts web latest-json
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts web latest-json
 \`\`\`
 
 Successful checks print \`verified-...\` lines and exit with status 0. A mismatch exits non-zero and prints the expected and actual digest.

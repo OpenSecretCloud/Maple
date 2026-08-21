@@ -328,8 +328,8 @@ For coordinated changes, make the backend contract secure and backward-compatibl
 Use `$validate-maple` for the complete test and exact-application workflow. During a security review, select focused tests first, then run the repository's CI-equivalent suites before declaring an implementation ready:
 
 ```bash
-nix develop .#ci -c ./scripts/ci/frontend.sh
-nix develop .#ci -c ./scripts/ci/rust.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 ```
 
 Run dependency advisory checks only with available, trusted tooling and without changing lockfiles. Separate advisory presence, production reachability, exploitability, and accepted exceptions. Report when an audit tool or advisory database could not be refreshed.

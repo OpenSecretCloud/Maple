@@ -31,7 +31,7 @@ Do not commit, push, open a PR, merge, tag, publish, or release unless the user 
 Prefer Nix so local tools match CI:
 
 ```bash
-nix develop
+nix develop --no-update-lock-file
 ./setup-hooks.sh
 just install
 ```
@@ -46,7 +46,7 @@ test -e frontend/.env.local || cp frontend/.env.example frontend/.env.local
 
 Set `VITE_OPEN_SECRET_API_URL` to the OpenSecret API under test. Set the billing or feature-flag API URLs only when exercising those integrations. Keep `.env.local` untracked, never put secrets in `VITE_*` values, and do not overwrite an existing developer configuration.
 
-Use `nix develop -c <command>` when an interactive shell is inconvenient. Use `nix develop -c just clean-local` to clean this checkout; do not run raw `cargo clean` from the Nix shell because Cargo intermediates may be shared.
+Use `nix develop --no-update-lock-file -c <command>` when an interactive shell is inconvenient. Use `nix develop --no-update-lock-file -c just clean-local` to clean this checkout; do not run raw `cargo clean` from the Nix shell because Cargo intermediates may be shared.
 
 ## Choose the Correct Boundary
 

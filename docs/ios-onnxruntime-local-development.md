@@ -107,7 +107,7 @@ This is fixed by adding `CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=NEVER` to the cmake f
 ### Cargo Not Finding Library
 
 1. Ensure `.cargo/config.toml` uses absolute paths
-2. Clean checkout-local artifacts with `nix develop -c just clean-local`, then
+2. Clean checkout-local artifacts with `nix develop --no-update-lock-file -c just clean-local`, then
    rebuild. Do not use raw `cargo clean` from a local Nix shell because its
    intermediate build directory may be shared with other Maple workspaces.
 3. Verify the library exists: `ls -la onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/`

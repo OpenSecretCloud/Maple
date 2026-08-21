@@ -66,11 +66,11 @@ jobs:
             release-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
       - name: Prepare ONNX Runtime iOS artifact
-        run: nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh
         timeout-minutes: 90
 
       - name: Build Tauri iOS App (signed)
-        run: nix develop .#apple -c ./scripts/ci/ios-release.sh
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-release.sh
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -81,7 +81,7 @@ jobs:
 
       - name: Collect iOS release checksums
         run: |
-          nix develop .#apple -c ./scripts/ci/attestation-manifest.sh \
+          nix develop --no-update-lock-file .#apple -c ./scripts/ci/attestation-manifest.sh \
             ios-release-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-final.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-*.sha256 \
@@ -128,7 +128,7 @@ jobs:
           path: artifacts
 
       - name: Verify iOS artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts ios
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts ios
         env:
           MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
 
@@ -242,5 +242,5 @@ jobs:
             pr-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
       - name: Prepare ONNX Runtime iOS artifact
-        run: nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh
         timeout-minutes: 90

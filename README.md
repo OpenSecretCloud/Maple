@@ -16,7 +16,7 @@ The supported development environment is the Nix flake. It pins Bun, Rust,
 platform tools, and native dependencies used by the repository.
 
 ```bash
-nix develop
+nix develop --no-update-lock-file
 ./setup-hooks.sh
 just install
 test -e frontend/.env.local || cp frontend/.env.example frontend/.env.local
@@ -28,7 +28,7 @@ backend and application configuration. Inspect its source before changing its
 values.
 
 The common recipes below assume the active Nix shell. For an independent call,
-prefix a recipe with `nix develop -c`.
+prefix a recipe with `nix develop --no-update-lock-file -c`.
 
 Select the intended OpenSecret API in the ignored `frontend/.env.local`:
 
@@ -102,16 +102,16 @@ Use the checked-in CI entry points rather than reconstructing them:
 
 ```bash
 # Frozen install, formatting, ESLint, typecheck, and Bun tests
-nix develop .#ci -c ./scripts/ci/frontend.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh
 
 # Locked all-target Rust tests
-nix develop .#ci -c ./scripts/ci/rust.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 
 # PR-configured web artifact
-MAPLE_WEB_ENVIRONMENT=pr nix develop .#ci -c ./scripts/ci/web.sh
+MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
 
 # Nix/toolchain/workflow metadata; not application tests
-nix flake check
+nix flake check --no-update-lock-file
 ```
 
 There is no general checked-in browser, packaged-app, or React-to-Tauri-command
@@ -166,7 +166,7 @@ Android development is supported from x86_64 Linux; the `.#android` shell is
 not exposed on macOS:
 
 ```bash
-nix develop .#android -c just android-build
+nix develop --no-update-lock-file .#android -c just android-build
 ```
 
 The CI scripts under `scripts/ci/` are the authority for PR and release-shaped

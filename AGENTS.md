@@ -175,19 +175,19 @@ Start focused, then run the complete gate for the layers changed:
 
 ```bash
 # Frontend format, lint, typecheck, and Bun tests
-nix develop .#ci -c ./scripts/ci/frontend.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh
 
 # Locked Rust tests for all targets (with Linux ONNX provisioning)
-nix develop .#ci -c ./scripts/ci/rust.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 
 # Rust formatting and strict Clippy when Rust changed
-nix develop .#ci -c just rust-lint
+nix develop --no-update-lock-file .#ci -c just rust-lint
 
 # PR-shaped web artifact when web build/config changed
-MAPLE_WEB_ENVIRONMENT=pr nix develop .#ci -c ./scripts/ci/web.sh
+MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
 
 # Flake/toolchain/workflow metadata; this does not run application tests
-nix flake check
+nix flake check --no-update-lock-file
 ```
 
 The pre-commit hook is useful but is not full CI parity. Unit tests, a web

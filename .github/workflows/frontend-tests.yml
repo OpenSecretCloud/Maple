@@ -30,4 +30,4 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
 
       - name: Run frontend checks
-        run: nix develop .#ci -c ./scripts/ci/frontend.sh
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh

@@ -31,7 +31,7 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
 
       - name: Build web artifact
-        run: nix develop .#ci -c ./scripts/ci/web.sh
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
         env:
           MAPLE_WEB_ENVIRONMENT: pr
 
@@ -70,7 +70,7 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
 
       - name: Build web artifact
-        run: nix develop .#ci -c ./scripts/ci/web.sh
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
         env:
           MAPLE_WEB_ENVIRONMENT: release
 
@@ -116,4 +116,4 @@ jobs:
           path: artifacts
 
       - name: Verify web artifact reproducibility proof
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts web
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts web

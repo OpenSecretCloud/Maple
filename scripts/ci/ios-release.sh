@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 print_source_provenance
+verify_rust_lockfile
 
 if [ "$(host_os)" != "darwin" ]; then
   echo "iOS builds must run on macOS." >&2

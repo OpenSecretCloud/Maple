@@ -54,14 +54,14 @@ jobs:
             ${{ runner.os }}-sccache-
 
       - name: Build Tauri Android App (fake signed release)
-        run: nix develop .#android -c ./scripts/ci/android-release.sh
+        run: nix develop --no-update-lock-file .#android -c ./scripts/ci/android-release.sh
         env:
           MAPLE_ANDROID_FAKE_SIGNING: "1"
           MAPLE_ANDROID_WEB_ENVIRONMENT: pr
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#android -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#android -c sccache --show-stats
 
       - name: Upload Android fake signed PR artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4

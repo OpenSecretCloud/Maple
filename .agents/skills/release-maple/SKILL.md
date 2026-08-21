@@ -31,7 +31,7 @@ store, submit for review, or alter a rollout merely to see whether it works.
    ```bash
    git fetch origin master
    git merge-base --is-ancestor origin/master HEAD
-   current_version="$(nix develop .#ci -c just get-version | tail -n 1)"
+   current_version="$(nix develop --no-update-lock-file .#ci -c just get-version | tail -n 1)"
    released_version="$(gh api repos/OpenSecretCloud/Maple/releases/latest --jq '.tag_name | ltrimstr("v")')"
    printf 'current=%s released=%s\n' "$current_version" "$released_version"
    ```
@@ -44,10 +44,10 @@ store, submit for review, or alter a rollout merely to see whether it works.
 4. On a focused branch, run exactly one repository helper:
 
    ```bash
-   nix develop .#ci -c just update-version X.Y.Z
-   nix develop .#ci -c just bump-patch
-   nix develop .#ci -c just bump-minor
-   nix develop .#ci -c just bump-major
+   nix develop --no-update-lock-file .#ci -c just update-version X.Y.Z
+   nix develop --no-update-lock-file .#ci -c just bump-patch
+   nix develop --no-update-lock-file .#ci -c just bump-minor
+   nix develop --no-update-lock-file .#ci -c just bump-major
    ```
 
 5. Review all manifest, Apple project, Android version-code, and

@@ -27,7 +27,7 @@ if [ "${MAPLE_HOOK_NIX_BOOTSTRAPPED:-0}" != "1" ] \
     NIX_BIN=$(find_nix)
     if [ -n "$NIX_BIN" ]; then
         echo "Entering the Maple Nix CI shell for pinned hook tools..."
-        exec "$NIX_BIN" develop "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
+        exec "$NIX_BIN" develop --no-update-lock-file "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
             "$REPO_ROOT/.githooks/pre-commit"
     fi
 fi
@@ -50,12 +50,12 @@ if [ "$NEEDS_TOOLCHAIN" -eq 1 ]; then
     NIX_BIN=$(find_nix)
     if [ -n "$NIX_BIN" ] && [ -f "$REPO_ROOT/flake.nix" ]; then
         echo "Required tools are not on PATH; entering the Maple Nix development shell..."
-        exec "$NIX_BIN" develop "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
+        exec "$NIX_BIN" develop --no-update-lock-file "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
             "$REPO_ROOT/.githooks/pre-commit"
     fi
 
     echo "Error: This hook requires bun, plus cargo for staged Rust changes."
-    echo "Install the missing tools or run the commit from 'nix develop'."
+    echo "Install the missing tools or run the commit from 'nix develop --no-update-lock-file'."
     exit 1
 fi
 
@@ -93,10 +93,10 @@ fi
 if echo "$STAGED_FILES" | grep -Eq '^frontend/src-tauri/.*\.(rs|toml|lock)$'; then
     echo "Running Rust unit tests..."
     cd "$REPO_ROOT/frontend/src-tauri" || exit 1
-    if ! cargo test --all-targets; then
+    if ! cargo test --locked --all-targets; then
         echo ""
         echo "Error: Rust tests failed! Please fix the test failures before committing."
-        echo "Run 'cd frontend/src-tauri && cargo test --all-targets' to see the errors."
+        echo "Run 'cd frontend/src-tauri && cargo test --locked --all-targets' to see the errors."
         exit 1
     fi
 else
