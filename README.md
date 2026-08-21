@@ -71,7 +71,7 @@ when changing the public exports.
 Use the pinned Nix shell and Bun version:
 
 ```sh
-nix develop
+nix develop --no-update-lock-file
 bun install --frozen-lockfile --ignore-scripts
 bun run format:check
 bun run build
@@ -104,12 +104,12 @@ client examples and transport details.
 Run the Rust validation from the repository root:
 
 ```sh
-nix develop -c bash -lc '
+nix develop --no-update-lock-file -c bash -lc '
   cd rust
   cargo fmt --all -- --check
-  cargo clippy --all-targets --all-features -- -D warnings
-  cargo test --all-features
-  cargo doc --no-deps --all-features
+  cargo clippy --locked --all-targets --all-features -- -D warnings
+  cargo test --locked --all-features
+  cargo doc --locked --no-deps --all-features
 '
 ```
 

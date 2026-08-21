@@ -240,13 +240,13 @@ Set it to `development` when the configured URL is a hosted development enclave.
 Run tests:
 ```bash
 # All tests (requires running server on localhost:3000)
-cargo test
+cargo test --locked
 
 # With output
-cargo test -- --nocapture
+cargo test --locked -- --nocapture
 
 # Specific test
-cargo test test_login_signup_flow -- --nocapture
+cargo test --locked test_login_signup_flow -- --nocapture
 ```
 
 ## Examples
@@ -255,7 +255,7 @@ See the `examples/` directory for complete examples:
 
 ```bash
 # Basic authentication flow
-cargo run --example auth_example
+cargo run --locked --example auth_example
 ```
 
 ## Security Considerations

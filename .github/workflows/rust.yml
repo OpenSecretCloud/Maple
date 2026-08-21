@@ -32,10 +32,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - name: Resolve dependency graph
-        working-directory: rust
-        run: cargo generate-lockfile
-
       - name: Audit dependencies
         uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
@@ -84,7 +80,7 @@ jobs:
 
       - name: Run clippy
         working-directory: rust
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   test:
     name: Test Suite
@@ -104,7 +100,7 @@ jobs:
 
       - name: Run tests
         working-directory: rust
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
         env:
           VITE_OPEN_SECRET_API_URL: ${{ secrets.VITE_OPEN_SECRET_API_URL }}
           VITE_OPEN_SECRET_PCR_ENVIRONMENT: development
@@ -131,7 +127,7 @@ jobs:
 
       - name: Check build
         working-directory: rust
-        run: cargo check --all-features
+        run: cargo check --locked --all-features
 
   doc:
     name: Check Documentation
@@ -153,4 +149,4 @@ jobs:
 
       - name: Check documentation
         working-directory: rust
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --locked --no-deps --all-features
