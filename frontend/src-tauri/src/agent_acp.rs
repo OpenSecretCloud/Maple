@@ -2295,7 +2295,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                                 )?;
                             }
                             Dispatch::Response(result, router) => {
-                                router.respond_with_result(result)?;
+                                router.route_with_result(result)?;
                             }
                             Dispatch::Notification(_) => {}
                         }
