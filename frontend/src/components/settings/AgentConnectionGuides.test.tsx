@@ -32,4 +32,17 @@ describe("AgentConnectionGuides", () => {
     expect(markup).toContain("maple-acp");
     expect(markup).toContain("supportsMcpServers");
   });
+
+  test("guides Buzz users from runtime setup to their first agent mention", () => {
+    const markup = renderToStaticMarkup(
+      <AgentConnectionGuides status={status} initialClient="buzz" />
+    );
+
+    expect(markup).toContain("Settings → Agents → Add runtimes → Custom harness");
+    expect(markup).toContain("add <code>acp</code> as the only Argument, then Save");
+    expect(markup).toContain("Choose Customize for this agent, select Maple");
+    expect(markup).toContain("under Advanced set Parallelism to 8");
+    expect(markup).toContain("@mention the agent");
+    expect(markup).not.toContain("and connect");
+  });
 });
