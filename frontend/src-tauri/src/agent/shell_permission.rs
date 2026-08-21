@@ -97,6 +97,9 @@ impl ShellPermissionRequest {
 
 pub(crate) fn is_remote_file_source(source: &str) -> bool {
     let source = source.trim();
+    if source.starts_with("maple-attachment://") {
+        return false;
+    }
     if source.starts_with(r"\\") || source.starts_with("//") {
         return true;
     }
@@ -435,6 +438,7 @@ mod tests {
         for source in [
             "file:///tmp/pixel.png",
             "file://localhost/tmp/pixel.png",
+            "maple-attachment://0123456789abcdef0123456789abcdef",
             r"C:\pixel.png",
         ] {
             assert!(!is_remote_file_source(source));

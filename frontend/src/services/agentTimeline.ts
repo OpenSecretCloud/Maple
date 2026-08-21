@@ -290,7 +290,15 @@ export function hasRenderableThinkingText(text: string | null | undefined): bool
 }
 
 export function isRenderableAgentTimelineItem(item: AgentTimelineItem): boolean {
-  if (item.itemType === "message") return Boolean(item.text?.trim());
+  if (item.itemType === "message") {
+    const imageAttachments =
+      item.input && typeof item.input === "object" && !Array.isArray(item.input)
+        ? (item.input as { imageAttachments?: unknown }).imageAttachments
+        : undefined;
+    return (
+      Boolean(item.text?.trim()) || (Array.isArray(imageAttachments) && imageAttachments.length > 0)
+    );
+  }
   if (item.itemType === "thinking") return hasRenderableThinkingText(item.text);
   if (item.itemType === "system" || item.itemType === "error") {
     return Boolean(item.title?.trim() || item.text?.trim());

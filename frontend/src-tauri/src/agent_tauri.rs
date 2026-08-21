@@ -436,6 +436,21 @@ pub async fn agent_load_session(
 }
 
 #[tauri::command]
+pub async fn agent_load_image_attachment(
+    app_handle: AppHandle,
+    state: State<'_, MapleAgentService>,
+    user_id: String,
+    session_id: String,
+    attachment_id: String,
+) -> Result<String, String> {
+    let _ = app_handle;
+    handle_for_user(&state, &user_id)
+        .await?
+        .load_image_attachment(session_id, attachment_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn agent_rename_session(
     state: State<'_, MapleAgentService>,
     api_auth_state: State<'_, MapleApiAuthState>,

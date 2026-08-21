@@ -189,6 +189,7 @@ pub fn run() {
             agent_tauri::agent_create_session,
             agent_tauri::agent_list_sessions,
             agent_tauri::agent_load_session,
+            agent_tauri::agent_load_image_attachment,
             agent_tauri::agent_rename_session,
             agent_tauri::agent_list_session_mcp_servers,
             agent_tauri::agent_set_session_mcp_server_enabled,

@@ -89,6 +89,22 @@ describe("AgentRuntimeService", () => {
     expect(bridge.lastArgs).toEqual({ userId: "user-a", request });
   });
 
+  test("image history loads through the account-fenced local attachment command", async () => {
+    const bridge = new RecordingBridge();
+    bridge.response = "data:image/png;base64,aW1hZ2U=";
+    const service = new AgentRuntimeService(bridge);
+
+    const result = await service.loadImageAttachment("user-a", "session-1", "attachment-1");
+
+    expect(result).toBe("data:image/png;base64,aW1hZ2U=");
+    expect(bridge.events).toEqual(["fence:user-a", "invoke:agent_load_image_attachment"]);
+    expect(bridge.lastArgs).toEqual({
+      userId: "user-a",
+      sessionId: "session-1",
+      attachmentId: "attachment-1"
+    });
+  });
+
   test("session creation forwards the selected model context limit", async () => {
     const bridge = new RecordingBridge();
     const service = new AgentRuntimeService(bridge);
