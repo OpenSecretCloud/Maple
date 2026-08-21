@@ -100,6 +100,62 @@ fn get_pending_update_failure() -> Result<Option<String>, String> {
 }
 
 #[cfg(desktop)]
+#[tauri::command]
+fn get_pending_update_install() -> Result<Option<String>, String> {
+    Ok(PENDING_UPDATE
+        .lock()
+        .map_err(|e| format!("Failed to lock PENDING_UPDATE mutex: {e}"))?
+        .as_ref()
+        .map(|pending| pending.update.version.clone()))
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn install_pending_update(app_handle: tauri::AppHandle) -> Result<(), String> {
+    // Hold the check lock for the whole install so the hourly check cannot
+    // download and offer the same version again while the password prompt
+    // is open.
+    let _check_guard = UPDATE_CHECK_LOCK.lock().await;
+
+    let pending = PENDING_UPDATE
+        .lock()
+        .map_err(|e| format!("Failed to lock PENDING_UPDATE mutex: {e}"))?
+        .take()
+        .ok_or_else(|| "No downloaded update is waiting to be installed".to_string())?;
+
+    log::info!(
+        "User requested install of downloaded update to version {}",
+        pending.update.version
+    );
+
+    // Installing a deb/rpm blocks on pkexec until the user answers the
+    // password prompt, so keep it off the async runtime.
+    let (pending, result) = tauri::async_runtime::spawn_blocking(move || {
+        let result = install_update(&app_handle, &pending.update, &pending.bytes, true);
+        (pending, result)
+    })
+    .await
+    .map_err(|e| format!("Update install task failed: {e}"))?;
+
+    if result.is_err() {
+        // A cancelled password prompt lands here. The bytes are already
+        // signature-verified, so keep them for "Try Again".
+        match PENDING_UPDATE.lock() {
+            Ok(mut guard) => {
+                if guard.is_none() {
+                    *guard = Some(pending);
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to lock PENDING_UPDATE mutex when restoring update: {e}")
+            }
+        }
+    }
+
+    result
+}
+
+#[cfg(desktop)]
 fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
     if matches!(&event, tauri::RunEvent::Ready) {
         reveal_main_window(app_handle);
@@ -223,6 +279,8 @@ pub fn run() {
             pdf_extractor::extract_document_content,
             restart_for_update,
             get_pending_update_failure,
+            get_pending_update_install,
+            install_pending_update,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -500,6 +558,46 @@ static FAILED_UPDATE_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(Stri
 #[cfg(desktop)]
 static UPDATE_CHECK_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
+/// A downloaded and signature-verified update that waits for the user to
+/// approve the install.
+#[cfg(desktop)]
+struct PendingUpdate {
+    update: tauri_plugin_updater::Update,
+    bytes: Vec<u8>,
+}
+
+#[cfg(desktop)]
+static PENDING_UPDATE: Lazy<Mutex<Option<PendingUpdate>>> = Lazy::new(|| Mutex::new(None));
+
+/// Linux deb/rpm installs run `pkexec`, which opens a system password dialog.
+/// That dialog must not appear without the user asking for it, so those
+/// installs wait for approval. AppImage, macOS and Windows install silently.
+#[cfg(desktop)]
+fn install_needs_user_approval() -> bool {
+    use tauri::utils::{config::BundleType, platform::bundle_type};
+
+    cfg!(target_os = "linux") && matches!(bundle_type(), Some(BundleType::Deb | BundleType::Rpm))
+}
+
+#[cfg(desktop)]
+fn pending_update_version() -> Option<String> {
+    match PENDING_UPDATE.lock() {
+        Ok(guard) => guard.as_ref().map(|pending| pending.update.version.clone()),
+        Err(e) => {
+            log::error!("Failed to lock PENDING_UPDATE mutex: {e}");
+            None
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn clear_pending_update() {
+    match PENDING_UPDATE.lock() {
+        Ok(mut guard) => *guard = None,
+        Err(e) => log::error!("Failed to lock PENDING_UPDATE mutex when clearing: {e}"),
+    }
+}
+
 /// Check for updates silently in the background
 #[cfg(desktop)]
 async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> Result<(), String> {
@@ -519,6 +617,7 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
                 log::error!("Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}")
             }
         }
+        clear_pending_update();
         log::info!("Update state cleared for user-requested retry");
     }
 
@@ -550,6 +649,14 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
             {
                 log::info!(
                     "Update to version {} already downloaded, skipping redundant download",
+                    update.version
+                );
+                return Ok(());
+            }
+
+            if pending_update_version().as_deref() == Some(update.version.as_str()) {
+                log::info!(
+                    "Update to version {} is downloaded and waiting for user approval, skipping redundant download",
                     update.version
                 );
                 return Ok(());
@@ -591,90 +698,40 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
             match update.download(progress_fn, download_complete).await {
                 Ok(bytes) => {
                     log::info!("Update downloaded and signature verified");
-                    log::info!("Installing update to version {}", update.version);
 
-                    // Try to install the update immediately
-                    match update.install(bytes) {
-                        Ok(_) => {
-                            // Log that the update is ready
-                            log::info!("Update installed successfully. Will be applied on next application restart.");
-
-                            match FAILED_UPDATE_VERSION.lock() {
-                                Ok(mut version) => version.clear(),
-                                Err(e) => log::error!(
-                                    "Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}"
-                                ),
-                            }
-
-                            // Mark this version as downloaded to prevent redundant downloads/notifications
-                            {
-                                match CURRENT_VERSION.lock() {
-                                    Ok(mut version) => *version = update.version.clone(),
-                                    Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when updating version: {e}")
-                                }
-                            }
-
-                            // If we've already shown a notification, don't show another one
-                            if UPDATE_DOWNLOADED.load(Ordering::SeqCst) {
-                                log::info!(
-                                    "Update notification already shown, not showing another one"
+                    if install_needs_user_approval() {
+                        let version = update.version.clone();
+                        match PENDING_UPDATE.lock() {
+                            Ok(mut guard) => *guard = Some(PendingUpdate { update, bytes }),
+                            Err(e) => {
+                                let error = format!(
+                                    "Failed to lock PENDING_UPDATE mutex when storing update: {e}"
                                 );
-                                return Ok(());
+                                log::error!("{error}");
+                                return Err(error);
                             }
-
-                            // Mark as downloaded to prevent further update notifications
-                            UPDATE_DOWNLOADED.store(true, Ordering::SeqCst);
-
-                            // Emit event to frontend for toast notification
-                            #[derive(Clone, serde::Serialize)]
-                            struct UpdateReadyPayload {
-                                version: String,
-                            }
-
-                            if let Err(e) = app_handle.emit(
-                                "update-ready",
-                                UpdateReadyPayload {
-                                    version: update.version.clone(),
-                                },
-                            ) {
-                                log::error!("Failed to emit update-ready event: {e}");
-                            } else {
-                                log::info!(
-                                    "Emitted update-ready event for version {}",
-                                    update.version
-                                );
-                            }
-
-                            Ok(())
                         }
-                        Err(e) => {
-                            let error = format!("Failed to install update: {e}");
-                            log::error!("{error}");
 
-                            match FAILED_UPDATE_VERSION.lock() {
-                                Ok(mut version) => *version = update.version.clone(),
-                                Err(lock_error) => log::error!(
-                                    "Failed to lock FAILED_UPDATE_VERSION mutex when recording failure: {lock_error}"
-                                ),
-                            }
-
-                            #[derive(Clone, serde::Serialize)]
-                            struct UpdateFailedPayload {
-                                version: String,
-                            }
-
-                            if let Err(emit_error) = app_handle.emit(
-                                "update-failed",
-                                UpdateFailedPayload {
-                                    version: update.version.clone(),
-                                },
-                            ) {
-                                log::error!("Failed to emit update-failed event: {emit_error}");
-                            }
-
-                            Err(error)
+                        #[derive(Clone, serde::Serialize)]
+                        struct UpdateAvailablePayload {
+                            version: String,
                         }
+
+                        if let Err(e) = app_handle.emit(
+                            "update-available",
+                            UpdateAvailablePayload {
+                                version: version.clone(),
+                            },
+                        ) {
+                            log::error!("Failed to emit update-available event: {e}");
+                        } else {
+                            log::info!("Emitted update-available event for version {version}");
+                        }
+
+                        return Ok(());
                     }
+
+                    install_update(&app_handle, &update, &bytes, false)
                 }
                 Err(e) => {
                     log::error!("Failed to download update: {e}");
@@ -689,6 +746,105 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
         Err(e) => {
             log::error!("Failed to check for updates: {e}");
             Err(format!("Failed to check for updates: {e}"))
+        }
+    }
+}
+
+/// Install a downloaded update and tell the frontend the result.
+///
+/// `user_approved` is true when the user clicked "Install Now". That path
+/// always reports the result, and a failure (for example a cancelled password
+/// prompt) does not block the version for the rest of the session.
+#[cfg(desktop)]
+fn install_update(
+    app_handle: &tauri::AppHandle,
+    update: &tauri_plugin_updater::Update,
+    bytes: &[u8],
+    user_approved: bool,
+) -> Result<(), String> {
+    log::info!("Installing update to version {}", update.version);
+
+    match update.install(bytes) {
+        Ok(_) => {
+            // Log that the update is ready
+            log::info!(
+                "Update installed successfully. Will be applied on next application restart."
+            );
+
+            match FAILED_UPDATE_VERSION.lock() {
+                Ok(mut version) => version.clear(),
+                Err(e) => {
+                    log::error!("Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}")
+                }
+            }
+
+            // Mark this version as downloaded to prevent redundant downloads/notifications
+            match CURRENT_VERSION.lock() {
+                Ok(mut version) => *version = update.version.clone(),
+                Err(e) => {
+                    log::error!("Failed to lock CURRENT_VERSION mutex when updating version: {e}")
+                }
+            }
+
+            // The silent path shows the restart toast once per session. An
+            // install the user asked for always gets feedback.
+            let already_notified = UPDATE_DOWNLOADED.swap(true, Ordering::SeqCst);
+            if already_notified && !user_approved {
+                log::info!("Update notification already shown, not showing another one");
+                return Ok(());
+            }
+
+            // Emit event to frontend for toast notification
+            #[derive(Clone, serde::Serialize)]
+            struct UpdateReadyPayload {
+                version: String,
+            }
+
+            if let Err(e) = app_handle.emit(
+                "update-ready",
+                UpdateReadyPayload {
+                    version: update.version.clone(),
+                },
+            ) {
+                log::error!("Failed to emit update-ready event: {e}");
+            } else {
+                log::info!("Emitted update-ready event for version {}", update.version);
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            let error = format!("Failed to install update: {e}");
+            log::error!("{error}");
+
+            if user_approved {
+                log::info!("User-approved install failed; the update stays available to retry");
+            } else {
+                match FAILED_UPDATE_VERSION.lock() {
+                    Ok(mut version) => *version = update.version.clone(),
+                    Err(lock_error) => log::error!(
+                        "Failed to lock FAILED_UPDATE_VERSION mutex when recording failure: {lock_error}"
+                    ),
+                }
+            }
+
+            #[derive(Clone, serde::Serialize)]
+            struct UpdateFailedPayload {
+                version: String,
+                retryable: bool,
+            }
+
+            if let Err(emit_error) = app_handle.emit(
+                "update-failed",
+                UpdateFailedPayload {
+                    version: update.version.clone(),
+                    retryable: user_approved,
+                },
+            ) {
+                log::error!("Failed to emit update-failed event: {emit_error}");
+            }
+
+            Err(error)
         }
     }
 }
