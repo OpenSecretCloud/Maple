@@ -4,7 +4,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  BUZZ_DEFAULT_AGENT_PARALLELISM,
   BUZZ_MAPLE_AGENT_PARALLELISM,
   BUZZ_MAPLE_HARNESS_ID,
   BUZZ_MAPLE_HARNESS_NAME,
@@ -109,14 +108,20 @@ function Step({ number, children }: { number: number; children: ReactNode }) {
   );
 }
 
-export function AgentConnectionGuides({ status }: { status: MapleAcpStatus | null }) {
+export function AgentConnectionGuides({
+  status,
+  initialClient = "paseo"
+}: {
+  status: MapleAcpStatus | null;
+  initialClient?: "paseo" | "buzz";
+}) {
   const harness = status?.harness ?? null;
   const paseoConfig = harness ? serializePaseoCustomProviderConfig(harness) : "";
   const buzzConfig = harness ? serializeBuzzCustomHarness(harness) : "";
 
   return (
     <div className="space-y-4">
-      <Tabs defaultValue="paseo" className="w-full">
+      <Tabs defaultValue={initialClient} className="w-full">
         <TabsList className="grid h-auto w-full grid-cols-2">
           <TabsTrigger value="paseo">Paseo</TabsTrigger>
           <TabsTrigger value="buzz">Buzz</TabsTrigger>
@@ -149,9 +154,11 @@ export function AgentConnectionGuides({ status }: { status: MapleAcpStatus | nul
 
         <TabsContent value="buzz" className="space-y-4 pt-2">
           <ol className="space-y-3">
-            <Step number={1}>Start Maple's local ACP service above.</Step>
-            <Step number={2}>Open Buzz Desktop's custom harness form.</Step>
-            <Step number={3}>Enter the separate values below and connect.</Step>
+            <Step number={1}>Keep Maple open and start its local ACP service above.</Step>
+            <Step number={2}>In Buzz, open Settings → Agents → Add runtimes → Custom harness.</Step>
+            <Step number={3}>
+              Enter the values below, add <code>acp</code> as the only Argument, then Save.
+            </Step>
           </ol>
 
           <div className="grid gap-2 sm:grid-cols-2">
@@ -161,18 +168,15 @@ export function AgentConnectionGuides({ status }: { status: MapleAcpStatus | nul
             <SetupField label="Argument" value={harness?.args[0] ?? ""} />
           </div>
 
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Keep <code>acp</code> as a separate argument in Buzz; do not append it to Command.
-          </p>
-
-          <Alert role="note">
-            <Server className="h-4 w-4" />
-            <AlertDescription>
-              Set Buzz managed-agent parallelism to {BUZZ_MAPLE_AGENT_PARALLELISM}. Buzz defaults to{" "}
-              {BUZZ_DEFAULT_AGENT_PARALLELISM}, while Maple accepts {BUZZ_MAPLE_AGENT_PARALLELISM}{" "}
-              local ACP connections by default.
-            </AlertDescription>
-          </Alert>
+          <ol className="space-y-3">
+            <Step number={4}>
+              In Buzz's Agents view, create an agent. Choose Customize for this agent, select Maple,
+              and under Advanced set Parallelism to {BUZZ_MAPLE_AGENT_PARALLELISM}.
+            </Step>
+            <Step number={5}>
+              Open a channel and @mention the agent. Buzz will add and start it automatically.
+            </Step>
+          </ol>
 
           <details className="group rounded-lg border border-border/70">
             <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium">
