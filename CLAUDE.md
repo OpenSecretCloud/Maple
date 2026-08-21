@@ -14,7 +14,7 @@ Maple Proxy is a lightweight OpenAI-compatible proxy server that forwards reques
 - `just run-prod` - Run pointing to production backend (https://enclave.trymaple.ai)
 - `just build` - Build debug binary
 - `just release` - Build optimized release binary
-- `cargo run` - Run directly with cargo
+- `cargo run --locked` - Run directly with cargo
 
 ### Testing and Quality
 - `just test` - Run all tests
@@ -88,7 +88,7 @@ Environment variables (can be set in .env file):
 Tests are located in `tests/` directory. Currently includes:
 - `health_test.rs` - Tests for health check endpoints
 
-Run tests with `just test` or `cargo test`.
+Run tests with `just test` or `cargo test --locked`.
 
 ## Dependencies
 

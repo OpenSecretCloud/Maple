@@ -15,7 +15,7 @@ default:
 setup:
     @echo "🔧 Setting up development environment..."
     @bash setup-hooks.sh
-    @cargo check --all-features
+    @cargo check --locked --all-features
     @echo "✅ Development environment ready"
 
 # Format code with rustfmt
@@ -30,7 +30,7 @@ fmt: format
 # Run clippy lints
 lint:
     @echo "🔍 Running clippy lints..."
-    @cargo clippy --all-targets --all-features -- -D warnings
+    @cargo clippy --locked --all-targets --all-features -- -D warnings
     @echo "✅ Lints passed"
 
 # Alias for lint
@@ -39,7 +39,7 @@ clippy: lint
 # Run all tests
 test:
     @echo "🧪 Running tests..."
-    @cargo test --all-features
+    @cargo test --locked --all-features
     @echo "✅ Tests passed"
 
 # Run all checks (format, lint, test)
@@ -50,14 +50,14 @@ check: format lint test
 run:
     @echo "🚀 Starting Maple Proxy server..."
     @echo "📝 Loading configuration from .env"
-    @cargo run
+    @cargo run --locked
 
 # Run with custom backend URL (preserves .env variables)
 run-with-backend url:
     @echo "🚀 Starting Maple Proxy server..."
     @echo "🔗 Backend: {{url}}"
     @echo "📝 Loading other configs from .env"
-    @bash -c 'set -a; source .env 2>/dev/null; set +a; MAPLE_BACKEND_URL={{url}} cargo run'
+    @bash -c 'set -a; source .env 2>/dev/null; set +a; MAPLE_BACKEND_URL={{url}} cargo run --locked'
 
 # Run pointing to local backend
 run-local:
@@ -70,19 +70,19 @@ run-prod:
 # Build debug binary
 build:
     @echo "🔨 Building debug binary..."
-    @cargo build
+    @cargo build --locked
     @echo "✅ Debug binary built at target/debug/maple-proxy"
 
 # Build release binary
 release:
     @echo "📦 Building release binary..."
-    @cargo build --release
+    @cargo build --locked --release
     @echo "✅ Release binary built at target/release/maple-proxy"
 
 # Build for all targets (used in CI)
 build-all:
     @echo "📦 Building for all targets..."
-    @cargo build --all-targets --all-features
+    @cargo build --locked --all-targets --all-features
     @echo "✅ All targets built"
 
 # Clean build artifacts
@@ -100,7 +100,7 @@ update:
 # Install to ~/.cargo/bin
 install:
     @echo "📥 Installing maple-proxy..."
-    @cargo install --path .
+    @cargo install --locked --path .
     @echo "✅ Installed to ~/.cargo/bin/maple-proxy"
 
 # Uninstall from ~/.cargo/bin
@@ -112,7 +112,7 @@ uninstall:
 # Run with verbose logging
 debug:
     @echo "🐛 Starting with debug logging..."
-    RUST_LOG=debug MAPLE_DEBUG=true cargo run
+    RUST_LOG=debug MAPLE_DEBUG=true cargo run --locked
 
 # Check for security vulnerabilities
 audit:
@@ -123,19 +123,20 @@ audit:
 # Generate documentation
 doc:
     @echo "📚 Generating documentation..."
-    @cargo doc --no-deps --all-features --open
+    @cargo doc --locked --no-deps --all-features --open
     @echo "✅ Documentation generated"
 
 # Show code coverage (requires cargo-tarpaulin)
 coverage:
     @echo "📊 Generating code coverage..."
+    @cargo metadata --locked --format-version 1 >/dev/null
     @cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out html
     @echo "✅ Coverage report generated at tarpaulin-report.html"
 
 # Watch for changes and run tests
 watch:
     @echo "👁️ Watching for changes..."
-    @cargo watch -x test
+    @cargo watch -x 'test --locked'
 
 # Create a new git commit with conventional commit message
 commit message:

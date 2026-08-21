@@ -28,7 +28,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Run cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --locked --all-targets --all-features
 
   test:
     name: Test Suite
@@ -43,7 +43,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
 
       - name: Run cargo test
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
 
   fmt:
     name: Rustfmt
@@ -77,7 +77,7 @@ jobs:
           components: clippy
 
       - name: Run cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   # Code Coverage is disabled until we have better test coverage
   # Currently only 13.93% coverage - re-enable when we add more tests
