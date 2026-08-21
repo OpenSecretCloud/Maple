@@ -19,12 +19,12 @@ RUN apt-get update && apt-get install -y \
 
 # Copy and build dependencies (cached if unchanged)
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --locked --release --recipe-path recipe.json
 
 # Copy source code and build the application
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --bin maple-proxy
+RUN cargo build --locked --release --bin maple-proxy
 
 # Runtime stage - minimal image for production
 FROM docker.io/debian:bookworm-slim AS runtime

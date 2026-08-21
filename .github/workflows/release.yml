@@ -54,7 +54,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -134,7 +134,7 @@ jobs:
           
           #### 🔧 From Source
           \`\`\`bash
-          cargo install --git https://github.com/OpenSecretCloud/maple-proxy --tag $VERSION
+          cargo install --locked --git https://github.com/OpenSecretCloud/maple-proxy --tag $VERSION
           \`\`\`
           
           ### Checksums

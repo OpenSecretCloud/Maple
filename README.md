@@ -22,7 +22,7 @@ Environment (TEE) processing.
 ```bash
 git clone <repository>
 cd maple-proxy
-cargo build --release
+cargo build --locked --release
 ```
 
 ### As a Library
@@ -55,10 +55,10 @@ export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between 
 
 Or use CLI arguments:
 ```bash
-cargo run -- --host 0.0.0.0 --port 8080 --backend-url https://enclave.trymaple.ai
+cargo run --locked -- --host 0.0.0.0 --port 8080 --backend-url https://enclave.trymaple.ai
 
 # Development enclaves must be selected explicitly
-cargo run -- --backend-url https://enclave.secretgpt.ai --pcr0-environment development
+cargo run --locked -- --backend-url https://enclave.secretgpt.ai --pcr0-environment development
 ```
 
 ## 🛠️ Usage
@@ -68,7 +68,7 @@ cargo run -- --backend-url https://enclave.secretgpt.ai --pcr0-environment devel
 #### Start the Server
 
 ```bash
-cargo run
+cargo run --locked
 ```
 
 You should see:
@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Run the example:
 ```bash
-cargo run --example library_usage
+cargo run --locked --example library_usage
 ```
 
 ## 💻 Client Examples
@@ -245,7 +245,7 @@ Maple Proxy supports two authentication methods:
 Set `MAPLE_API_KEY` - all requests will use this key by default:
 ```bash
 export MAPLE_API_KEY=your-maple-api-key
-cargo run
+cargo run --locked
 ```
 
 ### 2. Per-Request Authorization Header
@@ -259,7 +259,7 @@ curl -H "Authorization: Bearer different-api-key" ...
 Enable CORS for web applications:
 ```bash
 export MAPLE_ENABLE_CORS=true
-cargo run
+cargo run --locked
 ```
 
 ## 🐳 Docker Deployment
@@ -403,18 +403,18 @@ Use GitHub Actions for production releases, Justfile for local development.
 
 ### Build from Source
 ```bash
-cargo build
+cargo build --locked
 ```
 
 ### Run with Debug Logging
 ```bash
 export MAPLE_DEBUG=true
-cargo run
+cargo run --locked
 ```
 
 ### Run Tests
 ```bash
-cargo test
+cargo test --locked
 ```
 
 ## 📊 Supported Models
@@ -445,7 +445,7 @@ Maple Proxy supports all models available in the Maple/OpenSecret platform, incl
 Enable debug logging for detailed information:
 ```bash
 export MAPLE_DEBUG=true
-cargo run
+cargo run --locked
 ```
 
 ## 🏗️ Architecture
