@@ -1,9 +1,11 @@
-name: Rust supply-chain denylist
+name: Rust supply-chain checks
 
 on:
   pull_request:
   push:
     branches: [master]
+  schedule:
+    - cron: "41 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +13,7 @@ permissions:
 
 jobs:
   cargo-deny:
-    name: Known malicious crates
+    name: RustSec advisories and malicious crates
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -20,9 +22,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check incident denylist
+      - name: Check RustSec advisories and incident denylist
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: frontend/src-tauri/Cargo.toml
-          command: check bans
+          command: check advisories bans
           arguments: --all-features --locked
