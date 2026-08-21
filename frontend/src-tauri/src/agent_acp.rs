@@ -1556,6 +1556,7 @@ impl AcpConnectionContext {
                     vision_capable: false,
                     steer: false,
                     queue_id: None,
+                    attachments: Vec::new(),
                 },
                 tool_context_access,
                 prompt_lifetime.clone(),

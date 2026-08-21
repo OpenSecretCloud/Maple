@@ -28,6 +28,7 @@ import {
   FolderOpen,
   FolderPlus,
   Globe2,
+  Image,
   Loader2,
   Lock,
   MessageSquare,
@@ -114,6 +115,7 @@ import {
   awaitAgentAuthUser,
   type AgentConfig,
   type AgentEventEnvelope,
+  type AgentImageAttachment,
   type AgentMcpServer,
   type AgentPermissionDecision,
   type AgentProjectTrustStatus,
@@ -204,8 +206,13 @@ import {
   useIsLandscapeMobile,
   useIsMobile
 } from "@/utils/utils";
-import { isTauriDesktop } from "@/utils/platform";
+import { isLinux, isTauri, isTauriDesktop } from "@/utils/platform";
 import { useLazyRef } from "@/utils/useLazyRef";
+import { fileToDataURL } from "@/utils/file";
+import {
+  getImageFilesFromClipboardItems,
+  maybeReadLinuxTauriClipboardImages
+} from "@/utils/imagePaste";
 import { revealAgentProjectFolder } from "@/services/agentProjectFolder";
 import {
   aggregateAgentSidebarStatus,
@@ -240,6 +247,15 @@ import type {
 const DEFAULT_MODEL = DEFAULT_AGENT_MODEL;
 const DEFAULT_MODE = "smart_approve";
 const NEW_SESSION_PENDING_KEY = "__maple-agent-new-session__";
+const MAX_AGENT_DRAFT_IMAGES = 10;
+const MAX_AGENT_DRAFT_IMAGE_BYTES = 10 * 1024 * 1024;
+const SUPPORTED_AGENT_IMAGE_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+
+interface AgentDraftImage {
+  file: File;
+  url: string;
+}
+
 const NEW_PROJECT_OPTION_VALUE = "__maple-agent-new-project__";
 const MAX_STABLE_SESSION_LOAD_ATTEMPTS = 3;
 const THOUGHT_PHASE_SEED_RETRY_MS = 250;
@@ -413,6 +429,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const os = useOpenSecret();
   const { availableModels, setAvailableModels, modelAliases, setModelAliases, setHasWhisperModel } =
     useModelState();
+  const { billingStatus } = useBillingState();
   const { agentSessionSelection } = usePersistentHomeNavigation();
   const { showNotification } = useNotification();
   const isMobile = useIsMobile();
@@ -474,6 +491,12 @@ export function AgentMode({ userId }: { userId: string }) {
   const [isSessionMcpServersLoading, setIsSessionMcpServersLoading] = useState(false);
   const [isMcpServerTogglePending, setIsMcpServerTogglePending] = useState(false);
   const [input, setInput] = useState("");
+  const [draftImages, setDraftImages] = useState<AgentDraftImage[]>([]);
+  const draftImagesRef = useRef(draftImages);
+  draftImagesRef.current = draftImages;
+  const [imageAttachmentError, setImageAttachmentError] = useState<string | null>(null);
+  const [imageUpgradeDialogOpen, setImageUpgradeDialogOpen] = useState(false);
+  const imagePasteGenerationRef = useRef(0);
   const promptHistoryEntries = useMemo(() => agentPromptHistory(timelineItems), [timelineItems]);
   const promptHistoryEntriesRef = useRef<readonly string[]>(promptHistoryEntries);
   const promptHistoryNavigationRef = useRef<AgentPromptHistoryNavigation | null>(null);
@@ -995,11 +1018,104 @@ export function AgentMode({ userId }: { userId: string }) {
     isStopping
   });
   const isSending = Boolean(activeRunId) || isSubmitting;
-  const queuedMessages = activeSessionId ? (queueBySession[activeSessionId]?.items ?? []) : [];
+  const queuedMessages = useMemo(
+    () => (activeSessionId ? (queueBySession[activeSessionId]?.items ?? []) : []),
+    [activeSessionId, queueBySession]
+  );
   const editingQueueId =
     queueEdit && activeSessionId && queueEdit.sessionId === activeSessionId
       ? queueEdit.queueId
       : null;
+  const planName = billingStatus?.product_name?.toLowerCase() || "";
+  const canUseAgentImages =
+    planName.includes("pro") || planName.includes("max") || planName.includes("team");
+
+  const clearDraftImages = useCallback(() => {
+    setDraftImages((current) => {
+      current.forEach((image) => URL.revokeObjectURL(image.url));
+      return [];
+    });
+    setImageAttachmentError(null);
+  }, []);
+
+  const attachAgentImages = useCallback(
+    (files: File[]) => {
+      if (files.length === 0 || isAgentSendLocked || queueEditRef.current) return;
+      if (!canUseAgentImages) {
+        setImageUpgradeDialogOpen(true);
+        return;
+      }
+
+      let validationError: string | null = null;
+      const valid = files.filter((file) => {
+        if (!SUPPORTED_AGENT_IMAGE_TYPES.has(file.type.toLowerCase())) {
+          validationError = "Only JPEG, PNG, and WebP images are supported";
+          return false;
+        }
+        if (file.size > MAX_AGENT_DRAFT_IMAGE_BYTES) {
+          validationError = "Image too large (max 10MB)";
+          return false;
+        }
+        return true;
+      });
+      if (validationError) setImageAttachmentError(validationError);
+      if (valid.length === 0) return;
+
+      setDraftImages((current) => {
+        const available = Math.max(0, MAX_AGENT_DRAFT_IMAGES - current.length);
+        const selected = valid.slice(0, available);
+        if (selected.length < valid.length) {
+          setImageAttachmentError(`Attach at most ${MAX_AGENT_DRAFT_IMAGES} images at a time`);
+        }
+        return [...current, ...selected.map((file) => ({ file, url: URL.createObjectURL(file) }))];
+      });
+    },
+    [canUseAgentImages, isAgentSendLocked]
+  );
+
+  const removeAgentImage = useCallback((index: number) => {
+    setDraftImages((current) => {
+      const image = current[index];
+      if (!image) return current;
+      URL.revokeObjectURL(image.url);
+      return current.filter((_, candidateIndex) => candidateIndex !== index);
+    });
+  }, []);
+
+  const handleAgentImagePaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const generation = imagePasteGenerationRef.current + 1;
+      imagePasteGenerationRef.current = generation;
+      const items = event.clipboardData?.items;
+      if (!items) return;
+
+      const images = getImageFilesFromClipboardItems(items);
+      if (images.length > 0) {
+        event.preventDefault();
+        attachAgentImages(images);
+        return;
+      }
+
+      const fallback = maybeReadLinuxTauriClipboardImages({
+        eventItemTypes: Array.from(items, (item) => item.type),
+        isTauri: isTauri(),
+        isLinux: isLinux(),
+        readClipboard: () => navigator.clipboard?.read?.()
+      });
+      void fallback?.then((fallbackImages) => {
+        if (imagePasteGenerationRef.current !== generation) return;
+        attachAgentImages(fallbackImages);
+      });
+    },
+    [attachAgentImages]
+  );
+
+  useEffect(
+    () => () => {
+      draftImagesRef.current.forEach((image) => URL.revokeObjectURL(image.url));
+    },
+    []
+  );
 
   useEffect(() => {
     const current = queueEditRef.current;
@@ -2352,6 +2468,7 @@ export function AgentMode({ userId }: { userId: string }) {
   const sendMessage = useCallback(
     async (restoreComposerFocus = false, steerNow = false, steerQueueId?: string) => {
       let text = input.trim();
+      const pendingImages = draftImagesRef.current;
       const requestedSessionId = activeSessionIdRef.current;
       let pendingSessionKey = requestedSessionId || NEW_SESSION_PENDING_KEY;
       const canSteerExistingChip = Boolean(steerQueueId);
@@ -2364,6 +2481,7 @@ export function AgentMode({ userId }: { userId: string }) {
           hasInFlightSend: pendingSendTokensRef.current.has(pendingSessionKey),
           hasQueuedMessages: queuedMessages.length > 0,
           hasActiveRun: Boolean(activeRunId),
+          hasAttachments: pendingImages.length > 0 && !queueEditRef.current,
           steerNow
         })
       ) {
@@ -2434,6 +2552,7 @@ export function AgentMode({ userId }: { userId: string }) {
 
       const keepComposerDraft = Boolean(steerQueueId) && !editingSteeredChip;
       const requestText = keepComposerDraft ? "" : text;
+      const requestImages = steerQueueId ? [] : pendingImages;
       setError(null);
       resetPromptHistoryNavigation();
       if (!keepComposerDraft) {
@@ -2462,6 +2581,12 @@ export function AgentMode({ userId }: { userId: string }) {
           if (cancelledPendingSendTokensRef.current.has(sendToken)) {
             throw new PendingAgentSendCancelledError();
           }
+          const attachments = await Promise.all(
+            requestImages.map(async ({ file }) => ({
+              name: file.name,
+              dataUrl: await fileToDataURL(file)
+            }))
+          );
           const response = await agentRuntimeService.sendMessage(userId, {
             sessionId,
             text: requestText,
@@ -2474,8 +2599,10 @@ export function AgentMode({ userId }: { userId: string }) {
               modelAliases
             ),
             steer: steerNow,
-            queueId: steerQueueId ?? editingSteeredChip?.queueId
+            queueId: steerQueueId ?? editingSteeredChip?.queueId,
+            attachments
           });
+          if (requestImages.length > 0) clearDraftImages();
           if (cancelledPendingSendTokensRef.current.has(sendToken)) {
             // The native command may have crossed the start boundary while the
             // user clicked Cancel. Cancel the concrete run before returning.
@@ -2534,6 +2661,7 @@ export function AgentMode({ userId }: { userId: string }) {
       availableModels,
       cancelledPendingSendTokensRef,
       clearPendingSend,
+      clearDraftImages,
       contextLimitForModel,
       deletedSessionIdsRef,
       ensureRuntimeAndSession,
@@ -2817,12 +2945,14 @@ export function AgentMode({ userId }: { userId: string }) {
         setActiveSessionId(null);
         setTimelineItems([]);
         setInput("");
+        clearDraftImages();
         restoreNewTaskModel();
       }
     },
     [
       agentSessionSelection,
       cancelThoughtLabelDisplays,
+      clearDraftImages,
       clearActiveRun,
       deletedSessionIdsRef,
       forgetSessionQueue,
@@ -3365,6 +3495,12 @@ export function AgentMode({ userId }: { userId: string }) {
         />
       }
     >
+      <UpgradePromptDialog
+        open={imageUpgradeDialogOpen}
+        onOpenChange={setImageUpgradeDialogOpen}
+        feature="image"
+      />
+
       {projectToRename ? (
         <RenameAgentProjectDialog
           key={projectToRename.path}
@@ -3573,6 +3709,9 @@ export function AgentMode({ userId }: { userId: string }) {
                   activeRootLabel={activeRootLabel}
                   areSettingsDisabled={areAgentSettingsLocked}
                   input={input}
+                  draftImages={draftImages}
+                  imageAttachmentError={imageAttachmentError}
+                  canUseImages={canUseAgentImages}
                   isSendDisabled={isAgentSendLocked}
                   isSending={isSending}
                   isStarting={isStarting}
@@ -3590,6 +3729,10 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={handleAgentInputChange}
                   onInputPointerDown={resetPromptHistoryNavigation}
+                  onImageAccessRequired={() => setImageUpgradeDialogOpen(true)}
+                  onImageFiles={attachAgentImages}
+                  onImagePaste={handleAgentImagePaste}
+                  onRemoveImage={removeAgentImage}
                   onKeyDown={handleKeyDown}
                   onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
@@ -3613,6 +3756,7 @@ export function AgentMode({ userId }: { userId: string }) {
                   isRunActive={Boolean(activeRunId) && !isSubmitting}
                   generatedThoughtLabels={generatedThoughtLabels}
                   sessionId={activeSessionId}
+                  userId={userId}
                   onPermissionDecision={respondToPermission}
                 />
               )}
@@ -3626,6 +3770,9 @@ export function AgentMode({ userId }: { userId: string }) {
                   activeRootLabel={activeRootLabel}
                   areSettingsDisabled={areAgentSettingsLocked}
                   input={input}
+                  draftImages={draftImages}
+                  imageAttachmentError={imageAttachmentError}
+                  canUseImages={canUseAgentImages}
                   isSendDisabled={isAgentSendLocked}
                   isSending={isSending}
                   isStarting={isStarting}
@@ -3642,6 +3789,10 @@ export function AgentMode({ userId }: { userId: string }) {
                   onChooseProjectRoot={chooseProjectRoot}
                   onInputChange={handleAgentInputChange}
                   onInputPointerDown={resetPromptHistoryNavigation}
+                  onImageAccessRequired={() => setImageUpgradeDialogOpen(true)}
+                  onImageFiles={attachAgentImages}
+                  onImagePaste={handleAgentImagePaste}
+                  onRemoveImage={removeAgentImage}
                   onKeyDown={handleKeyDown}
                   onBeforeInput={handleBeforeInput}
                   onManageMcpServers={handleManageMcpServers}
@@ -4803,6 +4954,9 @@ interface AgentComposerProps {
   activeRootLabel: string;
   areSettingsDisabled: boolean;
   input: string;
+  draftImages: AgentDraftImage[];
+  imageAttachmentError: string | null;
+  canUseImages: boolean;
   isSendDisabled: boolean;
   isSending: boolean;
   isStarting: boolean;
@@ -4820,6 +4974,10 @@ interface AgentComposerProps {
   onChooseProjectRoot: () => void;
   onInputChange: (value: string) => void;
   onInputPointerDown: () => void;
+  onImageAccessRequired: () => void;
+  onImageFiles: (files: File[]) => void;
+  onImagePaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  onRemoveImage: (index: number) => void;
   onBeforeInput: (event: React.FormEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onManageMcpServers: () => void;
@@ -4841,6 +4999,9 @@ function AgentComposer({
   activeRootLabel,
   areSettingsDisabled,
   input,
+  draftImages,
+  imageAttachmentError,
+  canUseImages,
   isSendDisabled,
   isSending,
   isStarting,
@@ -4858,6 +5019,10 @@ function AgentComposer({
   onChooseProjectRoot,
   onInputChange,
   onInputPointerDown,
+  onImageAccessRequired,
+  onImageFiles,
+  onImagePaste,
+  onRemoveImage,
   onBeforeInput,
   onKeyDown,
   onManageMcpServers,
@@ -4875,6 +5040,7 @@ function AgentComposer({
   onDiscardQueuedMessageEdit
 }: AgentComposerProps) {
   const rootOptions = recentRoots;
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -4917,7 +5083,7 @@ function AgentComposer({
               )}
             >
               <span className="min-w-0 flex-1 truncate" title={item.text}>
-                {item.text}
+                {item.text || `${item.attachments?.length ?? 0} image attachment(s)`}
               </span>
               {onCancelQueuedMessage ? (
                 <button
@@ -4955,6 +5121,33 @@ function AgentComposer({
           ))}
         </div>
       ) : null}
+      {!editingQueueId && draftImages.length > 0 ? (
+        <div className="flex flex-wrap gap-2 px-3 pt-3">
+          {draftImages.map((image, index) => (
+            <div key={image.url} className="group relative">
+              <img
+                src={image.url}
+                alt={image.file.name || `Attachment ${index + 1}`}
+                className="h-16 w-16 rounded-xl border object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => onRemoveImage(index)}
+                disabled={isSendDisabled}
+                aria-label={`Remove attachment ${index + 1}`}
+                className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-40"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {imageAttachmentError ? (
+        <p className="px-3 pt-2 text-sm text-maple-error" role="alert">
+          {imageAttachmentError}
+        </p>
+      ) : null}
       <Textarea
         ref={textareaRef}
         id="agent-message"
@@ -4963,6 +5156,7 @@ function AgentComposer({
         onPointerDown={onInputPointerDown}
         onBeforeInput={onBeforeInput}
         onKeyDown={onKeyDown}
+        onPaste={onImagePaste}
         disabled={isSendDisabled}
         placeholder={
           editingQueueId
@@ -5001,6 +5195,25 @@ function AgentComposer({
             onToggle={onMcpToggle}
             onManage={onManageMcpServers}
           />
+
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            disabled={isSendDisabled || Boolean(editingQueueId)}
+            onClick={() => {
+              if (!canUseImages) {
+                onImageAccessRequired();
+                return;
+              }
+              imageInputRef.current?.click();
+            }}
+            aria-label="Add images"
+            title="Add images"
+          >
+            <Image className="h-4 w-4" />
+          </Button>
 
           <Select
             disabled={areSettingsDisabled}
@@ -5066,7 +5279,8 @@ function AgentComposer({
                 isSendDisabled,
                 projectRoot,
                 hasQueuedMessages: queuedMessages.length > 0,
-                hasActiveRun: isSending
+                hasActiveRun: isSending,
+                hasAttachments: draftImages.length > 0 && !editingQueueId
               })
             }
             aria-label="Send agent message"
@@ -5079,6 +5293,18 @@ function AgentComposer({
           </button>
         </div>
       </div>
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/jpeg,image/jpg,image/png,image/webp"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          onImageFiles(files);
+        }}
+      />
     </ChatComposerSurface>
   );
 }
@@ -5461,6 +5687,7 @@ function AgentTimeline({
   isRunActive,
   generatedThoughtLabels,
   sessionId,
+  userId,
   onPermissionDecision
 }: {
   items: AgentTimelineItem[];
@@ -5468,6 +5695,7 @@ function AgentTimeline({
   isRunActive: boolean;
   generatedThoughtLabels: Record<string, Record<string, string>>;
   sessionId: string | null;
+  userId: string;
   onPermissionDecision: (item: AgentTimelineItem, decision: AgentPermissionDecision) => void;
 }) {
   const visibleItems = coalesceAdjacentThinkingItems(items).filter(isRenderableAgentTimelineItem);
@@ -5483,6 +5711,7 @@ function AgentTimeline({
         const copyText = getAgentTurnCopyText(turn);
 
         if (turn.type === "user") {
+          const imageAttachments = agentTimelineImageAttachments(turn.item);
           const previousTurn = turnIndex > 0 ? turns[turnIndex - 1] : undefined;
           const nextTurn = turns[turnIndex + 1];
           const previousShowsPending =
@@ -5497,7 +5726,21 @@ function AgentTimeline({
                 stackedBottom={stackedBottom}
                 actions={copyText ? <ChatCopyButton text={copyText} /> : undefined}
               >
-                <Markdown content={turn.item.text || ""} />
+                <div className="space-y-2">
+                  {imageAttachments.length > 0 && sessionId ? (
+                    <div className="flex flex-wrap gap-2">
+                      {imageAttachments.map((attachment) => (
+                        <AgentImageAttachmentPreview
+                          key={attachment.id}
+                          attachment={attachment}
+                          sessionId={sessionId}
+                          userId={userId}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                  {turn.item.text?.trim() ? <Markdown content={turn.item.text} /> : null}
+                </div>
               </ChatUserTurn>
               {pendingAfterUserTurnId === turn.id ? <ChatAssistantPendingTurn /> : null}
             </div>
@@ -5537,6 +5780,74 @@ function AgentTimeline({
           </ChatAssistantTurn>
         );
       })}
+    </div>
+  );
+}
+
+function agentTimelineImageAttachments(item: AgentTimelineItem): AgentImageAttachment[] {
+  if (!item.input || typeof item.input !== "object" || Array.isArray(item.input)) return [];
+  const attachments = (item.input as { imageAttachments?: unknown }).imageAttachments;
+  if (!Array.isArray(attachments)) return [];
+  return attachments.filter((attachment): attachment is AgentImageAttachment => {
+    if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) return false;
+    const candidate = attachment as Partial<AgentImageAttachment>;
+    return (
+      typeof candidate.id === "string" &&
+      typeof candidate.name === "string" &&
+      typeof candidate.mimeType === "string" &&
+      typeof candidate.source === "string"
+    );
+  });
+}
+
+function AgentImageAttachmentPreview({
+  attachment,
+  sessionId,
+  userId
+}: {
+  attachment: AgentImageAttachment;
+  sessionId: string;
+  userId: string;
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDataUrl(null);
+    setFailed(false);
+    void agentRuntimeService
+      .loadImageAttachment(userId, sessionId, attachment.id)
+      .then((value) => {
+        if (!cancelled) setDataUrl(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [attachment.id, sessionId, userId]);
+
+  if (dataUrl) {
+    return (
+      <img
+        src={dataUrl}
+        alt={attachment.name}
+        title={attachment.name}
+        className="max-h-64 max-w-full rounded-xl border object-contain"
+      />
+    );
+  }
+
+  return (
+    <div className="flex h-16 min-w-32 items-center gap-2 rounded-xl border bg-muted/40 px-3 text-xs text-muted-foreground">
+      {failed ? (
+        <AlertCircle className="h-4 w-4 shrink-0" />
+      ) : (
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+      )}
+      <span className="max-w-44 truncate">{attachment.name}</span>
     </div>
   );
 }

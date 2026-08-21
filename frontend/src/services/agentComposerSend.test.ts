@@ -49,6 +49,23 @@ describe("agent composer send policy", () => {
         hasInFlightSend: false
       })
     ).toBe(true);
+    expect(
+      canSubmitAgentComposerMessage({
+        text: "",
+        hasAttachments: true,
+        isSendLocked: false,
+        isSessionSelectionPending: false,
+        hasInFlightSend: false
+      })
+    ).toBe(true);
+    expect(
+      agentComposerCanSend({
+        text: "",
+        hasAttachments: true,
+        isSendDisabled: false,
+        projectRoot: "/tmp/project"
+      })
+    ).toBe(true);
   });
 
   test("still blocks empty, locked, in-flight, and selection-pending submits", () => {

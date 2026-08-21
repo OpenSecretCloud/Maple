@@ -138,7 +138,20 @@ export interface AgentQueuedMessage {
   messageId: string;
   sessionId: string;
   text: string;
+  attachments?: AgentImageAttachment[];
   createdMs: number;
+}
+
+export interface AgentImageUpload {
+  name: string;
+  dataUrl: string;
+}
+
+export interface AgentImageAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  source: string;
 }
 
 export interface AgentDesktopQueueSnapshot {
@@ -173,6 +186,7 @@ export interface AgentSendMessageRequest {
   visionCapable: boolean;
   steer?: boolean;
   queueId?: string | null;
+  attachments?: AgentImageUpload[];
 }
 
 export interface AgentRunResponse {
@@ -410,6 +424,18 @@ export class AgentRuntimeService {
 
   async deleteSession(userId: string, sessionId: string): Promise<void> {
     await this.invokeForUser(userId, "agent_delete_session", { userId, sessionId });
+  }
+
+  async loadImageAttachment(
+    userId: string,
+    sessionId: string,
+    attachmentId: string
+  ): Promise<string> {
+    return await this.invokeLocalForUser<string>(userId, "agent_load_image_attachment", {
+      userId,
+      sessionId,
+      attachmentId
+    });
   }
 
   async sendMessage(userId: string, request: AgentSendMessageRequest): Promise<AgentRunResponse> {

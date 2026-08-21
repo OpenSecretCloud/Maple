@@ -17,6 +17,7 @@ export function canSubmitAgentComposerMessage({
   hasInFlightSend,
   hasQueuedMessages = false,
   hasActiveRun = false,
+  hasAttachments = false,
   steerNow = false
 }: {
   text: string;
@@ -25,9 +26,10 @@ export function canSubmitAgentComposerMessage({
   hasInFlightSend: boolean;
   hasQueuedMessages?: boolean;
   hasActiveRun?: boolean;
+  hasAttachments?: boolean;
   steerNow?: boolean;
 }): boolean {
-  const hasSendableText = Boolean(text.trim());
+  const hasSendableText = Boolean(text.trim()) || hasAttachments;
   const canFlushQueuedOnly = hasQueuedMessages && !hasActiveRun;
   const canSteerQueuedStack = steerNow && hasQueuedMessages && !hasSendableText;
   return (
@@ -85,15 +87,17 @@ export function agentComposerCanSend({
   isSendDisabled,
   projectRoot,
   hasQueuedMessages = false,
-  hasActiveRun = false
+  hasActiveRun = false,
+  hasAttachments = false
 }: {
   text: string;
   isSendDisabled: boolean;
   projectRoot: string;
   hasQueuedMessages?: boolean;
   hasActiveRun?: boolean;
+  hasAttachments?: boolean;
 }): boolean {
-  const hasSendableText = Boolean(text.trim());
+  const hasSendableText = Boolean(text.trim()) || hasAttachments;
   const canFlushQueuedOnly = hasQueuedMessages && !hasActiveRun;
   return (hasSendableText || canFlushQueuedOnly) && !isSendDisabled && Boolean(projectRoot);
 }

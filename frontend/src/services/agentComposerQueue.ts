@@ -3,6 +3,7 @@ export interface AgentQueuedMessage {
   messageId: string;
   sessionId: string;
   text: string;
+  attachments?: Array<{ id: string; name: string; mimeType: string; source: string }>;
   createdMs: number;
 }
 

@@ -10,6 +10,7 @@ import {
   groupAgentTimelineItems,
   hasAgentUserMessage,
   hasRenderableThinkingText,
+  isRenderableAgentTimelineItem,
   agentPendingAssistantLoader,
   shouldShowAgentAssistantLoader
 } from "./agentTimeline";
@@ -56,6 +57,26 @@ describe("hasAgentUserMessage", () => {
       ])
     ).toBe(false);
     expect(hasAgentUserMessage([item("user", "message", "user")])).toBe(true);
+  });
+});
+
+describe("isRenderableAgentTimelineItem", () => {
+  test("keeps image-only user messages in the timeline", () => {
+    expect(
+      isRenderableAgentTimelineItem({
+        ...item("image", "message", "user", ""),
+        input: {
+          imageAttachments: [
+            {
+              id: "attachment",
+              name: "screen.png",
+              mimeType: "image/png",
+              source: "maple-attachment://attachment"
+            }
+          ]
+        }
+      })
+    ).toBe(true);
   });
 });
 

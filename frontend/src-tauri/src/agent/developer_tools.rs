@@ -1,3 +1,4 @@
+use super::attachments::{attachment_id_from_source, AgentAttachmentStore};
 use super::web_tools::{
     bound_open_url_tool_error, bound_web_search_tool_error, execute_open_url, execute_web_search,
     open_url_tool, web_search_tool, OpenUrlParams, WebSearchParams, WebToolState,
@@ -145,6 +146,7 @@ pub(crate) struct MapleDeveloperClient {
     web_state: Arc<WebToolState>,
     tool_context: SharedAgentToolContext,
     contextual_image_context: Option<PlatformExtensionContext>,
+    attachment_store: Option<Arc<AgentAttachmentStore>>,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
     #[cfg(not(windows))]
@@ -175,11 +177,17 @@ impl MapleDeveloperClient {
             web_state,
             tool_context,
             contextual_image_context,
+            attachment_store: None,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
             #[cfg(not(windows))]
             login_path: OnceCell::new(),
         })
+    }
+
+    pub(super) fn with_attachment_store(mut self, store: Arc<AgentAttachmentStore>) -> Self {
+        self.attachment_store = Some(store);
+        self
     }
 
     #[cfg(not(windows))]
@@ -300,10 +308,10 @@ impl MapleDeveloperClient {
 
     fn read_image_tool(mut tool: Tool, requires_context: bool) -> Tool {
         tool.description = Some(if requires_context {
-            "Read an image from a local file path or http(s) URL and return a detailed visual description. Include focused task context describing what you need to learn from the image. Remote URLs require approval in Read only mode. Supports png, jpeg, gif, and webp."
+            "Read an image from a Maple attachment reference, local file path, or http(s) URL and return a detailed visual description. Include focused task context describing what you need to learn from the image. Remote URLs require approval in Read only mode. Supports png, jpeg, gif, and webp."
                 .into()
         } else {
-            "Read an image from a local file path or http(s) URL and return it as image content for the model to inspect. Remote URLs require approval in Read only mode. Supports png, jpeg, gif, and webp."
+            "Read an image from a Maple attachment reference, local file path, or http(s) URL and return it as image content for the model to inspect. Remote URLs require approval in Read only mode. Supports png, jpeg, gif, and webp."
                 .into()
         });
         let mut schema = tool.input_schema.as_ref().clone();
@@ -316,7 +324,7 @@ impl MapleDeveloperClient {
                 .and_then(serde_json::Value::as_object_mut)
             {
                 source.insert("description".to_string(), serde_json::Value::String(
-                    "Local file path or http(s) URL. Remote URLs require approval in Read only mode."
+                    "Maple attachment reference, local file path, or http(s) URL. Remote URLs require approval in Read only mode."
                         .to_string(),
                 ));
             }
@@ -578,6 +586,7 @@ impl McpClientTrait for MapleDeveloperClient {
                     ctx,
                     name,
                     arguments,
+                    self.attachment_store.as_deref(),
                     cancel_token.clone(),
                 )
                 .await?;
@@ -1571,7 +1580,8 @@ fn normalize_read_image_arguments(
     let Some(source) = source else {
         return arguments;
     };
-    if is_remote_file_source(&source)
+    if attachment_id_from_source(&source).is_some()
+        || is_remote_file_source(&source)
         || reqwest::Url::parse(&source).is_ok_and(|url| url.scheme() == "file")
     {
         return arguments;
@@ -1632,6 +1642,7 @@ async fn call_bounded_read_image(
     ctx: &ToolCallContext,
     name: &str,
     arguments: Option<JsonObject>,
+    attachment_store: Option<&AgentAttachmentStore>,
     cancel_token: CancellationToken,
 ) -> Result<CallToolResult, Error> {
     let Some(source) = arguments
@@ -1643,13 +1654,29 @@ async fn call_bounded_read_image(
         return goose.call_tool(ctx, name, arguments, cancel_token).await;
     };
 
-    let bytes =
+    let bytes = if let Some(attachment_id) = attachment_id_from_source(&source) {
+        let Some(store) = attachment_store.cloned() else {
+            return Ok(error_result("Maple image attachment is unavailable"));
+        };
+        let session_id = ctx.session_id.clone();
+        let attachment_id = attachment_id.to_string();
+        match tokio::task::spawn_blocking(move || store.read(&session_id, &attachment_id)).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(error)) => return Ok(error_result(error)),
+            Err(error) => {
+                return Ok(error_result(format!(
+                    "Agent image attachment task failed: {error}"
+                )))
+            }
+        }
+    } else {
         match load_bounded_image_bytes(&source, ctx.working_dir.as_deref(), cancel_token.clone())
             .await
         {
             Ok(bytes) => bytes,
             Err(error) => return Ok(error_result(error)),
-        };
+        }
+    };
     if cancel_token.is_cancelled() {
         return Ok(error_result("Image read cancelled"));
     }
@@ -2423,6 +2450,7 @@ fn mutation_key(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::attachments::AgentImageUpload;
     use crate::agent::tool_context::AgentToolContextSpec;
     use crate::agent::transient_mcp::{TransientMcpConfig, TransientMcpRouter};
     use axum::response::IntoResponse;
@@ -3325,11 +3353,19 @@ mod tests {
     }
 
     #[test]
-    fn read_image_keeps_remote_urls_and_normalizes_local_paths() {
+    fn read_image_keeps_urls_and_maple_attachments_and_normalizes_local_paths() {
         let remote = object!({ "source": "https://example.com/pixel.png" });
         assert_eq!(
             normalize_read_image_arguments(Some(remote.clone()), Some(Path::new("/tmp"))),
             Some(remote)
+        );
+
+        let attachment = object!({
+            "source": "maple-attachment://0123456789abcdef0123456789abcdef"
+        });
+        assert_eq!(
+            normalize_read_image_arguments(Some(attachment.clone()), Some(Path::new("/tmp"))),
+            Some(attachment)
         );
 
         let local = normalize_read_image_arguments(
@@ -3338,6 +3374,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(local["source"], "/tmp/project/images/pixel.png");
+    }
+
+    #[tokio::test]
+    async fn read_image_resolves_session_scoped_maple_attachments() {
+        const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+        let temp = TestDir::new();
+        let store = AgentAttachmentStore::new(temp.path().join("account"));
+        let prepared = store
+            .store_uploads(
+                "session-a",
+                &[AgentImageUpload {
+                    name: "screen.png".to_string(),
+                    data_url: format!("data:image/png;base64,{PNG_1X1}"),
+                }],
+            )
+            .unwrap();
+        let source = prepared[0].attachment.source.clone();
+        let client =
+            test_client(temp.path().join("sessions"), true).with_attachment_store(Arc::new(store));
+
+        let result = client
+            .call_tool(
+                &ToolCallContext::new("session-a".to_string(), None, None),
+                "read_image",
+                Some(object!({ "source": source.clone() })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.is_error, Some(false));
+        assert!(result
+            .content
+            .iter()
+            .any(|content| matches!(content, ContentBlock::Image(_))));
+        assert!(result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("source"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == source));
     }
 
     #[tokio::test]
