@@ -48,6 +48,7 @@ run_build_phase() {
   local app_exe
 
   print_source_provenance
+  verify_rust_lockfile
   install_frontend_deps
   configure_sccache
   use_release_environment

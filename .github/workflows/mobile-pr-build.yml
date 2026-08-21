@@ -68,11 +68,11 @@ jobs:
             pr-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
       - name: Prepare ONNX Runtime iOS artifact
-        run: nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh
         timeout-minutes: 90
 
       - name: Build Tauri iOS App (simulator)
-        run: nix develop .#apple -c ./scripts/ci/ios-pr.sh
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-pr.sh
         env:
           MAPLE_IOS_DOWNLOAD_SIMULATOR_RUNTIME: "1"
         timeout-minutes: 90

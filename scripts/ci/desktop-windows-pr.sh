@@ -6,6 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 require_windows_host "desktop-windows-pr.sh"
 
 print_source_provenance
+verify_rust_lockfile
 
 install_frontend_deps
 configure_sccache

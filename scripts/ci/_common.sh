@@ -11,6 +11,10 @@ source "${TAURI_DIR}/scripts/onnxruntime-android-pins.sh"
 
 export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
 
+verify_rust_lockfile() {
+  (cd "${TAURI_DIR}" && cargo metadata --locked --format-version 1 >/dev/null)
+}
+
 install_frontend_deps() {
   disable_bun_env_files
   cd "${FRONTEND_DIR}"

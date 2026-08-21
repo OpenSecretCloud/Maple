@@ -26,7 +26,7 @@ Use the highest tier triggered by the change. Add lower-tier checks rather than 
 Use for prose, comments, or metadata that cannot affect a build or runtime.
 
 - Review the rendered or consumed result, links, examples, and commands.
-- Run `nix flake check` when changing the flake, GitHub Actions, or release metadata.
+- Run `nix flake check --no-update-lock-file` when changing the flake, GitHub Actions, or release metadata.
 - Escalate to the owning tier when documentation changes an executable example, environment contract, or generated input.
 
 ### Tier 1: isolated frontend behavior
@@ -91,7 +91,7 @@ Run commands from the repository root unless the command changes directory expli
 ### Focused frontend test
 
 ```bash
-nix develop .#ci -c bash -lc \
+nix develop --no-update-lock-file .#ci -c bash -lc \
   'cd frontend && bun --no-env-file test ./src/path/to/changed.test.ts'
 ```
 
@@ -101,7 +101,7 @@ already exported by the calling shell still apply.
 ### Complete frontend checks
 
 ```bash
-nix develop .#ci -c ./scripts/ci/frontend.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh
 ```
 
 This script installs locked frontend dependencies and runs formatting, linting, typechecking, and Bun tests. It removes `frontend/node_modules` and ignores local `.env*` files while it runs. Commit or preserve relevant local work before invoking it. It does **not** build the application.
@@ -109,7 +109,7 @@ This script installs locked frontend dependencies and runs formatting, linting, 
 ### Web production build
 
 ```bash
-MAPLE_WEB_ENVIRONMENT=pr nix develop .#ci -c ./scripts/ci/web.sh
+MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
 ```
 
 Use `pr` for contributor validation. Record the compiled OpenSecret, billing, and feature-flag endpoint configuration when those endpoints affect the scenario. A successful web build proves bundling, not browser behavior.
@@ -119,7 +119,7 @@ with the checked-in preview command, then open that preview rather than the
 development server:
 
 ```bash
-nix develop .#ci -c bash -lc \
+nix develop --no-update-lock-file .#ci -c bash -lc \
   'cd frontend && bun --no-env-file run preview'
 ```
 
@@ -131,8 +131,8 @@ development-runtime evidence, not smoke evidence for the built artifact.
 ### Rust checks
 
 ```bash
-nix develop .#ci -c just rust-lint
-nix develop .#ci -c ./scripts/ci/rust.sh
+nix develop --no-update-lock-file .#ci -c just rust-lint
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 ```
 
 The lint recipe runs `cargo fmt --check` and Clippy with warnings denied. The CI script provisions Linux ONNX Runtime when needed and runs `cargo test --all-targets --locked`. Neither command launches Maple.
@@ -140,7 +140,7 @@ The lint recipe runs `cargo fmt --check` and Clippy with warnings denied. The CI
 ### Repository configuration checks
 
 ```bash
-nix flake check
+nix flake check --no-update-lock-file
 ```
 
 This validates pinned tool versions, GitHub Actions syntax, and release metadata. Run it for changes to `flake.nix`, `flake.lock`, workflows, CI scripts, or release configuration. It is not a substitute for product tests.
@@ -159,13 +159,13 @@ that Maple works with the OpenSecret backend configured in
 ### macOS desktop
 
 ```bash
-nix develop .#ci -c ./scripts/ci/desktop-pr.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/desktop-pr.sh
 ```
 
 ### Linux desktop
 
 ```bash
-MAPLE_TAURI_FAKE_UPDATER_SIGNING=1 nix develop .#desktop-linux -c ./scripts/ci/desktop-pr.sh
+MAPLE_TAURI_FAKE_UPDATER_SIGNING=1 nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/desktop-pr.sh
 ```
 
 ### Windows desktop
@@ -181,7 +181,7 @@ Run on real Windows from Git Bash/MSYS:
 Run on x86_64 Linux:
 
 ```bash
-MAPLE_ANDROID_FAKE_SIGNING=1 MAPLE_ANDROID_WEB_ENVIRONMENT=pr nix develop .#android -c ./scripts/ci/android-release.sh
+MAPLE_ANDROID_FAKE_SIGNING=1 MAPLE_ANDROID_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#android -c ./scripts/ci/android-release.sh
 ```
 
 ### iOS
@@ -189,8 +189,8 @@ MAPLE_ANDROID_FAKE_SIGNING=1 MAPLE_ANDROID_WEB_ENVIRONMENT=pr nix develop .#andr
 Run on macOS with the supported Xcode toolchain:
 
 ```bash
-nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh
-nix develop .#apple -c ./scripts/ci/ios-pr.sh
+nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh
+nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-pr.sh
 ```
 
 Treat PR artifact workflows as compile/package evidence. They do not launch the built app. Treat artifact attestations as provenance evidence only when the attestation step actually succeeds.
@@ -211,7 +211,7 @@ selected OpenSecret backend by
 including required migrations, then launch Maple from this checkout with:
 
 ```bash
-nix develop -c just desktop-dev
+nix develop --no-update-lock-file -c just desktop-dev
 ```
 
 `just desktop-dev` consumes the configured development endpoints and applies
@@ -227,7 +227,7 @@ overlay or port. When packaged behavior and the overlay identity are both
 required, build with:
 
 ```bash
-nix develop -c just desktop-build-debug-overlay
+nix develop --no-update-lock-file -c just desktop-build-debug-overlay
 ```
 
 On macOS, verify the produced app's `CFBundleIdentifier` from its actual

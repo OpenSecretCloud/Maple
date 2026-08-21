@@ -65,7 +65,7 @@ cd frontend/src-tauri
 ORT_DYLIB_PATH=/absolute/path/from/the/provider \
 MAPLE_OCR_TEST_PDF=/absolute/path/to/scanned.pdf \
 MAPLE_OCR_MODEL_DIR=/absolute/path/to/models \
-nix develop -c cargo test --release --locked --lib \
+nix develop --no-update-lock-file -c cargo test --release --locked --lib \
   extracts_scanned_pdf_with_real_ocr_models -- --ignored --nocapture
 ```
 

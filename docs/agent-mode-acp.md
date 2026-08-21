@@ -314,8 +314,8 @@ Use the same authenticated Paseo daemon for every row. If a provider refresh is 
 The focused ACP test entry point on macOS is:
 
 ```bash
-nix develop -c frontend/src-tauri/scripts/run-with-desktop-onnxruntime.sh \
-  cargo test --manifest-path frontend/src-tauri/Cargo.toml agent_acp --lib
+nix develop --no-update-lock-file -c frontend/src-tauri/scripts/run-with-desktop-onnxruntime.sh \
+  cargo test --locked --manifest-path frontend/src-tauri/Cargo.toml agent_acp --lib
 ```
 
 Use the managed OpenSecret workspace and its repository-native smoke commands for the supporting OpenSecret and billing services. Never substitute a different installed Maple app for the exact development app in the GUI rows.

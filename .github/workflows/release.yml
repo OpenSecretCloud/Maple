@@ -105,7 +105,7 @@ jobs:
           fi
 
       - name: Build Tauri desktop app
-        run: nix develop .#${{ matrix.nix_shell }} -c ./scripts/ci/desktop-release.sh
+        run: nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c ./scripts/ci/desktop-release.sh
         env:
           APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest-8-cores' && '1' || '' }}
           NO_STRIP: ${{ matrix.platform == 'ubuntu-latest-8-cores' && 'true' || '' }}
@@ -119,11 +119,11 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#${{ matrix.nix_shell }} -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c sccache --show-stats
 
       - name: Collect desktop release checksums
         run: |
-          nix develop .#${{ matrix.nix_shell }} -c ./scripts/ci/attestation-manifest.sh \
+          nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c ./scripts/ci/attestation-manifest.sh \
             desktop-release-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-final.sha256 \
             frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-*.sha256
@@ -345,7 +345,7 @@ jobs:
             ${{ runner.os }}-sccache-
 
       - name: Build Tauri Android App
-        run: nix develop .#android -c ./scripts/ci/android-release.sh
+        run: nix develop --no-update-lock-file .#android -c ./scripts/ci/android-release.sh
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -353,11 +353,11 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#android -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#android -c sccache --show-stats
 
       - name: Collect Android release checksums
         run: |
-          nix develop .#android -c ./scripts/ci/attestation-manifest.sh \
+          nix develop --no-update-lock-file .#android -c ./scripts/ci/attestation-manifest.sh \
             android-release-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/android-release-final.sha256 \
             frontend/src-tauri/target/reproducibility/android-release-*.sha256
@@ -451,11 +451,11 @@ jobs:
             release-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
       - name: Prepare ONNX Runtime iOS artifact
-        run: nix develop .#apple -c ./scripts/ci/ios-onnxruntime.sh
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh
         timeout-minutes: 90
 
       - name: Build Tauri iOS App
-        run: nix develop .#apple -c ./scripts/ci/ios-release.sh
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-release.sh
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -466,7 +466,7 @@ jobs:
 
       - name: Collect iOS release checksums
         run: |
-          nix develop .#apple -c ./scripts/ci/attestation-manifest.sh \
+          nix develop --no-update-lock-file .#apple -c ./scripts/ci/attestation-manifest.sh \
             ios-release-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-final.sha256 \
             frontend/src-tauri/target/reproducibility/ios-release-*.sha256 \
@@ -530,7 +530,7 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
 
       - name: Build web artifact
-        run: nix develop .#ci -c ./scripts/ci/web.sh
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
         env:
           MAPLE_WEB_ENVIRONMENT: release
 
@@ -581,7 +581,7 @@ jobs:
       - name: Verify Android release artifact reproducibility proofs
         env:
           MAPLE_REQUIRE_ANDROID_SIGNATURE_VERIFICATION: "1"
-        run: nix develop .#android -c ./scripts/ci/verify-release-artifacts.sh artifacts android
+        run: nix develop --no-update-lock-file .#android -c ./scripts/ci/verify-release-artifacts.sh artifacts android
 
   verify-linux-desktop-release-artifacts:
     needs: build-tauri
@@ -607,7 +607,7 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify Linux desktop release artifact reproducibility proofs
-        run: nix develop .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
+        run: nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
 
   verify-macos-desktop-release-artifacts:
     needs: build-tauri
@@ -652,7 +652,7 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify macOS desktop release artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
 
   verify-windows-desktop-release-artifacts:
     needs: build-windows
@@ -678,7 +678,7 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify Windows desktop release artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
 
   verify-desktop-release-artifacts:
     needs:
@@ -720,11 +720,11 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           MAPLE_LATEST_JSON_PUB_DATE: ${{ github.event.release.published_at || github.event.release.created_at }}
-        run: nix develop .#ci -c ./scripts/ci/latest-json.sh artifacts latest.json
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/latest-json.sh artifacts latest.json
 
       - name: Collect latest.json checksums
         run: |
-          nix develop .#ci -c ./scripts/ci/attestation-manifest.sh \
+          nix develop --no-update-lock-file .#ci -c ./scripts/ci/attestation-manifest.sh \
             latest-json-artifacts.sha256 \
             frontend/src-tauri/target/reproducibility/latest-json-final.sha256
           cat latest-json-artifacts.sha256
@@ -794,7 +794,7 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify release artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos windows ios web latest-json
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos windows ios web latest-json
         env:
           MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
 
@@ -831,7 +831,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          nix develop .#ci -c ./scripts/ci/release-verification-guide.sh \
+          nix develop --no-update-lock-file .#ci -c ./scripts/ci/release-verification-guide.sh \
             artifacts \
             MAPLE_RELEASE_VERIFICATION.md
           sha256sum MAPLE_RELEASE_VERIFICATION.md > MAPLE_RELEASE_VERIFICATION.md.sha256

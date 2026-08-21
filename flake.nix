@@ -600,11 +600,11 @@
               inherit name;
               runtimeInputs = [ pkgs.nix ];
               text = ''
-                exec nix develop ".#${shell}" -c ${script} "$@"
+                exec nix develop --no-update-lock-file ".#${shell}" -c ${script} "$@"
               '';
             };
           }) // {
-            meta.description = "Run ${script} through nix develop .#${shell}";
+            meta.description = "Run ${script} through nix develop --no-update-lock-file .#${shell}";
           };
 
         desktopCiShell = if pkgs.stdenv.isLinux then "desktop-linux" else "ci";

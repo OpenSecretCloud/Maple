@@ -56,11 +56,11 @@ jobs:
             ${{ runner.os }}-sccache-
 
       - name: Build Tauri App (macOS, unsigned)
-        run: nix develop .#ci -c ./scripts/ci/desktop-pr.sh
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/desktop-pr.sh
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#ci -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#ci -c sccache --show-stats
 
       - name: Upload macOS PR Build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
@@ -109,13 +109,13 @@ jobs:
           fi
 
       - name: Build Tauri App (Linux, unsigned + fake updater signing)
-        run: nix develop .#desktop-linux -c ./scripts/ci/desktop-pr.sh
+        run: nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/desktop-pr.sh
         env:
           MAPLE_TAURI_FAKE_UPDATER_SIGNING: "1"
 
       - name: Show sccache stats
         if: always()
-        run: nix develop .#desktop-linux -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#desktop-linux -c sccache --show-stats
 
       - name: Upload Linux PR Builds
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
@@ -220,4 +220,4 @@ jobs:
           path: artifacts
 
       - name: Verify Windows artifact reproducibility proofs
-        run: nix develop .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts windows

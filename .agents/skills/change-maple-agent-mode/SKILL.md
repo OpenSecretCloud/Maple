@@ -124,7 +124,7 @@ archive or current Goose `main`.
 Run the smallest relevant frontend set without Bun's automatic dotenv loading:
 
 ```bash
-nix develop .#ci -c bash -c \
+nix develop --no-update-lock-file .#ci -c bash -c \
   'cd frontend && bun --no-env-file test ./src/components/AgentMode.test.ts'
 ```
 
@@ -135,7 +135,7 @@ or connection availability.
 Run Rust tests by affected module while iterating:
 
 ```bash
-nix develop .#ci -c bash -c \
+nix develop --no-update-lock-file .#ci -c bash -c \
   'cd frontend/src-tauri && cargo test --locked "agent::provider::tests::"'
 ```
 
@@ -161,7 +161,7 @@ path or report the scenario unavailable.
    is occupied, stop the process only when you can prove it belongs to this
    checkout, using its owning lifecycle mechanism where one exists; otherwise
    use another overlay or port. Launch from the repository root with
-   `nix develop -c just desktop-dev`. Operate the native window belonging to
+   `nix develop --no-update-lock-file -c just desktop-dev`. Operate the native window belonging to
    the recorded PID and identifier, never a browser tab or another installed
    app named Maple.
 

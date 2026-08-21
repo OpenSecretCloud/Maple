@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 print_source_provenance
+verify_rust_lockfile
 
 if [ "$(host_os)" != "linux" ]; then
   echo "Android builds must run on Linux." >&2
@@ -20,7 +21,7 @@ case "$(uname -m)" in
 esac
 
 if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "${ANDROID_HOME}" ]; then
-  echo "ANDROID_HOME is not set. Run through 'nix develop .#android'." >&2
+  echo "ANDROID_HOME is not set. Run through 'nix develop --no-update-lock-file .#android'." >&2
   exit 1
 fi
 

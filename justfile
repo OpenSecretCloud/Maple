@@ -24,15 +24,15 @@ lint:
     cd frontend && bun run lint
 
 # Run Tauri iOS development build (default simulator) without the Rust file watcher
-ios-dev:
+ios-dev: _verify-rust-lock
     cd frontend && bun run tauri ios dev --no-watch
 
 # Run Tauri iOS development build on specific simulator (e.g., "iPhone 16 Pro iOS 26")
-ios-dev-sim simulator:
+ios-dev-sim simulator: _verify-rust-lock
     cd frontend && bun run tauri ios dev --no-watch '{{simulator}}'
 
 # Run Tauri iOS development build on physical device (e.g., "Your iPhone")
-ios-dev-device device:
+ios-dev-device device: _verify-rust-lock
     cd frontend && bun run tauri ios dev --no-watch --device '{{device}}'
 
 # Build and verify ONNX Runtime for iOS (device + simulator) - used by PDF OCR
@@ -56,24 +56,24 @@ ios-fix-arch:
     echo "Fixed! Verify with: grep -E 'ARCHS =|VALID_ARCHS|EXCLUDED_ARCHS' maple.xcodeproj/project.pbxproj"
 
 # Build Tauri Android release
-android-build:
+android-build: _verify-rust-lock
     cd frontend/src-tauri && ./scripts/provide-android-onnxruntime.sh
     cd frontend && bun run tauri android build
 
 # Build Tauri desktop release
-desktop-build:
+desktop-build: _verify-rust-lock
     cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
 
 # Run Tauri desktop development build without the Rust file watcher, using workspace-local config when available
-desktop-dev:
+desktop-dev: _verify-rust-lock
     cd frontend && if [ -f ../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch --config ../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch; fi
 
 # Build Tauri desktop debug
-desktop-build-debug:
+desktop-build-debug: _verify-rust-lock
     cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
 
 # Build an unsigned debug desktop package with the required local Tauri overlay
-desktop-build-debug-overlay:
+desktop-build-debug-overlay: _verify-rust-lock
     #!/usr/bin/env bash
     set -euo pipefail
     test -f .local/tauri-workspace.json || { echo "missing .local/tauri-workspace.json" >&2; exit 1; }
@@ -81,28 +81,32 @@ desktop-build-debug-overlay:
     src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug --no-sign --config ../.local/tauri-workspace.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 # Build Tauri desktop release (with CC unset for compatibility)
-desktop-build-no-cc:
+desktop-build-no-cc: _verify-rust-lock
     cd frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
 
 # Build Tauri desktop debug (with CC unset for compatibility)
-desktop-build-debug-no-cc:
+desktop-build-debug-no-cc: _verify-rust-lock
     cd frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
 
 # Format Rust code
 rust-fmt:
     cd frontend/src-tauri && cargo fmt
 
+# Fail before Tauri can build if Cargo.toml and Cargo.lock disagree.
+_verify-rust-lock:
+    cd frontend/src-tauri && cargo metadata --locked --format-version 1 >/dev/null
+
 # Check Rust code compiles
 rust-check:
-    cd frontend/src-tauri && cargo check
+    cd frontend/src-tauri && cargo check --locked
 
 # Run Clippy lints on Rust code
 rust-clippy:
-    cd frontend/src-tauri && cargo clippy
+    cd frontend/src-tauri && cargo clippy --locked
 
 # Run all Rust checks (fmt check + clippy)
 rust-lint:
-    cd frontend/src-tauri && cargo fmt --check && cargo clippy -- -D warnings
+    cd frontend/src-tauri && cargo fmt --check && cargo clippy --locked -- -D warnings
 
 # Remove only this checkout's final Cargo artifacts. Raw `cargo clean` also
 # removes CARGO_BUILD_BUILD_DIR, which may be shared by multiple workspaces.
