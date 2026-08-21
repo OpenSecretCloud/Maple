@@ -64,15 +64,15 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 # Pin Goose to an exact official upstream commit. Keep this as a git dependency
 # instead of a submodule so ordinary Maple checkouts do not need the full Goose
 # history.
-goose = { git = "https://github.com/aaif-goose/goose.git", rev = "98c11ce2ee7b9b302978aa64b1eab7d0895607c7", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "98c11ce2ee7b9b302978aa64b1eab7d0895607c7", package = "goose-providers", default-features = false }
+goose = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose-providers", default-features = false }
 opensecret = "3.6.1"
 rand = "0.8.6"
 async-trait = "0.1"
 rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
 tauri-plugin-dialog = "2.7.1"
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
-agent-client-protocol = { version = "=1.0.1", default-features = false, features = ["unstable_elicitation", "unstable_end_turn_token_usage"] }
+agent-client-protocol = { version = "=2.0.0", default-features = false, features = ["unstable_elicitation", "unstable_end_turn_token_usage"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }

@@ -7660,6 +7660,7 @@ fn message_error_item(
     created_ms: u128,
 ) -> AgentTimelineItem {
     let title = match error.kind {
+        MessageErrorKind::Authentication => "Authentication failed",
         MessageErrorKind::ContextLengthExceeded => "Context limit exceeded",
         MessageErrorKind::CreditsExhausted => "Credits exhausted",
         MessageErrorKind::Other => "Agent error",
@@ -8277,6 +8278,9 @@ fn mcp_server_to_extension(server: &AgentMcpServer) -> Result<ExtensionConfig, S
                     .collect(),
                 timeout: Some(server.timeout_seconds),
                 socket: None,
+                client_id: None,
+                client_secret_key: None,
+                scopes: Vec::new(),
                 bundled: Some(false),
                 available_tools: Vec::new(),
             })
