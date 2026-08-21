@@ -6,9 +6,8 @@
 //! [`MAPLE_SYSTEM_PROMPT_TEMPLATE`] is a line-for-line copy of the pinned
 //! goose `crates/goose/src/prompts/system.md` with only the two-line identity
 //! header rebranded. Every dynamic section (turn context, extensions,
-//! tool-count suggestion, response guidelines) is preserved byte-for-byte so
-//! the rendered prompt keeps goose's exact structure and prompt-cache
-//! stability.
+//! response guidelines) is preserved byte-for-byte so the rendered prompt
+//! keeps goose's exact structure and prompt-cache stability.
 //!
 //! When bumping the goose pin in `Cargo.toml`, diff this template against the
 //! pinned `crates/goose/src/prompts/system.md`; only the first two lines may
@@ -52,15 +51,6 @@ in your tool specification.
 {% else %}
 No extensions are defined. You should let the user know that they should add extensions.
 {% endif %}
-{% endif %}
-
-{% if include_extensions and extension_tool_limits is defined and not code_execution_mode %}
-{% with (extension_count, tool_count) = extension_tool_limits  %}
-# Suggestion
-
-The user has {{extension_count}} extensions with {{tool_count}} tools enabled, exceeding recommended limits ({{max_extensions}} extensions or {{max_tools}} tools).
-Consider asking if they'd like to disable some extensions to improve tool selection accuracy.
-{% endwith %}
 {% endif %}
 
 # Response Guidelines

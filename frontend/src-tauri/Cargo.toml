@@ -64,8 +64,8 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 # Pin Goose to an exact official upstream commit. Keep this as a git dependency
 # instead of a submodule so ordinary Maple checkouts do not need the full Goose
 # history.
-goose = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "064244e6bddf641876676f054a006b7da1da5182", package = "goose-providers", default-features = false }
+goose = { git = "https://github.com/aaif-goose/goose.git", rev = "98c11ce2ee7b9b302978aa64b1eab7d0895607c7", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "98c11ce2ee7b9b302978aa64b1eab7d0895607c7", package = "goose-providers", default-features = false }
 opensecret = "3.6.1"
 rand = "0.8.6"
 async-trait = "0.1"
