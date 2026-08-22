@@ -10,6 +10,7 @@ use crate::agent::{
 };
 use crate::agent_host::{AgentHostLifecycle, AgentRuntimeLifecycleOutcome};
 use crate::maple_api::MapleApiAuthState;
+use futures_util::future::BoxFuture;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -393,18 +394,25 @@ pub async fn agent_save_project_root_order(
         .await
 }
 
-#[tauri::command]
-pub async fn agent_create_session(
+#[deny(clippy::large_futures, clippy::large_stack_frames)]
+#[tauri::command(async)]
+pub fn agent_create_session(
     app_handle: AppHandle,
     state: State<'_, MapleAgentService>,
     user_id: String,
     request: Option<AgentCreateSessionRequest>,
-) -> Result<AgentSessionDetail, String> {
+) -> BoxFuture<'static, Result<AgentSessionDetail, String>> {
     let _ = app_handle;
-    handle_for_user(&state, &user_id)
-        .await?
-        .create_session(request)
-        .await
+    let service = MapleAgentService::clone(state.inner());
+    Box::pin(async move {
+        let handle = service.handle_for_user(&user_id).await?;
+        #[allow(
+            clippy::large_futures,
+            reason = "the enclosing command future is heap-boxed before it crosses Tauri"
+        )]
+        let result = handle.create_session(request).await;
+        result
+    })
 }
 
 #[tauri::command]
@@ -640,6 +648,22 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn create_session_command_keeps_the_tauri_boundary_boxed() {
+        let _: for<'a> fn(
+            AppHandle,
+            State<'a, MapleAgentService>,
+            String,
+            Option<AgentCreateSessionRequest>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<AgentSessionDetail, String>>
+                    + Send
+                    + 'static,
+            >,
+        > = agent_create_session;
+    }
 
     #[test]
     fn service_events_project_to_the_stable_desktop_wire_contract() {
