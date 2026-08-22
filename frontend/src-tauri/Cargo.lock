@@ -4749,9 +4749,9 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7470c127c9bd8ffb7471e1ca720edc5817d8fa019d3aa82db5e644186ae2f25d"
+checksum = "ce86619142c6c60420edf577c4fe41df6e1d3bb3a63429da130b6ccab81cec72"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4960,7 +4960,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.18",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5594,9 +5594,9 @@ dependencies = [
 
 [[package]]
 name = "opensecret"
-version = "3.6.1"
+version = "3.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86d9a35e5dd1ee761d3449d9e2db722eb1ebbab0eef02d3bb8601fd6b23d6bd9"
+checksum = "3323b7adba9f171cc9277b7d51fb881e4a3f37c860eb533bcb0ae434bf4294e1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7836,7 +7836,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9466,7 +9466,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.18",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10294,7 +10294,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
