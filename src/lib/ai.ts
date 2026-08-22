@@ -2,6 +2,7 @@ import { decryptMessage, encryptMessage } from "./encryption";
 import { getAttestation, type Attestation } from "./getAttestation";
 import * as api from "./api";
 import { serializePcrConfig, snapshotPcrConfig, type PcrConfig } from "./pcr";
+import { classifyRecovery } from "./recovery";
 
 export interface CustomFetchOptions {
   /** Optional API key to use instead of a JWT token. */
@@ -24,6 +25,14 @@ export interface CustomFetchDependencies {
   fetch: typeof globalThis.fetch;
   getAttestation: typeof getAttestation;
   refreshToken: typeof api.refreshToken;
+}
+
+interface RequestSnapshot {
+  url: string;
+  headers: Headers;
+  options: RequestInit;
+  plaintextBody?: string;
+  signal?: AbortSignal | null;
 }
 
 const defaultDependencies: CustomFetchDependencies = {
@@ -54,6 +63,47 @@ async function discardResponse(response: Response): Promise<void> {
   }
 }
 
+function throwIfAborted(signal?: AbortSignal | null): void {
+  signal?.throwIfAborted();
+}
+
+async function snapshotRequest(
+  input: string | URL | Request,
+  init?: RequestInit
+): Promise<RequestSnapshot> {
+  const normalized = new Request(input, init);
+  const signal =
+    init?.signal === null
+      ? null
+      : (init?.signal ?? (input instanceof Request ? input.signal : undefined));
+  const url = normalized.url;
+  const headers = new Headers(normalized.headers);
+  const options: RequestInit = {
+    ...init,
+    method: normalized.method,
+    cache: init?.cache ?? normalized.cache,
+    credentials: init?.credentials ?? normalized.credentials,
+    integrity: init?.integrity ?? normalized.integrity,
+    keepalive: init?.keepalive ?? normalized.keepalive,
+    mode: init?.mode ?? normalized.mode,
+    redirect: init?.redirect ?? normalized.redirect,
+    referrer: init?.referrer ?? normalized.referrer,
+    referrerPolicy: init?.referrerPolicy ?? normalized.referrerPolicy,
+    signal
+  };
+  delete options.body;
+  delete options.headers;
+  const plaintextBody = normalized.body === null ? undefined : await normalized.text();
+
+  return {
+    url,
+    headers,
+    options,
+    plaintextBody,
+    signal
+  };
+}
+
 export function createCustomFetch(
   options?: CustomFetchOptions
 ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
@@ -81,34 +131,57 @@ export function createCustomFetchWithDependencies(
     failedSessionId: string,
     identity: ReturnType<typeof resolveAttestationIdentity>
   ): Promise<ActiveAttestation> => {
-    // A concurrent request or token refresh may already have replaced the
-    // failed session. Reuse it instead of starting another handshake.
-    const currentAttestation = requireActiveAttestation(
-      await dependencies.getAttestation(false, identity.apiUrl, identity.pcrConfig)
-    );
-    if (currentAttestation.sessionId !== failedSessionId) {
-      return currentAttestation;
-    }
-
-    let attestationRefresh = attestationRefreshes.get(identity.scope);
+    const renewalScope = `${identity.scope}\n${failedSessionId}`;
+    let attestationRefresh = attestationRefreshes.get(renewalScope);
     if (!attestationRefresh) {
-      attestationRefresh = dependencies
-        .getAttestation(true, identity.apiUrl, identity.pcrConfig)
-        .then(requireActiveAttestation)
-        .finally(() => {
-          attestationRefreshes.delete(identity.scope);
-        });
-      attestationRefreshes.set(identity.scope, attestationRefresh);
+      let resolveRefresh!: (attestation: ActiveAttestation) => void;
+      let rejectRefresh!: (reason?: unknown) => void;
+      attestationRefresh = new Promise<ActiveAttestation>((resolve, reject) => {
+        resolveRefresh = resolve;
+        rejectRefresh = reject;
+      });
+      attestationRefreshes.set(renewalScope, attestationRefresh);
+
+      const registeredRefresh = attestationRefresh;
+      void (async () => {
+        try {
+          // A concurrent request or token refresh may already have replaced
+          // the failed generation. This lookup belongs inside the registered
+          // leader so a late caller cannot miss the in-flight renewal after
+          // its forced refresh evicts the cache.
+          const currentAttestation = requireActiveAttestation(
+            await dependencies.getAttestation(false, identity.apiUrl, identity.pcrConfig)
+          );
+          const renewedAttestation =
+            currentAttestation.sessionId === failedSessionId
+              ? requireActiveAttestation(
+                  await dependencies.getAttestation(true, identity.apiUrl, identity.pcrConfig)
+                )
+              : currentAttestation;
+          resolveRefresh(renewedAttestation);
+        } catch (error) {
+          rejectRefresh(error);
+        } finally {
+          if (attestationRefreshes.get(renewalScope) === registeredRefresh) {
+            attestationRefreshes.delete(renewalScope);
+          }
+        }
+      })();
     }
 
     return attestationRefresh;
   };
 
   return async (requestUrl: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    // Authentication mode is part of the logical request snapshot. A caller
+    // may retain and mutate the options object while this request is in
+    // flight; recovery must not switch between API-key and JWT credentials.
+    const apiKey = options?.apiKey;
+    const usesApiKey = Boolean(apiKey);
     const getAuthHeader = () => {
       // If an API key is provided, use it instead of JWT token
-      if (options?.apiKey) {
-        return `Bearer ${options.apiKey}`;
+      if (apiKey) {
+        return `Bearer ${apiKey}`;
       }
 
       // Otherwise, use the standard JWT token
@@ -127,20 +200,22 @@ export function createCustomFetchWithDependencies(
       // unrelated account change during attestation must not send the
       // already-prepared plaintext request under a different token.
       let authHeader = getAuthHeader();
+      const request = await snapshotRequest(requestUrl, init);
+      throwIfAborted(request.signal);
 
       const makeRequest = async (attestation: ActiveAttestation) => {
-        const headers = new Headers(init?.headers);
+        const headers = new Headers(request.headers);
         headers.set("Authorization", authHeader);
         headers.set("x-session-id", attestation.sessionId);
 
-        const requestOptions: RequestInit = { ...init, headers };
+        const requestOptions: RequestInit = { ...request.options, headers };
 
         // Encrypt the original plaintext again for every attempt. Reusing an
         // old request body with a new session ID would make recovery fail.
-        if (init?.body) {
+        if (request.plaintextBody !== undefined) {
           const encryptedBody = dependencies.encryptMessage(
             attestation.sessionKey,
-            init.body as string
+            request.plaintextBody
           );
           requestOptions.body = JSON.stringify({ encrypted: encryptedBody });
           headers.set("Content-Type", "application/json");
@@ -148,7 +223,7 @@ export function createCustomFetchWithDependencies(
 
         return {
           attestation,
-          response: await dependencies.fetch(requestUrl, requestOptions)
+          response: await dependencies.fetch(request.url, requestOptions)
         };
       };
 
@@ -159,18 +234,21 @@ export function createCustomFetchWithDependencies(
           attestationIdentity.pcrConfig
         )
       );
-      let refreshedToken = false;
-      let renewedAttestation = false;
+      throwIfAborted(request.signal);
+      let replayed = false;
       let finalAttempt: Awaited<ReturnType<typeof makeRequest>>;
 
       while (true) {
         const attempt = await makeRequest(attestation);
+        const recovery = classifyRecovery(attempt.response.status, attempt.response.headers);
 
-        if (attempt.response.status === 401 && !options?.apiKey && !refreshedToken) {
-          refreshedToken = true;
+        if (recovery === "refresh_access_token" && !usesApiKey && !replayed) {
+          replayed = true;
           await discardResponse(attempt.response);
+          throwIfAborted(request.signal);
           console.warn("Unauthorized, refreshing access token");
           await dependencies.refreshToken();
+          throwIfAborted(request.signal);
           authHeader = getAuthHeader();
 
           // The encrypted refresh call may itself have replaced a stale
@@ -185,11 +263,13 @@ export function createCustomFetchWithDependencies(
           continue;
         }
 
-        if (attempt.response.status === 400 && !renewedAttestation) {
-          renewedAttestation = true;
+        if (recovery === "renew_session" && !replayed) {
+          replayed = true;
           await discardResponse(attempt.response);
+          throwIfAborted(request.signal);
           console.warn("Bad Request, renewing attestation and retrying once");
           attestation = await renewAttestation(attempt.attestation.sessionId, attestationIdentity);
+          throwIfAborted(request.signal);
           continue;
         }
 
