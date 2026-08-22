@@ -33,7 +33,7 @@ Add to your `Cargo.toml`:
 [dependencies]
 maple-proxy = { git = "https://github.com/opensecretcloud/maple-proxy" }
 # Or if published to crates.io:
-# maple-proxy = "0.3.1"
+# maple-proxy = "0.3.2"
 ```
 
 ## ⚙️ Configuration
