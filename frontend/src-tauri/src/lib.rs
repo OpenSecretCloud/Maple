@@ -18,6 +18,8 @@ mod open_secret_config;
 mod pdf_extractor;
 mod pdf_ocr;
 mod proxy;
+#[cfg(desktop)]
+mod updater_preferences;
 mod word_extractor;
 
 #[cfg(desktop)]
@@ -90,13 +92,11 @@ fn enable_main_window_frame_autosave(app_handle: &tauri::AppHandle) {
 
 #[cfg(desktop)]
 #[tauri::command]
-fn get_pending_update_failure() -> Result<Option<String>, String> {
-    let version = FAILED_UPDATE_VERSION
+fn get_pending_update_failure() -> Result<Option<PendingUpdateFailure>, String> {
+    PENDING_UPDATE_FAILURE
         .lock()
-        .map_err(|e| format!("Failed to lock FAILED_UPDATE_VERSION mutex: {e}"))?
-        .clone();
-
-    Ok((!version.is_empty()).then_some(version))
+        .map_err(|e| format!("Failed to lock PENDING_UPDATE_FAILURE mutex: {e}"))
+        .map(|failure| failure.clone())
 }
 
 #[cfg(desktop)]
@@ -131,7 +131,12 @@ async fn install_pending_update(app_handle: tauri::AppHandle) -> Result<(), Stri
     // Installing a deb/rpm blocks on pkexec until the user answers the
     // password prompt, so keep it off the async runtime.
     let (pending, result) = tauri::async_runtime::spawn_blocking(move || {
-        let result = install_update(&app_handle, &pending.update, &pending.bytes, true);
+        let result = install_update(
+            &app_handle,
+            &pending.update,
+            &pending.bytes,
+            UpdateInstallOrigin::UserApprovedPending,
+        );
         (pending, result)
     })
     .await
@@ -153,6 +158,14 @@ async fn install_pending_update(app_handle: tauri::AppHandle) -> Result<(), Stri
     }
 
     result
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn check_for_updates_manually(
+    app_handle: tauri::AppHandle,
+) -> Result<UpdateCheckResult, String> {
+    check_for_updates(app_handle, UpdateCheckTrigger::Manual).await
 }
 
 #[cfg(desktop)]
@@ -282,6 +295,9 @@ pub fn run() {
             get_pending_update_failure,
             get_pending_update_install,
             install_pending_update,
+            check_for_updates_manually,
+            updater_preferences::load_updater_preferences,
+            updater_preferences::save_updater_preferences,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -339,19 +355,20 @@ pub fn run() {
             // Create the application menu with update options
             #[cfg(desktop)]
             {
-                // Set up a simple updater handler
-                log::info!("Setting up automatic updater");
+                log::info!("Setting up updater");
 
-                // Setup update check on startup with delay and hourly checks
+                // Check on startup and hourly while automatic updates remain enabled.
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     // Wait for app to fully initialize (use async sleep to not block the thread)
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    log::info!("Performing automatic update check on startup");
 
-                    // This checks for updates, downloads the matching platform bundle,
-                    // and invokes its installer. The update takes effect after restart.
-                    if let Err(e) = check_for_updates(app_handle.clone(), false).await {
+                    if let Err(e) = check_for_updates(
+                        app_handle.clone(),
+                        UpdateCheckTrigger::Automatic,
+                    )
+                    .await
+                    {
                         log::error!("Automatic update check failed: {e}");
                     }
 
@@ -364,10 +381,14 @@ pub fn run() {
                         loop {
                             // Wait one hour before checking again
                             tokio::time::sleep(one_hour).await;
-                            log::info!("Performing scheduled hourly update check");
-
-                            // Check for updates
-                            let _ = check_for_updates(hourly_app_handle.clone(), false).await;
+                            if let Err(e) = check_for_updates(
+                                hourly_app_handle.clone(),
+                                UpdateCheckTrigger::Automatic,
+                            )
+                            .await
+                            {
+                                log::error!("Scheduled update check failed: {e}");
+                            }
                         }
                     });
                 });
@@ -377,12 +398,12 @@ pub fn run() {
                 // On Windows/Linux this menu renders as an in-window bar at the top of
                 // the window. Its edit items (undo/redo/cut/copy/paste/select-all) are
                 // handled natively by the webview regardless of the menu, About lives in
-                // the in-app account menu, and updates are applied by the automatic check
-                // (startup + hourly, above). The bar adds only clutter, so we omit it
-                // entirely on those platforms for a cleaner window.
+                // the in-app account menu, and the cross-platform manual update action
+                // lives in Settings. The bar adds only clutter, so we omit it entirely
+                // on those platforms for a cleaner window.
                 #[cfg(target_os = "macos")]
                 {
-                    use tauri::menu::{MenuBuilder, SubmenuBuilder};
+                    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
                     // Define menu item ID for "Check for Updates"
                     let check_updates_id = "check-for-updates";
@@ -390,13 +411,17 @@ pub fn run() {
                     // Get app handle for menu operations
                     let handle = app.handle();
 
+                    let check_updates_item =
+                        MenuItemBuilder::with_id(check_updates_id, "Check for Updates")
+                            .build(handle)?;
+
                     // For macOS, we need to create a proper submenu structure
                     // First create the app submenu (first submenu becomes the application menu)
                     let app_submenu = SubmenuBuilder::new(handle, &app.package_info().name)
                         // Add about menu item (standard macOS menu item)
                         .about(None)
                         // Add our update checker to the app menu
-                        .text(check_updates_id, "Check for Updates")
+                        .item(&check_updates_item)
                         .separator()
                         .hide()
                         .hide_others()
@@ -429,6 +454,7 @@ pub fn run() {
 
                     // Handle menu events
                     let app_handle_for_menu = app.handle().clone();
+                    let check_updates_item_for_menu = check_updates_item.clone();
                     app.on_menu_event(move |_window, event| {
                         // Menu event handler receives events for all menu items
                         log::info!("Menu event received: {:?}", event.id());
@@ -436,17 +462,50 @@ pub fn run() {
                         // Check for our menu ID - works the same on all platforms now
                         if event.id().0 == check_updates_id {
                             log::info!(
-                                "Check for updates menu item clicked - clearing dismissal flags and triggering update check..."
+                                "Check for updates menu item clicked - triggering a user-requested update check..."
                             );
 
                             // Clone the app handle to use in the async task
                             let app_handle_clone = app_handle_for_menu.clone();
+                            let check_updates_item_clone = check_updates_item_for_menu.clone();
+
+                            if let Err(e) =
+                                check_updates_item_for_menu.set_text("Checking for Updates…")
+                            {
+                                log::error!("Failed to update check menu item text: {e}");
+                            }
+                            if let Err(e) = check_updates_item_for_menu.set_enabled(false) {
+                                log::error!("Failed to disable check menu item: {e}");
+                            }
 
                             // Spawn a new async task to check for updates (non-blocking)
                             tauri::async_runtime::spawn(async move {
-                                match check_for_updates(app_handle_clone, true).await {
-                                    Ok(_) => log::info!("Update check completed successfully"),
-                                    Err(e) => log::error!("Update check failed: {e}"),
+                                match check_for_updates(
+                                    app_handle_clone.clone(),
+                                    UpdateCheckTrigger::Manual,
+                                )
+                                .await
+                                {
+                                    Ok(result) => {
+                                        log::info!("Update check completed successfully");
+                                        emit_manual_update_check_result(
+                                            &app_handle_clone,
+                                            &result,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        log::error!("Update check failed: {e}");
+                                        emit_manual_update_check_error(&app_handle_clone);
+                                    }
+                                }
+
+                                if let Err(e) =
+                                    check_updates_item_clone.set_text("Check for Updates")
+                                {
+                                    log::error!("Failed to restore check menu item text: {e}");
+                                }
+                                if let Err(e) = check_updates_item_clone.set_enabled(true) {
+                                    log::error!("Failed to re-enable check menu item: {e}");
                                 }
                             });
                         }
@@ -557,6 +616,9 @@ static CURRENT_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::ne
 #[cfg(desktop)]
 static FAILED_UPDATE_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 #[cfg(desktop)]
+static PENDING_UPDATE_FAILURE: Lazy<Mutex<Option<PendingUpdateFailure>>> =
+    Lazy::new(|| Mutex::new(None));
+#[cfg(desktop)]
 static UPDATE_CHECK_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
 /// A downloaded and signature-verified update that waits for the user to
@@ -569,6 +631,56 @@ struct PendingUpdate {
 
 #[cfg(desktop)]
 static PENDING_UPDATE: Lazy<Mutex<Option<PendingUpdate>>> = Lazy::new(|| Mutex::new(None));
+
+#[cfg(desktop)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateCheckTrigger {
+    Automatic,
+    Manual,
+}
+
+#[cfg(desktop)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateInstallOrigin {
+    Automatic,
+    ManualCheck,
+    UserApprovedPending,
+}
+
+#[cfg(desktop)]
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UpdateFailureOrigin {
+    Automatic,
+    Manual,
+}
+
+#[cfg(desktop)]
+#[derive(Clone, serde::Serialize)]
+struct PendingUpdateFailure {
+    version: String,
+    origin: UpdateFailureOrigin,
+}
+
+#[cfg(desktop)]
+fn install_failure_retryability(origin: UpdateInstallOrigin) -> Option<bool> {
+    match origin {
+        UpdateInstallOrigin::Automatic => Some(false),
+        UpdateInstallOrigin::ManualCheck => None,
+        UpdateInstallOrigin::UserApprovedPending => Some(true),
+    }
+}
+
+#[cfg(desktop)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum UpdateCheckResult {
+    AutomaticUpdatesDisabled,
+    UpToDate,
+    ReadyToRestart { version: String },
+    ReadyToInstall { version: String },
+    InstallFailed { version: String },
+}
 
 /// Linux deb/rpm installs run `pkexec`, which opens a system password dialog.
 /// That dialog must not appear without the user asking for it, so those
@@ -592,34 +704,170 @@ fn pending_update_version() -> Option<String> {
 }
 
 #[cfg(desktop)]
-fn clear_pending_update() {
-    match PENDING_UPDATE.lock() {
-        Ok(mut guard) => *guard = None,
-        Err(e) => log::error!("Failed to lock PENDING_UPDATE mutex when clearing: {e}"),
+fn downloaded_update_version() -> Option<String> {
+    if !UPDATE_DOWNLOADED.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    match CURRENT_VERSION.lock() {
+        Ok(version) if !version.is_empty() => Some(version.clone()),
+        Ok(_) => None,
+        Err(e) => {
+            log::error!("Failed to lock CURRENT_VERSION mutex: {e}");
+            None
+        }
     }
 }
 
-/// Check for updates silently in the background
 #[cfg(desktop)]
-async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> Result<(), String> {
+fn prepared_update_result(
+    downloaded_version: Option<String>,
+    pending_install_version: Option<String>,
+) -> Option<UpdateCheckResult> {
+    downloaded_version
+        .map(|version| UpdateCheckResult::ReadyToRestart { version })
+        .or_else(|| {
+            pending_install_version.map(|version| UpdateCheckResult::ReadyToInstall { version })
+        })
+}
+
+#[cfg(desktop)]
+fn emit_update_available(app_handle: &tauri::AppHandle, version: &str) {
+    #[derive(Clone, serde::Serialize)]
+    struct UpdateAvailablePayload<'a> {
+        version: &'a str,
+    }
+
+    if let Err(e) = app_handle.emit("update-available", UpdateAvailablePayload { version }) {
+        log::error!("Failed to emit update-available event: {e}");
+    } else {
+        log::info!("Emitted update-available event for version {version}");
+    }
+}
+
+#[cfg(desktop)]
+fn emit_update_ready(app_handle: &tauri::AppHandle, version: &str) {
+    #[derive(Clone, serde::Serialize)]
+    struct UpdateReadyPayload<'a> {
+        version: &'a str,
+    }
+
+    if let Err(e) = app_handle.emit("update-ready", UpdateReadyPayload { version }) {
+        log::error!("Failed to emit update-ready event: {e}");
+    } else {
+        log::info!("Emitted update-ready event for version {version}");
+    }
+}
+
+/// The macOS menu does not have an inline result surface like Settings. Emit
+/// only outcomes that are not already covered by the existing update events.
+#[cfg(desktop)]
+fn emit_manual_update_check_result(app_handle: &tauri::AppHandle, result: &UpdateCheckResult) {
+    if result == &UpdateCheckResult::UpToDate {
+        if let Err(e) = app_handle.emit("manual-update-check-up-to-date", ()) {
+            log::error!("Failed to emit manual-update-check-up-to-date event: {e}");
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn emit_manual_update_install_failed(app_handle: &tauri::AppHandle, version: &str) {
+    #[derive(Clone, serde::Serialize)]
+    struct ManualInstallFailedPayload<'a> {
+        version: &'a str,
+    }
+
+    if let Err(e) = app_handle.emit(
+        "manual-update-install-failed",
+        ManualInstallFailedPayload { version },
+    ) {
+        log::error!("Failed to emit manual-update-install-failed event: {e}");
+    }
+}
+
+#[cfg(desktop)]
+fn emit_manual_update_check_error(app_handle: &tauri::AppHandle) {
+    if let Err(e) = app_handle.emit("manual-update-check-failed", ()) {
+        log::error!("Failed to emit manual-update-check-failed event: {e}");
+    }
+}
+
+#[cfg(desktop)]
+async fn automatic_updates_enabled(app_handle: &tauri::AppHandle) -> Result<bool, String> {
+    updater_preferences::load(app_handle)
+        .await
+        .map(|preferences| preferences.automatic_updates)
+        .map_err(|error| format!("Failed to load updater preferences: {error}"))
+}
+
+#[cfg(desktop)]
+async fn automatic_update_may_continue(
+    app_handle: &tauri::AppHandle,
+    trigger: UpdateCheckTrigger,
+) -> Result<bool, String> {
+    if trigger == UpdateCheckTrigger::Manual {
+        return Ok(true);
+    }
+
+    automatic_updates_enabled(app_handle)
+        .await
+        .map(|enabled| update_trigger_allows(trigger, enabled))
+}
+
+#[cfg(desktop)]
+fn update_trigger_allows(trigger: UpdateCheckTrigger, automatic_updates_enabled: bool) -> bool {
+    trigger == UpdateCheckTrigger::Manual || automatic_updates_enabled
+}
+
+/// Check for updates. Automatic checks honor the persisted preference at each
+/// network/install boundary; a user-requested check always proceeds.
+#[cfg(desktop)]
+async fn check_for_updates(
+    app_handle: tauri::AppHandle,
+    trigger: UpdateCheckTrigger,
+) -> Result<UpdateCheckResult, String> {
     use tauri_plugin_updater::UpdaterExt;
 
     let _check_guard = UPDATE_CHECK_LOCK.lock().await;
 
-    if force_retry {
-        UPDATE_DOWNLOADED.store(false, Ordering::SeqCst);
-        match CURRENT_VERSION.lock() {
-            Ok(mut version) => version.clear(),
-            Err(e) => log::error!("Failed to lock CURRENT_VERSION mutex when clearing: {e}"),
+    if !automatic_update_may_continue(&app_handle, trigger).await? {
+        log::info!("Skipping automatic update check because automatic updates are disabled");
+        return Ok(UpdateCheckResult::AutomaticUpdatesDisabled);
+    }
+
+    if trigger == UpdateCheckTrigger::Manual {
+        // A manual check should resurface already prepared work instead of
+        // discarding it and downloading or installing the same version again.
+        if let Some(prepared) =
+            prepared_update_result(downloaded_update_version(), pending_update_version())
+        {
+            match &prepared {
+                UpdateCheckResult::ReadyToRestart { version } => {
+                    emit_update_ready(&app_handle, version)
+                }
+                UpdateCheckResult::ReadyToInstall { version } => {
+                    emit_update_available(&app_handle, version)
+                }
+                _ => unreachable!("prepared update result must be actionable"),
+            }
+            return Ok(prepared);
         }
+
+        // An explicit check is also an explicit retry of a version whose
+        // automatic install failed earlier in this session.
         match FAILED_UPDATE_VERSION.lock() {
             Ok(mut version) => version.clear(),
             Err(e) => {
                 log::error!("Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}")
             }
         }
-        clear_pending_update();
-        log::info!("Update state cleared for user-requested retry");
+        match PENDING_UPDATE_FAILURE.lock() {
+            Ok(mut failure) => *failure = None,
+            Err(e) => {
+                log::error!("Failed to lock PENDING_UPDATE_FAILURE mutex when clearing: {e}")
+            }
+        }
+        log::info!("Automatic install failure suppression cleared for user-requested retry");
     }
 
     log::info!("Checking for updates...");
@@ -652,7 +900,9 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
                     "Update to version {} already downloaded, skipping redundant download",
                     update.version
                 );
-                return Ok(());
+                return Ok(UpdateCheckResult::ReadyToRestart {
+                    version: update.version,
+                });
             }
 
             if pending_update_version().as_deref() == Some(update.version.as_str()) {
@@ -660,7 +910,9 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
                     "Update to version {} is downloaded and waiting for user approval, skipping redundant download",
                     update.version
                 );
-                return Ok(());
+                return Ok(UpdateCheckResult::ReadyToInstall {
+                    version: update.version,
+                });
             }
 
             let failed_update_version = match FAILED_UPDATE_VERSION.lock() {
@@ -676,7 +928,17 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
                     "Update to version {} already failed to install in this session, skipping automatic retry",
                     update.version
                 );
-                return Ok(());
+                return Ok(UpdateCheckResult::InstallFailed {
+                    version: update.version,
+                });
+            }
+
+            if !automatic_update_may_continue(&app_handle, trigger).await? {
+                log::info!(
+                    "Automatic updates were disabled while checking; not downloading version {}",
+                    update.version
+                );
+                return Ok(UpdateCheckResult::AutomaticUpdatesDisabled);
             }
 
             log::info!("Update available, attempting to download and install");
@@ -700,6 +962,28 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
                 Ok(bytes) => {
                     log::info!("Update downloaded and signature verified");
 
+                    // Keep the preference save lock through the final automatic
+                    // action. If disabling wins the lock, this action stops; if
+                    // an already-authorized action wins, save(false) does not
+                    // report success until the action has finished.
+                    let _automatic_action_guard = if trigger == UpdateCheckTrigger::Automatic {
+                        let (preferences, guard) = updater_preferences::load_and_lock(&app_handle)
+                            .await
+                            .map_err(|error| {
+                                format!("Failed to load updater preferences: {error}")
+                            })?;
+                        if !preferences.automatic_updates {
+                            log::info!(
+                                "Automatic updates were disabled while downloading; not installing version {}",
+                                update.version
+                            );
+                            return Ok(UpdateCheckResult::AutomaticUpdatesDisabled);
+                        }
+                        Some(guard)
+                    } else {
+                        None
+                    };
+
                     if install_needs_user_approval() {
                         let version = update.version.clone();
                         match PENDING_UPDATE.lock() {
@@ -713,26 +997,27 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
                             }
                         }
 
-                        #[derive(Clone, serde::Serialize)]
-                        struct UpdateAvailablePayload {
-                            version: String,
-                        }
+                        emit_update_available(&app_handle, &version);
 
-                        if let Err(e) = app_handle.emit(
-                            "update-available",
-                            UpdateAvailablePayload {
-                                version: version.clone(),
-                            },
-                        ) {
-                            log::error!("Failed to emit update-available event: {e}");
-                        } else {
-                            log::info!("Emitted update-available event for version {version}");
-                        }
-
-                        return Ok(());
+                        return Ok(UpdateCheckResult::ReadyToInstall { version });
                     }
 
-                    install_update(&app_handle, &update, &bytes, false)
+                    let version = update.version.clone();
+                    let install_origin = match trigger {
+                        UpdateCheckTrigger::Automatic => UpdateInstallOrigin::Automatic,
+                        UpdateCheckTrigger::Manual => UpdateInstallOrigin::ManualCheck,
+                    };
+                    match install_update(&app_handle, &update, &bytes, install_origin) {
+                        Ok(()) => Ok(UpdateCheckResult::ReadyToRestart { version }),
+                        Err(error) if trigger == UpdateCheckTrigger::Manual => {
+                            log::error!(
+                                "Manual update check downloaded version {version}, but installation failed: {error}"
+                            );
+                            emit_manual_update_install_failed(&app_handle, &version);
+                            Ok(UpdateCheckResult::InstallFailed { version })
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
                 Err(e) => {
                     log::error!("Failed to download update: {e}");
@@ -742,7 +1027,7 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
         }
         Ok(None) => {
             log::info!("No updates available");
-            Ok(())
+            Ok(UpdateCheckResult::UpToDate)
         }
         Err(e) => {
             log::error!("Failed to check for updates: {e}");
@@ -753,15 +1038,16 @@ async fn check_for_updates(app_handle: tauri::AppHandle, force_retry: bool) -> R
 
 /// Install a downloaded update and tell the frontend the result.
 ///
-/// `user_approved` is true when the user clicked "Install Now". That path
-/// always reports the result, and a failure (for example a cancelled password
-/// prompt) does not block the version for the rest of the session.
+/// A staged install the user approved always reports the result, and a failure
+/// (for example a cancelled password prompt) does not block the version for the
+/// rest of the session. Manual-check failures are returned to their caller,
+/// while automatic failures emit the global fallback notification.
 #[cfg(desktop)]
 fn install_update(
     app_handle: &tauri::AppHandle,
     update: &tauri_plugin_updater::Update,
     bytes: &[u8],
-    user_approved: bool,
+    origin: UpdateInstallOrigin,
 ) -> Result<(), String> {
     log::info!("Installing update to version {}", update.version);
 
@@ -778,6 +1064,12 @@ fn install_update(
                     log::error!("Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}")
                 }
             }
+            match PENDING_UPDATE_FAILURE.lock() {
+                Ok(mut failure) => *failure = None,
+                Err(e) => {
+                    log::error!("Failed to lock PENDING_UPDATE_FAILURE mutex when clearing: {e}")
+                }
+            }
 
             // Mark this version as downloaded to prevent redundant downloads/notifications
             match CURRENT_VERSION.lock() {
@@ -790,27 +1082,12 @@ fn install_update(
             // The silent path shows the restart toast once per session. An
             // install the user asked for always gets feedback.
             let already_notified = UPDATE_DOWNLOADED.swap(true, Ordering::SeqCst);
-            if already_notified && !user_approved {
+            if already_notified && origin != UpdateInstallOrigin::UserApprovedPending {
                 log::info!("Update notification already shown, not showing another one");
                 return Ok(());
             }
 
-            // Emit event to frontend for toast notification
-            #[derive(Clone, serde::Serialize)]
-            struct UpdateReadyPayload {
-                version: String,
-            }
-
-            if let Err(e) = app_handle.emit(
-                "update-ready",
-                UpdateReadyPayload {
-                    version: update.version.clone(),
-                },
-            ) {
-                log::error!("Failed to emit update-ready event: {e}");
-            } else {
-                log::info!("Emitted update-ready event for version {}", update.version);
-            }
+            emit_update_ready(app_handle, &update.version);
 
             Ok(())
         }
@@ -818,13 +1095,32 @@ fn install_update(
             let error = format!("Failed to install update: {e}");
             log::error!("{error}");
 
-            if user_approved {
+            if origin == UpdateInstallOrigin::UserApprovedPending {
                 log::info!("User-approved install failed; the update stays available to retry");
             } else {
                 match FAILED_UPDATE_VERSION.lock() {
                     Ok(mut version) => *version = update.version.clone(),
                     Err(lock_error) => log::error!(
                         "Failed to lock FAILED_UPDATE_VERSION mutex when recording failure: {lock_error}"
+                    ),
+                }
+
+                let failure_origin = match origin {
+                    UpdateInstallOrigin::Automatic => UpdateFailureOrigin::Automatic,
+                    UpdateInstallOrigin::ManualCheck => UpdateFailureOrigin::Manual,
+                    UpdateInstallOrigin::UserApprovedPending => unreachable!(
+                        "user-approved pending failures do not enter suppression state"
+                    ),
+                };
+                match PENDING_UPDATE_FAILURE.lock() {
+                    Ok(mut failure) => {
+                        *failure = Some(PendingUpdateFailure {
+                            version: update.version.clone(),
+                            origin: failure_origin,
+                        });
+                    }
+                    Err(lock_error) => log::error!(
+                        "Failed to lock PENDING_UPDATE_FAILURE mutex when recording failure: {lock_error}"
                     ),
                 }
             }
@@ -835,17 +1131,80 @@ fn install_update(
                 retryable: bool,
             }
 
-            if let Err(emit_error) = app_handle.emit(
-                "update-failed",
-                UpdateFailedPayload {
-                    version: update.version.clone(),
-                    retryable: user_approved,
-                },
-            ) {
-                log::error!("Failed to emit update-failed event: {emit_error}");
+            if let Some(retryable) = install_failure_retryability(origin) {
+                if let Err(emit_error) = app_handle.emit(
+                    "update-failed",
+                    UpdateFailedPayload {
+                        version: update.version.clone(),
+                        retryable,
+                    },
+                ) {
+                    log::error!("Failed to emit update-failed event: {emit_error}");
+                }
             }
 
             Err(error)
         }
+    }
+}
+
+#[cfg(all(test, desktop))]
+mod updater_policy_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_trigger_honors_the_preference_while_manual_checks_bypass_it() {
+        assert!(!update_trigger_allows(UpdateCheckTrigger::Automatic, false));
+        assert!(update_trigger_allows(UpdateCheckTrigger::Automatic, true));
+        assert!(update_trigger_allows(UpdateCheckTrigger::Manual, false));
+    }
+
+    #[test]
+    fn manual_checks_resurface_prepared_updates_before_hitting_the_network() {
+        assert_eq!(
+            prepared_update_result(Some("4.5.6".to_string()), Some("4.5.5".to_string())),
+            Some(UpdateCheckResult::ReadyToRestart {
+                version: "4.5.6".to_string()
+            })
+        );
+        assert_eq!(
+            prepared_update_result(None, Some("4.5.5".to_string())),
+            Some(UpdateCheckResult::ReadyToInstall {
+                version: "4.5.5".to_string()
+            })
+        );
+        assert_eq!(prepared_update_result(None, None), None);
+    }
+
+    #[test]
+    fn install_failure_feedback_matches_the_recovery_path() {
+        assert_eq!(
+            install_failure_retryability(UpdateInstallOrigin::Automatic),
+            Some(false)
+        );
+        assert_eq!(
+            install_failure_retryability(UpdateInstallOrigin::ManualCheck),
+            None
+        );
+        assert_eq!(
+            install_failure_retryability(UpdateInstallOrigin::UserApprovedPending),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn pending_failure_origin_preserves_manual_recovery_copy() {
+        let failure = PendingUpdateFailure {
+            version: "4.5.6".to_string(),
+            origin: UpdateFailureOrigin::Manual,
+        };
+
+        assert_eq!(
+            serde_json::to_value(failure).unwrap(),
+            serde_json::json!({
+                "version": "4.5.6",
+                "origin": "manual"
+            })
+        );
     }
 }
