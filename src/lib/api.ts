@@ -1189,22 +1189,36 @@ export type ModelCatalogResponse = {
 
 /**
  * Fetches available AI models from the OpenAI-compatible API
- * @param apiKey - Optional API key to use instead of JWT token
+ * @param apiKey - Optional API key to use instead of a stored JWT token
  * @returns A promise resolving to an array of Model objects
  * @throws {Error} If:
- * - The user is not authenticated (no JWT token or API key)
  * - The request fails
  * - The response format is invalid
+ *
+ * When no API key or stored JWT is available, the request uses the attested
+ * encrypted session without an Authorization header. Credential-bearing calls
+ * stay on the authenticated path and are never retried anonymously if
+ * validation fails.
  */
 export async function fetchModels(apiKey?: string): Promise<Model[]> {
   try {
-    const response = await openAiAuthenticatedApiCall<void, ModelsListResponse>(
-      `${apiUrl}/v1/models`,
-      "GET",
-      undefined,
-      "Failed to fetch models",
-      apiKey
-    );
+    const hasIdentityCredential =
+      apiKey !== undefined || window.localStorage.getItem("access_token") !== null;
+    const response = hasIdentityCredential
+      ? await openAiAuthenticatedApiCall<void, ModelsListResponse>(
+          `${apiUrl}/v1/models`,
+          "GET",
+          undefined,
+          "Failed to fetch models",
+          apiKey
+        )
+      : await encryptedApiCall<void, ModelsListResponse>(
+          `${apiUrl}/v1/models`,
+          "GET",
+          undefined,
+          undefined,
+          "Failed to fetch models"
+        );
 
     // Validate response structure
     if (!response || typeof response !== "object") {
