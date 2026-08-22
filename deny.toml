@@ -1,7 +1,11 @@
+[advisories]
+# Vulnerability and unsoundness advisories are blocking. Unmaintained-package
+# notices are tracked separately because they often require API migrations.
+unmaintained = "none"
+
 [bans]
 # Emergency supply-chain containment for the August 2026 crates.io campaign.
-# Keep this check focused on known malicious packages; broader policy and
-# locked dependency enforcement are intentionally separate follow-up work.
+# Keep these explicit package bans alongside the blocking RustSec checks.
 multiple-versions = "allow"
 wildcards = "allow"
 deny = [
