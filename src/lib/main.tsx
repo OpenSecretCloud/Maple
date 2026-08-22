@@ -489,14 +489,13 @@ export type OpenSecretContextType = {
    * Fetches available AI models from the OpenAI-compatible API
    * @returns A promise resolving to an array of Model objects
    * @throws {Error} If:
-   * - The user is not authenticated
    * - The request fails
    *
    *
    * - Returns a list of available AI models from the configured OpenAI-compatible API
    * - Response is encrypted and automatically decrypted
-   * - Guest users will receive a 401 Unauthorized error
-   * - Requires an active authentication session
+   * - Before sign-in, uses an attested encrypted session without identity authorization
+   * - When a JWT or API key is present, preserves authenticated model filtering
    */
   fetchModels: () => Promise<Model[]>;
 
