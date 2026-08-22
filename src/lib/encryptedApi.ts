@@ -1,8 +1,10 @@
 import { encryptMessage, decryptMessage } from "./encryption";
-import { getAttestation } from "./getAttestation";
+import { getAttestation, type Attestation } from "./getAttestation";
 import { getApiPcrConfig, getApiUrl, refreshToken } from "./api";
 import { getPlatformApiUrl, getPlatformPcrConfig, platformRefreshToken } from "./platformApi";
 import { apiConfig } from "./apiConfig";
+import { serializePcrConfig, snapshotPcrConfig, type PcrConfig } from "./pcr";
+import { classifyRecovery } from "./recovery";
 
 interface EncryptedResponse {
   encrypted: string;
@@ -14,66 +16,297 @@ interface ApiResponse<T> {
   error?: string;
 }
 
+interface RequestAuthentication {
+  token?: string;
+  refreshAccessToken?: () => Promise<string>;
+}
+
+interface ActiveAttestation {
+  sessionKey: Uint8Array;
+  sessionId: string;
+}
+
+/** @internal Exported for deterministic transport tests, not from the package entry point. */
+export interface EncryptedApiDependencies {
+  decryptMessage: typeof decryptMessage;
+  encryptMessage: typeof encryptMessage;
+  fetch: typeof globalThis.fetch;
+  getAttestation: typeof getAttestation;
+  getApiPcrConfig: typeof getApiPcrConfig;
+  getApiUrl: typeof getApiUrl;
+  getPlatformApiUrl: typeof getPlatformApiUrl;
+  getPlatformPcrConfig: typeof getPlatformPcrConfig;
+  getAccessToken: () => string | null;
+  refreshAccessToken: (url: string) => Promise<void>;
+  resolveEndpoint: typeof apiConfig.resolveEndpoint;
+}
+
+const defaultDependencies: EncryptedApiDependencies = {
+  decryptMessage,
+  encryptMessage,
+  fetch: (...args) => globalThis.fetch(...args),
+  getAttestation,
+  // Keep circular api.ts/platformApi.ts imports lazy until after module setup.
+  getApiPcrConfig: () => getApiPcrConfig(),
+  getApiUrl: () => getApiUrl(),
+  getPlatformApiUrl: () => getPlatformApiUrl(),
+  getPlatformPcrConfig: () => getPlatformPcrConfig(),
+  getAccessToken: () => window.localStorage.getItem("access_token"),
+  refreshAccessToken: async (url) => {
+    console.log("Refreshing access token");
+    const refreshFn = apiConfig.getRefreshFunction(url);
+    console.log(`Using ${refreshFn}`);
+    if (refreshFn === "platformRefreshToken") {
+      await platformRefreshToken();
+    } else {
+      await refreshToken();
+    }
+  },
+  resolveEndpoint: (url) => apiConfig.resolveEndpoint(url)
+};
+
+const attestationRenewals = new WeakMap<
+  EncryptedApiDependencies["getAttestation"],
+  Map<string, Promise<ActiveAttestation>>
+>();
+
+function requireActiveAttestation(attestation: Attestation): ActiveAttestation {
+  if (!attestation.sessionKey || !attestation.sessionId) {
+    throw new Error("Failed to make encrypted API call, no attestation available.");
+  }
+  return {
+    sessionKey: attestation.sessionKey,
+    sessionId: attestation.sessionId
+  };
+}
+
+async function renewAttestation(
+  failedSessionId: string,
+  apiUrl: string,
+  pcrConfig: PcrConfig,
+  dependencies: EncryptedApiDependencies
+): Promise<ActiveAttestation> {
+  let renewals = attestationRenewals.get(dependencies.getAttestation);
+  if (!renewals) {
+    renewals = new Map();
+    attestationRenewals.set(dependencies.getAttestation, renewals);
+  }
+
+  const scope = `${apiUrl}\n${serializePcrConfig(pcrConfig)}\n${failedSessionId}`;
+  let renewal = renewals.get(scope);
+  if (!renewal) {
+    let resolveRenewal!: (attestation: ActiveAttestation) => void;
+    let rejectRenewal!: (reason?: unknown) => void;
+    renewal = new Promise<ActiveAttestation>((resolve, reject) => {
+      resolveRenewal = resolve;
+      rejectRenewal = reject;
+    });
+    renewals.set(scope, renewal);
+
+    const registeredRenewal = renewal;
+    const registeredRenewals = renewals;
+    void (async () => {
+      try {
+        // Keep the cache comparison inside the already-registered leader. A
+        // staggered stale response must join here even while the leader's
+        // forced refresh has temporarily removed the cached session.
+        const currentAttestation = requireActiveAttestation(
+          await dependencies.getAttestation(false, apiUrl, pcrConfig)
+        );
+        const renewedAttestation =
+          currentAttestation.sessionId === failedSessionId
+            ? requireActiveAttestation(await dependencies.getAttestation(true, apiUrl, pcrConfig))
+            : currentAttestation;
+        resolveRenewal(renewedAttestation);
+      } catch (error) {
+        rejectRenewal(error);
+      } finally {
+        if (registeredRenewals.get(scope) === registeredRenewal) {
+          registeredRenewals.delete(scope);
+        }
+        if (
+          registeredRenewals.size === 0 &&
+          attestationRenewals.get(dependencies.getAttestation) === registeredRenewals
+        ) {
+          attestationRenewals.delete(dependencies.getAttestation);
+        }
+      }
+    })();
+  }
+
+  return renewal;
+}
+
+async function discardResponse(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // A bounded recovery no longer needs this error response. It may already
+    // be closed in some fetch implementations.
+  }
+}
+
+async function performEncryptedApiCall<T, U>(
+  url: string,
+  method: string,
+  data: T,
+  authentication: RequestAuthentication,
+  errorMessage: string | undefined,
+  dependencies: EncryptedApiDependencies
+): Promise<ApiResponse<U>> {
+  try {
+    // Snapshot every logical request value before the first transport send.
+    // Only the token, session ID, and ciphertext may change on recovery.
+    const plaintextBody = data ? JSON.stringify(data) : undefined;
+    const endpoint = dependencies.resolveEndpoint(url);
+    const explicitApiUrl =
+      endpoint.context === "platform" ? dependencies.getPlatformApiUrl() : dependencies.getApiUrl();
+    const pcrConfig = snapshotPcrConfig(
+      endpoint.context === "platform"
+        ? dependencies.getPlatformPcrConfig()
+        : dependencies.getApiPcrConfig()
+    );
+
+    let token = authentication.token;
+    let attestation = await dependencies.getAttestation(false, explicitApiUrl, pcrConfig);
+    let replayed = false;
+
+    const requireSession = async (forceRefresh: boolean) => {
+      if (forceRefresh || !attestation.sessionKey || !attestation.sessionId) {
+        attestation = await dependencies.getAttestation(true, explicitApiUrl, pcrConfig);
+      }
+      if (!attestation.sessionKey || !attestation.sessionId) {
+        throw new Error("Failed to make encrypted API call, no attestation available.");
+      }
+      return {
+        sessionKey: attestation.sessionKey,
+        sessionId: attestation.sessionId
+      };
+    };
+
+    while (true) {
+      const session = await requireSession(false);
+      const encryptedData = plaintextBody
+        ? dependencies.encryptMessage(session.sessionKey, plaintextBody)
+        : undefined;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "x-session-id": session.sessionId
+      };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      const response = await dependencies.fetch(url, {
+        method,
+        headers,
+        body: encryptedData ? JSON.stringify({ encrypted: encryptedData }) : undefined
+      });
+      const recovery = classifyRecovery(response.status, response.headers);
+
+      if (!replayed && recovery === "renew_session") {
+        replayed = true;
+        await discardResponse(response);
+        console.log("Session not found, renewing attestation and retrying once");
+        attestation = await renewAttestation(
+          session.sessionId,
+          explicitApiUrl,
+          pcrConfig,
+          dependencies
+        );
+        continue;
+      }
+
+      if (!replayed && recovery === "refresh_access_token" && authentication.refreshAccessToken) {
+        replayed = true;
+        await discardResponse(response);
+        token = await authentication.refreshAccessToken();
+        // The encrypted refresh request can repair a stale session with its
+        // own replay budget, so always reload the current session afterward.
+        attestation = await dependencies.getAttestation(false, explicitApiUrl, pcrConfig);
+        continue;
+      }
+
+      const result: ApiResponse<U> = { status: response.status };
+      if (!response.ok) {
+        try {
+          const errorBody = (await response.json()) as { message?: string };
+          result.error =
+            errorBody.message || errorMessage || `HTTP error! Status: ${response.status}`;
+        } catch {
+          result.error = errorMessage || `HTTP error! Status: ${response.status}`;
+        }
+        return result;
+      }
+
+      try {
+        const encryptedResponse = (await response.json()) as EncryptedResponse;
+        const decryptedResponse = dependencies.decryptMessage(
+          session.sessionKey,
+          encryptedResponse.encrypted
+        );
+        result.data = JSON.parse(decryptedResponse) as U;
+      } catch (error) {
+        console.error("Error decrypting or parsing response:", error);
+        result.status = 500;
+        result.error = "Failed to decrypt or parse the response";
+      }
+      return result;
+    }
+  } catch (error) {
+    return {
+      status: 500,
+      error: error instanceof Error ? error.message : "Unknown error occurred"
+    };
+  }
+}
+
+function unwrapApiResponse<U>(response: ApiResponse<U>, missingDataMessage: string): U {
+  if (response.error) throw new Error(response.error);
+  if (!response.data) throw new Error(missingDataMessage);
+  return response.data;
+}
+
 export async function authenticatedApiCall<T, U>(
   url: string,
   method: string,
   data: T,
   errorMessage?: string
 ): Promise<U> {
-  const tryAuthenticatedRequest = async (forceRefresh: boolean = false): Promise<U> => {
-    try {
-      if (forceRefresh) {
-        console.log("Refreshing access token");
+  return authenticatedApiCallWithDependencies(url, method, data, errorMessage, defaultDependencies);
+}
 
-        // Use the apiConfig to determine which refresh function to use
-        const refreshFn = apiConfig.getRefreshFunction(url);
-        console.log(`Using ${refreshFn}`);
+/** @internal Exported for deterministic transport tests, not from the package entry point. */
+export async function authenticatedApiCallWithDependencies<T, U>(
+  url: string,
+  method: string,
+  data: T,
+  errorMessage: string | undefined,
+  dependencies: EncryptedApiDependencies
+): Promise<U> {
+  try {
+    const accessToken = dependencies.getAccessToken();
+    if (!accessToken) throw new Error("No access token available");
 
-        if (refreshFn === "platformRefreshToken") {
-          await platformRefreshToken();
-        } else {
-          await refreshToken();
+    const response = await performEncryptedApiCall<T, U>(
+      url,
+      method,
+      data,
+      {
+        token: accessToken,
+        refreshAccessToken: async () => {
+          await dependencies.refreshAccessToken(url);
+          const refreshedToken = dependencies.getAccessToken();
+          if (!refreshedToken) throw new Error("No access token available");
+          return refreshedToken;
         }
-      }
-
-      // Always get the latest token from localStorage
-      const accessToken = window.localStorage.getItem("access_token");
-      if (!accessToken) {
-        throw new Error("No access token available");
-      }
-
-      const response = await internalEncryptedApiCall<T, U>(
-        url,
-        method,
-        data,
-        accessToken,
-        errorMessage
-      );
-
-      // Attempt to refresh token once if we get a 401
-      if (response.status === 401 && !forceRefresh) {
-        console.log(`Received 401 for URL ${url}, attempting to refresh token`);
-        return tryAuthenticatedRequest(true);
-      }
-
-      // Throw an error if the response contains an error message
-      if (response.error) {
-        throw new Error(response.error);
-      }
-
-      // Throw an error if no data was received
-      if (!response.data) {
-        throw new Error("No data received from the server");
-      }
-
-      return response.data;
-    } catch (error) {
-      console.error(error);
-      throw error;
-    }
-  };
-
-  return tryAuthenticatedRequest();
+      },
+      errorMessage,
+      dependencies
+    );
+    return unwrapApiResponse(response, "No data received from the server");
+  } catch (error) {
+    console.error(error);
+    throw error;
+  }
 }
 
 // Special version for OpenAI endpoints that supports API keys
@@ -84,122 +317,38 @@ export async function openAiAuthenticatedApiCall<T, U>(
   errorMessage?: string,
   apiKey?: string
 ): Promise<U> {
-  // If no API key provided, use regular authenticated call
-  if (!apiKey) {
-    return authenticatedApiCall<T, U>(url, method, data, errorMessage);
-  }
-
-  // For API key auth, call internal encrypted API directly (no refresh logic)
-  const response = await internalEncryptedApiCall<T, U>(url, method, data, apiKey, errorMessage);
-
-  if (response.error) {
-    throw new Error(response.error);
-  }
-
-  if (!response.data) {
-    throw new Error(errorMessage || `Request to ${url} failed`);
-  }
-
-  return response.data;
+  return openAiAuthenticatedApiCallWithDependencies(
+    url,
+    method,
+    data,
+    errorMessage,
+    apiKey,
+    defaultDependencies
+  );
 }
 
-// This internal version can return a specific
-async function internalEncryptedApiCall<T, U>(
+/** @internal Exported for deterministic transport tests, not from the package entry point. */
+export async function openAiAuthenticatedApiCallWithDependencies<T, U>(
   url: string,
   method: string,
   data: T,
-  accessToken?: string,
-  errorMessage?: string
-): Promise<ApiResponse<U>> {
-  // Use apiConfig to determine the context and get the appropriate API URL
-  const endpoint = apiConfig.resolveEndpoint(url);
-  const explicitApiUrl = endpoint.context === "platform" ? getPlatformApiUrl() : getApiUrl();
-  const pcrConfig = endpoint.context === "platform" ? getPlatformPcrConfig() : getApiPcrConfig();
+  errorMessage: string | undefined,
+  apiKey: string | undefined,
+  dependencies: EncryptedApiDependencies
+): Promise<U> {
+  if (!apiKey) {
+    return authenticatedApiCallWithDependencies(url, method, data, errorMessage, dependencies);
+  }
 
-  let { sessionKey, sessionId } = await getAttestation(false, explicitApiUrl, pcrConfig);
-
-  const makeRequest = async (token: string | undefined, forceNewAttestation: boolean = false) => {
-    if (forceNewAttestation || !sessionKey || !sessionId) {
-      const newAttestation = await getAttestation(true, explicitApiUrl, pcrConfig);
-      sessionKey = newAttestation.sessionKey;
-      sessionId = newAttestation.sessionId;
-    }
-
-    if (!sessionKey || !sessionId) {
-      throw new Error("Failed to make encrypted API call, no attestation available.");
-    }
-
-    const jsonData = data ? JSON.stringify(data) : undefined;
-    const encryptedData = jsonData ? encryptMessage(sessionKey, jsonData) : undefined;
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "x-session-id": sessionId
-    };
-
-    // Only add Authorization header if a token is provided
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: encryptedData ? JSON.stringify({ encrypted: encryptedData }) : undefined
-    });
-
-    const result: ApiResponse<U> = {
-      status: response.status
-    };
-
-    if (!response.ok) {
-      try {
-        const errorBody = await response.json();
-        result.error =
-          errorBody.message || errorMessage || `HTTP error! Status: ${response.status}`;
-      } catch {
-        result.error = errorMessage || `HTTP error! Status: ${response.status}`;
-      }
-    } else {
-      try {
-        const encryptedResponse: EncryptedResponse = await response.json();
-        const decryptedResponse = decryptMessage(sessionKey, encryptedResponse.encrypted);
-        result.data = JSON.parse(decryptedResponse);
-      } catch (error) {
-        console.error("Error decrypting or parsing response:", error);
-        result.status = 500;
-        result.error = "Failed to decrypt or parse the response";
-      }
-    }
-
-    return result;
-  };
-
-  const tryEncryptedRequest = async (
-    token: string | undefined,
-    forceNewAttestation: boolean = false
-  ): Promise<ApiResponse<U>> => {
-    try {
-      const response = await makeRequest(token, forceNewAttestation);
-
-      // Retry with new attestation if we get a 400 or encryption error, but only once
-      if (response.status === 400 || response.error?.includes("Encryption error")) {
-        if (!forceNewAttestation) {
-          console.log("Encryption error or Bad Request, attempting to renew attestation");
-          return tryEncryptedRequest(token, true);
-        }
-      }
-
-      return response;
-    } catch (error) {
-      return {
-        status: 500,
-        error: error instanceof Error ? error.message : "Unknown error occurred"
-      };
-    }
-  };
-
-  return tryEncryptedRequest(accessToken);
+  const response = await performEncryptedApiCall<T, U>(
+    url,
+    method,
+    data,
+    { token: apiKey },
+    errorMessage,
+    dependencies
+  );
+  return unwrapApiResponse(response, errorMessage || `Request to ${url} failed`);
 }
 
 export async function encryptedApiCall<T, U>(
@@ -209,23 +358,32 @@ export async function encryptedApiCall<T, U>(
   accessToken?: string,
   errorMessage?: string
 ): Promise<U> {
-  const response = await internalEncryptedApiCall<T, U>(
+  return encryptedApiCallWithDependencies(
     url,
     method,
     data,
     accessToken,
-    errorMessage
+    errorMessage,
+    defaultDependencies
   );
+}
 
-  // Throw an error if the response contains an error message
-  if (response.error) {
-    throw new Error(response.error);
-  }
-
-  // Throw an error if no data was received
-  if (!response.data) {
-    throw new Error("No data received from the server");
-  }
-
-  return response.data;
+/** @internal Exported for deterministic transport tests, not from the package entry point. */
+export async function encryptedApiCallWithDependencies<T, U>(
+  url: string,
+  method: string,
+  data: T,
+  accessToken: string | undefined,
+  errorMessage: string | undefined,
+  dependencies: EncryptedApiDependencies
+): Promise<U> {
+  const response = await performEncryptedApiCall<T, U>(
+    url,
+    method,
+    data,
+    { token: accessToken },
+    errorMessage,
+    dependencies
+  );
+  return unwrapApiResponse(response, "No data received from the server");
 }
