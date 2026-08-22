@@ -394,6 +394,7 @@ pub async fn agent_save_project_root_order(
         .await
 }
 
+#[deny(clippy::large_futures, clippy::large_stack_frames)]
 #[tauri::command(async)]
 pub fn agent_create_session(
     app_handle: AppHandle,
@@ -404,11 +405,13 @@ pub fn agent_create_session(
     let _ = app_handle;
     let service = MapleAgentService::clone(state.inner());
     Box::pin(async move {
-        service
-            .handle_for_user(&user_id)
-            .await?
-            .create_session(request)
-            .await
+        let handle = service.handle_for_user(&user_id).await?;
+        #[allow(
+            clippy::large_futures,
+            reason = "the enclosing command future is heap-boxed before it crosses Tauri"
+        )]
+        let result = handle.create_session(request).await;
+        result
     })
 }
 
