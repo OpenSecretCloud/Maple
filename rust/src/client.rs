@@ -876,15 +876,13 @@ impl OpenSecretClient {
                             self.perform_attestation_handshake().await?;
                             replayed = true;
                         }
-                        Some(RecoveryAction::RefreshAccessToken) if allow_refresh => {
-                            if self
-                                .recover_auth_after_unauthorized(auth_mode, &auth)
-                                .await?
-                            {
-                                replayed = true;
-                            } else {
-                                return Err(Self::api_error_from_response(response).await);
-                            }
+                        Some(RecoveryAction::RefreshAccessToken)
+                            if allow_refresh
+                                && self
+                                    .recover_auth_after_unauthorized(auth_mode, &auth)
+                                    .await? =>
+                        {
+                            replayed = true;
                         }
                         _ => return Err(Self::api_error_from_response(response).await),
                     }
@@ -1176,15 +1174,13 @@ impl OpenSecretClient {
                             self.perform_attestation_handshake().await?;
                             replayed = true;
                         }
-                        Some(RecoveryAction::RefreshAccessToken) if allow_refresh => {
-                            if self
-                                .recover_auth_after_unauthorized(auth_mode, &auth)
-                                .await?
-                            {
-                                replayed = true;
-                            } else {
-                                return Err(Self::api_error_from_response(response).await);
-                            }
+                        Some(RecoveryAction::RefreshAccessToken)
+                            if allow_refresh
+                                && self
+                                    .recover_auth_after_unauthorized(auth_mode, &auth)
+                                    .await? =>
+                        {
+                            replayed = true;
                         }
                         _ => return Err(Self::api_error_from_response(response).await),
                     }
