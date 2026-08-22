@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useNotification } from "@/contexts/NotificationContext";
 import { openExternalUrl } from "@/utils/openUrl";
-import { isTauri } from "@/utils/platform";
+import { isTauriDesktop } from "@/utils/platform";
 
 interface UpdateReadyPayload {
   version: string;
@@ -20,11 +20,20 @@ interface UpdateAvailablePayload {
   version: string;
 }
 
+interface ManualInstallFailedPayload {
+  version: string;
+}
+
+interface PendingUpdateFailure {
+  version: string;
+  origin: "automatic" | "manual";
+}
+
 export function UpdateEventListener() {
   const { showNotification } = useNotification();
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isTauriDesktop()) {
       return;
     }
 
@@ -32,6 +41,9 @@ export function UpdateEventListener() {
     let unlistenUpdateReady: (() => void) | null = null;
     let unlistenUpdateFailed: (() => void) | null = null;
     let unlistenUpdateAvailable: (() => void) | null = null;
+    let unlistenManualCheckUpToDate: (() => void) | null = null;
+    let unlistenManualCheckFailed: (() => void) | null = null;
+    let unlistenManualInstallFailed: (() => void) | null = null;
 
     const installPendingUpdate = async () => {
       try {
@@ -79,6 +91,31 @@ export function UpdateEventListener() {
         type: "error",
         title: "Update Failed",
         message: `Maple couldn't install version ${version} automatically. Download the latest installer to update manually.`,
+        duration: 0,
+        actions: [
+          {
+            label: "Later",
+            variant: "secondary",
+            onClick: () => {
+              // Just dismiss - the notification will close automatically
+            }
+          },
+          {
+            label: "Download Manually",
+            variant: "primary",
+            onClick: () => {
+              void openExternalUrl("https://trymaple.ai/downloads");
+            }
+          }
+        ]
+      });
+    };
+
+    const showManualUpdateFailed = (version: string) => {
+      showNotification({
+        type: "error",
+        title: "Update Not Installed",
+        message: `Maple couldn't install version ${version}. Check again, or download the latest installer.`,
         duration: 0,
         actions: [
           {
@@ -190,9 +227,56 @@ export function UpdateEventListener() {
         }
         unlistenUpdateAvailable = unlistenAvailable;
 
-        const pendingFailure = await invoke<string | null>("get_pending_update_failure");
+        const unlistenUpToDate = await listen("manual-update-check-up-to-date", () => {
+          showNotification({
+            type: "success",
+            title: "Maple Is Up to Date",
+            message: "You're running the latest available version.",
+            duration: 5000
+          });
+        });
+        if (disposed) {
+          unlistenUpToDate();
+          return;
+        }
+        unlistenManualCheckUpToDate = unlistenUpToDate;
+
+        const unlistenCheckFailed = await listen("manual-update-check-failed", () => {
+          showNotification({
+            type: "error",
+            title: "Couldn't Check for Updates",
+            message: "Try again; if it keeps failing, use the latest installer.",
+            duration: 8000
+          });
+        });
+        if (disposed) {
+          unlistenCheckFailed();
+          return;
+        }
+        unlistenManualCheckFailed = unlistenCheckFailed;
+
+        const unlistenInstallFailed = await listen<ManualInstallFailedPayload>(
+          "manual-update-install-failed",
+          (event) => {
+            const { version } = event.payload;
+            showManualUpdateFailed(version);
+          }
+        );
+        if (disposed) {
+          unlistenInstallFailed();
+          return;
+        }
+        unlistenManualInstallFailed = unlistenInstallFailed;
+
+        const pendingFailure = await invoke<PendingUpdateFailure | null>(
+          "get_pending_update_failure"
+        );
         if (!disposed && pendingFailure) {
-          showUpdateFailed(pendingFailure);
+          if (pendingFailure.origin === "manual") {
+            showManualUpdateFailed(pendingFailure.version);
+          } else {
+            showUpdateFailed(pendingFailure.version);
+          }
           return;
         }
 
@@ -212,6 +296,9 @@ export function UpdateEventListener() {
       if (unlistenUpdateReady) unlistenUpdateReady();
       if (unlistenUpdateFailed) unlistenUpdateFailed();
       if (unlistenUpdateAvailable) unlistenUpdateAvailable();
+      if (unlistenManualCheckUpToDate) unlistenManualCheckUpToDate();
+      if (unlistenManualCheckFailed) unlistenManualCheckFailed();
+      if (unlistenManualInstallFailed) unlistenManualInstallFailed();
     };
   }, [showNotification]);
 

@@ -3,7 +3,9 @@ import { ExternalLink, FileText, Info, Mail, Shield } from "lucide-react";
 import packageJson from "../../../package.json";
 import { Button } from "@/components/ui/button";
 import { openExternalUrl } from "@/utils/openUrl";
+import { isTauriDesktop } from "@/utils/platform";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
+import { UpdateSettings } from "./UpdateSettings";
 
 type ExternalRowProps = {
   label: string;
@@ -26,8 +28,10 @@ function ExternalRow({ label, url, icon: Icon }: ExternalRowProps) {
 }
 
 export function AboutSettings() {
+  const supportsDesktopUpdates = isTauriDesktop();
+
   return (
-    <SettingsPage title="About" description="Maple information, policies, and support.">
+    <SettingsPage title="About" description="Maple information, updates, policies, and support.">
       <SettingsSection title="Maple Research">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -44,6 +48,8 @@ export function AboutSettings() {
           </Button>
         </div>
       </SettingsSection>
+
+      {supportsDesktopUpdates && <UpdateSettings />}
 
       <SettingsSection title="Policies and support">
         <div className="space-y-2">

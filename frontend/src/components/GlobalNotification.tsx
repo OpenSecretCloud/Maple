@@ -85,6 +85,9 @@ export function GlobalNotification({ notification, onDismiss }: GlobalNotificati
   return (
     <div className="fixed top-4 right-4 z-50 pointer-events-none">
       <div
+        role={notification.type === "error" ? "alert" : "status"}
+        aria-live={notification.type === "error" ? "assertive" : "polite"}
+        aria-atomic="true"
         className={cn(
           "pointer-events-auto flex flex-col gap-3 rounded-lg border bg-card text-card-foreground p-4 shadow-lg transition-all duration-200 min-w-[320px] max-w-md",
           isLeaving ? "opacity-0 translate-x-full" : "opacity-100 translate-x-0",
