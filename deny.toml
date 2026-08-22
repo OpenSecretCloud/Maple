@@ -1,6 +1,7 @@
 [advisories]
 # Vulnerability and unsoundness advisories are blocking. Unmaintained-package
 # notices are tracked separately because they often require API migrations.
+unsound = "all"
 unmaintained = "none"
 
 [bans]
