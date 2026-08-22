@@ -131,6 +131,18 @@ impl AgentHostLifecycle {
     pub(crate) async fn shutdown_for_update(&self, app_handle: &AppHandle) -> Result<(), String> {
         self.shutdown_services(app_handle, true).await
     }
+
+    /// A Windows updater launch normally exits Maple and never returns. If it
+    /// does return with an error, reopen admission so the still-running app is
+    /// not left permanently in draining mode. Already stopped Agent/ACP work
+    /// is not recreated; the user can retry or restart it explicitly.
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn reopen_after_failed_update_install(&self, app_handle: &AppHandle) {
+        let _guard = self.lock().await;
+        app_handle
+            .state::<MapleAgentService>()
+            .reopen_after_failed_shutdown();
+    }
 }
 
 fn combine_surface_results<T>(
