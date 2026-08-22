@@ -18,15 +18,26 @@ use goose_providers::retry::{
 use opensecret::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
 use rmcp::model::Tool;
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::future::{ready, Future};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use tokio_util::io::StreamReader;
 use tokio_util::sync::CancellationToken;
 
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 pub(super) const MAPLE_PROVIDER_NAME: &str = "maple";
+const AUTHENTICATION_ERROR_MESSAGE: &str = "Maple authentication failed";
+pub(super) const ATTESTATION_VERIFICATION_ERROR_MESSAGE: &str =
+    "Maple could not verify the secure server connection";
+pub(super) const SECURE_CONNECTION_ERROR_MESSAGE: &str =
+    "Maple's encrypted connection could not be recovered";
+const ERROR_CONTRACT_HEADER: &str = "x-opensecret-error-contract";
+const ERROR_CODE_HEADER: &str = "x-opensecret-error-code";
+const ERROR_CONTRACT_VERSION: &[u8] = b"1";
+const SESSION_NOT_FOUND_ERROR_CODE: &[u8] = b"session_not_found";
+
 /// Extra transient inference attempts after the first failure. Goose's 1s × 2^n
 /// backoff, capped at 30s, then covers roughly three minutes of provider blips.
 const TRANSIENT_MAX_RETRIES: usize = 10;
@@ -47,8 +58,16 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(test)]
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 
+struct MapleRunContext {
+    cancellation: CancellationToken,
+    // Pinned Goose projects terminal provider errors as assistant messages.
+    // Preserve only the SDK-owned, repair-exhausted categories that Maple must
+    // return as failed runs instead.
+    terminal_error: Cell<Option<&'static str>>,
+}
+
 tokio::task_local! {
-    static MAPLE_RUN_CANCELLATION: CancellationToken;
+    static MAPLE_RUN_CONTEXT: MapleRunContext;
 }
 
 pub(crate) async fn with_run_cancellation<F>(
@@ -58,13 +77,47 @@ pub(crate) async fn with_run_cancellation<F>(
 where
     F: Future,
 {
-    MAPLE_RUN_CANCELLATION.scope(cancellation, future).await
+    MAPLE_RUN_CONTEXT
+        .scope(
+            MapleRunContext {
+                cancellation,
+                terminal_error: Cell::new(None),
+            },
+            future,
+        )
+        .await
 }
 
 fn current_run_cancellation() -> CancellationToken {
-    MAPLE_RUN_CANCELLATION
-        .try_with(CancellationToken::clone)
+    MAPLE_RUN_CONTEXT
+        .try_with(|context| context.cancellation.clone())
         .unwrap_or_default()
+}
+
+fn remember_terminal_run_error(error: &ProviderError) {
+    let message = match error {
+        ProviderError::Authentication(_) => AUTHENTICATION_ERROR_MESSAGE,
+        ProviderError::ExecutionError(message)
+            if message == ATTESTATION_VERIFICATION_ERROR_MESSAGE =>
+        {
+            ATTESTATION_VERIFICATION_ERROR_MESSAGE
+        }
+        ProviderError::ExecutionError(message) if message == SECURE_CONNECTION_ERROR_MESSAGE => {
+            SECURE_CONNECTION_ERROR_MESSAGE
+        }
+        _ => return,
+    };
+
+    let _ = MAPLE_RUN_CONTEXT.try_with(|context| {
+        context.terminal_error.set(Some(message));
+    });
+}
+
+pub(super) fn take_terminal_run_error() -> Option<String> {
+    MAPLE_RUN_CONTEXT
+        .try_with(|context| context.terminal_error.take().map(str::to_string))
+        .ok()
+        .flatten()
 }
 
 fn cancellation_error() -> ProviderError {
@@ -304,9 +357,12 @@ impl MapleProvider {
         let parsed = response_to_streaming_message(lines);
 
         Box::pin(parsed.map(move |result| {
-            result.map_err(|_| {
+            result.map_err(|error| {
                 if parser_cancellation.is_cancelled() {
                     cancellation_error()
+                } else if let Some(error) = secure_connection_stream_error(&error) {
+                    remember_terminal_run_error(&error);
+                    error
                 } else {
                     invalid_stream_error()
                 }
@@ -335,7 +391,6 @@ impl MapleProvider {
     ) -> Result<MessageStream, ProviderError> {
         let config = Provider::retry_config(self);
         let mut attempts = 0;
-        let mut auth_retried = false;
 
         loop {
             let error = match self.stream_attempt(payload_bytes, cancellation).await {
@@ -365,14 +420,8 @@ impl MapleProvider {
                 Err(error) => error,
             };
 
-            if matches!(error, ProviderError::Authentication(_)) && !auth_retried {
-                auth_retried = true;
-                if self.refresh_credentials().await.is_ok() {
-                    continue;
-                }
-            }
-
             if !should_retry(&error, &config) || attempts >= config.max_retries() {
+                remember_terminal_run_error(&error);
                 return Err(error);
             }
             attempts += 1;
@@ -507,6 +556,7 @@ async fn ensure_success(response: InferenceResponse) -> Result<InferenceResponse
     }
 
     let status = response.status();
+    let terminal_session_failure = has_exact_session_not_found_contract(status, response.headers());
     let retry_after_header = response
         .headers()
         .get("retry-after")
@@ -516,7 +566,11 @@ async fn ensure_success(response: InferenceResponse) -> Result<InferenceResponse
     let (body, truncated) = collect_bounded_body(body).await?;
     let payload = error_payload(&body, truncated);
     let retry_delay = retry_after_delay(payload.as_ref(), retry_after_header.as_deref());
-    let error = map_http_error(status, payload.as_ref());
+    let error = if terminal_session_failure {
+        ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
+    } else {
+        map_http_error(status, payload.as_ref())
+    };
 
     match error {
         ProviderError::RateLimitExceeded { details, .. } => Err(ProviderError::RateLimitExceeded {
@@ -525,6 +579,29 @@ async fn ensure_success(response: InferenceResponse) -> Result<InferenceResponse
         }),
         error => Err(error),
     }
+}
+
+fn has_exact_session_not_found_contract(
+    status: tauri::http::StatusCode,
+    headers: &tauri::http::HeaderMap,
+) -> bool {
+    if status != tauri::http::StatusCode::BAD_REQUEST {
+        return false;
+    }
+
+    let mut contract_values = headers.get_all(ERROR_CONTRACT_HEADER).iter();
+    let Some(contract_version) = contract_values.next() else {
+        return false;
+    };
+    if contract_values.next().is_some() || contract_version.as_bytes() != ERROR_CONTRACT_VERSION {
+        return false;
+    }
+
+    let mut code_values = headers.get_all(ERROR_CODE_HEADER).iter();
+    let Some(code) = code_values.next() else {
+        return false;
+    };
+    code_values.next().is_none() && code.as_bytes() == SESSION_NOT_FOUND_ERROR_CODE
 }
 
 async fn collect_bounded_body(
@@ -626,8 +703,8 @@ fn map_http_error(status: tauri::http::StatusCode, payload: Option<&Value>) -> P
     );
 
     match status {
-        tauri::http::StatusCode::UNAUTHORIZED | tauri::http::StatusCode::FORBIDDEN => {
-            ProviderError::Authentication("Maple authentication failed".to_string())
+        tauri::http::StatusCode::UNAUTHORIZED => {
+            ProviderError::Authentication(AUTHENTICATION_ERROR_MESSAGE.to_string())
         }
         tauri::http::StatusCode::NOT_FOUND => ProviderError::EndpointNotFound(
             "The Maple inference endpoint was not found".to_string(),
@@ -679,11 +756,14 @@ fn map_opensecret_error(error: opensecret::Error) -> ProviderError {
         "OpenSecret inference transport failed ({})",
         opensecret_error_category(&error)
     );
+    map_opensecret_error_kind(error)
+}
+
+fn map_opensecret_error_kind(error: opensecret::Error) -> ProviderError {
     match error {
-        opensecret::Error::Authentication(_)
-        | opensecret::Error::Api {
-            status: 401 | 403, ..
-        } => ProviderError::Authentication("Maple authentication failed".to_string()),
+        opensecret::Error::Authentication(_) | opensecret::Error::Api { status: 401, .. } => {
+            ProviderError::Authentication(AUTHENTICATION_ERROR_MESSAGE.to_string())
+        }
         opensecret::Error::Api {
             status: 402,
             message: _,
@@ -731,9 +811,9 @@ fn map_opensecret_error(error: opensecret::Error) -> ProviderError {
                 ProviderError::NetworkError("The Maple network request failed".to_string())
             }
         }
-        opensecret::Error::AttestationVerificationFailed(_) => ProviderError::ExecutionError(
-            "Maple could not verify the secure server connection".to_string(),
-        ),
+        opensecret::Error::AttestationVerificationFailed(_) => {
+            ProviderError::ExecutionError(ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string())
+        }
         opensecret::Error::Session(_)
         | opensecret::Error::KeyExchange(_)
         | opensecret::Error::Encryption(_)
@@ -744,7 +824,7 @@ fn map_opensecret_error(error: opensecret::Error) -> ProviderError {
         | opensecret::Error::Io(_)
         | opensecret::Error::Utf8(_)
         | opensecret::Error::Base64Decode(_) => {
-            ProviderError::NetworkError("Maple's encrypted connection failed".to_string())
+            ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
         }
         opensecret::Error::Serialization(_)
         | opensecret::Error::Configuration(_)
@@ -759,7 +839,23 @@ fn map_response_stream_error(error: opensecret::Error) -> std::io::Error {
         "Failed to read encrypted Maple response stream ({})",
         opensecret_error_category(&error)
     );
-    std::io::Error::other("Maple's encrypted response stream failed")
+    std::io::Error::other(map_opensecret_error_kind(error))
+}
+
+fn secure_connection_stream_error(error: &anyhow::Error) -> Option<ProviderError> {
+    error.chain().find_map(|cause| {
+        let provider_error = cause.downcast_ref::<ProviderError>().or_else(|| {
+            let LinesCodecError::Io(error) = cause.downcast_ref::<LinesCodecError>()? else {
+                return None;
+            };
+            error.get_ref()?.downcast_ref::<ProviderError>()
+        })?;
+        let ProviderError::ExecutionError(message) = provider_error else {
+            return None;
+        };
+        (message == SECURE_CONNECTION_ERROR_MESSAGE)
+            .then(|| ProviderError::ExecutionError(message.clone()))
+    })
 }
 
 pub(crate) fn opensecret_error_category(error: &opensecret::Error) -> &'static str {
@@ -835,9 +931,13 @@ mod tests {
         }
 
         fn queued(responses: Vec<InferenceResponse>) -> Self {
+            Self::with_results(responses.into_iter().map(Ok).collect())
+        }
+
+        fn with_results(responses: Vec<opensecret::Result<InferenceResponse>>) -> Self {
             Self {
                 requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+                responses: Mutex::new(responses.into()),
                 request_notify: Notify::new(),
             }
         }
@@ -912,6 +1012,27 @@ mod tests {
 
     fn response(status: u16, chunks: Vec<Vec<u8>>, retry_after: Option<&str>) -> InferenceResponse {
         response_with_items(status, chunks.into_iter().map(Ok).collect(), retry_after)
+    }
+
+    fn error_contract_response(contract: Option<&str>, code: Option<&str>) -> InferenceResponse {
+        let mut response = response(
+            400,
+            vec![br#"{"error":{"message":"private session detail"}}"#.to_vec()],
+            None,
+        );
+        if let Some(contract) = contract {
+            response.headers_mut().insert(
+                ERROR_CONTRACT_HEADER,
+                tauri::http::HeaderValue::from_str(contract).expect("valid contract fixture"),
+            );
+        }
+        if let Some(code) = code {
+            response.headers_mut().insert(
+                ERROR_CODE_HEADER,
+                tauri::http::HeaderValue::from_str(code).expect("valid error code fixture"),
+            );
+        }
+        response
     }
 
     fn malformed_response(detail: &str) -> InferenceResponse {
@@ -1061,12 +1182,10 @@ mod tests {
         response
     }
 
-    fn notifying_body_error_response(error_read: Arc<Notify>) -> InferenceResponse {
+    fn notifying_malformed_response(error_read: Arc<Notify>) -> InferenceResponse {
         let body: OpenSecretResponseBody = Box::pin(futures_util::stream::once(async move {
             error_read.notify_one();
-            Err(opensecret::Error::InvalidResponse(
-                "private first-item stream failure".to_string(),
-            ))
+            Ok(b"data: transient-invalid-stream\n\n".to_vec().into())
         }));
         let mut response = InferenceResponse::new(body);
         *response.status_mut() = tauri::http::StatusCode::OK;
@@ -1536,7 +1655,7 @@ mod tests {
             .expect_err("the interruption should remain an error");
         assert_eq!(
             error,
-            ProviderError::NetworkError("Maple's response stream was invalid".to_string())
+            ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
         );
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
@@ -1586,7 +1705,8 @@ mod tests {
         assert_eq!(usage.expect("usage").usage.total_tokens, Some(5));
         assert!(matches!(
             stream.next().await,
-            Some(Err(ProviderError::NetworkError(_)))
+            Some(Err(ProviderError::ExecutionError(message)))
+                if message == SECURE_CONNECTION_ERROR_MESSAGE
         ));
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
@@ -1637,9 +1757,7 @@ mod tests {
             200,
             vec![
                 Ok(incomplete_tool_call_sse()),
-                Err(opensecret::Error::InvalidResponse(
-                    "private incomplete tool stream failure".to_string(),
-                )),
+                Ok(b"data: transient-invalid-tool-stream\n\n".to_vec()),
             ],
             None,
         );
@@ -1752,7 +1870,10 @@ mod tests {
             .await
             .expect("the interruption should be surfaced")
             .expect_err("the interruption should remain an error");
-        assert!(matches!(error, ProviderError::NetworkError(_)));
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
+        );
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
     }
@@ -1858,6 +1979,283 @@ mod tests {
         ))
         .await;
         assert!(matches!(server, Err(ProviderError::ServerError(_))));
+    }
+
+    #[test]
+    fn forbidden_errors_are_request_failures_not_authentication() {
+        let retry_config = fast_retry_config(3);
+        let errors = [
+            map_http_error(tauri::http::StatusCode::FORBIDDEN, None),
+            map_opensecret_error(opensecret::Error::Api {
+                status: 403,
+                message: "private plan detail".to_string(),
+            }),
+        ];
+
+        for error in errors {
+            assert_eq!(
+                error,
+                ProviderError::RequestFailed("Maple request failed with status 403".to_string())
+            );
+            assert!(!should_retry(&error, &retry_config));
+        }
+    }
+
+    #[tokio::test]
+    async fn session_not_found_contract_is_exact_and_fail_closed() {
+        let exact = error_contract_response(Some("1"), Some("session_not_found"));
+        assert!(has_exact_session_not_found_contract(
+            exact.status(),
+            exact.headers()
+        ));
+
+        let mut invalid = vec![
+            error_contract_response(None, None),
+            error_contract_response(None, Some("session_not_found")),
+            error_contract_response(Some("01"), Some("session_not_found")),
+            error_contract_response(Some("1, 1"), Some("session_not_found")),
+            error_contract_response(Some("1"), None),
+            error_contract_response(Some("1"), Some("unknown")),
+            error_contract_response(Some("1"), Some("access_token_expired")),
+        ];
+
+        let mut duplicate_contract = error_contract_response(Some("1"), Some("session_not_found"));
+        duplicate_contract.headers_mut().append(
+            ERROR_CONTRACT_HEADER,
+            tauri::http::HeaderValue::from_static("1"),
+        );
+        invalid.push(duplicate_contract);
+
+        let mut duplicate_code = error_contract_response(Some("1"), Some("session_not_found"));
+        duplicate_code.headers_mut().append(
+            ERROR_CODE_HEADER,
+            tauri::http::HeaderValue::from_static("session_not_found"),
+        );
+        invalid.push(duplicate_code);
+
+        for response in invalid {
+            assert!(!has_exact_session_not_found_contract(
+                response.status(),
+                response.headers()
+            ));
+            let error = match ensure_success(response).await {
+                Ok(_) => panic!("a 400 response should fail"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error,
+                ProviderError::RequestFailed(
+                    "Maple rejected the inference request (400)".to_string()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn secure_connection_sdk_errors_are_fixed_and_non_transient() {
+        let retry_config = fast_retry_config(3);
+        let errors = vec![
+            opensecret::Error::Session("private session detail".to_string()),
+            opensecret::Error::KeyExchange("private key detail".to_string()),
+            opensecret::Error::Encryption("private encryption detail".to_string()),
+            opensecret::Error::Decryption("private decryption detail".to_string()),
+            opensecret::Error::InvalidResponse("private response detail".to_string()),
+            opensecret::Error::Crypto("private crypto detail".to_string()),
+            opensecret::Error::Cbor("private cbor detail".to_string()),
+            opensecret::Error::Io(std::io::Error::other("private io detail")),
+            opensecret::Error::Utf8(
+                String::from_utf8(vec![0xff]).expect_err("invalid UTF-8 fixture"),
+            ),
+            opensecret::Error::Base64Decode(base64::DecodeError::InvalidByte(0, b'%')),
+        ];
+
+        for error in errors {
+            let error = map_opensecret_error(error);
+            assert_eq!(
+                error,
+                ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
+            );
+            assert!(!should_retry(&error, &retry_config));
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_authentication_is_one_send_and_is_latched_for_the_run() {
+        let transport = Arc::new(FakeTransport::with_responses(vec![
+            response(401, vec![br#"{"message":"Invalid JWT"}"#.to_vec()], None),
+            fragmented_success_response(),
+        ]));
+        let provider =
+            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let model_config = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("hello")];
+
+        let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
+            let result = provider
+                .stream(&model_config, "system", &messages, &[])
+                .await;
+            (result, take_terminal_run_error())
+        })
+        .await;
+
+        assert!(matches!(result, Err(ProviderError::Authentication(_))));
+        assert_eq!(
+            terminal_error.as_deref(),
+            Some(AUTHENTICATION_ERROR_MESSAGE)
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_coded_session_failure_is_one_send_and_is_latched_for_the_run() {
+        let transport = Arc::new(FakeTransport::with_responses(vec![
+            error_contract_response(Some("1"), Some("session_not_found")),
+            fragmented_success_response(),
+        ]));
+        let provider =
+            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let model_config = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("hello")];
+
+        let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
+            let result = provider
+                .stream(&model_config, "system", &messages, &[])
+                .await;
+            (result, take_terminal_run_error())
+        })
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("coded session failure should be terminal"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(
+            terminal_error.as_deref(),
+            Some(SECURE_CONNECTION_ERROR_MESSAGE)
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_attestation_failure_is_one_send_and_is_latched_for_the_run() {
+        let transport = Arc::new(FakeTransport::with_results(vec![
+            Err(opensecret::Error::AttestationVerificationFailed(
+                "private attestation detail".to_string(),
+            )),
+            Ok(fragmented_success_response()),
+        ]));
+        let provider =
+            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let model_config = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("hello")];
+
+        let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
+            let result = provider
+                .stream(&model_config, "system", &messages, &[])
+                .await;
+            (result, take_terminal_run_error())
+        })
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("attestation verification failure should be terminal"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(
+            terminal_error.as_deref(),
+            Some(ATTESTATION_VERIFICATION_ERROR_MESSAGE)
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_secure_connection_failure_is_one_send_and_is_latched_for_the_run() {
+        let transport = Arc::new(FakeTransport::with_results(vec![
+            Err(opensecret::Error::Session(
+                "private exhausted session detail".to_string(),
+            )),
+            Ok(fragmented_success_response()),
+        ]));
+        let provider =
+            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let model_config = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("hello")];
+
+        let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
+            let result = provider
+                .stream(&model_config, "system", &messages, &[])
+                .await;
+            (result, take_terminal_run_error())
+        })
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("secure connection failure should be terminal"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(
+            terminal_error.as_deref(),
+            Some(SECURE_CONNECTION_ERROR_MESSAGE)
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_secure_stream_failure_is_one_send_and_is_latched_for_the_run() {
+        let failed = response_with_items(
+            200,
+            vec![Err(opensecret::Error::Decryption(
+                "private lazy decryption detail".to_string(),
+            ))],
+            None,
+        );
+        let transport = Arc::new(FakeTransport::queued(vec![
+            failed,
+            fragmented_success_response(),
+        ]));
+        let provider =
+            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let model_config = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("hello")];
+
+        let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
+            let result = provider
+                .stream(&model_config, "system", &messages, &[])
+                .await;
+            (result, take_terminal_run_error())
+        })
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("lazy secure stream failure should be terminal"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(
+            terminal_error.as_deref(),
+            Some(SECURE_CONNECTION_ERROR_MESSAGE)
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
@@ -2033,7 +2431,7 @@ mod tests {
     async fn cancellation_interrupts_first_item_retry_backoff() {
         let error_read = Arc::new(Notify::new());
         let transport = Arc::new(FakeTransport::queued(vec![
-            notifying_body_error_response(Arc::clone(&error_read)),
+            notifying_malformed_response(Arc::clone(&error_read)),
             fragmented_success_response(),
         ]));
         let retry_config = RetryConfig::new(3, 60_000, 1.0, 60_000).transient_only();
