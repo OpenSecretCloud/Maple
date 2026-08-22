@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
+import React, { createContext, useContext, useState, useCallback, useMemo, useRef } from "react";
 import { GlobalNotification, type Notification } from "@/components/GlobalNotification";
 
 interface NotificationContextType {
@@ -10,9 +10,10 @@ const NotificationContext = createContext<NotificationContextType | undefined>(u
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [notification, setNotification] = useState<Notification | null>(null);
+  const nextNotificationId = useRef(0);
 
   const showNotification = useCallback((notif: Omit<Notification, "id">) => {
-    const id = Date.now().toString();
+    const id = `${Date.now()}-${++nextNotificationId.current}`;
     setNotification({
       ...notif,
       id,
@@ -24,6 +25,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setNotification(null);
   }, []);
 
+  const dismissNotification = useCallback((notificationId: string) => {
+    setNotification((current) => (current?.id === notificationId ? null : current));
+  }, []);
+
   const contextValue = useMemo(
     () => ({ showNotification, clearNotification }),
     [clearNotification, showNotification]
@@ -32,7 +37,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   return (
     <NotificationContext.Provider value={contextValue}>
       {children}
-      <GlobalNotification notification={notification} onDismiss={clearNotification} />
+      <GlobalNotification notification={notification} onDismiss={dismissNotification} />
     </NotificationContext.Provider>
   );
 }

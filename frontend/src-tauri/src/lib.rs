@@ -25,7 +25,11 @@ mod word_extractor;
 #[cfg(desktop)]
 #[tauri::command]
 async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> {
-    log::info!("User requested restart for update");
+    // Never restart while a bundle replacement is in progress, and do not let
+    // renderer code turn this updater-only command into a general restart.
+    let _install_guard = UPDATE_INSTALL_LOCK.lock().await;
+    let version = update_ready_to_restart_version()?;
+    log::info!("User requested restart to apply update version {version}");
     let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
     lifecycle.shutdown_for_update(&app_handle).await?;
     app_handle.request_restart();
@@ -92,72 +96,86 @@ fn enable_main_window_frame_autosave(app_handle: &tauri::AppHandle) {
 
 #[cfg(desktop)]
 #[tauri::command]
-fn get_pending_update_failure() -> Result<Option<PendingUpdateFailure>, String> {
-    PENDING_UPDATE_FAILURE
-        .lock()
-        .map_err(|e| format!("Failed to lock PENDING_UPDATE_FAILURE mutex: {e}"))
-        .map(|failure| failure.clone())
+fn get_prepared_update() -> Result<Option<PreparedUpdate>, String> {
+    prepared_update_snapshot()
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn get_pending_update_install() -> Result<Option<String>, String> {
-    Ok(PENDING_UPDATE
-        .lock()
-        .map_err(|e| format!("Failed to lock PENDING_UPDATE mutex: {e}"))?
-        .as_ref()
-        .map(|pending| pending.update.version.clone()))
-}
+async fn install_pending_update(
+    app_handle: tauri::AppHandle,
+    expected_version: String,
+) -> Result<PreparedUpdate, String> {
+    // Only one native bundle mutation may run. A second visible Install action
+    // coalesces behind the first and receives its resulting native state; it
+    // must never launch a second package-manager/UAC prompt automatically.
+    let _install_guard = match UPDATE_INSTALL_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::info!("Another update lifecycle action is active; waiting for its result");
+            let _coalesced_guard = UPDATE_INSTALL_LOCK.lock().await;
+            let prepared = prepared_update_snapshot()?
+                .ok_or_else(|| "No prepared update remains after the active action".to_string())?;
+            return validate_returned_prepared_update(prepared, &expected_version);
+        }
+    };
 
-#[cfg(desktop)]
-#[tauri::command]
-async fn install_pending_update(app_handle: tauri::AppHandle) -> Result<(), String> {
-    // Hold the check lock for the whole install so the hourly check cannot
-    // download and offer the same version again while the password prompt
-    // is open.
+    // Hold the check lock for the whole install so the hourly scheduler cannot
+    // race the prepared state transition.
     let _check_guard = UPDATE_CHECK_LOCK.lock().await;
 
-    let pending = PENDING_UPDATE
-        .lock()
-        .map_err(|e| format!("Failed to lock PENDING_UPDATE mutex: {e}"))?
-        .take()
-        .ok_or_else(|| "No downloaded update is waiting to be installed".to_string())?;
+    let pending = pending_update_snapshot(&expected_version)?;
 
     log::info!(
         "User requested install of downloaded update to version {}",
         pending.update.version
     );
 
-    // Installing a deb/rpm blocks on pkexec until the user answers the
-    // password prompt, so keep it off the async runtime.
-    let (pending, result) = tauri::async_runtime::spawn_blocking(move || {
-        let result = install_update(
-            &app_handle,
-            &pending.update,
-            &pending.bytes,
-            UpdateInstallOrigin::UserApprovedPending,
-        );
-        (pending, result)
-    })
-    .await
-    .map_err(|e| format!("Update install task failed: {e}"))?;
-
-    if result.is_err() {
-        // A cancelled password prompt lands here. The bytes are already
-        // signature-verified, so keep them for "Try Again".
-        match PENDING_UPDATE.lock() {
-            Ok(mut guard) => {
-                if guard.is_none() {
-                    *guard = Some(pending);
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to lock PENDING_UPDATE mutex when restoring update: {e}")
-            }
+    // The Windows updater launches NSIS and exits the process directly, which
+    // bypasses Maple's async RunEvent cleanup. Drain Agent services first.
+    #[cfg(target_os = "windows")]
+    {
+        let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
+        if let Err(error) = lifecycle.shutdown_for_update(&app_handle).await {
+            emit_update_install_failed(&app_handle, &pending.update.version);
+            return Err(error);
         }
     }
 
-    result
+    // Package installation may block on OS UI or filesystem work, so keep it
+    // off the async runtime. The verified pending object stays in native state
+    // until installation succeeds, including if this task fails to join.
+    let version = pending.update.version.clone();
+    let install_app_handle = app_handle.clone();
+    let install_result = tauri::async_runtime::spawn_blocking(move || {
+        install_update(&install_app_handle, &pending.update, &pending.bytes)
+    })
+    .await;
+
+    let result = match install_result {
+        Ok(result) => result,
+        Err(error) => {
+            let error = format!("Update install task failed: {error}");
+            log::error!("{error}");
+            emit_update_install_failed(&app_handle, &version);
+            #[cfg(target_os = "windows")]
+            app_handle
+                .state::<agent_host::AgentHostLifecycle>()
+                .reopen_after_failed_update_install(&app_handle)
+                .await;
+            return Err(error);
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    if result.is_err() {
+        app_handle
+            .state::<agent_host::AgentHostLifecycle>()
+            .reopen_after_failed_update_install(&app_handle)
+            .await;
+    }
+
+    result.map(|()| PreparedUpdate::ReadyToRestart { version })
 }
 
 #[cfg(desktop)]
@@ -199,6 +217,10 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        // A normal quit may race an explicit install. Let the native bundle
+        // replacement finish before stopping services and exiting, without
+        // making exit wait for an unrelated network update check/download.
+        let _install_guard = UPDATE_INSTALL_LOCK.lock().await;
         let lifecycle = app_handle.state::<agent_host::AgentHostLifecycle>();
         if let Err(error) = lifecycle.shutdown_for_exit(&app_handle).await {
             log::error!("Failed to stop Agent services during app exit: {error}");
@@ -292,8 +314,7 @@ pub fn run() {
             proxy::test_proxy_port,
             pdf_extractor::extract_document_content,
             restart_for_update,
-            get_pending_update_failure,
-            get_pending_update_install,
+            get_prepared_update,
             install_pending_update,
             check_for_updates_manually,
             updater_preferences::load_updater_preferences,
@@ -603,34 +624,39 @@ use once_cell::sync::Lazy;
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(desktop)]
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-#[cfg(desktop)]
-static UPDATE_DOWNLOADED: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
 static AGENT_EXIT_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
 static AGENT_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
 #[cfg(desktop)]
-static CURRENT_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-#[cfg(desktop)]
-static FAILED_UPDATE_VERSION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-#[cfg(desktop)]
-static PENDING_UPDATE_FAILURE: Lazy<Mutex<Option<PendingUpdateFailure>>> =
-    Lazy::new(|| Mutex::new(None));
-#[cfg(desktop)]
 static UPDATE_CHECK_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+#[cfg(desktop)]
+static UPDATE_INSTALL_LOCK: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
 
 /// A downloaded and signature-verified update that waits for the user to
 /// approve the install.
 #[cfg(desktop)]
 struct PendingUpdate {
     update: tauri_plugin_updater::Update,
+    // PendingUpdate itself is shared behind Arc, so retain the updater's Vec
+    // directly instead of allocating/copying the full artifact into Arc<[u8]>.
     bytes: Vec<u8>,
+    requires_system_approval: bool,
 }
 
 #[cfg(desktop)]
-static PENDING_UPDATE: Lazy<Mutex<Option<PendingUpdate>>> = Lazy::new(|| Mutex::new(None));
+enum PreparedUpdateState {
+    None,
+    ReadyToInstall(Arc<PendingUpdate>),
+    ReadyToRestart { version: String },
+}
+
+#[cfg(desktop)]
+static PREPARED_UPDATE: Lazy<Mutex<PreparedUpdateState>> =
+    Lazy::new(|| Mutex::new(PreparedUpdateState::None));
 
 #[cfg(desktop)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -640,105 +666,190 @@ enum UpdateCheckTrigger {
 }
 
 #[cfg(desktop)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UpdateInstallOrigin {
-    Automatic,
-    ManualCheck,
-    UserApprovedPending,
-}
-
-#[cfg(desktop)]
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-enum UpdateFailureOrigin {
-    Automatic,
-    Manual,
-}
-
-#[cfg(desktop)]
-#[derive(Clone, serde::Serialize)]
-struct PendingUpdateFailure {
-    version: String,
-    origin: UpdateFailureOrigin,
-}
-
-#[cfg(desktop)]
-fn install_failure_retryability(origin: UpdateInstallOrigin) -> Option<bool> {
-    match origin {
-        UpdateInstallOrigin::Automatic => Some(false),
-        UpdateInstallOrigin::ManualCheck => None,
-        UpdateInstallOrigin::UserApprovedPending => Some(true),
-    }
-}
-
-#[cfg(desktop)]
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum UpdateCheckResult {
     AutomaticUpdatesDisabled,
     UpToDate,
-    ReadyToRestart { version: String },
-    ReadyToInstall { version: String },
-    InstallFailed { version: String },
+    ReadyToRestart {
+        version: String,
+    },
+    ReadyToInstall {
+        version: String,
+        requires_system_approval: bool,
+    },
+}
+
+#[cfg(desktop)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum PreparedUpdate {
+    ReadyToInstall {
+        version: String,
+        requires_system_approval: bool,
+    },
+    ReadyToRestart {
+        version: String,
+    },
 }
 
 /// Linux deb/rpm installs run `pkexec`, which opens a system password dialog.
-/// That dialog must not appear without the user asking for it, so those
-/// installs wait for approval. AppImage, macOS and Windows install silently.
+/// Report that native bundle detail so the renderer never guesses from the OS;
+/// AppImage updates do not require the same system approval.
 #[cfg(desktop)]
-fn install_needs_user_approval() -> bool {
+fn install_requires_system_approval() -> bool {
     use tauri::utils::{config::BundleType, platform::bundle_type};
 
     cfg!(target_os = "linux") && matches!(bundle_type(), Some(BundleType::Deb | BundleType::Rpm))
 }
 
 #[cfg(desktop)]
-fn pending_update_version() -> Option<String> {
-    match PENDING_UPDATE.lock() {
-        Ok(guard) => guard.as_ref().map(|pending| pending.update.version.clone()),
-        Err(e) => {
-            log::error!("Failed to lock PENDING_UPDATE mutex: {e}");
-            None
+fn prepared_update_snapshot() -> Result<Option<PreparedUpdate>, String> {
+    let state = PREPARED_UPDATE
+        .lock()
+        .map_err(|e| format!("Failed to lock PREPARED_UPDATE mutex: {e}"))?;
+
+    Ok(match &*state {
+        PreparedUpdateState::None => None,
+        PreparedUpdateState::ReadyToInstall(pending) => Some(PreparedUpdate::ReadyToInstall {
+            version: pending.update.version.clone(),
+            requires_system_approval: pending.requires_system_approval,
+        }),
+        PreparedUpdateState::ReadyToRestart { version } => Some(PreparedUpdate::ReadyToRestart {
+            version: version.clone(),
+        }),
+    })
+}
+
+#[cfg(desktop)]
+fn prepared_update_result(prepared: Option<PreparedUpdate>) -> Option<UpdateCheckResult> {
+    prepared.map(|prepared| match prepared {
+        PreparedUpdate::ReadyToInstall {
+            version,
+            requires_system_approval,
+        } => UpdateCheckResult::ReadyToInstall {
+            version,
+            requires_system_approval,
+        },
+        PreparedUpdate::ReadyToRestart { version } => UpdateCheckResult::ReadyToRestart { version },
+    })
+}
+
+#[cfg(desktop)]
+fn update_ready_to_restart_version() -> Result<String, String> {
+    validate_update_ready_to_restart(prepared_update_snapshot()?)
+}
+
+#[cfg(desktop)]
+fn validate_update_ready_to_restart(prepared: Option<PreparedUpdate>) -> Result<String, String> {
+    match prepared {
+        Some(PreparedUpdate::ReadyToRestart { version }) => Ok(version),
+        Some(PreparedUpdate::ReadyToInstall { version, .. }) => Err(format!(
+            "Version {version} is downloaded but has not been installed"
+        )),
+        None => Err("No installed update is waiting for Maple to restart".to_string()),
+    }
+}
+
+#[cfg(desktop)]
+fn validate_expected_update_version(
+    prepared_version: Option<&str>,
+    expected_version: &str,
+) -> Result<(), String> {
+    match prepared_version {
+        Some(version) if version == expected_version => Ok(()),
+        Some(version) => Err(format!(
+            "Downloaded update changed from version {expected_version} to {version}; review it before installing"
+        )),
+        None => Err("No downloaded update is waiting to be installed".to_string()),
+    }
+}
+
+#[cfg(desktop)]
+fn validate_returned_prepared_update(
+    prepared: PreparedUpdate,
+    expected_version: &str,
+) -> Result<PreparedUpdate, String> {
+    let version = match &prepared {
+        PreparedUpdate::ReadyToInstall { version, .. }
+        | PreparedUpdate::ReadyToRestart { version } => version,
+    };
+    validate_expected_update_version(Some(version), expected_version)?;
+    Ok(prepared)
+}
+
+#[cfg(desktop)]
+fn pending_update_snapshot(expected_version: &str) -> Result<Arc<PendingUpdate>, String> {
+    let state = PREPARED_UPDATE
+        .lock()
+        .map_err(|e| format!("Failed to lock PREPARED_UPDATE mutex: {e}"))?;
+
+    match &*state {
+        PreparedUpdateState::ReadyToInstall(pending) => {
+            validate_expected_update_version(Some(&pending.update.version), expected_version)?;
+            Ok(Arc::clone(pending))
+        }
+        PreparedUpdateState::ReadyToRestart { version } => Err(format!(
+            "Version {version} is already installed and waiting for Maple to restart"
+        )),
+        PreparedUpdateState::None => {
+            Err("No downloaded update is waiting to be installed".to_string())
         }
     }
 }
 
 #[cfg(desktop)]
-fn downloaded_update_version() -> Option<String> {
-    if !UPDATE_DOWNLOADED.load(Ordering::SeqCst) {
-        return None;
-    }
+fn store_pending_update(pending: PendingUpdate) -> Result<(), String> {
+    let mut state = PREPARED_UPDATE
+        .lock()
+        .map_err(|e| format!("Failed to lock PREPARED_UPDATE mutex: {e}"))?;
+    *state = PreparedUpdateState::ReadyToInstall(Arc::new(pending));
+    Ok(())
+}
 
-    match CURRENT_VERSION.lock() {
-        Ok(version) if !version.is_empty() => Some(version.clone()),
-        Ok(_) => None,
-        Err(e) => {
-            log::error!("Failed to lock CURRENT_VERSION mutex: {e}");
-            None
+#[cfg(desktop)]
+fn mark_update_installed(expected_version: &str) -> Result<(), String> {
+    let mut state = PREPARED_UPDATE
+        .lock()
+        .map_err(|e| format!("Failed to lock PREPARED_UPDATE mutex: {e}"))?;
+
+    match &*state {
+        PreparedUpdateState::ReadyToInstall(pending) => {
+            validate_expected_update_version(Some(&pending.update.version), expected_version)?;
+        }
+        PreparedUpdateState::ReadyToRestart { version } => {
+            return validate_expected_update_version(Some(version), expected_version);
+        }
+        PreparedUpdateState::None => {
+            return validate_expected_update_version(None, expected_version);
         }
     }
+
+    *state = PreparedUpdateState::ReadyToRestart {
+        version: expected_version.to_string(),
+    };
+    Ok(())
 }
 
 #[cfg(desktop)]
-fn prepared_update_result(
-    downloaded_version: Option<String>,
-    pending_install_version: Option<String>,
-) -> Option<UpdateCheckResult> {
-    downloaded_version
-        .map(|version| UpdateCheckResult::ReadyToRestart { version })
-        .or_else(|| {
-            pending_install_version.map(|version| UpdateCheckResult::ReadyToInstall { version })
-        })
-}
-
-#[cfg(desktop)]
-fn emit_update_available(app_handle: &tauri::AppHandle, version: &str) {
+fn emit_update_available(
+    app_handle: &tauri::AppHandle,
+    version: &str,
+    requires_system_approval: bool,
+) {
     #[derive(Clone, serde::Serialize)]
     struct UpdateAvailablePayload<'a> {
         version: &'a str,
+        requires_system_approval: bool,
     }
 
-    if let Err(e) = app_handle.emit("update-available", UpdateAvailablePayload { version }) {
+    if let Err(e) = app_handle.emit(
+        "update-available",
+        UpdateAvailablePayload {
+            version,
+            requires_system_approval,
+        },
+    ) {
         log::error!("Failed to emit update-available event: {e}");
     } else {
         log::info!("Emitted update-available event for version {version}");
@@ -767,21 +878,6 @@ fn emit_manual_update_check_result(app_handle: &tauri::AppHandle, result: &Updat
         if let Err(e) = app_handle.emit("manual-update-check-up-to-date", ()) {
             log::error!("Failed to emit manual-update-check-up-to-date event: {e}");
         }
-    }
-}
-
-#[cfg(desktop)]
-fn emit_manual_update_install_failed(app_handle: &tauri::AppHandle, version: &str) {
-    #[derive(Clone, serde::Serialize)]
-    struct ManualInstallFailedPayload<'a> {
-        version: &'a str,
-    }
-
-    if let Err(e) = app_handle.emit(
-        "manual-update-install-failed",
-        ManualInstallFailedPayload { version },
-    ) {
-        log::error!("Failed to emit manual-update-install-failed event: {e}");
     }
 }
 
@@ -820,7 +916,8 @@ fn update_trigger_allows(trigger: UpdateCheckTrigger, automatic_updates_enabled:
 }
 
 /// Check for updates. Automatic checks honor the persisted preference at each
-/// network/install boundary; a user-requested check always proceeds.
+/// network/download boundary; a user-requested check always proceeds. Every
+/// verified download waits for an explicit install action.
 #[cfg(desktop)]
 async fn check_for_updates(
     app_handle: tauri::AppHandle,
@@ -835,39 +932,23 @@ async fn check_for_updates(
         return Ok(UpdateCheckResult::AutomaticUpdatesDisabled);
     }
 
-    if trigger == UpdateCheckTrigger::Manual {
-        // A manual check should resurface already prepared work instead of
-        // discarding it and downloading or installing the same version again.
-        if let Some(prepared) =
-            prepared_update_result(downloaded_update_version(), pending_update_version())
-        {
+    // A prepared update owns the updater flow until it is installed/restarted.
+    // Manual checks resurface it; automatic checks quietly avoid another
+    // network request or redundant download.
+    if let Some(prepared) = prepared_update_result(prepared_update_snapshot()?) {
+        if trigger == UpdateCheckTrigger::Manual {
             match &prepared {
                 UpdateCheckResult::ReadyToRestart { version } => {
                     emit_update_ready(&app_handle, version)
                 }
-                UpdateCheckResult::ReadyToInstall { version } => {
-                    emit_update_available(&app_handle, version)
-                }
+                UpdateCheckResult::ReadyToInstall {
+                    version,
+                    requires_system_approval,
+                } => emit_update_available(&app_handle, version, *requires_system_approval),
                 _ => unreachable!("prepared update result must be actionable"),
             }
-            return Ok(prepared);
         }
-
-        // An explicit check is also an explicit retry of a version whose
-        // automatic install failed earlier in this session.
-        match FAILED_UPDATE_VERSION.lock() {
-            Ok(mut version) => version.clear(),
-            Err(e) => {
-                log::error!("Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}")
-            }
-        }
-        match PENDING_UPDATE_FAILURE.lock() {
-            Ok(mut failure) => *failure = None,
-            Err(e) => {
-                log::error!("Failed to lock PENDING_UPDATE_FAILURE mutex when clearing: {e}")
-            }
-        }
-        log::info!("Automatic install failure suppression cleared for user-requested retry");
+        return Ok(prepared);
     }
 
     log::info!("Checking for updates...");
@@ -884,55 +965,6 @@ async fn check_for_updates(
     // Check for updates
     match updater.check().await {
         Ok(Some(update)) => {
-            // Check if we've already downloaded this specific version
-            let current_downloaded_version = match CURRENT_VERSION.lock() {
-                Ok(guard) => guard.clone(),
-                Err(e) => {
-                    log::error!("Failed to lock CURRENT_VERSION mutex: {e}");
-                    String::new() // Use empty string if lock fails
-                }
-            };
-
-            if UPDATE_DOWNLOADED.load(Ordering::SeqCst)
-                && current_downloaded_version == update.version
-            {
-                log::info!(
-                    "Update to version {} already downloaded, skipping redundant download",
-                    update.version
-                );
-                return Ok(UpdateCheckResult::ReadyToRestart {
-                    version: update.version,
-                });
-            }
-
-            if pending_update_version().as_deref() == Some(update.version.as_str()) {
-                log::info!(
-                    "Update to version {} is downloaded and waiting for user approval, skipping redundant download",
-                    update.version
-                );
-                return Ok(UpdateCheckResult::ReadyToInstall {
-                    version: update.version,
-                });
-            }
-
-            let failed_update_version = match FAILED_UPDATE_VERSION.lock() {
-                Ok(guard) => guard.clone(),
-                Err(e) => {
-                    log::error!("Failed to lock FAILED_UPDATE_VERSION mutex: {e}");
-                    String::new()
-                }
-            };
-
-            if failed_update_version == update.version {
-                log::info!(
-                    "Update to version {} already failed to install in this session, skipping automatic retry",
-                    update.version
-                );
-                return Ok(UpdateCheckResult::InstallFailed {
-                    version: update.version,
-                });
-            }
-
             if !automatic_update_may_continue(&app_handle, trigger).await? {
                 log::info!(
                     "Automatic updates were disabled while checking; not downloading version {}",
@@ -941,7 +973,7 @@ async fn check_for_updates(
                 return Ok(UpdateCheckResult::AutomaticUpdatesDisabled);
             }
 
-            log::info!("Update available, attempting to download and install");
+            log::info!("Update available, downloading it for user approval");
 
             // Download the update
             let mut downloaded = 0_u64;
@@ -974,7 +1006,7 @@ async fn check_for_updates(
                             })?;
                         if !preferences.automatic_updates {
                             log::info!(
-                                "Automatic updates were disabled while downloading; not installing version {}",
+                                "Automatic updates were disabled while downloading; not preparing version {}",
                                 update.version
                             );
                             return Ok(UpdateCheckResult::AutomaticUpdatesDisabled);
@@ -984,40 +1016,20 @@ async fn check_for_updates(
                         None
                     };
 
-                    if install_needs_user_approval() {
-                        let version = update.version.clone();
-                        match PENDING_UPDATE.lock() {
-                            Ok(mut guard) => *guard = Some(PendingUpdate { update, bytes }),
-                            Err(e) => {
-                                let error = format!(
-                                    "Failed to lock PENDING_UPDATE mutex when storing update: {e}"
-                                );
-                                log::error!("{error}");
-                                return Err(error);
-                            }
-                        }
-
-                        emit_update_available(&app_handle, &version);
-
-                        return Ok(UpdateCheckResult::ReadyToInstall { version });
-                    }
-
                     let version = update.version.clone();
-                    let install_origin = match trigger {
-                        UpdateCheckTrigger::Automatic => UpdateInstallOrigin::Automatic,
-                        UpdateCheckTrigger::Manual => UpdateInstallOrigin::ManualCheck,
-                    };
-                    match install_update(&app_handle, &update, &bytes, install_origin) {
-                        Ok(()) => Ok(UpdateCheckResult::ReadyToRestart { version }),
-                        Err(error) if trigger == UpdateCheckTrigger::Manual => {
-                            log::error!(
-                                "Manual update check downloaded version {version}, but installation failed: {error}"
-                            );
-                            emit_manual_update_install_failed(&app_handle, &version);
-                            Ok(UpdateCheckResult::InstallFailed { version })
-                        }
-                        Err(error) => Err(error),
-                    }
+                    let requires_system_approval = install_requires_system_approval();
+                    store_pending_update(PendingUpdate {
+                        update,
+                        bytes,
+                        requires_system_approval,
+                    })?;
+
+                    emit_update_available(&app_handle, &version, requires_system_approval);
+
+                    Ok(UpdateCheckResult::ReadyToInstall {
+                        version,
+                        requires_system_approval,
+                    })
                 }
                 Err(e) => {
                     log::error!("Failed to download update: {e}");
@@ -1036,113 +1048,51 @@ async fn check_for_updates(
     }
 }
 
-/// Install a downloaded update and tell the frontend the result.
-///
-/// A staged install the user approved always reports the result, and a failure
-/// (for example a cancelled password prompt) does not block the version for the
-/// rest of the session. Manual-check failures are returned to their caller,
-/// while automatic failures emit the global fallback notification.
+#[cfg(desktop)]
+fn emit_update_install_failed(app_handle: &tauri::AppHandle, version: &str) {
+    #[derive(Clone, serde::Serialize)]
+    struct UpdateFailedPayload<'a> {
+        version: &'a str,
+        retryable: bool,
+    }
+
+    if let Err(error) = app_handle.emit(
+        "update-failed",
+        UpdateFailedPayload {
+            version,
+            retryable: true,
+        },
+    ) {
+        log::error!("Failed to emit update-failed event: {error}");
+    }
+}
+
+/// Install a signature-verified update after the user explicitly approves it.
+/// The prepared object remains in native memory on every failure so Settings
+/// can offer the same verified bytes again.
 #[cfg(desktop)]
 fn install_update(
     app_handle: &tauri::AppHandle,
     update: &tauri_plugin_updater::Update,
     bytes: &[u8],
-    origin: UpdateInstallOrigin,
 ) -> Result<(), String> {
     log::info!("Installing update to version {}", update.version);
 
     match update.install(bytes) {
         Ok(_) => {
-            // Log that the update is ready
             log::info!(
                 "Update installed successfully. Will be applied on next application restart."
             );
 
-            match FAILED_UPDATE_VERSION.lock() {
-                Ok(mut version) => version.clear(),
-                Err(e) => {
-                    log::error!("Failed to lock FAILED_UPDATE_VERSION mutex when clearing: {e}")
-                }
-            }
-            match PENDING_UPDATE_FAILURE.lock() {
-                Ok(mut failure) => *failure = None,
-                Err(e) => {
-                    log::error!("Failed to lock PENDING_UPDATE_FAILURE mutex when clearing: {e}")
-                }
-            }
-
-            // Mark this version as downloaded to prevent redundant downloads/notifications
-            match CURRENT_VERSION.lock() {
-                Ok(mut version) => *version = update.version.clone(),
-                Err(e) => {
-                    log::error!("Failed to lock CURRENT_VERSION mutex when updating version: {e}")
-                }
-            }
-
-            // The silent path shows the restart toast once per session. An
-            // install the user asked for always gets feedback.
-            let already_notified = UPDATE_DOWNLOADED.swap(true, Ordering::SeqCst);
-            if already_notified && origin != UpdateInstallOrigin::UserApprovedPending {
-                log::info!("Update notification already shown, not showing another one");
-                return Ok(());
-            }
-
+            mark_update_installed(&update.version)?;
             emit_update_ready(app_handle, &update.version);
-
             Ok(())
         }
         Err(e) => {
             let error = format!("Failed to install update: {e}");
             log::error!("{error}");
-
-            if origin == UpdateInstallOrigin::UserApprovedPending {
-                log::info!("User-approved install failed; the update stays available to retry");
-            } else {
-                match FAILED_UPDATE_VERSION.lock() {
-                    Ok(mut version) => *version = update.version.clone(),
-                    Err(lock_error) => log::error!(
-                        "Failed to lock FAILED_UPDATE_VERSION mutex when recording failure: {lock_error}"
-                    ),
-                }
-
-                let failure_origin = match origin {
-                    UpdateInstallOrigin::Automatic => UpdateFailureOrigin::Automatic,
-                    UpdateInstallOrigin::ManualCheck => UpdateFailureOrigin::Manual,
-                    UpdateInstallOrigin::UserApprovedPending => unreachable!(
-                        "user-approved pending failures do not enter suppression state"
-                    ),
-                };
-                match PENDING_UPDATE_FAILURE.lock() {
-                    Ok(mut failure) => {
-                        *failure = Some(PendingUpdateFailure {
-                            version: update.version.clone(),
-                            origin: failure_origin,
-                        });
-                    }
-                    Err(lock_error) => log::error!(
-                        "Failed to lock PENDING_UPDATE_FAILURE mutex when recording failure: {lock_error}"
-                    ),
-                }
-            }
-
-            #[derive(Clone, serde::Serialize)]
-            struct UpdateFailedPayload {
-                version: String,
-                retryable: bool,
-            }
-
-            if let Some(retryable) = install_failure_retryability(origin) {
-                if let Err(emit_error) = app_handle.emit(
-                    "update-failed",
-                    UpdateFailedPayload {
-                        version: update.version.clone(),
-                        retryable,
-                    },
-                ) {
-                    log::error!("Failed to emit update-failed event: {emit_error}");
-                }
-            }
-
+            log::info!("User-approved install failed; the verified update remains available");
+            emit_update_install_failed(app_handle, &update.version);
             Err(error)
         }
     }
@@ -1162,49 +1112,92 @@ mod updater_policy_tests {
     #[test]
     fn manual_checks_resurface_prepared_updates_before_hitting_the_network() {
         assert_eq!(
-            prepared_update_result(Some("4.5.6".to_string()), Some("4.5.5".to_string())),
+            prepared_update_result(Some(PreparedUpdate::ReadyToRestart {
+                version: "4.5.6".to_string(),
+            })),
             Some(UpdateCheckResult::ReadyToRestart {
                 version: "4.5.6".to_string()
             })
         );
         assert_eq!(
-            prepared_update_result(None, Some("4.5.5".to_string())),
+            prepared_update_result(Some(PreparedUpdate::ReadyToInstall {
+                version: "4.5.5".to_string(),
+                requires_system_approval: true,
+            })),
             Some(UpdateCheckResult::ReadyToInstall {
-                version: "4.5.5".to_string()
+                version: "4.5.5".to_string(),
+                requires_system_approval: true,
             })
         );
-        assert_eq!(prepared_update_result(None, None), None);
+        assert_eq!(prepared_update_result(None), None);
     }
 
     #[test]
-    fn install_failure_feedback_matches_the_recovery_path() {
+    fn renderer_must_confirm_the_exact_prepared_version() {
         assert_eq!(
-            install_failure_retryability(UpdateInstallOrigin::Automatic),
-            Some(false)
+            validate_expected_update_version(Some("4.5.6"), "4.5.6"),
+            Ok(())
         );
         assert_eq!(
-            install_failure_retryability(UpdateInstallOrigin::ManualCheck),
-            None
+            validate_expected_update_version(Some("4.5.7"), "4.5.6"),
+            Err(
+                "Downloaded update changed from version 4.5.6 to 4.5.7; review it before installing"
+                    .to_string()
+            )
         );
         assert_eq!(
-            install_failure_retryability(UpdateInstallOrigin::UserApprovedPending),
-            Some(true)
+            validate_expected_update_version(None, "4.5.6"),
+            Err("No downloaded update is waiting to be installed".to_string())
+        );
+        assert_eq!(
+            validate_returned_prepared_update(
+                PreparedUpdate::ReadyToRestart {
+                    version: "4.5.7".to_string(),
+                },
+                "4.5.6",
+            ),
+            Err(
+                "Downloaded update changed from version 4.5.6 to 4.5.7; review it before installing"
+                    .to_string()
+            )
         );
     }
 
     #[test]
-    fn pending_failure_origin_preserves_manual_recovery_copy() {
-        let failure = PendingUpdateFailure {
+    fn prepared_update_keeps_native_install_approval_metadata() {
+        let prepared = PreparedUpdate::ReadyToInstall {
             version: "4.5.6".to_string(),
-            origin: UpdateFailureOrigin::Manual,
+            requires_system_approval: true,
         };
 
         assert_eq!(
-            serde_json::to_value(failure).unwrap(),
+            serde_json::to_value(prepared).unwrap(),
             serde_json::json!({
+                "status": "ready_to_install",
                 "version": "4.5.6",
-                "origin": "manual"
+                "requires_system_approval": true
             })
+        );
+    }
+
+    #[test]
+    fn restart_requires_a_natively_installed_update() {
+        assert_eq!(
+            validate_update_ready_to_restart(Some(PreparedUpdate::ReadyToRestart {
+                version: "4.5.6".to_string(),
+            })),
+            Ok("4.5.6".to_string())
+        );
+        assert_eq!(
+            validate_update_ready_to_restart(Some(PreparedUpdate::ReadyToInstall {
+                version: "4.5.6".to_string(),
+                requires_system_approval: false,
+            })),
+            Err("Version 4.5.6 is downloaded but has not been installed".to_string())
+        );
+        assert_eq!(
+            validate_update_ready_to_restart(None),
+            Err("No installed update is waiting for Maple to restart".to_string())
         );
     }
 }

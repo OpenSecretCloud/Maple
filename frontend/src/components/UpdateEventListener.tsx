@@ -1,56 +1,113 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import { useNotification } from "@/contexts/NotificationContext";
+import { updateService, type PreparedUpdate, type UpdateService } from "@/services/updateService";
 import { openExternalUrl } from "@/utils/openUrl";
 import { isTauriDesktop } from "@/utils/platform";
 
-interface UpdateReadyPayload {
-  version: string;
-}
-
 interface UpdateFailedPayload {
   version: string;
-  // True when the user approved the install and it did not complete (for
-  // example a cancelled password prompt). The download is kept for a retry.
-  retryable?: boolean;
 }
 
-interface UpdateAvailablePayload {
-  version: string;
+interface UpdateEventListenerProps {
+  service?: UpdateService;
+  isDesktop?: boolean;
+  listenEvent?: typeof listen;
 }
 
-interface ManualInstallFailedPayload {
-  version: string;
-}
-
-interface PendingUpdateFailure {
-  version: string;
-  origin: "automatic" | "manual";
-}
-
-export function UpdateEventListener() {
+export function UpdateEventListener({
+  service = updateService,
+  isDesktop = isTauriDesktop(),
+  listenEvent = listen
+}: UpdateEventListenerProps = {}) {
   const { showNotification } = useNotification();
 
   useEffect(() => {
-    if (!isTauriDesktop()) {
+    if (!isDesktop) {
       return;
     }
 
     let disposed = false;
-    let unlistenUpdateReady: (() => void) | null = null;
+    let preparedUpdateGeneration = 0;
+    let unlistenPreparedUpdate: (() => void) | null = null;
     let unlistenUpdateFailed: (() => void) | null = null;
-    let unlistenUpdateAvailable: (() => void) | null = null;
     let unlistenManualCheckUpToDate: (() => void) | null = null;
     let unlistenManualCheckFailed: (() => void) | null = null;
-    let unlistenManualInstallFailed: (() => void) | null = null;
 
-    const installPendingUpdate = async () => {
+    const installPendingUpdate = async (version: string) => {
       try {
-        await invoke("install_pending_update");
+        const prepared = await service.installPreparedUpdate(version);
+        if (!disposed) {
+          if (prepared.status === "ready_to_restart") {
+            showPreparedUpdate(prepared);
+          } else {
+            // A coalesced caller can observe the first install's retryable
+            // failure as the still-prepared native update.
+            showUpdateInstallFailed(prepared.version);
+          }
+        }
       } catch (error) {
-        // The backend emits update-failed for install errors.
         console.error("Failed to install pending update:", error);
+        if (disposed) return;
+
+        const reconciliationGeneration = preparedUpdateGeneration;
+        try {
+          const currentPrepared = await service.getPreparedUpdate();
+          if (disposed || preparedUpdateGeneration !== reconciliationGeneration) return;
+
+          if (currentPrepared?.status === "ready_to_install") {
+            showUpdateInstallFailed(currentPrepared.version);
+          } else if (currentPrepared?.status === "ready_to_restart") {
+            showUpdateReady(currentPrepared.version);
+          } else {
+            showNotification({
+              type: "error",
+              title: "Update Action Unavailable",
+              message: "Open Settings and check for updates again.",
+              duration: 8000
+            });
+          }
+        } catch (preparedError) {
+          console.error("Failed to reconcile updater state:", preparedError);
+          if (!disposed && preparedUpdateGeneration === reconciliationGeneration) {
+            showNotification({
+              type: "error",
+              title: "Couldn't Confirm the Update",
+              message: "Open Settings and check for updates again.",
+              duration: 8000
+            });
+          }
+        }
+      }
+    };
+
+    const restartForInstalledUpdate = async (version: string) => {
+      try {
+        await service.restartForUpdate();
+      } catch (error) {
+        console.error("Failed to restart for update:", error);
+        showNotification({
+          type: "error",
+          title: "Couldn't Restart Maple",
+          message: `Version ${version} is installed. Quit and reopen Maple to finish updating, or try again.`,
+          duration: 0,
+          actions: [
+            {
+              label: "Later",
+              variant: "secondary",
+              onClick: () => {
+                // Just dismiss - the notification will close automatically
+              }
+            },
+            {
+              label: "Try Again",
+              variant: "primary",
+              onClick: () => {
+                void restartForInstalledUpdate(version);
+              }
+            }
+          ]
+        });
       }
     };
 
@@ -79,70 +136,20 @@ export function UpdateEventListener() {
             label: "Try Again",
             variant: "primary",
             onClick: () => {
-              void installPendingUpdate();
+              void installPendingUpdate(version);
             }
           }
         ]
       });
     };
 
-    const showUpdateFailed = (version: string) => {
-      showNotification({
-        type: "error",
-        title: "Update Failed",
-        message: `Maple couldn't install version ${version} automatically. Download the latest installer to update manually.`,
-        duration: 0,
-        actions: [
-          {
-            label: "Later",
-            variant: "secondary",
-            onClick: () => {
-              // Just dismiss - the notification will close automatically
-            }
-          },
-          {
-            label: "Download Manually",
-            variant: "primary",
-            onClick: () => {
-              void openExternalUrl("https://trymaple.ai/downloads");
-            }
-          }
-        ]
-      });
-    };
-
-    const showManualUpdateFailed = (version: string) => {
-      showNotification({
-        type: "error",
-        title: "Update Not Installed",
-        message: `Maple couldn't install version ${version}. Check again, or download the latest installer.`,
-        duration: 0,
-        actions: [
-          {
-            label: "Later",
-            variant: "secondary",
-            onClick: () => {
-              // Just dismiss - the notification will close automatically
-            }
-          },
-          {
-            label: "Download Manually",
-            variant: "primary",
-            onClick: () => {
-              void openExternalUrl("https://trymaple.ai/downloads");
-            }
-          }
-        ]
-      });
-    };
-
-    // Linux deb/rpm installs open a system password prompt, so the backend
-    // downloads the update and waits for the user to approve the install.
-    const showUpdateAvailable = (version: string) => {
+    const showUpdateAvailable = (version: string, requiresSystemApproval: boolean) => {
       showNotification({
         type: "update",
-        title: "Update Available",
-        message: `Maple downloaded version ${version}. Your system will ask for your password to install it.`,
+        title: "Update Ready",
+        message: requiresSystemApproval
+          ? `Maple downloaded and verified version ${version}. Your system will ask for approval to install it.`
+          : `Maple downloaded and verified version ${version}. Install it when you're ready.`,
         duration: 0,
         actions: [
           {
@@ -156,78 +163,76 @@ export function UpdateEventListener() {
             label: "Install Now",
             variant: "primary",
             onClick: () => {
-              void installPendingUpdate();
+              void installPendingUpdate(version);
             }
           }
         ]
       });
     };
 
+    const showUpdateReady = (version: string) => {
+      showNotification({
+        type: "update",
+        title: "Update Installed",
+        message: `Version ${version} has been installed. Restart Maple to finish updating.`,
+        duration: 0,
+        actions: [
+          {
+            label: "Later",
+            variant: "secondary",
+            onClick: () => {
+              // Just dismiss - the notification will close automatically
+            }
+          },
+          {
+            label: "Restart Now",
+            variant: "primary",
+            onClick: () => {
+              void restartForInstalledUpdate(version);
+            }
+          }
+        ]
+      });
+    };
+
+    const showPreparedUpdate = (prepared: PreparedUpdate) => {
+      preparedUpdateGeneration += 1;
+      if (prepared.status === "ready_to_install") {
+        showUpdateAvailable(prepared.version, prepared.requires_system_approval);
+      } else {
+        showUpdateReady(prepared.version);
+      }
+    };
+
     const setupListeners = async () => {
       try {
-        const unlistenReady = await listen<UpdateReadyPayload>("update-ready", (event) => {
-          const { version } = event.payload;
-          showNotification({
-            type: "update",
-            title: "Update Installed",
-            message: `Version ${version} has been installed. Restart Maple to finish updating.`,
-            duration: 0,
-            actions: [
-              {
-                label: "Later",
-                variant: "secondary",
-                onClick: () => {
-                  // Just dismiss - the notification will close automatically
-                }
-              },
-              {
-                label: "Restart Now",
-                variant: "primary",
-                onClick: async () => {
-                  try {
-                    await invoke("restart_for_update");
-                  } catch (error) {
-                    console.error("Failed to restart for update:", error);
-                  }
-                }
-              }
-            ]
-          });
-        });
+        const unlistenPrepared = await service.subscribePreparedUpdates(showPreparedUpdate);
         if (disposed) {
-          unlistenReady();
+          unlistenPrepared();
           return;
         }
-        unlistenUpdateReady = unlistenReady;
+        unlistenPreparedUpdate = unlistenPrepared;
+      } catch (error) {
+        console.error("Failed to subscribe to prepared updates:", error);
+      }
+      if (disposed) return;
 
-        const unlistenFailed = await listen<UpdateFailedPayload>("update-failed", (event) => {
-          const { version, retryable } = event.payload;
-          if (retryable) {
-            showUpdateInstallFailed(version);
-          } else {
-            showUpdateFailed(version);
-          }
+      try {
+        const unlistenFailed = await listenEvent<UpdateFailedPayload>("update-failed", (event) => {
+          showUpdateInstallFailed(event.payload.version);
         });
         if (disposed) {
           unlistenFailed();
           return;
         }
         unlistenUpdateFailed = unlistenFailed;
+      } catch (error) {
+        console.error("Failed to subscribe to update install failures:", error);
+      }
+      if (disposed) return;
 
-        const unlistenAvailable = await listen<UpdateAvailablePayload>(
-          "update-available",
-          (event) => {
-            const { version } = event.payload;
-            showUpdateAvailable(version);
-          }
-        );
-        if (disposed) {
-          unlistenAvailable();
-          return;
-        }
-        unlistenUpdateAvailable = unlistenAvailable;
-
-        const unlistenUpToDate = await listen("manual-update-check-up-to-date", () => {
+      try {
+        const unlistenUpToDate = await listenEvent("manual-update-check-up-to-date", () => {
           showNotification({
             type: "success",
             title: "Maple Is Up to Date",
@@ -240,8 +245,13 @@ export function UpdateEventListener() {
           return;
         }
         unlistenManualCheckUpToDate = unlistenUpToDate;
+      } catch (error) {
+        console.error("Failed to subscribe to manual update success:", error);
+      }
+      if (disposed) return;
 
-        const unlistenCheckFailed = await listen("manual-update-check-failed", () => {
+      try {
+        const unlistenCheckFailed = await listenEvent("manual-update-check-failed", () => {
           showNotification({
             type: "error",
             title: "Couldn't Check for Updates",
@@ -254,38 +264,19 @@ export function UpdateEventListener() {
           return;
         }
         unlistenManualCheckFailed = unlistenCheckFailed;
+      } catch (error) {
+        console.error("Failed to subscribe to manual update failures:", error);
+      }
+      if (disposed) return;
 
-        const unlistenInstallFailed = await listen<ManualInstallFailedPayload>(
-          "manual-update-install-failed",
-          (event) => {
-            const { version } = event.payload;
-            showManualUpdateFailed(version);
-          }
-        );
-        if (disposed) {
-          unlistenInstallFailed();
-          return;
-        }
-        unlistenManualInstallFailed = unlistenInstallFailed;
-
-        const pendingFailure = await invoke<PendingUpdateFailure | null>(
-          "get_pending_update_failure"
-        );
-        if (!disposed && pendingFailure) {
-          if (pendingFailure.origin === "manual") {
-            showManualUpdateFailed(pendingFailure.version);
-          } else {
-            showUpdateFailed(pendingFailure.version);
-          }
-          return;
-        }
-
-        const pendingInstall = await invoke<string | null>("get_pending_update_install");
-        if (!disposed && pendingInstall) {
-          showUpdateAvailable(pendingInstall);
+      try {
+        const queryGeneration = preparedUpdateGeneration;
+        const prepared = await service.getPreparedUpdate();
+        if (!disposed && prepared && preparedUpdateGeneration === queryGeneration) {
+          showPreparedUpdate(prepared);
         }
       } catch (error) {
-        console.error("Failed to setup update event listeners:", error);
+        console.error("Failed to rehydrate prepared update state:", error);
       }
     };
 
@@ -293,14 +284,12 @@ export function UpdateEventListener() {
 
     return () => {
       disposed = true;
-      if (unlistenUpdateReady) unlistenUpdateReady();
+      if (unlistenPreparedUpdate) unlistenPreparedUpdate();
       if (unlistenUpdateFailed) unlistenUpdateFailed();
-      if (unlistenUpdateAvailable) unlistenUpdateAvailable();
       if (unlistenManualCheckUpToDate) unlistenManualCheckUpToDate();
       if (unlistenManualCheckFailed) unlistenManualCheckFailed();
-      if (unlistenManualInstallFailed) unlistenManualInstallFailed();
     };
-  }, [showNotification]);
+  }, [isDesktop, listenEvent, service, showNotification]);
 
   return null;
 }

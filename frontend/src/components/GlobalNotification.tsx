@@ -20,23 +20,38 @@ export interface Notification {
 
 interface GlobalNotificationProps {
   notification: Notification | null;
-  onDismiss: () => void;
+  onDismiss: (notificationId: string) => void;
 }
 
 export function GlobalNotification({ notification, onDismiss }: GlobalNotificationProps) {
   const [isVisible, setIsVisible] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const dismissTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notificationIdRef = useRef<string | null>(notification?.id ?? null);
+  notificationIdRef.current = notification?.id ?? null;
 
   const handleDismiss = useCallback(() => {
+    const dismissedNotificationId = notificationIdRef.current;
+    if (!dismissedNotificationId) return;
+
     setIsLeaving(true);
     dismissTimeoutRef.current = setTimeout(() => {
+      // An action can synchronously trigger a replacement notification. Never
+      // let the old toast's exit animation clear or hide that newer result.
+      if (notificationIdRef.current !== dismissedNotificationId) return;
+
       setIsVisible(false);
-      onDismiss();
+      onDismiss(dismissedNotificationId);
+      dismissTimeoutRef.current = null;
     }, 200); // Match animation duration
   }, [onDismiss]);
 
   useEffect(() => {
+    if (dismissTimeoutRef.current) {
+      clearTimeout(dismissTimeoutRef.current);
+      dismissTimeoutRef.current = null;
+    }
+
     if (notification) {
       // Trigger enter animation
       setIsVisible(true);
