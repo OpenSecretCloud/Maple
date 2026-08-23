@@ -38,7 +38,7 @@ interface GitHubRelease {
   assets?: GitHubReleaseAsset[];
 }
 
-export const DOWNLOAD_ASSET_MATCHERS: Record<DownloadAssetKey, (name: string) => boolean> = {
+const DOWNLOAD_ASSET_MATCHERS: Record<DownloadAssetKey, (name: string) => boolean> = {
   macOS: (name) => name.endsWith("_universal.dmg"),
   windowsExe: (name) => name.endsWith("_x64-setup.exe"),
   linuxAppImage: (name) => name.endsWith("_amd64.AppImage"),
@@ -61,15 +61,14 @@ function tagFromVersion(version: string): string {
   return version.startsWith("v") ? version : `v${version}`;
 }
 
-function constructedDownloadUrls(tagName: string, version: string): DownloadUrls {
-  const baseDownloadUrl = `https://github.com/OpenSecretCloud/Maple/releases/download/${tagName}`;
+function latestReleaseDownloadUrls(): DownloadUrls {
   return {
-    macOS: `${baseDownloadUrl}/Maple_${version}_universal.dmg`,
-    windowsExe: `${baseDownloadUrl}/Maple_${version}_x64-setup.exe`,
-    linuxAppImage: `${baseDownloadUrl}/Maple_${version}_amd64.AppImage`,
-    linuxDeb: `${baseDownloadUrl}/Maple_${version}_amd64.deb`,
-    linuxRpm: `${baseDownloadUrl}/Maple_${version}_x86_64.rpm`,
-    androidApk: `${baseDownloadUrl}/app-universal-release.apk`
+    macOS: GITHUB_RELEASES_LATEST_URL,
+    windowsExe: GITHUB_RELEASES_LATEST_URL,
+    linuxAppImage: GITHUB_RELEASES_LATEST_URL,
+    linuxDeb: GITHUB_RELEASES_LATEST_URL,
+    linuxRpm: GITHUB_RELEASES_LATEST_URL,
+    androidApk: GITHUB_RELEASES_LATEST_URL
   };
 }
 
@@ -79,7 +78,7 @@ export function buildFallbackDownloadInfo(version: string): DownloadInfo {
   return {
     version: normalizedVersion,
     tagName,
-    downloadUrls: constructedDownloadUrls(tagName, normalizedVersion),
+    downloadUrls: latestReleaseDownloadUrls(),
     releaseUrl: GITHUB_RELEASES_LATEST_URL
   };
 }
@@ -101,8 +100,7 @@ function isGitHubRelease(value: unknown): value is GitHubRelease {
 export function resolveDownloadUrlsFromRelease(
   release: Pick<GitHubRelease, "tag_name" | "assets">
 ): DownloadUrls {
-  const version = versionFromTag(release.tag_name);
-  const resolved = constructedDownloadUrls(release.tag_name, version);
+  const resolved = latestReleaseDownloadUrls();
   const assets = Array.isArray(release.assets) ? release.assets : [];
 
   for (const key of DOWNLOAD_ASSET_KEYS) {

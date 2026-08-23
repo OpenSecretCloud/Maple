@@ -4,6 +4,7 @@ import {
   fetchLatestRelease,
   getLatestDownloadInfo,
   GITHUB_RELEASES_API_URL,
+  GITHUB_RELEASES_LATEST_URL,
   resolveDownloadUrlsFromRelease
 } from "./githubRelease";
 
@@ -15,25 +16,19 @@ afterEach(() => {
 });
 
 describe("buildFallbackDownloadInfo", () => {
-  test("builds GitHub tag URLs from the packaged version", () => {
+  test("points GitHub-hosted installers at the latest release page instead of versioned filenames", () => {
     expect(buildFallbackDownloadInfo("3.3.8")).toEqual({
       version: "3.3.8",
       tagName: "v3.3.8",
       downloadUrls: {
-        macOS:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_universal.dmg",
-        windowsExe:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_x64-setup.exe",
-        linuxAppImage:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_amd64.AppImage",
-        linuxDeb:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_amd64.deb",
-        linuxRpm:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_x86_64.rpm",
-        androidApk:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v3.3.8/app-universal-release.apk"
+        macOS: GITHUB_RELEASES_LATEST_URL,
+        windowsExe: GITHUB_RELEASES_LATEST_URL,
+        linuxAppImage: GITHUB_RELEASES_LATEST_URL,
+        linuxDeb: GITHUB_RELEASES_LATEST_URL,
+        linuxRpm: GITHUB_RELEASES_LATEST_URL,
+        androidApk: GITHUB_RELEASES_LATEST_URL
       },
-      releaseUrl: "https://github.com/OpenSecretCloud/Maple/releases/latest"
+      releaseUrl: GITHUB_RELEASES_LATEST_URL
     });
   });
 });
@@ -84,7 +79,7 @@ describe("resolveDownloadUrlsFromRelease", () => {
     });
   });
 
-  test("keeps constructed URLs when an asset is missing", () => {
+  test("falls back to the latest release page when an asset is missing", () => {
     const urls = resolveDownloadUrlsFromRelease({
       tag_name: "v3.3.8",
       assets: [
@@ -96,9 +91,7 @@ describe("resolveDownloadUrlsFromRelease", () => {
     });
 
     expect(urls.macOS).toBe("https://example.test/Maple.dmg");
-    expect(urls.windowsExe).toBe(
-      "https://github.com/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_x64-setup.exe"
-    );
+    expect(urls.windowsExe).toBe(GITHUB_RELEASES_LATEST_URL);
   });
 });
 
@@ -133,14 +126,10 @@ describe("getLatestDownloadInfo", () => {
       downloadUrls: {
         macOS: "https://example.test/Maple_9.9.9_universal.dmg",
         windowsExe: "https://example.test/Maple_9.9.9_x64-setup.exe",
-        linuxAppImage:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v9.9.9/Maple_9.9.9_amd64.AppImage",
-        linuxDeb:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v9.9.9/Maple_9.9.9_amd64.deb",
-        linuxRpm:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v9.9.9/Maple_9.9.9_x86_64.rpm",
-        androidApk:
-          "https://github.com/OpenSecretCloud/Maple/releases/download/v9.9.9/app-universal-release.apk"
+        linuxAppImage: GITHUB_RELEASES_LATEST_URL,
+        linuxDeb: GITHUB_RELEASES_LATEST_URL,
+        linuxRpm: GITHUB_RELEASES_LATEST_URL,
+        androidApk: GITHUB_RELEASES_LATEST_URL
       },
       releaseUrl: "https://github.com/OpenSecretCloud/Maple/releases/tag/v9.9.9"
     });

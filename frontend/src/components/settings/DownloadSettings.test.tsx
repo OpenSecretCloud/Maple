@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import type { DownloadInfo } from "@/utils/githubRelease";
+import { GITHUB_RELEASES_LATEST_URL, type DownloadInfo } from "@/utils/githubRelease";
 import { DownloadSettings } from "./DownloadSettings";
 
 function textContent(node: ReactTestInstance): string {
@@ -104,9 +104,18 @@ describe("DownloadSettings", () => {
         { href: "https://example.test/Maple.rpm", label: ".rpm" }
       ])
     );
+
+    await act(async () => {
+      linuxRadio?.props.onKeyDown({
+        key: "ArrowDown",
+        preventDefault() {}
+      });
+    });
+    const iosRadio = radioButtons(renderer!).find((button) => textContent(button).includes("iOS"));
+    expect(iosRadio?.props["aria-checked"]).toBe(true);
   });
 
-  test("keeps packaged fallback links when the GitHub lookup fails", async () => {
+  test("keeps latest-release fallback links when the GitHub lookup fails", async () => {
     const loadDownloadInfo = mock(async () => null);
     const consoleError = spyOn(console, "error").mockImplementation(() => {});
 
@@ -123,8 +132,7 @@ describe("DownloadSettings", () => {
     const downloadLink = renderer!.root
       .findAllByType("a")
       .find((link) => textContent(link).includes("Download for macOS"));
-    expect(downloadLink?.props.href).toContain("Maple_");
-    expect(downloadLink?.props.href).toContain("_universal.dmg");
+    expect(downloadLink?.props.href).toBe(GITHUB_RELEASES_LATEST_URL);
     expect(textContent(renderer!.root)).toContain("Choose the platform you want to install.");
     consoleError.mockRestore();
   });

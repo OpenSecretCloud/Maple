@@ -21,6 +21,27 @@ import { SettingsSection } from "./SettingsPage";
 
 const DEFAULT_TARGET: AppDownloadTarget = "macos";
 
+function nextDownloadTarget(current: AppDownloadTarget, key: string): AppDownloadTarget | null {
+  const index = APP_DOWNLOAD_TARGETS.indexOf(current);
+  if (key === "Home") {
+    return APP_DOWNLOAD_TARGETS[0] ?? DEFAULT_TARGET;
+  }
+  if (key === "End") {
+    return APP_DOWNLOAD_TARGETS[APP_DOWNLOAD_TARGETS.length - 1] ?? DEFAULT_TARGET;
+  }
+  if (key === "ArrowRight" || key === "ArrowDown") {
+    return APP_DOWNLOAD_TARGETS[(index + 1) % APP_DOWNLOAD_TARGETS.length] ?? DEFAULT_TARGET;
+  }
+  if (key === "ArrowLeft" || key === "ArrowUp") {
+    return (
+      APP_DOWNLOAD_TARGETS[
+        (index - 1 + APP_DOWNLOAD_TARGETS.length) % APP_DOWNLOAD_TARGETS.length
+      ] ?? DEFAULT_TARGET
+    );
+  }
+  return null;
+}
+
 export type DownloadSettingsProps = {
   environment?: AppDownloadEnvironment;
   loadDownloadInfo?: (signal?: AbortSignal) => Promise<DownloadInfo | null>;
@@ -104,15 +125,12 @@ export function DownloadSettings({
                 }}
                 onClick={() => selectTarget(target)}
                 onKeyDown={(event) => {
-                  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
+                  const next = nextDownloadTarget(target, event.key);
+                  if (!next) {
                     return;
                   }
                   event.preventDefault();
-                  const index = APP_DOWNLOAD_TARGETS.indexOf(target);
-                  const delta = event.key === "ArrowRight" ? 1 : -1;
-                  const nextIndex =
-                    (index + delta + APP_DOWNLOAD_TARGETS.length) % APP_DOWNLOAD_TARGETS.length;
-                  selectTarget(APP_DOWNLOAD_TARGETS[nextIndex] ?? DEFAULT_TARGET);
+                  selectTarget(next);
                 }}
                 className={cn(
                   "rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",

@@ -83,6 +83,12 @@ describe("appDownloadActions", () => {
     ]);
   });
 
+  test("offers the Windows installer as the primary action", () => {
+    expect(appDownloadActions("windows", urls)).toEqual([
+      { label: "Download for Windows", href: urls.windowsExe, variant: "primary" }
+    ]);
+  });
+
   test("offers Linux package choices", () => {
     expect(appDownloadActions("linux", urls).map((action) => action.label)).toEqual([
       "Download AppImage",
