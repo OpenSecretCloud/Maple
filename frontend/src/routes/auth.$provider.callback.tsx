@@ -3,8 +3,8 @@ import { useEffect, useState, useRef } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { MapleLoadingMark } from "@/components/MapleLoadingMark";
 import { getBillingService } from "@/billing/billingService";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
@@ -264,7 +264,7 @@ function OAuthCallback() {
         <CardContent>
           <p className="mb-4">Completing authentication...</p>
           <div className="flex justify-center">
-            <Loader2 className="h-8 w-8 animate-spin" />
+            <MapleLoadingMark size={44} label="Completing sign-in" />
           </div>
         </CardContent>
       </Card>
@@ -279,7 +279,7 @@ function OAuthCallback() {
           <CardTitle>Processing {formattedProvider} Login</CardTitle>
         </CardHeader>
         <CardContent className="flex justify-center">
-          <Loader2 className="h-8 w-8 animate-spin" />
+          <MapleLoadingMark size={44} label="Completing sign-in" />
         </CardContent>
       </Card>
     );

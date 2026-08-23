@@ -2,8 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
+import { MapleLoadingMark } from "@/components/MapleLoadingMark";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 
 // Define the search parameters interface
@@ -121,7 +121,7 @@ function DesktopAuth() {
       <CardContent>
         <p className="mb-4">Please wait while we redirect you to complete authentication...</p>
         <div className="flex justify-center">
-          <Loader2 className="h-8 w-8 animate-spin" />
+          <MapleLoadingMark size={44} label="Preparing sign-in" />
         </div>
       </CardContent>
     </Card>
