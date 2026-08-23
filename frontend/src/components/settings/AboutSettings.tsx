@@ -3,8 +3,9 @@ import { ExternalLink, FileText, Info, Mail, Shield } from "lucide-react";
 import packageJson from "../../../package.json";
 import { Button } from "@/components/ui/button";
 import { openExternalUrl } from "@/utils/openUrl";
-import { isTauriDesktop } from "@/utils/platform";
+import { isTauriDesktop, isWeb } from "@/utils/platform";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
+import { DownloadSettings } from "./DownloadSettings";
 import { UpdateSettings } from "./UpdateSettings";
 
 type ExternalRowProps = {
@@ -27,9 +28,28 @@ function ExternalRow({ label, url, icon: Icon }: ExternalRowProps) {
   );
 }
 
-export function AboutSettings() {
-  const supportsDesktopUpdates = isTauriDesktop();
+export function resolveAboutSettingsGating(
+  checks: { isTauriDesktop: () => boolean; isWeb: () => boolean } = {
+    isTauriDesktop,
+    isWeb
+  }
+) {
+  return {
+    supportsDesktopUpdates: checks.isTauriDesktop(),
+    showAppDownloads: checks.isWeb()
+  };
+}
 
+export function AboutSettings({
+  supportsDesktopUpdates,
+  showAppDownloads
+}: {
+  supportsDesktopUpdates?: boolean;
+  showAppDownloads?: boolean;
+} = {}) {
+  const gating = resolveAboutSettingsGating();
+  const showUpdates = supportsDesktopUpdates ?? gating.supportsDesktopUpdates;
+  const showDownloads = showAppDownloads ?? gating.showAppDownloads;
   return (
     <SettingsPage title="About" description="Maple information, updates, policies, and support.">
       <SettingsSection title="Maple Research">
@@ -49,7 +69,8 @@ export function AboutSettings() {
         </div>
       </SettingsSection>
 
-      {supportsDesktopUpdates && <UpdateSettings />}
+      {showUpdates && <UpdateSettings />}
+      {showDownloads && <DownloadSettings />}
 
       <SettingsSection title="Policies and support">
         <div className="space-y-2">
