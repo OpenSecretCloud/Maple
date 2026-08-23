@@ -17,7 +17,7 @@ describe("shared chat typography scope", () => {
     expect(markup).not.toContain("data-stacked-user");
   });
 
-  test("tightens consecutive user turns without reserving a copy row", () => {
+  test("keeps actions below on mobile and beside compact consecutive turns on desktop", () => {
     const markup = renderToStaticMarkup(
       <ChatUserTurn stackedTop stackedBottom actions={<button type="button">Copy</button>}>
         <p>Follow-up</p>
@@ -27,7 +27,8 @@ describe("shared chat typography scope", () => {
     expect(markup).toContain("data-stacked-user");
     expect(markup).toContain("pt-1 -mt-1");
     expect(markup).toContain("pb-0");
-    expect(markup).toContain("right-full");
+    expect(markup).toContain("justify-end pr-1 pt-1");
+    expect(markup).toContain("md:absolute md:bottom-0 md:right-full");
     expect(markup).toContain("Copy");
   });
 
