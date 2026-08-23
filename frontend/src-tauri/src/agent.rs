@@ -6216,6 +6216,13 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
 
     loop {
         let next_event = stream.next().await;
+        // The Maple provider records this immediately before returning its
+        // final auth/secure-connection error. Consume it before Goose's
+        // synthetic assistant message can enter the task timeline.
+        if let Some(error) = provider::take_terminal_run_error() {
+            prompt_error = Some(error);
+            break;
+        }
         let Some(event) = next_event else {
             break;
         };
@@ -6252,6 +6259,10 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                     },
                 )
                 .await;
+                if let Some(error) = provider::take_terminal_run_error() {
+                    prompt_error = Some(error);
+                    break;
+                }
                 if cancel_token.is_cancelled() && !automatically_handled.is_empty() {
                     cancelled_permission_ids
                         .lock()
@@ -10180,6 +10191,34 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum TerminalMapleFailure {
+        Session,
+        AttestationVerification,
+    }
+
+    struct TerminalMapleTransport(TerminalMapleFailure);
+
+    #[async_trait::async_trait]
+    impl provider::MapleInferenceTransport for TerminalMapleTransport {
+        async fn send_inference_request(
+            self: Arc<Self>,
+            _request: opensecret::InferenceRequest,
+            _cancel_token: CancellationToken,
+        ) -> opensecret::Result<opensecret::InferenceResponse> {
+            match self.0 {
+                TerminalMapleFailure::Session => Err(opensecret::Error::Session(
+                    "private exhausted session detail".to_string(),
+                )),
+                TerminalMapleFailure::AttestationVerification => {
+                    Err(opensecret::Error::AttestationVerificationFailed(
+                        "private attestation detail".to_string(),
+                    ))
+                }
+            }
+        }
+    }
+
     struct SessionTitleTestProvider {
         calls: Arc<AtomicUsize>,
         response: &'static str,
@@ -10370,6 +10409,94 @@ mod tests {
             .await
             .unwrap();
         (test_root, session_manager, agent, session)
+    }
+
+    async fn assert_terminal_maple_failure_fails_before_goose_message_projection(
+        label: &str,
+        failure: TerminalMapleFailure,
+        expected_error: &str,
+    ) {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let maple_provider = Arc::new(provider::MapleProvider::new(Arc::new(
+            TerminalMapleTransport(failure),
+        )));
+        let (test_root, session_manager, agent, session) =
+            session_title_test_context(label, maple_provider).await;
+        let run_id = format!("{label}-run");
+        let (events, _run_events) = AgentRunEventPublisher::new(
+            AgentEventDispatcher::new(sink.clone()),
+            session.id.clone(),
+            run_id.clone(),
+            AgentHostEventPolicy::Publish,
+        );
+        let cancellation = CancellationToken::new();
+        let prompt = "Trigger a terminal Maple connection failure";
+
+        let result = provider::with_run_cancellation(
+            cancellation.clone(),
+            run_agent_prompt(AgentPromptRun {
+                events,
+                agent: Arc::new(agent),
+                session_manager: Arc::clone(&session_manager),
+                session_title_lifecycle: Arc::new(Mutex::new(())),
+                live_timelines: Arc::new(Mutex::new(HashMap::new())),
+                session_id: session.id.clone(),
+                user_message: Message::user().with_text(prompt).with_generated_id(),
+                permission_modes: Arc::new(Mutex::new(HashMap::new())),
+                web_tool_state: Arc::new(WebToolState::default()),
+                web_permission_context: WebPermissionContext::from_user_prompt(prompt),
+                cancel_token: cancellation,
+                session_title_start: None,
+                pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+                issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
+                run_id,
+                permission_routing: AgentPermissionRouting::Desktop,
+                steered_unacked: Arc::new(Mutex::new(Vec::new())),
+            }),
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("terminal Maple connection error should fail the prompt"),
+            Err(error) => error,
+        };
+        assert_eq!(error, expected_error);
+        let emitted = sink
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!emitted.iter().any(|event| matches!(
+            event,
+            AgentServiceEvent::Run {
+                event: AgentRunEvent::TimelineItem(_),
+                ..
+            }
+        )));
+
+        drop(emitted);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn terminal_maple_connection_error_fails_before_goose_message_projection() {
+        assert_terminal_maple_failure_fails_before_goose_message_projection(
+            "terminal-maple-error",
+            TerminalMapleFailure::Session,
+            provider::SECURE_CONNECTION_ERROR_MESSAGE,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn terminal_maple_attestation_error_fails_before_goose_message_projection() {
+        assert_terminal_maple_failure_fails_before_goose_message_projection(
+            "terminal-maple-attestation-error",
+            TerminalMapleFailure::AttestationVerification,
+            provider::ATTESTATION_VERIFICATION_ERROR_MESSAGE,
+        )
+        .await;
     }
 
     fn recent_roots_test_dir(label: &str) -> PathBuf {
