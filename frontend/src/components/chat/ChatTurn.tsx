@@ -54,7 +54,7 @@ export function ChatUserTurn({
           </div>
         </div>
         {actions ? (
-          <div className="absolute bottom-0 right-full mr-0.5 flex justify-end opacity-100 transition-opacity md:opacity-0 md:group-hover/user:opacity-100 md:group-focus-within/user:opacity-100 landscape-short:opacity-100">
+          <div className="flex justify-end pr-1 pt-1 opacity-100 transition-opacity md:absolute md:bottom-0 md:right-full md:mr-0.5 md:pr-0 md:pt-0 md:opacity-0 md:group-hover/user:opacity-100 md:group-focus-within/user:opacity-100 landscape-short:opacity-100">
             {actions}
           </div>
         ) : null}
