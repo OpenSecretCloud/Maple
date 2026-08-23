@@ -28,13 +28,28 @@ function ExternalRow({ label, url, icon: Icon }: ExternalRowProps) {
   );
 }
 
+export function resolveAboutSettingsGating(
+  checks: { isTauriDesktop: () => boolean; isWeb: () => boolean } = {
+    isTauriDesktop,
+    isWeb
+  }
+) {
+  return {
+    supportsDesktopUpdates: checks.isTauriDesktop(),
+    showAppDownloads: checks.isWeb()
+  };
+}
+
 export function AboutSettings({
-  supportsDesktopUpdates = isTauriDesktop(),
-  showAppDownloads = isWeb()
+  supportsDesktopUpdates,
+  showAppDownloads
 }: {
   supportsDesktopUpdates?: boolean;
   showAppDownloads?: boolean;
 } = {}) {
+  const gating = resolveAboutSettingsGating();
+  const showUpdates = supportsDesktopUpdates ?? gating.supportsDesktopUpdates;
+  const showDownloads = showAppDownloads ?? gating.showAppDownloads;
   return (
     <SettingsPage title="About" description="Maple information, updates, policies, and support.">
       <SettingsSection title="Maple Research">
@@ -54,8 +69,8 @@ export function AboutSettings({
         </div>
       </SettingsSection>
 
-      {supportsDesktopUpdates && <UpdateSettings />}
-      {showAppDownloads && <DownloadSettings />}
+      {showUpdates && <UpdateSettings />}
+      {showDownloads && <DownloadSettings />}
 
       <SettingsSection title="Policies and support">
         <div className="space-y-2">

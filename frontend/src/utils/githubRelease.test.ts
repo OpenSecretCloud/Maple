@@ -36,7 +36,6 @@ describe("buildFallbackDownloadInfo", () => {
 describe("resolveDownloadUrlsFromRelease", () => {
   test("prefers matched GitHub assets, including the rpmbuild Linux name", () => {
     const urls = resolveDownloadUrlsFromRelease({
-      tag_name: "v3.3.7",
       assets: [
         {
           name: "Maple_3.3.7_universal.dmg",
@@ -81,7 +80,6 @@ describe("resolveDownloadUrlsFromRelease", () => {
 
   test("falls back to the latest release page when an asset is missing", () => {
     const urls = resolveDownloadUrlsFromRelease({
-      tag_name: "v3.3.8",
       assets: [
         {
           name: "Maple_3.3.8_universal.dmg",

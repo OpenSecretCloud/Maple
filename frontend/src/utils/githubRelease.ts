@@ -98,7 +98,7 @@ function isGitHubRelease(value: unknown): value is GitHubRelease {
 }
 
 export function resolveDownloadUrlsFromRelease(
-  release: Pick<GitHubRelease, "tag_name" | "assets">
+  release: Pick<GitHubRelease, "assets">
 ): DownloadUrls {
   const resolved = latestReleaseDownloadUrls();
   const assets = Array.isArray(release.assets) ? release.assets : [];
