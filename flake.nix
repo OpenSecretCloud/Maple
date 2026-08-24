@@ -683,6 +683,7 @@
               release.yml \
               rust-tests.yml \
               tauri-pr-change-detection.yml \
+              updates-tests.yml \
               web-build.yml \
               zapstore-publish.yml
             touch "$out"
