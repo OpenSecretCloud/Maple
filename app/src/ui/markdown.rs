@@ -153,7 +153,7 @@ pub fn render_markdown(source: &str) -> Div {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(source, options);
 
-    let mut container = div().flex().flex_col().gap_2().w_full();
+    let mut container = div().flex().flex_col().gap_2().w_full().pr_6();
     let mut paragraph = Paragraph::default();
     let mut inline_flags: Vec<InlineStyle> = Vec::new();
     let mut list_counters: Vec<Option<u64>> = Vec::new();

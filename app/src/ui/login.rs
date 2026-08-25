@@ -263,21 +263,7 @@ impl Render for LoginScreen {
                             .text_color(gpui::rgb(theme::TEXT_PRIMARY))
                             .child("Maple"),
                     )
-                    .child(
-                        div()
-                            .id("login-close")
-                            .px_2()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                                    .cursor_pointer()
-                            })
-                            .on_click(|_event, _window, cx| cx.quit())
-                            .child("✕"),
-                    ),
+                    .child(div()),
             )
             .child(
                 div()

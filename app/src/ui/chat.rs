@@ -107,6 +107,9 @@ impl ChatScreen {
     {
         let task = self.backend.spawn(future);
         cx.spawn(async move |this, cx| {
+            if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
+                eprintln!("CALL complete");
+            }
             let result = task.await.unwrap_or_else(|error| {
                 log::debug!("agent task failed: {error:?}");
                 Err("The agent task was cancelled".to_string())
@@ -144,6 +147,9 @@ impl ChatScreen {
     }
 
     fn refresh_roots(&self, cx: &mut Context<Self>) {
+        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
+            eprintln!("CALL start ROOTS");
+        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -226,6 +232,9 @@ impl ChatScreen {
     }
 
     fn refresh_models(&self, cx: &mut Context<Self>) {
+        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
+            eprintln!("CALL start MODELS");
+        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -234,7 +243,10 @@ impl ChatScreen {
             |this, result, cx| {
                 if let Ok(models) = result {
                     if this.selected_model.is_none() {
-                        this.selected_model = models.first().cloned();
+                        this.selected_model = this
+                            .backend
+                            .configured_model()
+                            .or_else(|| models.first().cloned());
                     }
                     this.models = models;
                 }
@@ -244,6 +256,9 @@ impl ChatScreen {
     }
 
     fn refresh_sessions(&self, cx: &mut Context<Self>) {
+        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
+            eprintln!("CALL start SESSIONS");
+        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -574,7 +589,7 @@ impl ChatScreen {
         self.call(
             async move {
                 backend.stop_runtime(&user_id).await?;
-                backend.logout(&user_id).await
+                backend.logout_and_clear(&user_id).await
             },
             cx,
             |_this, _result, cx| {
@@ -656,6 +671,57 @@ impl ChatScreen {
 
     /// Route one backend service event into UI state.
     pub fn handle_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) {
+        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
+            let summary = match &event {
+                AgentServiceEvent::RuntimeStatus(status) => {
+                    format!(
+                        "RuntimeStatus running={} runs={}",
+                        status.running,
+                        status.active_runs.len()
+                    )
+                }
+                AgentServiceEvent::SessionCreated(session) => {
+                    format!("SessionCreated {} {}", session.id, session.title)
+                }
+                AgentServiceEvent::SessionUpdated {
+                    session_id,
+                    session,
+                    ..
+                } => {
+                    format!("SessionUpdated {session_id} -> {}", session.title)
+                }
+                AgentServiceEvent::TimelineItem {
+                    session_id, item, ..
+                } => {
+                    format!(
+                        "TimelineItem {session_id} type={} text_len={}",
+                        item.item_type,
+                        item.text.as_deref().map(str::len).unwrap_or(0)
+                    )
+                }
+                AgentServiceEvent::Run {
+                    session_id,
+                    run_id,
+                    event,
+                } => match event {
+                    maple_agent::agent::AgentRunEvent::Started => {
+                        format!("Run {session_id} {run_id} Started")
+                    }
+                    maple_agent::agent::AgentRunEvent::TimelineItem(item) => {
+                        format!(
+                            "Run {session_id} {run_id} TimelineItem type={} text_len={}",
+                            item.item_type,
+                            item.text.as_deref().map(str::len).unwrap_or(0)
+                        )
+                    }
+                    maple_agent::agent::AgentRunEvent::Finished(_) => {
+                        format!("Run {session_id} {run_id} Finished")
+                    }
+                    other => format!("Run {session_id} {run_id} {}", event_kind(other)),
+                },
+            };
+            eprintln!("EVE {summary}");
+        }
         match event {
             AgentServiceEvent::RuntimeStatus(status) => {
                 // The status snapshot is authoritative for active runs.
@@ -766,7 +832,7 @@ impl ChatScreen {
 impl EventEmitter<LoggedOut> for ChatScreen {}
 
 impl Render for ChatScreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
@@ -781,7 +847,8 @@ impl Render for ChatScreen {
                     .h_full()
                     .min_w_0()
                     .child(self.render_header(cx))
-                    .child(self.render_transcript(cx))
+                    .children(self.render_menu_panel(cx))
+                    .child(self.render_transcript(window, cx))
                     .when_some(self.pending_permission.clone(), |container, permission| {
                         container.child(render_permission_card(
                             permission,
@@ -888,7 +955,7 @@ impl ChatScreen {
             .selected_model
             .clone()
             .unwrap_or_else(|| "default model".to_string());
-        let models = self.models.clone();
+        let _models = self.models.clone();
         let mut header = div()
             .flex()
             .items_center()
@@ -984,19 +1051,23 @@ impl ChatScreen {
                             .child("Sign out"),
                     ),
             );
+        header
+    }
+
+    /// The open header menu as an inline panel. Rendered in normal flow
+    /// below the header; deferred/absolute anchoring proved unreliable.
+    fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let mut menu = div()
+            .flex()
+            .flex_col()
+            .mx_4()
+            .my_1()
+            .py_1()
+            .rounded_md()
+            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .border_1()
+            .border_color(gpui::rgb(theme::BORDER));
         if self.root_menu_open {
-            let mut menu = div()
-                .occlude()
-                .flex()
-                .flex_col()
-                .mt_6()
-                .py_1()
-                .min_w(gpui::px(360.))
-                .rounded_md()
-                .bg(gpui::rgb(theme::BG_ELEVATED))
-                .border_1()
-                .border_color(gpui::rgb(theme::BORDER))
-                .shadow_md();
             for path in self.recent_roots.iter().take(6) {
                 let path = path.clone();
                 let is_current = self.project_root.as_deref() == Some(path.as_str());
@@ -1076,94 +1147,64 @@ impl ChatScreen {
                             ),
                     );
             }
-            header = header.child(gpui::deferred(
-                div()
-                    .absolute()
-                    .top(gpui::px(40.))
-                    .left(gpui::px(16.))
-                    .child(menu),
-            ));
+            return Some(menu);
         }
         if self.models_menu_open {
-            let menu = div()
-                .occlude()
-                .flex()
-                .flex_col()
-                .mt_6()
-                .py_1()
-                .rounded_md()
-                .bg(gpui::rgb(theme::BG_ELEVATED))
-                .border_1()
-                .border_color(gpui::rgb(theme::BORDER))
-                .shadow_md()
-                .children(models.iter().map(|model| {
-                    let model = model.clone();
-                    div()
-                        .id(gpui::SharedString::from(format!("model-{model}")))
-                        .px_3()
-                        .py_1()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                        .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
-                        .on_click({
-                            let model = model.clone();
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.pick_model(model.clone(), cx);
-                            })
-                        })
-                        .child(model)
-                }));
-            header = header.child(gpui::deferred(
+            menu = menu.children(self.models.iter().map(|model| {
+                let model = model.clone();
                 div()
-                    .absolute()
-                    .top(gpui::px(40.))
-                    .right(gpui::px(16.))
-                    .child(menu),
-            ));
+                    .id(gpui::SharedString::from(format!("model-{model}")))
+                    .px_3()
+                    .py_1()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .on_click({
+                        let model = model.clone();
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.pick_model(model.clone(), cx);
+                        })
+                    })
+                    .child(model)
+            }));
+            return Some(menu);
         }
-        header
+        None
     }
 
-    fn render_transcript(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_transcript(&self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let empty = self.timeline.is_empty();
         let booting = self.booting;
         let items = self.timeline.clone();
-        let list_state = self.list_state.clone();
         div()
             .id("transcript")
             .flex_1()
             .flex()
             .flex_col()
+            .min_h_0()
             .px_6()
             .py_4()
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .when(empty, |container| {
-                        container.child(
-                            div()
-                                .flex()
-                                .h_full()
-                                .justify_center()
-                                .items_center()
-                                .text_color(gpui::rgb(theme::TEXT_FAINT))
-                                .child(if booting {
-                                    "Starting agent runtime…".to_string()
-                                } else {
-                                    "Ask Maple anything about this project".to_string()
-                                }),
-                        )
-                    })
-                    .when(!empty, |container| {
-                        container.child(gpui::list(list_state, move |index, _window, _cx| {
-                            items
-                                .get(index)
-                                .map(|item| render_timeline_item(item).into_any_element())
-                                .unwrap_or_else(|| div().into_any_element())
-                        }))
-                    }),
-            )
+            .overflow_y_scroll()
+            .overflow_x_hidden()
+            .when(empty, |container| {
+                container.child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_h_0()
+                        .justify_center()
+                        .items_center()
+                        .text_color(gpui::rgb(theme::TEXT_FAINT))
+                        .child(if booting {
+                            "Starting agent runtime…".to_string()
+                        } else {
+                            "Ask Maple anything about this project".to_string()
+                        }),
+                )
+            })
+            .when(!empty, |container| {
+                container.children(items.iter().map(|item| render_timeline_item(item)))
+            })
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(
                     div()
@@ -1294,6 +1335,7 @@ fn render_message(item: &AgentTimelineItem) -> Div {
     } else {
         div()
             .max_w_full()
+            .pr_2()
             .text_color(gpui::rgb(theme::TEXT_PRIMARY))
             .child(markdown::render_markdown(&text))
     }
@@ -1542,6 +1584,20 @@ fn render_permission_card(
         );
     }
     card.child(buttons)
+}
+
+fn event_kind(event: &maple_agent::agent::AgentRunEvent) -> &'static str {
+    use maple_agent::agent::AgentRunEvent;
+    match event {
+        AgentRunEvent::SessionUpdated(_) => "SessionUpdated",
+        AgentRunEvent::PermissionRequested { .. } => "PermissionRequested",
+        AgentRunEvent::SetupWarning(_) => "SetupWarning",
+        AgentRunEvent::HistoryReplaced => "HistoryReplaced",
+        AgentRunEvent::Error(_) => "Error",
+        AgentRunEvent::QueueChanged(_) => "QueueChanged",
+        AgentRunEvent::QueuePromoted { .. } => "QueuePromoted",
+        _ => "other",
+    }
 }
 
 fn relative_time(when: i64) -> String {

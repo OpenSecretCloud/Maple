@@ -7,14 +7,17 @@ mod ui;
 use std::sync::Arc;
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Global, Pixels, Render, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    App, Application, Bounds, Context, Entity, Global, KeyBinding, Pixels, Render, Window,
+    WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
+
+actions!(maple_app, [QuitApp]);
 
 use backend::AgentBackend;
 use ui::chat::{ChatScreen, LoggedOut};
 use ui::login::{LoginScreen, LoginSucceeded};
 use ui::text_input;
+use ui::titlebar::TitleBar;
 
 struct Globals {
     backend: Arc<AgentBackend>,
@@ -56,11 +59,26 @@ impl MapleApp {
 }
 
 impl Render for MapleApp {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(match &self.screen {
-            Screen::Login(login) => login.clone().into_any_element(),
-            Screen::Chat(chat) => chat.clone().into_any_element(),
-        })
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let titlebar = cx.new(|_| TitleBar::new("Maple"));
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_key_down(
+                cx.listener(|_this, event: &gpui::KeyDownEvent, _window, cx| {
+                    if event.keystroke.key.eq_ignore_ascii_case("q")
+                        && (event.keystroke.modifiers.control || event.keystroke.modifiers.platform)
+                    {
+                        cx.quit();
+                    }
+                }),
+            )
+            .child(titlebar)
+            .child(div().flex_1().min_h_0().child(match &self.screen {
+                Screen::Login(login) => login.clone().into_any_element(),
+                Screen::Chat(chat) => chat.clone().into_any_element(),
+            }))
     }
 }
 
@@ -71,8 +89,17 @@ fn main() {
         .unwrap_or_else(|_| "https://enclave.trymaple.ai".to_string());
     let backend = Arc::new(AgentBackend::new(api_url).expect("failed to initialize agent backend"));
 
+    // Restore a persisted session before the UI starts so sign-in can be
+    // skipped entirely when the credentials are still valid.
+    let restored_user = backend.restore_now();
+
     Application::new().run(move |cx: &mut App| {
         text_input::register_key_bindings(cx);
+        cx.bind_keys([
+            KeyBinding::new("ctrl-q", QuitApp, None),
+            KeyBinding::new("cmd-q", QuitApp, None),
+        ]);
+        cx.on_action(|_: &QuitApp, cx| cx.quit());
         cx.set_global(Globals {
             backend: backend.clone(),
         });
@@ -89,12 +116,23 @@ fn main() {
                     ..Default::default()
                 },
                 |_, cx| {
-                    let login = cx.new(|cx| LoginScreen::new(backend.clone(), cx));
-                    cx.new(|_| MapleApp {
-                        backend: backend.clone(),
-                        screen: Screen::Login(login.clone()),
-                        user_id: None,
-                    })
+                    if let Some(user_id) = restored_user.clone() {
+                        let chat =
+                            cx.new(|cx| ChatScreen::new(backend.clone(), user_id.clone(), cx));
+                        let root = cx.new(|_| MapleApp {
+                            backend: backend.clone(),
+                            screen: Screen::Chat(chat.clone()),
+                            user_id: Some(user_id),
+                        });
+                        root
+                    } else {
+                        let login = cx.new(|cx| LoginScreen::new(backend.clone(), cx));
+                        cx.new(|_| MapleApp {
+                            backend: backend.clone(),
+                            screen: Screen::Login(login.clone()),
+                            user_id: None,
+                        })
+                    }
                 },
             )
             .expect("failed to open main window");
@@ -107,6 +145,18 @@ fn main() {
                 let Screen::Login(login) = &app.screen else {
                     return;
                 };
+                // A restored session starts on the chat screen and needs
+                // the same sign-out routing.
+                if let Screen::Chat(chat) = &app.screen {
+                    cx.subscribe(
+                        chat,
+                        |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
+                            app.show_login(cx);
+                        },
+                    )
+                    .detach();
+                    return;
+                }
                 cx.subscribe(login, {
                     let backend = backend.clone();
                     move |app: &mut MapleApp, _emitter, event: &LoginSucceeded, cx| {
@@ -117,13 +167,6 @@ fn main() {
                         app.screen = Screen::Chat(chat.clone());
                         // Sign-out returns to the login screen with fresh
                         // inputs and a cleared account.
-                        cx.subscribe(
-                            &chat,
-                            |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
-                                app.show_login(cx);
-                            },
-                        )
-                        .detach();
                         cx.notify();
                     }
                 })

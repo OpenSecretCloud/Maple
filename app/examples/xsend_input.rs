@@ -52,6 +52,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
         }
+        "hotkey" => {
+            // hotkey <ctrl|alt|shift>-<key>  e.g. ctrl-q
+            let combo = args[2].clone();
+            let (modifier, key) = combo.split_once('-').ok_or("expected <modifier>-<key>")?;
+            let modifier_keysym: Keysym = match modifier {
+                "ctrl" | "control" => 0xffe3,
+                "alt" => 0xffe9,
+                "shift" => 0xffe1,
+                other => return Err(format!("unsupported modifier {other:?}").into()),
+            };
+            let key_char = key.chars().next().ok_or("missing key")?;
+            let (keysym, _) =
+                keysym_for(key_char).ok_or_else(|| format!("no keysym for {key:?}"))?;
+            press(&conn, modifier_keysym, false)?;
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            press(&conn, keysym, false)?;
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            release(&conn, keysym)?;
+            release(&conn, modifier_keysym)?;
+        }
         other => return Err(format!("unknown verb {other:?}").into()),
     }
     conn.get_input_focus()?.reply()?;
@@ -82,6 +102,29 @@ fn find_maple_window(
         }
     }
     Err("Maple window not found".into())
+}
+
+fn release(conn: &RustConnection, keysym: Keysym) -> Result<(), x11rb::errors::ReplyError> {
+    let mapping = conn.get_keyboard_mapping(8, 248)?.reply()?;
+    let mut keycode = 0;
+    'outer: for (index, chunk) in mapping
+        .keysyms
+        .chunks(mapping.keysyms_per_keycode as usize)
+        .enumerate()
+    {
+        for sym in chunk.iter() {
+            if *sym != 0 && *sym == keysym {
+                keycode = (index + 8) as u8;
+                break 'outer;
+            }
+        }
+    }
+    if keycode == 0 {
+        return Ok(());
+    }
+    conn.xtest_fake_input(3, keycode, 0, 0, 0, 0, 0)?;
+    conn.flush()?;
+    Ok(())
 }
 
 fn fake_motion(conn: &RustConnection, x: i16, y: i16) -> Result<(), x11rb::errors::ReplyError> {

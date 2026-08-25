@@ -212,10 +212,101 @@ impl AgentBackend {
                 log::debug!("set_auth failed during sign in: {message}");
                 "Sign in failed. Try again.".to_string()
             })?;
+        self.persist_auth(
+            &snapshot.user_id,
+            &snapshot.access_token,
+            snapshot.refresh_token.as_deref(),
+        );
         Ok(AuthSession { user_id, snapshot })
     }
 
     pub async fn logout(&self, user_id: &str) -> Result<(), String> {
+        self.auth.clear_auth(user_id).await
+    }
+
+    fn auth_file() -> std::path::PathBuf {
+        config_root().join("auth.json")
+    }
+
+    fn persist_auth(&self, user_id: &str, access_token: &str, refresh_token: Option<&str>) {
+        let path = Self::auth_file();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let record = serde_json::json!({
+            "user_id": user_id,
+            "api_url": self.api_url,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        });
+        let _ = std::fs::write(&path, record.to_string());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+
+    fn load_persisted_auth(&self) -> Option<(String, String, Option<String>)> {
+        let path = Self::auth_file();
+        let bytes = std::fs::read(&path).ok()?;
+        let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let user_id = record.get("user_id")?.as_str()?.to_string();
+        let api_url = record.get("api_url")?.as_str()?.to_string();
+        if api_url != self.api_url {
+            // Credentials belong to a different backend; do not reuse them.
+            return None;
+        }
+        let access_token = record.get("access_token")?.as_str()?.to_string();
+        let refresh_token = record
+            .get("refresh_token")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        Some((user_id, access_token, refresh_token))
+    }
+
+    fn clear_persisted_auth() {
+        let _ = std::fs::remove_file(Self::auth_file());
+    }
+
+    /// Restore a persisted session before the UI starts. Validates the
+    /// credentials against the backend; returns the account id on success.
+    pub fn restore_now(&self) -> Option<String> {
+        let (user_id, access_token, refresh_token) = self.load_persisted_auth()?;
+        let api_url = self.api_url.clone();
+        let auth = &self.auth;
+        let result = self.runtime.block_on(async move {
+            let request = MapleApiAuthRequest {
+                user_id,
+                api_url,
+                access_token,
+                refresh_token,
+            };
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                auth.set_auth(Arc::new(NoopAuthEventSink), request),
+            )
+            .await
+            {
+                Ok(Ok(snapshot)) => Ok(snapshot.user_id),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err("timeout".to_string()),
+            }
+        });
+        match result {
+            Ok(user_id) => Some(user_id),
+            Err(error) => {
+                log::debug!("persisted auth rejected: {error:?}");
+                Self::clear_persisted_auth();
+                None
+            }
+        }
+    }
+
+    /// Sign out completely: forget persisted credentials, then clear the
+    /// in-memory session.
+    pub async fn logout_and_clear(&self, user_id: &str) -> Result<(), String> {
+        Self::clear_persisted_auth();
         self.auth.clear_auth(user_id).await
     }
 
@@ -248,12 +339,18 @@ impl AgentBackend {
                 log::debug!("set_auth failed during sign in: {message}");
                 "Sign in failed. Try again.".to_string()
             })
-            .map(|snapshot| AuthSession {
-                user_id: snapshot.user_id.clone(),
-                snapshot,
+            .map(|snapshot| {
+                self.persist_auth(
+                    &snapshot.user_id,
+                    &snapshot.access_token,
+                    snapshot.refresh_token.as_deref(),
+                );
+                AuthSession {
+                    user_id: snapshot.user_id.clone(),
+                    snapshot,
+                }
             })
     }
-
     /// Begin an OAuth flow: returns the authorization URL to open in a
     /// browser (also opens it via the system browser).
     pub async fn oauth_start(&self, provider: OAuthProvider) -> Result<String, String> {
@@ -339,7 +436,14 @@ impl AgentBackend {
     ) -> Result<AgentRuntimeStatus, String> {
         let handle = self.service.handle_for_user(user_id).await?;
         let session = self.auth.session_for(user_id).await?;
-        handle.start(session, request).await
+        // A wedged enclave connection must surface as an error, not an
+        // eternal spinner.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            handle.start(session, request),
+        )
+        .await
+        .map_err(|_| "Runtime start timed out. Check your connection and retry.".to_string())?
     }
 
     pub async fn stop_runtime(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {
@@ -478,13 +582,18 @@ impl AgentBackend {
     }
 
     /// Standard start request for this app: agent rooted at the launch
-    /// directory with the default model and the SmartApprove policy.
+    /// directory with the configured model and the SmartApprove policy.
     pub fn default_start_request(&self) -> AgentStartRequest {
         AgentStartRequest {
             project_root: Some(default_project_root()),
-            model: None,
+            model: std::env::var("MAPLE_MODEL").ok(),
             mode: None,
         }
+    }
+
+    /// Model the UI should select initially: MAPLE_MODEL when set.
+    pub fn configured_model(&self) -> Option<String> {
+        std::env::var("MAPLE_MODEL").ok()
     }
 }
 
