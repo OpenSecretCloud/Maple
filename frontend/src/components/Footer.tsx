@@ -1,6 +1,8 @@
 import { Github, Twitter, Mail } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DiscordIcon } from "./icons/DiscordIcon";
+import { MARKETING_DOWNLOADS_URL } from "@/config/domains";
+import { openExternalUrl } from "@/utils/openUrl";
 import { isTauri } from "@/utils/platform";
 
 export function Footer() {
@@ -62,12 +64,19 @@ export function Footer() {
             >
               Pricing
             </Link>
-            <Link
-              to="/downloads"
+            <a
+              href={MARKETING_DOWNLOADS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(event) => {
+                if (!isTauriPlatform) return;
+                event.preventDefault();
+                void openExternalUrl(MARKETING_DOWNLOADS_URL);
+              }}
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"
             >
               Downloads
-            </Link>
+            </a>
             <Link
               to="/proof"
               className="text-[hsl(var(--marketing-text-muted))] hover:text-foreground transition-colors"

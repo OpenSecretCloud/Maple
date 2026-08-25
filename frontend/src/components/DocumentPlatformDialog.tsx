@@ -9,6 +9,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { FileText, Smartphone, Monitor, Check, Sparkles } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
+import { MARKETING_DOWNLOADS_URL } from "@/config/domains";
+import { openExternalUrl } from "@/utils/openUrl";
 
 interface DocumentPlatformDialogProps {
   open: boolean;
@@ -30,7 +32,7 @@ export function DocumentPlatformDialog({
 
   const handleGetApps = () => {
     onOpenChange(false);
-    navigate({ to: "/downloads" });
+    void openExternalUrl(MARKETING_DOWNLOADS_URL);
   };
 
   return (

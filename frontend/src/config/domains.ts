@@ -15,3 +15,5 @@ export function appUrl(path = "/") {
 export function marketingUrl(path = "/") {
   return new URL(path, `${MARKETING_ORIGIN}/`).toString();
 }
+
+export const MARKETING_DOWNLOADS_URL = marketingUrl("/research#download");
