@@ -1,5 +1,8 @@
+import repositoryMetadata from "../../repo.meta.json";
+
 const LATEST_JSON_PATH = "/latest.json";
 const MAX_LATEST_JSON_BYTES = 64 * 1024;
+export const GITHUB_REPOSITORY = `${repositoryMetadata.github.owner}/${repositoryMetadata.github.repository}`;
 const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const GENERATED_PUB_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REQUIRED_PLATFORMS = [
@@ -76,8 +79,8 @@ function isExpectedArtifactUrl(value: string, version: string): boolean {
   const segments = url.pathname.split("/").filter(Boolean);
   return (
     segments.length === 6 &&
-    segments[0] === "OpenSecretCloud" &&
-    segments[1] === "Maple" &&
+    segments[0] === repositoryMetadata.github.owner &&
+    segments[1] === repositoryMetadata.github.repository &&
     segments[2] === "releases" &&
     segments[3] === "download" &&
     segments[4] === `v${version}` &&

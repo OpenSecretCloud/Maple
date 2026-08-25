@@ -3,10 +3,25 @@ import {
   buildFallbackDownloadInfo,
   fetchLatestRelease,
   getLatestDownloadInfo,
+  GITHUB_REPOSITORY,
+  GITHUB_REPOSITORY_URL,
   GITHUB_RELEASES_API_URL,
   GITHUB_RELEASES_LATEST_URL,
   resolveDownloadUrlsFromRelease
 } from "./githubRelease";
+
+describe("repository metadata", () => {
+  test("builds the current Maple GitHub URLs from the shared repository identity", () => {
+    expect(GITHUB_REPOSITORY).toBe("OpenSecretCloud/Maple");
+    expect(GITHUB_REPOSITORY_URL).toBe("https://github.com/OpenSecretCloud/Maple");
+    expect(GITHUB_RELEASES_API_URL).toBe(
+      "https://api.github.com/repos/OpenSecretCloud/Maple/releases/latest"
+    );
+    expect(GITHUB_RELEASES_LATEST_URL).toBe(
+      "https://github.com/OpenSecretCloud/Maple/releases/latest"
+    );
+  });
+});
 
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">> | null = null;
 
