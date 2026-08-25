@@ -9,33 +9,241 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  classify:
+    name: Classify completed Maple release
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'release' &&
       github.event.workflow_run.head_repository.full_name == github.repository
+    permissions:
+      actions: read
+      contents: read
     runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.classify.outputs.publish }}
+      release_id: ${{ steps.classify.outputs.release_id }}
+      release_sha: ${{ steps.classify.outputs.release_sha }}
+      release_tag: ${{ steps.classify.outputs.release_tag }}
+    steps:
+      - name: Validate completed release workflow
+        id: classify
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_TAG: ${{ github.event.workflow_run.head_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${EXPECTED_RUN_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Unexpected workflow run ID: ${EXPECTED_RUN_ID}" >&2
+            exit 1
+          fi
+          if [[ ! "${EXPECTED_TAG}" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]; then
+            echo "Refusing to classify unexpected release tag: ${EXPECTED_TAG}" >&2
+            exit 1
+          fi
+          if [[ ! "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Refusing to classify unexpected release SHA: ${EXPECTED_SHA}" >&2
+            exit 1
+          fi
+
+          repository_json="$(gh api "repos/${EXPECTED_REPOSITORY}")"
+          jq -e --arg repository "${EXPECTED_REPOSITORY}" '
+            type == "object" and
+            .full_name == $repository and
+            .default_branch == "master"
+          ' <<<"${repository_json}" >/dev/null
+
+          run_json="$(gh api "repos/${EXPECTED_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}")"
+          jq -e \
+            --arg repository "${EXPECTED_REPOSITORY}" \
+            --arg tag "${EXPECTED_TAG}" \
+            --arg sha "${EXPECTED_SHA}" \
+            --argjson run_id "${EXPECTED_RUN_ID}" '
+              type == "object" and
+              .id == $run_id and
+              .path == ".github/workflows/release.yml" and
+              .event == "release" and
+              .status == "completed" and
+              .conclusion == "success" and
+              .head_branch == $tag and
+              .head_sha == $sha and
+              .repository.full_name == $repository and
+              .head_repository.full_name == $repository
+            ' <<<"${run_json}" >/dev/null
+
+          run_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run_json}")"
+          jobs_json="$(gh api "repos/${EXPECTED_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}/jobs?filter=latest&per_page=100")"
+          jq -e '
+            type == "object" and
+            (.total_count | type == "number") and
+            (.total_count <= 100) and
+            (.jobs | type == "array") and
+            (.jobs | length) == .total_count
+          ' <<<"${jobs_json}" >/dev/null
+
+          classifier_count="$(
+            jq -r --argjson run_id "${EXPECTED_RUN_ID}" --argjson run_attempt "${run_attempt}" --arg sha "${EXPECTED_SHA}" '
+              [
+                .jobs[]
+                | select(
+                    .name == "Classify Maple app release" and
+                    .run_id == $run_id and
+                    (.run_attempt | type == "number") and
+                    .run_attempt >= 1 and
+                    .run_attempt <= $run_attempt and
+                    .head_sha == $sha and
+                    .status == "completed" and
+                    .conclusion == "success"
+                  )
+              ]
+              | length
+            ' <<<"${jobs_json}"
+          )"
+          named_classifier_count="$(
+            jq -r '[.jobs[] | select(.name == "Classify Maple app release")] | length' <<<"${jobs_json}"
+          )"
+          # `gh run rerun --failed` can retain a successful classifier from an
+          # earlier attempt. filter=latest returns that job's latest execution,
+          # so its attempt may be older than the completed run's attempt.
+          if [ "${classifier_count}" -ne 1 ] || [ "${named_classifier_count}" -ne 1 ]; then
+            echo "Expected exactly one successful 'Classify Maple app release' job in the completed run." >&2
+            echo "matching=${classifier_count} named=${named_classifier_count}" >&2
+            exit 1
+          fi
+
+          release_json="$(gh api "repos/${EXPECTED_REPOSITORY}/releases/tags/${EXPECTED_TAG}")"
+          jq -e --arg tag "${EXPECTED_TAG}" '
+            type == "object" and
+            (.id | type == "number" and . > 0) and
+            .tag_name == $tag and
+            (.draft | type == "boolean") and
+            .draft == false and
+            (.prerelease | type == "boolean")
+          ' <<<"${release_json}" >/dev/null
+          release_id="$(jq -er '.id' <<<"${release_json}")"
+          prerelease="$(jq -er '.prerelease' <<<"${release_json}")"
+
+          tag_sha="$(gh api "repos/${EXPECTED_REPOSITORY}/commits/${EXPECTED_TAG}" --jq '.sha')"
+          if [ "${tag_sha}" != "${EXPECTED_SHA}" ]; then
+            echo "Release tag no longer resolves to the completed workflow SHA." >&2
+            echo "tag=${EXPECTED_TAG} expected=${EXPECTED_SHA} actual=${tag_sha}" >&2
+            exit 1
+          fi
+
+          compare_json="$(gh api "repos/${EXPECTED_REPOSITORY}/compare/${EXPECTED_SHA}...master")"
+          jq -e --arg sha "${EXPECTED_SHA}" '
+            type == "object" and
+            (.status == "ahead" or .status == "identical") and
+            .base_commit.sha == $sha and
+            .merge_base_commit.sha == $sha
+          ' <<<"${compare_json}" >/dev/null
+
+          publish=false
+          if [ "${prerelease}" = "false" ]; then
+            latest_json="$(gh api "repos/${EXPECTED_REPOSITORY}/releases/latest")"
+            jq -e '
+              type == "object" and
+              (.id | type == "number" and . > 0) and
+              (.tag_name | type == "string") and
+              .draft == false and
+              .prerelease == false
+            ' <<<"${latest_json}" >/dev/null
+
+            latest_id="$(jq -er '.id' <<<"${latest_json}")"
+            latest_tag="$(jq -er '.tag_name' <<<"${latest_json}")"
+            if [ "${latest_id}" = "${release_id}" ] && [ "${latest_tag}" = "${EXPECTED_TAG}" ]; then
+              publish=true
+            else
+              echo "Release ${EXPECTED_TAG} is no longer the latest stable release; skipping Zapstore publish."
+            fi
+          else
+            echo "Release ${EXPECTED_TAG} is a prerelease; skipping Zapstore publish."
+          fi
+
+          {
+            echo "publish=${publish}"
+            echo "release_id=${release_id}"
+            echo "release_sha=${EXPECTED_SHA}"
+            echo "release_tag=${EXPECTED_TAG}"
+          } >>"${GITHUB_OUTPUT}"
+
+  publish:
+    name: Publish current stable release to Zapstore
+    needs: classify
+    if: needs.classify.outputs.publish == 'true'
+    permissions:
+      attestations: read
+      contents: read
+    runs-on: ubuntu-latest
+    concurrency:
+      group: zapstore-production
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
+          fetch-depth: 0
           persist-credentials: false
+          ref: ${{ needs.classify.outputs.release_sha }}
           sparse-checkout: |
             zapstore.yaml
+            frontend/package.json
+            frontend/src-tauri/Cargo.toml
+            frontend/src-tauri/tauri.conf.json
             frontend/src-tauri/icons/icon.png
+            scripts/ci/_common.sh
+            scripts/ci/classify-app-release.sh
+            scripts/ci/validate-release-version.sh
+
+      - name: Verify checked-out release identity
+        env:
+          RELEASE_SHA: ${{ needs.classify.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [ "$(git rev-parse HEAD)" != "${RELEASE_SHA}" ]; then
+            echo "Checked-out commit does not match the classified release SHA." >&2
+            exit 1
+          fi
+
+          ./scripts/ci/classify-app-release.sh \
+            --repo-root "${GITHUB_WORKSPACE}" \
+            --tag "${RELEASE_TAG}" \
+            --sha "${RELEASE_SHA}" \
+            --draft false \
+            --prerelease false \
+            --ref "refs/tags/${RELEASE_TAG}" \
+            --protected-ref refs/remotes/origin/master
 
       - name: Download APK from release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v?[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Refusing to publish from unexpected release tag: $RELEASE_TAG" >&2
-            exit 1
-          fi
-          echo "Downloading APK from release $RELEASE_TAG"
-          gh release download "$RELEASE_TAG" \
+          set -euo pipefail
+          echo "Downloading APK from release ${RELEASE_TAG}"
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
             --pattern "app-universal-release.apk" \
             --dir .
+
+      - name: Verify APK release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.classify.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh attestation verify app-universal-release.apk \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+            --signer-digest "${RELEASE_SHA}" \
+            --source-digest "${RELEASE_SHA}" \
+            --source-ref "refs/tags/${RELEASE_TAG}" \
+            --deny-self-hosted-runners
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # was v5
@@ -96,21 +304,109 @@ jobs:
           fi
 
           go install "${ZSP_MODULE}@${ZSP_VERSION}"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+
+      - name: Confirm release is still current
+        id: current
+        env:
+          EXPECTED_RELEASE_ID: ${{ needs.classify.outputs.release_id }}
+          EXPECTED_SHA: ${{ needs.classify.outputs.release_sha }}
+          EXPECTED_TAG: ${{ needs.classify.outputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          not_current() {
+            echo "current=false" >>"${GITHUB_OUTPUT}"
+            echo "$1; skipping Zapstore publish."
+            exit 0
+          }
+
+          fail() {
+            echo "$1" >&2
+            exit 1
+          }
+
+          repository_json="$(gh api "repos/${GITHUB_REPOSITORY}")" || \
+            fail "Could not re-read repository state."
+          jq -e --arg repository "${GITHUB_REPOSITORY}" '
+            type == "object" and
+            .full_name == $repository and
+            .default_branch == "master"
+          ' <<<"${repository_json}" >/dev/null || \
+            fail "Repository response is malformed or the protected default branch is no longer master."
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${EXPECTED_TAG}")" || \
+            fail "Could not re-read release ${EXPECTED_TAG}."
+          jq -e \
+            --argjson id "${EXPECTED_RELEASE_ID}" \
+            --arg tag "${EXPECTED_TAG}" '
+              type == "object" and
+              (.id | type == "number" and . > 0) and
+              .id == $id and
+              .tag_name == $tag and
+              (.draft | type == "boolean") and
+              .draft == false and
+              (.prerelease | type == "boolean")
+            ' <<<"${release_json}" >/dev/null || \
+            fail "Release ${EXPECTED_TAG} is malformed or its protected identity changed."
+
+          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_TAG}")" || \
+            fail "Could not re-resolve release tag ${EXPECTED_TAG}."
+          jq -e --arg sha "${EXPECTED_SHA}" '
+            type == "object" and
+            (.sha | type == "string") and
+            .sha == $sha
+          ' <<<"${tag_json}" >/dev/null || \
+            fail "Release tag ${EXPECTED_TAG} moved or returned a malformed response."
+
+          compare_json="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${EXPECTED_SHA}...master")" || \
+            fail "Could not re-check protected-master ancestry."
+          jq -e --arg sha "${EXPECTED_SHA}" '
+            type == "object" and
+            (.status == "ahead" or .status == "identical") and
+            .base_commit.sha == $sha and
+            .merge_base_commit.sha == $sha
+          ' <<<"${compare_json}" >/dev/null || \
+            fail "Release ${EXPECTED_TAG} is no longer on protected master or ancestry response is malformed."
+
+          if [ "$(jq -er '.prerelease' <<<"${release_json}")" = "true" ]; then
+            not_current "Release ${EXPECTED_TAG} is now a prerelease"
+          fi
+
+          latest_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest")" || \
+            fail "Could not re-read the latest stable release."
+          jq -e '
+            type == "object" and
+            (.id | type == "number" and . > 0) and
+            (.tag_name | type == "string") and
+            .draft == false and
+            .prerelease == false
+          ' <<<"${latest_json}" >/dev/null || \
+            fail "Latest stable release response is malformed."
+
+          latest_id="$(jq -er '.id' <<<"${latest_json}")"
+          latest_tag="$(jq -er '.tag_name' <<<"${latest_json}")"
+          if [ "${latest_id}" != "${EXPECTED_RELEASE_ID}" ] || [ "${latest_tag}" != "${EXPECTED_TAG}" ]; then
+            not_current "Release ${EXPECTED_TAG} is no longer latest"
+          fi
+
+          echo "current=true" >>"${GITHUB_OUTPUT}"
 
       - name: Publish to Zapstore
+        if: steps.current.outputs.current == 'true'
         env:
-          SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
-          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMMIT_SHA: ${{ needs.classify.outputs.release_sha }}
           GOTOOLCHAIN: local
+          SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
         run: |
           if [ -z "${SIGN_WITH}" ]; then
             echo "Missing required secret: ZAPSTORE_SIGN_WITH" >&2
             exit 1
           fi
 
-          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Refusing to publish with unexpected commit SHA: $COMMIT_SHA" >&2
+          if [[ ! "${COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Refusing to publish with unexpected commit SHA: ${COMMIT_SHA}" >&2
             exit 1
           fi
 
@@ -118,21 +414,21 @@ jobs:
           output="$(
             zsp publish \
               --quiet \
-              --commit "$COMMIT_SHA" \
+              --commit "${COMMIT_SHA}" \
               zapstore.yaml 2>&1
           )"
           status=$?
           set -e
 
-          if [ -n "$output" ]; then
-            printf '%s\n' "$output"
+          if [ -n "${output}" ]; then
+            printf '%s\n' "${output}"
           fi
 
-          if [ "$status" -ne 0 ]; then
-            exit "$status"
+          if [ "${status}" -ne 0 ]; then
+            exit "${status}"
           fi
 
-          if [[ "$output" == *"flag provided but not defined"* || "$output" == *"Usage of publish:"* ]]; then
+          if [[ "${output}" == *"flag provided but not defined"* || "${output}" == *"Usage of publish:"* ]]; then
             echo "zsp returned success but printed CLI usage, treating this as a failure." >&2
             exit 1
           fi

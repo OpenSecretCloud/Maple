@@ -190,6 +190,7 @@
           python3
           sccache
           unzip
+          yq-go
           zip
           actionlint
           rustToolchain
@@ -681,6 +682,7 @@
               mobile-pr-build.yml \
               mobile-build.yml \
               release.yml \
+              release-gates-tests.yml \
               rust-tests.yml \
               tauri-pr-change-detection.yml \
               updates-tests.yml \
@@ -695,6 +697,22 @@
           } ''
             cd "$src"
             bash ./scripts/ci/validate-release-version.sh >/dev/null
+            touch "$out"
+          '';
+
+          release-gates = pkgs.runCommand "maple-release-gates-check" {
+            nativeBuildInputs = with pkgs; [
+              bash
+              coreutils
+              git
+              jq
+              python3
+              yq-go
+            ];
+            src = ./.;
+          } ''
+            cd "$src"
+            bash ./scripts/ci/test-release-gates.sh
             touch "$out"
           '';
         };

@@ -1,0 +1,49 @@
+name: Release gates tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-gates-tests.yml"
+      - ".github/workflows/zapstore-publish.yml"
+      - "scripts/ci/classify-app-release.sh"
+      - "scripts/ci/test-release-gates.sh"
+      - "scripts/ci/validate-release-version.sh"
+      - "frontend/package.json"
+      - "frontend/src-tauri/Cargo.toml"
+      - "frontend/src-tauri/tauri.conf.json"
+      - "flake.nix"
+      - "flake.lock"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-gates-tests.yml"
+      - ".github/workflows/zapstore-publish.yml"
+      - "scripts/ci/classify-app-release.sh"
+      - "scripts/ci/test-release-gates.sh"
+      - "scripts/ci/validate-release-version.sh"
+      - "frontend/package.json"
+      - "frontend/src-tauri/Cargo.toml"
+      - "frontend/src-tauri/tauri.conf.json"
+      - "flake.nix"
+      - "flake.lock"
+
+permissions:
+  contents: read
+
+jobs:
+  release-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Test release gates
+        run: nix build --no-link --print-build-logs .#checks.x86_64-linux.release-gates
