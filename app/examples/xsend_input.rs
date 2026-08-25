@@ -17,6 +17,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let xtest = conn.xtest_get_version(2, 2)?.reply()?;
     assert!(xtest.major_version >= 2, "XTEST 2 unavailable");
 
+    // Without a window manager, X input focus never moves on its own.
+    // Explicitly focus the "Maple" window so keyboard events deliver.
+    let maple = find_maple_window(&conn)?;
+    conn.set_input_focus(
+        x11rb::protocol::xproto::InputFocus::POINTER_ROOT,
+        maple,
+        0_u32, // CurrentTime
+    )?;
+    conn.flush()?;
+
     match args[1].as_str() {
         "click" => {
             let x: i16 = args[2].parse()?;
@@ -46,6 +56,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     conn.get_input_focus()?.reply()?;
     Ok(())
+}
+
+fn find_maple_window(
+    conn: &RustConnection,
+) -> Result<x11rb::protocol::xproto::Window, Box<dyn std::error::Error>> {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let setup = conn.setup();
+    let root = setup.roots[0].root;
+    let tree = conn.query_tree(root)?.reply()?;
+    for window in tree.children {
+        let name = conn
+            .get_property(
+                false,
+                window,
+                x11rb::protocol::xproto::AtomEnum::WM_NAME,
+                x11rb::protocol::xproto::AtomEnum::STRING,
+                0,
+                64,
+            )?
+            .reply()?;
+        let bytes = name.value;
+        if bytes.as_slice() == b"Maple" {
+            return Ok(window);
+        }
+    }
+    Err("Maple window not found".into())
 }
 
 fn fake_motion(conn: &RustConnection, x: i16, y: i16) -> Result<(), x11rb::errors::ReplyError> {
@@ -107,6 +143,7 @@ fn press(
 fn keysym_for(character: char) -> Option<(Keysym, bool)> {
     let code = character as u32;
     match character {
+        '\t' => Some((0xff09, false)),
         'a'..='z' | '0'..='9' => Some((code, false)),
         'A'..='Z' => Some((character.to_ascii_lowercase() as u32, true)),
         ' ' | '.' | '-' | '_' | '/' | '@' | ':' | '!' | '?' | '#' | '%' | '+' | '(' | ')' => {

@@ -49,6 +49,13 @@ pub struct AgentBackend {
     event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<AgentServiceEvent>>>,
 }
 
+fn configured_client_id() -> Uuid {
+    std::env::var("MAPLE_CLIENT_ID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| DEFAULT_CLIENT_ID.parse().expect("valid uuid"))
+}
+
 struct ChannelEventSink(mpsc::UnboundedSender<AgentServiceEvent>);
 
 impl AgentEventSink for ChannelEventSink {
@@ -63,6 +70,28 @@ impl AgentEventSink for ChannelEventSink {
 }
 
 const APP_DIR_NAME: &str = "maple-gpui";
+
+/// Maple's public OpenSecret project id. The backend rejects unknown
+/// client ids, so this must match the registered project.
+const DEFAULT_CLIENT_ID: &str = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
+
+/// OAuth providers supported by the OpenSecret backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthProvider {
+    Github,
+    Google,
+    Apple,
+}
+
+impl OAuthProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Github => "GitHub",
+            Self::Google => "Google",
+            Self::Apple => "Apple",
+        }
+    }
+}
 
 fn config_root() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -118,7 +147,7 @@ impl AgentBackend {
             service,
             auth: MapleApiAuthState::new(),
             api_url,
-            client_id: Uuid::new_v4(),
+            client_id: configured_client_id(),
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
         })
     }
@@ -188,6 +217,115 @@ impl AgentBackend {
 
     pub async fn logout(&self, user_id: &str) -> Result<(), String> {
         self.auth.clear_auth(user_id).await
+    }
+
+    fn oauth_client(&self) -> Result<OpenSecretClient, String> {
+        let environment = configured_pcr0_environment()?;
+        OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
+            .map_err(|_| "Maple API authentication failed".to_string())
+    }
+
+    async fn publish_session(
+        &self,
+        user_id: String,
+        access_token: String,
+        refresh_token: Option<String>,
+    ) -> Result<AuthSession, String> {
+        self.auth
+            .set_auth(
+                Arc::new(NoopAuthEventSink),
+                MapleApiAuthRequest {
+                    user_id,
+                    api_url: self.api_url.clone(),
+                    access_token,
+                    refresh_token,
+                },
+            )
+            .await
+            .map_err(|message| {
+                // Keep validation detail out of the UI; it can echo the
+                // configured URL back to the user.
+                log::debug!("set_auth failed during sign in: {message}");
+                "Sign in failed. Try again.".to_string()
+            })
+            .map(|snapshot| AuthSession {
+                user_id: snapshot.user_id.clone(),
+                snapshot,
+            })
+    }
+
+    /// Begin an OAuth flow: returns the authorization URL to open in a
+    /// browser (also opens it via the system browser).
+    pub async fn oauth_start(&self, provider: OAuthProvider) -> Result<String, String> {
+        let client = self.oauth_client()?;
+        let client_id = self.client_id;
+        let (auth_url, state) = match provider {
+            OAuthProvider::Github => {
+                let response = client
+                    .initiate_github_auth(client_id, None)
+                    .await
+                    .map_err(|_| "Could not start GitHub sign in".to_string())?;
+                (response.auth_url, response.state)
+            }
+            OAuthProvider::Google => {
+                let response = client
+                    .initiate_google_auth(client_id, None)
+                    .await
+                    .map_err(|_| "Could not start Google sign in".to_string())?;
+                (response.auth_url, response.state)
+            }
+            OAuthProvider::Apple => {
+                let response = client
+                    .initiate_apple_auth(client_id, None)
+                    .await
+                    .map_err(|_| "Could not start Apple sign in".to_string())?;
+                (response.auth_url, response.state)
+            }
+        };
+        // The state lives in the redirected URL the user pastes back; the
+        // backend re-validates it during the callback exchange.
+        let _ = state;
+        if webbrowser::open(&auth_url).is_err() {
+            // No system browser available: the UI still shows the URL.
+            log::debug!("failed to open system browser for OAuth");
+        }
+        Ok(auth_url)
+    }
+
+    /// Complete an OAuth flow from the redirected URL (pasted by the user or
+    /// captured from a loopback redirect).
+    pub async fn oauth_complete(
+        &self,
+        provider: OAuthProvider,
+        redirected_url: String,
+    ) -> Result<AuthSession, String> {
+        let Some((code, state)) = parse_oauth_callback(&redirected_url) else {
+            return Err(
+                "Paste the full URL you were redirected to (it contains code and state)"
+                    .to_string(),
+            );
+        };
+        let client = self.oauth_client()?;
+        let response = match provider {
+            OAuthProvider::Github => client
+                .handle_github_callback(code, state, String::new())
+                .await
+                .map_err(|_| "GitHub sign in failed".to_string())?,
+            OAuthProvider::Google => client
+                .handle_google_callback(code, state, String::new())
+                .await
+                .map_err(|_| "Google sign in failed".to_string())?,
+            OAuthProvider::Apple => client
+                .handle_apple_callback(code, state, String::new())
+                .await
+                .map_err(|_| "Apple sign in failed".to_string())?,
+        };
+        self.publish_session(
+            response.id.to_string(),
+            response.access_token,
+            Some(response.refresh_token),
+        )
+        .await
     }
 
     pub async fn runtime_status(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {
@@ -314,4 +452,21 @@ impl AgentBackend {
             mode: None,
         }
     }
+}
+
+/// Extract `code` and `state` query parameters from an OAuth redirect URL.
+fn parse_oauth_callback(url: &str) -> Option<(String, String)> {
+    let query = url.split_once('?')?.1;
+    let mut code = None;
+    let mut state = None;
+    for pair in query.split(['&', '#']) {
+        if let Some((key, value)) = pair.split_once('=') {
+            match key {
+                "code" => code = Some(value.to_string()),
+                "state" => state = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+    Some((code?, state?))
 }

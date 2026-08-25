@@ -316,9 +316,11 @@ impl ChatScreen {
 
     /// Send without a Window, callable from the composer's Enter hook and
     /// from the Send button.
-    /// Send without a Window, callable from the Send button.
+    /// Send without a Window, callable from the Send button. The button
+    /// path owns no composer lease, so it clears the input here.
     fn send_inner(&mut self, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).text();
+        self.composer.update(cx, |input, cx| input.clear(cx));
         self.send_text(text, cx);
     }
 
@@ -357,7 +359,8 @@ impl ChatScreen {
             queue_id: None,
             attachments: Vec::new(),
         };
-        self.composer.update(cx, |input, cx| input.clear(cx));
+        // The caller already cleared the composer (the Enter path clears
+        // inside the input itself); clearing here would double-lease it.
         self.notice = None;
         cx.notify();
         self.call(

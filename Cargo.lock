@@ -4978,6 +4978,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "uuid",
+ "webbrowser",
  "x11rb",
 ]
 

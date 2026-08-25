@@ -736,11 +736,24 @@ impl Render for TextInput {
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                let plain_enter = event.keystroke.key == "enter"
-                    && this.marked_range.is_none()
-                    && !event.keystroke.modifiers.control
+                let no_modifiers = !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
                     && !event.keystroke.modifiers.platform;
+                if event.keystroke.key.eq_ignore_ascii_case("tab")
+                    && no_modifiers
+                    && this.marked_range.is_none()
+                {
+                    // Move through the frame's tab stops instead of
+                    // inserting a tab character.
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    cx.stop_propagation();
+                }
+                let plain_enter =
+                    event.keystroke.key == "enter" && this.marked_range.is_none() && no_modifiers;
                 if plain_enter {
                     this.enter_pressed(window, cx);
                     // Stop the platform text input from also inserting a

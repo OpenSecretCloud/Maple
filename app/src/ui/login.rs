@@ -1,10 +1,11 @@
-//! Sign-in screen: email and password against the OpenSecret backend.
+//! Sign-in screen: email and password, or OAuth (GitHub, Google, Apple)
+//! against the OpenSecret backend.
 
 use std::sync::Arc;
 
 use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*};
 
-use crate::backend::AgentBackend;
+use crate::backend::{AgentBackend, OAuthProvider};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
@@ -12,18 +13,32 @@ use crate::ui::theme;
 /// crosses the event boundary; the token snapshot stays inside the backend.
 pub struct LoginSucceeded(pub String);
 
+/// How the OAuth completion step is presented.
+enum OAuthFlow {
+    Idle,
+    Pending {
+        provider: OAuthProvider,
+        auth_url: String,
+    },
+}
+
 pub struct LoginScreen {
     backend: Arc<AgentBackend>,
     email_input: Entity<TextInput>,
     password_input: Entity<TextInput>,
+    /// Paste field for the OAuth redirect URL.
+    callback_input: Entity<TextInput>,
+    oauth: OAuthFlow,
     error: Option<String>,
     busy: bool,
+    focused_once: bool,
 }
 
 impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
         let email = cx.new(|cx| TextInput::new("Email", cx));
         let password = cx.new(|cx| TextInput::new("Password", cx).masked());
+        let callback = cx.new(|cx| TextInput::new("Paste the URL you were redirected to…", cx));
         // Enter handlers receive their own field's text and read the sibling
         // through its entity; neither path leases the focused input.
         let (email_handle, password_handle) = (email.clone(), password.clone());
@@ -50,12 +65,23 @@ impl LoginScreen {
                 }
             });
         });
+        let oauth_weak = weak;
+        callback.update(cx, |input, _| {
+            input.set_on_enter(move |_, _, cx| {
+                if let Some(this) = oauth_weak.upgrade() {
+                    this.update(cx, |screen, cx| screen.confirm_oauth(cx));
+                }
+            });
+        });
         Self {
             backend,
             email_input: email,
             password_input: password,
+            callback_input: callback,
+            oauth: OAuthFlow::Idle,
             error: None,
             busy: false,
+            focused_once: false,
         }
     }
 
@@ -93,45 +119,120 @@ impl LoginScreen {
         .detach();
     }
 
-    fn submit(&mut self, cx: &mut Context<Self>) {
-        let email = self.email_input.read(cx).text();
-        let password = self.password_input.read(cx).text();
-        self.submit_values(email, password, cx);
-    }
-
     fn submit_clicked(
         &mut self,
         _event: &gpui::ClickEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.submit(cx);
+        let email = self.email_input.read(cx).text();
+        let password = self.password_input.read(cx).text();
+        self.submit_values(email, password, cx);
+    }
+
+    fn start_oauth(&mut self, provider: OAuthProvider, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        cx.notify();
+        let (spawn_backend, oauth_backend) = (self.backend.clone(), self.backend.clone());
+        let task = spawn_backend.spawn(async move { oauth_backend.oauth_start(provider).await });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.unwrap_or_else(|error| {
+                log::debug!("oauth start failed: {error:?}");
+                Err("Could not start sign in".to_string())
+            });
+            this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(auth_url) => {
+                        this.oauth = OAuthFlow::Pending { provider, auth_url };
+                    }
+                    Err(message) => this.error = Some(message),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn confirm_oauth(&mut self, cx: &mut Context<Self>) {
+        let OAuthFlow::Pending { provider, .. } = self.oauth else {
+            return;
+        };
+        if self.busy {
+            return;
+        }
+        let redirected = self.callback_input.read(cx).text();
+        if redirected.trim().is_empty() {
+            self.error = Some("Paste the URL you were redirected to".to_string());
+            cx.notify();
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        cx.notify();
+        let (spawn_backend, oauth_backend) = (self.backend.clone(), self.backend.clone());
+        let task = spawn_backend
+            .spawn(async move { oauth_backend.oauth_complete(provider, redirected).await });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.unwrap_or_else(|error| {
+                log::debug!("oauth completion failed: {error:?}");
+                Err("Sign in failed. Try again.".to_string())
+            });
+            this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
+                    Err(message) => this.error = Some(message),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn cancel_oauth(&mut self, cx: &mut Context<Self>) {
+        self.oauth = OAuthFlow::Idle;
+        self.error = None;
+        self.callback_input.update(cx, |input, cx| input.clear(cx));
+        cx.notify();
     }
 }
 
 impl EventEmitter<LoginSucceeded> for LoginScreen {}
 
 impl Render for LoginScreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy;
-        div()
-            .size_full()
+        if !self.focused_once {
+            // Sign-in screens focus the first field so typing works
+            // immediately.
+            self.focused_once = true;
+            use gpui::Focusable as _;
+            let handle = self.email_input.read(cx).focus_handle(cx);
+            window.focus(&handle);
+        }
+        let mut card = div()
             .flex()
-            .justify_center()
-            .items_center()
-            .bg(gpui::rgb(theme::BG_APP))
+            .flex_col()
+            .gap_3()
+            .w(gpui::px(380.))
+            .p_6()
+            .rounded_lg()
+            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .border_1()
+            .border_color(gpui::rgb(theme::BORDER))
+            .when(busy, |container| container.opacity(0.7))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_3()
-                    .w(gpui::px(360.))
-                    .p_6()
-                    .rounded_lg()
-                    .bg(gpui::rgb(theme::BG_ELEVATED))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::BORDER))
-                    .when(busy, |container| container.opacity(0.7))
+                    .items_center()
+                    .justify_between()
                     .child(
                         div()
                             .text_xl()
@@ -141,20 +242,32 @@ impl Render for LoginScreen {
                     )
                     .child(
                         div()
+                            .id("login-close")
+                            .px_2()
+                            .rounded_md()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                            .child(format!("Sign in to {}", self.backend.api_url())),
-                    )
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .hover(|style| {
+                                style
+                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .cursor_pointer()
+                            })
+                            .on_click(|_event, _window, cx| cx.quit())
+                            .child("✕"),
+                    ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .child(format!("Sign in to {}", self.backend.api_url())),
+            );
+
+        match &self.oauth {
+            OAuthFlow::Idle => {
+                card = card
                     .child(field("Email", self.email_input.clone()))
                     .child(field("Password", self.password_input.clone()))
-                    .when_some(self.error.clone(), |container, message| {
-                        container.child(
-                            div()
-                                .text_sm()
-                                .text_color(gpui::rgb(theme::STATUS_ERROR))
-                                .child(message),
-                        )
-                    })
                     .child(
                         div()
                             .id("login-submit")
@@ -175,31 +288,187 @@ impl Render for LoginScreen {
                             } else {
                                 "Sign in".to_string()
                             }),
-                    ),
-            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .h(gpui::px(1.))
+                                    .flex_1()
+                                    .bg(gpui::rgb(theme::BORDER_SUBTLE)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                    .child("or continue with"),
+                            )
+                            .child(
+                                div()
+                                    .h(gpui::px(1.))
+                                    .flex_1()
+                                    .bg(gpui::rgb(theme::BORDER_SUBTLE)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(oauth_button(OAuthProvider::Github, busy, cx))
+                            .child(oauth_button(OAuthProvider::Google, busy, cx))
+                            .child(oauth_button(OAuthProvider::Apple, busy, cx)),
+                    );
+            }
+            OAuthFlow::Pending { provider, auth_url } => {
+                card = card
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .child(format!(
+                                "Finish signing in with {}",
+                                provider_label(*provider)
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .child("Your browser opened the sign-in page. After you approve, the site redirects you; paste that final URL here."),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .line_clamp(2)
+                            .child(auth_url.clone()),
+                    )
+                    .child(field("", self.callback_input.clone()))
+                    .child(
+                        div()
+                            .id("oauth-confirm")
+                            .flex()
+                            .justify_center()
+                            .py_2()
+                            .rounded_md()
+                            .bg(gpui::rgb(if busy {
+                                theme::BORDER
+                            } else {
+                                theme::ACCENT
+                            }))
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .when(!busy, |el| {
+                                el.hover(|style| {
+                                    style
+                                        .bg(gpui::rgb(theme::ACCENT_HOVER))
+                                        .cursor_pointer()
+                                })
+                            })
+                            .when(!busy, |el| {
+                                el.on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.confirm_oauth(cx);
+                                }))
+                            })
+                            .child(if busy {
+                                "Completing…".to_string()
+                            } else {
+                                "Complete sign in".to_string()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("oauth-cancel")
+                            .flex()
+                            .justify_center()
+                            .py_1()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.cancel_oauth(cx);
+                            }))
+                            .child("Back to email sign in"),
+                    );
+            }
+        }
+
+        if let Some(message) = self.error.clone() {
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::STATUS_ERROR))
+                    .child(message),
+            );
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .justify_center()
+            .items_center()
+            .bg(gpui::rgb(theme::BG_APP))
+            .child(card)
     }
 }
 
-fn field(label: &str, input: Entity<TextInput>) -> Div {
+fn provider_label(provider: OAuthProvider) -> &'static str {
+    provider.label()
+}
+
+fn oauth_button(
+    provider: OAuthProvider,
+    busy: bool,
+    cx: &mut Context<LoginScreen>,
+) -> gpui::Stateful<Div> {
     div()
+        .id(gpui::SharedString::from(format!(
+            "oauth-{}",
+            provider_label(provider).to_lowercase()
+        )))
+        .flex_1()
         .flex()
-        .flex_col()
-        .gap_1()
-        .child(
+        .justify_center()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(gpui::rgb(theme::BORDER))
+        .text_sm()
+        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+        .when(!busy, |el| {
+            el.hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+        })
+        .when(!busy, |el| {
+            el.on_click({
+                cx.listener(move |this, _event, _window, cx| {
+                    this.start_oauth(provider, cx);
+                })
+            })
+        })
+        .child(provider_label(provider).to_string())
+}
+
+fn field(label: &str, input: Entity<TextInput>) -> Div {
+    let mut container = div().flex().flex_col().gap_1();
+    if !label.is_empty() {
+        container = container.child(
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::TEXT_SECONDARY))
                 .child(label.to_string()),
-        )
-        .child(
-            div()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .bg(gpui::rgb(theme::BG_INPUT))
-                .border_1()
-                .border_color(gpui::rgb(theme::BORDER))
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                .child(input),
-        )
+        );
+    }
+    container.child(
+        div()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(gpui::rgb(theme::BG_INPUT))
+            .border_1()
+            .border_color(gpui::rgb(theme::BORDER))
+            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+            .child(input),
+    )
 }
