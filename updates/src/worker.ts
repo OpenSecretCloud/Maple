@@ -76,7 +76,7 @@ function isExpectedArtifactUrl(value: string, version: string): boolean {
   const segments = url.pathname.split("/").filter(Boolean);
   return (
     segments.length === 6 &&
-    segments[0].length > 0 &&
+    segments[0] === "OpenSecretCloud" &&
     segments[1] === "Maple" &&
     segments[2] === "releases" &&
     segments[3] === "download" &&
