@@ -3,10 +3,13 @@
  * installable assets the same way the Maple marketing site does.
  */
 
-export const GITHUB_RELEASES_API_URL =
-  "https://api.github.com/repos/OpenSecretCloud/Maple/releases/latest";
-export const GITHUB_RELEASES_LATEST_URL =
-  "https://github.com/OpenSecretCloud/Maple/releases/latest";
+import repositoryMetadata from "../../../repo.meta.json";
+
+export const GITHUB_REPOSITORY = `${repositoryMetadata.github.owner}/${repositoryMetadata.github.repository}`;
+export const GITHUB_REPOSITORY_URL = `https://github.com/${GITHUB_REPOSITORY}`;
+
+export const GITHUB_RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest`;
+export const GITHUB_RELEASES_LATEST_URL = `${GITHUB_REPOSITORY_URL}/releases/latest`;
 
 export type DownloadAssetKey =
   | "macOS"

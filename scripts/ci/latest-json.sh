@@ -22,6 +22,11 @@ fi
 configure_reproducible_build_metadata
 pub_date="${MAPLE_LATEST_JSON_PUB_DATE:-$(source_date_rfc3339)}"
 
+repository_metadata="${REPO_ROOT}/repo.meta.json"
+github_owner="$(jq -er '.github.owner | select(type == "string" and length > 0)' "${repository_metadata}")"
+github_repository="$(jq -er '.github.repository | select(type == "string" and length > 0)' "${repository_metadata}")"
+github_repository_url="https://github.com/${github_owner}/${github_repository}"
+
 find_one_artifact() {
   local pattern="$1"
   local file
@@ -68,16 +73,16 @@ linux_appimage_sig_content="$(cat "${linux_appimage_sig}")"
 linux_deb_sig_content="$(cat "${linux_deb_sig}")"
 linux_rpm_sig_content="$(cat "${linux_rpm_sig}")"
 windows_sig_content="$(cat "${windows_sig}")"
-macos_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${macos_bundle}")"
-linux_appimage_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${linux_appimage_bundle}")"
-linux_deb_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${linux_deb_bundle}")"
-linux_rpm_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${linux_rpm_bundle}")"
-windows_url="https://github.com/OpenSecretCloud/Maple/releases/download/${release_tag}/$(basename "${windows_bundle}")"
+macos_url="${github_repository_url}/releases/download/${release_tag}/$(basename "${macos_bundle}")"
+linux_appimage_url="${github_repository_url}/releases/download/${release_tag}/$(basename "${linux_appimage_bundle}")"
+linux_deb_url="${github_repository_url}/releases/download/${release_tag}/$(basename "${linux_deb_bundle}")"
+linux_rpm_url="${github_repository_url}/releases/download/${release_tag}/$(basename "${linux_rpm_bundle}")"
+windows_url="${github_repository_url}/releases/download/${release_tag}/$(basename "${windows_bundle}")"
 
 tmp="$(mktemp)"
 jq -S -n \
   --arg version "${release_tag#v}" \
-  --arg notes "See the release notes at https://github.com/OpenSecretCloud/Maple/releases/tag/${release_tag}" \
+  --arg notes "See the release notes at ${github_repository_url}/releases/tag/${release_tag}" \
   --arg pub_date "${pub_date}" \
   --arg macos_sig "${macos_sig_content}" \
   --arg linux_appimage_sig "${linux_appimage_sig_content}" \

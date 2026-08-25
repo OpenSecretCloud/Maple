@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { handleRequest, isLatestRelease, type Env } from "./worker";
+import {
+  GITHUB_REPOSITORY,
+  handleRequest,
+  isLatestRelease,
+  type Env,
+} from "./worker";
 
 function releaseUrl(version: string, name: string): string {
-  return `https://github.com/OpenSecretCloud/Maple/releases/download/v${version}/${name}`;
+  return `https://github.com/${GITHUB_REPOSITORY}/releases/download/v${version}/${name}`;
 }
 
 function validRelease(version = "3.3.8") {
@@ -55,6 +60,10 @@ function envReturning(response: Response, requests: Request[] = []): Env {
 }
 
 describe("latest.json validation", () => {
+  test("uses the shared Maple GitHub repository identity", () => {
+    expect(GITHUB_REPOSITORY).toBe("OpenSecretCloud/Maple");
+  });
+
   test("accepts the Maple release schema", () => {
     expect(isLatestRelease(validRelease())).toBe(true);
   });
