@@ -39,6 +39,13 @@ pub struct ChatScreen {
     booting: bool,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
+    /// Root the runtime is currently serving; new tasks operate here.
+    project_root: Option<String>,
+    recent_roots: Vec<String>,
+    root_menu_open: bool,
+    /// Manual path entry for the root switcher.
+    root_input: Option<Entity<TextInput>>,
+    root_switching: bool,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Per-session count of applied timeline events; a load whose snapshot
@@ -77,6 +84,11 @@ impl ChatScreen {
             notice: None,
             booting: true,
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
+            project_root: None,
+            recent_roots: Vec::new(),
+            root_menu_open: false,
+            root_input: None,
+            root_switching: false,
             selection_generation: 0,
             timeline_revisions: HashMap::new(),
         };
@@ -114,7 +126,10 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 match result {
-                    Ok(_) => this.runtime_error = None,
+                    Ok(status) => {
+                        this.runtime_error = None;
+                        this.project_root = status.project_root;
+                    }
                     Err(message) => {
                         this.runtime_error = Some(format!("Runtime failed to start: {message}"))
                     }
@@ -122,9 +137,92 @@ impl ChatScreen {
                 this.booting = false;
                 cx.notify();
                 this.refresh_models(cx);
+                this.refresh_roots(cx);
                 this.refresh_sessions(cx);
             },
         );
+    }
+
+    fn refresh_roots(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.recent_project_roots(&user_id).await },
+            cx,
+            |this, result, cx| {
+                if let Ok(roots) = result {
+                    this.recent_roots = roots.into_iter().map(|root| root.path).collect();
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn switch_root(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.root_switching {
+            return;
+        }
+        let path = path.trim().to_string();
+        if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
+            self.notice = Some("Enter an absolute directory path".to_string());
+            cx.notify();
+            return;
+        }
+        self.root_switching = true;
+        self.root_menu_open = false;
+        self.root_input = None;
+        self.notice = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.set_project_root(&user_id, path).await },
+            cx,
+            |this, result, cx| {
+                this.root_switching = false;
+                match result {
+                    Ok(status) => {
+                        this.project_root = status.project_root;
+                        this.selected_session = None;
+                        this.timeline.clear();
+                        this.list_state.reset(0);
+                        this.refresh_roots(cx);
+                        this.refresh_sessions(cx);
+                    }
+                    Err(message) => this.notice = Some(message),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
+        // Best-effort native directory picker; falls back to manual entry.
+        let current = self.project_root.clone().unwrap_or_default();
+        let output = std::process::Command::new("zenity")
+            .arg("--file-selection")
+            .arg("--directory")
+            .arg("--filename")
+            .arg(&current)
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    self.switch_root(path, cx);
+                }
+            }
+            _ => {
+                // zenity missing or cancelled: offer manual entry.
+                if self.root_input.is_none() {
+                    let input = cx.new(|cx| {
+                        TextInput::new("/absolute/path/to/project", cx).with_tab_index(0)
+                    });
+                    self.root_input = Some(input);
+                }
+                cx.notify();
+            }
+        }
     }
 
     fn refresh_models(&self, cx: &mut Context<Self>) {
@@ -184,7 +282,10 @@ impl ChatScreen {
             cx,
             |this, result, cx| match result {
                 Ok(session) => {
-                    this.sessions.insert(0, session.clone());
+                    // The SessionCreated event may arrive before this
+                    // callback; upsert so the sidebar never shows the task
+                    // twice.
+                    this.upsert_session(session.clone());
                     let timeline = Vec::new();
                     this.set_active_session(session, timeline, cx);
                 }
@@ -305,6 +406,7 @@ impl ChatScreen {
         self.pending_permission = None;
         self.permission_responding = false;
         self.models_menu_open = false;
+        self.root_menu_open = false;
         cx.notify();
     }
 
@@ -484,6 +586,7 @@ impl ChatScreen {
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
         self.selected_model = Some(model);
         self.models_menu_open = false;
+        self.root_menu_open = false;
         cx.notify();
     }
 
@@ -539,7 +642,7 @@ impl ChatScreen {
             .or_insert(0) += 1;
     }
 
-    fn update_session_summary(&mut self, session: AgentSessionSummary) {
+    fn upsert_session(&mut self, session: AgentSessionSummary) {
         if let Some(existing) = self
             .sessions
             .iter_mut()
@@ -559,10 +662,10 @@ impl ChatScreen {
                 self.active_runs = status.active_runs;
             }
             AgentServiceEvent::SessionCreated(session) => {
-                self.update_session_summary(session);
+                self.upsert_session(session);
             }
             AgentServiceEvent::SessionUpdated { session, .. } => {
-                self.update_session_summary(session);
+                self.upsert_session(session);
             }
             AgentServiceEvent::TimelineItem {
                 session_id, item, ..
@@ -594,7 +697,7 @@ impl ChatScreen {
         use maple_agent::agent::AgentRunEvent;
         match event {
             AgentRunEvent::SessionUpdated(session) => {
-                self.update_session_summary(session);
+                self.upsert_session(session);
             }
             AgentRunEvent::Started => {
                 self.active_runs
@@ -813,6 +916,37 @@ impl ChatScreen {
                     .gap_2()
                     .child(
                         div()
+                            .id("root-picker")
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(theme::BORDER))
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.models_menu_open = false;
+                                this.root_menu_open = !this.root_menu_open;
+                                cx.notify();
+                            }))
+                            .child(format!(
+                                "📁 {}",
+                                self.project_root
+                                    .as_deref()
+                                    .and_then(|path| {
+                                        std::path::Path::new(path)
+                                            .file_name()
+                                            .map(|name| name.to_string_lossy().to_string())
+                                    })
+                                    .unwrap_or_else(|| "project".to_string())
+                            )),
+                    )
+                    .child(
+                        div()
                             .id("model-picker")
                             .flex()
                             .items_center()
@@ -825,6 +959,7 @@ impl ChatScreen {
                             .text_color(gpui::rgb(theme::TEXT_SECONDARY))
                             .hover(|style| style.cursor_pointer())
                             .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.root_menu_open = false;
                                 this.models_menu_open = !this.models_menu_open;
                                 cx.notify();
                             }))
@@ -849,6 +984,106 @@ impl ChatScreen {
                             .child("Sign out"),
                     ),
             );
+        if self.root_menu_open {
+            let mut menu = div()
+                .occlude()
+                .flex()
+                .flex_col()
+                .mt_6()
+                .py_1()
+                .min_w(gpui::px(360.))
+                .rounded_md()
+                .bg(gpui::rgb(theme::BG_ELEVATED))
+                .border_1()
+                .border_color(gpui::rgb(theme::BORDER))
+                .shadow_md();
+            for path in self.recent_roots.iter().take(6) {
+                let path = path.clone();
+                let is_current = self.project_root.as_deref() == Some(path.as_str());
+                menu = menu.child(
+                    div()
+                        .id(gpui::SharedString::from(format!("root-{}", path)))
+                        .px_3()
+                        .py_1()
+                        .text_sm()
+                        .text_color(gpui::rgb(if is_current {
+                            theme::ACCENT
+                        } else {
+                            theme::TEXT_PRIMARY
+                        }))
+                        .line_clamp(1)
+                        .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                        .on_click({
+                            let path = path.clone();
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.switch_root(path.clone(), cx);
+                            })
+                        })
+                        .child(path),
+                );
+            }
+            menu = menu.child(
+                div()
+                    .id("root-choose")
+                    .px_3()
+                    .py_1()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.choose_root_dialog(cx);
+                    }))
+                    .child("Choose folder…"),
+            );
+            if let Some(input) = self.root_input.clone() {
+                menu = menu
+                    .child(
+                        div()
+                            .px_3()
+                            .pb_1()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .child("Or type an absolute path:"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .pb_2()
+                            .child(div().flex_1().child(input))
+                            .child(
+                                div()
+                                    .id("root-apply")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(gpui::rgb(theme::ACCENT))
+                                    .text_sm()
+                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .hover(|style| style.cursor_pointer())
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        if let Some(path) = this
+                                            .root_input
+                                            .as_ref()
+                                            .map(|input| input.read(cx).text())
+                                        {
+                                            this.switch_root(path, cx);
+                                        }
+                                    }))
+                                    .child("Go"),
+                            ),
+                    );
+            }
+            header = header.child(gpui::deferred(
+                div()
+                    .absolute()
+                    .top(gpui::px(40.))
+                    .left(gpui::px(16.))
+                    .child(menu),
+            ));
+        }
         if self.models_menu_open {
             let menu = div()
                 .occlude()

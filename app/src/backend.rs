@@ -13,7 +13,7 @@ use std::sync::Arc;
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentEventSink, AgentRuntimeStatus, AgentSendMessageRequest,
     AgentServiceEvent, AgentSessionDetail, AgentSessionSummary, AgentStartRequest,
-    AgentToolContextSpec, MapleAgentHostResources, MapleAgentService,
+    AgentToolContextSpec, MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState, NoopAuthEventSink,
@@ -344,6 +344,40 @@ impl AgentBackend {
 
     pub async fn stop_runtime(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {
         self.service.handle_for_user(user_id).await?.stop().await
+    }
+
+    /// Roots recently used by this account, most recent first.
+    pub async fn recent_project_roots(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<RecentProjectRoot>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_recent_project_roots()
+            .await
+    }
+
+    /// Switch the runtime to a different project root: registers the root as
+    /// recent, restarts the agent under it, and returns the new status.
+    pub async fn set_project_root(
+        &self,
+        user_id: &str,
+        path: String,
+    ) -> Result<AgentRuntimeStatus, String> {
+        let handle = self.service.handle_for_user(user_id).await?;
+        handle.save_recent_project_root(path.clone()).await?;
+        let session = self.auth.session_for(user_id).await?;
+        handle
+            .restart(
+                session,
+                Some(AgentStartRequest {
+                    project_root: Some(path),
+                    model: None,
+                    mode: None,
+                }),
+            )
+            .await
     }
 
     pub async fn list_sessions(

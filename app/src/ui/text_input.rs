@@ -71,8 +71,12 @@ pub struct TextInput {
     is_selecting: bool,
     /// Render '*' in place of content characters (password fields).
     mask: bool,
-    /// Clear the content after the Enter hook runs (composer behavior).
+    /// Clear the content once the Enter hook has consumed it (composer behavior).
     clear_on_enter: bool,
+    /// Explicit tab order for this input within its surface. Inputs without
+    /// distinct indices collapse onto the same tab-stop path, which makes
+    /// focus navigation a no-op.
+    tab_index: Option<isize>,
     on_enter: Option<EnterHandler>,
 }
 
@@ -90,8 +94,15 @@ impl TextInput {
             is_selecting: false,
             mask: false,
             clear_on_enter: false,
+            tab_index: None,
             on_enter: None,
         }
+    }
+
+    /// Give this input an explicit position in the tab order.
+    pub fn with_tab_index(mut self, index: isize) -> Self {
+        self.tab_index = Some(index);
+        self
     }
 
     /// Clear the content once the Enter hook has consumed it.
@@ -717,6 +728,7 @@ impl Render for TextInput {
             .flex()
             .key_context("TextInput")
             .track_focus(&self.focus_handle(cx))
+            .when_some(self.tab_index, |el, index| el.tab_index(index))
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
@@ -739,19 +751,6 @@ impl Render for TextInput {
                 let no_modifiers = !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
                     && !event.keystroke.modifiers.platform;
-                if event.keystroke.key.eq_ignore_ascii_case("tab")
-                    && no_modifiers
-                    && this.marked_range.is_none()
-                {
-                    // Move through the frame's tab stops instead of
-                    // inserting a tab character.
-                    if event.keystroke.modifiers.shift {
-                        window.focus_prev();
-                    } else {
-                        window.focus_next();
-                    }
-                    cx.stop_propagation();
-                }
                 let plain_enter =
                     event.keystroke.key == "enter" && this.marked_range.is_none() && no_modifiers;
                 if plain_enter {

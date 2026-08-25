@@ -36,8 +36,8 @@ pub struct LoginScreen {
 
 impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
-        let email = cx.new(|cx| TextInput::new("Email", cx));
-        let password = cx.new(|cx| TextInput::new("Password", cx).masked());
+        let email = cx.new(|cx| TextInput::new("Email", cx).with_tab_index(0));
+        let password = cx.new(|cx| TextInput::new("Password", cx).masked().with_tab_index(1));
         let callback = cx.new(|cx| TextInput::new("Paste the URL you were redirected to…", cx));
         // Enter handlers receive their own field's text and read the sibling
         // through its entity; neither path leases the focused input.
@@ -218,6 +218,7 @@ impl Render for LoginScreen {
             window.focus(&handle);
         }
         let mut card = div()
+            .id("login-card")
             .flex()
             .flex_col()
             .gap_3()
@@ -228,6 +229,28 @@ impl Render for LoginScreen {
             .border_1()
             .border_color(gpui::rgb(theme::BORDER))
             .when(busy, |container| container.opacity(0.7))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key.eq_ignore_ascii_case("tab")
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform
+                    && matches!(this.oauth, OAuthFlow::Idle)
+                {
+                    // focus_next is unreliable in this gpui release; move
+                    // between the two fields explicitly.
+                    use gpui::Focusable as _;
+                    let focused_on_email = window.focused(cx).as_ref()
+                        == Some(&this.email_input.read(cx).focus_handle(cx));
+                    let target = if focused_on_email {
+                        this.password_input.clone()
+                    } else {
+                        this.email_input.clone()
+                    };
+                    let handle = target.read(cx).focus_handle(cx);
+                    window.focus(&handle);
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 div()
                     .flex()
