@@ -1,0 +1,40 @@
+[package]
+name = "maple-agent"
+description = "Transport-neutral Maple agent runtime: Goose-backed sessions, provider, tools, permissions"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+once_cell = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+goose = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose-providers", default-features = false }
+opensecret = "3.6.2"
+maple-proxy = "0.3.2"
+rand = "0.8.6"
+rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+httpdate = "1"
+process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+tempfile = "3"
+icu_properties = "2.1.1"
+sha2 = "0.10"
+base64 = "0.22"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+axum = "0.8"
+ciborium = "0.2"

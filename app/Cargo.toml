@@ -1,0 +1,24 @@
+[package]
+name = "maple-gpui"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "maple-gpui"
+path = "src/main.rs"
+
+[dependencies]
+maple-agent = { path = "../crates/maple-agent" }
+gpui = "0.2.2"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+opensecret = "3.6.2"
+uuid = { version = "1", features = ["v4"] }
+unicode-segmentation = "1"
+x11rb = { version = "0.13", features = ["xtest"] }
+pulldown-cmark = { version = "0.13", default-features = false }
