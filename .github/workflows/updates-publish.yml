@@ -148,8 +148,17 @@ jobs:
             and .result.service == "maple-updates"
           ' <<<"${domain_response}" >/dev/null
 
+          subdomain_response="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain")"
+          workers_subdomain="$(jq -er 'select(.success == true) | .result.subdomain' <<<"${subdomain_response}")"
+          [[ "${workers_subdomain}" =~ ^[a-z0-9-]+$ ]] || {
+            echo "Cloudflare returned an invalid Workers subdomain." >&2
+            exit 1
+          }
+
           served_metadata="$(mktemp "${RUNNER_TEMP}/maple-updates-live.XXXXXX")"
-          endpoint="https://updates.trymaple.ai/latest.json"
+          endpoint="https://maple-updates.${workers_subdomain}.workers.dev/latest.json"
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error \
               --connect-timeout 5 \
@@ -161,9 +170,9 @@ jobs:
               echo "Published ${RELEASE_TAG} at ${endpoint}."
               exit 0
             fi
-            echo "Waiting for the custom domain to serve the deployed metadata (${attempt}/60)."
+            echo "Waiting for the Worker to serve the deployed metadata (${attempt}/60)."
             sleep 10
           done
 
-          echo "The public updater endpoint did not serve the deployed latest.json." >&2
+          echo "The Worker did not serve the deployed latest.json." >&2
           exit 1
