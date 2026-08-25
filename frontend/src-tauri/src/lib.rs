@@ -954,7 +954,11 @@ async fn check_for_updates(
     log::info!("Checking for updates...");
 
     // Get the updater
-    let updater = match app_handle.updater() {
+    let updater = match app_handle
+        .updater_builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
         Ok(u) => u,
         Err(e) => {
             log::error!("Failed to get updater: {e}");
