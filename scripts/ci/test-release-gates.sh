@@ -160,9 +160,11 @@ expect_failure "rejects an unknown argument" \
   bash "${classifier}" --unknown value
 
 release_json="${temp_root}/release.json"
+pages_production_json="${temp_root}/pages-production.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
+yq -o=json '.' "${repo_root}/.github/workflows/pages-production.yml" > "${pages_production_json}"
 
-python3 - "${release_json}" <<'PY'
+python3 - "${release_json}" "${pages_production_json}" <<'PY'
 import json
 import re
 import sys
@@ -200,6 +202,9 @@ def secret_names(value):
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     release = json.load(handle)
+
+with open(sys.argv[2], encoding="utf-8") as handle:
+    pages_production = json.load(handle)
 
 release_jobs = release["jobs"]
 classifier_id = "classify-app-release"
@@ -247,7 +252,65 @@ for job_id, job in release_jobs.items():
             check(checkout.get("ref") == release_ref, f"Release checkout in {job_id} must pin classifier SHA")
             check(checkout.get("persist-credentials") is False, f"Release checkout in {job_id} must not persist credentials")
 
+check(
+    pages_production.get("permissions") == {"contents": "read"},
+    "Pages production workflow must default to contents: read",
+)
+pages_on = pages_production.get("on", {})
+check("workflow_dispatch" in pages_on, "Pages production workflow must support manual retry")
+pages_workflow_run = pages_on.get("workflow_run", {})
+check(
+    pages_workflow_run.get("workflows") == ["Release"]
+    and pages_workflow_run.get("types") == ["completed"],
+    "Pages production workflow must follow completed Release workflows",
+)
+check(
+    pages_production.get("concurrency")
+    == {"group": "pages-production", "cancel-in-progress": False},
+    "Pages production workflow must serialize promotions without cancellation",
+)
+
+pages_jobs = pages_production.get("jobs", {})
+check(set(pages_jobs) == {"promote"}, "Pages production workflow must have one promotion job")
+pages_job = pages_jobs["promote"]
+check(
+    pages_job.get("permissions") == {"contents": "write"},
+    "Pages production promotion must have only contents: write permission",
+)
+check(not secret_names(pages_production), "Pages production workflow must not receive secrets")
+check("environment" not in pages_job, "Pages production promotion must not require a secret-bearing environment")
+
+pages_if = str(pages_job.get("if", ""))
+for required_gate in (
+    "workflow_run.conclusion == 'success'",
+    "workflow_run.event == 'release'",
+    "workflow_run.path == '.github/workflows/release.yml'",
+    "workflow_run.head_repository.full_name == github.repository",
+):
+    check(required_gate in pages_if, f"Pages production job is missing gate: {required_gate}")
+
+pages_steps = pages_job.get("steps", [])
+check(len(pages_steps) == 1, "Pages production promotion must have one non-checkout step")
+pages_step = pages_steps[0]
+check("uses" not in pages_step, "Pages production promotion must not run a third-party action")
+pages_env = pages_step.get("env", {})
+check(
+    pages_env.get("PAGES_PRODUCTION_BRANCH") == "pages-production",
+    "Pages production branch must be hardcoded",
+)
+check(pages_env.get("GH_TOKEN") == "${{ github.token }}", "Pages promotion must use github.token")
+
+pages_run = str(pages_step.get("run", ""))
+for required_control in (
+    "repos/${REPOSITORY}/releases/latest",
+    "repos/${REPOSITORY}/compare/${release_sha}...master",
+    "repos/${REPOSITORY}/compare/${current_sha}...${release_sha}",
+    "repos/${REPOSITORY}/git/refs/heads/${PAGES_PRODUCTION_BRANCH}",
+    '-F force=true',
+):
+    check(required_control in pages_run, f"Pages production step is missing control: {required_control}")
+
 PY
-pass "workflow release-gate topology is fail closed without gating on Zapstore"
+pass "workflow release-gate topology is fail closed with isolated downstream publishers"
 
 printf '1..%d\n' "${passed}"

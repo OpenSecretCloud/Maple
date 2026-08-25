@@ -1,0 +1,142 @@
+name: Promote Pages production
+
+run-name: Promote the current Maple release to Pages production
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-production
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Advance pages-production
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'release' &&
+        github.event.workflow_run.path == '.github/workflows/release.yml' &&
+        github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Advance the production branch to the verified release SHA
+        env:
+          EXPECTED_RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
+          EXPECTED_RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || '' }}
+          GH_TOKEN: ${{ github.token }}
+          PAGES_PRODUCTION_BRANCH: pages-production
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "Pages production promotion failed: $*" >&2
+            exit 1
+          }
+
+          api() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$@"
+          }
+
+          [ "${PAGES_PRODUCTION_BRANCH}" = "pages-production" ] || \
+            fail "unexpected production branch"
+
+          default_branch="$(api "repos/${REPOSITORY}" --jq '.default_branch')"
+          [ "${default_branch}" = "master" ] || fail "default branch must be master"
+
+          latest_release="$(api "repos/${REPOSITORY}/releases/latest")"
+          release_id="$(jq -er 'select(.draft == false and .prerelease == false) | .id' \
+            <<<"${latest_release}")"
+          release_tag="$(jq -er '.tag_name' <<<"${latest_release}")"
+          [[ "${release_id}" =~ ^[0-9]+$ ]] || fail "release id must be numeric"
+          [[ "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || \
+            fail "latest stable release must use an exact vX.Y.Z tag"
+
+          if [ -n "${EXPECTED_RELEASE_TAG}" ]; then
+            [[ "${EXPECTED_RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || \
+              fail "completed Release workflow has an invalid tag"
+            if [ "${release_tag}" != "${EXPECTED_RELEASE_TAG}" ]; then
+              echo "${EXPECTED_RELEASE_TAG} is no longer the latest stable release; leaving ${PAGES_PRODUCTION_BRANCH} unchanged."
+              exit 0
+            fi
+          fi
+
+          release_sha="$(api "repos/${REPOSITORY}/commits/${release_tag}" --jq '.sha')"
+          [[ "${release_sha}" =~ ^[0-9a-f]{40}$ ]] || fail "release SHA is invalid"
+          if [ -n "${EXPECTED_RELEASE_SHA}" ]; then
+            [[ "${EXPECTED_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || \
+              fail "completed Release workflow has an invalid SHA"
+            [ "${release_sha}" = "${EXPECTED_RELEASE_SHA}" ] || \
+              fail "release tag no longer resolves to the completed workflow SHA"
+          fi
+
+          master_status="$(api \
+            "repos/${REPOSITORY}/compare/${release_sha}...master" \
+            --jq '.status')"
+          case "${master_status}" in
+            ahead|identical) ;;
+            *) fail "release SHA is not reachable from protected master" ;;
+          esac
+
+          production_ref="repos/${REPOSITORY}/git/ref/heads/${PAGES_PRODUCTION_BRANCH}"
+          current_sha="$(api "${production_ref}" --jq '.object.sha')"
+          [[ "${current_sha}" =~ ^[0-9a-f]{40}$ ]] || \
+            fail "current production branch SHA is invalid"
+
+          if [ "${current_sha}" = "${release_sha}" ]; then
+            echo "${PAGES_PRODUCTION_BRANCH} already points to ${release_tag} (${release_sha})."
+            exit 0
+          fi
+
+          promotion_status="$(api \
+            "repos/${REPOSITORY}/compare/${current_sha}...${release_sha}" \
+            --jq '.status')"
+          [ "${promotion_status}" = "ahead" ] || \
+            fail "refusing a non-forward production change from ${current_sha} to ${release_sha}"
+
+          current_release_id="$(api \
+            "repos/${REPOSITORY}/releases/latest" \
+            --jq 'select(.draft == false and .prerelease == false) | .id')"
+          if [ "${current_release_id}" != "${release_id}" ]; then
+            echo "The latest stable release changed during this run; leaving ${PAGES_PRODUCTION_BRANCH} unchanged."
+            exit 0
+          fi
+
+          checked_sha="$(api "${production_ref}" --jq '.object.sha')"
+          [ "${checked_sha}" = "${current_sha}" ] || \
+            fail "production branch changed during this run"
+
+          updated_sha="$(api \
+            --method PATCH \
+            "repos/${REPOSITORY}/git/refs/heads/${PAGES_PRODUCTION_BRANCH}" \
+            -f sha="${release_sha}" \
+            -F force=true \
+            --jq '.object.sha')"
+          [ "${updated_sha}" = "${release_sha}" ] || \
+            fail "GitHub did not update the production branch to the release SHA"
+
+          live_sha="$(api "${production_ref}" --jq '.object.sha')"
+          [ "${live_sha}" = "${release_sha}" ] || \
+            fail "production branch verification returned an unexpected SHA"
+
+          echo "Advanced ${PAGES_PRODUCTION_BRANCH} to ${release_tag} (${release_sha})."
+          {
+            echo "### Pages production"
+            echo
+            echo "Advanced \`${PAGES_PRODUCTION_BRANCH}\` to \`${release_tag}\` (\`${release_sha}\`)."
+            echo "Cloudflare Pages now owns the external build and production deployment result."
+          } >> "${GITHUB_STEP_SUMMARY}"

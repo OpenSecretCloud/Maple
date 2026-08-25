@@ -681,6 +681,7 @@
               frontend-tests.yml \
               mobile-pr-build.yml \
               mobile-build.yml \
+              pages-production.yml \
               release.yml \
               release-gates-tests.yml \
               rust-tests.yml \
