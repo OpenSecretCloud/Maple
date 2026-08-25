@@ -3,7 +3,7 @@
   "name": "maple-updates",
   "main": "src/worker.ts",
   "compatibility_date": "2026-08-24",
-  "workers_dev": false,
+  "workers_dev": true,
   "preview_urls": false,
   "assets": {
     "directory": "./public",
