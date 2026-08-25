@@ -1,0 +1,157 @@
+name: Publish updater metadata
+
+run-name: Publish the current Maple release to Cloudflare
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updates-production
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish current release
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: updates-production
+      url: https://updates.trymaple.ai/latest.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Download and validate the current release metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(gh api "repos/${REPOSITORY}/releases/latest")"
+          release_id="$(jq -er 'select(.draft == false and .prerelease == false) | .id' <<<"${release_json}")"
+          release_tag="$(jq -er '.tag_name' <<<"${release_json}")"
+          [[ "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Latest GitHub Release tag is not a stable version: ${release_tag}" >&2
+            exit 1
+          }
+
+          asset_count="$(jq '[.assets[] | select(.name == "latest.json")] | length' <<<"${release_json}")"
+          [ "${asset_count}" -eq 1 ] || {
+            echo "Expected exactly one latest.json asset, found ${asset_count}." >&2
+            exit 1
+          }
+
+          asset_id="$(jq -er '.assets[] | select(.name == "latest.json") | .id' <<<"${release_json}")"
+          asset_size="$(jq -er '.assets[] | select(.name == "latest.json") | .size' <<<"${release_json}")"
+          asset_digest="$(jq -er '.assets[] | select(.name == "latest.json") | .digest' <<<"${release_json}")"
+          [[ "${asset_size}" =~ ^[0-9]+$ ]] && [ "${asset_size}" -gt 0 ] && [ "${asset_size}" -le 65536 ] || {
+            echo "latest.json has an invalid size: ${asset_size}" >&2
+            exit 1
+          }
+          [[ "${asset_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "latest.json does not have a GitHub SHA-256 digest." >&2
+            exit 1
+          }
+
+          mkdir -p release-metadata
+          gh api \
+            -H "Accept: application/octet-stream" \
+            "repos/${REPOSITORY}/releases/assets/${asset_id}" \
+            > release-metadata/latest.json
+
+          actual_digest="sha256:$(sha256sum release-metadata/latest.json | cut -d' ' -f1)"
+          [ "${actual_digest}" = "${asset_digest}" ] || {
+            echo "Downloaded latest.json does not match GitHub's digest." >&2
+            exit 1
+          }
+          [ "$(wc -c < release-metadata/latest.json)" -eq "${asset_size}" ] || {
+            echo "Downloaded latest.json does not match GitHub's size." >&2
+            exit 1
+          }
+
+          version="${release_tag#v}"
+          url_prefix="https://github.com/${REPOSITORY}/releases/download/${release_tag}/"
+          jq -e --arg version "${version}" --arg url_prefix "${url_prefix}" '
+            .version == $version
+            and (.platforms | type == "object")
+            and ([.platforms[] |
+              (.signature | type == "string" and length > 0)
+              and (.url | type == "string" and startswith($url_prefix))
+            ] | all)
+          ' release-metadata/latest.json >/dev/null
+
+          cp release-metadata/latest.json updates/public/latest.json
+          {
+            echo "RELEASE_ID=${release_id}"
+            echo "RELEASE_TAG=${release_tag}"
+            echo "LATEST_ASSET_ID=${asset_id}"
+          } >>"${GITHUB_ENV}"
+
+          nix develop --no-update-lock-file .#ci -c ./scripts/ci/updates.sh
+          nix develop --no-update-lock-file .#ci -c bash -lc \
+            'cd updates && bun run validate:latest public/latest.json'
+
+      - name: Deploy and verify the public endpoint
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          set -euo pipefail
+
+          [ -n "${CLOUDFLARE_ACCOUNT_ID}" ] || {
+            echo "CLOUDFLARE_ACCOUNT_ID is not configured in updates-production." >&2
+            exit 1
+          }
+          [ -n "${CLOUDFLARE_API_TOKEN}" ] || {
+            echo "CLOUDFLARE_API_TOKEN is not configured in updates-production." >&2
+            exit 1
+          }
+
+          current_json="$(gh api "repos/${REPOSITORY}/releases/latest")"
+          current_release_id="$(jq -er '.id' <<<"${current_json}")"
+          current_asset_id="$(jq -er '.assets[] | select(.name == "latest.json") | .id' <<<"${current_json}")"
+          [ "${current_release_id}:${current_asset_id}" = "${RELEASE_ID}:${LATEST_ASSET_ID}" ] || {
+            echo "The latest GitHub Release changed during this run; dispatch it again." >&2
+            exit 1
+          }
+          unset GH_TOKEN
+
+          nix develop --no-update-lock-file .#ci -c bash -lc \
+            "cd updates && bun run deploy -- --strict \
+              --tag 'release-${RELEASE_TAG#v}' \
+              --message 'Publish ${RELEASE_TAG} from GitHub Release ${RELEASE_ID}'"
+
+          served_metadata="$(mktemp "${RUNNER_TEMP}/maple-updates-live.XXXXXX")"
+          endpoint="https://updates.trymaple.ai/latest.json"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              --connect-timeout 5 \
+              --max-time 20 \
+              --header 'cache-control: no-cache' \
+              --output "${served_metadata}" \
+              "${endpoint}?deploy=${GITHUB_SHA}" && \
+              cmp --silent updates/public/latest.json "${served_metadata}"; then
+              echo "Published ${RELEASE_TAG} at ${endpoint}."
+              exit 0
+            fi
+            echo "Waiting for the custom domain to serve the deployed metadata (${attempt}/60)."
+            sleep 10
+          done
+
+          echo "The public updater endpoint did not serve the deployed latest.json." >&2
+          exit 1

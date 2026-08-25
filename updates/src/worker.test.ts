@@ -72,6 +72,11 @@ describe("latest.json validation", () => {
       "https://downloads.example.com/Maple_3.3.8_x64-setup.exe";
     expect(isLatestRelease(wrongHost)).toBe(false);
 
+    const wrongOwner = validRelease();
+    wrongOwner.platforms["windows-x86_64"].url =
+      "https://github.com/SomeoneElse/Maple/releases/download/v3.3.8/Maple_3.3.8_x64-setup.exe";
+    expect(isLatestRelease(wrongOwner)).toBe(false);
+
     const nonDefaultPort = validRelease();
     nonDefaultPort.platforms["windows-x86_64"].url =
       "https://github.com:8443/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_x64-setup.exe";

@@ -685,6 +685,7 @@
               release-gates-tests.yml \
               rust-tests.yml \
               tauri-pr-change-detection.yml \
+              updates-publish.yml \
               updates-tests.yml \
               web-build.yml \
               zapstore-publish.yml

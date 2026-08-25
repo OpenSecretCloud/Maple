@@ -13,10 +13,13 @@ its stable version, release timestamp, required platform entries, signatures,
 and GitHub Maple release URLs validate. Invalid or unavailable metadata returns
 `503` so clients retain the GitHub fallback.
 
-The live pointer is generated and deployed by release automation. It is ignored
-by git and must not be committed. The checked-in Worker has no production route,
-`workers.dev` endpoint, or preview URL; attaching the custom domain is a separate
-authorized Cloudflare operation.
+The live pointer is ignored by git and must not be committed. The protected
+`Publish updater metadata` GitHub Actions workflow downloads the current stable
+GitHub Release's `latest.json`, verifies its GitHub digest and Worker schema,
+deploys it, and confirms that the public endpoint serves the exact same bytes.
+The first run also creates the `updates.trymaple.ai` Custom Domain and its DNS and
+TLS configuration. Publication is manual until the release workflow is connected
+in a later phase. Do not use a local Wrangler login for production deployment.
 
 ## Development
 
