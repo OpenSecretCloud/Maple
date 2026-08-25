@@ -136,6 +136,18 @@ jobs:
               --tag 'release-${RELEASE_TAG#v}' \
               --message 'Publish ${RELEASE_TAG} from GitHub Release ${RELEASE_ID}'"
 
+          domain_response="$(curl --fail-with-body --silent --show-error \
+            --request PUT \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --data '{"hostname":"updates.trymaple.ai","service":"maple-updates","zone_name":"trymaple.ai"}' \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains")"
+          jq -e '
+            .success == true
+            and .result.hostname == "updates.trymaple.ai"
+            and .result.service == "maple-updates"
+          ' <<<"${domain_response}" >/dev/null
+
           served_metadata="$(mktemp "${RUNNER_TEMP}/maple-updates-live.XXXXXX")"
           endpoint="https://updates.trymaple.ai/latest.json"
           for attempt in $(seq 1 60); do
