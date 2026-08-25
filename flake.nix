@@ -39,7 +39,6 @@
           pkg-config
           openssl
           zlib
-          gcc
           clang
           libclang
           
@@ -55,7 +54,7 @@
         ];
         
         linuxOnlyInputs = with pkgs; [
-          # Add Linux-specific dependencies if needed
+          gcc
         ];
         
         allInputs = commonInputs

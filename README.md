@@ -89,6 +89,12 @@ bun run pack
 
 Only `dist/` is included in the package.
 
+Publish a freshly built npm artifact with:
+
+```sh
+just publish-npm
+```
+
 ## Rust SDK
 
 Add the crate to a Rust application:
@@ -115,6 +121,12 @@ nix develop --no-update-lock-file -c bash -lc '
 
 Integration tests use the variables documented in `rust/.env.example` and are
 separate from the default local validation path.
+
+Publish the locked Rust crate with:
+
+```sh
+just publish-cargo
+```
 
 ## Change discipline
 
