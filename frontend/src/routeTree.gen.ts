@@ -13,7 +13,6 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as AgentRouteImport } from './routes/agent'
 import { Route as DesktopAuthRouteImport } from './routes/desktop-auth'
-import { Route as DownloadsRouteImport } from './routes/downloads'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PasswordResetRouteImport } from './routes/password-reset'
 import { Route as PaymentCanceledRouteImport } from './routes/payment-canceled'
@@ -67,11 +66,6 @@ const AgentRoute = AgentRouteImport.update({
 const DesktopAuthRoute = DesktopAuthRouteImport.update({
   id: '/desktop-auth',
   path: '/desktop-auth',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DownloadsRoute = DownloadsRouteImport.update({
-  id: '/downloads',
-  path: '/downloads',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -251,7 +245,6 @@ export interface FileRoutesByFullPath {
   '/about': typeof AboutRoute
   '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
-  '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/payment-canceled': typeof PaymentCanceledRoute
@@ -292,7 +285,6 @@ export interface FileRoutesByTo {
   '/about': typeof AboutRoute
   '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
-  '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/payment-canceled': typeof PaymentCanceledRoute
@@ -330,7 +322,6 @@ export interface FileRoutesById {
   '/about': typeof AboutRoute
   '/agent': typeof AgentRoute
   '/desktop-auth': typeof DesktopAuthRoute
-  '/downloads': typeof DownloadsRoute
   '/login': typeof LoginRoute
   '/password-reset': typeof PasswordResetRouteWithChildren
   '/payment-canceled': typeof PaymentCanceledRoute
@@ -373,7 +364,6 @@ export interface FileRouteTypes {
     | '/about'
     | '/agent'
     | '/desktop-auth'
-    | '/downloads'
     | '/login'
     | '/password-reset'
     | '/payment-canceled'
@@ -414,7 +404,6 @@ export interface FileRouteTypes {
     | '/about'
     | '/agent'
     | '/desktop-auth'
-    | '/downloads'
     | '/login'
     | '/password-reset'
     | '/payment-canceled'
@@ -451,7 +440,6 @@ export interface FileRouteTypes {
     | '/about'
     | '/agent'
     | '/desktop-auth'
-    | '/downloads'
     | '/login'
     | '/password-reset'
     | '/payment-canceled'
@@ -493,7 +481,6 @@ export interface RootRouteChildren {
   AboutRoute: typeof AboutRoute
   AgentRoute: typeof AgentRoute
   DesktopAuthRoute: typeof DesktopAuthRoute
-  DownloadsRoute: typeof DownloadsRoute
   LoginRoute: typeof LoginRoute
   PasswordResetRoute: typeof PasswordResetRouteWithChildren
   PaymentCanceledRoute: typeof PaymentCanceledRoute
@@ -539,13 +526,6 @@ declare module '@tanstack/react-router' {
       path: '/desktop-auth'
       fullPath: '/desktop-auth'
       preLoaderRoute: typeof DesktopAuthRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/downloads': {
-      id: '/downloads'
-      path: '/downloads'
-      fullPath: '/downloads'
-      preLoaderRoute: typeof DownloadsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -882,7 +862,6 @@ const rootRouteChildren: RootRouteChildren = {
   AboutRoute: AboutRoute,
   AgentRoute: AgentRoute,
   DesktopAuthRoute: DesktopAuthRoute,
-  DownloadsRoute: DownloadsRoute,
   LoginRoute: LoginRoute,
   PasswordResetRoute: PasswordResetRouteWithChildren,
   PaymentCanceledRoute: PaymentCanceledRoute,

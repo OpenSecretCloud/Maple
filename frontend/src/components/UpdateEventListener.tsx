@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { MARKETING_DOWNLOADS_URL } from "@/config/domains";
 import { useNotification } from "@/contexts/NotificationContext";
 import { updateService, type PreparedUpdate, type UpdateService } from "@/services/updateService";
 import { openExternalUrl } from "@/utils/openUrl";
@@ -129,7 +130,7 @@ export function UpdateEventListener({
             label: "Download Manually",
             variant: "secondary",
             onClick: () => {
-              void openExternalUrl("https://trymaple.ai/downloads");
+              void openExternalUrl(MARKETING_DOWNLOADS_URL);
             }
           },
           {
