@@ -59,6 +59,43 @@ function dependencies(overrides: Partial<CustomFetchDependencies>): CustomFetchD
   };
 }
 
+async function withRequestBodyUnavailable<T>(callback: () => Promise<T>): Promise<T> {
+  const OriginalRequest = globalThis.Request;
+  const plaintextBodies = new WeakMap<Request, string>();
+  class RequestWithoutBody extends OriginalRequest {
+    constructor(input: RequestInfo | URL, init?: RequestInit) {
+      const plaintextBody =
+        typeof init?.body === "string"
+          ? init.body
+          : input instanceof RequestWithoutBody
+            ? plaintextBodies.get(input)
+            : undefined;
+      super(
+        input,
+        plaintextBody !== undefined && init?.body == null ? { ...init, body: plaintextBody } : init
+      );
+      if (plaintextBody !== undefined) plaintextBodies.set(this, plaintextBody);
+    }
+
+    get body() {
+      return undefined;
+    }
+
+    async text(): Promise<string> {
+      const storedPlaintextBody = plaintextBodies.get(this);
+      const plaintextBody = await super.text();
+      return storedPlaintextBody ?? plaintextBody;
+    }
+  }
+
+  globalThis.Request = RequestWithoutBody as unknown as typeof Request;
+  try {
+    return await callback();
+  } finally {
+    globalThis.Request = OriginalRequest;
+  }
+}
+
 describe("createCustomFetch stale-session recovery", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -126,6 +163,174 @@ describe("createCustomFetch stale-session recovery", () => {
       }
     ]);
   });
+
+  for (const method of ["GET", "HEAD", "POST"] as const) {
+    test(`keeps Firefox ${method} requests bodyless across stale-session recovery`, async () => {
+      await withRequestBodyUnavailable(async () => {
+        let currentAttestation = staleAttestation;
+        let forcedAttestations = 0;
+        let encryptions = 0;
+        const requests: Array<{
+          body: BodyInit | null | undefined;
+          method: string | undefined;
+          safeHeader: string | null;
+          sessionId: string | null;
+          url: string;
+        }> = [];
+
+        const customFetch = createCustomFetchWithDependencies(
+          { apiKey: "test-api-key" },
+          dependencies({
+            encryptMessage: (sessionKey, plaintext) => {
+              encryptions += 1;
+              return encryptForTest(sessionKey, plaintext);
+            },
+            getAttestation: async (forceRefresh) => {
+              if (forceRefresh) {
+                forcedAttestations += 1;
+                currentAttestation = freshAttestation;
+              }
+              return currentAttestation;
+            },
+            fetch: async (input, init) => {
+              const headers = new Headers(init?.headers);
+              requests.push({
+                body: init?.body,
+                method: init?.method,
+                safeHeader: headers.get("x-safe-provider-header"),
+                sessionId: headers.get("x-session-id"),
+                url: String(input)
+              });
+
+              return requests.length === 1
+                ? contractError(400, "stale", "session_not_found")
+                : Response.json({ encrypted: '2:{"ok":true}' });
+            }
+          })
+        );
+        const sourceRequest = new Request(
+          "https://example.test/v1/conversations/conversation-1?limit=20",
+          {
+            method,
+            headers: { "x-safe-provider-header": "preserve-me" }
+          }
+        );
+
+        expect(await (await customFetch(sourceRequest)).json()).toEqual({ ok: true });
+        expect(forcedAttestations).toBe(1);
+        expect(encryptions).toBe(0);
+        expect(requests).toEqual([
+          {
+            body: undefined,
+            method,
+            safeHeader: "preserve-me",
+            sessionId: "stale-session",
+            url: "https://example.test/v1/conversations/conversation-1?limit=20"
+          },
+          {
+            body: undefined,
+            method,
+            safeHeader: "preserve-me",
+            sessionId: "fresh-session",
+            url: "https://example.test/v1/conversations/conversation-1?limit=20"
+          }
+        ]);
+      });
+    });
+  }
+
+  test("keeps Firefox POST plaintext encryption and replay intact", async () => {
+    await withRequestBodyUnavailable(async () => {
+      let currentAttestation = staleAttestation;
+      let forcedAttestations = 0;
+      const requests: RecordedRequest[] = [];
+
+      const customFetch = createCustomFetchWithDependencies(
+        { apiKey: "test-api-key" },
+        dependencies({
+          getAttestation: async (forceRefresh) => {
+            if (forceRefresh) {
+              forcedAttestations += 1;
+              currentAttestation = freshAttestation;
+            }
+            return currentAttestation;
+          },
+          fetch: async (_input, init) => {
+            const request = recordRequest(init);
+            requests.push(request);
+            return requests.length === 1
+              ? contractError(400, "stale", "session_not_found")
+              : Response.json({ encrypted: '2:{"ok":true}' });
+          }
+        })
+      );
+      const sourceRequest = new Request("https://example.test/v1/responses", {
+        method: "POST",
+        body: '{"prompt":"preserve this"}'
+      });
+
+      expect(await (await customFetch(sourceRequest)).json()).toEqual({ ok: true });
+      expect(forcedAttestations).toBe(1);
+      expect(requests).toEqual([
+        {
+          authorization: "Bearer test-api-key",
+          encryptedBody: '1:{"prompt":"preserve this"}',
+          sessionId: "stale-session"
+        },
+        {
+          authorization: "Bearer test-api-key",
+          encryptedBody: '2:{"prompt":"preserve this"}',
+          sessionId: "fresh-session"
+        }
+      ]);
+    });
+  });
+
+  for (const source of ["RequestInit", "Request"] as const) {
+    test(`preserves an explicitly empty Firefox POST body from ${source}`, async () => {
+      await withRequestBodyUnavailable(async () => {
+        let currentAttestation = staleAttestation;
+        const requests: RecordedRequest[] = [];
+
+        const customFetch = createCustomFetchWithDependencies(
+          { apiKey: "test-api-key" },
+          dependencies({
+            getAttestation: async (forceRefresh) => {
+              if (forceRefresh) currentAttestation = freshAttestation;
+              return currentAttestation;
+            },
+            fetch: async (_input, init) => {
+              const request = recordRequest(init);
+              requests.push(request);
+              return requests.length === 1
+                ? contractError(400, "stale", "session_not_found")
+                : Response.json({ encrypted: '2:{"ok":true}' });
+            }
+          })
+        );
+        const url = "https://example.test/v1/responses";
+
+        const response =
+          source === "RequestInit"
+            ? await customFetch(url, { method: "POST", body: "" })
+            : await customFetch(new Request(url, { method: "POST", body: "" }));
+
+        expect(await response.json()).toEqual({ ok: true });
+        expect(requests).toEqual([
+          {
+            authorization: "Bearer test-api-key",
+            encryptedBody: "1:",
+            sessionId: "stale-session"
+          },
+          {
+            authorization: "Bearer test-api-key",
+            encryptedBody: "2:",
+            sessionId: "fresh-session"
+          }
+        ]);
+      });
+    });
+  }
 
   test("stops after one attestation retry when 400 persists", async () => {
     let currentAttestation = staleAttestation;

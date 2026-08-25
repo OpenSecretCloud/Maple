@@ -67,6 +67,23 @@ function throwIfAborted(signal?: AbortSignal | null): void {
   signal?.throwIfAborted();
 }
 
+function allowsRequestBody(method: string): boolean {
+  return method !== "GET" && method !== "HEAD";
+}
+
+async function snapshotPlaintextBody(
+  normalized: Request,
+  init?: RequestInit
+): Promise<string | undefined> {
+  if (!allowsRequestBody(normalized.method)) return undefined;
+
+  const bodyKnownPresent = init?.body != null || normalized.body != null;
+  const plaintextBody = await normalized.text();
+  return bodyKnownPresent || normalized.bodyUsed || plaintextBody !== ""
+    ? plaintextBody
+    : undefined;
+}
+
 async function snapshotRequest(
   input: string | URL | Request,
   init?: RequestInit
@@ -93,7 +110,9 @@ async function snapshotRequest(
   };
   delete options.body;
   delete options.headers;
-  const plaintextBody = normalized.body === null ? undefined : await normalized.text();
+  // Firefox does not expose Request.body. Gate on the normalized method first,
+  // then use the plaintext and explicit init body as fallback presence signals.
+  const plaintextBody = await snapshotPlaintextBody(normalized, init);
 
   return {
     url,
@@ -212,7 +231,10 @@ export function createCustomFetchWithDependencies(
 
         // Encrypt the original plaintext again for every attempt. Reusing an
         // old request body with a new session ID would make recovery fail.
-        if (request.plaintextBody !== undefined) {
+        if (
+          request.plaintextBody !== undefined &&
+          allowsRequestBody(request.options.method ?? "GET")
+        ) {
           const encryptedBody = dependencies.encryptMessage(
             attestation.sessionKey,
             request.plaintextBody
