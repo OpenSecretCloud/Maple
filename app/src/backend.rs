@@ -53,10 +53,12 @@ struct ChannelEventSink(mpsc::UnboundedSender<AgentServiceEvent>);
 
 impl AgentEventSink for ChannelEventSink {
     fn emit(&self, event: &AgentServiceEvent) {
-        // A full channel means the UI stopped draining; the runtime tolerates a
-        // dropped notification because every mutation is also returned by the
-        // originating call. Prefer dropping over blocking agent tasks.
-        let _ = self.0.send(event.clone());
+        // The channel is unbounded, so sends only fail after the UI dropped
+        // the receiver (window closed). The runtime tolerates missing
+        // notifications for that case; surface it once for diagnosis.
+        if self.0.send(event.clone()).is_err() {
+            log::debug!("agent event receiver is gone; dropping further events");
+        }
     }
 }
 
@@ -98,6 +100,9 @@ fn default_project_root() -> String {
 
 impl AgentBackend {
     pub fn new(api_url: String) -> Result<Self, String> {
+        // Enforce the credential-bearing URL policy before any client is
+        // built, including the login-time SDK client.
+        let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let paths =
             maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root());
@@ -171,7 +176,13 @@ impl AgentBackend {
                     refresh_token: Some(response.refresh_token),
                 },
             )
-            .await?;
+            .await
+            .map_err(|message| {
+                // Keep validation detail out of the UI; it can echo the
+                // configured URL back to the user.
+                log::debug!("set_auth failed during sign in: {message}");
+                "Sign in failed. Try again.".to_string()
+            })?;
         Ok(AuthSession { user_id, snapshot })
     }
 

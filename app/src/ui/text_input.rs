@@ -35,28 +35,29 @@ actions!(
 /// Register the default key bindings for every TextInput. Safe to call once
 /// at startup; covers both platform modifier conventions.
 pub fn register_key_bindings(cx: &mut App) {
+    let context = Some("TextInput");
     cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, None),
-        KeyBinding::new("delete", Delete, None),
-        KeyBinding::new("left", Left, None),
-        KeyBinding::new("right", Right, None),
-        KeyBinding::new("shift-left", SelectLeft, None),
-        KeyBinding::new("shift-right", SelectRight, None),
-        KeyBinding::new("ctrl-a", SelectAll, None),
-        KeyBinding::new("cmd-a", SelectAll, None),
-        KeyBinding::new("ctrl-v", Paste, None),
-        KeyBinding::new("cmd-v", Paste, None),
-        KeyBinding::new("ctrl-c", Copy, None),
-        KeyBinding::new("cmd-c", Copy, None),
-        KeyBinding::new("ctrl-x", Cut, None),
-        KeyBinding::new("cmd-x", Cut, None),
-        KeyBinding::new("home", Home, None),
-        KeyBinding::new("end", End, None),
-        KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, None),
+        KeyBinding::new("backspace", Backspace, context),
+        KeyBinding::new("delete", Delete, context),
+        KeyBinding::new("left", Left, context),
+        KeyBinding::new("right", Right, context),
+        KeyBinding::new("shift-left", SelectLeft, context),
+        KeyBinding::new("shift-right", SelectRight, context),
+        KeyBinding::new("ctrl-a", SelectAll, context),
+        KeyBinding::new("cmd-a", SelectAll, context),
+        KeyBinding::new("ctrl-v", Paste, context),
+        KeyBinding::new("cmd-v", Paste, context),
+        KeyBinding::new("ctrl-c", Copy, context),
+        KeyBinding::new("cmd-c", Copy, context),
+        KeyBinding::new("ctrl-x", Cut, context),
+        KeyBinding::new("cmd-x", Cut, context),
+        KeyBinding::new("home", Home, context),
+        KeyBinding::new("end", End, context),
+        KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, context),
     ]);
 }
 
-type EnterHandler = Box<dyn Fn(&mut Window, &mut Context<TextInput>) + 'static>;
+type EnterHandler = Box<dyn Fn(String, &mut Window, &mut Context<TextInput>) + 'static>;
 
 pub struct TextInput {
     focus_handle: FocusHandle,
@@ -70,6 +71,8 @@ pub struct TextInput {
     is_selecting: bool,
     /// Render '*' in place of content characters (password fields).
     mask: bool,
+    /// Clear the content after the Enter hook runs (composer behavior).
+    clear_on_enter: bool,
     on_enter: Option<EnterHandler>,
 }
 
@@ -86,8 +89,15 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             mask: false,
+            clear_on_enter: false,
             on_enter: None,
         }
+    }
+
+    /// Clear the content once the Enter hook has consumed it.
+    pub fn clears_on_enter(mut self) -> Self {
+        self.clear_on_enter = true;
+        self
     }
 
     pub fn masked(mut self) -> Self {
@@ -97,10 +107,19 @@ impl TextInput {
 
     pub fn on_enter(
         mut self,
-        handler: impl Fn(&mut Window, &mut Context<TextInput>) + 'static,
+        handler: impl Fn(String, &mut Window, &mut Context<TextInput>) + 'static,
     ) -> Self {
         self.on_enter = Some(Box::new(handler));
         self
+    }
+
+    /// Attach or replace the Enter hook after construction. The handler
+    /// receives the current text so it never reads this entity re-entrantly.
+    pub fn set_on_enter(
+        &mut self,
+        handler: impl Fn(String, &mut Window, &mut Context<TextInput>) + 'static,
+    ) {
+        self.on_enter = Some(Box::new(handler));
     }
 
     pub fn text(&self) -> String {
@@ -121,9 +140,15 @@ impl TextInput {
     }
 
     fn enter_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Hand the handler the current text so it never has to read this
+        // entity while it is being updated.
+        let text = self.text();
         if let Some(on_enter) = self.on_enter.take() {
-            on_enter(window, cx);
+            on_enter(text, window, cx);
             self.on_enter = Some(on_enter);
+        }
+        if self.clear_on_enter {
+            self.clear(cx);
         }
     }
 
@@ -475,8 +500,20 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        if !self.mask {
-            assert_eq!(last_layout.text, self.content);
+        if self.mask {
+            // Map a display ('*') index back to the content byte offset.
+            let chars = self.content.char_indices().collect::<Vec<_>>();
+            let display = last_layout.index_for_x(point.x - line_point.x)?;
+            let offset = chars
+                .get(display)
+                .map(|(i, _)| *i)
+                .unwrap_or(self.content.len());
+            return Some(self.offset_to_utf16(offset));
+        }
+        if last_layout.text != self.content {
+            // Layout is from a previous frame; report no hit instead of
+            // slicing with stale offsets.
+            return None;
         }
         let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
         Some(self.offset_to_utf16(utf8_index))
@@ -699,8 +736,16 @@ impl Render for TextInput {
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "enter" {
+                let plain_enter = event.keystroke.key == "enter"
+                    && this.marked_range.is_none()
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform;
+                if plain_enter {
                     this.enter_pressed(window, cx);
+                    // Stop the platform text input from also inserting a
+                    // newline for the unhandled Return keystroke.
+                    cx.stop_propagation();
                 }
             }))
             .w_full()

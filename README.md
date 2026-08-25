@@ -3,9 +3,8 @@
 Native Maple desktop app: the Maple Agent Mode flow rebuilt in
 [gpui](https://crates.io/crates/gpui) over the unchanged Maple agent runtime.
 
-Sprint 1 scope (agreed with the boss): replicate Desktop Agent Mode only.
-ACP, proxy, and daemon work stay out of the GUI for now; see
-"Architecture" below for where they will attach.
+Scope: Desktop Agent Mode only. ACP, proxy, and daemon work stay out of the
+GUI; see "Architecture" below for where they will attach.
 
 ## Layout
 
@@ -17,8 +16,9 @@ crates/maple-agent/   Backend: Maple's transport-neutral agent runtime,
                       and account-scoped session storage.
 app/                  Frontend: gpui binary. Owns the window, login screen,
                       chat UI, and the backend adapter.
-docs/                 Reference material (theme spec, flow checklist, gpui
-                      cheat sheet) produced during the port.
+docs/                 Reference material: theme spec, flow checklist, gpui
+                      cheat sheet, and the review reports that shaped the
+                      current code.
 ```
 
 ### Backend / frontend boundary
@@ -40,7 +40,20 @@ only to remove Tauri:
   are injectable traits
 - public visibility opened on the service surface the app consumes
 
-Goose is pinned to the same aaif-goose fork revision as Maple.
+Goose is pinned to the same aaif-goose fork revision as Maple. The port was
+diff-audited file by file; the runtime passes its full 290-test suite.
+
+## Prerequisites
+
+- Rust 1.94+ (stable)
+- Linux: `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libfontconfig-dev`,
+  `libfreetype-dev`, and a Vulkan loader (any ICD; Lavapipe works for
+  headless testing). Debian/Ubuntu:
+
+  ```sh
+  sudo apt install libxkbcommon-dev libxkbcommon-x11-dev \
+       libfontconfig-dev libfreetype-dev mesa-vulkan-drivers
+  ```
 
 ## Running
 
@@ -59,12 +72,31 @@ Configuration:
   Goose session storage).
 
 Sign in with your Maple email and password (OpenSecret `/login`). Tokens are
-kept in memory only — signing out or quitting drops them, and you sign in
-again on the next launch.
+kept in memory only — Sign out or quit drops them, and you sign in again on
+the next launch.
+
+## Headless QA
+
+The `app/examples/` directory contains the tooling used to verify the UI
+without a display:
+
+- `gpui_hello` — upstream gpui example used as a rendering control.
+- `xsend_input` — XTEST input injector (clicks and ASCII typing) for
+  driving the app under `Xvfb`.
+
+Typical session:
+
+```sh
+Xvfb :99 -screen 0 1440x900x24 &
+DISPLAY=:99 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+  cargo run -p maple-gpui &
+DISPLAY=:99 ./target/debug/examples/xsend_input click 728 572
+DISPLAY=:99 import -window root /tmp/shot.png
+```
 
 ## Tests
 
 ```bash
-cargo test -p maple-agent   # the ported runtime suite from Maple
+cargo test -p maple-agent   # the ported runtime suite from Maple (290 tests)
 cargo check --workspace
 ```

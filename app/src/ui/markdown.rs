@@ -1,11 +1,13 @@
 //! Markdown rendering for agent messages: pulldown-cmark events mapped onto
+//! gpui elements. Covers the subset that model output actually produces:
 //! paragraphs, headings, lists, code blocks, blockquotes, rules, and inline
-//! bold/italic/code/strikethrough/link styling via StyledText highlights.
+//! bold/italic/code/strikethrough/link styling.
 //!
-//! Must be called during render, when a `Window` is available to resolve the
-//! ambient text style.
-
-use gpui::{Div, SharedString, StyledText, Window, div, prelude::*, px};
+//! Inline styles use `StyledText::with_highlights`, which resolves the
+//! ambient text style at paint time. Block styles (size, weight, monospace)
+//! are set on the wrapping divs so they compose with the parent element.
+//!
+use gpui::{Div, SharedString, StyledText, div, prelude::*, px};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::theme;
@@ -24,8 +26,16 @@ impl InlineStyle {
         self == Self::default()
     }
 
-    fn highlight(self, base: gpui::HighlightStyle) -> gpui::HighlightStyle {
-        let mut style = base;
+    fn highlight(self) -> gpui::HighlightStyle {
+        let mut style = gpui::HighlightStyle {
+            color: None,
+            font_weight: None,
+            font_style: None,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+            fade_out: None,
+        };
         if self.bold {
             style.font_weight = Some(gpui::FontWeight::BOLD);
         }
@@ -79,54 +89,33 @@ impl Paragraph {
     }
 }
 
-fn base_highlight(window: &Window) -> gpui::HighlightStyle {
-    let style = window.text_style();
-    gpui::HighlightStyle {
-        color: Some(style.color),
-        font_weight: Some(style.font_weight),
-        font_style: Some(style.font_style),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-        fade_out: None,
-    }
-}
-
 fn styled_paragraph(
     paragraph: Paragraph,
-    window: &Window,
     text_size: Option<gpui::Pixels>,
     weight: Option<gpui::FontWeight>,
-    color: Option<gpui::Hsla>,
 ) -> Div {
-    let base = base_highlight(window);
-    let mut base = base;
-    if let Some(weight) = weight {
-        base.font_weight = Some(weight);
-    }
-    if let Some(color) = color {
-        base.color = Some(color);
-    }
+    // Only styled spans become highlights; unstyled ranges inherit the
+    // ambient text style resolved at paint time.
     let mut highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> = Vec::new();
     for (range, style) in paragraph.spans {
-        let rendered = if style.is_plain() {
-            base
-        } else {
-            style.highlight(base)
-        };
+        if style.is_plain() {
+            continue;
+        }
         if let Some((last_range, last_style)) = highlights.last_mut() {
-            if last_range.end == range.start && *last_style == rendered {
+            if last_range.end == range.start && *last_style == style.highlight() {
                 last_range.end = range.end;
                 continue;
             }
         }
-        highlights.push((range, rendered));
+        highlights.push((range, style.highlight()));
     }
-    let text = StyledText::new(SharedString::new(paragraph.text))
-        .with_default_highlights(&window.text_style(), highlights);
+    let text = StyledText::new(SharedString::new(paragraph.text)).with_highlights(highlights);
     let mut div = div().w_full();
     if let Some(size) = text_size {
         div = div.text_size(size);
+    }
+    if let Some(weight) = weight {
+        div = div.font_weight(weight);
     }
     div.child(text)
 }
@@ -141,9 +130,25 @@ fn heading_size(level: HeadingLevel) -> gpui::Pixels {
     }
 }
 
+fn code_block(code: String) -> Div {
+    div()
+        .w_full()
+        .my_1()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(gpui::rgb(theme::BG_CODE_BLOCK))
+        .border_1()
+        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .font_family("monospace")
+        .text_size(px(13.))
+        .text_color(gpui::rgb(theme::CODE_TEXT))
+        .child(code.trim_end().to_string())
+}
+
 /// Render a markdown string into a vertical stack of elements. Call during
 /// render with the ambient window.
-pub fn render_markdown(source: &str, window: &Window) -> Div {
+pub fn render_markdown(source: &str) -> Div {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(source, options);
@@ -152,8 +157,7 @@ pub fn render_markdown(source: &str, window: &Window) -> Div {
     let mut paragraph = Paragraph::default();
     let mut inline_flags: Vec<InlineStyle> = Vec::new();
     let mut list_counters: Vec<Option<u64>> = Vec::new();
-    let mut code_block: Option<String> = None;
-    let mut heading: Option<HeadingLevel> = None;
+    let mut code_block_text: Option<String> = None;
     let mut in_quote = false;
 
     let current_style = |flags: &[InlineStyle]| -> InlineStyle {
@@ -168,23 +172,41 @@ pub fn render_markdown(source: &str, window: &Window) -> Div {
         style
     };
 
+    // Emit the pending paragraph before a block boundary.
+    macro_rules! flush_paragraph {
+        () => {
+            if !paragraph.is_empty() {
+                let taken = paragraph.take();
+                let element = styled_paragraph(taken, None, None);
+                container = container.child(wrap_inline(element, in_quote, list_counters.len()));
+            }
+        };
+    }
+
     for event in parser {
         match event {
             Event::Start(tag) => match tag {
                 Tag::Paragraph => {}
-                Tag::Heading { level, .. } => {
-                    heading = Some(level);
+                Tag::Heading { .. } => {
+                    flush_paragraph!();
                 }
                 Tag::BlockQuote(_) => {
+                    flush_paragraph!();
                     in_quote = true;
                 }
                 Tag::CodeBlock(_) => {
-                    code_block = Some(String::new());
+                    flush_paragraph!();
+                    code_block_text = Some(String::new());
                 }
                 Tag::List(start) => {
+                    flush_paragraph!();
                     list_counters.push(start);
                 }
                 Tag::Item => {
+                    // A new list item starts a fresh paragraph even when the
+                    // previous one has not been closed (tight lists), so
+                    // nested items never merge into their parent's line.
+                    flush_paragraph!();
                     if let Some(counter) = list_counters.last_mut() {
                         match counter {
                             Some(number) => {
@@ -215,94 +237,62 @@ pub fn render_markdown(source: &str, window: &Window) -> Div {
             },
             Event::End(tag) => match tag {
                 TagEnd::Paragraph => {
-                    let taken = paragraph.take();
-                    if !taken.is_empty() {
-                        let element = styled_paragraph(taken, window, None, None, None);
-                        container = container.child(if in_quote {
-                            quote_wrap(element)
-                        } else {
-                            element
-                        });
-                    }
+                    flush_paragraph!();
                 }
                 TagEnd::Heading(level) => {
                     let taken = paragraph.take();
                     if !taken.is_empty() {
                         let element = styled_paragraph(
                             taken,
-                            window,
                             Some(heading_size(level)),
                             Some(gpui::FontWeight::BOLD),
-                            None,
                         );
-                        container = container.child(if in_quote {
-                            quote_wrap(element)
-                        } else {
-                            element
-                        });
+                        container =
+                            container.child(wrap_inline(element, in_quote, list_counters.len()));
                     }
-                    heading = None;
                 }
                 TagEnd::BlockQuote(_) => {
                     in_quote = false;
                 }
                 TagEnd::CodeBlock => {
-                    if let Some(code) = code_block.take() {
-                        container = container.child(
-                            div()
-                                .w_full()
-                                .my_1()
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .bg(gpui::rgb(theme::BG_CODE_BLOCK))
-                                .border_1()
-                                .border_color(gpui::rgb(theme::BORDER_SUBTLE))
-                                .font_family("monospace")
-                                .text_size(px(13.))
-                                .text_color(gpui::rgb(theme::CODE_TEXT))
-                                .child(code.trim_end().to_string()),
-                        );
+                    if let Some(code) = code_block_text.take() {
+                        container = container.child(wrap_inline(
+                            code_block(code),
+                            in_quote,
+                            list_counters.len(),
+                        ));
                     }
                 }
                 TagEnd::List(_) => {
                     list_counters.pop();
                 }
                 TagEnd::Item => {
-                    let taken = paragraph.take();
-                    if !taken.is_empty() {
-                        let element = styled_paragraph(taken, window, None, None, None);
-                        container = container.child(if in_quote {
-                            quote_wrap(element)
-                        } else {
-                            element
-                        });
-                    }
+                    flush_paragraph!();
                 }
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {}
+                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+                    inline_flags.pop();
+                }
                 _ => {}
             },
             Event::Text(chunk) => {
-                if let Some(code) = code_block.as_mut() {
+                if let Some(code) = code_block_text.as_mut() {
                     code.push_str(&chunk);
                 } else {
                     paragraph.push(&chunk, current_style(&inline_flags));
                 }
             }
             Event::Code(chunk) => {
-                let style = {
-                    let mut style = current_style(&inline_flags);
-                    style.code = true;
-                    style
-                };
+                let mut style = current_style(&inline_flags);
+                style.code = true;
                 paragraph.push(&chunk, style);
             }
             Event::SoftBreak | Event::HardBreak => {
-                if code_block.is_none() {
+                if code_block_text.is_none() {
                     paragraph.push("\n", InlineStyle::default());
                 }
             }
             Event::Rule => {
+                flush_paragraph!();
                 container = container.child(
                     div()
                         .h(px(1.))
@@ -315,7 +305,7 @@ pub fn render_markdown(source: &str, window: &Window) -> Div {
                 paragraph.push(&html, current_style(&inline_flags));
             }
             Event::Html(html) => {
-                if let Some(code) = code_block.as_mut() {
+                if let Some(code) = code_block_text.as_mut() {
                     code.push_str(&html);
                 }
             }
@@ -324,18 +314,24 @@ pub fn render_markdown(source: &str, window: &Window) -> Div {
     }
 
     // Flush any trailing content outside a closing tag (defensive).
-    if !paragraph.is_empty() && code_block.is_none() {
+    if !paragraph.is_empty() && code_block_text.is_none() {
         let taken = paragraph.take();
-        container = container.child(styled_paragraph(taken, window, None, None, None));
+        container = container.child(styled_paragraph(taken, None, None));
     }
     container
 }
 
-fn quote_wrap(element: Div) -> Div {
-    div()
-        .w_full()
-        .border_l_2()
-        .border_color(gpui::rgb(theme::BORDER))
-        .pl_3()
-        .child(element)
+/// Apply list indentation and blockquote chrome to an inner block.
+fn wrap_inline(element: Div, in_quote: bool, list_depth: usize) -> Div {
+    let mut outer = div().w_full();
+    if list_depth > 1 {
+        outer = outer.pl(px(16. * (list_depth - 1) as f32));
+    }
+    if in_quote {
+        outer = outer
+            .border_l_2()
+            .border_color(gpui::rgb(theme::BORDER))
+            .pl_3();
+    }
+    outer.child(element)
 }

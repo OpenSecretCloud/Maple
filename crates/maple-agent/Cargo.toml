@@ -23,7 +23,6 @@ opensecret = "3.6.2"
 maple-proxy = "0.3.2"
 rand = "0.8.6"
 rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
-chrono = { version = "0.4", default-features = false, features = ["std"] }
 httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 pulldown-cmark = { version = "0.13", default-features = false }
@@ -31,6 +30,9 @@ tempfile = "3"
 icu_properties = "2.1.1"
 sha2 = "0.10"
 base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

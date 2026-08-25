@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*};
 
-use crate::backend::{AgentBackend, AuthSession};
+use crate::backend::AgentBackend;
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
-pub struct LoginSucceeded(pub AuthSession);
+/// Emitted after the backend validated the credentials. Only the account id
+/// crosses the event boundary; the token snapshot stays inside the backend.
+pub struct LoginSucceeded(pub String);
 
 pub struct LoginScreen {
     backend: Arc<AgentBackend>,
@@ -22,6 +24,32 @@ impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
         let email = cx.new(|cx| TextInput::new("Email", cx));
         let password = cx.new(|cx| TextInput::new("Password", cx).masked());
+        // Enter handlers receive their own field's text and read the sibling
+        // through its entity; neither path leases the focused input.
+        let (email_handle, password_handle) = (email.clone(), password.clone());
+        let weak = cx.entity().downgrade();
+        let email_weak = weak.clone();
+        let password_weak = weak.clone();
+        email.update(cx, |input, _| {
+            input.set_on_enter(move |email_text, _, cx| {
+                let password_text = password_handle.read(cx).text();
+                if let Some(this) = email_weak.upgrade() {
+                    this.update(cx, |screen, cx| {
+                        screen.submit_values(email_text, password_text, cx)
+                    });
+                }
+            });
+        });
+        password.update(cx, |input, _| {
+            input.set_on_enter(move |password_text, _, cx| {
+                let email_text = email_handle.read(cx).text();
+                if let Some(this) = password_weak.upgrade() {
+                    this.update(cx, |screen, cx| {
+                        screen.submit_values(email_text, password_text, cx)
+                    });
+                }
+            });
+        });
         Self {
             backend,
             email_input: email,
@@ -31,12 +59,10 @@ impl LoginScreen {
         }
     }
 
-    fn submit(&mut self, _event: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn submit_values(&mut self, email: String, password: String, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
-        let email = self.email_input.read(cx).text();
-        let password = self.password_input.read(cx).text();
         if email.trim().is_empty() || password.is_empty() {
             self.error = Some("Enter your email and password".to_string());
             cx.notify();
@@ -48,11 +74,16 @@ impl LoginScreen {
         let (spawn_backend, login_backend) = (self.backend.clone(), self.backend.clone());
         let task = spawn_backend.spawn(async move { login_backend.login(email, password).await });
         cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|error| Err(format!("{error}")));
+            let result = task.await.unwrap_or_else(|error| {
+                log::debug!("login task failed: {error:?}");
+                Err("Sign in failed. Try again.".to_string())
+            });
             this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {
-                    Ok(session) => cx.emit(LoginSucceeded(session)),
+                    Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
+                    // The backend already sanitizes its own error strings;
+                    // anything unexpected still gets a fixed message.
                     Err(message) => this.error = Some(message),
                 }
                 cx.notify();
@@ -60,6 +91,21 @@ impl LoginScreen {
             .ok();
         })
         .detach();
+    }
+
+    fn submit(&mut self, cx: &mut Context<Self>) {
+        let email = self.email_input.read(cx).text();
+        let password = self.password_input.read(cx).text();
+        self.submit_values(email, password, cx);
+    }
+
+    fn submit_clicked(
+        &mut self,
+        _event: &gpui::ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit(cx);
     }
 }
 
@@ -85,6 +131,7 @@ impl Render for LoginScreen {
                     .bg(gpui::rgb(theme::BG_ELEVATED))
                     .border_1()
                     .border_color(gpui::rgb(theme::BORDER))
+                    .when(busy, |container| container.opacity(0.7))
                     .child(
                         div()
                             .text_xl()
@@ -122,7 +169,7 @@ impl Render for LoginScreen {
                                     style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer()
                                 })
                             })
-                            .on_click(cx.listener(Self::submit))
+                            .when(!busy, |el| el.on_click(cx.listener(Self::submit_clicked)))
                             .child(if busy {
                                 "Signing in…".to_string()
                             } else {

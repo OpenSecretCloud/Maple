@@ -1,5 +1,5 @@
 //! Root application: login/chat routing, backend ownership, and the event
-//! pump that forwards agent service events into the chat screen.
+//! pump that forwards agent service events into the active chat screen.
 
 mod backend;
 mod ui;
@@ -12,7 +12,7 @@ use gpui::{
 };
 
 use backend::AgentBackend;
-use ui::chat::ChatScreen;
+use ui::chat::{ChatScreen, LoggedOut};
 use ui::login::{LoginScreen, LoginSucceeded};
 use ui::text_input;
 
@@ -28,8 +28,31 @@ enum Screen {
 }
 
 struct MapleApp {
+    backend: Arc<AgentBackend>,
     screen: Screen,
     user_id: Option<String>,
+}
+
+impl MapleApp {
+    /// Forward one backend service event to the chat screen when one exists.
+    fn handle_service_event(
+        &mut self,
+        event: maple_agent::agent::AgentServiceEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let Screen::Chat(chat) = &self.screen {
+            chat.update(cx, |chat, cx| chat.handle_service_event(event, cx));
+        }
+    }
+
+    /// Tear down the chat screen and return to a fresh login form.
+    fn show_login(&mut self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let login = cx.new(|cx| LoginScreen::new(backend, cx));
+        self.screen = Screen::Login(login);
+        self.user_id = None;
+        cx.notify();
+    }
 }
 
 impl Render for MapleApp {
@@ -68,14 +91,17 @@ fn main() {
                 |_, cx| {
                     let login = cx.new(|cx| LoginScreen::new(backend.clone(), cx));
                     cx.new(|_| MapleApp {
+                        backend: backend.clone(),
                         screen: Screen::Login(login.clone()),
                         user_id: None,
                     })
                 },
             )
             .expect("failed to open main window");
+        let root = window
+            .update(cx, |_, _, cx| cx.entity())
+            .expect("root entity");
 
-        // Route login success into the chat screen and start the event pump.
         window
             .update(cx, |app: &mut MapleApp, _window, cx| {
                 let Screen::Login(login) = &app.screen else {
@@ -84,12 +110,20 @@ fn main() {
                 cx.subscribe(login, {
                     let backend = backend.clone();
                     move |app: &mut MapleApp, _emitter, event: &LoginSucceeded, cx| {
-                        let user_id = event.0.user_id.clone();
+                        let user_id = event.0.clone();
                         let chat =
                             cx.new(|cx| ChatScreen::new(backend.clone(), user_id.clone(), cx));
                         app.user_id = Some(user_id);
                         app.screen = Screen::Chat(chat.clone());
-                        start_event_pump(cx, &backend, &chat);
+                        // Sign-out returns to the login screen with fresh
+                        // inputs and a cleared account.
+                        cx.subscribe(
+                            &chat,
+                            |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
+                                app.show_login(cx);
+                            },
+                        )
+                        .detach();
                         cx.notify();
                     }
                 })
@@ -97,29 +131,25 @@ fn main() {
             })
             .expect("subscribe login");
 
+        // The event pump runs once for the whole process and routes events to
+        // whichever screen is active. It exits when the root entity is gone.
+        let (spawn_backend, take_backend) = (backend.clone(), backend.clone());
+        let rx = spawn_backend.spawn(async move { take_backend.take_events().await });
+        cx.spawn(async move |cx| {
+            let Some(mut rx) = rx.await.ok().flatten() else {
+                return;
+            };
+            while let Some(event) = rx.recv().await {
+                if root
+                    .update(cx, |app, cx| app.handle_service_event(event, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         cx.activate(true);
     });
-}
-
-/// Drain the backend event stream on the UI executor and forward each event
-/// into the chat screen.
-fn start_event_pump(
-    cx: &mut Context<MapleApp>,
-    backend: &Arc<AgentBackend>,
-    chat: &Entity<ChatScreen>,
-) {
-    let backend = backend.clone();
-    let chat = chat.clone();
-    let (spawn_backend, take_backend) = (backend.clone(), backend.clone());
-    let rx = spawn_backend.spawn(async move { take_backend.take_events().await });
-    cx.spawn(async move |_this, cx| {
-        let Some(mut rx) = rx.await.ok().flatten() else {
-            return;
-        };
-        while let Some(event) = rx.recv().await {
-            chat.update(cx, |chat, cx| chat.handle_service_event(event, cx))
-                .ok();
-        }
-    })
-    .detach();
 }

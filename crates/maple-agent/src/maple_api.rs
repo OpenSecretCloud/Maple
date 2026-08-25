@@ -497,6 +497,11 @@ fn build_client(
     Ok(Arc::new(client))
 }
 
+/// Validate a backend base URL under Maple's credential-bearing URL policy.
+pub fn validate_api_url(api_url: &str) -> Result<String, String> {
+    normalize_api_url(api_url)
+}
+
 pub struct MapleApiAuthState {
     inner: Mutex<Option<Arc<MapleApiSession>>>,
     mutation: Mutex<()>,

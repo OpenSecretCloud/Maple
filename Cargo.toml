@@ -22,3 +22,8 @@ reqwest = { version = "0.13", features = ["stream"] }
 
 [profile.dev]
 opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
