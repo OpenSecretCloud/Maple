@@ -15,8 +15,9 @@ commit, external effect, and authority provided by the user.
   frontend, and Rust workflows. The iOS master workflow uploads its verified
   IPA to TestFlight automatically.
 - Creating a GitHub Release starts the cross-platform release workflow. A
-  successful release workflow starts a separate best-effort Zapstore attempt.
-  Zapstore never gates or changes the outcome of the Maple release.
+  successful release workflow starts separate updater-metadata, Pages
+  production-branch, and best-effort Zapstore workflows. These sibling
+  workflows never gate or change the outcome of the core Maple release.
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
@@ -125,6 +126,28 @@ updater `latest.json`, aggregate verification, and verification-guide step.
 Packaging success alone is not runtime smoke; inspect the workflow's actual
 verification and attestation results.
 
+After `Release` succeeds, inspect the two required publication handoffs. Do
+not rerun the core Release to repair either sibling:
+
+```bash
+gh run list --repo OpenSecretCloud/Maple --workflow 'Publish updater metadata' \
+  --commit "$head_sha" --limit 10 \
+  --json databaseId,status,conclusion,headSha,createdAt,url
+
+gh run list --repo OpenSecretCloud/Maple --workflow 'Promote Pages production' \
+  --commit "$head_sha" --limit 10 \
+  --json databaseId,status,conclusion,headSha,createdAt,url
+```
+
+The updater workflow must publish the verified `latest.json` before reporting
+the desktop updater control plane current. The Pages workflow advances the
+machine-owned `pages-production` ref to the exact stable release SHA; its
+success proves the ref mutation, not Cloudflare's external build or live-site
+result. Verify the corresponding Cloudflare Pages check/deployment separately
+before reporting Maple web production current. A failure in either sibling is
+reported and repaired in that workflow without changing the completed release
+artifacts.
+
 On failure, read the failed logs before acting:
 
 ```bash
@@ -164,8 +187,9 @@ gh run list --repo OpenSecretCloud/Maple --workflow 'Publish to Zapstore' \
 Do not retry or repair Zapstore as part of the Maple release flow. A separate
 explicit request may authorize investigating or retrying Zapstore itself.
 
-Do not call the release complete while a required release workflow is queued
-or running. Zapstore is not a required release workflow.
+Do not call the core repository release complete while its required `Release`
+workflow is queued or running. Report updater publication and Pages production
+as separate downstream states. Zapstore is not a required release workflow.
 
 ## Store and API handoff
 
