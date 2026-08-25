@@ -15,7 +15,8 @@ commit, external effect, and authority provided by the user.
   frontend, and Rust workflows. The iOS master workflow uploads its verified
   IPA to TestFlight automatically.
 - Creating a GitHub Release starts the cross-platform release workflow. A
-  successful release workflow triggers Zapstore publication.
+  successful release workflow starts a separate best-effort Zapstore attempt.
+  Zapstore never gates or changes the outcome of the Maple release.
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
@@ -140,22 +141,7 @@ Do not classify version/proof mismatches, deterministic builds, signing
 failures, missing credentials, or integrity checks as transient. Do not delete
 or recreate a published release without separate explicit direction.
 
-## Verify downstream publication
-
-Zapstore starts only after the `Release` workflow succeeds. Select the newest
-non-skipped run for the exact commit and watch it:
-
-```bash
-gh run list --repo OpenSecretCloud/Maple --workflow 'Publish to Zapstore' \
-  --commit "$head_sha" --limit 10 \
-  --json databaseId,status,conclusion,headSha,createdAt,url
-
-gh run watch ZAPSTORE_RUN_ID \
-  --repo OpenSecretCloud/Maple --exit-status --compact
-```
-
-Treat pinned Go/zsp verification failures as integrity failures unless logs
-prove a transient transport problem.
+## Verify the release and optionally inspect Zapstore
 
 Verify the published release and its assets:
 
@@ -164,8 +150,22 @@ gh release view "$tag" --repo OpenSecretCloud/Maple \
   --json tagName,name,isDraft,isPrerelease,publishedAt,targetCommitish,url,assets
 ```
 
-Do not call the release complete while a required workflow is queued or
-running.
+Zapstore starts only after `Release` succeeds and is strictly best effort. Its
+queued, running, skipped, or failed state must not delay release completion,
+trigger a release retry, or be reported as a Maple release failure. Inspect it
+only when Zapstore status is specifically useful:
+
+```bash
+gh run list --repo OpenSecretCloud/Maple --workflow 'Publish to Zapstore' \
+  --commit "$head_sha" --limit 10 \
+  --json databaseId,status,conclusion,headSha,createdAt,url
+```
+
+Do not retry or repair Zapstore as part of the Maple release flow. A separate
+explicit request may authorize investigating or retrying Zapstore itself.
+
+Do not call the release complete while a required release workflow is queued
+or running. Zapstore is not a required release workflow.
 
 ## Store and API handoff
 
@@ -196,7 +196,8 @@ in the release handoff or issue that owns them, not in this evergreen skill.
 ## Report
 
 Report the version, tag, exact commit, release URL, main workflow URL and
-attempt count, Zapstore workflow URL, artifact verification result, any retry
-and supporting evidence, authorized store/API actions, and every boundary that
-remains unverified. Separate repository release completion from store
-distribution and live application availability.
+attempt count, artifact verification result, any required-workflow retry and
+supporting evidence, authorized store/API actions, and every boundary that
+remains unverified. If Zapstore was inspected, report its status separately as
+non-gating. Separate repository release completion from store distribution and
+live application availability.

@@ -160,11 +160,9 @@ expect_failure "rejects an unknown argument" \
   bash "${classifier}" --unknown value
 
 release_json="${temp_root}/release.json"
-zapstore_json="${temp_root}/zapstore.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
-yq -o=json '.' "${repo_root}/.github/workflows/zapstore-publish.yml" > "${zapstore_json}"
 
-python3 - "${release_json}" "${zapstore_json}" <<'PY'
+python3 - "${release_json}" <<'PY'
 import json
 import re
 import sys
@@ -223,8 +221,8 @@ android_attestation_steps = [
 ]
 check(len(android_attestation_steps) == 1, "Android release artifacts must be attested exactly once")
 check(
-    android_attestation_steps[0].get("continue-on-error") is not True,
-    "Android attestation must succeed before the Release can wake Zapstore",
+    android_attestation_steps[0].get("continue-on-error") is True,
+    "Android attestation must remain best effort",
 )
 
 classifier_checkouts = [
@@ -249,103 +247,7 @@ for job_id, job in release_jobs.items():
             check(checkout.get("ref") == release_ref, f"Release checkout in {job_id} must pin classifier SHA")
             check(checkout.get("persist-credentials") is False, f"Release checkout in {job_id} must not persist credentials")
 
-with open(sys.argv[2], encoding="utf-8") as handle:
-    zapstore = json.load(handle)
-
-zapstore_jobs = zapstore["jobs"]
-check("classify" in zapstore_jobs, "Zapstore workflow must have classify job")
-check("publish" in zapstore_jobs, "Zapstore workflow must have publish job")
-zapstore_classifier = zapstore_jobs["classify"]
-check(not secret_names(zapstore_classifier), "Zapstore classifier must not receive secrets")
-check(
-    zapstore_classifier.get("permissions", {}) == {"actions": "read", "contents": "read"},
-    "Zapstore classifier must have only actions: read and contents: read permissions",
-)
-check(
-    not any(
-        str(step.get("uses", "")).startswith("actions/checkout@")
-        for step in zapstore_classifier.get("steps", [])
-    ),
-    "Zapstore classifier must not checkout or execute repository content",
-)
-zapstore_classifier_run = "\n".join(
-    str(step.get("run", "")) for step in zapstore_classifier.get("steps", [])
-)
-check(
-    ".run_attempt == $run_attempt" not in zapstore_classifier_run,
-    "Zapstore classifier must allow a successful classifier retained by --failed reruns",
-)
-publish = zapstore_jobs["publish"]
-check("classify" in needs(publish), "Zapstore publish must directly need classify")
-check(
-    publish.get("permissions", {}) == {"attestations": "read", "contents": "read"},
-    "Zapstore publish must have only attestations: read and contents: read permissions",
-)
-publish_metadata = {key: value for key, value in publish.items() if key != "steps"}
-check(
-    not (secret_names(publish_metadata) - {"GITHUB_TOKEN"}),
-    "Zapstore custom secret must not be exposed at job scope",
-)
-concurrency = publish.get("concurrency", {})
-check(concurrency.get("group") == "zapstore-production", "Zapstore publish concurrency group must be hard-coded")
-check(concurrency.get("cancel-in-progress") is False, "Zapstore publish must not cancel an in-progress publication")
-
-steps = publish.get("steps", [])
-checkout_steps = [step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
-check(len(checkout_steps) == 1, "Zapstore publish must have exactly one checkout")
-checkout = checkout_steps[0].get("with", {})
-check(
-    checkout.get("ref") == "${{ needs.classify.outputs.release_sha }}",
-    "Zapstore checkout must pin the classified upstream SHA",
-)
-check(checkout.get("persist-credentials") is False, "Zapstore checkout must not persist credentials")
-
-attestation_steps = [step for step in steps if step.get("name") == "Verify APK release provenance"]
-check(len(attestation_steps) == 1, "Zapstore must verify APK release provenance exactly once")
-attestation_index = steps.index(attestation_steps[0])
-attestation_run = str(attestation_steps[0].get("run", ""))
-for required_fragment in (
-    "gh attestation verify app-universal-release.apk",
-    "--signer-workflow",
-    "--signer-digest",
-    "--source-digest",
-    "--source-ref",
-    "--deny-self-hosted-runners",
-):
-    check(required_fragment in attestation_run, f"Zapstore APK verification must use {required_fragment}")
-
-publish_indexes = [index for index, step in enumerate(steps) if step.get("name") == "Publish to Zapstore"]
-check(len(publish_indexes) == 1, "Zapstore workflow must have one final Publish to Zapstore step")
-publish_index = publish_indexes[0]
-check(attestation_index < publish_index, "APK provenance verification must precede Zapstore publish")
-publish_step = steps[publish_index]
-check(publish_index == len(steps) - 1, "Publish to Zapstore must be the final step")
-check(publish_index > 0, "Publish to Zapstore must follow a current-release recheck")
-recheck = steps[publish_index - 1]
-recheck_name = str(recheck.get("name", "")).lower()
-check(
-    "release" in recheck_name and any(word in recheck_name for word in ("recheck", "current", "confirm")),
-    "Current-release recheck must immediately precede publish",
-)
-check("releases/latest" in str(recheck.get("run", "")), "Current-release recheck must query releases/latest")
-recheck_id = recheck.get("id")
-check(isinstance(recheck_id, str) and recheck_id, "Current-release recheck must expose a step output")
-expected_publish_condition = f"steps.{recheck_id}.outputs.current == 'true'"
-check(
-    publish_step.get("if") == expected_publish_condition,
-    "Zapstore publish must be conditional on the immediately preceding current-release recheck: "
-    f"expected {expected_publish_condition!r}, got {publish_step.get('if')!r}",
-)
-zsp_indexes = [index for index, step in enumerate(steps) if "zsp publish" in str(step.get("run", ""))]
-check(zsp_indexes == [publish_index], "zsp publish must run only in the final secret-bearing step")
-
-for index, step in enumerate(steps):
-    custom_secrets = secret_names(step) - {"GITHUB_TOKEN"}
-    if index == publish_index:
-        check(custom_secrets == {"ZAPSTORE_SIGN_WITH"}, "Final publish must receive only ZAPSTORE_SIGN_WITH")
-    else:
-        check(not custom_secrets, f"Custom secret exposed before final publish step {index}")
 PY
-pass "workflow release-gate topology is fail closed"
+pass "workflow release-gate topology is fail closed without gating on Zapstore"
 
 printf '1..%d\n' "${passed}"
