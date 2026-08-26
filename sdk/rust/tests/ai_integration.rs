@@ -122,6 +122,59 @@ async fn test_get_models() {
 }
 
 #[tokio::test]
+async fn test_get_model_catalog() {
+    let client = setup_authenticated_client()
+        .await
+        .expect("Failed to setup client");
+
+    let catalog = client
+        .get_model_catalog()
+        .await
+        .expect("Failed to get model catalog");
+
+    // Verify response structure
+    assert_eq!(catalog.object, "list");
+    assert!(
+        !catalog.data.is_empty(),
+        "Catalog should have at least one model"
+    );
+
+    for model in &catalog.data {
+        assert!(!model.id.is_empty(), "Catalog model ID should not be empty");
+        // Context fields are optional but must be positive when present.
+        if let Some(context_window) = model.context_window {
+            assert!(context_window > 0, "context_window should be positive");
+        }
+        if let Some(max_context_tokens) = model.max_context_tokens {
+            assert!(
+                max_context_tokens > 0,
+                "max_context_tokens should be positive"
+            );
+        }
+    }
+
+    for alias in &catalog.aliases {
+        assert!(!alias.id.is_empty(), "Alias ID should not be empty");
+    }
+
+    // The server always assigns default aliases.
+    assert!(
+        catalog.defaults.quick.is_some(),
+        "Catalog defaults should include a quick model"
+    );
+    assert!(
+        catalog.defaults.powerful.is_some(),
+        "Catalog defaults should include a powerful model"
+    );
+
+    println!(
+        "Found {} catalog models and {} aliases",
+        catalog.data.len(),
+        catalog.aliases.len()
+    );
+}
+
+#[tokio::test]
 #[ignore = "Server currently only supports streaming completions"]
 async fn test_chat_completion_non_streaming() {
     // The server's /v1/chat/completions endpoint only returns SSE streams

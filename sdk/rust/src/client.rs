@@ -2193,6 +2193,12 @@ impl OpenSecretClient {
             .await
     }
 
+    /// Fetches the full model catalog with context windows and capabilities.
+    pub async fn get_model_catalog(&self) -> Result<ModelCatalogResponse> {
+        self.encrypted_openai_call("/v1/models/catalog", "GET", None::<()>)
+            .await
+    }
+
     /// Creates embeddings for the given input text(s)
     ///
     /// # Example
