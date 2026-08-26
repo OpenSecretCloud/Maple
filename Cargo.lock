@@ -5027,7 +5027,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent"
-version = "0.4.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5061,7 +5061,7 @@ dependencies = [
 
 [[package]]
 name = "maple-gpui"
-version = "0.4.1"
+version = "0.6.2"
 dependencies = [
  "env_logger",
  "gpui",
