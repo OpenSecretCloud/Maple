@@ -44,10 +44,13 @@ OpenSecret is its required backend. Keep these runtime paths distinct:
 - Local proxy: a separate user-facing OpenAI-compatible relay. Research chat
   and Agent Mode do not internally route through it.
 
-The browser client and native Agent Mode use independently pinned OpenSecret
-SDKs. Do not assume their versions, transports, retries, or API coverage are
-identical. A backend contract change that Maple consumes needs compatibility
-checks for every affected client path.
+The OpenSecret SDK source lives under `sdk/`. Treat `frontend/package.json` as
+the authority for whether the browser client consumes a published version or
+the in-tree `file:../sdk` package. Native Agent Mode continues to consume the
+published Rust crate pinned in `frontend/src-tauri/Cargo.toml` until the proxy
+and Rust consumers switch together. Do not assume the TypeScript and Rust SDKs
+have identical transports, retries, or API coverage. A backend contract change
+that Maple consumes needs compatibility checks for every affected client path.
 
 ## Code ownership and placement
 
@@ -249,6 +252,9 @@ requests release work, and report the tag and commit before publishing.
 
 - `$develop-maple`: setup, placement, implementation loop, and common web,
   desktop, mobile, and backend-integration work.
+- `$develop-opensecret-sdk`: TypeScript/React and Rust SDK development under
+  `sdk/`, backend compatibility, package-boundary checks, and publishing
+  handoff.
 - `$validate-maple`: focused tests, CI parity, exact-app smoke, full-stack
   smoke, and evidence reporting.
 - `$change-maple-agent-mode`: Agent Mode, ACP, Goose/provider, permissions,

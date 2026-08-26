@@ -261,13 +261,25 @@ Inspect the browser and native OpenSecret clients independently:
 - `frontend/src/services/mapleApiAuthService.ts`
 - `frontend/src-tauri/src/maple_api.rs`
 - `frontend/src-tauri/src/agent/provider.rs`
+- `sdk/src/` and `sdk/rust/` when the SDK implementation or public protocol is
+  in scope
 - the pinned JavaScript and Rust OpenSecret SDK versions and lockfiles
 
 Preserve the OpenSecret SDK's encrypted and attested transport. Do not replace `aiCustomFetch` or the native SDK client with raw browser/native fetch merely to make a request work. Avoid layering automatic client retries over Maple operations that may have server-side effects; keep retry ownership explicit.
 
 Review development and production enclave URLs and PCR/attestation allowlists together. Reject an endpoint that is not HTTPS unless it is an explicit loopback development address. Reject URL credentials and unexpected paths, queries, or fragments at the native authority boundary. Treat source-configured PCR values as policy, not proof that a live enclave currently matches; perform live attestation before making deployment claims.
 
-Do not assume the browser and native SDK pins have identical features, request schemas, refresh behavior, attestation behavior, or error handling. For an OpenSecret API contract change, validate both clients. Keep decrypted upstream errors and response bodies out of logs and user-facing native errors; expose bounded categories unless safe detail is deliberately part of the public contract.
+The SDK source is in this repository. Read `frontend/package.json` to determine
+whether the browser client resolves a published version or `file:../sdk`;
+continue treating the Rust crate pin in `frontend/src-tauri/Cargo.toml` as a
+published dependency until the coordinated proxy/Rust switch. Review source
+changes and resolved application dependencies as distinct boundaries; do not
+assume an in-tree fix protects a client that does not consume it. Do not assume
+the browser and native SDKs have identical features, request schemas, refresh
+behavior, attestation behavior, or error handling. For an OpenSecret API
+contract change, validate both clients. Keep decrypted upstream errors and
+response bodies out of logs and user-facing native errors; expose bounded
+categories unless safe detail is deliberately part of the public contract.
 
 When backend confirmation is needed, inspect the current open-source OpenSecret repository and follow its `AGENTS.md` and relevant skills. Do not infer its authorization, transport, or deployment behavior solely from Maple's caller.
 
