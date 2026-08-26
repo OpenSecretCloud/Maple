@@ -58,18 +58,18 @@ make_fixture() {
 
 valid="${temp_root}/valid"
 make_fixture "${valid}"
-"${verifier}" "${valid}" proxy >/dev/null
+bash "${verifier}" "${valid}" proxy >/dev/null
 pass "accepts the complete proxy release asset set"
 
 missing="${temp_root}/missing"
 cp -R "${valid}" "${missing}"
 rm "${missing}/maple-proxy-linux-aarch64.tar.gz"
-expect_failure "rejects a missing proxy release asset" "${verifier}" "${missing}" proxy
+expect_failure "rejects a missing proxy release asset" bash "${verifier}" "${missing}" proxy
 
 tampered="${temp_root}/tampered"
 cp -R "${valid}" "${tampered}"
 printf 'tampered\n' >> "${tampered}/maple-proxy-macos-aarch64.tar.gz"
-expect_failure "rejects a proxy release hash mismatch" "${verifier}" "${tampered}" proxy
+expect_failure "rejects a proxy release hash mismatch" bash "${verifier}" "${tampered}" proxy
 
 extra_member="${temp_root}/extra-member"
 cp -R "${valid}" "${extra_member}"
@@ -87,11 +87,11 @@ tar -C "${extra_member}/stage" -czf "${extra_member}/maple-proxy-linux-x86_64.ta
     > maple-proxy-release-final.sha256
 )
 rm -rf "${extra_member}/stage"
-expect_failure "rejects an archive with extra members" "${verifier}" "${extra_member}" proxy
+expect_failure "rejects an archive with extra members" bash "${verifier}" "${extra_member}" proxy
 
 unexpected="${temp_root}/unexpected"
 cp -R "${valid}" "${unexpected}"
 cp "${unexpected}/maple-proxy-linux-x86_64.tar.gz" "${unexpected}/maple-proxy-linux-riscv64.tar.gz"
-expect_failure "rejects an unexpected proxy release archive" "${verifier}" "${unexpected}" proxy
+expect_failure "rejects an unexpected proxy release archive" bash "${verifier}" "${unexpected}" proxy
 
 printf '1..%d\n' "${passed}"
