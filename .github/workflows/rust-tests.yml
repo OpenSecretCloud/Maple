@@ -6,8 +6,22 @@ permissions:
 on:
   push:
     branches: [master]
+    paths:
+      - ".github/workflows/rust-tests.yml"
+      - "frontend/src-tauri/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/rust.sh"
+      - "flake.nix"
+      - "flake.lock"
   pull_request:
     branches: [master]
+    paths:
+      - ".github/workflows/rust-tests.yml"
+      - "frontend/src-tauri/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/rust.sh"
+      - "flake.nix"
+      - "flake.lock"
 
 jobs:
   rust-tests:
@@ -26,7 +40,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-rust-tests-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-rust-tests-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-rust-tests-
             ${{ runner.os }}-sccache-

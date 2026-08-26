@@ -283,7 +283,7 @@ test("supports custom remote attestation URLs", async () => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
-      if (url.includes("custom.example.com")) {
+      if (url === "https://custom.example.com/prod.json") {
         return createMockResponse([
           {
             PCR0: VERIFIED_PCR0,

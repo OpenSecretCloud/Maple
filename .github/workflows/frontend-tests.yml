@@ -6,8 +6,24 @@ permissions:
 on:
   push:
     branches: [ master ]
+    paths:
+      - ".github/workflows/frontend-tests.yml"
+      - "frontend/**"
+      - "!frontend/src-tauri/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/frontend.sh"
+      - "flake.nix"
+      - "flake.lock"
   pull_request:
     branches: [ master ]
+    paths:
+      - ".github/workflows/frontend-tests.yml"
+      - "frontend/**"
+      - "!frontend/src-tauri/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/frontend.sh"
+      - "flake.nix"
+      - "flake.lock"
 
 jobs:
   test-frontend:

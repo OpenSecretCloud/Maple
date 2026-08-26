@@ -7,6 +7,10 @@ const PCR_ENVIRONMENT_VARIABLE: &str = "VITE_OPEN_SECRET_PCR_ENVIRONMENT";
 const PCR_ENVIRONMENT_ERROR: &str =
     "VITE_OPEN_SECRET_PCR_ENVIRONMENT must be either \"production\" or \"development\"";
 
+pub fn live_ai_enabled() -> bool {
+    env::var("RUN_LIVE_AI").is_ok_and(|value| value == "1")
+}
+
 pub fn parse_pcr0_environment(
     value: Option<&str>,
 ) -> std::result::Result<Pcr0Environment, &'static str> {

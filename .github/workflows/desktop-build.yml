@@ -11,7 +11,12 @@ on:
     branches: [master]
 
 jobs:
+  changes:
+    uses: ./.github/workflows/app-change-detection.yml
+
   build-macos:
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.macos != 'false') }}
     runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
@@ -46,7 +51,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/Library/Caches/Mozilla.sccache
-          key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-macos-release-
             ${{ runner.os }}-sccache-macos-
@@ -97,6 +102,8 @@ jobs:
           retention-days: 5
 
   build-linux:
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.linux != 'false') }}
     runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
@@ -112,7 +119,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-linux-release-
             ${{ runner.os }}-sccache-linux-
@@ -222,6 +229,8 @@ jobs:
         run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos
 
   build-windows:
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.windows != 'false') }}
     runs-on: windows-2025
     environment: windows-signing
     env:
@@ -268,7 +277,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~\AppData\Local\Mozilla\sccache
-          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-
 

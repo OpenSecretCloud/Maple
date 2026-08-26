@@ -20,7 +20,7 @@ describe("synthesizeTTSChunk", () => {
 
     const result = await synthesizeTTSChunk(
       aiCustomFetch,
-      "https://enclave.example/",
+      "https://enclave.example///",
       "Hello.",
       { voice: "fr_female", speed: 1.2 },
       controller.signal

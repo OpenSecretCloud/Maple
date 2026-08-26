@@ -6,8 +6,22 @@ permissions:
 on:
   push:
     branches: [master]
+    paths:
+      - ".github/workflows/updates-tests.yml"
+      - "updates/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/updates.sh"
+      - "flake.nix"
+      - "flake.lock"
   pull_request:
     branches: [master]
+    paths:
+      - ".github/workflows/updates-tests.yml"
+      - "updates/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/updates.sh"
+      - "flake.nix"
+      - "flake.lock"
 
 jobs:
   test-updates-worker:

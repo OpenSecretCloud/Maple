@@ -1,0 +1,98 @@
+name: Detect Maple app changes
+
+on:
+  workflow_call:
+    outputs:
+      frontend:
+        description: Whether shared renderer inputs changed
+        value: ${{ jobs.detect.outputs.frontend }}
+      macos:
+        description: Whether macOS-native inputs changed
+        value: ${{ jobs.detect.outputs.macos }}
+      linux:
+        description: Whether Linux-native inputs changed
+        value: ${{ jobs.detect.outputs.linux }}
+      windows:
+        description: Whether Windows-native inputs changed
+        value: ${{ jobs.detect.outputs.windows }}
+      ios:
+        description: Whether iOS-native inputs changed
+        value: ${{ jobs.detect.outputs.ios }}
+      android:
+        description: Whether Android-native inputs changed
+        value: ${{ jobs.detect.outputs.android }}
+      ios_onnx:
+        description: Whether the iOS ONNX Runtime cache inputs changed
+        value: ${{ jobs.detect.outputs.ios_onnx }}
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.classify.outputs.frontend }}
+      macos: ${{ steps.classify.outputs.macos }}
+      linux: ${{ steps.classify.outputs.linux }}
+      windows: ${{ steps.classify.outputs.windows }}
+      ios: ${{ steps.classify.outputs.ios }}
+      android: ${{ steps.classify.outputs.android }}
+      ios_onnx: ${{ steps.classify.outputs.ios_onnx }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          enable_all() {
+            for output in frontend macos linux windows ios android ios_onnx; do
+              printf '%s=true\n' "${output}" >> "${GITHUB_OUTPUT}"
+            done
+          }
+
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request)
+              separator="..."
+              ;;
+            push)
+              separator=".."
+              if [[ "${BASE_SHA}" =~ ^0+$ ]]; then
+                echo "No prior commit is available for this push; enabling every app build lane."
+                enable_all
+                exit 0
+              fi
+              ;;
+            *)
+              echo "Unsupported event ${GITHUB_EVENT_NAME}; enabling every app build lane."
+              enable_all
+              exit 0
+              ;;
+          esac
+
+          if ! git cat-file -e "${BASE_SHA}^{commit}" || ! git cat-file -e "${HEAD_SHA}^{commit}"; then
+            echo "A comparison commit is unavailable; enabling every app build lane."
+            enable_all
+            exit 0
+          fi
+
+          changed_paths="$(mktemp)"
+          trap 'rm -f "${changed_paths}"' EXIT
+          if ! git diff --no-renames --name-only -z "${BASE_SHA}${separator}${HEAD_SHA}" > "${changed_paths}"; then
+            echo "Could not enumerate changed paths; enabling every app build lane."
+            enable_all
+            exit 0
+          fi
+
+          if ! python3 scripts/ci/change_detection.py < "${changed_paths}" >> "${GITHUB_OUTPUT}"; then
+            echo "Could not classify changed paths; enabling every app build lane."
+            enable_all
+          fi

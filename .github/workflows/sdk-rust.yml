@@ -1,0 +1,57 @@
+name: SDK Rust CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/sdk-rust.yml"
+      - "sdk/rust/**"
+      - "sdk/rust-toolchain.toml"
+      - "sdk/flake.nix"
+      - "sdk/flake.lock"
+  pull_request:
+    branches: [master]
+    paths:
+      - ".github/workflows/sdk-rust.yml"
+      - "sdk/rust/**"
+      - "sdk/rust-toolchain.toml"
+      - "sdk/flake.nix"
+      - "sdk/flake.lock"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  sdk-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # was v2
+        with:
+          workspaces: sdk/rust -> target
+          add-rust-environment-hash-key: "false"
+          key: ${{ hashFiles('sdk/rust/Cargo.lock', 'sdk/rust-toolchain.toml', 'sdk/flake.lock') }}
+
+      - name: Run credential-free Rust SDK checks
+        run: |
+          nix develop --no-update-lock-file ./sdk -c bash -lc '
+            cd sdk/rust
+            cargo fmt --all -- --check
+            cargo clippy --locked --all-targets --all-features -- -D warnings
+            cargo test --locked --all-features --lib
+            RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+          '

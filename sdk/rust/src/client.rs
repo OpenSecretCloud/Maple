@@ -3118,9 +3118,10 @@ mod tests {
             OpenSecretClient::new_with_pcr0_trust_policy(mock_server.uri(), production_policy)
                 .unwrap();
         let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
+        let nonce = Uuid::new_v4().to_string();
 
         let error = client
-            .establish_session_from_verified_attestation("test-nonce", document)
+            .establish_session_from_verified_attestation(&nonce, document)
             .await
             .unwrap_err();
 
@@ -3145,9 +3146,10 @@ mod tests {
         )
         .unwrap();
         let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
+        let nonce = Uuid::new_v4().to_string();
 
         let error = client
-            .establish_session_from_verified_attestation("test-nonce", document)
+            .establish_session_from_verified_attestation(&nonce, document)
             .await
             .unwrap_err();
 
