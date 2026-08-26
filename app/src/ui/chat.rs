@@ -1584,17 +1584,42 @@ fn render_permission_card(
     card.child(buttons)
 }
 
-fn relative_time(when: i64) -> String {
-    let now = std::time::SystemTime::now()
+fn relative_time(when_ms: i64) -> String {
+    let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0);
-    let delta = (now - when).max(0);
-    match delta {
+    relative_time_at(when_ms, now_ms)
+}
+
+fn relative_time_at(when_ms: i64, now_ms: i64) -> String {
+    // Session timestamps are epoch milliseconds; compare in seconds.
+    let seconds = ((now_ms - when_ms).max(0)) / 1000;
+    match seconds {
         seconds if seconds < 60 => "just now".to_string(),
         seconds if seconds < 3600 => format!("{}m ago", seconds / 60),
         seconds if seconds < 86_400 => format!("{}h ago", seconds / 3600),
         seconds => format!("{}d ago", seconds / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relative_time_at;
+
+    #[test]
+    fn relative_time_interprets_epoch_milliseconds() {
+        let now_ms = 1_787_713_997_000_i64;
+        assert_eq!(relative_time_at(now_ms - 30_000, now_ms), "just now");
+        assert_eq!(relative_time_at(now_ms - 14 * 60 * 1000, now_ms), "14m ago");
+        assert_eq!(
+            relative_time_at(now_ms - 2 * 3_600 * 1000, now_ms),
+            "2h ago"
+        );
+        assert_eq!(
+            relative_time_at(now_ms - 3 * 86_400 * 1000, now_ms),
+            "3d ago"
+        );
     }
 }
 
