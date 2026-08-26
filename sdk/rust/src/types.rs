@@ -694,6 +694,67 @@ pub struct Model {
     pub owned_by: Option<String>,
 }
 
+/// A catalog entry: model identity plus context and capability metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogModel {
+    pub id: String,
+    #[serde(default = "default_model_object")]
+    pub object: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owned_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<CatalogCapabilities>,
+}
+
+/// Capability flags a catalog entry advertises.
+///
+/// Mirrors the server and TypeScript SDK `ModelCapabilities` contract.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CatalogCapabilities {
+    #[serde(default)]
+    pub chat: bool,
+    #[serde(default)]
+    pub vision: bool,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub tool_use: bool,
+}
+
+/// A catalog alias resolving to a concrete model id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogAlias {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<CatalogCapabilities>,
+}
+
+/// Default alias assignments from the catalog.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CatalogDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub powerful: Option<String>,
+}
+
+/// The full model catalog from `/v1/models/catalog`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelCatalogResponse {
+    pub object: String,
+    pub data: Vec<CatalogModel>,
+    #[serde(default)]
+    pub aliases: Vec<CatalogAlias>,
+    #[serde(default)]
+    pub defaults: CatalogDefaults,
+}
+
 fn default_model_object() -> String {
     "model".to_string()
 }
