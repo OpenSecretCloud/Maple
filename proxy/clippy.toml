@@ -1,0 +1,26 @@
+# Clippy configuration for maple-proxy
+# Enable additional lints for better code quality
+
+# Warn on missing documentation in crate items
+missing-docs-in-crate-items = false
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Type complexity threshold  
+type-complexity-threshold = 250
+
+# Trivial copy pass by reference threshold
+trivial-copy-size-limit = 64
+
+# Large types passed by value threshold
+pass-by-value-size-limit = 256
+
+# Too many arguments threshold
+too-many-arguments-threshold = 7
+
+# Too many lines threshold
+too-many-lines-threshold = 100
+
+# Large enum variant threshold
+large-error-threshold = 128

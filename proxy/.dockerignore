@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+target/
+Dockerfile
+.dockerignore
+
+# Development files
+.env
+.env.local
+*.log
+*.pid
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Documentation
+README.md
+LICENSE
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Test coverage
+tarpaulin-report.html
+cobertura.xml
+coverage/
+
+# Nix
+flake.nix
+flake.lock
+result
+result-*
+
+# Development scripts
+justfile
+setup-hooks.sh
+
+# macOS
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
