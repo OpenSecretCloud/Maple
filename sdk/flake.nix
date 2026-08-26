@@ -20,19 +20,19 @@
         pkgs = import nixpkgs { inherit system overlays; };
         bunPkgs = import bun-nixpkgs { inherit system; };
         sdkBun = assert bunPkgs.bun.version == "1.3.5"; bunPkgs.bun;
-        
+
         # Try to use rust-toolchain.toml if it exists, otherwise use stable
         rust = if builtins.pathExists ./rust-toolchain.toml
           then pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml
           else pkgs.rust-bin.stable.latest.default;
-        
+
         commonInputs = with pkgs; [
           # TypeScript/JavaScript tooling
           sdkBun
           nodejs_20
           nodePackages.typescript
           nodePackages.typescript-language-server
-          
+
           # Rust tooling
           rust
           rust-analyzer
@@ -41,22 +41,22 @@
           zlib
           clang
           libclang
-          
+
           # Useful tools
           jq
           just
         ];
-        
+
         darwinOnlyInputs = with pkgs; [
           libiconv
           darwin.apple_sdk.frameworks.Security
           darwin.apple_sdk.frameworks.SystemConfiguration
         ];
-        
+
         linuxOnlyInputs = with pkgs; [
           gcc
         ];
-        
+
         allInputs = commonInputs
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinOnlyInputs
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxOnlyInputs;
@@ -64,24 +64,24 @@
       {
         devShells.default = pkgs.mkShell {
           packages = allInputs;
-          
+
           shellHook = ''
             echo "OpenSecret SDK Development Environment"
             echo "----------------------------------------"
             echo "TypeScript/Bun tools available"
             echo "Rust toolchain: $(rustc --version)"
             echo ""
-            
+
             # Set up Rust environment variables
             export LIBCLANG_PATH=${pkgs.libclang.lib}/lib/
             export LD_LIBRARY_PATH=${pkgs.openssl}/lib:$LD_LIBRARY_PATH
             export PKG_CONFIG_PATH=${pkgs.openssl.dev}/lib/pkgconfig
-            
+
             ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
               # macOS-specific setup
               export RUST_BACKTRACE=1
             ''}
-            
+
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               # Linux-specific setup
               export RUST_BACKTRACE=1

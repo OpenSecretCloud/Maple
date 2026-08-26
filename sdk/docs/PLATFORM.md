@@ -11,7 +11,7 @@ import { OpenSecretDeveloper } from "@opensecret/react";
 
 function App() {
   return (
-    <OpenSecretDeveloper 
+    <OpenSecretDeveloper
       apiUrl="https://developer.opensecret.cloud"
       pcrConfig={{ environment: "production" }} // Optional; production is the default
     >
@@ -146,8 +146,8 @@ function DeveloperLogin() {
   async function handleRegister() {
     try {
       const response = await dev.signUp(
-        "developer@example.com", 
-        "yourpassword", 
+        "developer@example.com",
+        "yourpassword",
         "01234567-89ab-cdef-0123-456789abcdef", // Required invite code in UUID format
         "Developer Name" // Optional
       );
@@ -216,9 +216,9 @@ requestNewPlatformVerificationCode(): Promise<{ message: string }>
 // Password Management Methods
 requestPlatformPasswordReset(email: string, hashedSecret: string): Promise<void>
 confirmPlatformPasswordReset(
-  email: string, 
-  alphanumericCode: string, 
-  plaintextSecret: string, 
+  email: string,
+  alphanumericCode: string,
+  plaintextSecret: string,
   newPassword: string
 ): Promise<{ message: string }>
 changePlatformPassword(currentPassword: string, newPassword: string): Promise<{ message: string }>
@@ -241,11 +241,11 @@ function DeveloperPasswordManagement() {
       // Generate a secure random secret and its hash for verification
       const plaintextSecret = generateSecureSecret();
       const hashedSecret = hashSecret(plaintextSecret);
-      
+
       // Store the plaintext secret securely (e.g., in component state)
       // to be used in the confirmation step
       setStoredSecret(plaintextSecret);
-      
+
       // Request the password reset
       await dev.requestPasswordReset(email, hashedSecret);
       console.log("Password reset email sent. Check your inbox for the code.");
@@ -274,7 +274,7 @@ function DeveloperPasswordManagement() {
       console.error("Failed to confirm password reset:", error);
     }
   }
-  
+
   // Change password when already logged in
   async function handleChangePassword(currentPassword: string, newPassword: string) {
     try {
@@ -316,10 +316,10 @@ import { useOpenSecretDeveloper } from "@opensecret/react";
 
 function PlatformManagement() {
   const dev = useOpenSecretDeveloper();
-  
+
   // Access developer information
   const { loading, developer } = dev.auth;
-  
+
   // Now you can use any of the platform management methods
   // ...
 }
@@ -472,7 +472,7 @@ const handleCreateSecret = async (orgId, projectId) => {
   // Encode the secret
   const secretValue = "my-secret-value";
   const encodedSecret = encode(new TextEncoder().encode(secretValue));
-  
+
   try {
     await dev.createProjectSecret(
       orgId,
@@ -676,14 +676,14 @@ function DeveloperPortal() {
   const [orgs, setOrgs] = useState([]);
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [projects, setProjects] = useState([]);
-  
+
   useEffect(() => {
     // Load organizations when developer is available
     if (!dev.auth.loading && dev.auth.developer) {
       loadOrganizations();
     }
   }, [dev.auth.loading, dev.auth.developer]);
-  
+
   async function loadOrganizations() {
     try {
       const orgs = await dev.listOrganizations();
@@ -692,7 +692,7 @@ function DeveloperPortal() {
       console.error("Failed to load organizations:", error);
     }
   }
-  
+
   async function loadProjects(orgId) {
     try {
       const projects = await dev.listProjects(orgId);
@@ -701,10 +701,10 @@ function DeveloperPortal() {
       console.error("Failed to load projects:", error);
     }
   }
-  
+
   async function handleCreateProject() {
     if (!selectedOrg) return;
-    
+
     try {
       await dev.createProject(
         selectedOrg.id,
@@ -717,7 +717,7 @@ function DeveloperPortal() {
       console.error("Failed to create project:", error);
     }
   }
-  
+
   return (
     <div>
       <h1>Developer Portal</h1>
@@ -726,7 +726,7 @@ function DeveloperPortal() {
       ) : dev.auth.developer ? (
         <div>
           <p>Welcome, {dev.auth.developer.name || dev.auth.developer.email}</p>
-          
+
           <h2>Your Organizations</h2>
           <ul>
             {orgs.map(org => (
@@ -747,7 +747,7 @@ function DeveloperPortal() {
           }}>
             Create Organization
           </button>
-          
+
           {selectedOrg && (
             <div>
               <h2>Projects in {selectedOrg.name}</h2>

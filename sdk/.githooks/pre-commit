@@ -9,33 +9,33 @@ echo "🔍 Running pre-commit checks..."
 # Check if there are changes in the rust directory
 if git diff --cached --name-only | grep -q "^rust/"; then
     echo "📦 Rust changes detected, running Rust checks..."
-    
+
     cd rust
-    
+
     echo "📝 Checking formatting..."
     if ! cargo fmt --all --check; then
         echo "❌ Format check failed. Run 'cd rust && cargo fmt' to fix."
         exit 1
     fi
-    
+
     echo "🔧 Running clippy..."
     if ! cargo clippy --locked --all-targets --all-features -- -D warnings; then
         echo "❌ Clippy check failed. Fix the warnings above."
         exit 1
     fi
-    
+
     echo "✅ Running cargo check..."
     if ! cargo check --locked --all-features; then
         echo "❌ Cargo check failed."
         exit 1
     fi
-    
+
     echo "🧪 Running tests..."
     if ! cargo test --locked --all-features; then
         echo "❌ Tests failed."
         exit 1
     fi
-    
+
     cd ..
 fi
 

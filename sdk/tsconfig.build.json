@@ -22,8 +22,8 @@
     }
   },
   "include": [
-    "src/lib/**/*", 
+    "src/lib/**/*",
     "src/global.d.ts"
   ],
   "exclude": ["node_modules", "**/*.test.ts", "**/*.test.tsx"]
-} 
+}
