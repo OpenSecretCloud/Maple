@@ -216,7 +216,7 @@ impl SettingsScreen {
                     .child(setting_row(
                         "Bypass permission prompts by default",
                         "New sessions approve every tool call without asking. \
-                         Each session can still switch modes from its header.",
+                         Each session can still switch modes from its composer.",
                         if self.settings.default_permission_mode == "auto" {
                             "On"
                         } else {

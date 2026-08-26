@@ -54,6 +54,10 @@ pub struct ChatScreen {
     models: Vec<String>,
     selected_model: Option<String>,
     models_menu_open: bool,
+    /// Approval-mode dropdown open state, anchored under the composer.
+    mode_menu_open: bool,
+    /// Compact usage line for the sidebar bottom (tokens used this account).
+    sidebar_usage: Option<crate::settings::UsageRow>,
     runtime_error: Option<String>,
     notice: Option<String>,
     booting: bool,
@@ -145,6 +149,8 @@ impl ChatScreen {
             models: Vec::new(),
             selected_model: None,
             models_menu_open: false,
+            mode_menu_open: false,
+            sidebar_usage: None,
             runtime_error: None,
             notice: None,
             booting: true,
@@ -217,6 +223,7 @@ impl ChatScreen {
                 this.refresh_models(cx);
                 this.refresh_roots(cx);
                 this.refresh_sessions(cx);
+                this.refresh_sidebar_usage(cx);
             },
         );
     }
@@ -1088,6 +1095,7 @@ impl ChatScreen {
                         self.permission_responding = false;
                     }
                 }
+                self.refresh_sidebar_usage(cx);
             }
             AgentRunEvent::QueueChanged(_) | AgentRunEvent::QueuePromoted { .. } => {
                 // Queue chips are rendered from send responses; nothing to do
@@ -1124,7 +1132,6 @@ impl Render for ChatScreen {
                             .h_full()
                             .min_w_0()
                             .child(self.render_header(cx))
-                            .children(self.render_menu_panel(cx))
                             .child(self.render_transcript(window, cx))
                             .when_some(self.pending_question.clone(), |container, question| {
                                 let input = self.pending_question_input.clone();
@@ -1137,7 +1144,8 @@ impl Render for ChatScreen {
                                     cx,
                                 ))
                             })
-                            .child(self.render_composer(cx)),
+                            .child(self.render_composer(cx))
+                            .children(self.render_menu_panel(cx)),
                     ),
             )
     }
@@ -1231,14 +1239,71 @@ impl ChatScreen {
                             )
                     })),
             )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_4()
+                    .py_3()
+                    .border_t_1()
+                    .border_color(gpui::rgb(theme::BORDER))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .line_clamp(1)
+                            .child(match &self.sidebar_usage {
+                                Some(row) => format!(
+                                    "{} tokens · ${:.2}",
+                                    format_usage_tokens(row.total_tokens),
+                                    row.cost
+                                ),
+                                None => "Usage unavailable".to_string(),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("open-settings")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .hover(|style| {
+                                style
+                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .cursor_pointer()
+                            })
+                            .on_click(cx.listener(|_this, _event, _window, cx| {
+                                cx.emit(OpenSettings);
+                            }))
+                            .child("⚙"),
+                    ),
+            )
+    }
+
+    /// Load the compact sidebar usage line from the goose usage ledger.
+    fn refresh_sidebar_usage(&mut self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move {
+                let scope = backend.account_scope(&user_id);
+                Ok(scope.map(|scope| crate::settings::load_usage(&scope).totals))
+            },
+            cx,
+            |this, result: Result<Option<crate::settings::UsageRow>, String>, cx| {
+                if let Ok(totals) = result {
+                    this.sidebar_usage = totals;
+                    cx.notify();
+                }
+            },
+        );
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
-        let model_label = self
-            .selected_model
-            .clone()
-            .unwrap_or_else(|| "default model".to_string());
-        let _models = self.models.clone();
         let mut header = div()
             .flex()
             .items_center()
@@ -1297,26 +1362,6 @@ impl ChatScreen {
                     )
                     .child(
                         div()
-                            .id("model-picker")
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(theme::BORDER))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.models_menu_open = !this.models_menu_open;
-                                cx.notify();
-                            }))
-                            .child(model_label),
-                    )
-                    .child(
-                        div()
                             .id("compact-now")
                             .flex()
                             .items_center()
@@ -1332,90 +1377,6 @@ impl ChatScreen {
                                 this.compact_now(cx);
                             }))
                             .child("⇲"),
-                    )
-                    .child(
-                        div()
-                            .id("permission-mode-toggle")
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(if self.permission_mode == "auto" {
-                                theme::STATUS_WARNING
-                            } else {
-                                theme::BORDER
-                            }))
-                            .text_sm()
-                            .text_color(gpui::rgb(if self.permission_mode == "auto" {
-                                theme::STATUS_WARNING
-                            } else {
-                                theme::TEXT_SECONDARY
-                            }))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.permission_mode = if this.permission_mode == "auto" {
-                                    "smart_approve".to_string()
-                                } else {
-                                    "auto".to_string()
-                                };
-                                this.uses_default_permission_mode = false;
-                                this.apply_permission_mode(cx);
-                                cx.notify();
-                            }))
-                            .child(if self.permission_mode == "auto" {
-                                "🛡 bypass".to_string()
-                            } else {
-                                "🛡 approve".to_string()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("tool-details-toggle")
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(theme::BORDER))
-                            .text_sm()
-                            .text_color(gpui::rgb(if self.tool_details {
-                                theme::TEXT_SECONDARY
-                            } else {
-                                theme::TEXT_MUTED
-                            }))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.tool_details = !this.tool_details;
-                                cx.notify();
-                            }))
-                            .child(if self.tool_details {
-                                "🔧 details".to_string()
-                            } else {
-                                "🔧 hidden".to_string()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("open-settings")
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                                    .cursor_pointer()
-                            })
-                            .on_click(cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(OpenSettings);
-                            }))
-                            .child("⚙"),
                     )
                     .child(
                         div()
@@ -1531,6 +1492,48 @@ impl ChatScreen {
                                     .child("Go"),
                             ),
                     );
+            }
+            return Some(menu);
+        }
+        if self.mode_menu_open {
+            for (mode, label, note) in [
+                (
+                    "auto",
+                    "Full access",
+                    "Approve every tool call without asking",
+                ),
+                ("smart_approve", "Ask first", "Confirm each gated tool call"),
+            ] {
+                let mode = mode.to_string();
+                let is_current = self.permission_mode == mode;
+                menu = menu.child(
+                    div()
+                        .id(gpui::SharedString::from(format!("mode-{mode}")))
+                        .px_3()
+                        .py_1()
+                        .text_sm()
+                        .text_color(gpui::rgb(if is_current {
+                            theme::ACCENT
+                        } else {
+                            theme::TEXT_PRIMARY
+                        }))
+                        .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.permission_mode = mode.clone();
+                            this.uses_default_permission_mode = false;
+                            this.mode_menu_open = false;
+                            this.apply_permission_mode(cx);
+                            cx.notify();
+                        }))
+                        .child(
+                            div().flex().flex_col().gap_0().child(label).child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                    .child(note),
+                            ),
+                        ),
+                );
             }
             return Some(menu);
         }
@@ -1686,11 +1689,16 @@ impl ChatScreen {
             .unwrap_or(false);
         let can_send = !disabled && !running && has_text;
         let composer = self.composer.clone();
+        let model_label = self
+            .selected_model
+            .clone()
+            .unwrap_or_else(|| "default model".to_string());
+        let bypass = self.permission_mode == "auto";
         div()
-            .flex()
-            .items_center()
-            .gap_2()
             .m_4()
+            .flex()
+            .flex_col()
+            .gap_2()
             .px_3()
             .py_2()
             .rounded_lg()
@@ -1700,54 +1708,142 @@ impl ChatScreen {
             .when(disabled, |container| container.opacity(0.5))
             .child(
                 div()
-                    .flex_1()
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                    .children(composer),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .children(composer),
+                    )
+                    .child(div().id("context-indicator").flex().items_center().child(
+                        crate::ui::context_ring::ContextRing::new(
+                            self.context_fraction.unwrap_or(0.0),
+                        ),
+                    ))
+                    .child(if running {
+                        div()
+                            .id("stop-run")
+                            .px_4()
+                            .py_2()
+                            .rounded_md()
+                            .bg(gpui::rgb(theme::STATUS_ERROR))
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::BG_APP))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.stop(cx);
+                            }))
+                            .child("Stop")
+                    } else {
+                        div()
+                            .id("send-message")
+                            .px_4()
+                            .py_2()
+                            .rounded_md()
+                            .bg(gpui::rgb(if can_send {
+                                theme::ACCENT
+                            } else {
+                                theme::BORDER
+                            }))
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .when(can_send, |el| {
+                                el.hover(|style| {
+                                    style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer()
+                                })
+                            })
+                            .when(can_send, |el| {
+                                el.on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.send_inner(cx);
+                                }))
+                            })
+                            .child(if disabled {
+                                "Starting…".to_string()
+                            } else {
+                                "Send".to_string()
+                            })
+                    }),
             )
-            .child(div().id("context-indicator").flex().items_center().child(
-                crate::ui::context_ring::ContextRing::new(self.context_fraction.unwrap_or(0.0)),
-            ))
-            .child(if running {
+            .child(
                 div()
-                    .id("stop-run")
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .bg(gpui::rgb(theme::STATUS_ERROR))
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::BG_APP))
-                    .hover(|style| style.cursor_pointer())
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.stop(cx);
-                    }))
-                    .child("Stop")
-            } else {
-                div()
-                    .id("send-message")
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .bg(gpui::rgb(if can_send {
-                        theme::ACCENT
-                    } else {
-                        theme::BORDER
-                    }))
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                    .when(can_send, |el| {
-                        el.hover(|style| style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer())
-                    })
-                    .when(can_send, |el| {
-                        el.on_click(cx.listener(|this, _event, _window, cx| {
-                            this.send_inner(cx);
-                        }))
-                    })
-                    .child(if disabled {
-                        "Starting…".to_string()
-                    } else {
-                        "Send".to_string()
-                    })
-            })
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("model-picker")
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(if self.models_menu_open {
+                                theme::ACCENT
+                            } else {
+                                theme::BORDER
+                            }))
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.root_menu_open = false;
+                                this.mode_menu_open = false;
+                                this.models_menu_open = !this.models_menu_open;
+                                cx.notify();
+                            }))
+                            .child(model_label)
+                            .child("▾"),
+                    )
+                    .child(
+                        div()
+                            .id("permission-mode-toggle")
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(if bypass {
+                                theme::STATUS_WARNING
+                            } else {
+                                theme::BORDER
+                            }))
+                            .text_sm()
+                            .text_color(gpui::rgb(if bypass {
+                                theme::STATUS_WARNING
+                            } else {
+                                theme::TEXT_SECONDARY
+                            }))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.root_menu_open = false;
+                                this.models_menu_open = false;
+                                this.mode_menu_open = !this.mode_menu_open;
+                                cx.notify();
+                            }))
+                            .child(if bypass {
+                                "🛡 Full access".to_string()
+                            } else {
+                                "🛡 Ask first".to_string()
+                            })
+                            .child("▾"),
+                    ),
+            )
+    }
+}
+/// Compact token count for the sidebar usage line (k/M).
+fn format_usage_tokens(tokens: i64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
     }
 }
 
