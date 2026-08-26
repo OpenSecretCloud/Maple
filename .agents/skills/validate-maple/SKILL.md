@@ -39,6 +39,16 @@ Use for pure React, TypeScript, CSS, state, and browser behavior with no native 
 - Smoke the changed state in a real browser. Cover loading, empty, success, error, and disabled states when relevant.
 - Test keyboard operation, focus, accessible labels, light/dark themes, and narrow/wide layouts when the change can affect them.
 
+SDK-only changes under `sdk/` are an independent monorepo component rather
+than Maple frontend changes. Load `$develop-opensecret-sdk`, run the applicable
+TypeScript or Rust SDK checks, and add the pinned local OpenSecret integration
+when the public protocol or backend compatibility changes. Read
+`frontend/package.json` to determine whether TypeScript SDK changes are Maple
+frontend inputs; the dependency may be a published version or `file:../sdk`.
+Rust SDK-only changes remain outside Maple application coverage until the
+published crate pin or coordinated proxy/Rust wiring changes. Do not run
+unrelated Maple packaging solely because an independent SDK boundary changed.
+
 ### Tier 2: API, account, persistence, and streaming integration
 
 Use when behavior depends on an OpenSecret server, authentication, account state, conversation persistence, billing API endpoint, feature-flag API endpoint, or streamed responses.

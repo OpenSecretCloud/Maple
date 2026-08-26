@@ -12,6 +12,9 @@ Work from the `OpenSecretCloud/Maple` repository root. Treat `justfile`, `fronte
 - Use `$validate-maple` for full validation, packaged-app smoke tests, cross-platform builds, or release-artifact verification.
 - Use `$review-maple-security` for security audits or changes involving authentication, authorization, attestation, OAuth/deep links, credentials, storage, CSP, local proxy exposure, filesystem/shell access, or trust boundaries.
 - Use `$change-maple-agent-mode` for Goose, Agent Mode runtime/UI, tool permissions, MCP, ACP, subagents, or agent persistence.
+- Use `$develop-opensecret-sdk` for changes to the TypeScript/React or Rust SDK
+  source under `sdk/`, including its backend integration revision or package
+  boundaries.
 - Use `$release-maple` for version bumps, tags, publishing, release CI, or distribution. Never use `just release` during ordinary development.
 
 Keep the current task scoped when one of these skills is unnecessary. Do not claim specialized validation that was not run.
@@ -63,13 +66,17 @@ Keep in OpenSecret:
 - Model/provider policy, confidential-compute enforcement, and public API semantics.
 - Validation that must remain authoritative when a client is modified or bypassed.
 
-Do not emulate missing server enforcement in Maple. If the work changes an API contract, coordinate the open-source backend and SDK changes, preserve compatible failure behavior where practical, and test Maple against the exact backend revision. Configure external billing and flags services through their public API URLs; do not depend on their source trees.
+Do not emulate missing server enforcement in Maple. If the work changes an API
+contract, coordinate the open-source backend with the SDK source under `sdk/`,
+preserve compatible failure behavior where practical, and test Maple against
+the exact backend revision. Configure external billing and flags services
+through their public API URLs; do not depend on their source trees.
 
 ## Follow the Existing Architecture
 
 - Put React, routes, contexts, and browser-facing services under `frontend/src/`.
 - Put privileged/native behavior under `frontend/src-tauri/src/` and expose the narrowest typed Tauri command or event needed by the UI.
-- Use `@opensecret/react` and the existing OpenSecret client paths for authentication, encryption, and API calls. Do not duplicate protocol or cryptographic logic in components.
+- Use `@opensecret/react` and the existing OpenSecret client paths for authentication, encryption, and API calls. Read `frontend/package.json` to determine whether the application consumes a published version or the in-tree `file:../sdk` package; do not infer that boundary from prose. Do not duplicate protocol or cryptographic logic in components.
 - Follow nearby state ownership, cancellation, error, and cleanup patterns. Preserve account isolation and handle logout, navigation, retries, and stale async completion explicitly.
 - Treat all network, file, deep-link, shell, tool, and Tauri-command inputs as untrusted. Validate again at the enforcing boundary.
 - Keep feature flags as rollout/UI controls, never authorization controls.
