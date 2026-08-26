@@ -134,7 +134,7 @@ impl Render for MapleApp {
 }
 
 fn main() {
-    env_logger::init();
+    init_logging();
 
     let api_url = std::env::var("MAPLE_API_URL")
         .unwrap_or_else(|_| "https://enclave.trymaple.ai".to_string());
@@ -253,4 +253,55 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+/// Log to stderr and to `<data dir>/logs/maple-gpui.log` so a freeze or
+/// crash leaves evidence on disk. `RUST_LOG` still controls the level;
+/// the default is `info`. Panics are logged as well.
+fn init_logging() {
+    let log_dir = backend::local_data_root().join("logs");
+    let file = std::fs::create_dir_all(&log_dir).ok().and_then(|_| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("maple-gpui.log"))
+            .ok()
+    });
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    if let Some(file) = file {
+        builder.target(env_logger::Target::Pipe(Box::new(TeeWriter {
+            file,
+            stderr: std::io::stderr(),
+        })));
+    }
+    builder.init();
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic: {info}");
+        default_hook(info);
+    }));
+    log::info!(
+        "maple-gpui {} starting; log file: {}",
+        env!("CARGO_PKG_VERSION"),
+        log_dir.join("maple-gpui.log").display()
+    );
+}
+
+struct TeeWriter {
+    file: std::fs::File,
+    stderr: std::io::Stderr,
+}
+
+impl std::io::Write for TeeWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = self.file.write_all(buf);
+        self.stderr.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = self.file.flush();
+        self.stderr.flush()
+    }
 }
