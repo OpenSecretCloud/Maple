@@ -1,7 +1,7 @@
 # OpenSecret SDKs
 
-This repository contains the TypeScript/React and Rust clients used by Maple
-and OpenSecret's internal applications. Both clients establish attested,
+This directory contains the TypeScript/React and Rust clients used by Maple and
+OpenSecret's internal applications. Both clients establish attested,
 end-to-end encrypted sessions with an OpenSecret backend and expose the API
 surface needed by those applications.
 
@@ -19,6 +19,12 @@ and tests.
 - `docs/PLATFORM.md` — internal developer/platform API notes.
 - repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
   and supply-chain validation for this directory.
+
+Maple's frontend consumes this TypeScript package through `file:../sdk`.
+Desktop Maple and `proxy/` consume `sdk/rust` through versioned path
+dependencies; iOS and Android exclude those desktop-only Rust consumers.
+Published npm and crates.io packages remain independent compatibility surfaces
+for external users.
 
 ## Security model
 
@@ -116,7 +122,7 @@ opensecret = "3"
 The primary entry point is `OpenSecretClient`. See `rust/README.md` for native
 client examples and transport details.
 
-Run the Rust validation from the repository root:
+Run the Rust validation from the `sdk/` directory:
 
 ```sh
 nix develop --no-update-lock-file -c bash -lc '

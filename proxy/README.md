@@ -13,15 +13,20 @@ Environment (TEE) processing.
 - **Flexible Authentication** - Environment variables or per-request API keys
 - **Familiar Clients** - Point compatible OpenAI clients at the proxy base URL
 - **Lightweight** - Minimal overhead, maximum performance
-- **CORS Support** - Ready for web applications
+- **Optional CORS** - Browser mode requires per-request keys and deployment review
 
 ## 📦 Installation
 
 ### As a Binary
 
-Every Maple GitHub Release includes native proxy archives for Linux x86_64,
-Linux ARM64, Apple Silicon macOS, and Windows x86_64. The stable download URLs
-use the ordinary Maple release, for example:
+Maple's current release workflow builds native proxy archives for Linux x86_64,
+Linux ARM64, Apple Silicon macOS, and Windows x86_64 and attaches them to the
+ordinary Maple app Release. No post-integration Maple release has been cut yet,
+so the current `releases/latest` entry does not contain these files. Until the
+first such release is published, build from source as shown below.
+
+After that release, verify the assets are present and use the stable download
+URLs, for example:
 
 ```bash
 curl -LO https://github.com/OpenSecretCloud/Maple/releases/latest/download/maple-proxy-linux-x86_64.tar.gz
@@ -30,7 +35,7 @@ sha256sum --check --ignore-missing maple-proxy-release-final.sha256
 ```
 
 There is no separate proxy GitHub Release or proxy release tag. To build from
-source instead:
+source now:
 
 ```bash
 git clone https://github.com/OpenSecretCloud/Maple.git
@@ -60,9 +65,9 @@ export MAPLE_HOST=127.0.0.1                    # Server host (default: 127.0.0.1
 export MAPLE_PORT=8080                         # Server port (default: 8080)
 export MAPLE_BACKEND_URL=http://localhost:3000         # Maple backend URL (prod: https://enclave.trymaple.ai)
 export MAPLE_PCR0_ENVIRONMENT=production       # PCR0 trust roots: production (default) or development
-export MAPLE_API_KEY=your-maple-api-key        # Default API key (optional)
+export MAPLE_API_KEY=your-maple-api-key        # Optional for trusted, non-browser clients only
 export MAPLE_DEBUG=true                        # Enable debug logging
-export MAPLE_ENABLE_CORS=true                  # Enable CORS
+export MAPLE_ENABLE_CORS=false                 # Default; see browser warning below
 export MAPLE_REQUEST_TIMEOUT_SECS=300          # Backend request timeout
 export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between chunks
 ```
@@ -270,17 +275,27 @@ curl -H "Authorization: Bearer different-api-key" ...
 
 ## 🌐 CORS Support
 
-Enable CORS for web applications:
+The standalone proxy does not inherit Maple's Tauri wrapper protections. If a
+browser must call it, do not configure `MAPLE_API_KEY`; require every request
+to carry its own bearer key and review the network exposure separately before
+enabling CORS:
+
 ```bash
+unset MAPLE_API_KEY
 export MAPLE_ENABLE_CORS=true
 cargo run --locked
 ```
 
 ## 🐳 Docker Deployment
 
-### Quick Start with Pre-built Image
+### Legacy Pre-built Image
 
-Pull and run the official image from GitHub Container Registry:
+The currently published GHCR `latest` image is the independently released
+standalone proxy 0.3.2. Maple's in-tree source is 0.3.3, and the root container
+workflow currently builds without pushing. Build from source for the current
+code until an explicitly authorized Maple-owned GHCR publisher is added.
+
+To run the legacy image deliberately:
 
 ```bash
 # Pull the latest image
@@ -306,7 +321,7 @@ just docker-run
 
 ### Production Docker Setup
 
-1. **Option A: Use pre-built image from GHCR**
+1. **Option A: Use the legacy 0.3.2 image from GHCR**
 ```bash
 # In your docker-compose.yml, use:
 image: ghcr.io/opensecretcloud/maple-proxy:latest
@@ -344,10 +359,9 @@ client = OpenAI(
 )
 ```
 
-This ensures:
-- Users' API keys remain private
-- Multiple users can share the same proxy instance
-- No API keys are exposed in container configurations
+This keeps API keys out of the shared container configuration and allows each
+client to supply its own credential. Review proxy logs and browser policy
+before treating a public deployment as safe.
 
 ### Docker Commands
 
@@ -379,7 +393,6 @@ The Docker image:
 - Uses multi-stage builds for minimal size (~130MB)
 - Runs as non-root user for security
 - Includes health checks
-- Optimizes dependency caching with cargo-chef
 - Supports both x86_64 and ARM architectures
 
 ### Environment Variables for Docker
@@ -404,6 +417,13 @@ in the Maple repository. Root, path-scoped workflows run locked Rust checks,
 supply-chain policy, and non-publishing AMD64/ARM64 container builds for proxy
 changes. Production publishing is intentionally handled separately from these
 CI checks.
+
+`proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
+`frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency
+changes must keep the path graph and all affected locks coherent. Docker builds
+must use the Maple repository root as context so both `proxy/` and `sdk/rust/`
+are available. GitHub Release archives, crates.io, and GHCR are three separate
+publication paths; completing one does not update the others.
 
 **Local Development (Justfile)**
 ```bash

@@ -21,6 +21,9 @@ commit, external effect, and authority provided by the user.
 - The same Maple GitHub Release receives four native `maple-proxy` archives and
   their checksum manifest. Never create a separate proxy Release or proxy tag;
   `/releases/latest` must continue to identify the Maple application release.
+- Maple GitHub Releases do not publish `opensecret` or `maple-proxy` to
+  crates.io and do not push a GHCR image. Those are separately versioned,
+  separately authorized production mutations.
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
@@ -81,6 +84,20 @@ The script requires a clean current `master`, exact manifest version parity, a
 newer version and unused tag, and successful required workflows for the exact
 commit. Stop on any failure; correct it through the normal reviewed process.
 Never overwrite or move a release tag.
+
+Record the proxy version and whether proxy or Rust SDK runtime inputs changed
+since `previous_tag`:
+
+```bash
+proxy_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' proxy/Cargo.toml | head -n 1)"
+git diff --name-only "$previous_tag".."$head_sha" -- proxy sdk/rust
+printf 'proxy_version=%s\n' "$proxy_version"
+```
+
+If runtime inputs changed without a proxy version change, stop and make the
+version decision explicit before publishing. A normal Maple Release always
+builds the checked-in proxy version, but that does not implicitly authorize a
+crates.io or GHCR publish.
 
 Preview GitHub's generated notes:
 
@@ -182,6 +199,13 @@ nix develop --no-update-lock-file .#ci -c \
   ./scripts/ci/verify-release-artifacts.sh artifacts proxy
 ```
 
+Confirm the release contains all four stable proxy archives and
+`maple-proxy-release-final.sha256`, and that their attestations and the
+published-asset verification job succeeded. Report the embedded proxy version
+separately from the Maple application version. Do not report crates.io or GHCR
+as updated unless their independent publisher was explicitly authorized and
+verified.
+
 Zapstore starts only after `Release` succeeds and is strictly best effort. Its
 queued, running, skipped, or failed state must not delay release completion,
 trigger a release retry, or be reported as a Maple release failure. Inspect it
@@ -228,9 +252,10 @@ in the release handoff or issue that owns them, not in this evergreen skill.
 
 ## Report
 
-Report the version, tag, exact commit, release URL, main workflow URL and
-attempt count, artifact verification result, any required-workflow retry and
-supporting evidence, authorized store/API actions, and every boundary that
-remains unverified. If Zapstore was inspected, report its status separately as
+Report the Maple version, proxy version, tag, exact commit, release URL, main
+workflow URL and attempt count, application and four-proxy-archive verification
+results, any required-workflow retry and supporting evidence, authorized
+store/API actions, and every boundary that remains unverified. State crates.io
+and GHCR status separately. If Zapstore was inspected, report its status as
 non-gating. Separate repository release completion from store distribution and
 live application availability.

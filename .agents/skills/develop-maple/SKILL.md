@@ -15,6 +15,8 @@ Work from the `OpenSecretCloud/Maple` repository root. Treat `justfile`, `fronte
 - Use `$develop-opensecret-sdk` for changes to the TypeScript/React or Rust SDK
   source under `sdk/`, including its backend integration revision or package
   boundaries.
+- Use `$develop-maple-proxy` for changes to the proxy crate, standalone binary,
+  container, or public OpenAI-compatible behavior under `proxy/`.
 - Use `$release-maple` for version bumps, tags, publishing, release CI, or distribution. Never use `just release` during ordinary development.
 
 Keep the current task scoped when one of these skills is unnecessary. Do not claim specialized validation that was not run.

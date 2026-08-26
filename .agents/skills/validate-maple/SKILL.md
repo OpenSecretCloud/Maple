@@ -39,15 +39,21 @@ Use for pure React, TypeScript, CSS, state, and browser behavior with no native 
 - Smoke the changed state in a real browser. Cover loading, empty, success, error, and disabled states when relevant.
 - Test keyboard operation, focus, accessible labels, light/dark themes, and narrow/wide layouts when the change can affect them.
 
-SDK-only changes under `sdk/` are an independent monorepo component rather
-than Maple frontend changes. Load `$develop-opensecret-sdk`, run the applicable
-TypeScript or Rust SDK checks, and add the pinned local OpenSecret integration
-when the public protocol or backend compatibility changes. Read
-`frontend/package.json` to determine whether TypeScript SDK changes are Maple
-frontend inputs; the dependency may be a published version or `file:../sdk`.
-Rust SDK-only changes remain outside Maple application coverage until the
-published crate pin or coordinated proxy/Rust wiring changes. Do not run
-unrelated Maple packaging solely because an independent SDK boundary changed.
+SDK work under `sdk/` has its own component checks. Load
+`$develop-opensecret-sdk`, run the applicable TypeScript or Rust SDK checks,
+and add the pinned local OpenSecret integration when the public protocol or
+backend compatibility changes. Maple's frontend consumes `file:../sdk`;
+desktop Maple and `proxy/` consume `sdk/rust` through local path dependencies.
+Rust SDK runtime changes therefore require proxy checks and desktop Maple
+coverage, while SDK tests/docs/examples and standalone lockfile changes remain
+independent. Do not run unrelated mobile packaging for desktop-only Rust SDK
+or proxy inputs.
+
+Proxy work under `proxy/` likewise has component and application boundaries.
+Load `$develop-maple-proxy`. Proxy or Rust SDK runtime inputs route to desktop
+Maple, not iOS or Android; proxy tests, examples, docs, its standalone
+`Cargo.lock`, and container-only inputs remain independently scoped unless the
+dependency graph or public runtime contract changes.
 
 ### Tier 2: API, account, persistence, and streaming integration
 
@@ -146,6 +152,38 @@ nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 ```
 
 The lint recipe runs `cargo fmt --check` and Clippy with warnings denied. The CI script provisions Linux ONNX Runtime when needed and runs `cargo test --all-targets --locked`. Neither command launches Maple.
+
+### Proxy checks and local dependency graph
+
+Run the proxy's CI-equivalent component checks through its pinned shell:
+
+```bash
+nix develop --no-update-lock-file ./proxy -c bash -lc '
+  cd proxy
+  cargo fmt --all -- --check
+  cargo clippy --locked --all-targets --all-features -- -D warnings
+  cargo test --locked --all-features
+  RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+  cargo machete
+'
+```
+
+For proxy dependency-wiring or Rust SDK runtime changes, also prove the root
+application resolves the intended in-tree crates:
+
+```bash
+nix develop --no-update-lock-file .#ci -c \
+  ./scripts/ci/verify-local-rust-deps.sh
+```
+
+The container build uses the Maple root as context because it copies
+`proxy/` and `sdk/rust/`:
+
+```bash
+docker build -f proxy/Dockerfile -t maple-proxy:validation .
+```
+
+A component check or image build is not runtime evidence.
 
 ### Repository configuration checks
 
@@ -301,6 +339,17 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
 - Before local-proxy smoke, choose and verify an unused checkout-specific
   loopback port. After start, verify that the recorded Maple PID owns the
   listener; do not assume the default port is available.
+- Keep two proxy smoke targets separate. For the standalone binary, launch the
+  exact checkout on loopback with explicit backend/PCR configuration, no saved
+  key in browser-facing CORS mode, and record the binary and listener PID. For
+  the Tauri Local OpenAI Proxy, start it through the exact packaged or
+  development app UI and verify its account, lifecycle, saved-key, CORS, and
+  logout behavior through that app. One target does not prove the other.
+- When forwarding behavior changes, exercise authenticated `/v1/models`, one
+  non-streaming chat response, one streaming response with exactly one
+  `[DONE]`, and embeddings against the intended backend. Add invalid/missing
+  authentication, timeout, cancellation, and upstream-error cases as
+  applicable. `/health` alone is only liveness evidence.
 
 ### PDF and OCR
 

@@ -1,5 +1,9 @@
 # OpenSecret Rust SDK
 
+This source lives under Maple's `sdk/rust/` directory. Desktop Maple and
+Maple's in-tree `proxy/` consume it through versioned path dependencies, while
+crates.io publishing remains an independent compatibility surface.
+
 Rust SDK for OpenSecret - secure AI API interactions with nitro attestation.
 
 ## Features
@@ -225,7 +229,8 @@ match client.login(email, password, client_id).await {
 
 ## Testing
 
-The SDK reads configuration from `.env.local` in the parent directory (OpenSecret-SDK root), matching the TypeScript SDK setup.
+The SDK reads configuration from `.env.local` in the parent Maple `sdk/`
+directory, matching the TypeScript SDK setup.
 
 Required environment variables in `.env.local`:
 ```bash
