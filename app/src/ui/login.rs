@@ -207,18 +207,9 @@ impl LoginScreen {
 impl EventEmitter<LoginSucceeded> for LoginScreen {}
 
 impl Render for LoginScreen {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy;
-        if !self.focused_once {
-            // Sign-in screens focus the first field so typing works
-            // immediately.
-            self.focused_once = true;
-            use gpui::Focusable as _;
-            let handle = self.email_input.read(cx).focus_handle(cx);
-            window.focus(&handle);
-        }
         let mut card = div()
-            .id("login-card")
             .flex()
             .flex_col()
             .gap_3()
@@ -414,7 +405,8 @@ impl Render for LoginScreen {
         }
 
         div()
-            .size_full()
+            .flex_1()
+            .min_h_0()
             .flex()
             .justify_center()
             .items_center()

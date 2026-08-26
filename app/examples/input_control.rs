@@ -1,15 +1,13 @@
-//! Single-line text input, ported from the gpui 0.2.2 `input` example and
-//! adapted for Maple: neutral theming, optional password masking, and an
-//! Enter-key hook for form submit and composer send.
-
-use std::ops::Range;
+//! Upstream gpui 0.2.2 input example, verbatim, as a control for the
+//! click-to-focus investigation.
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InteractiveElement,
-    KeyBinding, Keystroke, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
-    actions, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size,
+    App, AppContext, Application, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId,
+    KeyBinding, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, WindowBounds,
+    WindowOptions, actions, div, fill, hsla, opaque_grey, point, prelude::*, px, relative, rgb,
+    rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -29,37 +27,11 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Quit,
     ]
 );
 
-/// Register the default key bindings for every TextInput. Safe to call once
-/// at startup; covers both platform modifier conventions.
-pub fn register_key_bindings(cx: &mut App) {
-    let context = Some("TextInput");
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, context),
-        KeyBinding::new("delete", Delete, context),
-        KeyBinding::new("left", Left, context),
-        KeyBinding::new("right", Right, context),
-        KeyBinding::new("shift-left", SelectLeft, context),
-        KeyBinding::new("shift-right", SelectRight, context),
-        KeyBinding::new("ctrl-a", SelectAll, context),
-        KeyBinding::new("cmd-a", SelectAll, context),
-        KeyBinding::new("ctrl-v", Paste, context),
-        KeyBinding::new("cmd-v", Paste, context),
-        KeyBinding::new("ctrl-c", Copy, context),
-        KeyBinding::new("cmd-c", Copy, context),
-        KeyBinding::new("ctrl-x", Cut, context),
-        KeyBinding::new("cmd-x", Cut, context),
-        KeyBinding::new("home", Home, context),
-        KeyBinding::new("end", End, context),
-        KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, context),
-    ]);
-}
-
-type EnterHandler = Box<dyn Fn(String, &mut Window, &mut Context<TextInput>) + 'static>;
-
-pub struct TextInput {
+struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
@@ -69,114 +41,15 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
-    /// Render '*' in place of content characters (password fields).
-    mask: bool,
-    /// Clear the content once the Enter hook has consumed it (composer behavior).
-    clear_on_enter: bool,
-    /// Explicit tab order for this input within its surface. Inputs without
-    /// distinct indices collapse onto the same tab-stop path, which makes
-    /// focus navigation a no-op.
-    tab_index: Option<isize>,
-    on_enter: Option<EnterHandler>,
+}
+
+#[derive(Debug)]
+enum Overflow {
+    Scroll,
+    Wrap,
 }
 
 impl TextInput {
-    pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
-        Self {
-            focus_handle: cx.focus_handle(),
-            content: "".into(),
-            placeholder: SharedString::from(placeholder.to_string()),
-            selected_range: 0..0,
-            selection_reversed: false,
-            marked_range: None,
-            last_layout: None,
-            last_bounds: None,
-            is_selecting: false,
-            mask: false,
-            clear_on_enter: false,
-            tab_index: None,
-            on_enter: None,
-        }
-    }
-
-    /// Give this input an explicit position in the tab order.
-    pub fn with_tab_index(mut self, index: isize) -> Self {
-        self.tab_index = Some(index);
-        self
-    }
-
-    /// Clear the content once the Enter hook has consumed it.
-    pub fn clears_on_enter(mut self) -> Self {
-        self.clear_on_enter = true;
-        self
-    }
-
-    pub fn masked(mut self) -> Self {
-        self.mask = true;
-        self
-    }
-
-    pub fn on_enter(
-        mut self,
-        handler: impl Fn(String, &mut Window, &mut Context<TextInput>) + 'static,
-    ) -> Self {
-        self.on_enter = Some(Box::new(handler));
-        self
-    }
-
-    /// Attach or replace the Enter hook after construction. The handler
-    /// receives the current text so it never reads this entity re-entrantly.
-    pub fn set_on_enter(
-        &mut self,
-        handler: impl Fn(String, &mut Window, &mut Context<TextInput>) + 'static,
-    ) {
-        self.on_enter = Some(Box::new(handler));
-    }
-
-    pub fn text(&self) -> String {
-        self.content.to_string()
-    }
-
-    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.content = SharedString::from(text.to_string());
-        self.selected_range = self.content.len()..self.content.len();
-        cx.notify();
-    }
-
-    pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.content = "".into();
-        self.selected_range = 0..0;
-        self.selection_reversed = false;
-        cx.notify();
-    }
-
-    fn enter_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Hand the handler the current text so it never has to read this
-        // entity while it is being updated.
-        let text = self.text();
-        if let Some(on_enter) = self.on_enter.take() {
-            on_enter(text, window, cx);
-            self.on_enter = Some(on_enter);
-        }
-        if self.clear_on_enter {
-            self.clear(cx);
-        }
-    }
-
-    fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
-    }
-
-    fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
-    }
-
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
@@ -214,6 +87,20 @@ impl TextInput {
         self.move_to(self.content.len(), cx);
     }
 
+    fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_boundary(self.cursor_offset()), cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.next_boundary(self.cursor_offset()), cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -221,6 +108,7 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         self.is_selecting = true;
+
         if event.modifiers.shift {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         } else {
@@ -260,7 +148,6 @@ impl TextInput {
             ));
         }
     }
-
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -283,50 +170,22 @@ impl TextInput {
         }
     }
 
-    /// Byte offset into the shaped display string for a content byte offset.
-    fn to_display_offset(&self, offset: usize) -> usize {
-        if self.mask {
-            self.content[..offset.min(self.content.len())]
-                .chars()
-                .count()
-        } else {
-            offset
-        }
-    }
-
-    fn display_text(&self) -> SharedString {
-        if self.mask {
-            "*".repeat(self.content.chars().count()).into()
-        } else {
-            self.content.clone()
-        }
-    }
-
     fn index_for_mouse_position(&self, position: gpui::Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
         }
+
         let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
         else {
             return 0;
         };
-        let mut index = if position.y < bounds.top() {
-            0
-        } else if position.y > bounds.bottom() {
-            self.content.len()
-        } else {
-            line.closest_index_for_x(position.x - bounds.left())
-        };
-        if self.mask {
-            // Map a display ('*') index back to the content byte offset.
-            let chars = self.content.char_indices().collect::<Vec<_>>();
-            let display = index.min(chars.len());
-            index = chars
-                .get(display)
-                .map(|(i, _)| *i)
-                .unwrap_or(self.content.len());
+        if position.y < bounds.top() {
+            return 0;
         }
-        index
+        if position.y > bounds.bottom() {
+            return self.content.len();
+        }
+        line.closest_index_for_x(position.x - bounds.left())
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -345,6 +204,7 @@ impl TextInput {
     fn offset_from_utf16(&self, offset: usize) -> usize {
         let mut utf8_offset = 0;
         let mut utf16_count = 0;
+
         for ch in self.content.chars() {
             if utf16_count >= offset {
                 break;
@@ -352,12 +212,14 @@ impl TextInput {
             utf16_count += ch.len_utf16();
             utf8_offset += ch.len_utf8();
         }
+
         utf8_offset
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
         let mut utf16_offset = 0;
         let mut utf8_count = 0;
+
         for ch in self.content.chars() {
             if utf8_count >= offset {
                 break;
@@ -365,6 +227,7 @@ impl TextInput {
             utf8_count += ch.len_utf8();
             utf16_offset += ch.len_utf16();
         }
+
         utf16_offset
     }
 
@@ -390,7 +253,19 @@ impl TextInput {
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
     }
+
+    fn reset(&mut self) {
+        self.content = "".into();
+        self.selected_range = 0..0;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.last_layout = None;
+        self.last_bounds = None;
+        self.is_selecting = false;
+    }
 }
+
+use std::ops::Range;
 
 impl EntityInputHandler for TextInput {
     fn text_for_range(
@@ -492,12 +367,13 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let start = self.to_display_offset(range.start);
-        let end = self.to_display_offset(range.end);
         Some(Bounds::from_corners(
-            point(bounds.left() + last_layout.x_for_index(start), bounds.top()),
             point(
-                bounds.left() + last_layout.x_for_index(end),
+                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + last_layout.x_for_index(range.end),
                 bounds.bottom(),
             ),
         ))
@@ -511,21 +387,8 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        if self.mask {
-            // Map a display ('*') index back to the content byte offset.
-            let chars = self.content.char_indices().collect::<Vec<_>>();
-            let display = last_layout.index_for_x(point.x - line_point.x)?;
-            let offset = chars
-                .get(display)
-                .map(|(i, _)| *i)
-                .unwrap_or(self.content.len());
-            return Some(self.offset_to_utf16(offset));
-        }
-        if last_layout.text != self.content {
-            // Layout is from a previous frame; report no hit instead of
-            // slicing with stale offsets.
-            return None;
-        }
+
+        assert_eq!(last_layout.text, self.content);
         let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
         Some(self.offset_to_utf16(utf8_index))
     }
@@ -587,13 +450,12 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
-        let mask = input.mask;
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0., 0., 1., 0.3))
+            (input.placeholder.clone(), hsla(0., 0., 0., 0.2))
         } else {
-            (input.display_text(), style.color)
+            (content, style.color)
         };
 
         let run = TextRun {
@@ -636,12 +498,7 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
 
-        let display_cursor = if mask {
-            content[..cursor.min(content.len())].chars().count()
-        } else {
-            cursor
-        };
-        let cursor_pos = line.x_for_index(display_cursor);
+        let cursor_pos = line.x_for_index(cursor);
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
@@ -650,31 +507,23 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    rgb(0xe7e7ea),
+                    gpui::blue(),
                 )),
             )
         } else {
-            let start = if mask {
-                content[..selected_range.start.min(content.len())]
-                    .chars()
-                    .count()
-            } else {
-                selected_range.start
-            };
-            let end = if mask {
-                content[..selected_range.end.min(content.len())]
-                    .chars()
-                    .count()
-            } else {
-                selected_range.end
-            };
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(bounds.left() + line.x_for_index(start), bounds.top()),
-                        point(bounds.left() + line.x_for_index(end), bounds.bottom()),
+                        point(
+                            bounds.left() + line.x_for_index(selected_range.start),
+                            bounds.top(),
+                        ),
+                        point(
+                            bounds.left() + line.x_for_index(selected_range.end),
+                            bounds.bottom(),
+                        ),
                     ),
-                    rgba(0x4a7dff40),
+                    rgba(0x3311ff30),
                 )),
                 None,
             )
@@ -742,31 +591,6 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                let no_modifiers = !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                    && !event.keystroke.modifiers.platform;
-                if event.keystroke.key.eq_ignore_ascii_case("tab")
-                    && no_modifiers
-                    && this.marked_range.is_none()
-                {
-                    if event.keystroke.modifiers.shift {
-                        window.focus_prev();
-                    } else {
-                        window.focus_next();
-                    }
-                    cx.stop_propagation();
-                }
-                let plain_enter =
-                    event.keystroke.key == "enter" && this.marked_range.is_none() && no_modifiers;
-                if plain_enter {
-                    this.enter_pressed(window, cx);
-                    // Stop the platform text input from also inserting a
-                    // newline for the unhandled Return keystroke.
-                    cx.stop_propagation();
-                }
-            }))
-            .when_some(self.tab_index, |el, index| el.tab_index(index))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -782,5 +606,162 @@ impl Focusable for TextInput {
     }
 }
 
-#[allow(dead_code)]
-fn _unused_keystroke_assert(_: &Keystroke) {}
+struct RootView {
+    first: Entity<TextInput>,
+    second: Entity<TextInput>,
+}
+
+impl Render for RootView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Replicate maple-gpui root: titlebar entity + content column with
+        // the ctrl-q key handler.
+        let titlebar = cx.new(|_| FakeTitleBar);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_key_down(cx.listener(|_this, _event: &gpui::KeyDownEvent, _window, _cx| {}))
+            .child(titlebar)
+            .child(
+                div().flex_1().min_h_0().child(
+                    div()
+                        .id("login-screen-root")
+                        .size_full()
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .bg(rgb(0x0a0a0a))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_3()
+                                .w(px(380.))
+                                .p_6()
+                                .rounded_lg()
+                                .bg(rgb(0x171717))
+                                .border_1()
+                                .border_color(rgb(0x2f2f37))
+                                .child(div().text_xl().child("Maple"))
+                                .child(div().text_sm().child("Sign in"))
+                                .child(field_wrap(self.first.clone()))
+                                .child(field_wrap(self.second.clone()))
+                                .child(
+                                    div()
+                                        .id("login-submit")
+                                        .flex()
+                                        .justify_center()
+                                        .py_2()
+                                        .rounded_md()
+                                        .bg(rgb(0xff9771))
+                                        .child("Sign in"),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap_2()
+                                        .child(oauth_btn("GitHub"))
+                                        .child(oauth_btn("Google"))
+                                        .child(oauth_btn("Apple")),
+                                ),
+                        ),
+                ),
+            )
+    }
+}
+
+struct FakeTitleBar;
+
+impl Render for FakeTitleBar {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().w_full().h(px(34.)).bg(rgb(0x262626)).child("Maple")
+    }
+}
+
+fn oauth_btn(label: &str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(gpui::SharedString::from(format!("oauth-{label}")))
+        .flex_1()
+        .flex()
+        .justify_center()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x2f2f37))
+        .text_sm()
+        .child(label.to_string())
+}
+
+fn field_wrap(input: Entity<TextInput>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(div().text_sm().child("Label"))
+        .child(
+            div()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(opaque_grey(0., 0.2))
+                .child(input),
+        )
+}
+
+fn main() {
+    Application::new().run(|cx: &mut App| {
+        let bounds = Bounds::centered(None, size(px(300.0), px(300.0)), cx);
+        cx.bind_keys([
+            KeyBinding::new("backspace", Backspace, None),
+            KeyBinding::new("delete", Delete, None),
+            KeyBinding::new("left", Left, None),
+            KeyBinding::new("right", Right, None),
+            KeyBinding::new("shift-left", SelectLeft, None),
+            KeyBinding::new("shift-right", SelectRight, None),
+            KeyBinding::new("cmd-a", SelectAll, None),
+            KeyBinding::new("cmd-v", Paste, None),
+            KeyBinding::new("cmd-c", Copy, None),
+            KeyBinding::new("cmd-x", Cut, None),
+            KeyBinding::new("home", Home, None),
+            KeyBinding::new("end", End, None),
+            KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, None),
+        ]);
+
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..Default::default()
+            },
+            |_, cx| {
+                let text_input = cx.new(|cx| TextInput {
+                    focus_handle: cx.focus_handle(),
+                    content: "".into(),
+                    placeholder: "Type here...".into(),
+                    selected_range: 0..0,
+                    selection_reversed: false,
+                    marked_range: None,
+                    last_layout: None,
+                    last_bounds: None,
+                    is_selecting: false,
+                });
+                let second = cx.new(|cx| TextInput {
+                    focus_handle: cx.focus_handle(),
+                    content: "".into(),
+                    placeholder: "Second field".into(),
+                    selected_range: 0..0,
+                    selection_reversed: false,
+                    marked_range: None,
+                    last_layout: None,
+                    last_bounds: None,
+                    is_selecting: false,
+                });
+                cx.new(|_| RootView {
+                    first: text_input.clone(),
+                    second,
+                })
+            },
+        )
+        .unwrap();
+        cx.activate(true);
+    });
+}

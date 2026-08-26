@@ -39,6 +39,12 @@ pub struct ChatScreen {
     booting: bool,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
+    /// Drives the transcript scroll; pinned to the bottom on new items.
+    transcript_scroll: gpui::ScrollHandle,
+    /// Set when the transcript should jump to its newest content. The
+    /// built-in scroll_to_bottom flag is not consumed reliably by this
+    /// gpui release, so the offset is set directly during render.
+    follow_transcript: bool,
     /// Root the runtime is currently serving; new tasks operate here.
     project_root: Option<String>,
     recent_roots: Vec<String>,
@@ -84,6 +90,8 @@ impl ChatScreen {
             notice: None,
             booting: true,
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
+            transcript_scroll: gpui::ScrollHandle::new(),
+            follow_transcript: true,
             project_root: None,
             recent_roots: Vec::new(),
             root_menu_open: false,
@@ -107,9 +115,6 @@ impl ChatScreen {
     {
         let task = self.backend.spawn(future);
         cx.spawn(async move |this, cx| {
-            if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
-                eprintln!("CALL complete");
-            }
             let result = task.await.unwrap_or_else(|error| {
                 log::debug!("agent task failed: {error:?}");
                 Err("The agent task was cancelled".to_string())
@@ -147,9 +152,6 @@ impl ChatScreen {
     }
 
     fn refresh_roots(&self, cx: &mut Context<Self>) {
-        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
-            eprintln!("CALL start ROOTS");
-        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -232,21 +234,23 @@ impl ChatScreen {
     }
 
     fn refresh_models(&self, cx: &mut Context<Self>) {
-        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
-            eprintln!("CALL start MODELS");
-        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let env_model = backend.configured_model();
         self.call(
-            async move { backend.available_model_ids(&user_id).await },
+            async move {
+                let saved = backend.saved_model(&user_id).await;
+                let models = backend.available_model_ids(&user_id).await?;
+                Ok((models, saved))
+            },
             cx,
-            |this, result, cx| {
-                if let Ok(models) = result {
+            move |this, result, cx| {
+                if let Ok((models, saved)) = result {
                     if this.selected_model.is_none() {
-                        this.selected_model = this
-                            .backend
-                            .configured_model()
-                            .or_else(|| models.first().cloned());
+                        // Env override wins, then the account's saved
+                        // default, then the first catalog entry.
+                        this.selected_model =
+                            env_model.or(saved).or_else(|| models.first().cloned());
                     }
                     this.models = models;
                 }
@@ -256,13 +260,14 @@ impl ChatScreen {
     }
 
     fn refresh_sessions(&self, cx: &mut Context<Self>) {
-        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
-            eprintln!("CALL start SESSIONS");
-        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        // Scope the list to the runtime's project root so sessions created
+        // under other roots never leak in (their working directories would
+        // run tools in the wrong place).
+        let root = self.project_root.clone();
         self.call(
-            async move { backend.list_sessions(&user_id, None).await },
+            async move { backend.list_sessions(&user_id, root).await },
             cx,
             |this, result, cx| {
                 match result {
@@ -418,6 +423,7 @@ impl ChatScreen {
         self.selected_session = Some(session.id);
         self.timeline = timeline;
         self.list_state.reset(self.timeline.len());
+        self.follow_transcript = true;
         self.pending_permission = None;
         self.permission_responding = false;
         self.models_menu_open = false;
@@ -599,10 +605,18 @@ impl ChatScreen {
     }
 
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
-        self.selected_model = Some(model);
+        self.selected_model = Some(model.clone());
         self.models_menu_open = false;
         self.root_menu_open = false;
         cx.notify();
+        // Remember the choice across launches via the agent config.
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.save_default_model(&user_id, model).await },
+            cx,
+            |_this, _result, _cx| {},
+        );
     }
 
     /// Apply a timeline item using Maple's merge contract: `append` extends
@@ -655,6 +669,7 @@ impl ChatScreen {
             .timeline_revisions
             .entry(session_id.to_string())
             .or_insert(0) += 1;
+        self.follow_transcript = true;
     }
 
     fn upsert_session(&mut self, session: AgentSessionSummary) {
@@ -671,57 +686,6 @@ impl ChatScreen {
 
     /// Route one backend service event into UI state.
     pub fn handle_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) {
-        if std::env::var("MAPLE_DEBUG_EVENTS").is_ok() {
-            let summary = match &event {
-                AgentServiceEvent::RuntimeStatus(status) => {
-                    format!(
-                        "RuntimeStatus running={} runs={}",
-                        status.running,
-                        status.active_runs.len()
-                    )
-                }
-                AgentServiceEvent::SessionCreated(session) => {
-                    format!("SessionCreated {} {}", session.id, session.title)
-                }
-                AgentServiceEvent::SessionUpdated {
-                    session_id,
-                    session,
-                    ..
-                } => {
-                    format!("SessionUpdated {session_id} -> {}", session.title)
-                }
-                AgentServiceEvent::TimelineItem {
-                    session_id, item, ..
-                } => {
-                    format!(
-                        "TimelineItem {session_id} type={} text_len={}",
-                        item.item_type,
-                        item.text.as_deref().map(str::len).unwrap_or(0)
-                    )
-                }
-                AgentServiceEvent::Run {
-                    session_id,
-                    run_id,
-                    event,
-                } => match event {
-                    maple_agent::agent::AgentRunEvent::Started => {
-                        format!("Run {session_id} {run_id} Started")
-                    }
-                    maple_agent::agent::AgentRunEvent::TimelineItem(item) => {
-                        format!(
-                            "Run {session_id} {run_id} TimelineItem type={} text_len={}",
-                            item.item_type,
-                            item.text.as_deref().map(str::len).unwrap_or(0)
-                        )
-                    }
-                    maple_agent::agent::AgentRunEvent::Finished(_) => {
-                        format!("Run {session_id} {run_id} Finished")
-                    }
-                    other => format!("Run {session_id} {run_id} {}", event_kind(other)),
-                },
-            };
-            eprintln!("EVE {summary}");
-        }
         match event {
             AgentServiceEvent::RuntimeStatus(status) => {
                 // The status snapshot is authoritative for active runs.
@@ -834,29 +798,37 @@ impl EventEmitter<LoggedOut> for ChatScreen {}
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .size_full()
+            .flex_1()
+            .min_h_0()
             .flex()
-            .flex_row()
+            .flex_col()
             .bg(gpui::rgb(theme::BG_APP))
-            .child(self.render_sidebar(cx))
             .child(
                 div()
-                    .flex()
-                    .flex_col()
                     .flex_1()
-                    .h_full()
-                    .min_w_0()
-                    .child(self.render_header(cx))
-                    .children(self.render_menu_panel(cx))
-                    .child(self.render_transcript(window, cx))
-                    .when_some(self.pending_permission.clone(), |container, permission| {
-                        container.child(render_permission_card(
-                            permission,
-                            self.permission_responding,
-                            cx,
-                        ))
-                    })
-                    .child(self.render_composer(cx)),
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .child(self.render_sidebar(cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .h_full()
+                            .min_w_0()
+                            .child(self.render_header(cx))
+                            .children(self.render_menu_panel(cx))
+                            .child(self.render_transcript(window, cx))
+                            .when_some(self.pending_permission.clone(), |container, permission| {
+                                container.child(render_permission_card(
+                                    permission,
+                                    self.permission_responding,
+                                    cx,
+                                ))
+                            })
+                            .child(self.render_composer(cx)),
+                    ),
             )
     }
 }
@@ -911,6 +883,7 @@ impl ChatScreen {
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
+                    .track_scroll(&self.transcript_scroll)
                     .px_2()
                     .gap_1()
                     .children(sessions.iter().map(|session| {
@@ -1172,7 +1145,11 @@ impl ChatScreen {
         None
     }
 
-    fn render_transcript(&self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_transcript(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let empty = self.timeline.is_empty();
         let booting = self.booting;
         let items = self.timeline.clone();
@@ -1185,6 +1162,7 @@ impl ChatScreen {
             .px_6()
             .py_4()
             .overflow_y_scroll()
+            .track_scroll(&self.transcript_scroll)
             .overflow_x_hidden()
             .when(empty, |container| {
                 container.child(
@@ -1203,7 +1181,26 @@ impl ChatScreen {
                 )
             })
             .when(!empty, |container| {
-                container.children(items.iter().map(|item| render_timeline_item(item)))
+                // Newest TURN first: gpui 0.2.2's programmatic
+                // bottom-scroll is unreliable, so the transcript shows the
+                // latest exchange at the top where it is always visible.
+                // Items keep their natural order inside each turn.
+                let mut turns: Vec<Vec<&AgentTimelineItem>> = Vec::new();
+                for item in items.iter() {
+                    let starts_turn =
+                        item.item_type == "message" && item.role.as_deref() == Some("user");
+                    if starts_turn || turns.is_empty() {
+                        turns.push(Vec::new());
+                    }
+                    turns.last_mut().expect("turn").push(item);
+                }
+                container.children(
+                    turns
+                        .into_iter()
+                        .rev()
+                        .flatten()
+                        .map(|item| render_timeline_item(item)),
+                )
             })
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(
@@ -1409,7 +1406,8 @@ fn render_tool(item: &AgentTimelineItem) -> Div {
                 .text_xs()
                 .text_color(gpui::rgb(theme::TEXT_MUTED))
                 .font_family("monospace")
-                .line_clamp(3)
+                .line_clamp(2)
+                .overflow_x_hidden()
                 .child(line)
         }))
 }
@@ -1584,20 +1582,6 @@ fn render_permission_card(
         );
     }
     card.child(buttons)
-}
-
-fn event_kind(event: &maple_agent::agent::AgentRunEvent) -> &'static str {
-    use maple_agent::agent::AgentRunEvent;
-    match event {
-        AgentRunEvent::SessionUpdated(_) => "SessionUpdated",
-        AgentRunEvent::PermissionRequested { .. } => "PermissionRequested",
-        AgentRunEvent::SetupWarning(_) => "SetupWarning",
-        AgentRunEvent::HistoryReplaced => "HistoryReplaced",
-        AgentRunEvent::Error(_) => "Error",
-        AgentRunEvent::QueueChanged(_) => "QueueChanged",
-        AgentRunEvent::QueuePromoted { .. } => "QueuePromoted",
-        _ => "other",
-    }
 }
 
 fn relative_time(when: i64) -> String {

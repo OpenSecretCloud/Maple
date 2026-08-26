@@ -85,6 +85,7 @@ fn find_maple_window(
     let setup = conn.setup();
     let root = setup.roots[0].root;
     let tree = conn.query_tree(root)?.reply()?;
+    let mut fallback = None;
     for window in tree.children {
         let name = conn
             .get_property(
@@ -100,8 +101,14 @@ fn find_maple_window(
         if bytes.as_slice() == b"Maple" {
             return Ok(window);
         }
+        let geometry = conn.get_geometry(window)?.reply().ok();
+        if let Some(geometry) = geometry {
+            if geometry.width > 10 && geometry.height > 10 {
+                fallback = fallback.or(Some(window));
+            }
+        }
     }
-    Err("Maple window not found".into())
+    fallback.ok_or("no window found".into())
 }
 
 fn release(conn: &RustConnection, keysym: Keysym) -> Result<(), x11rb::errors::ReplyError> {

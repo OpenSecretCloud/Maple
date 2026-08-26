@@ -40,9 +40,6 @@ impl Render for TitleBar {
             .border_color(gpui::rgb(theme::BORDER_SUBTLE))
             // Any press in the bar that is not on a control starts a window
             // drag, which is the standard title-bar behavior.
-            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                window.start_window_move();
-            })
             .child(
                 div()
                     .text_xs()

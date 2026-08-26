@@ -65,20 +65,11 @@ impl Render for MapleApp {
             .size_full()
             .flex()
             .flex_col()
-            .on_key_down(
-                cx.listener(|_this, event: &gpui::KeyDownEvent, _window, cx| {
-                    if event.keystroke.key.eq_ignore_ascii_case("q")
-                        && (event.keystroke.modifiers.control || event.keystroke.modifiers.platform)
-                    {
-                        cx.quit();
-                    }
-                }),
-            )
             .child(titlebar)
-            .child(div().flex_1().min_h_0().child(match &self.screen {
+            .child(match &self.screen {
                 Screen::Login(login) => login.clone().into_any_element(),
                 Screen::Chat(chat) => chat.clone().into_any_element(),
-            }))
+            })
     }
 }
 
