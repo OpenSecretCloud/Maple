@@ -2,3 +2,4 @@
 .env
 .env.*
 .papercuts.jsonl
+__pycache__/
