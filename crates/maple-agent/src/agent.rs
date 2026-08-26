@@ -2313,6 +2313,14 @@ async fn start_runtime_for_user(
 
     let project_root = resolve_project_root(request.project_root.as_deref(), &agent_config)
         .map_err(|e| format!("Failed to resolve Agent Mode project root: {e}"))?;
+    // Trust the root the desktop user explicitly launched under so its
+    // project-local skills load without a separate prompt. Maple's Tauri app
+    // asks first; this app treats launching in a directory as the choice.
+    if project_trust_status(&agent_config, &project_root, true).decision != Some(true) {
+        apply_project_trust(&mut agent_config, &project_root, true);
+        save_agent_config_inner(&state.host.paths, user_id, &agent_config)
+            .map_err(|error| error.to_string())?;
+    }
     let model = request
         .model
         .unwrap_or_else(|| agent_config.default_model.clone());
@@ -2327,6 +2335,9 @@ async fn start_runtime_for_user(
         .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
     fs::create_dir_all(goose_path_root.join("config"))
         .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
+    // Goose resolves the global AGENTS.md relative to this path root, not the
+    // real home. Link the user's ~/.agents/AGENTS.md in so it is honored.
+    link_global_agents_md(&goose_path_root);
     // This account-scoped PermissionManager is the one AgentManager actually
     // inspects. Force every Maple-routed tool through ActionRequired before it
     // is constructed so stale Goose AlwaysAllow entries cannot bypass Maple.
@@ -7974,6 +7985,37 @@ fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServiceEvent) {
     events.sink.emit(&event);
 }
 
+/// Mirror ~/.agents/AGENTS.md into the embedded goose path root so goose's
+/// global hints loader sees it. A symlink stays current; an existing file at
+/// the target is never overwritten.
+fn link_global_agents_md(goose_path_root: &Path) {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let home = PathBuf::from(home);
+    if !home.is_absolute() {
+        return;
+    }
+    let source = home.join(".agents").join("AGENTS.md");
+    if !source.is_file() {
+        return;
+    }
+    let target_dir = goose_path_root.join(".agents");
+    let target = target_dir.join("AGENTS.md");
+    if target.exists() {
+        return;
+    }
+    let _ = fs::create_dir_all(&target_dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        if symlink(&source, &target).is_ok() {
+            return;
+        }
+    }
+    let _ = fs::copy(&source, &target);
+}
+
 fn configure_embedded_goose(
     goose_path_root: &Path,
     model: &str,
@@ -7982,6 +8024,9 @@ fn configure_embedded_goose(
 ) -> Result<(), String> {
     fs::create_dir_all(goose_path_root.join("config"))
         .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
+    // Goose resolves the global AGENTS.md relative to this path root, not the
+    // real home. Link the user's ~/.agents/AGENTS.md in so it is honored.
+    link_global_agents_md(goose_path_root);
     fs::create_dir_all(goose_path_root.join("data"))
         .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
     fs::create_dir_all(goose_path_root.join("state"))

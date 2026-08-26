@@ -93,6 +93,30 @@ impl OAuthProvider {
     }
 }
 
+impl AgentBackend {
+    /// The account scope (sha of the user id) used for on-disk layout.
+    pub fn account_scope(&self, user_id: &str) -> Option<String> {
+        maple_agent::maple_api::account_scope(user_id).ok()
+    }
+}
+
+/// App configuration root (XDG-style), also used by the settings store.
+pub fn app_config_root() -> PathBuf {
+    config_root()
+}
+
+/// Path to the goose sessions database for one account scope.
+pub fn account_session_db(account_scope: &str) -> PathBuf {
+    config_root()
+        .join("agent")
+        .join("accounts")
+        .join(account_scope)
+        .join("goose")
+        .join("data")
+        .join("sessions")
+        .join("sessions.db")
+}
+
 fn config_root() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -556,6 +580,24 @@ impl AgentBackend {
             .handle_for_user(user_id)
             .await?
             .available_model_ids()
+            .await
+    }
+
+    /// Set the permission policy for a session: "smart_approve" asks for
+    /// each gated tool, "auto" approves everything (bypass).
+    pub async fn set_permission_mode(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        mode: &str,
+    ) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_permission_mode(maple_agent::agent::AgentPermissionModeRequest {
+                session_id: session_id.to_string(),
+                mode: mode.to_string(),
+            })
             .await
     }
 

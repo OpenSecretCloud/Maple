@@ -437,7 +437,7 @@ fn map_sdk_error(error: opensecret::Error) -> String {
     "Maple API authentication failed".to_string()
 }
 
-pub(crate) fn account_scope(user_id: &str) -> Result<String, String> {
+pub fn account_scope(user_id: &str) -> Result<String, String> {
     let user_id = normalized_user_id(user_id)?;
     let digest = Sha256::digest(user_id.as_bytes());
     Ok(format!("{digest:x}"))

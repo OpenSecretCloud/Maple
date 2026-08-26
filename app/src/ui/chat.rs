@@ -20,6 +20,9 @@ use crate::ui::theme;
 
 pub struct LoggedOut;
 
+/// Emitted when the user opens app settings from the chat header.
+pub struct OpenSettings;
+
 pub struct ChatScreen {
     backend: Arc<AgentBackend>,
     user_id: String,
@@ -52,6 +55,12 @@ pub struct ChatScreen {
     /// Whether tool cards show their input/output payloads. Toggled from
     /// the header; off gives a one-line card per tool call.
     tool_details: bool,
+    /// Permission policy: "smart_approve" prompts per gated tool, "auto"
+    /// approves everything (bypass). Applies to new runs.
+    permission_mode: String,
+    /// False once the user picks a mode for this specific session; the
+    /// settings default then no longer overrides it.
+    uses_default_permission_mode: bool,
     /// Root the runtime is currently serving; new tasks operate here.
     project_root: Option<String>,
     recent_roots: Vec<String>,
@@ -101,6 +110,16 @@ impl ChatScreen {
             sidebar_scroll: gpui::ScrollHandle::new(),
             follow_transcript: true,
             tool_details: true,
+            permission_mode: std::env::var("MAPLE_PERMISSION_MODE")
+                .ok()
+                .filter(|mode| mode == "auto" || mode == "smart_approve")
+                .or_else(|| {
+                    crate::settings::load_settings()
+                        .default_permission_mode
+                        .into()
+                })
+                .unwrap_or_else(|| "smart_approve".to_string()),
+            uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
             recent_roots: Vec::new(),
             root_menu_open: false,
@@ -423,6 +442,45 @@ impl ChatScreen {
         );
     }
 
+    /// Apply settings-default changes when returning from the settings
+    /// screen: tool verbosity updates live; the permission default only
+    /// affects sessions that still follow the default.
+    pub fn apply_defaults(
+        &mut self,
+        settings: &crate::settings::AppSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.tool_details = settings.tool_details;
+        if self.uses_default_permission_mode {
+            self.permission_mode = settings.default_permission_mode.clone();
+            self.apply_permission_mode(cx);
+        }
+        cx.notify();
+    }
+
+    fn apply_permission_mode(&self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let mode = self.permission_mode.clone();
+        self.call(
+            async move {
+                backend
+                    .set_permission_mode(&user_id, &session_id, &mode)
+                    .await
+            },
+            cx,
+            |this, result, cx| {
+                if let Err(message) = result {
+                    this.notice = Some(format!("Could not set permission mode: {message}"));
+                    cx.notify();
+                }
+            },
+        );
+    }
+
     fn set_active_session(
         &mut self,
         session: AgentSessionSummary,
@@ -430,6 +488,13 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.selected_session = Some(session.id);
+        // Adopt the session's stored policy; it persists per session in the
+        // runtime.
+        let mode = session.mode.clone();
+        if mode == "auto" || mode == "smart_approve" {
+            self.permission_mode = mode;
+        }
+        self.apply_permission_mode(cx);
         self.timeline = timeline;
         self.list_state.reset(self.timeline.len());
         self.follow_transcript = true;
@@ -485,7 +550,7 @@ impl ChatScreen {
             text: text.clone(),
             model,
             context_limit: None,
-            mode: None,
+            mode: Some(self.permission_mode.clone()),
             vision_capable: false,
             steer: false,
             queue_id: None,
@@ -804,6 +869,8 @@ impl ChatScreen {
 
 impl EventEmitter<LoggedOut> for ChatScreen {}
 
+impl EventEmitter<OpenSettings> for ChatScreen {}
+
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -1016,6 +1083,43 @@ impl ChatScreen {
                     )
                     .child(
                         div()
+                            .id("permission-mode-toggle")
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(if self.permission_mode == "auto" {
+                                theme::STATUS_WARNING
+                            } else {
+                                theme::BORDER
+                            }))
+                            .text_sm()
+                            .text_color(gpui::rgb(if self.permission_mode == "auto" {
+                                theme::STATUS_WARNING
+                            } else {
+                                theme::TEXT_SECONDARY
+                            }))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.permission_mode = if this.permission_mode == "auto" {
+                                    "smart_approve".to_string()
+                                } else {
+                                    "auto".to_string()
+                                };
+                                this.uses_default_permission_mode = false;
+                                this.apply_permission_mode(cx);
+                                cx.notify();
+                            }))
+                            .child(if self.permission_mode == "auto" {
+                                "🛡 bypass".to_string()
+                            } else {
+                                "🛡 approve".to_string()
+                            }),
+                    )
+                    .child(
+                        div()
                             .id("tool-details-toggle")
                             .flex()
                             .items_center()
@@ -1040,6 +1144,26 @@ impl ChatScreen {
                             } else {
                                 "🔧 hidden".to_string()
                             }),
+                    )
+                    .child(
+                        div()
+                            .id("open-settings")
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .hover(|style| {
+                                style
+                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .cursor_pointer()
+                            })
+                            .on_click(cx.listener(|_this, _event, _window, cx| {
+                                cx.emit(OpenSettings);
+                            }))
+                            .child("⚙"),
                     )
                     .child(
                         div()
@@ -1406,7 +1530,7 @@ fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {
 fn render_tool(item: &AgentTimelineItem, details: bool) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
     let title = item.title.clone().unwrap_or_else(|| item.item_type.clone());
-    let card = div()
+    let mut card = div()
         .flex()
         .flex_col()
         .gap_1()
@@ -1439,15 +1563,76 @@ fn render_tool(item: &AgentTimelineItem, details: bool) -> Div {
         // Compact: tool name and status only, no payload.
         return card;
     }
-    card.children(tool_summary(item).map(|line| {
-        div()
-            .text_xs()
-            .text_color(gpui::rgb(theme::TEXT_MUTED))
-            .font_family("monospace")
-            .line_clamp(2)
-            .overflow_x_hidden()
-            .child(line)
-    }))
+    // Input stays monospace JSON; the output renders as markdown when it
+    // carries readable text, falling back to the raw JSON line.
+    if let Some(input) = tool_input_line(item) {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                .font_family("monospace")
+                .line_clamp(2)
+                .overflow_x_hidden()
+                .child(input),
+        );
+    }
+    if let Some(output) = tool_output_markdown(item) {
+        card = card.child(
+            div()
+                .mt_1()
+                .w_full()
+                .text_sm()
+                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .child(crate::ui::markdown::render_markdown(&output)),
+        );
+    }
+    card
+}
+
+fn tool_input_line(item: &AgentTimelineItem) -> Option<String> {
+    item.input
+        .as_ref()
+        .filter(|value| !value.is_null())
+        .map(|value| format!("input: {value}"))
+}
+
+/// Extract readable text from a tool output for markdown rendering.
+fn tool_output_markdown(item: &AgentTimelineItem) -> Option<String> {
+    let value = item.output.as_ref().filter(|value| !value.is_null())?;
+    let text = extract_output_text(value)?;
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn extract_output_text(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Object(map) => {
+            // Common tool result shapes: {"text": ...}, {"stdout": ...},
+            // {"content": [{"type": "text", "text": ...}, ...]}.
+            for key in ["text", "stdout", "stderr", "output"] {
+                if let Some(inner) = map.get(key) {
+                    if let Some(text) = extract_output_text(inner) {
+                        return Some(text);
+                    }
+                }
+            }
+            if let Some(serde_json::Value::Array(items)) = map.get("content") {
+                let mut joined = String::new();
+                for entry in items {
+                    if let Some(text) = entry.get("text").and_then(|t| t.as_str()) {
+                        joined.push_str(text);
+                        joined.push('\n');
+                    }
+                }
+                if !joined.is_empty() {
+                    return Some(joined);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn render_error(item: &AgentTimelineItem) -> Div {
@@ -1516,25 +1701,6 @@ fn render_system(item: &AgentTimelineItem) -> Div {
         .text_sm()
         .text_color(gpui::rgb(theme::TEXT_MUTED))
         .child(text)
-}
-
-fn tool_summary(item: &AgentTimelineItem) -> Option<String> {
-    let input = item
-        .input
-        .as_ref()
-        .filter(|value| !value.is_null())
-        .map(|value| format!("input: {value}"));
-    let output = item
-        .output
-        .as_ref()
-        .filter(|value| !value.is_null())
-        .map(|value| format!("output: {value}"));
-    match (input, output) {
-        (Some(input), Some(output)) => Some(format!("{input}\n{output}")),
-        (Some(input), None) => Some(input),
-        (None, Some(output)) => Some(output),
-        (None, None) => None,
-    }
 }
 
 fn render_permission_card(

@@ -19,6 +19,10 @@ impl TitleBar {
         }
     }
 
+    /// App version for display, from the workspace manifest.
+    pub fn version() -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
     pub fn height() -> gpui::Pixels {
         BAR_HEIGHT
     }
@@ -45,9 +49,21 @@ impl Render for TitleBar {
             })
             .child(
                 div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::TEXT_MUTED))
-                    .child(self.title.clone()),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .child(self.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::TEXT_FAINT))
+                            .child(format!("v{}", Self::version())),
+                    ),
             )
             .child(
                 div()

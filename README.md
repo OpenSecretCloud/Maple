@@ -77,22 +77,10 @@ the next launch.
 
 ## Headless QA
 
-The `app/examples/` directory contains the tooling used to verify the UI
-without a display:
+The UI was verified headless with Xvfb + Lavapipe and an XTEST input
+injector; those tools live in git history (`app/examples/`) if needed
+again.
 
-- `gpui_hello` — upstream gpui example used as a rendering control.
-- `xsend_input` — XTEST input injector (clicks and ASCII typing) for
-  driving the app under `Xvfb`.
-
-Typical session:
-
-```sh
-Xvfb :99 -screen 0 1440x900x24 &
-DISPLAY=:99 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
-  cargo run -p maple-gpui &
-DISPLAY=:99 ./target/debug/examples/xsend_input click 728 572
-DISPLAY=:99 import -window root /tmp/shot.png
-```
 
 ## Tests
 

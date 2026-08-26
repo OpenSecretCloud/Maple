@@ -2,6 +2,7 @@
 //! pump that forwards agent service events into the active chat screen.
 
 mod backend;
+mod settings;
 mod ui;
 
 use std::sync::Arc;
@@ -16,6 +17,7 @@ actions!(maple_app, [QuitApp]);
 use backend::AgentBackend;
 use ui::chat::{ChatScreen, LoggedOut};
 use ui::login::{LoginScreen, LoginSucceeded};
+use ui::settings::{SettingsClosed, SettingsScreen};
 use ui::text_input;
 use ui::titlebar::TitleBar;
 
@@ -28,12 +30,17 @@ impl Global for Globals {}
 enum Screen {
     Login(Entity<LoginScreen>),
     Chat(Entity<ChatScreen>),
+    Settings(Entity<SettingsScreen>),
 }
 
 struct MapleApp {
     backend: Arc<AgentBackend>,
     screen: Screen,
     user_id: Option<String>,
+    /// The chat screen is parked while settings is open so Back returns to
+    /// it with its state intact.
+    parked_chat: Option<Entity<ChatScreen>>,
+    settings: crate::settings::AppSettings,
 }
 
 impl MapleApp {
@@ -54,6 +61,57 @@ impl MapleApp {
         let login = cx.new(|cx| LoginScreen::new(backend, cx));
         self.screen = Screen::Login(login);
         self.user_id = None;
+        self.parked_chat = None;
+        cx.notify();
+    }
+
+    /// Park the chat screen and show settings.
+    fn show_settings(&mut self, cx: &mut Context<Self>) {
+        let Screen::Chat(chat) = &self.screen else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone().unwrap_or_default();
+        let settings = self.settings.clone();
+        let screen = cx.new(|cx| SettingsScreen::new(backend, user_id, settings, cx));
+        cx.subscribe(
+            &screen,
+            |app: &mut MapleApp, _emitter, event: &SettingsClosed, cx| {
+                app.close_settings(event.0.clone(), cx);
+            },
+        )
+        .detach();
+        self.parked_chat = Some(chat.clone());
+        self.screen = Screen::Settings(screen);
+        cx.notify();
+    }
+
+    /// Wire per-chat events: sign-out and the settings gear.
+    fn subscribe_chat(&mut self, chat: &Entity<ChatScreen>, cx: &mut Context<Self>) {
+        cx.subscribe(
+            chat,
+            |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
+                app.show_login(cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            chat,
+            |app: &mut MapleApp, _emitter, _event: &ui::chat::OpenSettings, cx| {
+                app.show_settings(cx);
+            },
+        )
+        .detach();
+    }
+
+    /// Restore the parked chat screen, applying any changed defaults.
+    fn close_settings(&mut self, updated: crate::settings::AppSettings, cx: &mut Context<Self>) {
+        self.settings = updated;
+        if let Some(chat) = self.parked_chat.take() {
+            let settings = self.settings.clone();
+            chat.update(cx, |chat, cx| chat.apply_defaults(&settings, cx));
+            self.screen = Screen::Chat(chat);
+        }
         cx.notify();
     }
 }
@@ -69,6 +127,7 @@ impl Render for MapleApp {
             .child(match &self.screen {
                 Screen::Login(login) => login.clone().into_any_element(),
                 Screen::Chat(chat) => chat.clone().into_any_element(),
+                Screen::Settings(screen) => screen.clone().into_any_element(),
             })
     }
 }
@@ -101,7 +160,7 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Maple".into()),
+                        title: Some(format!("Maple v{}", ui::titlebar::TitleBar::version()).into()),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -110,10 +169,16 @@ fn main() {
                     if let Some(user_id) = restored_user.clone() {
                         let chat =
                             cx.new(|cx| ChatScreen::new(backend.clone(), user_id.clone(), cx));
-                        let root = cx.new(|_| MapleApp {
-                            backend: backend.clone(),
-                            screen: Screen::Chat(chat.clone()),
-                            user_id: Some(user_id),
+                        let root = cx.new(|cx| {
+                            let mut app = MapleApp {
+                                backend: backend.clone(),
+                                screen: Screen::Chat(chat.clone()),
+                                user_id: Some(user_id),
+                                parked_chat: None,
+                                settings: crate::settings::load_settings(),
+                            };
+                            app.subscribe_chat(&chat, cx);
+                            app
                         });
                         root
                     } else {
@@ -122,6 +187,8 @@ fn main() {
                             backend: backend.clone(),
                             screen: Screen::Login(login.clone()),
                             user_id: None,
+                            parked_chat: None,
+                            settings: crate::settings::load_settings(),
                         })
                     }
                 },
@@ -156,8 +223,7 @@ fn main() {
                             cx.new(|cx| ChatScreen::new(backend.clone(), user_id.clone(), cx));
                         app.user_id = Some(user_id);
                         app.screen = Screen::Chat(chat.clone());
-                        // Sign-out returns to the login screen with fresh
-                        // inputs and a cleared account.
+                        app.subscribe_chat(&chat, cx);
                         cx.notify();
                     }
                 })
