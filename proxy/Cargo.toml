@@ -1,0 +1,62 @@
+[package]
+name = "maple-proxy"
+version = "0.3.2"
+edition = "2021"
+authors = ["OpenSecret"]
+description = "Lightweight OpenAI-compatible proxy server for Maple/OpenSecret TEE infrastructure"
+license = "MIT"
+repository = "https://github.com/OpenSecretCloud/maple-proxy"
+homepage = "https://github.com/OpenSecretCloud/maple-proxy"
+keywords = ["openai", "proxy", "tee", "opensecret", "maple"]
+categories = ["web-programming::http-server", "api-bindings"]
+include = [
+    "/src/**",
+    "/examples/**",
+    "/tests/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+]
+
+[lib]
+name = "maple_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "maple-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# OpenSecret SDK
+opensecret = "3.6.2"
+
+# Web server
+axum = { version = "0.8.4", features = ["http2", "macros"] }
+tokio = { version = "1.47", features = ["net", "rt-multi-thread", "macros", "sync", "time"] }
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.6", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Streaming support
+futures = "0.3"
+async-stream = "0.3"
+
+# Configuration and environment
+clap = { version = "4.5", features = ["derive", "env"] }
+dotenvy = "0.15"
+
+# Utilities
+dashmap = "6.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+anyhow = "1.0.103"
+
+# HTTP types and headers
+http = "1.0"
+
+[dev-dependencies]
+axum-test = "18.0.1"

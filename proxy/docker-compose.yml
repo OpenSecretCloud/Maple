@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  maple-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      cache_from:
+        - maple-proxy:builder
+        - maple-proxy:latest
+    image: maple-proxy:latest
+    container_name: maple-proxy
+    ports:
+      - "${MAPLE_PORT:-8080}:8080"
+    environment:
+      # Server configuration
+      - MAPLE_HOST=0.0.0.0
+      - MAPLE_PORT=8080
+      
+      # Backend configuration (defaults to production)
+      - MAPLE_BACKEND_URL=${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai}
+      - MAPLE_PCR0_ENVIRONMENT=${MAPLE_PCR0_ENVIRONMENT:-production}
+      
+      # Authentication - Uncomment ONLY for private/internal deployments!
+      # For public deployments: Keep this commented out - clients will pass their own API keys
+      # - MAPLE_API_KEY=${MAPLE_API_KEY}
+      
+      # Optional configurations
+      - MAPLE_DEBUG=${MAPLE_DEBUG:-false}
+      - MAPLE_ENABLE_CORS=${MAPLE_ENABLE_CORS:-true}
+      - MAPLE_REQUEST_TIMEOUT_SECS=${MAPLE_REQUEST_TIMEOUT_SECS:-300}
+      - MAPLE_STREAM_IDLE_TIMEOUT_SECS=${MAPLE_STREAM_IDLE_TIMEOUT_SECS:-300}
+      - RUST_LOG=${RUST_LOG:-info}
+    
+    # Production-grade restart policy
+    restart: unless-stopped
+    
+    # Health monitoring
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 128M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    networks:
+      - maple-network
+
+networks:
+  maple-network:
+    driver: bridge

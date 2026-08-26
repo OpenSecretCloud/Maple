@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          components: rustfmt, clippy
+
+      - name: Run cargo check
+        run: cargo check --locked --all-targets --all-features
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+
+      - name: Run cargo test
+        run: cargo test --locked --all-features
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          components: rustfmt
+
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          components: clippy
+
+      - name: Run cargo clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  # Code Coverage is disabled until we have better test coverage
+  # Currently only 13.93% coverage - re-enable when we add more tests
+  # To re-enable: uncomment this job and add more tests for:
+  # - src/main.rs (0% coverage)
+  # - src/config.rs (0% coverage) 
+  # - src/proxy.rs (5% coverage)
+  #
+  # coverage:
+  #   name: Code Coverage
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout sources
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Install stable toolchain
+  #       uses: actions-rust-lang/setup-rust-toolchain@v1
+  #
+  #     - name: Cache cargo-tarpaulin
+  #       uses: actions/cache@v4
+  #       id: cache-tarpaulin
+  #       with:
+  #         path: ~/.cargo/bin/cargo-tarpaulin
+  #         key: cargo-tarpaulin-${{ runner.os }}
+  #
+  #     - name: Install cargo-tarpaulin
+  #       if: steps.cache-tarpaulin.outputs.cache-hit != 'true'
+  #       run: cargo install cargo-tarpaulin
+  #
+  #     - name: Generate code coverage
+  #       run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
+  #
+  #     - name: Upload to codecov.io
+  #       uses: codecov/codecov-action@v4
+  #       with:
+  #         token: ${{ secrets.CODECOV_TOKEN }}
+  #         fail_ci_if_error: false
