@@ -8,7 +8,7 @@ default:
 
 # Install frontend dependencies
 install:
-    cd frontend && bun install
+    ./scripts/prepare-frontend-deps.sh
 
 # Start the frontend development server
 dev:
