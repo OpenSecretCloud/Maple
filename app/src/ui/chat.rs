@@ -43,6 +43,12 @@ pub struct ChatScreen {
     question_focus_id: Option<String>,
     /// Fraction of the context window in use for the selected session.
     context_fraction: Option<f32>,
+    /// True while the per-second usage poller task is running.
+    usage_poller_active: bool,
+    /// Last ledger-confirmed context tokens for the selected session.
+    ledger_context_tokens: i64,
+    /// Context limit used with the estimate above.
+    context_limit: i64,
     composer_busy: bool,
     composer: Option<Entity<TextInput>>,
     models: Vec<String>,
@@ -131,6 +137,9 @@ impl ChatScreen {
             pending_question_input: None,
             question_focus_id: None,
             context_fraction: None,
+            usage_poller_active: false,
+            ledger_context_tokens: 0,
+            context_limit: 0,
             composer_busy: false,
             composer: None,
             models: Vec::new(),
@@ -511,6 +520,8 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Ok(Some((tokens, limit))) = result {
+                    this.ledger_context_tokens = tokens;
+                    this.context_limit = limit;
                     let fraction = if limit > 0 {
                         tokens as f32 / limit as f32
                     } else {
@@ -521,6 +532,66 @@ impl ChatScreen {
                 }
             },
         );
+    }
+
+    /// Poll context usage once per second while the selected session runs.
+    /// The goose usage ledger gains a row on every inference call, so this
+    /// tracks the ring in real time at each turn boundary.
+    fn start_usage_poller(&mut self, session_id: String, cx: &mut Context<Self>) {
+        if self.usage_poller_active {
+            return;
+        }
+        self.usage_poller_active = true;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let target = session_id.clone();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1000))
+                    .await;
+                let keep_going = this
+                    .update(cx, |this: &mut ChatScreen, cx| {
+                        let running = this
+                            .selected_session
+                            .as_deref()
+                            .is_some_and(|selected| selected == target.as_str())
+                            && this.active_runs.contains_key(&target);
+                        if running {
+                            let backend = backend.clone();
+                            let user_id = user_id.clone();
+                            let target = target.clone();
+                            this.call(
+                                async move { backend.context_usage(&user_id, &target).await },
+                                cx,
+                                |this, result, cx| {
+                                    if let Ok(Some((tokens, limit))) = result {
+                                        this.ledger_context_tokens = tokens;
+                                        this.context_limit = limit;
+                                        let fraction = if limit > 0 {
+                                            tokens as f32 / limit as f32
+                                        } else {
+                                            0.0
+                                        };
+                                        this.context_fraction = Some(fraction);
+                                        cx.notify();
+                                    }
+                                },
+                            );
+                        }
+                        running
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    this.update(cx, |this: &mut ChatScreen, _cx| {
+                        this.usage_poller_active = false;
+                    })
+                    .ok();
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     fn compact_now(&mut self, cx: &mut Context<Self>) {
@@ -952,6 +1023,8 @@ impl ChatScreen {
             AgentRunEvent::Started => {
                 self.active_runs
                     .insert(session_id.to_string(), run_id.to_string());
+                self.start_usage_poller(session_id.to_string(), cx);
+                self.refresh_context_usage(cx);
             }
             AgentRunEvent::TimelineItem(item) => {
                 if self.is_selected(session_id) {
