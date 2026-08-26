@@ -72,6 +72,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             release(&conn, keysym)?;
             release(&conn, modifier_keysym)?;
         }
+        "scroll" => {
+            // scroll <x> <y> <clicks>  (positive = down, negative = up)
+            let x: i16 = args[2].parse()?;
+            let y: i16 = args[3].parse()?;
+            let clicks: i32 = args[4].parse()?;
+            fake_motion(&conn, x, y)?;
+            for _ in 0..clicks.abs() {
+                let button = if clicks > 0 { 5 } else { 4 };
+                conn.xtest_fake_input(4, button, 0, 0, 0, 0, 0)?;
+                conn.flush()?;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                conn.xtest_fake_input(5, button, 0, 0, 0, 0, 0)?;
+                conn.flush()?;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
         other => return Err(format!("unknown verb {other:?}").into()),
     }
     conn.get_input_focus()?.reply()?;

@@ -41,10 +41,17 @@ pub struct ChatScreen {
     list_state: gpui::ListState,
     /// Drives the transcript scroll; pinned to the bottom on new items.
     transcript_scroll: gpui::ScrollHandle,
-    /// Set when the transcript should jump to its newest content. The
-    /// built-in scroll_to_bottom flag is not consumed reliably by this
-    /// gpui release, so the offset is set directly during render.
+    /// Independent scroll state for the sidebar session list. Sharing one
+    /// handle made each container clamp the other's offset, which broke
+    /// the transcript's bottom pinning.
+    sidebar_scroll: gpui::ScrollHandle,
+    /// Set when the transcript should jump to its newest content on the
+    /// next render (session switch or send); streaming follows only while
+    /// the view is already at the bottom.
     follow_transcript: bool,
+    /// Whether tool cards show their input/output payloads. Toggled from
+    /// the header; off gives a one-line card per tool call.
+    tool_details: bool,
     /// Root the runtime is currently serving; new tasks operate here.
     project_root: Option<String>,
     recent_roots: Vec<String>,
@@ -91,7 +98,9 @@ impl ChatScreen {
             booting: true,
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
             transcript_scroll: gpui::ScrollHandle::new(),
+            sidebar_scroll: gpui::ScrollHandle::new(),
             follow_transcript: true,
+            tool_details: true,
             project_root: None,
             recent_roots: Vec::new(),
             root_menu_open: false,
@@ -485,6 +494,7 @@ impl ChatScreen {
         // The caller already cleared the composer (the Enter path clears
         // inside the input itself); clearing here would double-lease it.
         self.notice = None;
+        self.follow_transcript = true;
         cx.notify();
         self.call(
             async move { backend.send_message(&user_id, request).await },
@@ -669,7 +679,6 @@ impl ChatScreen {
             .timeline_revisions
             .entry(session_id.to_string())
             .or_insert(0) += 1;
-        self.follow_transcript = true;
     }
 
     fn upsert_session(&mut self, session: AgentSessionSummary) {
@@ -883,7 +892,7 @@ impl ChatScreen {
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
-                    .track_scroll(&self.transcript_scroll)
+                    .track_scroll(&self.sidebar_scroll)
                     .px_2()
                     .gap_1()
                     .children(sessions.iter().map(|session| {
@@ -1004,6 +1013,33 @@ impl ChatScreen {
                                 cx.notify();
                             }))
                             .child(model_label),
+                    )
+                    .child(
+                        div()
+                            .id("tool-details-toggle")
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(theme::BORDER))
+                            .text_sm()
+                            .text_color(gpui::rgb(if self.tool_details {
+                                theme::TEXT_SECONDARY
+                            } else {
+                                theme::TEXT_MUTED
+                            }))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.tool_details = !this.tool_details;
+                                cx.notify();
+                            }))
+                            .child(if self.tool_details {
+                                "🔧 details".to_string()
+                            } else {
+                                "🔧 hidden".to_string()
+                            }),
                     )
                     .child(
                         div()
@@ -1150,6 +1186,16 @@ impl ChatScreen {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // Follow the newest content while the view sits at (or near) the
+        // bottom, or after an explicit jump. Checking before render keeps
+        // user scrolls intact mid-stream.
+        let offset = self.transcript_scroll.offset();
+        let max = self.transcript_scroll.max_offset();
+        let at_bottom = max.height <= gpui::px(1.) || offset.y <= -(max.height - gpui::px(48.));
+        if at_bottom || self.follow_transcript {
+            self.follow_transcript = false;
+            self.transcript_scroll.scroll_to_bottom();
+        }
         let empty = self.timeline.is_empty();
         let booting = self.booting;
         let items = self.timeline.clone();
@@ -1181,25 +1227,14 @@ impl ChatScreen {
                 )
             })
             .when(!empty, |container| {
-                // Newest TURN first: gpui 0.2.2's programmatic
-                // bottom-scroll is unreliable, so the transcript shows the
-                // latest exchange at the top where it is always visible.
-                // Items keep their natural order inside each turn.
-                let mut turns: Vec<Vec<&AgentTimelineItem>> = Vec::new();
-                for item in items.iter() {
-                    let starts_turn =
-                        item.item_type == "message" && item.role.as_deref() == Some("user");
-                    if starts_turn || turns.is_empty() {
-                        turns.push(Vec::new());
-                    }
-                    turns.last_mut().expect("turn").push(item);
-                }
+                // Standard chat order: oldest at the top, newest at the
+                // bottom; the container follows the bottom while the user
+                // stays there (see the pinning logic above).
+                let tool_details = self.tool_details;
                 container.children(
-                    turns
-                        .into_iter()
-                        .rev()
-                        .flatten()
-                        .map(|item| render_timeline_item(item)),
+                    items
+                        .iter()
+                        .map(move |item| render_timeline_item(item, tool_details)),
                 )
             })
             .when_some(self.runtime_error.clone(), |container, error| {
@@ -1296,11 +1331,11 @@ impl ChatScreen {
     }
 }
 
-fn render_timeline_item(item: &AgentTimelineItem) -> Div {
+fn render_timeline_item(item: &AgentTimelineItem, tool_details: bool) -> Div {
     let item = match item.item_type.as_str() {
         "message" => render_message(item),
         "thinking" | "reasoning" => render_thinking(item),
-        "tool" | "toolCall" => render_tool(item),
+        "tool" | "toolCall" => render_tool(item, tool_details),
         "error" => render_error(item),
         "permission" => render_permission_row(item),
         _ => render_system(item),
@@ -1368,11 +1403,10 @@ fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {
     }
 }
 
-fn render_tool(item: &AgentTimelineItem) -> Div {
+fn render_tool(item: &AgentTimelineItem, details: bool) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
     let title = item.title.clone().unwrap_or_else(|| item.item_type.clone());
-    let summary = tool_summary(item);
-    div()
+    let card = div()
         .flex()
         .flex_col()
         .gap_1()
@@ -1400,16 +1434,20 @@ fn render_tool(item: &AgentTimelineItem) -> Div {
                         .text_color(gpui::rgb(status_color))
                         .child(label),
                 ),
-        )
-        .children(summary.map(|line| {
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::TEXT_MUTED))
-                .font_family("monospace")
-                .line_clamp(2)
-                .overflow_x_hidden()
-                .child(line)
-        }))
+        );
+    if !details {
+        // Compact: tool name and status only, no payload.
+        return card;
+    }
+    card.children(tool_summary(item).map(|line| {
+        div()
+            .text_xs()
+            .text_color(gpui::rgb(theme::TEXT_MUTED))
+            .font_family("monospace")
+            .line_clamp(2)
+            .overflow_x_hidden()
+            .child(line)
+    }))
 }
 
 fn render_error(item: &AgentTimelineItem) -> Div {
