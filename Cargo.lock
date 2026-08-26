@@ -5027,7 +5027,7 @@ dependencies = [
 
 [[package]]
 name = "maple-agent"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5060,13 +5060,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "maple-gpui"
-version = "0.6.2"
+name = "maple-billing"
+version = "0.6.3"
 dependencies = [
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "maple-gpui"
+version = "0.6.3"
+dependencies = [
+ "chrono",
  "env_logger",
  "gpui",
  "log",
  "maple-agent",
+ "maple-billing",
  "opensecret",
  "pulldown-cmark",
  "rusqlite",

@@ -228,6 +228,18 @@ impl MapleApiSession {
         Ok(())
     }
 
+    /// Mint a third-party JWT for `audience` (for example the Maple billing
+    /// API) with the current enclave credentials.
+    pub async fn third_party_token(&self, audience: String) -> Result<String, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot
+            .client
+            .generate_third_party_token(Some(audience))
+            .await;
+        self.record_refresh(&snapshot).await?;
+        Ok(response.map_err(map_sdk_error)?.token)
+    }
+
     pub(crate) async fn model_ids(&self) -> Result<Vec<String>, String> {
         let snapshot = self.client_snapshot().await?;
         let response = snapshot.client.get_models().await;
