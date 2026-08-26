@@ -10,6 +10,11 @@ uses the TypeScript OpenSecret SDK with the Responses and Conversations APIs;
 Agent Mode embeds Goose and uses the Rust OpenSecret SDK through Tauri. The
 local OpenAI-compatible proxy is a separate user-facing service.
 
+The OpenSecret SDK source and its upstream Git history are imported under
+[`sdk/`](sdk/README.md). Maple still consumes the published TypeScript and Rust
+SDK packages until follow-up changes explicitly switch those dependencies to
+the in-repository source.
+
 ## Quick start
 
 The supported development environment is the Nix flake. It pins Bun, Rust,
