@@ -3,8 +3,8 @@ version: '3.8'
 services:
   maple-proxy:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: proxy/Dockerfile
       cache_from:
         - maple-proxy:builder
         - maple-proxy:latest

@@ -171,7 +171,7 @@ env:
 # Build Docker image
 docker-build:
     @echo "🐳 Building Docker image with {{container}}..."
-    @{{container}} build -t maple-proxy:latest .
+    @{{container}} build -f Dockerfile -t maple-proxy:latest ..
     @echo "✅ Docker image built: maple-proxy:latest"
 
 # Run Docker container
@@ -247,7 +247,7 @@ ghcr-push tag="latest":
 # Build and push to GHCR
 ghcr-build-push tag="latest":
     @echo "🐳 Building and pushing to GHCR..."
-    @{{container}} build -t ghcr.io/opensecretcloud/maple-proxy:{{tag}} .
+    @{{container}} build -f Dockerfile -t ghcr.io/opensecretcloud/maple-proxy:{{tag}} ..
     @{{container}} push ghcr.io/opensecretcloud/maple-proxy:{{tag}}
     @echo "✅ Image available at ghcr.io/opensecretcloud/maple-proxy:{{tag}}"
 

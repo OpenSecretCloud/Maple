@@ -36,11 +36,8 @@ tauri-plugin-os = "2.3.2"
 tauri-plugin-sign-in-with-apple = "1.0.2"
 tokio = { version = "1.0", features = ["io-std", "io-util", "net", "process", "sync", "rt-multi-thread", "macros", "time"] }
 once_cell = "1.18.0"
-maple-proxy = "0.3.2"
 tauri-plugin-fs = "2.5.1"
 anyhow = "1.0"
-axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
 pdf_oxide = { version = "=0.3.74", git = "https://github.com/OpenSecretCloud/pdf_oxide.git", rev = "f24b43ba997dd91ce60839640a8ce3ac92a87a5d", features = ["ocr-ort", "rendering"] }
 # Keep the pre-1.0 Word parser exact-pinned. office_oxide is already in the
 # PDFOxide graph; Maple adds strict DOC/DOCX container and semantic guards.
@@ -66,7 +63,10 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 # history.
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose", default-features = false }
 goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose-providers", default-features = false }
-opensecret = "3.6.2"
+maple-proxy = { version = "0.3.3", path = "../../proxy" }
+opensecret = { version = "3.6.2", path = "../../sdk/rust" }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
 rand = "0.8.6"
 async-trait = "0.1"
 rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }

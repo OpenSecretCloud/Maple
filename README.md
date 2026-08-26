@@ -11,10 +11,9 @@ Agent Mode embeds Goose and uses the Rust OpenSecret SDK through Tauri. The
 local OpenAI-compatible proxy is a separate user-facing service.
 
 The OpenSecret SDK source and its upstream Git history live under
-[`sdk/`](sdk/README.md), and Maple's TypeScript client consumes that in-tree
-package. The proxy source and its upstream history live under
-[`proxy/`](proxy/README.md). Native Maple and the proxy still consume published
-Rust crates until their local references switch together.
+[`sdk/`](sdk/README.md), and Maple consumes its in-tree TypeScript and Rust
+packages. The proxy source and its upstream history live under
+[`proxy/`](proxy/README.md); desktop Maple consumes that in-tree crate too.
 
 ## Quick start
 

@@ -8,19 +8,25 @@ on:
     branches: [master]
     paths:
       - ".github/workflows/proxy-container.yml"
-      - "proxy/.dockerignore"
+      - ".dockerignore"
       - "proxy/Dockerfile"
       - "proxy/Cargo.toml"
       - "proxy/Cargo.lock"
       - "proxy/src/**"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
   pull_request:
     paths:
       - ".github/workflows/proxy-container.yml"
-      - "proxy/.dockerignore"
+      - ".dockerignore"
       - "proxy/Dockerfile"
       - "proxy/Cargo.toml"
       - "proxy/Cargo.lock"
       - "proxy/src/**"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
 
 jobs:
   proxy-container:
@@ -45,7 +51,7 @@ jobs:
       - name: Build proxy container without publishing
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # was v5
         with:
-          context: proxy
+          context: .
           file: proxy/Dockerfile
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=proxy-${{ matrix.platform }}

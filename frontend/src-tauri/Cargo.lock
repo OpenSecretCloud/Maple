@@ -4766,9 +4766,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce86619142c6c60420edf577c4fe41df6e1d3bb3a63429da130b6ccab81cec72"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5586,8 +5584,6 @@ dependencies = [
 [[package]]
 name = "opensecret"
 version = "3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3323b7adba9f171cc9277b7d51fb881e4a3f37c860eb533bcb0ae434bf4294e1"
 dependencies = [
  "aes-gcm",
  "anyhow",

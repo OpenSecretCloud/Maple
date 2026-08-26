@@ -14,9 +14,11 @@ mod legacy_tts_cleanup;
 #[cfg(desktop)]
 mod maple_api;
 mod onnxruntime;
+#[cfg(desktop)]
 mod open_secret_config;
 mod pdf_extractor;
 mod pdf_ocr;
+#[cfg(desktop)]
 mod proxy;
 #[cfg(desktop)]
 mod updater_preferences;
