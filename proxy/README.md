@@ -19,6 +19,19 @@ Environment (TEE) processing.
 
 ### As a Binary
 
+Every Maple GitHub Release includes native proxy archives for Linux x86_64,
+Linux ARM64, Apple Silicon macOS, and Windows x86_64. The stable download URLs
+use the ordinary Maple release, for example:
+
+```bash
+curl -LO https://github.com/OpenSecretCloud/Maple/releases/latest/download/maple-proxy-linux-x86_64.tar.gz
+curl -LO https://github.com/OpenSecretCloud/Maple/releases/latest/download/maple-proxy-release-final.sha256
+sha256sum --check --ignore-missing maple-proxy-release-final.sha256
+```
+
+There is no separate proxy GitHub Release or proxy release tag. To build from
+source instead:
+
 ```bash
 git clone https://github.com/OpenSecretCloud/Maple.git
 cd Maple/proxy

@@ -702,6 +702,10 @@
               git
               jq
               python3
+              ripgrep
+              gnutar
+              unzip
+              zip
               yq-go
             ];
             src = ./.;

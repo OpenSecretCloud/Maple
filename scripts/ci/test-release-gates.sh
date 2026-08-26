@@ -161,10 +161,19 @@ expect_failure "rejects an unknown argument" \
 
 release_json="${temp_root}/release.json"
 pages_production_json="${temp_root}/pages-production.json"
+proxy_rust_json="${temp_root}/proxy-rust.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/pages-production.yml" > "${pages_production_json}"
+yq -o=json '.' "${repo_root}/.github/workflows/proxy-rust.yml" > "${proxy_rust_json}"
 
-python3 - "${release_json}" "${pages_production_json}" <<'PY'
+if rg -n --glob '*.yml' --glob '*.yaml' \
+  'gh[[:space:]]+release[[:space:]]+create|softprops/action-gh-release' \
+  "${repo_root}/.github/workflows"; then
+  fail "repository workflows must not create a second GitHub Release"
+fi
+pass "repository workflows preserve one Maple GitHub Release object"
+
+python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" <<'PY'
 import json
 import re
 import sys
@@ -205,6 +214,9 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 
 with open(sys.argv[2], encoding="utf-8") as handle:
     pages_production = json.load(handle)
+
+with open(sys.argv[3], encoding="utf-8") as handle:
+    proxy_rust = json.load(handle)
 
 release_jobs = release["jobs"]
 classifier_id = "classify-app-release"
@@ -251,6 +263,117 @@ for job_id, job in release_jobs.items():
             checkout = step.get("with", {})
             check(checkout.get("ref") == release_ref, f"Release checkout in {job_id} must pin classifier SHA")
             check(checkout.get("persist-credentials") is False, f"Release checkout in {job_id} must not persist credentials")
+
+proxy_assets = {
+    "maple-proxy-linux-aarch64.tar.gz",
+    "maple-proxy-linux-x86_64.tar.gz",
+    "maple-proxy-macos-aarch64.tar.gz",
+    "maple-proxy-windows-x86_64.zip",
+}
+for job_id in (
+    "build-proxy",
+    "publish-proxy-release-artifacts",
+    "verify-proxy-release-artifacts",
+):
+    check(job_id in release_jobs, f"Release workflow must have {job_id} job")
+
+proxy_build = release_jobs["build-proxy"]
+proxy_matrix = proxy_build.get("strategy", {}).get("matrix", {}).get("include", [])
+check(
+    {entry.get("archive") for entry in proxy_matrix} == proxy_assets,
+    "Proxy release matrix must build the four stable native asset names",
+)
+check(
+    len(proxy_matrix) == len(proxy_assets),
+    "Proxy release matrix must contain each native asset exactly once",
+)
+check(
+    proxy_build.get("permissions") == {"contents": "read"},
+    "Proxy native builds must have only contents: read permission",
+)
+
+proxy_rehearsal = proxy_rust.get("jobs", {}).get("proxy-native-release", {})
+proxy_rehearsal_matrix = (
+    proxy_rehearsal.get("strategy", {}).get("matrix", {}).get("include", [])
+)
+check(
+    proxy_rehearsal_matrix == proxy_matrix,
+    "Proxy PR rehearsal and release matrices must remain identical",
+)
+proxy_rehearsal_runs = "\n".join(
+    str(step.get("run", "")) for step in proxy_rehearsal.get("steps", [])
+)
+check(
+    'proxy-release.sh proxy-release-rehearsal "${{ matrix.archive }}"'
+    in proxy_rehearsal_runs,
+    "Proxy PR rehearsal must run the release packaging script",
+)
+
+proxy_publish = release_jobs["publish-proxy-release-artifacts"]
+check(
+    set(needs(proxy_publish)) == {classifier_id, "build-proxy"},
+    "Proxy publisher must wait for classification and every native proxy build",
+)
+check(
+    proxy_publish.get("permissions")
+    == {
+        "contents": "write",
+        "id-token": "write",
+        "attestations": "write",
+        "artifact-metadata": "write",
+    },
+    "Proxy publisher must have only release-upload and attestation permissions",
+)
+proxy_attest_steps = [
+    step
+    for step in proxy_publish.get("steps", [])
+    if step.get("name") == "Attest proxy release assets"
+]
+check(len(proxy_attest_steps) == 1, "Proxy release assets must be attested exactly once")
+check(
+    proxy_attest_steps[0].get("continue-on-error") is not True,
+    "Proxy release attestation must fail closed",
+)
+proxy_upload_steps = [
+    step
+    for step in proxy_publish.get("steps", [])
+    if step.get("name") == "Upload proxy assets to the Maple release"
+]
+check(len(proxy_upload_steps) == 1, "Proxy assets must upload exactly once")
+proxy_upload_run = str(proxy_upload_steps[0].get("run", ""))
+check(
+    'gh release upload "${RELEASE_TAG}"' in proxy_upload_run,
+    "Proxy publisher must upload to the classified Maple release tag",
+)
+for asset in proxy_assets | {"maple-proxy-release-final.sha256"}:
+    check(asset in proxy_upload_run, f"Proxy publisher must upload {asset}")
+
+proxy_verify = release_jobs["verify-proxy-release-artifacts"]
+check(
+    set(needs(proxy_verify))
+    == {classifier_id, "publish-proxy-release-artifacts"},
+    "Published proxy verification must wait for the proxy publisher",
+)
+
+latest_needs = set(needs(release_jobs["update-latest-json"]))
+check(
+    not latest_needs.intersection(
+        {"build-proxy", "publish-proxy-release-artifacts", "verify-proxy-release-artifacts"}
+    ),
+    "latest.json publication must remain independent of proxy release jobs",
+)
+
+aggregate = release_jobs["verify-release-artifacts"]
+check(
+    "verify-proxy-release-artifacts" in needs(aggregate),
+    "Aggregate release verification must wait for published proxy verification",
+)
+aggregate_runs = "\n".join(str(step.get("run", "")) for step in aggregate.get("steps", []))
+check(
+    "verify-release-artifacts.sh artifacts macos windows ios web latest-json proxy"
+    in aggregate_runs,
+    "Aggregate release verification must include proxy assets",
+)
 
 check(
     pages_production.get("permissions") == {"contents": "read"},
@@ -312,5 +435,8 @@ for required_control in (
 
 PY
 pass "workflow release-gate topology is fail closed with isolated downstream publishers"
+
+bash "${script_dir}/test-proxy-release-artifacts.sh" >/dev/null
+pass "proxy release artifact verifier accepts only the complete native asset set"
 
 printf '1..%d\n' "${passed}"

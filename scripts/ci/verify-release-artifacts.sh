@@ -5,7 +5,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 usage() {
   cat >&2 <<'EOF'
-usage: verify-release-artifacts.sh <artifacts-dir> [all|present|linux|macos|windows|android|ios|web|latest-json ...]
+usage: verify-release-artifacts.sh <artifacts-dir> [all|present|linux|macos|windows|android|ios|web|latest-json|proxy ...]
 
 Verifies downloaded release artifacts against their reproducibility proof files.
 The verifier recomputes final file hashes, canonical signed payload hashes, and
@@ -799,6 +799,125 @@ verify_latest_json() {
   done
 }
 
+proxy_asset_required() {
+  local name="$1"
+  local count file
+
+  count="$(find "${artifacts_dir}" -type f -name "${name}" | wc -l | tr -d '[:space:]')"
+  if [ "${count}" != "1" ]; then
+    echo "Expected exactly one proxy release asset named ${name}; found ${count}." >&2
+    return 1
+  fi
+
+  file="$(find "${artifacts_dir}" -type f -name "${name}" | LC_ALL=C sort | head -n 1)"
+  printf '%s\n' "${file}"
+}
+
+verify_proxy_archive_member() {
+  local archive_name="$1"
+  local archive="$2"
+  local members expected_member
+
+  case "${archive_name}" in
+    *.tar.gz)
+      members="$(tar -tzf "${archive}")"
+      expected_member="maple-proxy"
+      ;;
+    *.zip)
+      members="$(unzip -Z1 "${archive}")"
+      expected_member="maple-proxy.exe"
+      ;;
+    *)
+      echo "Unsupported proxy archive format: ${archive_name}" >&2
+      return 1
+      ;;
+  esac
+
+  if [ "${members}" != "${expected_member}" ]; then
+    echo "Proxy archive ${archive_name} must contain only ${expected_member}." >&2
+    printf 'members=%s\n' "${members}" >&2
+    return 1
+  fi
+
+  printf 'verified-proxy-archive-member  %s  %s\n' "${archive_name}" "${expected_member}"
+}
+
+verify_proxy() {
+  local manifest manifest_count digest label extra archive actual archive_name
+  local count=0
+  local expected_assets=(
+    maple-proxy-linux-aarch64.tar.gz
+    maple-proxy-linux-x86_64.tar.gz
+    maple-proxy-macos-aarch64.tar.gz
+    maple-proxy-windows-x86_64.zip
+  )
+  declare -A expected=()
+  declare -A seen=()
+
+  manifest_count="$(find "${artifacts_dir}" -type f -name maple-proxy-release-final.sha256 | wc -l | tr -d '[:space:]')"
+  if [ "${manifest_count}" != "1" ]; then
+    echo "Expected exactly one proxy release manifest; found ${manifest_count}." >&2
+    return 1
+  fi
+  manifest="$(proof_file_required maple-proxy-release-final.sha256)"
+
+  for archive_name in "${expected_assets[@]}"; do
+    expected["${archive_name}"]=1
+    seen["${archive_name}"]=0
+    proxy_asset_required "${archive_name}" >/dev/null
+  done
+
+  while read -r digest label extra; do
+    [ -n "${digest:-}" ] || continue
+
+    if ! [[ "${digest}" =~ ^[0-9a-fA-F]{64}$ ]] || [ -z "${label:-}" ] || [ -n "${extra:-}" ]; then
+      echo "Invalid proxy release manifest line in ${manifest}: ${digest:-} ${label:-} ${extra:-}" >&2
+      return 1
+    fi
+    if [ "$(basename "${label}")" != "${label}" ] || [ -z "${expected[${label}]+x}" ]; then
+      echo "Unexpected proxy release manifest asset: ${label}" >&2
+      return 1
+    fi
+    if [ "${seen[${label}]}" = "1" ]; then
+      echo "Duplicate proxy release manifest asset: ${label}" >&2
+      return 1
+    fi
+
+    archive="$(proxy_asset_required "${label}")"
+    actual="$(sha256_file "${archive}" | awk '{ print $1 }')"
+    if [ "${actual}" != "${digest}" ]; then
+      echo "Proxy release asset hash mismatch for ${label}." >&2
+      echo "expected=${digest}" >&2
+      echo "actual=${actual}" >&2
+      return 1
+    fi
+
+    verify_proxy_archive_member "${label}" "${archive}"
+    printf 'verified-proxy-release-asset  %s  %s\n' "${actual}" "${label}"
+    seen["${label}"]=1
+    count=$((count + 1))
+  done < "${manifest}"
+
+  for archive_name in "${expected_assets[@]}"; do
+    if [ "${seen[${archive_name}]}" != "1" ]; then
+      echo "Missing proxy release manifest asset: ${archive_name}" >&2
+      return 1
+    fi
+  done
+  if [ "${count}" -ne "${#expected_assets[@]}" ]; then
+    echo "Unexpected proxy release manifest entry count: ${count}" >&2
+    return 1
+  fi
+
+  while IFS= read -r -d '' archive; do
+    archive_name="$(basename "${archive}")"
+    if [ -z "${expected[${archive_name}]+x}" ]; then
+      echo "Unexpected proxy release archive: ${archive_name}" >&2
+      return 1
+    fi
+  done < <(find "${artifacts_dir}" -type f \( -name 'maple-proxy-*.tar.gz' -o -name 'maple-proxy-*.zip' \) -print0 | LC_ALL=C sort -z)
+}
+
 target_present() {
   local pattern="$1"
   [ -n "$(proof_file_optional "${pattern}")" ]
@@ -816,6 +935,7 @@ verify_present() {
   target_present ios-release-final.sha256 && verify_ios
   target_present web-final.sha256 && verify_web
   target_present latest-json-final.sha256 && verify_latest_json
+  target_present maple-proxy-release-final.sha256 && verify_proxy
   return 0
 }
 
@@ -827,6 +947,7 @@ verify_all() {
   verify_ios
   verify_web
   verify_latest_json
+  verify_proxy
 }
 
 for target in "$@"; do
@@ -857,6 +978,9 @@ for target in "$@"; do
       ;;
     latest-json)
       verify_latest_json
+      ;;
+    proxy)
+      verify_proxy
       ;;
     *)
       usage

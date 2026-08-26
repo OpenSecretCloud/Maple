@@ -9,6 +9,7 @@ pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 300;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "maple-proxy")]
 #[command(about = "Lightweight OpenAI-compatible proxy server for Maple/OpenSecret")]
+#[command(version)]
 pub struct Config {
     /// Host to bind the server to
     #[arg(long, env = "MAPLE_HOST", default_value = "127.0.0.1")]

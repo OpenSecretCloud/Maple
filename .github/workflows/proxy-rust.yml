@@ -18,6 +18,7 @@ on:
       - "proxy/src/**"
       - "proxy/tests/**"
       - "proxy/examples/**"
+      - "scripts/ci/proxy-release.sh"
       - "sdk/rust/Cargo.toml"
       - "sdk/rust/src/**"
       - "sdk/rust/assets/**"
@@ -34,6 +35,7 @@ on:
       - "proxy/src/**"
       - "proxy/tests/**"
       - "proxy/examples/**"
+      - "scripts/ci/proxy-release.sh"
       - "sdk/rust/Cargo.toml"
       - "sdk/rust/src/**"
       - "sdk/rust/assets/**"
@@ -73,3 +75,40 @@ jobs:
             RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
             cargo machete
           '
+
+  proxy-native-release:
+    name: proxy-native-release (${{ matrix.archive }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            archive: maple-proxy-linux-x86_64.tar.gz
+          - runner: ubuntu-24.04-arm
+            archive: maple-proxy-linux-aarch64.tar.gz
+          - runner: macos-26-xlarge
+            archive: maple-proxy-macos-aarch64.tar.gz
+          - runner: windows-2025
+            archive: maple-proxy-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
+        with:
+          toolchain: 1.89.0
+
+      - name: Cache proxy Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # was v2
+        with:
+          workspaces: proxy -> target
+          add-rust-environment-hash-key: "false"
+          key: native-release-${{ matrix.archive }}-${{ hashFiles('proxy/Cargo.lock') }}
+
+      - name: Rehearse native proxy release asset
+        shell: bash
+        run: ./scripts/ci/proxy-release.sh proxy-release-rehearsal "${{ matrix.archive }}"
