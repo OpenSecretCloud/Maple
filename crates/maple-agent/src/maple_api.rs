@@ -236,6 +236,13 @@ impl MapleApiSession {
         Ok(response.data.into_iter().map(|model| model.id).collect())
     }
 
+    pub(crate) async fn model_catalog(&self) -> Result<opensecret::ModelCatalogResponse, String> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.get_model_catalog().await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_sdk_error)
+    }
+
     pub(crate) async fn send_inference_request(
         self: Arc<Self>,
         request: InferenceRequest,

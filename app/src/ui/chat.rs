@@ -515,8 +515,13 @@ impl ChatScreen {
         };
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let model = self.selected_model.clone();
         self.call(
-            async move { backend.context_usage(&user_id, &session_id).await },
+            async move {
+                backend
+                    .context_usage(&user_id, &session_id, model.as_deref())
+                    .await
+            },
             cx,
             |this, result, cx| {
                 if let Ok(Some((tokens, limit))) = result {
@@ -561,8 +566,13 @@ impl ChatScreen {
                             let backend = backend.clone();
                             let user_id = user_id.clone();
                             let target = target.clone();
+                            let model = this.selected_model.clone();
                             this.call(
-                                async move { backend.context_usage(&user_id, &target).await },
+                                async move {
+                                    backend
+                                        .context_usage(&user_id, &target, model.as_deref())
+                                        .await
+                                },
                                 cx,
                                 |this, result, cx| {
                                     if let Ok(Some((tokens, limit))) = result {
@@ -885,6 +895,7 @@ impl ChatScreen {
             cx,
             |_this, _result, _cx| {},
         );
+        self.refresh_context_usage(cx);
     }
 
     /// Apply a timeline item using Maple's merge contract: `append` extends

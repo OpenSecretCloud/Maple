@@ -142,6 +142,26 @@ const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
 const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 const MAPLE_IMAGE_ATTACHMENTS_OPERATION: &str = "mapleImageAttachments";
 
+/// Maple's context-limit rule: both fields present and equal is the value,
+/// exactly one present wins, and absent or disagreeing metadata is unknown.
+pub(crate) fn reconcile_context_limit(
+    context_window: Option<u64>,
+    max_context_tokens: Option<u64>,
+) -> Option<i64> {
+    let context_window = context_window
+        .and_then(|value| i64::try_from(value).ok())
+        .filter(|value| *value > 0);
+    let max_context_tokens = max_context_tokens
+        .and_then(|value| i64::try_from(value).ok())
+        .filter(|value| *value > 0);
+    match (context_window, max_context_tokens) {
+        (None, None) => None,
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(_), Some(_)) => None,
+    }
+}
+
 fn validate_session_model_lock(
     message_count: usize,
     persisted_model: Option<&str>,
@@ -3677,6 +3697,57 @@ impl AgentRuntimeHandle {
         models.retain(|model| model != &default_model);
         models.insert(0, default_model.clone());
         Ok(models)
+    }
+
+    /// Resolve the context limit (tokens) for a model id against the live
+    /// model catalog. Follows Maple's frontend rules: an alias resolves to
+    /// its target model; `context_window` and `max_context_tokens` must be
+    /// present-and-equal when both appear, else the one present value wins;
+    /// absent or disagreeing metadata means unknown.
+    pub async fn context_limit_for_model(&self, model_id: &str) -> Result<Option<i64>, String> {
+        if model_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let maple_api_session = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, self.account_scope.as_ref())?;
+            Arc::clone(&current.maple_api_session)
+        };
+        drop(_runtime_lifecycle_guard);
+
+        let catalog = match maple_api_session.model_catalog().await {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                log::warn!("Failed to fetch Maple Agent model catalog: {error}");
+                return Ok(None);
+            }
+        };
+
+        let mut concrete_id = model_id.to_string();
+        for alias in &catalog.aliases {
+            if alias.id == model_id {
+                if let Some(target) = alias.target_model.as_deref() {
+                    if !target.trim().is_empty() {
+                        concrete_id = target.to_string();
+                    }
+                }
+                break;
+            }
+        }
+        let model = catalog.data.iter().find(|model| model.id == concrete_id);
+        let Some(model) = model else {
+            return Ok(None);
+        };
+        Ok(reconcile_context_limit(
+            model.context_window,
+            model.max_context_tokens,
+        ))
     }
 
     pub async fn load_session(&self, session_id: String) -> Result<AgentSessionDetail, String> {
@@ -10141,6 +10212,26 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_limit_requires_present_and_agreeing_metadata() {
+        // Absent metadata means unknown.
+        assert_eq!(reconcile_context_limit(None, None), None);
+        // Exactly one field wins.
+        assert_eq!(reconcile_context_limit(Some(256_000), None), Some(256_000));
+        assert_eq!(reconcile_context_limit(None, Some(128_000)), Some(128_000));
+        // Equal values agree.
+        assert_eq!(
+            reconcile_context_limit(Some(200_000), Some(200_000)),
+            Some(200_000)
+        );
+        // Disagreeing values are unknown, matching Maple's frontend rule.
+        assert_eq!(reconcile_context_limit(Some(128_000), Some(200_000)), None);
+        // Zero or overflow is not a usable limit.
+        assert_eq!(reconcile_context_limit(Some(0), None), None);
+        assert_eq!(reconcile_context_limit(Some(u64::MAX), None), None);
+    }
+
     use axum::response::IntoResponse;
     use goose_providers::base::{stream_from_single_message, MessageStream, Provider};
     use goose_providers::conversation::token_usage::{ProviderUsage, Usage};

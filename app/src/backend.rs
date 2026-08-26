@@ -618,19 +618,34 @@ impl AgentBackend {
     }
 
     /// Latest context usage for a session from the goose usage ledger:
-    /// (context tokens, context limit).
+    /// (context tokens, context limit). The limit comes from the model
+    /// catalog for the selected model; MAPLE_CONTEXT_LIMIT is a manual
+    /// override; 200k is the fallback when the catalog lacks the model.
     pub async fn context_usage(
         &self,
         user_id: &str,
         session_id: &str,
+        model: Option<&str>,
     ) -> Result<Option<(i64, i64)>, String> {
         let Some(scope) = self.account_scope(user_id) else {
             return Ok(None);
         };
-        let limit: i64 = std::env::var("MAPLE_CONTEXT_LIMIT")
+        let limit: i64 = match std::env::var("MAPLE_CONTEXT_LIMIT")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(200_000);
+        {
+            Some(limit) if limit > 0 => limit,
+            _ => match model {
+                Some(model) => self
+                    .service
+                    .handle_for_user(user_id)
+                    .await?
+                    .context_limit_for_model(model)
+                    .await?
+                    .unwrap_or(200_000),
+                None => 200_000,
+            },
+        };
         let db = crate::backend::account_session_db(&scope);
         let Ok(conn) = rusqlite::Connection::open(&db) else {
             return Ok(None);

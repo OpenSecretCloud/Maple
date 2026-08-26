@@ -5786,8 +5786,7 @@ dependencies = [
 [[package]]
 name = "opensecret"
 version = "3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3323b7adba9f171cc9277b7d51fb881e4a3f37c860eb533bcb0ae434bf4294e1"
+source = "git+https://github.com/benthecarman/Maple?branch=opensecret-git#0efc1bbb463d2d51aabcc9d1c3638e37094abe94"
 dependencies = [
  "aes-gcm",
  "anyhow",
