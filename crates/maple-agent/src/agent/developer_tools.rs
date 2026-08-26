@@ -147,6 +147,9 @@ pub(crate) struct MapleDeveloperClient {
     tool_context: SharedAgentToolContext,
     contextual_image_context: Option<PlatformExtensionContext>,
     attachment_store: Option<Arc<AgentAttachmentStore>>,
+    /// Routes ask_user questions to the UI; absent in tests.
+    questions: Option<crate::agent::questions::QuestionBroker>,
+    session_id: Option<String>,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
     #[cfg(not(windows))]
@@ -178,6 +181,8 @@ impl MapleDeveloperClient {
             tool_context,
             contextual_image_context,
             attachment_store: None,
+            questions: None,
+            session_id: None,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
             #[cfg(not(windows))]
@@ -219,6 +224,58 @@ impl MapleDeveloperClient {
             })
             .await
             .clone()
+    }
+
+    fn todo_tool() -> Tool {
+        Tool::new(
+            "todo_write".to_string(),
+            "Record or update the plan for the current task. Call this whenever the plan changes so the user sees live progress.".to_string(),
+            object!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["todos"],
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The full todo list; replaces any previous list",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["content", "status"],
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "Short task description"
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                    "description": "Current state of this item"
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+        )
+    }
+
+    fn ask_user_tool() -> Tool {
+        Tool::new(
+            "ask_user".to_string(),
+            "Ask the user a free-text question and wait for their answer. Use when you need information, a decision, or confirmation that cannot be derived from the workspace.".to_string(),
+            object!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["question"],
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to show the user"
+                    }
+                }
+            }),
+        )
     }
 
     fn read_tool() -> Tool {
@@ -501,6 +558,8 @@ impl McpClientTrait for MapleDeveloperClient {
                 self.contextual_image_context.is_some(),
             ));
         }
+        tools.push(Self::todo_tool());
+        tools.push(Self::ask_user_tool());
         tools.push(web_search_tool());
         tools.push(open_url_tool());
 
@@ -544,6 +603,38 @@ impl McpClientTrait for MapleDeveloperClient {
                 Ok(params) => write_file(params, working_dir, cancel_token).await,
                 Err(error) => error_result(error),
             },
+            "todo_write" => {
+                // The list is state for the UI; echo it back so the model
+                // sees its own plan confirmed.
+                match arguments {
+                    Some(args) => text_result(
+                        serde_json::to_string_pretty(&serde_json::Value::Object(args))
+                            .unwrap_or_else(|_| "[]".to_string()),
+                    ),
+                    None => text_result("[]".to_string()),
+                }
+            }
+            "ask_user" => {
+                let question = arguments
+                    .as_ref()
+                    .and_then(|args| args.get("question"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if question.trim().is_empty() {
+                    return Ok(error_result("question must not be empty"));
+                }
+                let Some(broker) = crate::agent::questions::global() else {
+                    return Ok(error_result("questions unavailable"));
+                };
+                let session_id = ctx.session_id.clone();
+                let answer = broker.ask(&session_id, question).await;
+                if answer.trim().is_empty() {
+                    text_result("(no answer provided)".to_string())
+                } else {
+                    text_result(answer)
+                }
+            }
             "shell" => {
                 let params = match Self::parse_args::<ShellParams>(arguments) {
                     Ok(params) => params,
@@ -655,6 +746,10 @@ fn success_result(text: impl Into<String>) -> CallToolResult {
 
 fn error_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![prioritized_text(format!("Error: {}", text.into()))])
+}
+
+fn text_result(text: impl Into<String>) -> CallToolResult {
+    CallToolResult::success(vec![prioritized_text(text)])
 }
 
 fn prioritized_text(text: impl Into<String>) -> ContentBlock {
@@ -2722,6 +2817,8 @@ mod tests {
                 "edit",
                 "write",
                 "read_image",
+                "todo_write",
+                "ask_user",
                 "web_search",
                 "open_url"
             ]
@@ -2753,7 +2850,7 @@ mod tests {
             result.tools[2].input_schema["properties"]["edits"]["minItems"],
             1
         );
-        let web_search = serde_json::to_value(&result.tools[5]).unwrap();
+        let web_search = serde_json::to_value(&result.tools[7]).unwrap();
         assert_eq!(web_search["annotations"]["readOnlyHint"], true);
         assert_eq!(web_search["annotations"]["destructiveHint"], false);
         assert_eq!(web_search["annotations"]["openWorldHint"], true);
@@ -2761,7 +2858,7 @@ mod tests {
             web_search["inputSchema"]["properties"]["limit"]["maximum"],
             50
         );
-        let open_url = serde_json::to_value(&result.tools[6]).unwrap();
+        let open_url = serde_json::to_value(&result.tools[8]).unwrap();
         assert_eq!(open_url["annotations"]["readOnlyHint"], false);
         assert_eq!(open_url["annotations"]["destructiveHint"], false);
         assert_eq!(open_url["annotations"]["openWorldHint"], true);
@@ -2802,6 +2899,8 @@ mod tests {
                 "edit",
                 "write",
                 "read_image",
+                "todo_write",
+                "ask_user",
                 "web_search",
                 "open_url",
                 EXTERNAL_MCP_TOOL_NAME,

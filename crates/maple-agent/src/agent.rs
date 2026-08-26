@@ -3,6 +3,7 @@ mod developer_tools;
 #[cfg(target_os = "macos")]
 mod macos_login_path;
 pub(crate) mod provider;
+mod questions;
 mod shell_permission;
 mod system_prompt;
 mod tool_context;
@@ -76,12 +77,14 @@ const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // policy at every tool boundary, including when the user changes it mid-run.
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
 #[cfg(test)]
-const MAPLE_DEVELOPER_TOOLS: [&str; 8] = [
+const MAPLE_DEVELOPER_TOOLS: [&str; 10] = [
     "read",
     "shell",
     "edit",
     "write",
     "read_image",
+    "todo_write",
+    "ask_user",
     "web_search",
     "open_url",
     EXTERNAL_MCP_TOOL_NAME,
@@ -93,6 +96,8 @@ const MAPLE_SKILLS_CLIENT_KEY: &str = "maple-skills-extension";
 const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   always_allow:
   - load_skill
+  - todo_write
+  - ask_user
   ask_before:
   - read
   - shell
@@ -896,6 +901,12 @@ pub enum AgentRunEvent {
 #[derive(Debug, Clone)]
 pub enum AgentServiceEvent {
     RuntimeStatus(AgentRuntimeStatus),
+    /// The agent asked the user a free-text question (ask_user tool).
+    Question {
+        session_id: String,
+        request_id: String,
+        question: String,
+    },
     SessionCreated(AgentSessionSummary),
     SessionUpdated {
         session_id: String,
@@ -1417,6 +1428,8 @@ impl MapleAgentHostResources {
 
 #[derive(Clone)]
 pub struct MapleAgentService {
+    /// Routes ask_user questions to the UI and answers back.
+    questions: questions::QuestionBroker,
     host: MapleAgentHostResources,
     inner: Arc<Mutex<Option<AgentRuntime>>>,
     runtime_lifecycle: Arc<Mutex<()>>,
@@ -1501,7 +1514,9 @@ impl LiveTimeline {
 
 impl MapleAgentService {
     pub fn new(host: MapleAgentHostResources) -> Self {
+        questions::init_global(host.events.clone());
         Self {
+            questions: questions::QuestionBroker::new(host.events.clone()),
             host,
             inner: Arc::new(Mutex::new(None)),
             runtime_lifecycle: Arc::new(Mutex::new(())),
@@ -1533,6 +1548,11 @@ impl MapleAgentService {
         })
     }
 
+    /// Deliver the user's answer to a pending ask_user question.
+    pub async fn answer_question(&self, request_id: &str, answer: String) -> bool {
+        self.questions.answer(request_id, answer).await
+    }
+
     /// Stop admitting mutations before host teardown begins. Existing work and
     /// cleanup operations remain able to drain through their dedicated paths.
     pub fn begin_draining(&self) {
@@ -1556,6 +1576,16 @@ impl MapleAgentService {
 }
 
 impl AgentRuntimeHandle {
+    /// Deliver the user's answer to an ask_user question from this
+    /// account's runtime. False when nothing was pending.
+    pub async fn answer_question_via_handle(
+        &self,
+        request_id: &str,
+        answer: String,
+    ) -> Result<bool, String> {
+        Ok(self.service.questions.answer(request_id, answer).await)
+    }
+
     pub async fn verify_generation(&self) -> Result<(), String> {
         ensure_account_generation(&self.service, &self.account_scope, self.generation).await
     }
@@ -7981,7 +8011,7 @@ async fn update_live_permission_status(
     Some(item.clone())
 }
 
-fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServiceEvent) {
+pub(crate) fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServiceEvent) {
     events.sink.emit(&event);
 }
 
@@ -13320,10 +13350,14 @@ mod tests {
         reset_maple_owned_permission_file(&path).unwrap();
         let manager = PermissionManager::new(root.clone());
         for tool in MAPLE_DEVELOPER_TOOLS {
-            assert_eq!(
-                manager.get_user_permission(tool),
-                Some(goose::config::permission::PermissionLevel::AskBefore)
-            );
+            // todo_write only records plan state for the UI; it has no
+            // side effects and is always allowed.
+            let expected = if tool == "todo_write" || tool == "ask_user" {
+                goose::config::permission::PermissionLevel::AlwaysAllow
+            } else {
+                goose::config::permission::PermissionLevel::AskBefore
+            };
+            assert_eq!(manager.get_user_permission(tool), Some(expected));
         }
         assert_eq!(
             manager.get_user_permission("load_skill"),

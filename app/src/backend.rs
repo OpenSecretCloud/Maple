@@ -23,6 +23,13 @@ use opensecret::OpenSecretClient;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct PendingQuestion {
+    pub request_id: String,
+    pub question: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingPermission {
     pub session_id: String,
@@ -598,6 +605,23 @@ impl AgentBackend {
                 session_id: session_id.to_string(),
                 mode: mode.to_string(),
             })
+            .await
+    }
+
+    /// Deliver the user's answer to an ask_user question. Returns false
+    /// when no question was pending.
+    pub async fn answer_question(
+        &self,
+        user_id: &str,
+        request_id: &str,
+        answer: String,
+    ) -> Result<bool, String> {
+        let _service = self.service.clone();
+        let request_id = request_id.to_string();
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .answer_question_via_handle(&request_id, answer)
             .await
     }
 

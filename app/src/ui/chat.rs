@@ -13,7 +13,7 @@ use maple_agent::agent::{
     AgentSendMessageRequest, AgentServiceEvent, AgentSessionSummary, AgentTimelineItem,
 };
 
-use crate::backend::{AgentBackend, PendingPermission};
+use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
 use crate::ui::markdown;
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
@@ -33,6 +33,15 @@ pub struct ChatScreen {
     active_runs: HashMap<String, String>,
     pending_permission: Option<PendingPermission>,
     permission_responding: bool,
+    /// Suppresses duplicate session creation while one is in flight.
+    session_setup_pending: bool,
+    /// An ask_user question waiting for the user's text answer.
+    pending_question: Option<PendingQuestion>,
+    /// Lazily created answer input for the question card.
+    pending_question_input: Option<Entity<TextInput>>,
+    /// Request id whose input currently holds focus.
+    question_focus_id: Option<String>,
+    composer_busy: bool,
     composer: Entity<TextInput>,
     models: Vec<String>,
     selected_model: Option<String>,
@@ -98,6 +107,11 @@ impl ChatScreen {
             active_runs: HashMap::new(),
             pending_permission: None,
             permission_responding: false,
+            session_setup_pending: false,
+            pending_question: None,
+            pending_question_input: None,
+            question_focus_id: None,
+            composer_busy: false,
             composer,
             models: Vec::new(),
             selected_model: None,
@@ -317,7 +331,12 @@ impl ChatScreen {
         );
     }
 
-    fn new_session(&self, cx: &mut Context<Self>) {
+    fn new_session(&mut self, cx: &mut Context<Self>) {
+        // A boot-time auto-create and a user click can race; one only.
+        if self.session_setup_pending {
+            return;
+        }
+        self.session_setup_pending = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -330,6 +349,7 @@ impl ChatScreen {
             cx,
             |this, result, cx| match result {
                 Ok(session) => {
+                    this.session_setup_pending = false;
                     // The SessionCreated event may arrive before this
                     // callback; upsert so the sidebar never shows the task
                     // twice.
@@ -337,7 +357,10 @@ impl ChatScreen {
                     let timeline = Vec::new();
                     this.set_active_session(session, timeline, cx);
                 }
-                Err(message) => this.notice = Some(message),
+                Err(message) => {
+                    this.session_setup_pending = false;
+                    this.notice = Some(message);
+                }
             },
         );
     }
@@ -625,6 +648,32 @@ impl ChatScreen {
         );
     }
 
+    fn submit_question(&mut self, cx: &mut Context<Self>) {
+        let Some(question) = self.pending_question.clone() else {
+            return;
+        };
+        let Some(input) = self.pending_question_input.clone() else {
+            return;
+        };
+        let answer = input.read(cx).text();
+        if answer.trim().is_empty() {
+            return;
+        }
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.pending_question = None;
+        cx.notify();
+        self.call(
+            async move {
+                backend
+                    .answer_question(&user_id, &question.request_id, answer)
+                    .await
+            },
+            cx,
+            |_this, _result, _cx| {},
+        );
+    }
+
     fn respond_permission(&mut self, allow: bool, cx: &mut Context<Self>) {
         let Some(permission) = self.pending_permission.clone() else {
             return;
@@ -778,6 +827,30 @@ impl ChatScreen {
                     self.apply_timeline_item(&session_id, item);
                 }
             }
+            AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                question,
+            } => {
+                if self.selected_session.as_deref() == Some(session_id.as_str()) {
+                    if self.pending_question_input.is_none() {
+                        let chat = cx.entity().downgrade();
+                        let input = cx.new(|cx| {
+                            TextInput::new("Type your answer…", cx).on_enter(move |text, _, cx| {
+                                let _ = text;
+                                if let Some(chat) = chat.upgrade() {
+                                    chat.update(cx, |chat, cx| chat.submit_question(cx));
+                                }
+                            })
+                        });
+                        self.pending_question_input = Some(input);
+                    }
+                    self.pending_question = Some(PendingQuestion {
+                        request_id,
+                        question,
+                    });
+                }
+            }
             AgentServiceEvent::Run {
                 session_id,
                 run_id,
@@ -896,6 +969,10 @@ impl Render for ChatScreen {
                             .child(self.render_header(cx))
                             .children(self.render_menu_panel(cx))
                             .child(self.render_transcript(window, cx))
+                            .when_some(self.pending_question.clone(), |container, question| {
+                                let input = self.pending_question_input.clone();
+                                container.child(render_question_card(question, input, cx))
+                            })
                             .when_some(self.pending_permission.clone(), |container, permission| {
                                 container.child(render_permission_card(
                                     permission,
@@ -1325,6 +1402,7 @@ impl ChatScreen {
         let items = self.timeline.clone();
         div()
             .id("transcript")
+            .relative()
             .flex_1()
             .flex()
             .flex_col()
@@ -1361,6 +1439,7 @@ impl ChatScreen {
                         .map(move |item| render_timeline_item(item, tool_details)),
                 )
             })
+            .child(self.render_scrollbar())
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(
                     div()
@@ -1385,6 +1464,41 @@ impl ChatScreen {
                         .child(notice),
                 )
             })
+    }
+
+    /// Thin scrollbar overlay driven by the transcript scroll handle.
+    fn render_scrollbar(&self) -> impl IntoElement {
+        let handle = &self.transcript_scroll;
+        let bounds = handle.bounds();
+        let max = handle.max_offset();
+        let track_height = bounds.size.height;
+        if max.height <= gpui::px(1.) || track_height <= gpui::px(0.) {
+            return div().opacity(0.);
+        }
+        let content = max.height + track_height;
+        // ratio of visible track to total content
+        let ratio = track_height / content;
+        let thumb_height = (track_height * ratio).max(gpui::px(24.));
+        let offset = -handle.offset().y;
+        let scrollable = (track_height - thumb_height).max(gpui::px(0.));
+        let progress = offset / max.height;
+        let thumb_top = scrollable * progress;
+        div()
+            .absolute()
+            .top(gpui::px(0.))
+            .right(gpui::px(2.))
+            .bottom(gpui::px(0.))
+            .w(gpui::px(6.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .w_full()
+                    .h(thumb_height)
+                    .mt(thumb_top)
+                    .rounded_full()
+                    .bg(gpui::rgba(0xffffff26)),
+            )
     }
 
     fn render_composer(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1459,7 +1573,19 @@ fn render_timeline_item(item: &AgentTimelineItem, tool_details: bool) -> Div {
     let item = match item.item_type.as_str() {
         "message" => render_message(item),
         "thinking" | "reasoning" => render_thinking(item),
-        "tool" | "toolCall" => render_tool(item, tool_details),
+        "tool" | "toolCall" => {
+            // Dispatch on payload shape; runtime titles are humanized
+            // ("todo write", "ask user") and vary by detail suffix.
+            if has_tool_input(item, "todos") {
+                render_todo(item)
+            } else if has_tool_input(item, "edits")
+                || (has_tool_input(item, "content") && has_tool_input(item, "path"))
+            {
+                render_tool_with_diff(item, tool_details)
+            } else {
+                render_tool(item, tool_details)
+            }
+        }
         "error" => render_error(item),
         "permission" => render_permission_row(item),
         _ => render_system(item),
@@ -1496,7 +1622,6 @@ fn render_message(item: &AgentTimelineItem) -> Div {
             .child(markdown::render_markdown(&text))
     }
 }
-
 fn render_thinking(item: &AgentTimelineItem) -> Div {
     let text = item.text.clone().unwrap_or_default();
     if text.trim().is_empty() {
@@ -1525,6 +1650,155 @@ fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {
         Some("cancelled") | Some("controlled_externally") => ("stopped", theme::TEXT_MUTED),
         _ => ("running", theme::STATUS_RUNNING),
     }
+}
+
+/// True when the tool call input has the given top-level key.
+fn has_tool_input(item: &AgentTimelineItem, key: &str) -> bool {
+    item.input
+        .as_ref()
+        .and_then(|value| value.as_object())
+        .is_some_and(|map| map.contains_key(key))
+}
+
+/// Checklist card for todo_write tool calls.
+fn render_todo(item: &AgentTimelineItem) -> Div {
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(gpui::rgb(theme::BG_TOOL_CARD))
+        .border_1()
+        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .child("Plan"),
+        );
+    if let Some(serde_json::Value::Object(map)) = item.input.as_ref() {
+        if let Some(serde_json::Value::Array(todos)) = map.get("todos") {
+            for todo in todos {
+                let content = todo
+                    .get("content")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                let status = todo
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("pending");
+                let (marker, color) = match status {
+                    "completed" => ("[x]", theme::STATUS_SUCCESS),
+                    "in_progress" => ("[~]", theme::STATUS_RUNNING),
+                    _ => ("[ ]", theme::TEXT_MUTED),
+                };
+                card = card.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family("monospace")
+                                .text_color(gpui::rgb(color))
+                                .child(marker.to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(gpui::rgb(if status == "completed" {
+                                    theme::TEXT_MUTED
+                                } else {
+                                    theme::TEXT_PRIMARY
+                                }))
+                                .line_clamp(1)
+                                .child(content.to_string()),
+                        ),
+                );
+            }
+        }
+    }
+    card
+}
+
+/// Tool card whose payload renders as a colored diff when it carries
+/// edit/write replacements.
+fn render_tool_with_diff(item: &AgentTimelineItem, details: bool) -> Div {
+    let card = render_tool(item, details);
+    if !details {
+        return card;
+    }
+    // Build a +/- view from the edit set when present.
+    let mut diff_lines: Vec<(char, String)> = Vec::new();
+    if let Some(serde_json::Value::Object(map)) = item.input.as_ref() {
+        if let Some(path) = map.get("path").and_then(|v| v.as_str()) {
+            diff_lines.push((' ', path.to_string()));
+        }
+        if let Some(serde_json::Value::Array(edits)) = map.get("edits") {
+            for edit in edits {
+                if let Some(old) = edit.get("oldText").and_then(|v| v.as_str()) {
+                    for line in old.lines() {
+                        diff_lines.push(('-', line.to_string()));
+                    }
+                }
+                if let Some(new) = edit.get("newText").and_then(|v| v.as_str()) {
+                    for line in new.lines() {
+                        diff_lines.push(('+', line.to_string()));
+                    }
+                }
+            }
+        }
+        if let Some(content) = map.get("content").and_then(|v| v.as_str()) {
+            for line in content.lines() {
+                diff_lines.push(('+', line.to_string()));
+            }
+        }
+    }
+    if diff_lines.is_empty() {
+        return card;
+    }
+    let mut diff = div()
+        .flex()
+        .flex_col()
+        .mt_1()
+        .rounded_md()
+        .bg(gpui::rgb(theme::BG_CODE_BLOCK))
+        .border_1()
+        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .overflow_x_hidden();
+    for (sign, line) in diff_lines.into_iter().take(200) {
+        let color = match sign {
+            '+' => theme::STATUS_SUCCESS,
+            '-' => theme::STATUS_ERROR,
+            _ => theme::TEXT_SECONDARY,
+        };
+        diff = diff.child(
+            div()
+                .flex()
+                .gap_1()
+                .px_2()
+                .text_xs()
+                .font_family("monospace")
+                .child(
+                    div()
+                        .w(gpui::px(10.))
+                        .text_color(gpui::rgb(color))
+                        .child(sign.to_string()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(gpui::rgb(color))
+                        .line_clamp(1)
+                        .child(line),
+                ),
+        );
+    }
+    card.child(diff)
 }
 
 fn render_tool(item: &AgentTimelineItem, details: bool) -> Div {
@@ -1701,6 +1975,71 @@ fn render_system(item: &AgentTimelineItem) -> Div {
         .text_sm()
         .text_color(gpui::rgb(theme::TEXT_MUTED))
         .child(text)
+}
+
+fn render_question_card(
+    question: crate::backend::PendingQuestion,
+    input: Option<Entity<TextInput>>,
+    cx: &mut Context<ChatScreen>,
+) -> Div {
+    let mut card = div()
+        .m_4()
+        .px_4()
+        .py_3()
+        .rounded_lg()
+        .bg(gpui::rgb(theme::BG_ELEVATED))
+        .border_1()
+        .border_color(gpui::rgb(theme::STATUS_RUNNING))
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .child("Question from Maple"),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .child(question.question.clone()),
+        );
+    if let Some(input) = input {
+        card = card.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .bg(gpui::rgb(theme::BG_INPUT))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::BORDER))
+                        .child(input),
+                )
+                .child(
+                    div()
+                        .id("question-submit")
+                        .px_4()
+                        .py_2()
+                        .rounded_md()
+                        .bg(gpui::rgb(theme::ACCENT))
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .hover(|style| style.cursor_pointer())
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.submit_question(cx);
+                        }))
+                        .child("Answer"),
+                ),
+        );
+    }
+    card
 }
 
 fn render_permission_card(
