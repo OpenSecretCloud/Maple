@@ -161,8 +161,10 @@ expect_failure "rejects an unknown argument" \
 
 release_json="${temp_root}/release.json"
 pages_production_json="${temp_root}/pages-production.json"
+proxy_rust_json="${temp_root}/proxy-rust.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/pages-production.yml" > "${pages_production_json}"
+yq -o=json '.' "${repo_root}/.github/workflows/proxy-rust.yml" > "${proxy_rust_json}"
 
 if rg -n --glob '*.yml' --glob '*.yaml' \
   'gh[[:space:]]+release[[:space:]]+create|softprops/action-gh-release' \
@@ -171,7 +173,7 @@ if rg -n --glob '*.yml' --glob '*.yaml' \
 fi
 pass "repository workflows preserve one Maple GitHub Release object"
 
-python3 - "${release_json}" "${pages_production_json}" <<'PY'
+python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" <<'PY'
 import json
 import re
 import sys
@@ -212,6 +214,9 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 
 with open(sys.argv[2], encoding="utf-8") as handle:
     pages_production = json.load(handle)
+
+with open(sys.argv[3], encoding="utf-8") as handle:
+    proxy_rust = json.load(handle)
 
 release_jobs = release["jobs"]
 classifier_id = "classify-app-release"
@@ -285,6 +290,23 @@ check(
 check(
     proxy_build.get("permissions") == {"contents": "read"},
     "Proxy native builds must have only contents: read permission",
+)
+
+proxy_rehearsal = proxy_rust.get("jobs", {}).get("proxy-native-release", {})
+proxy_rehearsal_matrix = (
+    proxy_rehearsal.get("strategy", {}).get("matrix", {}).get("include", [])
+)
+check(
+    proxy_rehearsal_matrix == proxy_matrix,
+    "Proxy PR rehearsal and release matrices must remain identical",
+)
+proxy_rehearsal_runs = "\n".join(
+    str(step.get("run", "")) for step in proxy_rehearsal.get("steps", [])
+)
+check(
+    'proxy-release.sh proxy-release-rehearsal "${{ matrix.archive }}"'
+    in proxy_rehearsal_runs,
+    "Proxy PR rehearsal must run the release packaging script",
 )
 
 proxy_publish = release_jobs["publish-proxy-release-artifacts"]
