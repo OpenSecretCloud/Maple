@@ -27,9 +27,21 @@ INERT_ROOT_FILES = frozenset(
         "zapstore.yaml",
     }
 )
-INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "sdk/", "updates/")
+INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "updates/")
 PURE_FRONTEND_PREFIXES = ("frontend/public/", "frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"frontend/icon.svg", "frontend/index.html"})
+SDK_FRONTEND_PREFIXES = ("sdk/src/",)
+SDK_TEST_PREFIXES = ("sdk/src/lib/test/",)
+SDK_FRONTEND_FILES = frozenset(
+    {
+        "sdk/bun.lock",
+        "sdk/bunfig.toml",
+        "sdk/package.json",
+        "sdk/tsconfig.build.json",
+        "sdk/tsconfig.json",
+        "sdk/vite.config.ts",
+    }
+)
 
 IOS_ONNX_INPUTS = frozenset(
     {
@@ -138,6 +150,12 @@ def classify_path(path: str) -> frozenset[str]:
     if not path or path.startswith("/") or ".." in path.split("/"):
         return ALL_OUTPUTS
     if path in INERT_ROOT_FILES or path.startswith(INERT_PREFIXES):
+        return frozenset()
+    if path.startswith(SDK_TEST_PREFIXES):
+        return frozenset()
+    if path in SDK_FRONTEND_FILES or path.startswith(SDK_FRONTEND_PREFIXES):
+        return frozenset({"frontend"})
+    if path.startswith("sdk/"):
         return frozenset()
     if path in PURE_FRONTEND_FILES or path.startswith(PURE_FRONTEND_PREFIXES):
         return frozenset({"frontend"})

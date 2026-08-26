@@ -10,6 +10,16 @@ on:
       - ".github/workflows/frontend-tests.yml"
       - "frontend/**"
       - "!frontend/src-tauri/**"
+      - "sdk/src/**"
+      - "!sdk/src/lib/test/**"
+      - "sdk/bun.lock"
+      - "sdk/bunfig.toml"
+      - "sdk/package.json"
+      - "sdk/tsconfig.build.json"
+      - "sdk/tsconfig.json"
+      - "sdk/vite.config.ts"
+      - "scripts/prepare-frontend-deps.sh"
+      - "scripts/prepare-typescript-sdk.sh"
       - "scripts/ci/_common.sh"
       - "scripts/ci/frontend.sh"
       - "flake.nix"
@@ -20,6 +30,16 @@ on:
       - ".github/workflows/frontend-tests.yml"
       - "frontend/**"
       - "!frontend/src-tauri/**"
+      - "sdk/src/**"
+      - "!sdk/src/lib/test/**"
+      - "sdk/bun.lock"
+      - "sdk/bunfig.toml"
+      - "sdk/package.json"
+      - "sdk/tsconfig.build.json"
+      - "sdk/tsconfig.json"
+      - "sdk/vite.config.ts"
+      - "scripts/prepare-frontend-deps.sh"
+      - "scripts/prepare-typescript-sdk.sh"
       - "scripts/ci/_common.sh"
       - "scripts/ci/frontend.sh"
       - "flake.nix"
@@ -43,7 +63,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock', 'sdk/bun.lock') }}
 
       - name: Run frontend checks
         run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh

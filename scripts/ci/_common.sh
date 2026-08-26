@@ -17,9 +17,9 @@ verify_rust_lockfile() {
 
 install_frontend_deps() {
   disable_bun_env_files
-  cd "${FRONTEND_DIR}"
-  rm -rf node_modules
-  bun install --frozen-lockfile --ignore-scripts
+  rm -rf "${FRONTEND_DIR}/node_modules"
+  "${REPO_ROOT}/scripts/prepare-frontend-deps.sh"
+  export MAPLE_FRONTEND_DEPS_PREPARED=1
 }
 
 disable_bun_env_files() {

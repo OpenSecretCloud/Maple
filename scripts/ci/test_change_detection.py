@@ -17,9 +17,17 @@ class ChangeDetectionTests(unittest.TestCase):
 
     def test_documentation_and_independent_components_skip_maple_app_builds(self) -> None:
         self.assert_routes(["README.md", "docs/monorepo-plan.md"])
-        self.assert_routes(["sdk/src/lib/index.ts", "sdk/rust/src/client.rs"])
+        self.assert_routes(["sdk/rust/src/client.rs"])
+        self.assert_routes(["sdk/README.md", "sdk/test/client.test.ts"])
+        self.assert_routes(["sdk/src/lib/test/models.test.ts"])
+        self.assert_routes(["sdk/src/lib/test/integration/web.test.ts"])
         self.assert_routes(["updates/src/index.ts"])
         self.assert_routes([".githooks/pre-commit", "justfile", "zapstore.yaml"])
+
+    def test_typescript_sdk_inputs_mark_only_the_frontend_lane(self) -> None:
+        self.assert_routes(["sdk/src/lib/index.ts"], "frontend")
+        self.assert_routes(["sdk/package.json"], "frontend")
+        self.assert_routes(["sdk/bun.lock"], "frontend")
 
     def test_renderer_changes_only_mark_the_frontend_lane(self) -> None:
         self.assert_routes(["frontend/src/routes/index.tsx"], "frontend")
