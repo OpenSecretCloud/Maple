@@ -673,23 +673,16 @@
             src = ./.github/workflows;
           } ''
             cd "$src"
-            actionlint \
-              android-pr-build.yml \
-              android-build.yml \
-              desktop-pr-build.yml \
-              desktop-build.yml \
-              frontend-tests.yml \
-              mobile-pr-build.yml \
-              mobile-build.yml \
-              pages-production.yml \
-              release.yml \
-              release-gates-tests.yml \
-              rust-tests.yml \
-              tauri-pr-change-detection.yml \
-              updates-publish.yml \
-              updates-tests.yml \
-              web-build.yml \
-              zapstore-publish.yml
+            actionlint ./*.yml
+            touch "$out"
+          '';
+
+          change-detection = pkgs.runCommand "maple-ci-change-detection-check" {
+            nativeBuildInputs = [ pkgs.python3 ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_change_detection.py
             touch "$out"
           '';
 

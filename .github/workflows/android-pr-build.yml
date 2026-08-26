@@ -9,13 +9,11 @@ on:
 
 jobs:
   changes:
-    permissions:
-      pull-requests: read
-    uses: ./.github/workflows/tauri-pr-change-detection.yml
+    uses: ./.github/workflows/app-change-detection.yml
 
   build-android:
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.tauri != 'false') }}
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.android != 'false') }}
     runs-on: ubuntu-latest-8-cores
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
@@ -48,7 +46,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-android-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-android-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-android-
             ${{ runner.os }}-sccache-

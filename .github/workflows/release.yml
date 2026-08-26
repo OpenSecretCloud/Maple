@@ -176,7 +176,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ${{ startsWith(matrix.platform, 'macos') && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
-          key: ${{ runner.os }}-sccache-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-release-
             ${{ runner.os }}-sccache-
@@ -305,7 +305,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~\AppData\Local\Mozilla\sccache
-          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-
 
@@ -431,7 +431,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-android-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-android-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-android-release-
             ${{ runner.os }}-sccache-
@@ -529,7 +529,7 @@ jobs:
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # was v1
         with:
-          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
+          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-

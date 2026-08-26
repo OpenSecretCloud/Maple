@@ -86,6 +86,14 @@ function throwIfAborted(signal: AbortSignal) {
   }
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 export async function synthesizeTTSChunk(
   aiCustomFetch: AiCustomFetch,
   apiUrl: string,
@@ -94,7 +102,7 @@ export async function synthesizeTTSChunk(
   signal: AbortSignal
 ): Promise<ArrayBuffer> {
   throwIfAborted(signal);
-  const response = await aiCustomFetch(`${apiUrl.replace(/\/+$/, "")}/v1/audio/speech`, {
+  const response = await aiCustomFetch(`${trimTrailingSlashes(apiUrl)}/v1/audio/speech`, {
     method: "POST",
     headers: {
       Accept: "audio/wav",

@@ -131,6 +131,11 @@ async fn test_chat_completion_non_streaming() {
 
 #[tokio::test]
 async fn test_chat_completion_streaming() {
+    if !common::live_ai_enabled() {
+        eprintln!("Skipping live AI streaming test; set RUN_LIVE_AI=1 to enable it");
+        return;
+    }
+
     let client = setup_authenticated_client()
         .await
         .expect("Failed to setup client");
@@ -254,6 +259,11 @@ async fn test_reasoning_content_with_kimi_k2() {
 
 #[tokio::test]
 async fn test_chat_completion_with_system_message() {
+    if !common::live_ai_enabled() {
+        eprintln!("Skipping live AI system-message test; set RUN_LIVE_AI=1 to enable it");
+        return;
+    }
+
     let client = setup_authenticated_client()
         .await
         .expect("Failed to setup client");
@@ -405,6 +415,11 @@ async fn test_guest_user_cannot_use_ai() {
 
 #[tokio::test]
 async fn test_create_embeddings_float_encoding() {
+    if !common::live_ai_enabled() {
+        eprintln!("Skipping live embeddings test; set RUN_LIVE_AI=1 to enable it");
+        return;
+    }
+
     let client = setup_authenticated_client()
         .await
         .expect("Failed to setup client");
@@ -448,6 +463,11 @@ async fn test_create_embeddings_float_encoding() {
 
 #[tokio::test]
 async fn test_create_embeddings_base64_encoding() {
+    if !common::live_ai_enabled() {
+        eprintln!("Skipping live embeddings test; set RUN_LIVE_AI=1 to enable it");
+        return;
+    }
+
     let client = setup_authenticated_client()
         .await
         .expect("Failed to setup client");
@@ -488,6 +508,11 @@ async fn test_create_embeddings_base64_encoding() {
 
 #[tokio::test]
 async fn test_create_embeddings_multiple_inputs() {
+    if !common::live_ai_enabled() {
+        eprintln!("Skipping live embeddings test; set RUN_LIVE_AI=1 to enable it");
+        return;
+    }
+
     let client = setup_authenticated_client()
         .await
         .expect("Failed to setup client");
@@ -536,6 +561,11 @@ async fn test_create_embeddings_multiple_inputs() {
 
 #[tokio::test]
 async fn test_embeddings_from_string_conversion() {
+    if !common::live_ai_enabled() {
+        eprintln!("Skipping live embeddings test; set RUN_LIVE_AI=1 to enable it");
+        return;
+    }
+
     let client = setup_authenticated_client()
         .await
         .expect("Failed to setup client");

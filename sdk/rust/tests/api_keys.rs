@@ -129,6 +129,11 @@ async fn test_api_key_authentication() -> Result<()> {
 
 #[tokio::test]
 async fn test_streaming_chat_with_api_key() -> Result<()> {
+    if !common::live_ai_enabled() {
+        eprintln!("Skipping live API-key streaming test; set RUN_LIVE_AI=1 to enable it");
+        return Ok(());
+    }
+
     use futures::StreamExt;
     use opensecret::{ChatCompletionRequest, ChatMessage};
 

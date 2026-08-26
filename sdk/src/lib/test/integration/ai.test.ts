@@ -95,7 +95,7 @@ function isLiveAiUnavailableError(error: unknown): boolean {
 }
 
 function liveAiTest(name: string, fn: () => Promise<void>, timeout?: number) {
-  test(
+  test.skipIf(process.env.RUN_LIVE_AI !== "1")(
     name,
     async () => {
       try {

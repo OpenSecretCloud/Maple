@@ -17,7 +17,8 @@ and tests.
   platform client.
 - `rust/` — the `opensecret` crate used by native clients.
 - `docs/PLATFORM.md` — internal developer/platform API notes.
-- `.github/workflows/` — TypeScript and Rust validation.
+- repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
+  and supply-chain validation for this directory.
 
 ## Security model
 
@@ -78,8 +79,16 @@ bun run build
 bun test --timeout 30000
 ```
 
-Live integration tests read the variables documented in `.env.example`. Use
-disposable test accounts and never commit credentials.
+Integration tests read the variables documented in `.env.example`. Monorepo CI
+checks out the exact OpenSecret commit pinned in
+`opensecret-integration-revision`, migrates disposable PostgreSQL, starts that
+backend on loopback, and creates disposable SDK fixtures. It does not depend on
+the hosted development service or stored test-account credentials.
+
+Tests that spend model/provider capacity are opt-in with `RUN_LIVE_AI=1` and
+are not part of the deterministic pull-request gate. When intentionally
+advancing the integration backend, update the pinned full commit SHA and let
+the local integration workflow prove both SDK implementations against it.
 
 Inspect the publishable npm artifact with:
 

@@ -198,9 +198,10 @@ generated output opportunistically.
 ## Releases
 
 Release preparation and publication are production actions. A push to
-`master` starts production-shaped signed workflows and can upload an iOS build
-to TestFlight; creating a GitHub Release starts the release pipeline and
-downstream publication. Do not use either as routine validation.
+`master` that changes classified Maple app inputs starts production-shaped
+signed workflows and can upload an iOS build to TestFlight; creating a GitHub
+Release always starts the complete release pipeline and downstream publication.
+Do not use either as routine validation.
 
 Use `.agents/skills/release-maple/` for version parity, tag safety, workflow
 monitoring, artifact verification, and explicit store handoff. Do not use the

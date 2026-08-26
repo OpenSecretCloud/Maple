@@ -197,6 +197,13 @@ React-to-Tauri-command integration harness; never claim those checks prove
 runtime integration. A privileged IPC change requires a manual exact-app smoke
 through the UI, command, native validation, and resulting local effect.
 
+Expensive app packaging is routed by `scripts/ci/change_detection.py`. Unknown
+root or native paths deliberately enable every affected lane, while independent
+monorepo components such as `sdk/` and `updates/` have their own checks. When a
+new in-repository dependency makes one component an app build input, update the
+classifier and its table-driven tests in the same change that wires the
+dependency.
+
 PR artifact scripts deliberately ignore local `.env*` files and compile fixed
 PR endpoints. They prove PR packaging, not a configured local-backend runtime.
 For the latter, preserve the checkout's `frontend/.env.local`, use

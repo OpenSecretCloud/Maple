@@ -8,7 +8,12 @@ on:
     branches: [ master ]
 
 jobs:
+  changes:
+    uses: ./.github/workflows/app-change-detection.yml
+
   build-ios:
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false') }}
     runs-on: macos-26-xlarge
     permissions:
       contents: read
@@ -51,7 +56,7 @@ jobs:
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # was v1
         with:
-          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('**/Cargo.lock') }}
+          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-
@@ -198,6 +203,8 @@ jobs:
             --apiIssuer "${{ secrets.APPLE_API_ISSUER }}"
 
   warm-ios-pr-onnx-cache:
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ios_onnx != 'false') }}
     runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4

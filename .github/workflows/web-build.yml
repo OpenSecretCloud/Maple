@@ -6,8 +6,24 @@ permissions:
 on:
   push:
     branches: [ master ]
+    paths:
+      - ".github/workflows/web-build.yml"
+      - "frontend/**"
+      - "!frontend/src-tauri/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/web.sh"
+      - "flake.nix"
+      - "flake.lock"
   pull_request:
     branches: [ master ]
+    paths:
+      - ".github/workflows/web-build.yml"
+      - "frontend/**"
+      - "!frontend/src-tauri/**"
+      - "scripts/ci/_common.sh"
+      - "scripts/ci/web.sh"
+      - "flake.nix"
+      - "flake.lock"
 
 jobs:
   build-web:

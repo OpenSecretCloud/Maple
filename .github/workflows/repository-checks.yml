@@ -1,0 +1,36 @@
+name: Repository CI checks
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/**"
+      - "scripts/ci/**"
+      - "flake.nix"
+      - "flake.lock"
+  pull_request:
+    branches: [master]
+    paths:
+      - ".github/workflows/**"
+      - "scripts/ci/**"
+      - "flake.nix"
+      - "flake.lock"
+
+jobs:
+  repository-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Validate repository CI configuration
+        run: nix flake check --no-update-lock-file --print-build-logs

@@ -2,8 +2,18 @@ name: Rust supply-chain checks
 
 on:
   pull_request:
+    paths:
+      - ".github/workflows/supply-chain.yml"
+      - "deny.toml"
+      - "frontend/src-tauri/Cargo.toml"
+      - "frontend/src-tauri/Cargo.lock"
   push:
     branches: [master]
+    paths:
+      - ".github/workflows/supply-chain.yml"
+      - "deny.toml"
+      - "frontend/src-tauri/Cargo.toml"
+      - "frontend/src-tauri/Cargo.lock"
   schedule:
     - cron: "41 6 * * *"
   workflow_dispatch:

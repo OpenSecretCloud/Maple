@@ -106,40 +106,43 @@ describe("API Key Authentication with OpenAI", () => {
     testApiKey = createdKey.key;
   });
 
-  test("OpenAI custom fetch with API key makes a simple request", async () => {
-    const openai = new OpenAI({
-      baseURL: `${API_URL}/v1/`,
-      dangerouslyAllowBrowser: true,
-      apiKey: testApiKey, // Use the API key directly
-      defaultHeaders: {
-        "Accept-Encoding": "identity"
-      },
-      fetch: createCustomFetch({ apiKey: testApiKey })
-    });
+  test.skipIf(process.env.RUN_LIVE_AI !== "1")(
+    "OpenAI custom fetch with API key makes a simple request",
+    async () => {
+      const openai = new OpenAI({
+        baseURL: `${API_URL}/v1/`,
+        dangerouslyAllowBrowser: true,
+        apiKey: testApiKey, // Use the API key directly
+        defaultHeaders: {
+          "Accept-Encoding": "identity"
+        },
+        fetch: createCustomFetch({ apiKey: testApiKey })
+      });
 
-    const model = CHAT_MODEL;
-    const messages = [
-      { role: "user" as const, content: 'please reply with exactly and only the word "echo"' }
-    ];
+      const model = CHAT_MODEL;
+      const messages = [
+        { role: "user" as const, content: 'please reply with exactly and only the word "echo"' }
+      ];
 
-    const stream = await openai.chat.completions.create({
-      model,
-      messages,
-      stream: true
-    });
+      const stream = await openai.chat.completions.create({
+        model,
+        messages,
+        stream: true
+      });
 
-    let fullResponse = "";
+      let fullResponse = "";
 
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || "";
-      fullResponse += content;
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || "";
+        fullResponse += content;
+      }
+
+      // In OpenAI v5, we just iterate through the stream instead of finalChatCompletion()
+      // The stream already completed above
+
+      expect(fullResponse.trim()).toBe("echo");
     }
-
-    // In OpenAI v5, we just iterate through the stream instead of finalChatCompletion()
-    // The stream already completed above
-
-    expect(fullResponse.trim()).toBe("echo");
-  });
+  );
 
   test("Fetch models with API key authentication", async () => {
     // Test that fetchModels works with API key
