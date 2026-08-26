@@ -18,6 +18,9 @@ commit, external effect, and authority provided by the user.
   successful release workflow starts separate updater-metadata, Pages
   production-branch, and best-effort Zapstore workflows. These sibling
   workflows never gate or change the outcome of the core Maple release.
+- The same Maple GitHub Release receives four native `maple-proxy` archives and
+  their checksum manifest. Never create a separate proxy Release or proxy tag;
+  `/releases/latest` must continue to identify the Maple application release.
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
@@ -122,7 +125,8 @@ gh run watch RELEASE_RUN_ID \
 ```
 
 Stay with every platform build, signature/canonical proof, artifact upload,
-updater `latest.json`, aggregate verification, and verification-guide step.
+the four native proxy builds and their published-asset verification, updater
+`latest.json`, aggregate verification, and verification-guide step.
 Packaging success alone is not runtime smoke; inspect the workflow's actual
 verification and attestation results.
 
@@ -171,6 +175,11 @@ Verify the published release and its assets:
 ```bash
 gh release view "$tag" --repo OpenSecretCloud/Maple \
   --json tagName,name,isDraft,isPrerelease,publishedAt,targetCommitish,url,assets
+
+mkdir -p artifacts
+gh release download "$tag" --repo OpenSecretCloud/Maple --dir artifacts
+nix develop --no-update-lock-file .#ci -c \
+  ./scripts/ci/verify-release-artifacts.sh artifacts proxy
 ```
 
 Zapstore starts only after `Release` succeeds and is strictly best effort. Its

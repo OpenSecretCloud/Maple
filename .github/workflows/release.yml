@@ -649,6 +649,146 @@ jobs:
             frontend/src-tauri/target/reproducibility/web-final.sha256 \
             --clobber
 
+  build-proxy:
+    name: Build proxy (${{ matrix.archive }})
+    needs: classify-app-release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            archive: maple-proxy-linux-x86_64.tar.gz
+          - runner: ubuntu-24.04-arm
+            archive: maple-proxy-linux-aarch64.tar.gz
+          - runner: macos-26-xlarge
+            archive: maple-proxy-macos-aarch64.tar.gz
+          - runner: windows-2025
+            archive: maple-proxy-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          ref: ${{ needs.classify-app-release.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # was stable
+        with:
+          toolchain: 1.89.0
+
+      - name: Cache proxy Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # was v2
+        with:
+          workspaces: proxy -> target
+          add-rust-environment-hash-key: "false"
+          key: release-${{ matrix.archive }}-${{ hashFiles('proxy/Cargo.lock') }}
+
+      - name: Build and package native proxy binary
+        shell: bash
+        run: ./scripts/ci/proxy-release.sh proxy-release-assets "${{ matrix.archive }}"
+
+      - name: Upload native proxy binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        with:
+          name: proxy-release-${{ matrix.archive }}
+          path: proxy-release-assets/${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-proxy-release-artifacts:
+    needs:
+      - classify-app-release
+      - build-proxy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          ref: ${{ needs.classify-app-release.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Download native proxy binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # was v4
+        with:
+          pattern: proxy-release-*
+          path: proxy-release-assets
+          merge-multiple: true
+
+      - name: Finalize and verify proxy release assets
+        run: |
+          set -euo pipefail
+          assets=(
+            maple-proxy-linux-aarch64.tar.gz
+            maple-proxy-linux-x86_64.tar.gz
+            maple-proxy-macos-aarch64.tar.gz
+            maple-proxy-windows-x86_64.zip
+          )
+          (
+            cd proxy-release-assets
+            sha256sum "${assets[@]}" > maple-proxy-release-final.sha256
+          )
+          ./scripts/ci/verify-release-artifacts.sh proxy-release-assets proxy
+
+          attested_assets=(
+            proxy-release-assets/maple-proxy-linux-aarch64.tar.gz
+            proxy-release-assets/maple-proxy-linux-x86_64.tar.gz
+            proxy-release-assets/maple-proxy-macos-aarch64.tar.gz
+            proxy-release-assets/maple-proxy-windows-x86_64.zip
+            proxy-release-assets/maple-proxy-release-final.sha256
+          )
+          sha256sum "${attested_assets[@]}" > proxy-release-attestation.sha256
+          cat proxy-release-assets/maple-proxy-release-final.sha256
+
+      - name: Attest proxy release assets
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
+        with:
+          subject-checksums: proxy-release-attestation.sha256
+
+      - name: Upload proxy assets to the Maple release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.classify-app-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            proxy-release-assets/maple-proxy-linux-aarch64.tar.gz \
+            proxy-release-assets/maple-proxy-linux-x86_64.tar.gz \
+            proxy-release-assets/maple-proxy-macos-aarch64.tar.gz \
+            proxy-release-assets/maple-proxy-windows-x86_64.zip \
+            proxy-release-assets/maple-proxy-release-final.sha256 \
+            --clobber
+
+  verify-proxy-release-artifacts:
+    needs:
+      - classify-app-release
+      - publish-proxy-release-artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          ref: ${{ needs.classify-app-release.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.classify-app-release.outputs.tag }}
+        run: |
+          mkdir -p artifacts
+          gh release download "${RELEASE_TAG}" -D artifacts
+
+      - name: Verify published proxy release assets
+        run: ./scripts/ci/verify-release-artifacts.sh artifacts proxy
+
   verify-android-release-artifacts:
     needs:
       - classify-app-release
@@ -864,6 +1004,7 @@ jobs:
       - build-web
       - update-latest-json
       - verify-android-release-artifacts
+      - verify-proxy-release-artifacts
     runs-on: macos-26-xlarge
     permissions:
       contents: read
@@ -906,7 +1047,7 @@ jobs:
           gh release download "${RELEASE_TAG}" -D artifacts
 
       - name: Verify release artifact reproducibility proofs
-        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos windows ios web latest-json
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts macos windows ios web latest-json proxy
         env:
           MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
 
