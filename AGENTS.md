@@ -52,6 +52,14 @@ and Rust consumers switch together. Do not assume the TypeScript and Rust SDKs
 have identical transports, retries, or API coverage. A backend contract change
 that Maple consumes needs compatibility checks for every affected client path.
 
+The standalone proxy source lives under `proxy/`. From the repository root,
+run its Rust commands through
+`nix develop --no-update-lock-file ./proxy -c bash -lc 'cd proxy && ...'`;
+root path-scoped workflows own proxy CI. Until the coordinated Rust dependency
+switch lands, the Tauri app and proxy continue to consume their published
+crate dependencies, so a proxy-only source change is not yet an application
+build input.
+
 ## Code ownership and placement
 
 - `frontend/src/routes`, `components`, `contexts`, and `state` own routing,

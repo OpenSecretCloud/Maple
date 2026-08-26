@@ -1,0 +1,69 @@
+name: Proxy Rust CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/proxy-rust.yml"
+      - "proxy/Cargo.toml"
+      - "proxy/Cargo.lock"
+      - "proxy/clippy.toml"
+      - "proxy/flake.nix"
+      - "proxy/flake.lock"
+      - "proxy/rust-toolchain.toml"
+      - "proxy/rustfmt.toml"
+      - "proxy/src/**"
+      - "proxy/tests/**"
+      - "proxy/examples/**"
+  pull_request:
+    paths:
+      - ".github/workflows/proxy-rust.yml"
+      - "proxy/Cargo.toml"
+      - "proxy/Cargo.lock"
+      - "proxy/clippy.toml"
+      - "proxy/flake.nix"
+      - "proxy/flake.lock"
+      - "proxy/rust-toolchain.toml"
+      - "proxy/rustfmt.toml"
+      - "proxy/src/**"
+      - "proxy/tests/**"
+      - "proxy/examples/**"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  proxy-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # was v2
+        with:
+          workspaces: proxy -> target
+          add-rust-environment-hash-key: "false"
+          key: ${{ hashFiles('proxy/Cargo.lock', 'proxy/rust-toolchain.toml', 'proxy/flake.lock') }}
+
+      - name: Run credential-free proxy checks
+        run: |
+          nix develop --no-update-lock-file ./proxy -c bash -lc '
+            cd proxy
+            cargo fmt --all -- --check
+            cargo clippy --locked --all-targets --all-features -- -D warnings
+            cargo test --locked --all-features
+            RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+            cargo machete
+          '
