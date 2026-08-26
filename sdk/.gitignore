@@ -1,0 +1,43 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Ignore package tarball files
+*.tgz
+
+# Environment files
+.env
+.env.local
+
+# ai 
+*.pbmd
+
+.claude
+
+# Rust
+rust/target/
+rust/.env
+rust/.env.local
+rust/**/*.rs.bk
+rust/*.pdb
