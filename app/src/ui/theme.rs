@@ -5,6 +5,8 @@
 pub const BG_APP: u32 = 0x0a0a0a;
 pub const BG_SIDEBAR: u32 = 0x262626;
 pub const BG_ELEVATED: u32 = 0x171717;
+pub const BG_SIDEBAR_CARD: u32 = 0x303030;
+pub const BG_SIDEBAR_PILL: u32 = 0x1c1c1c;
 pub const BG_INPUT: u32 = 0x121212;
 pub const BG_USER_BUBBLE: u32 = 0x171717;
 pub const BG_CODE_BLOCK: u32 = 0x0d0d0d;

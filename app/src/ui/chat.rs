@@ -58,6 +58,7 @@ pub struct ChatScreen {
     mode_menu_open: bool,
     /// Compact usage line for the sidebar bottom (tokens used this account).
     sidebar_usage: Option<crate::settings::UsageRow>,
+    sidebar_plan: Option<crate::billing::PlanUsage>,
     runtime_error: Option<String>,
     notice: Option<String>,
     booting: bool,
@@ -151,6 +152,7 @@ impl ChatScreen {
             models_menu_open: false,
             mode_menu_open: false,
             sidebar_usage: None,
+            sidebar_plan: None,
             runtime_error: None,
             notice: None,
             booting: true,
@@ -224,6 +226,7 @@ impl ChatScreen {
                 this.refresh_roots(cx);
                 this.refresh_sessions(cx);
                 this.refresh_sidebar_usage(cx);
+                this.refresh_sidebar_plan(cx);
             },
         );
     }
@@ -1096,6 +1099,7 @@ impl ChatScreen {
                     }
                 }
                 self.refresh_sidebar_usage(cx);
+                self.refresh_sidebar_plan(cx);
             }
             AgentRunEvent::QueueChanged(_) | AgentRunEvent::QueuePromoted { .. } => {
                 // Queue chips are rendered from send responses; nothing to do
@@ -1239,49 +1243,132 @@ impl ChatScreen {
                             )
                     })),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(gpui::rgb(theme::BORDER))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
-                            .line_clamp(1)
-                            .child(match &self.sidebar_usage {
-                                Some(row) => format!(
-                                    "{} tokens · ${:.2}",
-                                    format_usage_tokens(row.total_tokens),
-                                    row.cost
+            .child(self.render_sidebar_footer(cx))
+    }
+
+    /// Sidebar footer: settings gear on the left and the plan usage card on
+    /// the right. The card shows the plan pill, percent used, reset date,
+    /// and a progress bar. Without plan data it shows token totals instead.
+    fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> Div {
+        let gear = div()
+            .id("open-settings")
+            .flex_none()
+            .size_6()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .text_lg()
+            .text_color(gpui::rgb(theme::TEXT_MUTED))
+            .hover(|style| {
+                style
+                    .bg(gpui::rgb(theme::BG_SIDEBAR_CARD))
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .cursor_pointer()
+            })
+            .on_click(cx.listener(|_this, _event, _window, cx| {
+                cx.emit(OpenSettings);
+            }))
+            .child("⚙");
+
+        let card = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_2p5()
+            .py_2p5()
+            .rounded_lg()
+            .bg(gpui::rgb(theme::BG_SIDEBAR_CARD));
+
+        let card = match &self.sidebar_plan {
+            Some(plan) => {
+                let fraction = f32::from(plan.percent_used) / 100.0;
+                card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .flex_none()
+                                .child(
+                                    div()
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded_md()
+                                        .bg(gpui::rgb(theme::BG_SIDEBAR_PILL))
+                                        .text_size(px(10.))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(gpui::rgb(theme::ACCENT))
+                                        .whitespace_nowrap()
+                                        .child(plan.plan_label.to_uppercase()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                        .whitespace_nowrap()
+                                        .child(format!("{}% used", plan.percent_used)),
                                 ),
-                                None => "Usage unavailable".to_string(),
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("open-settings")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                                    .cursor_pointer()
-                            })
-                            .on_click(cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(OpenSettings);
-                            }))
-                            .child("⚙"),
-                    ),
-            )
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .text_size(px(10.))
+                                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .child(format!("Resets {}", plan.resets_label)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(3.))
+                        .rounded_full()
+                        .bg(gpui::rgb(theme::BORDER))
+                        .child(
+                            div()
+                                .h_full()
+                                .w(gpui::relative(fraction))
+                                .rounded_full()
+                                .bg(gpui::rgb(theme::ACCENT)),
+                        ),
+                )
+            }
+            None => card.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .line_clamp(1)
+                    .child(match &self.sidebar_usage {
+                        Some(row) => format!(
+                            "{} tokens · ${:.2}",
+                            format_usage_tokens(row.total_tokens),
+                            row.cost
+                        ),
+                        None => "Usage unavailable".to_string(),
+                    }),
+            ),
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_3()
+            .border_t_1()
+            .border_color(gpui::rgb(theme::BORDER))
+            .child(gear)
+            .child(card)
     }
 
     /// Load the compact sidebar usage line from the goose usage ledger.
@@ -1299,6 +1386,24 @@ impl ChatScreen {
                     this.sidebar_usage = totals;
                     cx.notify();
                 }
+            },
+        );
+    }
+
+    /// Load the plan card from the Maple billing API. Failures keep the
+    /// previous card; the token-total fallback covers the first load.
+    fn refresh_sidebar_plan(&mut self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.plan_usage(&user_id).await },
+            cx,
+            |this, result: Result<Option<crate::billing::PlanUsage>, String>, cx| match result {
+                Ok(plan) => {
+                    this.sidebar_plan = plan;
+                    cx.notify();
+                }
+                Err(error) => log::warn!("plan usage unavailable: {error}"),
             },
         );
     }

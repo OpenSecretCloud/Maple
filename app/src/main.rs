@@ -2,6 +2,7 @@
 //! pump that forwards agent service events into the active chat screen.
 
 mod backend;
+mod billing;
 mod settings;
 mod ui;
 

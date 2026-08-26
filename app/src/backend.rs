@@ -5,7 +5,7 @@
 //! never touches the agent runtime directly, so this seam can later be moved
 //! behind a process or socket boundary without touching UI code.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,6 +54,9 @@ pub struct AgentBackend {
     api_url: String,
     client_id: Uuid,
     event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<AgentServiceEvent>>>,
+    billing: crate::billing::BillingClient,
+    /// Cached billing JWT per user id. Replaced after a 401.
+    billing_tokens: tokio::sync::Mutex<HashMap<String, String>>,
 }
 
 fn configured_client_id() -> Uuid {
@@ -133,7 +136,7 @@ fn config_root() -> PathBuf {
     base.join(APP_DIR_NAME)
 }
 
-fn local_data_root() -> PathBuf {
+pub fn local_data_root() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -173,13 +176,23 @@ impl AgentBackend {
             Arc::new(ChannelEventSink(event_tx)),
             default_tool_context,
         ));
+        let runtime =
+            Runtime::new().map_err(|error| format!("failed to start runtime: {error}"))?;
+        // reqwest clients must be built inside a Tokio runtime context; one
+        // built outside never completes a request.
+        let billing = {
+            let _guard = runtime.enter();
+            crate::billing::BillingClient::new(crate::billing::configured_billing_api_url())
+        };
         Ok(Self {
-            runtime: Runtime::new().map_err(|error| format!("failed to start runtime: {error}"))?,
+            runtime,
             service,
             auth: MapleApiAuthState::new(),
             api_url,
             client_id: configured_client_id(),
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
+            billing,
+            billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -454,6 +467,69 @@ impl AgentBackend {
             Some(response.refresh_token),
         )
         .await
+    }
+
+    /// Plan usage for the sidebar card from the Maple billing API. Returns
+    /// `None` when the subscription has no token meter.
+    pub async fn plan_usage(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<crate::billing::PlanUsage>, String> {
+        use crate::billing::BillingError;
+        let session = self.auth.session_for(user_id).await?;
+        let cached = self.billing_tokens.lock().await.get(user_id).cloned();
+        let mut token = match cached {
+            Some(token) => token,
+            None => self.mint_billing_token(&session, user_id).await?,
+        };
+        let mut result = self.subscription_status(&token).await;
+        if matches!(result, Err(BillingError::Unauthorized)) {
+            // The cached token expired or was revoked: mint one and retry once.
+            token = self.mint_billing_token(&session, user_id).await?;
+            result = self.subscription_status(&token).await;
+        }
+        let status = match result {
+            Ok(status) => status,
+            Err(BillingError::Unauthorized) => {
+                self.billing_tokens.lock().await.remove(user_id);
+                return Err(BillingError::Unauthorized.to_string());
+            }
+            Err(BillingError::Other(error)) => return Err(error),
+        };
+        let plan = crate::billing::PlanUsage::from_status(&status, chrono::Local::now());
+        log::debug!("plan usage: {plan:?}");
+        Ok(plan)
+    }
+
+    async fn subscription_status(
+        &self,
+        token: &str,
+    ) -> Result<crate::billing::BillingStatus, crate::billing::BillingError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            self.billing.subscription_status(token),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(crate::billing::BillingError::Other(
+                "billing request timed out".to_string(),
+            ))
+        })
+    }
+
+    async fn mint_billing_token(
+        &self,
+        session: &Arc<maple_agent::maple_api::MapleApiSession>,
+        user_id: &str,
+    ) -> Result<String, String> {
+        let token = session
+            .third_party_token(self.billing.base_url().to_string())
+            .await?;
+        self.billing_tokens
+            .lock()
+            .await
+            .insert(user_id.to_string(), token.clone());
+        Ok(token)
     }
 
     pub async fn runtime_status(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 maple-agent = { path = "../crates/maple-agent" }
+maple-billing = { path = "../crates/maple-billing" }
 gpui = { version = "0.2.2", features = ["test-support"] }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -24,5 +25,6 @@ uuid = { version = "1", features = ["v4"] }
 unicode-segmentation = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
 
 [dev-dependencies]
