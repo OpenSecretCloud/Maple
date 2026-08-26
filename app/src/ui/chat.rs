@@ -1609,6 +1609,7 @@ impl ChatScreen {
                 ),
                 ("smart_approve", "Ask first", "Confirm each gated tool call"),
             ] {
+                let icon = permission_mode_icon(mode);
                 let mode = mode.to_string();
                 let is_current = self.permission_mode == mode;
                 menu = menu.child(
@@ -1631,12 +1632,17 @@ impl ChatScreen {
                             cx.notify();
                         }))
                         .child(
-                            div().flex().flex_col().gap_0().child(label).child(
-                                div()
-                                    .text_xs()
-                                    .text_color(gpui::rgb(theme::TEXT_MUTED))
-                                    .child(note),
-                            ),
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_0()
+                                .child(div().flex().items_center().gap_1().child(icon).child(label))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                        .child(note),
+                                ),
                         ),
                 );
             }
@@ -1812,16 +1818,76 @@ impl ChatScreen {
             .border_color(gpui::rgb(theme::BORDER))
             .when(disabled, |container| container.opacity(0.5))
             .child(
+                div().flex().items_center().child(
+                    div()
+                        .flex_1()
+                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .children(composer),
+                ),
+            )
+            .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(
                         div()
-                            .flex_1()
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                            .children(composer),
+                            .id("model-picker")
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(if self.models_menu_open {
+                                theme::ACCENT
+                            } else {
+                                theme::BORDER
+                            }))
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.root_menu_open = false;
+                                this.mode_menu_open = false;
+                                this.models_menu_open = !this.models_menu_open;
+                                cx.notify();
+                            }))
+                            .child(model_label),
                     )
+                    .child(
+                        div()
+                            .id("permission-mode-toggle")
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(if bypass {
+                                theme::STATUS_WARNING
+                            } else {
+                                theme::BORDER
+                            }))
+                            .text_sm()
+                            .text_color(gpui::rgb(if bypass {
+                                theme::STATUS_WARNING
+                            } else {
+                                theme::TEXT_SECONDARY
+                            }))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.root_menu_open = false;
+                                this.models_menu_open = false;
+                                this.mode_menu_open = !this.mode_menu_open;
+                                cx.notify();
+                            }))
+                            .child(permission_mode_icon(&self.permission_mode))
+                            .child(if bypass { "Full access" } else { "Ask first" }),
+                    )
+                    .child(div().flex_1())
                     .child(div().id("context-indicator").flex().items_center().child(
                         crate::ui::context_ring::ContextRing::new(
                             self.context_fraction.unwrap_or(0.0),
@@ -1871,76 +1937,14 @@ impl ChatScreen {
                             })
                     }),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("model-picker")
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(if self.models_menu_open {
-                                theme::ACCENT
-                            } else {
-                                theme::BORDER
-                            }))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.mode_menu_open = false;
-                                this.models_menu_open = !this.models_menu_open;
-                                cx.notify();
-                            }))
-                            .child(model_label)
-                            .child("▾"),
-                    )
-                    .child(
-                        div()
-                            .id("permission-mode-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(if bypass {
-                                theme::STATUS_WARNING
-                            } else {
-                                theme::BORDER
-                            }))
-                            .text_sm()
-                            .text_color(gpui::rgb(if bypass {
-                                theme::STATUS_WARNING
-                            } else {
-                                theme::TEXT_SECONDARY
-                            }))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.models_menu_open = false;
-                                this.mode_menu_open = !this.mode_menu_open;
-                                cx.notify();
-                            }))
-                            .child(if bypass {
-                                "🛡 Full access".to_string()
-                            } else {
-                                "🛡 Ask first".to_string()
-                            })
-                            .child("▾"),
-                    ),
-            )
     }
 }
+
+/// Icon for a permission mode: bolt for full access, shield for ask first.
+fn permission_mode_icon(mode: &str) -> &'static str {
+    if mode == "auto" { "⚡" } else { "🛡" }
+}
+
 /// Compact token count for the sidebar usage line (k/M).
 fn format_usage_tokens(tokens: i64) -> String {
     if tokens >= 1_000_000 {
