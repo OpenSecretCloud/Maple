@@ -44,21 +44,18 @@ OpenSecret is its required backend. Keep these runtime paths distinct:
 - Local proxy: a separate user-facing OpenAI-compatible relay. Research chat
   and Agent Mode do not internally route through it.
 
-The OpenSecret SDK source lives under `sdk/`. Treat `frontend/package.json` as
-the authority for whether the browser client consumes a published version or
-the in-tree `file:../sdk` package. Native Agent Mode continues to consume the
-published Rust crate pinned in `frontend/src-tauri/Cargo.toml` until the proxy
-and Rust consumers switch together. Do not assume the TypeScript and Rust SDKs
-have identical transports, retries, or API coverage. A backend contract change
-that Maple consumes needs compatibility checks for every affected client path.
+The OpenSecret SDK source lives under `sdk/`. The browser client consumes the
+in-tree `file:../sdk` package, and the desktop Tauri app plus proxy consume the
+in-tree `sdk/rust` crate. Do not assume the TypeScript and Rust SDKs have
+identical transports, retries, or API coverage. A backend contract change that
+Maple consumes needs compatibility checks for every affected client path.
 
 The standalone proxy source lives under `proxy/`. From the repository root,
 run its Rust commands through
 `nix develop --no-update-lock-file ./proxy -c bash -lc 'cd proxy && ...'`;
-root path-scoped workflows own proxy CI. Until the coordinated Rust dependency
-switch lands, the Tauri app and proxy continue to consume their published
-crate dependencies, so a proxy-only source change is not yet an application
-build input.
+root path-scoped workflows own proxy CI. Proxy and Rust SDK runtime changes are
+desktop application build inputs; container, test, documentation, and
+standalone lockfile changes remain independent.
 
 ## Code ownership and placement
 

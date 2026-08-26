@@ -9,8 +9,14 @@ on:
     paths:
       - ".github/workflows/rust-tests.yml"
       - "frontend/src-tauri/**"
+      - "proxy/Cargo.toml"
+      - "proxy/src/**"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
       - "scripts/ci/_common.sh"
       - "scripts/ci/rust.sh"
+      - "scripts/ci/verify-local-rust-deps.sh"
       - "flake.nix"
       - "flake.lock"
   pull_request:
@@ -18,8 +24,14 @@ on:
     paths:
       - ".github/workflows/rust-tests.yml"
       - "frontend/src-tauri/**"
+      - "proxy/Cargo.toml"
+      - "proxy/src/**"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
       - "scripts/ci/_common.sh"
       - "scripts/ci/rust.sh"
+      - "scripts/ci/verify-local-rust-deps.sh"
       - "flake.nix"
       - "flake.lock"
 
@@ -46,7 +58,9 @@ jobs:
             ${{ runner.os }}-sccache-
 
       - name: Run Rust unit tests
-        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
+        run: |
+          nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-local-rust-deps.sh
+          nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 
       - name: Show sccache stats
         if: always()

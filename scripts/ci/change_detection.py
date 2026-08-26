@@ -16,6 +16,7 @@ ALL_OUTPUTS = frozenset(OUTPUTS)
 INERT_ROOT_FILES = frozenset(
     {
         ".gitignore",
+        ".dockerignore",
         ".repo_ignore",
         "AGENTS.md",
         "deny.toml",
@@ -40,6 +41,36 @@ SDK_FRONTEND_FILES = frozenset(
         "sdk/tsconfig.build.json",
         "sdk/tsconfig.json",
         "sdk/vite.config.ts",
+    }
+)
+SDK_RUST_RUNTIME_PREFIXES = ("sdk/rust/src/", "sdk/rust/assets/")
+SDK_RUST_INERT_PREFIXES = ("sdk/rust/tests/", "sdk/rust/examples/")
+SDK_RUST_INERT_FILES = frozenset(
+    {
+        "sdk/rust/.env.example",
+        "sdk/rust/Cargo.lock",
+        "sdk/rust/LICENSE",
+        "sdk/rust/README.md",
+    }
+)
+PROXY_RUNTIME_PREFIXES = ("proxy/src/",)
+PROXY_INERT_PREFIXES = ("proxy/tests/", "proxy/examples/")
+PROXY_INERT_FILES = frozenset(
+    {
+        "proxy/.env.example",
+        "proxy/.gitignore",
+        "proxy/Cargo.lock",
+        "proxy/Dockerfile",
+        "proxy/LICENSE",
+        "proxy/README.md",
+        "proxy/clippy.toml",
+        "proxy/deny.toml",
+        "proxy/docker-compose.yml",
+        "proxy/flake.lock",
+        "proxy/flake.nix",
+        "proxy/justfile",
+        "proxy/rust-toolchain.toml",
+        "proxy/rustfmt.toml",
     }
 )
 
@@ -155,12 +186,22 @@ def classify_path(path: str) -> frozenset[str]:
         return frozenset()
     if path in SDK_FRONTEND_FILES or path.startswith(SDK_FRONTEND_PREFIXES):
         return frozenset({"frontend"})
+    if path == "sdk/rust/Cargo.toml" or path.startswith(SDK_RUST_RUNTIME_PREFIXES):
+        return DESKTOP_PLATFORMS
+    if path in SDK_RUST_INERT_FILES or path.startswith(SDK_RUST_INERT_PREFIXES):
+        return frozenset()
+    if path.startswith("sdk/rust/"):
+        # Unknown files in a consumed Rust crate may be build inputs.
+        return DESKTOP_PLATFORMS
     if path.startswith("sdk/"):
         return frozenset()
-    if path.startswith("proxy/"):
-        # Proxy has its own path-scoped checks until the native app starts
-        # consuming the in-tree crate in the follow-up dependency switch.
+    if path == "proxy/Cargo.toml" or path.startswith(PROXY_RUNTIME_PREFIXES):
+        return DESKTOP_PLATFORMS
+    if path in PROXY_INERT_FILES or path.startswith(PROXY_INERT_PREFIXES):
         return frozenset()
+    if path.startswith("proxy/"):
+        # Unknown files in the consumed proxy crate may be build inputs.
+        return DESKTOP_PLATFORMS
     if path in PURE_FRONTEND_FILES or path.startswith(PURE_FRONTEND_PREFIXES):
         return frozenset({"frontend"})
     if path.startswith("frontend/src-tauri/"):

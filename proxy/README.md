@@ -34,6 +34,9 @@ Add to your `Cargo.toml`:
 maple-proxy = "0.3.2"
 ```
 
+Crates.io publishing remains separate from Maple application releases; the
+example above uses the latest published crate version.
+
 ## ⚙️ Configuration
 
 Set environment variables or use command-line arguments:
@@ -298,7 +301,7 @@ image: ghcr.io/opensecretcloud/maple-proxy:latest
 
 2. **Option B: Build your own image**
 ```bash
-docker build -t maple-proxy:latest .
+docker build -f Dockerfile -t maple-proxy:latest ..
 ```
 
 3. **Run with docker-compose:**

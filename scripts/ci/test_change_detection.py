@@ -17,14 +17,36 @@ class ChangeDetectionTests(unittest.TestCase):
 
     def test_documentation_and_independent_components_skip_maple_app_builds(self) -> None:
         self.assert_routes(["README.md", "docs/monorepo-plan.md"])
-        self.assert_routes(["sdk/rust/src/client.rs"])
         self.assert_routes(["sdk/README.md", "sdk/test/client.test.ts"])
         self.assert_routes(["sdk/src/lib/test/models.test.ts"])
         self.assert_routes(["sdk/src/lib/test/integration/web.test.ts"])
         self.assert_routes(["updates/src/index.ts"])
-        self.assert_routes(["proxy/src/proxy.rs"])
-        self.assert_routes(["proxy/Cargo.toml", "proxy/Dockerfile"])
         self.assert_routes([".githooks/pre-commit", "justfile", "zapstore.yaml"])
+
+    def test_in_tree_rust_runtime_inputs_mark_desktop_lanes(self) -> None:
+        for path in (
+            "proxy/Cargo.toml",
+            "proxy/src/proxy.rs",
+            "sdk/rust/Cargo.toml",
+            "sdk/rust/src/client.rs",
+            "sdk/rust/assets/aws_nitro_root.der",
+            "proxy/build.rs",
+            "sdk/rust/build.rs",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path], "macos", "linux", "windows")
+
+    def test_standalone_rust_inputs_skip_maple_app_builds(self) -> None:
+        for path in (
+            "proxy/Cargo.lock",
+            "proxy/Dockerfile",
+            "proxy/tests/health_test.rs",
+            "sdk/rust/Cargo.lock",
+            "sdk/rust/tests/client.rs",
+            "sdk/rust/examples/api_usage.rs",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path])
 
     def test_typescript_sdk_inputs_mark_only_the_frontend_lane(self) -> None:
         self.assert_routes(["sdk/src/lib/index.ts"], "frontend")

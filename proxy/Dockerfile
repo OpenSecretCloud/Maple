@@ -4,12 +4,17 @@ WORKDIR /app
 
 # Plan stage - prepare dependency list for caching
 FROM chef AS planner
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY proxy/Cargo.toml proxy/Cargo.lock ./proxy/
+COPY proxy/src ./proxy/src
+COPY sdk/rust/Cargo.toml ./sdk/rust/
+COPY sdk/rust/src ./sdk/rust/src
+COPY sdk/rust/assets ./sdk/rust/assets
+WORKDIR /app/proxy
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Build stage - build dependencies separately for caching
 FROM chef AS builder
+WORKDIR /app/proxy
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -18,12 +23,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and build dependencies (cached if unchanged)
-COPY --from=planner /app/recipe.json recipe.json
+COPY --from=planner /app/proxy/recipe.json recipe.json
 RUN cargo chef cook --locked --release --recipe-path recipe.json
 
 # Copy source code and build the application
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY proxy/Cargo.toml proxy/Cargo.lock ./
+COPY proxy/src ./src
+COPY sdk/rust/Cargo.toml /app/sdk/rust/Cargo.toml
+COPY sdk/rust/src /app/sdk/rust/src
+COPY sdk/rust/assets /app/sdk/rust/assets
 RUN cargo build --locked --release --bin maple-proxy
 
 # Runtime stage - minimal image for production
@@ -64,7 +72,6 @@ ENV MAPLE_HOST=0.0.0.0 \
 # Expose the port
 EXPOSE 8080
 
-# Health check
 # Health check (curl needs to be installed)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1

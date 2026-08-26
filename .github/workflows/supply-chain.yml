@@ -7,6 +7,8 @@ on:
       - "deny.toml"
       - "frontend/src-tauri/Cargo.toml"
       - "frontend/src-tauri/Cargo.lock"
+      - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
   push:
     branches: [master]
     paths:
@@ -14,6 +16,8 @@ on:
       - "deny.toml"
       - "frontend/src-tauri/Cargo.toml"
       - "frontend/src-tauri/Cargo.lock"
+      - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
   schedule:
     - cron: "41 6 * * *"
   workflow_dispatch:

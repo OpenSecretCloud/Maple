@@ -1,0 +1,17 @@
+# The proxy image builds from the repository root because it consumes the
+# in-tree Rust SDK. Keep the context limited to the two runtime crates.
+**
+!.dockerignore
+!proxy/
+!proxy/Dockerfile
+!proxy/Cargo.toml
+!proxy/Cargo.lock
+!proxy/src/
+!proxy/src/**
+!sdk/
+!sdk/rust/
+!sdk/rust/Cargo.toml
+!sdk/rust/src/
+!sdk/rust/src/**
+!sdk/rust/assets/
+!sdk/rust/assets/**
