@@ -16,9 +16,9 @@ package boundaries remain independently versioned and publishable:
 - `rust/` builds the `opensecret` crate for native consumers.
 - `frontend/package.json` is authoritative for whether Maple's browser client
   consumes a published TypeScript version or the in-tree `file:../sdk` package.
-- Maple's native client continues to consume the published Rust crate pinned in
-  `frontend/src-tauri/Cargo.toml` until the proxy and Rust consumers switch
-  together.
+- desktop Maple and `proxy/` consume the in-tree Rust crate through versioned
+  path dependencies. iOS and Android do not compile those desktop-only
+  consumers.
 
 Do not commit, push, open a PR, publish, or alter Maple's application dependency
 wiring unless the user authorizes that action.
@@ -80,8 +80,10 @@ bun run pack
 cargo package --locked --manifest-path rust/Cargo.toml
 ```
 
-These commands validate package contents; they do not publish them or prove a
-Maple application consumes the result.
+These commands validate package contents; they do not publish them. For Rust
+SDK changes, also run the root `scripts/ci/verify-local-rust-deps.sh` check and
+the applicable desktop/proxy validation before claiming Maple consumes the
+result.
 
 ## Publishing boundary
 

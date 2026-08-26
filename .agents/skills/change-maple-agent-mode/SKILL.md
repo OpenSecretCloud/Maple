@@ -39,10 +39,10 @@ Use these seams:
 - `frontend/src-tauri/src/agent.rs`: transport-neutral Agent domain state, account handles, Goose/session orchestration, persistence, run ownership, timelines, MCP and skills attachment, and permission routing. Do not import Tauri or ACP protocol types into this core.
 - `frontend/src-tauri/src/agent/provider.rs`: Goose-provider request construction, encrypted inference transport, streaming, bounded error handling, retry policy, and cancellation.
 - `frontend/src-tauri/src/maple_api.rs`: account-scoped native OpenSecret SDK sessions, backend identity validation, atomic credential replacement, and refresh reconciliation.
-- `sdk/rust/`: source for the OpenSecret Rust SDK. Maple's native application
-  still consumes the published crate pinned in
-  `frontend/src-tauri/Cargo.toml`; do not claim an in-tree SDK edit reached
-  Agent Mode until that dependency boundary is deliberately wired or updated.
+- `sdk/rust/`: source for the OpenSecret Rust SDK consumed by Maple's desktop
+  application through the path dependency in `frontend/src-tauri/Cargo.toml`.
+  Rust SDK runtime changes therefore reach Agent Mode desktop builds; verify
+  the local dependency graph rather than treating the in-tree source as inert.
 - `frontend/src-tauri/src/agent/developer_tools.rs`: Maple's privileged read, write, edit, image, shell, and backend web-tool implementations. Add privileged tools here rather than exposing an unmediated Goose tool path.
 - `frontend/src-tauri/src/agent/{shell_permission,web_permission,tool_context,web_tools}.rs`: automatic policy, secret-bearing execution context, public-URL admission, provenance, and output bounds.
 - `frontend/src-tauri/src/agent/system_prompt.rs`: the narrowly rebranded copy of the pinned Goose system prompt.

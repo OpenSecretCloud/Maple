@@ -219,7 +219,13 @@ assuming intentional execution authority violates the design.
 
 ## Review the Local OpenAI Proxy
 
-Inspect `frontend/src-tauri/src/proxy.rs`, `frontend/src/services/proxyService.ts`, the settings UI, all startup/logout callers, and tests as one boundary.
+Inspect `proxy/src/{config,lib,main,proxy}.rs`,
+`proxy/{Cargo.toml,.env.example,Dockerfile,docker-compose.yml,justfile}`,
+`frontend/src-tauri/src/proxy.rs`, `frontend/src/services/proxyService.ts`, the
+settings UI, all startup/logout callers, and tests as one boundary. Keep the
+reusable HTTP proxy's request and authentication rules distinct from Maple's
+account-scoped Tauri lifecycle. The standalone crate, binary, and container do
+not inherit protections implemented only by the Tauri wrapper.
 
 Require these defaults unless an explicit product decision changes them:
 
@@ -229,6 +235,20 @@ Require these defaults unless an explicit product decision changes them:
 - keep browser reachability separate from Maple's saved credential.
 
 When CORS is disabled, verify browser-controlled `Origin` and `Sec-Fetch-Site` requests are rejected before a saved key can be spent. Omitting CORS response headers alone is insufficient. When CORS is enabled for browser compatibility, require every inference request to provide its own bearer key and remove saved-key fallback.
+
+Build a core-versus-Tauri regression matrix for CORS on/off, saved-key
+present/absent, browser `Origin`/`Sec-Fetch-Site` headers, and per-request
+bearer keys. Test the standalone router directly as well as the exact app;
+passing wrapper tests does not establish the core policy.
+
+Review the exact exposed routes and methods, request-size and concurrency
+bounds, forwarded and stripped headers, response-cache bounds, setup and
+stream-idle timeouts, cancellation, exactly one streaming terminator, upstream
+status/body leakage, backend and PCR trust selection, bind/TLS policy, and
+logs. Never log any portion of an API key, authorization header, encrypted or
+decrypted request body, response body, or credential-bearing URL. `/health`
+proves liveness only; exercise `/v1/models`, non-streaming chat, streaming chat,
+and embeddings when their shared forwarding path changes.
 
 Review host, port, CORS mode, saved credential, auto-start, owner account, and backend URL as one security object. Validate bind hosts and endpoints natively. Allow plaintext HTTP only for explicit loopback development; reject embedded URL credentials and unexpected path, query, or fragment components unless the API contract requires them.
 
@@ -269,12 +289,10 @@ Preserve the OpenSecret SDK's encrypted and attested transport. Do not replace `
 
 Review development and production enclave URLs and PCR/attestation allowlists together. Reject an endpoint that is not HTTPS unless it is an explicit loopback development address. Reject URL credentials and unexpected paths, queries, or fragments at the native authority boundary. Treat source-configured PCR values as policy, not proof that a live enclave currently matches; perform live attestation before making deployment claims.
 
-The SDK source is in this repository. Read `frontend/package.json` to determine
-whether the browser client resolves a published version or `file:../sdk`;
-continue treating the Rust crate pin in `frontend/src-tauri/Cargo.toml` as a
-published dependency until the coordinated proxy/Rust switch. Review source
-changes and resolved application dependencies as distinct boundaries; do not
-assume an in-tree fix protects a client that does not consume it. Do not assume
+The SDK source is in this repository. The browser uses `file:../sdk`, while
+desktop Maple and `proxy/` use versioned path dependencies on `sdk/rust`.
+Review source changes and resolved application dependencies as distinct
+boundaries, and verify the local Cargo graph before claiming coverage. Do not assume
 the browser and native SDKs have identical features, request schemas, refresh
 behavior, attestation behavior, or error handling. For an OpenSecret API
 contract change, validate both clients. Keep decrypted upstream errors and

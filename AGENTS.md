@@ -50,7 +50,7 @@ in-tree `sdk/rust` crate. Do not assume the TypeScript and Rust SDKs have
 identical transports, retries, or API coverage. A backend contract change that
 Maple consumes needs compatibility checks for every affected client path.
 
-The standalone proxy source lives under `proxy/`. From the repository root,
+The Maple Proxy source lives under `proxy/`. From the repository root,
 run its Rust commands through
 `nix develop --no-update-lock-file ./proxy -c bash -lc 'cd proxy && ...'`;
 root path-scoped workflows own proxy CI. Proxy and Rust SDK runtime changes are
@@ -260,6 +260,8 @@ requests release work, and report the tag and commit before publishing.
 - `$develop-opensecret-sdk`: TypeScript/React and Rust SDK development under
   `sdk/`, backend compatibility, package-boundary checks, and publishing
   handoff.
+- `$develop-maple-proxy`: proxy crate, binary, OpenAI-compatible HTTP behavior,
+  container builds, application dependency boundary, and publishing handoff.
 - `$validate-maple`: focused tests, CI parity, exact-app smoke, full-stack
   smoke, and evidence reporting.
 - `$change-maple-agent-mode`: Agent Mode, ACP, Goose/provider, permissions,
