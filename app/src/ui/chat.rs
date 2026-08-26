@@ -42,7 +42,7 @@ pub struct ChatScreen {
     /// Request id whose input currently holds focus.
     question_focus_id: Option<String>,
     composer_busy: bool,
-    composer: Entity<TextInput>,
+    composer: Option<Entity<TextInput>>,
     models: Vec<String>,
     selected_model: Option<String>,
     models_menu_open: bool,
@@ -87,17 +87,34 @@ pub struct ChatScreen {
 impl ChatScreen {
     pub fn new(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
+        let mut this = Self::new_inner(backend, user_id);
+        this.attach_composer(weak, cx);
+        this.start(cx);
+        this
+    }
+
+    /// Create and wire the composer; called by the real constructor.
+    fn attach_composer(&mut self, weak: gpui::WeakEntity<Self>, cx: &mut Context<Self>) {
         let composer = cx.new(|cx| {
             TextInput::new("Message Maple…", cx)
                 .clears_on_enter()
                 .on_enter(move |text, _, cx| {
-                    // The handler receives the composer text directly; clearing
-                    // and sending happen without leasing the focused input.
+                    // The handler receives the composer text directly;
+                    // clearing and sending happen without leasing the input.
                     if let Some(this) = weak.upgrade() {
                         this.update(cx, |chat, cx| chat.send_text(text, cx));
                     }
                 })
         });
+        self.composer = Some(composer);
+    }
+
+    /// Test seam: pure state without composer wiring or runtime start.
+    pub(crate) fn new_inner(backend: Arc<AgentBackend>, user_id: String) -> Self {
+        Self::new_inner_with_placeholder(backend, user_id)
+    }
+
+    fn new_inner_with_placeholder(backend: Arc<AgentBackend>, user_id: String) -> Self {
         let this = Self {
             backend,
             user_id,
@@ -112,7 +129,7 @@ impl ChatScreen {
             pending_question_input: None,
             question_focus_id: None,
             composer_busy: false,
-            composer,
+            composer: None,
             models: Vec::new(),
             selected_model: None,
             models_menu_open: false,
@@ -142,7 +159,6 @@ impl ChatScreen {
             selection_generation: 0,
             timeline_revisions: HashMap::new(),
         };
-        this.start(cx);
         this
     }
 
@@ -539,8 +555,11 @@ impl ChatScreen {
     /// Send without a Window, callable from the Send button. The button
     /// path owns no composer lease, so it clears the input here.
     fn send_inner(&mut self, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).text();
-        self.composer.update(cx, |input, cx| input.clear(cx));
+        let Some(composer) = self.composer.clone() else {
+            return;
+        };
+        let text = composer.read(cx).text();
+        composer.update(cx, |input, cx| input.clear(cx));
         self.send_text(text, cx);
     }
 
@@ -595,8 +614,9 @@ impl ChatScreen {
                     // Show the failure in the transcript and give the draft
                     // back instead of silently dropping it.
                     this.push_local_error("Send failed", &message, cx);
-                    this.composer
-                        .update(cx, |input, cx| input.set_text(&text, cx));
+                    if let Some(composer) = this.composer.clone() {
+                        composer.update(cx, |input, cx| input.set_text(&text, cx));
+                    }
                 }
             },
         );
@@ -1504,7 +1524,11 @@ impl ChatScreen {
     fn render_composer(&mut self, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         let disabled = self.booting;
-        let has_text = !self.composer.read(cx).text().trim().is_empty();
+        let has_text = self
+            .composer
+            .as_ref()
+            .map(|composer| !composer.read(cx).text().trim().is_empty())
+            .unwrap_or(false);
         let can_send = !disabled && !running && has_text;
         let composer = self.composer.clone();
         div()
@@ -1523,7 +1547,7 @@ impl ChatScreen {
                 div()
                     .flex_1()
                     .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                    .child(composer),
+                    .children(composer),
             )
             .child(if running {
                 div()
@@ -2169,4 +2193,160 @@ mod tests {
 #[allow(dead_code)]
 fn _unused_any_element(assertion: AnyElement) -> AnyElement {
     assertion
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn summary(id: &str, title: &str) -> AgentSessionSummary {
+        AgentSessionSummary {
+            id: id.to_string(),
+            title: title.to_string(),
+            project_root: "/tmp/proj".to_string(),
+            created_ms: 0,
+            updated_ms: 0,
+            message_count: 0,
+            model: None,
+            mode: "smart_approve".to_string(),
+        }
+    }
+
+    fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
+        AgentTimelineItem {
+            id: id.to_string(),
+            item_type: item_type.to_string(),
+            role: None,
+            title: None,
+            text: text.map(str::to_string),
+            status: None,
+            input: None,
+            output: None,
+            created_ms: 0,
+            merge: "replace".to_string(),
+        }
+    }
+
+    fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
+        cx.update(|_app| {
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
+                    .expect("backend"),
+            );
+            _cx.new(|cx| {
+                let mut screen = ChatScreen::new_inner(backend, "user".to_string());
+                screen.selected_session = Some("s1".to_string());
+                screen
+            })
+        })
+    }
+
+    #[gpui::test]
+    fn test_timeline_appends_streamed_text(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            this.apply_timeline_item("s1", item("m1", "message", Some("Hel")));
+            this.apply_timeline_item(
+                "s1",
+                AgentTimelineItem {
+                    merge: "append".to_string(),
+                    ..item("m1", "message", Some("lo"))
+                },
+            );
+            assert_eq!(this.timeline.len(), 1);
+            assert_eq!(this.timeline[0].text.as_deref(), Some("Hello"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_timeline_field_merge_keeps_prior_payloads(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            let mut tool = item("t1", "tool", None);
+            tool.title = Some("edit".to_string());
+            tool.input = Some(serde_json::json!({"edits": []}));
+            this.apply_timeline_item("s1", tool);
+            // Completion row carries only a status; fields must survive.
+            this.apply_timeline_item(
+                "s1",
+                AgentTimelineItem {
+                    status: Some("completed".to_string()),
+                    ..item("t1", "tool", None)
+                },
+            );
+            assert_eq!(this.timeline.len(), 1);
+            assert_eq!(this.timeline[0].title.as_deref(), Some("edit"));
+            assert!(this.timeline[0].input.is_some());
+            assert_eq!(this.timeline[0].status.as_deref(), Some("completed"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_events_from_other_sessions_are_ignored(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let event = AgentServiceEvent::TimelineItem {
+            session_id: "other".to_string(),
+            run_id: None,
+            item: item("m9", "message", Some("alien")),
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(event, cx);
+            assert!(this.timeline.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_session_upsert_never_duplicates(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            this.upsert_session(summary("s1", "A"));
+            this.upsert_session(summary("s1", "A2"));
+            this.upsert_session(summary("s2", "B"));
+            assert_eq!(this.sessions.len(), 2);
+            // New sessions prepend; updates happen in place.
+            assert_eq!(this.sessions[0].title, "B");
+            assert_eq!(this.sessions[1].title, "A2");
+        });
+    }
+
+    #[gpui::test]
+    fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let event = AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: "q1".to_string(),
+            question: "Favorite color?".to_string(),
+        };
+        screen.update(cx, |this, cx| {
+            assert!(this.pending_question.is_none());
+            this.handle_service_event(event, cx);
+            let question = this.pending_question.as_ref().expect("question set");
+            assert_eq!(question.request_id, "q1");
+            assert!(this.pending_question_input.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn test_finished_only_clears_its_own_run(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.active_runs
+                .insert("s1".to_string(), "run-old".to_string());
+            this.active_runs
+                .insert("s1".to_string(), "run-new".to_string());
+            this.handle_run_event(
+                "s1",
+                "run-old",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert_eq!(
+                this.active_runs.get("s1").map(String::as_str),
+                Some("run-new")
+            );
+        });
+    }
 }
