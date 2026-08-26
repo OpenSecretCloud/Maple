@@ -1,3 +1,4 @@
 /.github/CODEOWNERS @AnthonyRonning
 /.github/workflows/ @AnthonyRonning
 /updates/ @AnthonyRonning
+/proxy/ @AnthonyRonning

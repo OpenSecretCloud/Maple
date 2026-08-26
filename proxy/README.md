@@ -20,8 +20,8 @@ Environment (TEE) processing.
 ### As a Binary
 
 ```bash
-git clone <repository>
-cd maple-proxy
+git clone https://github.com/OpenSecretCloud/Maple.git
+cd Maple/proxy
 cargo build --locked --release
 ```
 
@@ -31,9 +31,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-maple-proxy = { git = "https://github.com/opensecretcloud/maple-proxy" }
-# Or if published to crates.io:
-# maple-proxy = "0.3.2"
+maple-proxy = "0.3.2"
 ```
 
 ## ⚙️ Configuration
@@ -385,21 +383,18 @@ environment:
 
 ### Docker Images & CI/CD
 
-**Automated Builds (GitHub Actions)**
-- Every push to `master` automatically builds and publishes to `ghcr.io/opensecretcloud/maple-proxy:latest`
-- Git tags (e.g., `v1.0.0`) trigger versioned releases
-- Multi-platform images (linux/amd64, linux/arm64) built automatically
-- No manual intervention needed - just push your code!
+The source lives under [`proxy/`](https://github.com/OpenSecretCloud/Maple/tree/master/proxy)
+in the Maple repository. Root, path-scoped workflows run locked Rust checks,
+supply-chain policy, and non-publishing AMD64/ARM64 container builds for proxy
+changes. Production publishing is intentionally handled separately from these
+CI checks.
 
 **Local Development (Justfile)**
 ```bash
 # For local testing and debugging
 just docker-build        # Build locally
 just docker-run          # Test locally
-just ghcr-push v1.2.3   # Manual push (requires login)
 ```
-
-Use GitHub Actions for production releases, Justfile for local development.
 
 ### Build from Source
 ```bash

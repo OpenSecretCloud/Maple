@@ -157,6 +157,10 @@ def classify_path(path: str) -> frozenset[str]:
         return frozenset({"frontend"})
     if path.startswith("sdk/"):
         return frozenset()
+    if path.startswith("proxy/"):
+        # Proxy has its own path-scoped checks until the native app starts
+        # consuming the in-tree crate in the follow-up dependency switch.
+        return frozenset()
     if path in PURE_FRONTEND_FILES or path.startswith(PURE_FRONTEND_PREFIXES):
         return frozenset({"frontend"})
     if path.startswith("frontend/src-tauri/"):

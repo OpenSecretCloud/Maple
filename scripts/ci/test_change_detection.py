@@ -22,6 +22,8 @@ class ChangeDetectionTests(unittest.TestCase):
         self.assert_routes(["sdk/src/lib/test/models.test.ts"])
         self.assert_routes(["sdk/src/lib/test/integration/web.test.ts"])
         self.assert_routes(["updates/src/index.ts"])
+        self.assert_routes(["proxy/src/proxy.rs"])
+        self.assert_routes(["proxy/Cargo.toml", "proxy/Dockerfile"])
         self.assert_routes([".githooks/pre-commit", "justfile", "zapstore.yaml"])
 
     def test_typescript_sdk_inputs_mark_only_the_frontend_lane(self) -> None:
