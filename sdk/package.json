@@ -1,0 +1,58 @@
+{
+  "name": "@opensecret/react",
+  "version": "3.5.2",
+  "packageManager": "bun@1.3.5",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/opensecret-react.umd.js",
+  "module": "./dist/opensecret-react.es.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/opensecret-react.es.js",
+      "require": "./dist/opensecret-react.umd.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node ./node_modules/vite/bin/vite.js build",
+    "pack": "bun run build && bun pm pack",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "test": "bun test --timeout 30000"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0"
+  },
+  "dependencies": {
+    "@peculiar/x509": "1.14.3",
+    "@stablelib/base64": "2.0.1",
+    "@stablelib/chacha20poly1305": "2.0.1",
+    "@stablelib/random": "2.0.1",
+    "cbor2": "1.12.0",
+    "tweetnacl": "1.0.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@types/bun": "1.1.13",
+    "@types/react": "19.2.18",
+    "@vitejs/plugin-react": "4.7.0",
+    "ajv": "8.20.0",
+    "eslint": "9.39.5",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "globals": "15.15.0",
+    "openai": "5.23.2",
+    "prettier": "3.9.6",
+    "typescript": "5.6.3",
+    "typescript-eslint": "8.66.0",
+    "vite": "6.4.3",
+    "vite-plugin-dts": "4.5.4"
+  },
+  "trustedDependencies": []
+}
