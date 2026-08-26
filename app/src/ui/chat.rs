@@ -41,6 +41,8 @@ pub struct ChatScreen {
     pending_question_input: Option<Entity<TextInput>>,
     /// Request id whose input currently holds focus.
     question_focus_id: Option<String>,
+    /// Fraction of the context window in use for the selected session.
+    context_fraction: Option<f32>,
     composer_busy: bool,
     composer: Option<Entity<TextInput>>,
     models: Vec<String>,
@@ -128,6 +130,7 @@ impl ChatScreen {
             pending_question: None,
             pending_question_input: None,
             question_focus_id: None,
+            context_fraction: None,
             composer_busy: false,
             composer: None,
             models: Vec::new(),
@@ -497,6 +500,52 @@ impl ChatScreen {
         cx.notify();
     }
 
+    fn refresh_context_usage(&self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.context_usage(&user_id, &session_id).await },
+            cx,
+            |this, result, cx| {
+                if let Ok(Some((tokens, limit))) = result {
+                    let fraction = if limit > 0 {
+                        tokens as f32 / limit as f32
+                    } else {
+                        0.0
+                    };
+                    this.context_fraction = Some(fraction);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn compact_now(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.notice = Some("Compacting…".to_string());
+        cx.notify();
+        self.call(
+            async move { backend.compact_session(&user_id, &session_id).await },
+            cx,
+            |this, result, cx| match result {
+                Ok(()) => {
+                    this.notice = Some("Conversation compacted".to_string());
+                    let sid = this.selected_session.clone().unwrap_or_default();
+                    this.select_session(&sid, cx);
+                    this.refresh_context_usage(cx);
+                }
+                Err(message) => this.notice = Some(format!("Compaction failed: {message}")),
+            },
+        );
+    }
+
     fn apply_permission_mode(&self, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
             return;
@@ -577,6 +626,10 @@ impl ChatScreen {
             return;
         }
         if text.trim().is_empty() {
+            return;
+        }
+        if text.trim() == "/compact" {
+            self.compact_now(cx);
             return;
         }
         self.send_to_session(&session_id, text, cx);
@@ -1180,6 +1233,24 @@ impl ChatScreen {
                     )
                     .child(
                         div()
+                            .id("compact-now")
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(gpui::rgb(theme::BORDER))
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .hover(|style| style.cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.compact_now(cx);
+                            }))
+                            .child("⇲"),
+                    )
+                    .child(
+                        div()
                             .id("permission-mode-toggle")
                             .flex()
                             .items_center()
@@ -1549,6 +1620,9 @@ impl ChatScreen {
                     .text_color(gpui::rgb(theme::TEXT_PRIMARY))
                     .children(composer),
             )
+            .child(div().id("context-indicator").flex().items_center().child(
+                crate::ui::context_ring::ContextRing::new(self.context_fraction.unwrap_or(0.0)),
+            ))
             .child(if running {
                 div()
                     .id("stop-run")
@@ -2229,16 +2303,13 @@ mod state_tests {
     }
 
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
-        cx.update(|_app| {
-            let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
-                    .expect("backend"),
-            );
-            _cx.new(|cx| {
-                let mut screen = ChatScreen::new_inner(backend, "user".to_string());
-                screen.selected_session = Some("s1".to_string());
-                screen
-            })
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
+        );
+        cx.new(|_cx| {
+            let mut screen = ChatScreen::new_inner(backend, "user".to_string());
+            screen.selected_session = Some("s1".to_string());
+            screen
         })
     }
 

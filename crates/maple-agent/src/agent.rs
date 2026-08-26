@@ -1576,6 +1576,33 @@ impl MapleAgentService {
 }
 
 impl AgentRuntimeHandle {
+    /// Compact a session's history now (manual /compact). The runtime's
+    /// compaction summarizes the conversation and replaces its history;
+    /// callers should reload the session afterwards.
+    pub async fn compact_session(&self, session_id: String) -> Result<(), String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let agent_manager = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, &self.account_scope)?;
+            Arc::clone(&current.agent_manager)
+        };
+        let agent = agent_manager
+            .get_or_create_agent(session_id.clone())
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        agent
+            .execute_command("/compact", &session_id)
+            .await
+            .map_err(|error| format!("Compaction failed: {error}"))?;
+        Ok(())
+    }
+
     /// Deliver the user's answer to an ask_user question from this
     /// account's runtime. False when nothing was pending.
     pub async fn answer_question_via_handle(

@@ -608,6 +608,46 @@ impl AgentBackend {
             .await
     }
 
+    /// Compact a session's history now; reload the session afterwards.
+    pub async fn compact_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .compact_session(session_id.to_string())
+            .await
+    }
+
+    /// Latest context usage for a session from the goose usage ledger:
+    /// (context tokens, context limit).
+    pub async fn context_usage(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<Option<(i64, i64)>, String> {
+        let Some(scope) = self.account_scope(user_id) else {
+            return Ok(None);
+        };
+        let limit: i64 = std::env::var("MAPLE_CONTEXT_LIMIT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(200_000);
+        let db = crate::backend::account_session_db(&scope);
+        let Ok(conn) = rusqlite::Connection::open(&db) else {
+            return Ok(None);
+        };
+        let row = conn
+            .query_row(
+                "SELECT COALESCE(input_tokens,0) + COALESCE(cache_read_tokens,0) \
+                 + COALESCE(cache_write_tokens,0) FROM usage_ledger \
+                 WHERE session_id = ?1 AND is_compaction = 0 \
+                 ORDER BY id DESC LIMIT 1",
+                [session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok();
+        Ok(row.map(|tokens| (tokens, limit)))
+    }
+
     /// Deliver the user's answer to an ask_user question. Returns false
     /// when no question was pending.
     pub async fn answer_question(

@@ -1,6 +1,7 @@
 //! gpui frontend for Maple: login, chat, shared widgets, theme.
 
 pub mod chat;
+pub mod context_ring;
 pub mod login;
 pub mod markdown;
 pub mod settings;
