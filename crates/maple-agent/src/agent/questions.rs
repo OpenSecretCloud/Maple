@@ -9,14 +9,6 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::agent::{emit_agent_event, AgentEventDispatcher, AgentServiceEvent};
 
-/// A question the agent asked the user, routed to the UI.
-#[derive(Debug, Clone)]
-pub(crate) struct AgentQuestion {
-    pub session_id: String,
-    pub request_id: String,
-    pub question: String,
-}
-
 #[derive(Clone)]
 pub(crate) struct QuestionBroker {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
@@ -45,9 +37,14 @@ impl QuestionBroker {
         }
     }
 
-    /// Ask the user a question and wait for the answer. Emits a service
-    /// event the UI renders as a question card.
-    pub(crate) async fn ask(&self, session_id: &str, question: String) -> String {
+    /// Ask the user one or more related questions and wait for the
+    /// answers. Emits a service event the UI renders as a question card
+    /// covering the whole batch.
+    pub(crate) async fn ask(
+        &self,
+        session_id: &str,
+        questions: Vec<crate::agent::AgentQuestion>,
+    ) -> String {
         let request_id = format!(
             "question_{}_{}",
             std::time::SystemTime::now()
@@ -64,7 +61,7 @@ impl QuestionBroker {
             AgentServiceEvent::Question {
                 session_id: session_id.to_string(),
                 request_id: request_id.clone(),
-                question: question.clone(),
+                questions,
             },
         );
         let answer = rx.await.unwrap_or_default();

@@ -8,21 +8,23 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Render, SharedString, Window, div,
-    prelude::*, px,
+    AnimationExt, AnyElement, AppContext, Div, Entity, EventEmitter, Focusable, Render,
+    SharedString, Window, div, prelude::*, px,
 };
-
 use maple_agent::agent::{
     AgentImageUpload, AgentSendMessageRequest, AgentServiceEvent, AgentSessionMcpServer,
-    AgentSessionSummary, AgentTimelineItem,
+    AgentSessionSummary, AgentSlashCommand, AgentTimelineItem,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
 use crate::ui::icons::{icon, wordmark};
 use crate::ui::markdown;
+use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+
+gpui::actions!(chat, [ChatEscape, CopySelection]);
 
 pub struct LoggedOut;
 
@@ -41,12 +43,13 @@ struct DraftImage {
     /// `None` until the crop finishes (or if the image did not decode).
     thumbnail: Option<Arc<gpui::Image>>,
 }
-
 /// Per-item parsed markdown. Interior mutability because the list render
 /// callback only has shared access to the screen.
 #[derive(Default)]
 struct MarkdownCache {
     entries: RefCell<HashMap<String, (u64, Rc<markdown::Document>)>>,
+    /// Base ordinal per item key, so paragraphs get stable selection keys.
+    ordinals: RefCell<HashMap<String, u64>>,
 }
 
 impl MarkdownCache {
@@ -70,8 +73,21 @@ impl MarkdownCache {
         document
     }
 
+    /// Selection ordinal base for an item key. Bases are spaced far apart
+    /// so `base + block index` never collides across messages.
+    fn ordinal_for(&self, key: &str) -> u64 {
+        let mut ordinals = self.ordinals.borrow_mut();
+        if let Some(base) = ordinals.get(key) {
+            return *base;
+        }
+        let base = ordinals.values().copied().max().unwrap_or(0) + 4096;
+        ordinals.insert(key.to_string(), base);
+        base
+    }
+
     fn clear(&self) {
         self.entries.borrow_mut().clear();
+        self.ordinals.borrow_mut().clear();
     }
 }
 
@@ -91,7 +107,9 @@ pub struct ChatScreen {
     /// Suppresses duplicate session creation while one is in flight.
     session_setup_pending: bool,
     /// An ask_user question waiting for the user's text answer.
-    pending_question: Option<PendingQuestion>,
+    /// Questions waiting for the user, oldest first. The model can issue
+    /// several ask_user calls in one turn; every card must be answerable.
+    pending_questions: Vec<PendingQuestion>,
     /// Lazily created answer input for the question card.
     pending_question_input: Option<Entity<TextInput>>,
     /// Request id whose input currently holds focus.
@@ -111,8 +129,13 @@ pub struct ChatScreen {
     models_menu_open: bool,
     /// Approval-mode dropdown open state, anchored under the composer.
     mode_menu_open: bool,
-    /// Compact usage line for the sidebar bottom (tokens used this account).
-    sidebar_usage: Option<crate::settings::UsageRow>,
+    /// Pinned project roots, ordered by pin time; first in the sidebar.
+    pinned_roots: Vec<String>,
+    /// Desktop notifications enabled (settings).
+    notify_enabled: bool,
+    /// Mirrors `window.is_window_active()` from the last render; refreshed
+    /// on activation changes because they force a redraw.
+    window_active: bool,
     sidebar_plan: Option<crate::billing::PlanUsage>,
     runtime_error: Option<SharedString>,
     notice: Option<SharedString>,
@@ -187,6 +210,40 @@ pub struct ChatScreen {
     /// Attachment ids with a read in flight or already failed; never asked
     /// for twice.
     attachment_requests: HashSet<String>,
+    /// Shared drag-selection state for transcript text.
+    selection: Option<Entity<rich_text::TextSelection>>,
+    /// Focus handle of the transcript; a selection press moves focus here
+    /// so the copy keybinding applies.
+    transcript_focus: Option<gpui::FocusHandle>,
+    /// True from send until the first agent item of the run arrives; shows
+    /// the waiting indicator under the transcript.
+    awaiting_first_token: bool,
+    /// Item ids whose tool card was clicked; membership inverts the
+    /// `tool_details` default for that card.
+    toggled_tools: HashSet<String>,
+    /// Ticked options of a multi-select question.
+    question_selected: HashMap<usize, usize>,
+    /// Index of the question being shown within the current card; a batch
+    /// iterates one question at a time instead of listing them all.
+    question_step: usize,
+    /// Answers recorded for earlier steps of the current card, by index.
+    question_step_answers: HashMap<usize, Vec<String>>,
+    /// Full-size image shown over the chat until dismissed.
+    lightbox: Option<Arc<gpui::Image>>,
+    /// Slash commands from the installed skills of the current project root.
+    slash_commands: Vec<AgentSlashCommand>,
+    /// Highlighted row in the open slash palette, if any.
+    slash_selected: Option<usize>,
+    /// Set when a pending question should steal focus at the next render.
+    question_focus_pending: bool,
+    /// One-line model summaries per completed tool item id.
+    tool_summaries: HashMap<String, String>,
+    /// Item ids with a summary request sent; never asked twice.
+    summary_requests: HashSet<String>,
+    /// Summary requests in flight; caps how many ride at once.
+    pending_summaries: usize,
+    /// Tool call summaries enabled (settings).
+    summaries_enabled: bool,
 }
 
 impl ChatScreen {
@@ -194,6 +251,8 @@ impl ChatScreen {
         let weak = cx.entity().downgrade();
         let mut this = Self::new_inner(backend, user_id);
         this.attach_composer(weak, cx);
+        this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
+        this.transcript_focus = Some(cx.focus_handle());
         this.start(cx);
         this
     }
@@ -203,15 +262,77 @@ impl ChatScreen {
         let composer = cx.new(|cx| {
             TextInput::new("Ask Maple to work in this folder...", cx)
                 .multiline(8)
-                .clears_on_enter()
+                .on_key({
+                    let weak = weak.clone();
+                    // This hook runs while the composer entity is being
+                    // updated: never read or update the composer here.
+                    // Text arrives as an argument; composer writes defer.
+                    move |event: &gpui::KeyDownEvent, text: &SharedString, _window, cx| -> bool {
+                        let Some(this) = weak.upgrade() else {
+                            return false;
+                        };
+                        let plain = !event.keystroke.modifiers.control
+                            && !event.keystroke.modifiers.alt
+                            && !event.keystroke.modifiers.platform
+                            && !event.keystroke.modifiers.shift;
+                        if !plain {
+                            return false;
+                        }
+                        let key = event.keystroke.key.clone();
+                        let token = text.strip_prefix('/').unwrap_or_default();
+                        let token_ok = text.starts_with('/')
+                            && !token.contains(char::is_whitespace)
+                            && !token.contains('/');
+                        match key.as_str() {
+                            "down" | "up" if token_ok => this.update(cx, |chat, cx| {
+                                chat.navigate_slash_palette(&key, token, cx)
+                            }),
+                            "tab" if token_ok => {
+                                let name = this.update(cx, |chat, _| {
+                                    let entries = slash_entries_for(token, &chat.slash_commands);
+                                    let index = chat
+                                        .slash_selected
+                                        .filter(|index| *index < entries.len())
+                                        .unwrap_or(0);
+                                    entries.get(index).map(|entry| entry.name.clone())
+                                });
+                                if let Some(name) = name {
+                                    let weak = weak.clone();
+                                    cx.defer(move |cx| {
+                                        weak.update(cx, |chat, cx| {
+                                            chat.complete_slash_command(&name, cx)
+                                        })
+                                        .ok();
+                                    });
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => {
+                                // Typing anything else restarts selection.
+                                this.update(cx, |chat, cx| {
+                                    if chat.slash_selected.is_some() {
+                                        chat.slash_selected = None;
+                                        cx.notify();
+                                    }
+                                });
+                                false
+                            }
+                        }
+                    }
+                })
                 .on_enter({
                     let weak = weak.clone();
+                    // The hook runs inside the composer's update; defer the
+                    // send so it may read and clear the composer safely.
                     move |text, _, cx| {
-                        // The handler receives the composer text directly;
-                        // clearing and sending happen without leasing the input.
-                        if let Some(this) = weak.upgrade() {
-                            this.update(cx, |chat, cx| chat.send_text(text, cx));
-                        }
+                        let weak = weak.clone();
+                        cx.defer(move |cx| {
+                            if let Some(this) = weak.upgrade() {
+                                this.update(cx, |chat, cx| chat.send_text(text.clone(), cx));
+                            }
+                        });
                     }
                 })
                 .on_paste_image(move |image, _, cx| {
@@ -241,7 +362,7 @@ impl ChatScreen {
             pending_permission_arguments: SharedString::default(),
             permission_responding: false,
             session_setup_pending: false,
-            pending_question: None,
+            pending_questions: Vec::new(),
             pending_question_input: None,
             question_focus_id: None,
             context_fraction: None,
@@ -254,7 +375,9 @@ impl ChatScreen {
             selected_model: None,
             models_menu_open: false,
             mode_menu_open: false,
-            sidebar_usage: None,
+            pinned_roots: settings.pinned_roots.clone(),
+            notify_enabled: settings.desktop_notifications,
+            window_active: true,
             sidebar_plan: None,
             runtime_error: None,
             notice: None,
@@ -297,6 +420,21 @@ impl ChatScreen {
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
             timeline_revisions: HashMap::new(),
+            selection: None,
+            transcript_focus: None,
+            awaiting_first_token: false,
+            toggled_tools: HashSet::new(),
+            question_selected: HashMap::new(),
+            question_step: 0,
+            question_step_answers: HashMap::new(),
+            lightbox: None,
+            slash_commands: Vec::new(),
+            slash_selected: None,
+            question_focus_pending: false,
+            tool_summaries: HashMap::new(),
+            summary_requests: HashSet::new(),
+            pending_summaries: 0,
+            summaries_enabled: settings.tool_summaries,
         };
         this
     }
@@ -344,8 +482,8 @@ impl ChatScreen {
                 cx.notify();
                 this.refresh_models(cx);
                 this.refresh_roots(cx);
+                this.refresh_slash_commands(cx);
                 this.refresh_sessions(cx);
-                this.refresh_sidebar_usage(cx);
                 this.refresh_sidebar_plan(cx);
             },
         );
@@ -395,6 +533,7 @@ impl ChatScreen {
                         this.rebuild_project_groups();
                         this.timeline.clear();
                         this.list_state.reset(0);
+                        this.refresh_slash_commands(cx);
                         this.refresh_roots(cx);
                         match this.pending_session_select.take() {
                             Some(session_id) => {
@@ -647,6 +786,7 @@ impl ChatScreen {
                     this.timeline = detail.timeline;
                     this.list_state.reset(this.timeline.len());
                     this.load_attachment_images(cx);
+                    this.summarize_loaded_tools(cx);
                 }
             },
         );
@@ -688,6 +828,10 @@ impl ChatScreen {
     ) {
         self.tool_details = settings.tool_details;
         self.default_web_enabled = settings.default_web_enabled;
+        self.notify_enabled = settings.desktop_notifications;
+        self.summaries_enabled = settings.tool_summaries;
+        self.pinned_roots = settings.pinned_roots.clone();
+        self.rebuild_project_groups();
         if self.uses_default_permission_mode
             && matches!(
                 settings.default_permission_mode.as_str(),
@@ -859,13 +1003,18 @@ impl ChatScreen {
         if mode == "auto" || mode == "smart_approve" {
             self.permission_mode = mode;
         }
-        self.web_enabled = session.web_enabled;
-        self.apply_permission_mode(cx);
         self.timeline = timeline;
+        // Ordinals restart for the new session; drop any stale selection.
+        if let Some(selection) = &self.selection {
+            selection.update(cx, |selection, _| selection.clear());
+        }
         self.markdown_cache.clear();
         self.list_state.reset(self.timeline.len());
         self.load_attachment_images(cx);
+        self.summarize_loaded_tools(cx);
         self.follow_transcript = true;
+        self.awaiting_first_token = false;
+        self.lightbox = None;
         self.pending_permission = None;
         self.permission_responding = false;
         self.models_menu_open = false;
@@ -904,6 +1053,21 @@ impl ChatScreen {
             .and_then(|model| self.model_vision.get(model))
             .copied()
             .unwrap_or(false)
+    }
+    /// Reload the skill slash commands for the current project root.
+    pub fn refresh_slash_commands(&mut self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let working_dir = self.project_root.clone();
+        self.call(
+            async move { backend.list_slash_commands(working_dir).await },
+            cx,
+            move |this, result, cx| {
+                if let Ok(commands) = result {
+                    this.slash_commands = commands;
+                    cx.notify();
+                }
+            },
+        );
     }
 
     /// Reload the MCP server list for the selected task.
@@ -1140,6 +1304,61 @@ impl ChatScreen {
             .is_some_and(|session| self.active_runs.contains_key(session))
     }
 
+    /// Escape, in priority order: close the photo viewer, skip a pending
+    /// question, clear a text selection, close the chip menus.
+    fn chat_escape(&mut self, _: &ChatEscape, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.lightbox.is_some() {
+            self.lightbox = None;
+            cx.notify();
+            return;
+        }
+        if self.pending_questions.first().is_some() {
+            self.skip_question(cx);
+            return;
+        }
+        if let Some(selection) = self.selection.clone()
+            && selection.read(cx).has_selection()
+        {
+            selection.update(cx, |selection, _| selection.clear());
+            cx.notify();
+            return;
+        }
+        if self.models_menu_open || self.mode_menu_open || self.mcp_menu_open {
+            self.models_menu_open = false;
+            self.mode_menu_open = false;
+            self.mcp_menu_open = false;
+            self.root_menu_open = false;
+            cx.notify();
+        }
+    }
+
+    /// Copy the transcript drag selection, when there is one.
+    fn copy_selection(&mut self, _: &CopySelection, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(selection) = self.selection.clone() else {
+            return;
+        };
+        let text = selection.read(cx).selected_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Toggle one tool card's expansion and re-measure its row.
+    fn toggle_tool(&mut self, item_id: &str, ix: usize, cx: &mut Context<Self>) {
+        if self.toggled_tools.contains(item_id) {
+            self.toggled_tools.remove(item_id);
+        } else {
+            self.toggled_tools.insert(item_id.to_string());
+        }
+        self.list_state.splice(ix..ix + 1, 1);
+        cx.notify();
+    }
+
+    /// Show a clicked attachment image full size.
+    fn open_lightbox(&mut self, image: Arc<gpui::Image>, cx: &mut Context<Self>) {
+        self.lightbox = Some(image);
+        cx.notify();
+    }
     /// Send without a Window, callable from the composer's Enter hook and
     /// from the Send button.
     /// Send without a Window, callable from the Send button. The button
@@ -1166,14 +1385,234 @@ impl ChatScreen {
             cx.notify();
             return;
         }
+        if !self.pending_questions.is_empty() {
+            // The run is blocked on the question; sending here would queue a
+            // message nobody reads and look like a stall.
+            self.notice = Some("Answer the question above first".into());
+            self.question_focus_pending = true;
+            cx.notify();
+            return;
+        }
         if text.trim().is_empty() && self.draft_images.is_empty() {
             return;
         }
-        if text.trim() == "/compact" {
-            self.compact_now(cx);
+        // Enter on an open palette runs the highlighted command instead of
+        // sending the partial token.
+        if let Some(command) = self.slash_palette_command(text.trim(), cx) {
+            self.slash_selected = None;
+            if let Some(composer) = self.composer.clone() {
+                composer.update(cx, |input, cx| input.clear(cx));
+            }
+            self.try_command(&session_id, &format!("/{command}"), cx);
+            return;
+        }
+        if self.try_command(&session_id, text.trim(), cx) {
+            // Commands never echo into the transcript; drop the typed text
+            // so the palette cannot survive the execution.
+            self.slash_selected = None;
+            if let Some(composer) = self.composer.clone() {
+                composer.update(cx, |input, cx| input.clear(cx));
+            }
             return;
         }
         self.send_to_session(&session_id, text, cx);
+    }
+
+    /// The command Enter should run when the slash palette is open: the
+    /// highlighted entry, falling back to the only or first match. `None`
+    /// when the palette is closed or the text is already a full command.
+    fn slash_palette_command(&self, text: &str, cx: &mut Context<Self>) -> Option<String> {
+        if self.pending_questions.first().is_some() {
+            return None;
+        }
+        let entries = self.slash_entries(cx);
+        if entries.is_empty() {
+            return None;
+        }
+        // A full exact match runs through the normal command path so the
+        // typed form (including arguments) is preserved.
+        let exact = text
+            .strip_prefix('/')
+            .and_then(|body| body.split_whitespace().next())
+            .map(|name| {
+                entries
+                    .iter()
+                    .any(|entry| entry.name.eq_ignore_ascii_case(name))
+            })
+            .unwrap_or(false);
+        if exact || text.contains(' ') {
+            return None;
+        }
+        let index = self
+            .slash_selected
+            .filter(|index| *index < entries.len())
+            .unwrap_or(0);
+        Some(entries[index].name.clone())
+    }
+
+    /// Arrow/tab handling for the open slash palette; returns whether the
+    /// key was consumed.
+    fn navigate_slash_palette(&mut self, key: &str, token: &str, cx: &mut Context<Self>) -> bool {
+        let entries = slash_entries_for(token, &self.slash_commands);
+        let count = entries.len();
+        if count == 0 {
+            return false;
+        }
+        match key {
+            "down" => {
+                let next = self.slash_selected.map_or(0, |index| (index + 1) % count);
+                self.slash_selected = Some(next);
+            }
+            "up" => {
+                let next = self
+                    .slash_selected
+                    .map_or(count - 1, |index| index.max(1) - 1);
+                self.slash_selected = Some(next);
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// Replace the composer text with `/name ` and focus it.
+    fn complete_slash_command(&mut self, name: &str, cx: &mut Context<Self>) {
+        let completed = format!("/{name} ");
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.set_text(&completed, cx));
+        }
+        self.slash_selected = None;
+        cx.notify();
+    }
+
+    /// Palette entries for the composer's current "/" token.
+    fn slash_entries(&self, cx: &mut Context<Self>) -> Vec<SlashEntry> {
+        let Some(text) = self
+            .composer
+            .as_ref()
+            .map(|composer| composer.read(cx).text())
+        else {
+            return Vec::new();
+        };
+        let Some(token) = text.strip_prefix('/') else {
+            return Vec::new();
+        };
+        if token.contains(char::is_whitespace) || token.contains('/') {
+            return Vec::new();
+        }
+        slash_entries_for(token, &self.slash_commands)
+    }
+
+    /// Execute a `/command` when it matches a built-in or a skill. Unknown
+    /// commands fall through and are sent to the model as plain text.
+    fn try_command(&mut self, session_id: &str, text: &str, cx: &mut Context<Self>) -> bool {
+        let Some(body) = text.strip_prefix('/') else {
+            return false;
+        };
+        let (name, args) = match body.split_once(char::is_whitespace) {
+            Some((name, args)) => (name, args.trim()),
+            None => (body, ""),
+        };
+        if name.is_empty() || name.contains('/') {
+            return false;
+        }
+        let session_id = session_id.to_string();
+        match name {
+            "compact" => {
+                self.compact_now(cx);
+                true
+            }
+            "new" => {
+                self.new_session(cx);
+                true
+            }
+            "pin" => {
+                if let Some(root) = self.project_root.clone() {
+                    self.toggle_pin(&root, cx);
+                } else {
+                    self.notice = Some("No project to pin".into());
+                    cx.notify();
+                }
+                true
+            }
+            "web" => {
+                let next = !self.web_enabled;
+                self.set_web_enabled(next, cx);
+                true
+            }
+            "model" => {
+                if args.is_empty() {
+                    self.models_menu_open = true;
+                    self.mode_menu_open = false;
+                    self.mcp_menu_open = false;
+                    self.root_menu_open = false;
+                    cx.notify();
+                } else {
+                    let query = args.to_string();
+                    match self
+                        .models
+                        .iter()
+                        .find(|model| model.to_lowercase().contains(&query.to_lowercase()))
+                    {
+                        Some(model) => {
+                            let model = model.clone();
+                            self.pick_model(model, cx);
+                        }
+                        None => {
+                            self.notice = Some(format!("No model matches “{query}”").into());
+                            cx.notify();
+                        }
+                    }
+                }
+                true
+            }
+            "help" => {
+                self.notice =
+                    Some("Type / to list commands. Built-ins: /compact, /new, /pin, /web, /model, /help. Skills appear as /name.".into());
+                cx.notify();
+                true
+            }
+            _ => {
+                // Skill commands resolve into the prompt that loads them.
+                if !self
+                    .slash_commands
+                    .iter()
+                    .any(|command| command.name.eq_ignore_ascii_case(name))
+                {
+                    return false;
+                }
+                let backend = self.backend.clone();
+                let user_id = self.user_id.clone();
+                let working_dir = self.project_root.clone();
+                let command = name.to_string();
+                let arguments = args.to_string();
+                self.notice = Some("Loading skill…".into());
+                cx.notify();
+                self.call(
+                    async move {
+                        backend
+                            .resolve_slash_command(working_dir, command, arguments)
+                            .await
+                    },
+                    cx,
+                    move |this, result, cx| match result {
+                        Ok(Some(prompt)) => {
+                            this.notice = None;
+                            this.send_to_session(&session_id, prompt, cx);
+                        }
+                        Ok(None) => {
+                            this.notice = Some("That skill is no longer installed".into());
+                            cx.notify();
+                        }
+                        Err(message) => {
+                            this.notice = Some(message.into());
+                            cx.notify();
+                        }
+                    },
+                );
+                true
+            }
+        }
     }
 
     fn send_to_session(&mut self, session_id: &str, text: String, cx: &mut Context<Self>) {
@@ -1200,10 +1639,19 @@ impl ChatScreen {
                 })
                 .collect(),
         };
-        // The caller already cleared the composer (the Enter path clears
-        // inside the input itself); clearing here would double-lease it.
         self.notice = None;
+        // Clear the composer at dispatch so no entry path can leave the
+        // sent text behind; a failed send restores it below.
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.clear(cx));
+        }
+        // Sending closes the chip menus anchored under the composer.
+        self.models_menu_open = false;
+        self.mode_menu_open = false;
+        self.mcp_menu_open = false;
+        self.root_menu_open = false;
         self.follow_transcript = true;
+        self.awaiting_first_token = true;
         cx.notify();
         self.call(
             async move { backend.send_message(&user_id, request).await },
@@ -1220,6 +1668,7 @@ impl ChatScreen {
                         composer.update(cx, |input, cx| input.set_text(&text, cx));
                     }
                     this.draft_images = drafts;
+                    this.awaiting_first_token = false;
                 }
             },
         );
@@ -1271,30 +1720,217 @@ impl ChatScreen {
         );
     }
 
+    /// A question card without an input is unanswerable; make sure one
+    /// exists whenever a question is showing.
+    fn ensure_question_input(&mut self, cx: &mut Context<Self>) {
+        if self.pending_question_input.is_some() {
+            return;
+        }
+        let chat = cx.entity().downgrade();
+        let input = cx.new(|cx| {
+            TextInput::new("Type your answer…", cx).on_enter(move |text, _, cx| {
+                let _ = text;
+                let chat = chat.clone();
+                // submit_question reads this input; defer out of its
+                // update first.
+                cx.defer(move |cx| {
+                    if let Some(chat) = chat.upgrade() {
+                        chat.update(cx, |chat, cx| chat.submit_question(cx));
+                    }
+                });
+            })
+        });
+        self.pending_question_input = Some(input);
+    }
+
     fn submit_question(&mut self, cx: &mut Context<Self>) {
-        let Some(question) = self.pending_question.clone() else {
+        let Some(question) = self.pending_questions.first().cloned() else {
             return;
         };
-        let Some(input) = self.pending_question_input.clone() else {
+        let step = self
+            .question_step
+            .min(question.questions.len().saturating_sub(1));
+        // Record this step's answer: the picked option, else typed text.
+        let answer = self.step_answer(&question, step, cx);
+        self.question_step_answers.insert(step, answer);
+        if step + 1 < question.questions.len() {
+            // More questions in this batch: show the next one.
+            self.question_step = step + 1;
+            self.question_selected.clear();
+            if let Some(input) = self.pending_question_input.clone() {
+                input.update(cx, |input, cx| input.clear(cx));
+            }
+            self.question_focus_pending = true;
+            cx.notify();
+            return;
+        }
+        let composed = self.composed_question_answer(cx);
+        self.answer_question(composed, cx);
+    }
+
+    /// The answer for one step: picked option label, else typed text,
+    /// else an explicit placeholder so the model sees it was skipped.
+    fn step_answer(
+        &self,
+        question: &crate::backend::PendingQuestion,
+        step: usize,
+        cx: &mut Context<Self>,
+    ) -> Vec<String> {
+        let Some(entry) = question.questions.get(step) else {
+            return vec!["(no answer provided)".to_string()];
+        };
+        if let Some(option_index) = self.question_selected.get(&step) {
+            if let Some(option) = entry.options.get(*option_index) {
+                return vec![option.label.clone()];
+            }
+        }
+        let typed = self
+            .pending_question_input
+            .as_ref()
+            .map(|input| input.read(cx).text())
+            .unwrap_or_default();
+        if !typed.trim().is_empty() {
+            return vec![typed.trim().to_string()];
+        }
+        vec!["(no answer provided)".to_string()]
+    }
+
+    /// Deliver `answer` (free text, a picked option, or joined options).
+    fn answer_question(&mut self, answer: String, cx: &mut Context<Self>) {
+        let Some(question) = self.pending_questions.first().cloned() else {
             return;
         };
-        let answer = input.read(cx).text();
         if answer.trim().is_empty() {
             return;
         }
+        let request_id = question.request_id.clone();
+        let callback_request_id = request_id.clone();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.pending_question = None;
+        if self
+            .pending_questions
+            .first()
+            .is_some_and(|current| current.request_id == question.request_id)
+        {
+            self.pending_questions.remove(0);
+        }
+        self.question_selected.clear();
+        self.question_step = 0;
+        self.question_step_answers.clear();
+        // Drop the answer input so the next question starts fresh
+        // instead of showing this answer's stale text — and recreate it
+        // right away: a queued question's event already fired, so nothing
+        // else will produce an input for its card.
+        if let Some(input) = self.pending_question_input.take() {
+            input.update(cx, |input, cx| input.clear(cx));
+        }
+        if self.pending_questions.first().is_some() {
+            self.ensure_question_input(cx);
+            self.question_focus_pending = true;
+        }
         cx.notify();
         self.call(
-            async move {
-                backend
-                    .answer_question(&user_id, &question.request_id, answer)
-                    .await
-            },
+            async move { backend.answer_question(&user_id, &request_id, answer).await },
             cx,
-            |_this, _result, _cx| {},
+            move |this, result, cx| match result {
+                Ok(true) => {}
+                Ok(false) => {
+                    log::warn!(
+                        "answer for question {} matched nothing pending",
+                        callback_request_id
+                    );
+                    this.notice = Some("The task was no longer waiting for that answer".into());
+                    cx.notify();
+                }
+                Err(message) => {
+                    log::warn!(
+                        "answer for question {} failed: {message}",
+                        callback_request_id
+                    );
+                    this.notice = Some(format!("Could not deliver the answer: {message}").into());
+                    cx.notify();
+                }
+            },
         );
+    }
+    /// Dismiss a question: cancel the run like the Stop button and
+    /// unblock the tool with an empty answer if it is still waiting.
+    fn skip_question(&mut self, cx: &mut Context<Self>) {
+        let Some(question) = self.pending_questions.first().cloned() else {
+            return;
+        };
+        self.pending_questions.remove(0);
+        self.question_selected.clear();
+        self.question_step = 0;
+        self.question_step_answers.clear();
+        if let Some(input) = self.pending_question_input.take() {
+            input.update(cx, |input, cx| input.clear(cx));
+        }
+        if self.pending_questions.first().is_some() {
+            self.ensure_question_input(cx);
+            self.question_focus_pending = true;
+        }
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        {
+            let request_id = question.request_id.clone();
+            let answer_backend = backend.clone();
+            let answer_user = user_id.clone();
+            self.call(
+                async move {
+                    answer_backend
+                        .answer_question(&answer_user, &request_id, String::new())
+                        .await
+                },
+                cx,
+                |_this, _result, _cx| {},
+            );
+        }
+        if let Some(run_id) = self.active_runs.get(&question.session_id).cloned() {
+            self.call(
+                async move { backend.cancel_run(&user_id, &run_id).await },
+                cx,
+                |this, result, cx| {
+                    if let Err(message) = result {
+                        this.notice = Some(message.into());
+                    }
+                    cx.notify();
+                },
+            );
+        }
+    }
+
+    /// Pick one option of one question (single-select, codex shape).
+    fn select_question_option(
+        &mut self,
+        question_index: usize,
+        option_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.question_selected.insert(question_index, option_index);
+        cx.notify();
+    }
+
+    /// Codex response JSON assembled from the recorded step answers.
+    fn composed_question_answer(&mut self, cx: &mut Context<Self>) -> String {
+        let Some(question) = self.pending_questions.first() else {
+            return String::new();
+        };
+        let mut answers = serde_json::Map::new();
+        for step in 0..question.questions.len() {
+            let entry = &question.questions[step];
+            let answer = self
+                .question_step_answers
+                .get(&step)
+                .cloned()
+                .unwrap_or_else(|| self.step_answer(question, step, cx));
+            answers.insert(entry.id.clone(), serde_json::json!({ "answers": answer }));
+        }
+        let composed = serde_json::json!({ "answers": answers }).to_string();
+        self.question_step_answers.clear();
+        self.question_step = 0;
+        composed
     }
 
     fn respond_permission(&mut self, allow: bool, cx: &mut Context<Self>) {
@@ -1366,6 +2002,84 @@ impl ChatScreen {
             |_this, _result, _cx| {},
         );
         self.refresh_context_usage(cx);
+    }
+
+    /// Ask the title model for a one-line summary of a completed tool call
+    /// whose output is too long to skim. At most a few requests ride at
+    /// once; each item is only ever asked once.
+    fn maybe_summarize_tool(
+        &mut self,
+        session_id: &str,
+        item: &AgentTimelineItem,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.summaries_enabled
+            || self.pending_summaries >= 3
+            || !matches!(item.item_type.as_str(), "tool" | "toolCall")
+            || item.status.as_deref() != Some("completed")
+            || has_tool_input(item, "todos")
+            || self.tool_summaries.contains_key(&item.id)
+            || self.summary_requests.contains(&item.id)
+        {
+            return;
+        }
+        let Some(output) = tool_output_markdown(item) else {
+            return;
+        };
+        if output.chars().count() < 400 {
+            return;
+        }
+        let Some(input) = item.input.clone().filter(|value| !value.is_null()) else {
+            return;
+        };
+        let item_id = item.id.clone();
+        let tool_name = item.title.clone().unwrap_or_else(|| item.item_type.clone());
+        let session_id = session_id.to_string();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.summary_requests.insert(item_id.clone());
+        self.pending_summaries += 1;
+        self.call(
+            async move {
+                backend
+                    .summarize_tool_call(&user_id, &session_id, tool_name, Some(input), output)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.pending_summaries = this.pending_summaries.saturating_sub(1);
+                if let Ok(Some(summary)) = result {
+                    let index = this
+                        .timeline
+                        .iter()
+                        .position(|candidate| candidate.id == item_id);
+                    if let Some(index) = index {
+                        this.list_state.splice(index..index + 1, 1);
+                    }
+                    this.tool_summaries.insert(item_id, summary);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    /// Request summaries for the long completed tool calls of the loaded
+    /// timeline (session switch or reload).
+    fn summarize_loaded_tools(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let candidates: Vec<AgentTimelineItem> = self
+            .timeline
+            .iter()
+            .rev()
+            .take(40)
+            .filter(|item| matches!(item.item_type.as_str(), "tool" | "toolCall"))
+            .cloned()
+            .collect();
+        for item in candidates {
+            self.maybe_summarize_tool(&session_id, &item, cx);
+        }
     }
 
     /// Fetch the images behind sent attachments that are not decoded yet.
@@ -1493,9 +2207,6 @@ impl ChatScreen {
         }
         self.rebuild_project_groups();
     }
-
-    /// Route a batch of backend service events into UI state with a single
-    /// render at the end.
     pub fn handle_service_events(
         &mut self,
         events: Vec<AgentServiceEvent>,
@@ -1534,8 +2245,13 @@ impl ChatScreen {
                 session_id, item, ..
             } => {
                 if self.selected_session.as_deref() == Some(session_id.as_str()) {
+                    if item.role.as_deref() != Some("user") {
+                        self.awaiting_first_token = false;
+                    }
+                    let summary_item = item.clone();
                     self.apply_timeline_item(&session_id, item);
                     self.load_attachment_images(cx);
+                    self.maybe_summarize_tool(&session_id, &summary_item, cx);
                 } else {
                     return false;
                 }
@@ -1543,25 +2259,38 @@ impl ChatScreen {
             AgentServiceEvent::Question {
                 session_id,
                 request_id,
-                question,
+                questions,
             } => {
+                let preview: String = questions
+                    .first()
+                    .map(|question| question.question.chars().take(140).collect())
+                    .unwrap_or_default();
+                self.notify_desktop("Maple has a question", &preview);
+                let was_empty = self.pending_questions.is_empty();
                 if self.selected_session.as_deref() == Some(session_id.as_str()) {
-                    if self.pending_question_input.is_none() {
-                        let chat = cx.entity().downgrade();
-                        let input = cx.new(|cx| {
-                            TextInput::new("Type your answer…", cx).on_enter(move |text, _, cx| {
-                                let _ = text;
-                                if let Some(chat) = chat.upgrade() {
-                                    chat.update(cx, |chat, cx| chat.submit_question(cx));
-                                }
-                            })
-                        });
-                        self.pending_question_input = Some(input);
+                    self.ensure_question_input(cx);
+                    self.question_selected.clear();
+                    if self.pending_questions.is_empty() {
+                        // A fresh question takes the card; follow-ups queue
+                        // behind it once this one is answered.
+                        self.question_focus_pending = true;
                     }
-                    self.pending_question = Some(PendingQuestion {
-                        request_id,
-                        question,
-                    });
+                    let preview: String = questions
+                        .first()
+                        .map(|question| question.question.chars().take(140).collect())
+                        .unwrap_or_default();
+                    self.notify_desktop("Maple has a question", &preview);
+                    if !self
+                        .pending_questions
+                        .iter()
+                        .any(|queued| queued.request_id == request_id)
+                    {
+                        self.pending_questions.push(PendingQuestion {
+                            session_id,
+                            request_id,
+                            questions,
+                        });
+                    }
                 }
             }
             AgentServiceEvent::Run {
@@ -1597,8 +2326,13 @@ impl ChatScreen {
             }
             AgentRunEvent::TimelineItem(item) => {
                 if self.is_selected(session_id) {
+                    if item.role.as_deref() != Some("user") {
+                        self.awaiting_first_token = false;
+                    }
+                    let summary_item = item.clone();
                     self.apply_timeline_item(session_id, item);
                     self.load_attachment_images(cx);
+                    self.maybe_summarize_tool(session_id, &summary_item, cx);
                 }
             }
             AgentRunEvent::PermissionRequested { request, item } => {
@@ -1615,6 +2349,11 @@ impl ChatScreen {
                             .unwrap_or_default()
                             .into()
                     };
+                    let prompt = request
+                        .prompt
+                        .clone()
+                        .unwrap_or_else(|| format!("Run tool {}?", request.tool_name));
+                    self.notify_desktop("Maple needs permission", &prompt);
                     self.pending_permission = Some(PendingPermission {
                         session_id: session_id.to_string(),
                         run_id: run_id.to_string(),
@@ -1657,7 +2396,14 @@ impl ChatScreen {
                         self.permission_responding = false;
                     }
                 }
-                self.refresh_sidebar_usage(cx);
+                self.awaiting_first_token = false;
+                let title = self
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| session.title.clone())
+                    .unwrap_or_else(|| "Task".to_string());
+                self.notify_desktop("Maple", &format!("“{title}” finished"));
                 self.refresh_sidebar_plan(cx);
             }
             AgentRunEvent::QueueChanged(_) | AgentRunEvent::QueuePromoted { .. } => {
@@ -1675,6 +2421,18 @@ impl EventEmitter<OpenSettingsSection> for ChatScreen {}
 
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Refreshed every frame; activation changes force a redraw, so
+        // this tracks focus closely enough to gate notifications.
+        self.window_active = window.is_window_active();
+        if self.question_focus_pending {
+            self.question_focus_pending = false;
+            if self.pending_questions.first().is_some()
+                && let Some(input) = self.pending_question_input.clone()
+            {
+                let handle = input.read(cx).focus_handle(cx);
+                window.focus(&handle);
+            }
+        }
         let empty = self.timeline.is_empty();
         let collapsed = self.sidebar_collapsed;
         let main = if empty {
@@ -1688,9 +2446,22 @@ impl Render for ChatScreen {
                 .min_w_0()
                 .child(self.render_header(cx))
                 .child(self.render_transcript(window, cx))
-                .when_some(self.pending_question.as_ref(), |container, question| {
+                .when(self.awaiting_first_token && self.is_run_active(), |main| {
+                    // Same gutter as transcript text so the dots line up
+                    main.child(
+                        div()
+                            .w_full()
+                            .max_w(px(900.))
+                            .mx_auto()
+                            .px_6()
+                            .child(render_waiting_indicator()),
+                    )
+                })
+                .when_some(self.pending_questions.first(), |container, question| {
                     let input = self.pending_question_input.clone();
-                    container.child(render_question_card(question, input, cx))
+                    let selected = self.question_selected.clone();
+                    let step = self.question_step;
+                    container.child(render_question_card(question, step, input, &selected, cx))
                 })
                 .when_some(self.pending_permission.as_ref(), |container, permission| {
                     container.child(render_permission_card(
@@ -1715,10 +2486,14 @@ impl Render for ChatScreen {
                                 .flex_col()
                         })
                         .child(self.render_composer(cx))
-                        .children(self.render_menu_panel(cx)),
+                        .children(self.render_menu_panel(cx))
+                        .children(self.render_slash_palette(cx)),
                 )
         };
         div()
+            .key_context("Chat")
+            .on_action(cx.listener(Self::chat_escape))
+            .on_action(cx.listener(Self::copy_selection))
             .flex_1()
             .min_h_0()
             .flex()
@@ -1755,6 +2530,33 @@ impl Render for ChatScreen {
                             .child(main),
                     ),
             )
+            .when_some(self.lightbox.clone(), |root, image| {
+                root.child(
+                    div()
+                        .id("lightbox")
+                        .absolute()
+                        .size_full()
+                        .top_0()
+                        .left_0()
+                        .bg(gpui::rgba(0x000000d9))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .hover(|style| style.cursor_pointer())
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.lightbox = None;
+                            cx.notify();
+                        }))
+                        .child(
+                            gpui::img(gpui::ImageSource::Image(image))
+                                .max_w(gpui::relative(0.9))
+                                .max_h(gpui::relative(0.9))
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(gpui::rgb(theme::BORDER)),
+                        ),
+                )
+            })
     }
 }
 
@@ -1820,7 +2622,12 @@ impl ChatScreen {
                             .w_full()
                             .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
                             .child(self.render_composer(cx))
-                            .children(self.render_menu_panel(cx)),
+                            .children(self.render_menu_panel(cx))
+                            .children(self.render_slash_palette(cx)),
+                    )
+                    .when(
+                        self.awaiting_first_token && self.is_run_active(),
+                        |column| column.child(render_waiting_indicator()),
                     )
                     .when(!expanded, |column| {
                         column.child(
@@ -1861,13 +2668,32 @@ impl ChatScreen {
             )
     }
 
-    /// Group sessions by project root: current root first, then the other
-    /// recent roots, then any root that only appears on a stored task.
-    /// Called when sessions or roots change, not per render.
+    /// Group sessions by project root: pinned roots first (in pin order),
+    /// then the current root, then the other recent roots, then any root
+    /// that only appears on a stored task. Called when sessions, roots, or
+    /// pins change, not per render.
     fn rebuild_project_groups(&mut self) {
+        let known = |root: &str, this: &Self| {
+            this.recent_roots.iter().any(|candidate| candidate == root)
+                || this.project_root.as_deref() == Some(root)
+                || this
+                    .sessions
+                    .iter()
+                    .any(|session| session.project_root == root)
+        };
         let mut roots: Vec<String> = Vec::new();
-        if let Some(root) = self.project_root.clone() {
+        for root in self
+            .pinned_roots
+            .iter()
+            .filter(|root| known(root, self))
+            .cloned()
+        {
             roots.push(root);
+        }
+        if let Some(root) = self.project_root.clone() {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
         }
         for root in self.recent_roots.iter().chain(
             self.sessions
@@ -1899,6 +2725,21 @@ impl ChatScreen {
             .filter(|(_, session)| session.archived)
             .map(|(index, _)| index)
             .collect();
+    }
+
+    /// Pin or unpin a project root. Pinned roots sort to the top of the
+    /// sidebar and persist in the app settings.
+    fn toggle_pin(&mut self, root: &str, cx: &mut Context<Self>) {
+        if self.pinned_roots.iter().any(|pinned| pinned == root) {
+            self.pinned_roots.retain(|pinned| pinned != root);
+        } else {
+            self.pinned_roots.push(root.to_string());
+        }
+        let mut settings = crate::settings::load_settings();
+        settings.pinned_roots = self.pinned_roots.clone();
+        crate::settings::save_settings(&settings);
+        self.rebuild_project_groups();
+        cx.notify();
     }
 
     /// Fold or unfold a project's task list. Unfolding a project that is
@@ -2107,6 +2948,7 @@ impl ChatScreen {
                     .children(self.project_groups.iter().map(|(root, indices)| {
                         let is_current = current_root == Some(root.as_str());
                         let is_collapsed = self.collapsed_roots.contains(root);
+                        let is_pinned = self.pinned_roots.iter().any(|pinned| pinned == root);
                         let name = root_display_name(root);
                         let tasks = indices.iter().filter_map(|index| self.sessions.get(*index));
                         let group_name = SharedString::from(format!("project-row-{root}"));
@@ -2153,6 +2995,43 @@ impl ChatScreen {
                                         theme::TEXT_PRIMARY,
                                     ))
                                     .child(div().flex_1().min_w_0().line_clamp(1).child(name))
+                                    .when(is_pinned, |row| {
+                                        // Pinned: the always-visible pin is
+                                        // the unpin button itself.
+                                        row.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "pin-project-{root}"
+                                                )))
+                                                .size_5()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .hover(|style| style.cursor_pointer())
+                                                .on_click({
+                                                    let root = root.clone();
+                                                    cx.listener(move |this, _event, _window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.toggle_pin(&root, cx);
+                                                    })
+                                                })
+                                                .child(icon("pin", px(13.), theme::ACCENT)),
+                                        )
+                                    })
+                                    .when(!is_pinned, |row| {
+                                        row.child(row_action(
+                                            SharedString::from(format!("pin-project-{root}")),
+                                            &group_name,
+                                            "pin",
+                                            {
+                                                let root = root.clone();
+                                                cx.listener(move |this, _event, _window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.toggle_pin(&root, cx);
+                                                })
+                                            },
+                                        ))
+                                    })
                                     .child(row_action(
                                         SharedString::from(format!("archive-project-{root}")),
                                         &group_name,
@@ -2300,9 +3179,8 @@ impl ChatScreen {
             ))
     }
 
-    /// Sidebar footer: settings gear on the left and the plan usage card on
-    /// the right. The card shows the plan pill, percent used, reset date,
-    /// and a progress bar. Without plan data it shows token totals instead.
+    /// Sidebar footer: just the settings gear. Plan usage stays loaded for
+    /// gating image attachments, but is not shown here.
     fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> Div {
         let gear = div()
             .id("open-settings")
@@ -2323,122 +3201,36 @@ impl ChatScreen {
                 cx.emit(OpenSettings);
             }))
             .child(icon("settings", px(16.), theme::TEXT_SECONDARY));
-
-        let card = div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .px_2p5()
-            .py_2p5()
-            .rounded_lg()
-            .bg(gpui::rgb(theme::BG_SIDEBAR_CARD));
-
-        let card = match &self.sidebar_plan {
-            Some(plan) => {
-                let fraction = f32::from(plan.percent_used) / 100.0;
-                card.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .flex_none()
-                                .child(
-                                    div()
-                                        .px_1p5()
-                                        .py_0p5()
-                                        .rounded_md()
-                                        .bg(gpui::rgb(theme::BG_SIDEBAR_PILL))
-                                        .text_size(px(10.))
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .text_color(gpui::rgb(theme::ACCENT))
-                                        .whitespace_nowrap()
-                                        .child(plan.plan_label.to_uppercase()),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                                        .whitespace_nowrap()
-                                        .child(format!("{}% used", plan.percent_used)),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .text_size(px(10.))
-                                .text_color(gpui::rgb(theme::TEXT_MUTED))
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .child(format!("· Resets {}", plan.resets_label)),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(3.))
-                        .rounded_full()
-                        .bg(gpui::rgb(theme::BORDER))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(gpui::relative(fraction))
-                                .rounded_full()
-                                .bg(gpui::rgb(theme::ACCENT)),
-                        ),
-                )
-            }
-            None => card.child(
-                div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::TEXT_MUTED))
-                    .line_clamp(1)
-                    .child(match &self.sidebar_usage {
-                        Some(row) => format!(
-                            "{} tokens · ${:.2}",
-                            format_usage_tokens(row.total_tokens),
-                            row.cost
-                        ),
-                        None => "Usage unavailable".to_string(),
-                    }),
-            ),
-        };
-
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_3()
-            .child(gear)
-            .child(card)
+        div().flex().items_center().px_3().py_2().child(gear)
     }
 
-    /// Load the compact sidebar usage line from the goose usage ledger.
-    fn refresh_sidebar_usage(&mut self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move {
-                let scope = backend.account_scope(&user_id);
-                Ok(scope.map(|scope| crate::settings::load_usage(&scope).totals))
-            },
-            cx,
-            |this, result: Result<Option<crate::settings::UsageRow>, String>, cx| {
-                if let Ok(totals) = result {
-                    this.sidebar_usage = totals;
-                    cx.notify();
-                }
-            },
-        );
+    /// Raise a desktop notification through `notify-send` when enabled and
+    /// the window is not focused. Sent from a thread: D-Bus calls must not
+    /// block the UI thread.
+    fn notify_desktop(&self, title: &str, body: &str) {
+        if !self.notify_enabled {
+            log::info!("desktop notification skipped (disabled): {title}");
+            return;
+        }
+        if self.window_active {
+            log::info!("desktop notification skipped (window active): {title}");
+            return;
+        }
+        log::info!("desktop notification sent: {title}");
+        let title = title.to_string();
+        let body = body.replace('\n', " ");
+        std::thread::spawn(move || {
+            let result = std::process::Command::new("notify-send")
+                .args(["-a", "Maple", "-t", "8000", "-u", "normal"])
+                .arg(&title)
+                .arg(&body)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if let Err(error) = result {
+                log::warn!("notify-send failed: {error}");
+            }
+        });
     }
 
     /// Load the plan card from the Maple billing API. Failures keep the
@@ -2792,6 +3584,64 @@ impl ChatScreen {
         None
     }
 
+    /// Command palette shown while the composer text starts with "/".
+    /// Lists built-ins plus the project's skill commands, filtered by the
+    /// typed prefix; clicking completes the command in the composer.
+    fn render_slash_palette(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let entries = self.slash_entries(cx);
+        if entries.is_empty() {
+            return None;
+        }
+        let selected = self.slash_selected.filter(|index| *index < entries.len());
+        let chat = cx.entity().downgrade();
+        let mut palette = div()
+            .flex()
+            .flex_col()
+            .mt_1()
+            .py_1()
+            .rounded_lg()
+            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .border_1()
+            .border_color(gpui::rgb(theme::BORDER));
+        for (index, entry) in entries.iter().enumerate() {
+            let is_selected = selected == Some(index);
+            let name = entry.name.clone();
+            let chat = chat.clone();
+            palette = palette.child(
+                div()
+                    .id(gpui::SharedString::from(format!("slash-{}", entry.name)))
+                    .flex()
+                    .items_baseline()
+                    .gap_2()
+                    .px_3()
+                    .when(is_selected, |row| {
+                        row.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED))
+                    })
+                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .on_click(move |_event, _window, cx: &mut gpui::App| {
+                        chat.update(cx, |chat, cx| chat.complete_slash_command(&name, cx))
+                            .ok();
+                    })
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_color(gpui::rgb(theme::ACCENT))
+                            .child(format!("/{}", entry.name)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .line_clamp(1)
+                            .child(entry.description.clone()),
+                    ),
+            );
+        }
+        Some(palette)
+    }
+
     fn render_transcript(
         &mut self,
         _window: &mut Window,
@@ -2818,6 +3668,10 @@ impl ChatScreen {
         self.follow_transcript = false;
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
+        let selection = self.selection.clone();
+        let transcript_focus = self.transcript_focus.clone();
+        let toggled = self.toggled_tools.clone();
+        let summary_requests = self.summary_requests.clone();
         // Only the visible items (plus a small overdraw) are built each
         // frame; the list measures and caches the rest.
         let list = gpui::list(self.list_state.clone(), move |ix, _window, cx| {
@@ -2826,19 +3680,37 @@ impl ChatScreen {
             };
             let chat = chat.read(cx);
             match chat.timeline.get(ix) {
-                Some(item) => render_timeline_item(
-                    item,
-                    tool_details,
-                    &chat.markdown_cache,
-                    &chat.attachment_images,
-                )
-                .into_any_element(),
+                Some(item) => {
+                    let render_ctx = RenderCtx {
+                        selection: selection.clone(),
+                        base_ordinal: Some(chat.markdown_cache.ordinal_for(&item.id)),
+                        focus: transcript_focus.clone(),
+                        id_seed: item.id.clone(),
+                    };
+                    let expanded = tool_details != toggled.contains(&item.id);
+                    render_timeline_item(
+                        item,
+                        expanded,
+                        &chat.markdown_cache,
+                        &chat.attachment_images,
+                        &entity,
+                        ix,
+                        &render_ctx,
+                        &chat.tool_summaries,
+                        &summary_requests,
+                    )
+                    .into_any_element()
+                }
                 None => div().into_any_element(),
             }
         })
         .size_full();
         div()
             .id("transcript")
+            .key_context("Transcript")
+            .when_some(self.transcript_focus.clone(), |div, focus| {
+                div.track_focus(&focus)
+            })
             .relative()
             .flex_1()
             .flex()
@@ -3210,8 +4082,37 @@ impl ChatScreen {
             )
     }
 }
+/// One row of the slash command palette.
+struct SlashEntry {
+    name: String,
+    description: String,
+}
 
-/// Borderless toolbar chip: optional leading icon, label, optional chevron.
+/// Built-in and skill commands matching a "/" token, capped for the popup.
+fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Vec<SlashEntry> {
+    let query = token.to_lowercase();
+    [
+        ("compact", "Summarize the conversation to free context"),
+        ("new", "Start a new task"),
+        ("pin", "Pin or unpin this project"),
+        ("web", "Toggle web tools for this task"),
+        ("model", "Pick the model; add a name to filter"),
+        ("help", "Show the available commands"),
+    ]
+    .into_iter()
+    .map(|(name, description)| SlashEntry {
+        name: name.to_string(),
+        description: description.to_string(),
+    })
+    .chain(skills.iter().map(|command| SlashEntry {
+        name: command.name.clone(),
+        description: command.description.clone(),
+    }))
+    .filter(|entry| entry.name.to_lowercase().starts_with(&query))
+    .take(8)
+    .collect()
+}
+
 fn chip(
     id: &'static str,
     leading: Option<&'static str>,
@@ -3383,25 +4284,20 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Compact token count for the sidebar usage line (k/M).
-fn format_usage_tokens(tokens: i64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
-}
-
 fn render_timeline_item(
     item: &AgentTimelineItem,
-    tool_details: bool,
+    expanded: bool,
     markdown_cache: &MarkdownCache,
     attachment_images: &HashMap<String, Arc<gpui::Image>>,
+    chat: &gpui::WeakEntity<ChatScreen>,
+    ix: usize,
+    ctx: &RenderCtx,
+    tool_summaries: &HashMap<String, String>,
+    summary_requested: &HashSet<String>,
 ) -> Div {
+    let summary_requested = summary_requested.contains(&item.id);
     let item = match item.item_type.as_str() {
-        "message" => render_message(item, markdown_cache, attachment_images),
+        "message" => render_message(item, markdown_cache, attachment_images, chat, ctx),
         "thinking" | "reasoning" => render_thinking(item),
         "tool" | "toolCall" => {
             // Dispatch on payload shape; runtime titles are humanized
@@ -3411,9 +4307,25 @@ fn render_timeline_item(
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
-                render_tool_with_diff(item, tool_details, markdown_cache)
+                render_tool_with_diff(
+                    item,
+                    expanded,
+                    markdown_cache,
+                    chat,
+                    ix,
+                    tool_summaries,
+                    summary_requested,
+                )
             } else {
-                render_tool(item, tool_details, markdown_cache)
+                render_tool(
+                    item,
+                    expanded,
+                    markdown_cache,
+                    chat,
+                    ix,
+                    tool_summaries,
+                    summary_requested,
+                )
             }
         }
         "error" => render_error(item),
@@ -3452,11 +4364,12 @@ fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat> {
         None
     }
 }
-
 fn render_message(
     item: &AgentTimelineItem,
     markdown_cache: &MarkdownCache,
     attachment_images: &HashMap<String, Arc<gpui::Image>>,
+    chat: &gpui::WeakEntity<ChatScreen>,
+    ctx: &RenderCtx,
 ) -> Div {
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
@@ -3466,6 +4379,13 @@ fn render_message(
         return div();
     }
     if is_user {
+        let user_ctx = RenderCtx {
+            selection: ctx.selection.clone(),
+            base_ordinal: ctx.base_ordinal.map(|base| base + 2048),
+            focus: ctx.focus.clone(),
+            id_seed: format!("{}#user", ctx.id_seed),
+        };
+        let ordinal = user_ctx.base_ordinal;
         div().flex().justify_end().child(
             div()
                 .max_w(gpui::relative(0.75))
@@ -3485,18 +4405,43 @@ fn render_message(
                             .mb_1()
                             .children(attachments.map(|(id, name)| {
                                 match attachment_images.get(id) {
-                                    // The picture itself, scaled to fit; gpui keeps
-                                    // the aspect ratio from the decoded size.
-                                    Some(image) => div().child(
-                                        gpui::img(gpui::ImageSource::Image(Arc::clone(image)))
-                                            .max_w(px(320.))
-                                            .max_h(px(240.))
-                                            .rounded_md()
-                                            .overflow_hidden()
-                                            .object_fit(gpui::ObjectFit::Contain)
-                                            .border_1()
-                                            .border_color(gpui::rgb(theme::BORDER)),
-                                    ),
+                                    // The picture itself, scaled to fit; click
+                                    // opens it full size. gpui keeps the aspect
+                                    // ratio from the decoded size.
+                                    Some(image) => {
+                                        let click_image = Arc::clone(image);
+                                        let chat = chat.clone();
+                                        div().child(
+                                            div()
+                                                .id(gpui::SharedString::from(format!(
+                                                    "attachment-{id}"
+                                                )))
+                                                .hover(|style| style.cursor_pointer())
+                                                .on_click(
+                                                    move |_event, _window, cx: &mut gpui::App| {
+                                                        chat.update(cx, |chat, cx| {
+                                                            chat.open_lightbox(
+                                                                Arc::clone(&click_image),
+                                                                cx,
+                                                            );
+                                                        })
+                                                        .ok();
+                                                    },
+                                                )
+                                                .child(
+                                                    gpui::img(gpui::ImageSource::Image(
+                                                        Arc::clone(&image),
+                                                    ))
+                                                    .max_w(px(320.))
+                                                    .max_h(px(240.))
+                                                    .rounded_md()
+                                                    .overflow_hidden()
+                                                    .object_fit(gpui::ObjectFit::Contain)
+                                                    .border_1()
+                                                    .border_color(gpui::rgb(theme::BORDER)),
+                                                ),
+                                        )
+                                    }
                                     // Name chip until the bytes arrive (or if they
                                     // never do, such as a deleted attachment).
                                     None => div()
@@ -3516,7 +4461,11 @@ fn render_message(
                     )
                 })
                 .when(!text.trim().is_empty(), |bubble| {
-                    bubble.child(text.to_string())
+                    bubble.child(rich_text::plain_paragraph(
+                        SharedString::from(text.to_string()),
+                        ordinal,
+                        &user_ctx,
+                    ))
                 }),
         )
     } else {
@@ -3524,11 +4473,14 @@ fn render_message(
             .max_w_full()
             .pr_2()
             .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-            .child(markdown::render(&markdown_cache.get(&item.id, text)))
+            .child(markdown::render_with(
+                &markdown_cache.get(&item.id, text),
+                ctx,
+            ))
     }
 }
 fn render_thinking(item: &AgentTimelineItem) -> Div {
-    let text = item.text.clone().unwrap_or_default();
+    let text = maple_display_text(&item.text.clone().unwrap_or_default()).into_owned();
     if text.trim().is_empty() {
         div().child(
             div()
@@ -3545,6 +4497,19 @@ fn render_thinking(item: &AgentTimelineItem) -> Div {
             .text_sm()
             .text_color(gpui::rgb(theme::TEXT_SECONDARY))
             .child(text)
+    }
+}
+
+/// Goose's runtime strings rebranded for Maple users, who never see goose.
+fn maple_display_text(text: &str) -> std::borrow::Cow<'_, str> {
+    match text.trim() {
+        "goose is compacting the conversation..." => {
+            std::borrow::Cow::Borrowed("Compacting the conversation…")
+        }
+        "Context limit reached. Compacting to continue conversation..." => {
+            std::borrow::Cow::Borrowed("Context limit reached — compacting to continue…")
+        }
+        _ => std::borrow::Cow::Borrowed(text),
     }
 }
 
@@ -3635,8 +4600,20 @@ fn render_tool_with_diff(
     item: &AgentTimelineItem,
     details: bool,
     markdown_cache: &MarkdownCache,
+    chat: &gpui::WeakEntity<ChatScreen>,
+    ix: usize,
+    tool_summaries: &HashMap<String, String>,
+    summary_requested: bool,
 ) -> Div {
-    let card = render_tool(item, details, markdown_cache);
+    let card = render_tool(
+        item,
+        details,
+        markdown_cache,
+        chat,
+        ix,
+        tool_summaries,
+        summary_requested,
+    );
     if !details {
         return card;
     }
@@ -3707,13 +4684,36 @@ fn render_tool_with_diff(
                 ),
         );
     }
-    card.child(diff)
+    // The diff is content: swallow clicks so selecting it does not toggle.
+    card.child(
+        div()
+            .id(gpui::SharedString::from(format!("tool-diff-{}", item.id)))
+            .on_click(
+                |_event: &gpui::ClickEvent, _window: &mut Window, cx: &mut gpui::App| {
+                    cx.stop_propagation();
+                },
+            )
+            .child(diff),
+    )
 }
 
-fn render_tool(item: &AgentTimelineItem, details: bool, markdown_cache: &MarkdownCache) -> Div {
+fn render_tool(
+    item: &AgentTimelineItem,
+    details: bool,
+    markdown_cache: &MarkdownCache,
+    chat: &gpui::WeakEntity<ChatScreen>,
+    ix: usize,
+    tool_summaries: &HashMap<String, String>,
+    summary_requested: bool,
+) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
     let title = item.title.clone().unwrap_or_else(|| item.item_type.clone());
+    let item_id = item.id.clone();
+    let chat_header = chat.clone();
+    let summary = tool_summaries.get(&item.id).cloned();
+    let has_summary = summary.is_some();
     let mut card = div()
+        .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
         .flex()
         .flex_col()
         .gap_1()
@@ -3723,6 +4723,14 @@ fn render_tool(item: &AgentTimelineItem, details: bool, markdown_cache: &Markdow
         .bg(gpui::rgb(theme::BG_TOOL_CARD))
         .border_1()
         .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .hover(|style| style.cursor_pointer())
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            chat_header
+                .update(cx, |chat, cx| {
+                    chat.toggle_tool(&item_id, ix, cx);
+                })
+                .ok();
+        })
         .child(
             div()
                 .flex()
@@ -3740,16 +4748,68 @@ fn render_tool(item: &AgentTimelineItem, details: bool, markdown_cache: &Markdow
                         .text_xs()
                         .text_color(gpui::rgb(status_color))
                         .child(label),
-                ),
+                )
+                .child(div().flex_1())
+                .child(icon(
+                    if details {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    },
+                    px(14.),
+                    theme::TEXT_MUTED,
+                )),
         );
-    if !details {
-        // Compact: tool name and status only, no payload.
-        return card;
+    // The payload region swallows clicks so selecting output text or
+    // opening links does not collapse the card.
+    let mut payload = div()
+        .id(gpui::SharedString::from(format!(
+            "tool-payload-{}",
+            item.id
+        )))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .on_click(
+            |_event: &gpui::ClickEvent, _window: &mut Window, cx: &mut gpui::App| {
+                cx.stop_propagation();
+            },
+        );
+    if let Some(summary) = summary {
+        payload = payload.child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .line_clamp(2)
+                .child(summary),
+        );
     }
-    // Input stays monospace JSON; the output renders as markdown when it
-    // carries readable text, falling back to the raw JSON line.
+    if !details {
+        // Compact: the model summary when present, otherwise a one-line
+        // raw output preview.
+        if !has_summary && summary_requested {
+            // A summary is on the way; do not flash the raw call first.
+            payload = payload.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .child("Summarizing…"),
+            );
+        } else if !has_summary && let Some(preview) = tool_output_preview(item) {
+            payload = payload.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .line_clamp(1)
+                    .child(preview),
+            );
+        }
+        return div().child(card.child(payload));
+    }
+    // Input stays monospace JSON; the model summary replaces the raw
+    // output once it arrives.
     if let Some(input) = tool_input_line(item) {
-        card = card.child(
+        payload = payload.child(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::TEXT_MUTED))
@@ -3759,8 +4819,8 @@ fn render_tool(item: &AgentTimelineItem, details: bool, markdown_cache: &Markdow
                 .child(input),
         );
     }
-    if let Some(output) = tool_output_markdown(item) {
-        card = card.child(
+    if !has_summary && let Some(output) = tool_output_markdown(item) {
+        payload = payload.child(
             div()
                 .mt_1()
                 .w_full()
@@ -3771,7 +4831,14 @@ fn render_tool(item: &AgentTimelineItem, details: bool, markdown_cache: &Markdow
                 )),
         );
     }
-    card
+    div().child(card.child(payload))
+}
+
+/// One-line plain preview of a tool output for collapsed cards.
+fn tool_output_preview(item: &AgentTimelineItem) -> Option<String> {
+    let text = tool_output_markdown(item)?;
+    let first = text.lines().find(|line| !line.trim().is_empty())?;
+    (!first.trim().is_empty()).then(|| first.trim().to_string())
 }
 
 fn tool_input_line(item: &AgentTimelineItem) -> Option<String> {
@@ -3890,7 +4957,9 @@ fn render_system(item: &AgentTimelineItem) -> Div {
 
 fn render_question_card(
     question: &crate::backend::PendingQuestion,
+    step: usize,
     input: Option<Entity<TextInput>>,
+    selected: &HashMap<usize, usize>,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
     let mut card = div()
@@ -3909,13 +4978,110 @@ fn render_question_card(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::TEXT_PRIMARY))
                 .child("Question from Maple"),
-        )
-        .child(
+        );
+    let step = step.min(question.questions.len().saturating_sub(1));
+    let has_more = step + 1 < question.questions.len();
+    for (question_index, entry) in question
+        .questions
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i == step)
+    {
+        let mut block = div().flex().flex_col().gap_1();
+        if question.questions.len() > 1 {
+            block = block.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .child(format!(
+                        "Question {} of {}",
+                        step + 1,
+                        question.questions.len()
+                    )),
+            );
+        }
+        block = block.child(
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .child(entry.header.clone()),
+        );
+        block = block.child(
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                .child(question.question.clone()),
+                .child(entry.question.clone()),
         );
+        for (option_index, option) in entry.options.iter().enumerate() {
+            let is_picked = selected.get(&question_index) == Some(&option_index);
+            let marker = div()
+                .size_3()
+                .rounded_full()
+                .border_1()
+                .border_color(gpui::rgb(if is_picked {
+                    theme::ACCENT
+                } else {
+                    theme::BORDER
+                }))
+                .when(is_picked, |dot| dot.bg(gpui::rgb(theme::ACCENT)));
+            // flex_1 is load-bearing: without it the row squeezes this
+            // block to a character wide and the label wraps vertically.
+            let label_element = if option.description.is_empty() {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .child(option.label.clone())
+            } else {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .child(option.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .child(option.description.clone()),
+                    )
+            };
+            block = block.child(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "question-option-{question_index}-{option_index}"
+                    )))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .cursor_pointer()
+                    })
+                    .on_click({
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.select_question_option(question_index, option_index, cx);
+                        })
+                    })
+                    .child(marker)
+                    .child(label_element),
+            );
+        }
+        card = card.child(block);
+    }
+    // "Other (type your own)": one shared free-form answer per card; it
+    // stands in for any question left without a picked option.
     if let Some(input) = input {
         card = card.child(
             div()
@@ -3931,6 +5097,9 @@ fn render_question_card(
                         .bg(gpui::rgb(theme::BG_INPUT))
                         .border_1()
                         .border_color(gpui::rgb(theme::BORDER))
+                        // The input inherits ambient color; without this the
+                        // typed answer renders near-black on the dark field.
+                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
                         .child(input),
                 )
                 .child(
@@ -3946,11 +5115,63 @@ fn render_question_card(
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.submit_question(cx);
                         }))
-                        .child("Answer"),
+                        .child(if has_more { "Next" } else { "Answer" }),
                 ),
         );
     }
-    card
+    card.child(
+        div()
+            .id("question-skip")
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_xs()
+            .text_color(gpui::rgb(theme::TEXT_MUTED))
+            .hover(|style| {
+                style
+                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .cursor_pointer()
+            })
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.skip_question(cx);
+            }))
+            .child("Skip (Esc)"),
+    )
+}
+
+/// Pulsing dots shown between send and the first streamed content.
+fn render_waiting_indicator() -> Div {
+    let dots: [gpui::Pixels; 3] = [px(7.), px(7.), px(7.)];
+    let mut row = div().flex().items_center().gap_1p5().px_4().py_2();
+    for (index, size) in dots.into_iter().enumerate() {
+        let duration = match index {
+            0 => std::time::Duration::from_millis(900),
+            1 => std::time::Duration::from_millis(1200),
+            _ => std::time::Duration::from_millis(1500),
+        };
+        let dot = div()
+            .size(size)
+            .rounded_full()
+            .bg(gpui::rgb(theme::TEXT_SECONDARY))
+            .with_animation(
+                gpui::ElementId::Name(format!("waiting-dot-{index}").into()),
+                gpui::Animation::new(duration).repeat(),
+                |el, delta| {
+                    let wave = (delta * std::f32::consts::PI).sin();
+                    el.opacity(0.2 + 0.7 * wave)
+                },
+            );
+        row = row.child(dot);
+    }
+    row.child(
+        div()
+            .text_sm()
+            .text_color(gpui::rgb(theme::TEXT_MUTED))
+            .child("Maple is thinking"),
+    )
 }
 
 fn render_permission_card(
@@ -4107,6 +5328,13 @@ mod state_tests {
         }
     }
 
+    fn user_item(id: &str, text: &str) -> AgentTimelineItem {
+        AgentTimelineItem {
+            role: Some("user".to_string()),
+            ..item(id, "message", Some(text))
+        }
+    }
+
     /// Serializes constructions that read the settings file: the
     /// persisted-defaults test swaps XDG_CONFIG_HOME process-wide, so no
     /// other test may read settings while the swap is live.
@@ -4248,21 +5476,331 @@ mod state_tests {
         });
     }
 
+    fn one_question(id: &str, text: &str) -> AgentServiceEvent {
+        AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: format!("req-{id}"),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                id: id.to_string(),
+                header: "Question".to_string(),
+                question: text.to_string(),
+                options: Vec::new(),
+            }],
+        }
+    }
+
     #[gpui::test]
     fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
         let screen = screen(cx);
-        let event = AgentServiceEvent::Question {
-            session_id: "s1".to_string(),
-            request_id: "q1".to_string(),
-            question: "Favorite color?".to_string(),
-        };
         screen.update(cx, |this, cx| {
-            assert!(this.pending_question.is_none());
-            this.handle_service_event(event, cx);
-            let question = this.pending_question.as_ref().expect("question set");
-            assert_eq!(question.request_id, "q1");
+            assert!(this.pending_questions.is_empty());
+            this.handle_service_event(one_question("color", "Favorite color?"), cx);
+            let question = this.pending_questions.first().expect("question set");
+            assert_eq!(question.questions.len(), 1);
+            assert_eq!(question.questions[0].id, "color");
             assert!(this.pending_question_input.is_some());
         });
+    }
+
+    #[gpui::test]
+    fn test_question_options_select_and_compose(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let event = AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: "q2".to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                id: "pick".to_string(),
+                header: "Pick".to_string(),
+                question: "Pick one".to_string(),
+                options: vec![
+                    maple_agent::agent::AgentQuestionOption {
+                        label: "A".to_string(),
+                        description: "First".to_string(),
+                    },
+                    maple_agent::agent::AgentQuestionOption {
+                        label: "B".to_string(),
+                        description: "Second".to_string(),
+                    },
+                ],
+            }],
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(event, cx);
+            // Repicking replaces the selection (single-select).
+            this.select_question_option(0, 1, cx);
+            this.select_question_option(0, 0, cx);
+            let answer = this.composed_question_answer(cx);
+            let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            assert_eq!(parsed["answers"]["pick"]["answers"][0], "A");
+        });
+    }
+
+    #[gpui::test]
+    fn test_skip_question_clears_card(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let event = one_question("skip", "Skip me");
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(event, cx);
+            assert!(this.pending_questions.first().is_some());
+            this.skip_question(cx);
+            assert!(this.pending_questions.is_empty());
+            assert!(this.question_selected.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_first_agent_item_clears_waiting_state(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.awaiting_first_token = true;
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::TimelineItem(user_item("u1", "hi")),
+                cx,
+            );
+            // The user's own echo does not stop the waiting indicator.
+            assert!(this.awaiting_first_token);
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::TimelineItem(item("t1", "thinking", None)),
+                cx,
+            );
+            assert!(!this.awaiting_first_token);
+        });
+    }
+
+    #[gpui::test]
+    fn test_send_closes_chip_menus(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            this.booting = false;
+            this.models_menu_open = true;
+            this.mode_menu_open = true;
+            this.mcp_menu_open = true;
+            this.root_menu_open = true;
+            this.send_text("hello".to_string(), cx);
+            assert!(!this.models_menu_open);
+            assert!(!this.mode_menu_open);
+            assert!(!this.mcp_menu_open);
+            assert!(!this.root_menu_open);
+        });
+    }
+
+    #[gpui::test]
+    fn test_multi_question_batch_steps_through(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let event = AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: "batch".to_string(),
+            questions: vec![
+                maple_agent::agent::AgentQuestion {
+                    id: "first".to_string(),
+                    header: "One".to_string(),
+                    question: "First?".to_string(),
+                    options: vec![maple_agent::agent::AgentQuestionOption {
+                        label: "Yes".to_string(),
+                        description: String::new(),
+                    }],
+                },
+                maple_agent::agent::AgentQuestion {
+                    id: "second".to_string(),
+                    header: "Two".to_string(),
+                    question: "Second?".to_string(),
+                    options: vec![maple_agent::agent::AgentQuestionOption {
+                        label: "No".to_string(),
+                        description: String::new(),
+                    }],
+                },
+            ],
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(event, cx);
+            assert_eq!(this.question_step, 0);
+            // Answer step one: the batch stays on the card, advanced.
+            this.select_question_option(0, 0, cx);
+            this.submit_question(cx);
+            assert_eq!(this.pending_questions.len(), 1);
+            assert_eq!(this.question_step, 1);
+            // Answer step two: the queue pops and both answers are recorded.
+            this.select_question_option(1, 0, cx);
+            this.submit_question(cx);
+            assert!(this.pending_questions.is_empty());
+            assert_eq!(this.question_step, 0);
+            assert!(this.question_step_answers.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_parallel_questions_queue_and_advance(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let question = |id: &str| AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: id.to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                id: id.to_string(),
+                header: "Question".to_string(),
+                question: format!("Question {id}"),
+                options: Vec::new(),
+            }],
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(question("q1"), cx);
+            this.handle_service_event(question("q2"), cx);
+            this.handle_service_event(question("q3"), cx);
+            // Duplicate delivery must not double-queue.
+            this.handle_service_event(question("q2"), cx);
+            assert_eq!(this.pending_questions.len(), 3);
+            assert_eq!(this.pending_questions[0].request_id, "q1");
+            // Answering pops the head and leaves the rest queued.
+            this.answer_question("first".to_string(), cx);
+            assert_eq!(this.pending_questions.len(), 2);
+            assert_eq!(this.pending_questions[0].request_id, "q2");
+            // Skipping pops the head too.
+            this.skip_question(cx);
+            assert_eq!(this.pending_questions.len(), 1);
+            assert_eq!(this.pending_questions[0].request_id, "q3");
+            // Every surfaced question must have an answer input; a card
+            // without one is unanswerable.
+            assert!(this.pending_question_input.is_some());
+            this.answer_question("third".to_string(), cx);
+            assert!(this.pending_questions.is_empty());
+            assert!(this.pending_question_input.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn test_send_blocked_while_question_pending(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.pending_questions = vec![crate::backend::PendingQuestion {
+                session_id: "s1".to_string(),
+                request_id: "q9".to_string(),
+                questions: vec![maple_agent::agent::AgentQuestion {
+                    id: "paused".to_string(),
+                    header: "Question".to_string(),
+                    question: "Paused?".to_string(),
+                    options: Vec::new(),
+                }],
+            }];
+            this.send_text("a stray reply".to_string(), cx);
+            assert_eq!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Answer the question above first")
+            );
+            assert!(this.question_focus_pending);
+        });
+    }
+
+    #[test]
+    fn test_slash_entries_filter_and_cap() {
+        let skills = vec![AgentSlashCommand {
+            name: "deploy".to_string(),
+            description: "Deploy".to_string(),
+            input_hint: None,
+        }];
+        let entries = slash_entries_for("de", &skills);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "deploy");
+        assert!(slash_entries_for("zzz", &skills).is_empty());
+        assert_eq!(slash_entries_for("", &skills).len(), 7);
+    }
+
+    #[gpui::test]
+    fn test_builtin_commands_execute(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.web_enabled = true;
+            assert!(this.try_command("s1", "/web", cx));
+            assert!(!this.web_enabled);
+            assert!(this.try_command("s1", "/model", cx));
+            assert!(this.models_menu_open);
+            // Unknown commands fall through to a normal send.
+            assert!(!this.try_command("s1", "/definitely-not-a-command", cx));
+            // Paths that merely start with a slash are not commands.
+            assert!(!this.try_command("s1", "/etc/hosts is a path", cx));
+        });
+    }
+
+    #[gpui::test]
+    fn test_skill_command_resolves_via_backend(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.slash_commands = vec![AgentSlashCommand {
+                name: "deploy".to_string(),
+                description: "Deploy the app".to_string(),
+                input_hint: None,
+            }];
+            assert!(this.try_command("s1", "/deploy staging", cx));
+            assert_eq!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Loading skill…")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_tool_summary_gating(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.summaries_enabled = true;
+            let long_output = "x".repeat(600);
+            let mut tool = item("tool-1", "tool", None);
+            tool.title = Some("shell".to_string());
+            tool.input = Some(serde_json::json!({"command": "ls"}));
+            // Running tools are not summarized.
+            tool.status = Some("running".to_string());
+            tool.output = Some(serde_json::json!({"stdout": long_output.clone()}));
+            this.maybe_summarize_tool("s1", &tool, cx);
+            assert!(this.summary_requests.is_empty());
+            // Completed tools with long output are queued once.
+            tool.status = Some("completed".to_string());
+            this.maybe_summarize_tool("s1", &tool, cx);
+            assert!(this.summary_requests.contains("tool-1"));
+            assert_eq!(this.pending_summaries, 1);
+            this.maybe_summarize_tool("s1", &tool, cx);
+            assert_eq!(this.pending_summaries, 1);
+            // Short outputs never queue.
+            let mut short = item("tool-2", "tool", None);
+            short.status = Some("completed".to_string());
+            short.input = Some(serde_json::json!({"q": 1}));
+            short.output = Some(serde_json::json!({"stdout": "ok"}));
+            this.maybe_summarize_tool("s1", &short, cx);
+            assert!(!this.summary_requests.contains("tool-2"));
+        });
+    }
+    #[test]
+    fn test_maple_display_text_rebrands_compaction() {
+        assert_eq!(
+            maple_display_text("goose is compacting the conversation..."),
+            "Compacting the conversation…"
+        );
+        assert_eq!(
+            maple_display_text("Context limit reached. Compacting to continue conversation..."),
+            "Context limit reached — compacting to continue…"
+        );
+        assert_eq!(maple_display_text("Anything else"), "Anything else");
+    }
+
+    #[test]
+    fn test_pinned_roots_sort_first() {
+        let _guard = SETTINGS_LOCK.lock();
+        let mut this = ChatScreen::new_inner(
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
+                    .expect("backend"),
+            ),
+            "user".to_string(),
+        );
+        this.recent_roots = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+        this.pinned_roots = vec!["/c".to_string(), "/a".to_string()];
+        this.rebuild_project_groups();
+        let roots: Vec<&String> = this.project_groups.iter().map(|(root, _)| root).collect();
+        assert_eq!(roots, vec!["/c", "/a", "/b"]);
     }
 
     #[gpui::test]

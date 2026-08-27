@@ -83,7 +83,7 @@ const MAPLE_DEVELOPER_TOOLS: [&str; 10] = [
     "write",
     "read_image",
     "todo_write",
-    "ask_user",
+    "request_user_input",
     "web_search",
     "open_url",
     EXTERNAL_MCP_TOOL_NAME,
@@ -102,7 +102,7 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   always_allow:
   - load_skill
   - todo_write
-  - ask_user
+  - request_user_input
   ask_before:
   - read
   - shell
@@ -124,6 +124,13 @@ const SESSION_TITLE_MODEL: &str = "llama3-3-70b";
 const SESSION_TITLE_TEMPERATURE: f32 = 0.7;
 const SESSION_TITLE_MAX_TOKENS: i32 = 15;
 const SESSION_TITLE_MAX_INPUT_CHARS: usize = 500;
+/// Tool-call summaries ride the same cheap model as session titles.
+const TOOL_SUMMARY_MODEL: &str = "llama3-3-70b";
+const TOOL_SUMMARY_TEMPERATURE: f32 = 0.2;
+const TOOL_SUMMARY_MAX_TOKENS: i32 = 48;
+const TOOL_SUMMARY_MAX_INPUT_CHARS: usize = 4000;
+const TOOL_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const TOOL_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a coding agent's activity feed. Reply with ONE short line of at most 12 words that says what the call did. No prefix, no quotes, no explanations.";
 const SESSION_TITLE_SYSTEM_PROMPT: &str = "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations.";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
@@ -319,6 +326,33 @@ pub(crate) enum AgentTransientMcpTransport {
 
 fn default_mcp_timeout_seconds() -> u64 {
     DEFAULT_MCP_TIMEOUT_SECONDS
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSlashCommand {
+    pub name: String,
+    pub description: String,
+    pub input_hint: Option<String>,
+}
+
+/// One answer choice, mirroring codex's request_user_input option.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// One question in a request_user_input call: one to three related
+/// questions ride a single call and are answered together. The client adds
+/// a free-form "Other" answer next to these options.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<AgentQuestionOption>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -933,11 +967,12 @@ pub enum AgentRunEvent {
 #[derive(Debug, Clone)]
 pub enum AgentServiceEvent {
     RuntimeStatus(AgentRuntimeStatus),
-    /// The agent asked the user a free-text question (ask_user tool).
+    /// The agent asked the user one or more related questions (ask_user
+    /// tool); every question in the batch is answered in one card.
     Question {
         session_id: String,
         request_id: String,
-        question: String,
+        questions: Vec<AgentQuestion>,
     },
     SessionCreated(AgentSessionSummary),
     SessionUpdated {
@@ -1465,7 +1500,6 @@ impl MapleAgentHostResources {
 #[derive(Clone)]
 pub struct MapleAgentService {
     /// Routes ask_user questions to the UI and answers back.
-    questions: questions::QuestionBroker,
     host: MapleAgentHostResources,
     inner: Arc<Mutex<Option<AgentRuntime>>>,
     runtime_lifecycle: Arc<Mutex<()>>,
@@ -1552,7 +1586,6 @@ impl MapleAgentService {
     pub fn new(host: MapleAgentHostResources) -> Self {
         questions::init_global(host.events.clone());
         Self {
-            questions: questions::QuestionBroker::new(host.events.clone()),
             host,
             inner: Arc::new(Mutex::new(None)),
             runtime_lifecycle: Arc::new(Mutex::new(())),
@@ -1586,9 +1619,45 @@ impl MapleAgentService {
 
     /// Deliver the user's answer to a pending ask_user question.
     pub async fn answer_question(&self, request_id: &str, answer: String) -> bool {
-        self.questions.answer(request_id, answer).await
+        // The ask_user tool registers its pending question in the
+        // process-global broker (`questions::global()`), not this struct's
+        // separate instance; answers must reach that same map or the run
+        // blocks forever waiting for a reply that never arrives.
+        match questions::global() {
+            Some(broker) => broker.answer(request_id, answer).await,
+            None => false,
+        }
     }
 
+    /// Slash commands available in `working_dir`: the installed skills,
+    /// normalized the way goose's slash-command layer does.
+    pub fn list_slash_commands(&self, working_dir: Option<&str>) -> Vec<AgentSlashCommand> {
+        goose::slash_commands::skill_slash_command::list_commands(
+            working_dir.map(std::path::Path::new),
+        )
+        .into_iter()
+        .map(|entry| AgentSlashCommand {
+            name: entry.name,
+            description: entry.description,
+            input_hint: entry.input_hint,
+        })
+        .collect()
+    }
+
+    /// Expand `/command args` from the installed skills into the prompt that
+    /// activates the skill. `None` when no skill matches the command.
+    pub fn resolve_slash_command(
+        &self,
+        working_dir: Option<&str>,
+        command: &str,
+        args: &str,
+    ) -> Result<Option<String>, String> {
+        goose::slash_commands::skill_slash_command::resolve_command(
+            command,
+            args,
+            working_dir.map(std::path::Path::new),
+        )
+    }
     /// Stop admitting mutations before host teardown begins. Existing work and
     /// cleanup operations remain able to drain through their dedicated paths.
     pub fn begin_draining(&self) {
@@ -1639,6 +1708,89 @@ impl AgentRuntimeHandle {
         Ok(())
     }
 
+    /// Summarize one completed tool call with the cheap title model
+    /// (llama3-3-70b over the Maple provider). Used by the transcript's
+    /// collapsed tool cards; `None` when the model returned nothing usable.
+    pub async fn summarize_tool_call(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Option<&serde_json::Value>,
+        output_text: &str,
+    ) -> Result<Option<String>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let agent_manager = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, &self.account_scope)?;
+            Arc::clone(&current.agent_manager)
+        };
+        let agent = agent_manager
+            .get_or_create_agent(session_id.to_string())
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        let provider = agent
+            .provider()
+            .await
+            .map_err(|error| format!("Failed to resolve Agent summary provider: {error}"))?;
+        let mut model_config =
+            goose::model_config::model_config_from_user_config_with_session_settings(
+                provider.get_name(),
+                TOOL_SUMMARY_MODEL,
+                None,
+                None,
+                None,
+            )
+            .map_err(|error| format!("Failed to configure Agent summary model: {error}"))?;
+        model_config.request_params = None;
+        model_config.reasoning = Some(false);
+        let model_config = model_config
+            .with_temperature(Some(TOOL_SUMMARY_TEMPERATURE))
+            .with_max_tokens(Some(TOOL_SUMMARY_MAX_TOKENS));
+
+        let truncate = |text: &str| -> String {
+            text.chars()
+                .take(TOOL_SUMMARY_MAX_INPUT_CHARS)
+                .collect::<String>()
+        };
+        let input_line = match input {
+            Some(value) if !value.is_null() => {
+                truncate(&serde_json::to_string(value).unwrap_or_default())
+            }
+            _ => String::new(),
+        };
+        let prompt = format!(
+            "Tool: {tool_name}\nInput: {input_line}\nOutput: {}",
+            truncate(output_text)
+        );
+        let messages = [Message::user().with_text(prompt)];
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let generation = provider::with_run_cancellation(
+            cancel_token.clone(),
+            goose::session_context::with_session_id(
+                Some(session_id.to_string()),
+                provider.complete(&model_config, TOOL_SUMMARY_SYSTEM_PROMPT, &messages, &[]),
+            ),
+        );
+        tokio::pin!(generation);
+        let completion = tokio::select! {
+            result = &mut generation => result,
+            _ = tokio::time::sleep(TOOL_SUMMARY_TIMEOUT) => {
+                cancel_token.cancel();
+                // Keep the provider's credential-reconciliation task from
+                // outliving the timeout, like title generation does.
+                let _ = generation.await;
+                return Err("Tool summary timed out".to_string());
+            }
+        }
+        .map_err(|error| format!("Failed to summarize tool call: {error}"))?;
+        Ok(normalize_tool_summary(&completion.0.as_concat_text()))
+    }
+
     /// Deliver the user's answer to an ask_user question from this
     /// account's runtime. False when nothing was pending.
     pub async fn answer_question_via_handle(
@@ -1646,7 +1798,7 @@ impl AgentRuntimeHandle {
         request_id: &str,
         answer: String,
     ) -> Result<bool, String> {
-        Ok(self.service.questions.answer(request_id, answer).await)
+        Ok(self.service.answer_question(request_id, answer).await)
     }
 
     pub async fn verify_generation(&self) -> Result<(), String> {
@@ -13702,7 +13854,7 @@ mod tests {
         for tool in MAPLE_DEVELOPER_TOOLS {
             // todo_write only records plan state for the UI; it has no
             // side effects and is always allowed.
-            let expected = if tool == "todo_write" || tool == "ask_user" {
+            let expected = if tool == "todo_write" || tool == "request_user_input" {
                 goose::config::permission::PermissionLevel::AlwaysAllow
             } else {
                 goose::config::permission::PermissionLevel::AskBefore
@@ -16742,6 +16894,89 @@ mod tests {
         drop(state);
         drop(session_manager);
         let _ = fs::remove_dir_all(test_root);
+    }
+
+    /// The ask_user tool registers pending questions in the process-global
+    /// broker while answers arrive through the service. Both ends must share
+    /// one map or the tool blocks forever and the UI sees "no longer
+    /// waiting".
+    #[tokio::test]
+    async fn answer_question_round_trips_through_the_global_broker() {
+        use std::sync::Mutex as StdMutex;
+        #[derive(Default)]
+        struct CapturingSink(StdMutex<Vec<AgentServiceEvent>>);
+        impl AgentEventSink for CapturingSink {
+            fn emit(&self, event: &AgentServiceEvent) {
+                self.0.lock().unwrap().push(event.clone());
+            }
+        }
+        // A fresh global broker per test run; the service constructor must
+        // install the instance it will answer against.
+        let sink = Arc::new(CapturingSink::default());
+        let state = MapleAgentService::new(MapleAgentHostResources::new(
+            AgentPathLayout::from_app_roots(
+                PathBuf::from("unused-config-root"),
+                PathBuf::from("unused-local-root"),
+            ),
+            sink.clone(),
+            AgentToolContextSpec::default(),
+        ));
+        let broker = questions::global().expect("service installed the global broker");
+        let one_question = |id: &str, text: &str| AgentQuestion {
+            id: id.to_string(),
+            header: "Question".to_string(),
+            question: text.to_string(),
+            options: Vec::new(),
+        };
+        let ask = {
+            let broker = broker.clone();
+            let questions = vec![one_question("continue", "Continue?")];
+            tokio::spawn(async move { broker.ask("s-roundtrip", questions).await })
+        };
+        let request_id = loop {
+            let found = sink.0.lock().unwrap().iter().find_map(|event| match event {
+                AgentServiceEvent::Question { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            });
+            if let Some(request_id) = found {
+                break request_id;
+            }
+            assert!(
+                !ask.is_finished(),
+                "ask returned before the question event fired"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        assert!(state.answer_question(&request_id, "yes".into()).await);
+        assert_eq!(ask.await.unwrap(), "yes");
+
+        // A follow-up question must be answerable through the same path.
+        let ask2 = {
+            let broker = broker.clone();
+            let questions = vec![one_question("next", "And now?")];
+            tokio::spawn(async move { broker.ask("s-roundtrip", questions).await })
+        };
+        let request_id2 = loop {
+            let found = sink
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    AgentServiceEvent::Question { request_id, .. } => Some(request_id.clone()),
+                    _ => None,
+                });
+            if let Some(latest) = found {
+                if latest != request_id {
+                    break latest;
+                }
+            }
+            assert!(!ask2.is_finished(), "ask2 returned early");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        assert!(state.answer_question(&request_id2, "again".into()).await);
+        assert_eq!(ask2.await.unwrap(), "again");
     }
 
     #[tokio::test]

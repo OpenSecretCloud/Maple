@@ -147,7 +147,7 @@ pub(crate) struct MapleDeveloperClient {
     tool_context: SharedAgentToolContext,
     contextual_image_context: Option<PlatformExtensionContext>,
     attachment_store: Option<Arc<AgentAttachmentStore>>,
-    /// Routes ask_user questions to the UI; absent in tests.
+    /// Routes request_user_input questions to the UI; absent in tests.
     questions: Option<crate::agent::questions::QuestionBroker>,
     session_id: Option<String>,
     /// When false the web tools are left out of the catalog entirely, so
@@ -269,18 +269,57 @@ impl MapleDeveloperClient {
         )
     }
 
-    fn ask_user_tool() -> Tool {
+    fn request_user_input_tool() -> Tool {
         Tool::new(
-            "ask_user".to_string(),
-            "Ask the user a free-text question and wait for their answer. Use when you need information, a decision, or confirmation that cannot be derived from the workspace.".to_string(),
+            "request_user_input".to_string(),
+            "Request user input for one to three short questions and wait for the response."
+                .to_string(),
             object!({
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["question"],
+                "required": ["questions"],
                 "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "The question to show the user"
+                    "questions": {
+                        "type": "array",
+                        "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["id", "header", "question", "options"],
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Stable identifier for mapping answers (snake_case)."
+                                },
+                                "header": {
+                                    "type": "string",
+                                    "description": "Short header label shown in the UI (12 or fewer chars)."
+                                },
+                                "question": {
+                                    "type": "string",
+                                    "description": "Single-sentence prompt shown to the user."
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["label", "description"],
+                                        "properties": {
+                                            "label": {
+                                                "type": "string",
+                                                "description": "User-facing label (1-5 words)."
+                                            },
+                                            "description": {
+                                                "type": "string",
+                                                "description": "One short sentence explaining impact/tradeoff if selected."
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }),
@@ -568,7 +607,7 @@ impl McpClientTrait for MapleDeveloperClient {
             ));
         }
         tools.push(Self::todo_tool());
-        tools.push(Self::ask_user_tool());
+        tools.push(Self::request_user_input_tool());
         if self.web_enabled {
             tools.push(web_search_tool());
             tools.push(open_url_tool());
@@ -625,21 +664,87 @@ impl McpClientTrait for MapleDeveloperClient {
                     None => text_result("[]".to_string()),
                 }
             }
-            "ask_user" => {
-                let question = arguments
-                    .as_ref()
-                    .and_then(|args| args.get("question"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if question.trim().is_empty() {
-                    return Ok(error_result("question must not be empty"));
+            "request_user_input" => {
+                // Be liberal in what we accept: the documented shape is a
+                // `questions` array, but a top-level single question object
+                // (or question/options pair) is taken as one question so a
+                // malformed call never dead-ends the model.
+                let arguments = arguments.as_ref();
+                let entries: Vec<serde_json::Value> =
+                    match arguments.and_then(|args| args.get("questions")) {
+                        Some(serde_json::Value::Array(list)) => list.clone(),
+                        Some(single @ serde_json::Value::Object(_)) => vec![single.clone()],
+                        _ => arguments
+                            .filter(|args| args.get("question").is_some())
+                            .map(|args| vec![serde_json::Value::Object(args.clone())])
+                            .unwrap_or_default(),
+                    };
+                let mut questions: Vec<crate::agent::AgentQuestion> = Vec::new();
+                for (index, entry) in entries.iter().enumerate() {
+                    let question = entry
+                        .get("question")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if question.is_empty() {
+                        continue;
+                    }
+                    let id = entry
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                        .filter(|id| !id.trim().is_empty())
+                        .unwrap_or_else(|| format!("question_{index}"));
+                    let header = entry
+                        .get("header")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                        .filter(|header| !header.trim().is_empty())
+                        .unwrap_or_else(|| "Question".to_string());
+                    let options: Vec<crate::agent::AgentQuestionOption> = entry
+                        .get("options")
+                        .and_then(|value| value.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|option| {
+                            let label = option
+                                .get("label")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            if label.is_empty() {
+                                return None;
+                            }
+                            Some(crate::agent::AgentQuestionOption {
+                                description: option
+                                    .get("description")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                label,
+                            })
+                        })
+                        .take(5)
+                        .collect();
+                    questions.push(crate::agent::AgentQuestion {
+                        id,
+                        header,
+                        question,
+                        options,
+                    });
+                }
+                if questions.is_empty() {
+                    return Ok(error_result("questions must not be empty"));
                 }
                 let Some(broker) = crate::agent::questions::global() else {
                     return Ok(error_result("questions unavailable"));
                 };
                 let session_id = ctx.session_id.clone();
-                let answer = broker.ask(&session_id, question).await;
+                // The UI answers with codex's response shape:
+                // {"answers": {"<id>": {"answers": ["..."]}}}
+                let answer = broker.ask(&session_id, questions).await;
                 if answer.trim().is_empty() {
                     text_result("(no answer provided)".to_string())
                 } else {
@@ -2832,7 +2937,7 @@ mod tests {
                 "write",
                 "read_image",
                 "todo_write",
-                "ask_user",
+                "request_user_input",
                 "web_search",
                 "open_url"
             ]
@@ -2914,7 +3019,7 @@ mod tests {
                 "write",
                 "read_image",
                 "todo_write",
-                "ask_user",
+                "request_user_input",
                 "web_search",
                 "open_url",
                 EXTERNAL_MCP_TOOL_NAME,

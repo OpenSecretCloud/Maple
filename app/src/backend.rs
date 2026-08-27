@@ -26,8 +26,10 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct PendingQuestion {
+    pub session_id: String,
     pub request_id: String,
-    pub question: String,
+    /// One or more related questions answered together in one card.
+    pub questions: Vec<maple_agent::agent::AgentQuestion>,
 }
 
 #[derive(Debug, Clone)]
