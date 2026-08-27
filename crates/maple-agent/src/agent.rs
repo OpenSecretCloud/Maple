@@ -1514,6 +1514,8 @@ pub struct MapleAgentService {
     live_timelines: LiveTimelines,
     desktop_queues: Arc<Mutex<HashMap<(String, String), DesktopSessionQueue>>>,
     admission: Arc<AtomicU8>,
+    /// The question broker this service installed as the process global.
+    questions: questions::QuestionBroker,
 }
 
 #[derive(Clone)]
@@ -1586,9 +1588,10 @@ impl LiveTimeline {
 
 impl MapleAgentService {
     pub fn new(host: MapleAgentHostResources) -> Self {
-        questions::init_global(host.events.clone());
+        let questions = questions::init_global(host.events.clone());
         Self {
             host,
+            questions,
             inner: Arc::new(Mutex::new(None)),
             runtime_lifecycle: Arc::new(Mutex::new(())),
             #[cfg(target_os = "macos")]
@@ -1601,6 +1604,11 @@ impl MapleAgentService {
             desktop_queues: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(AtomicU8::new(AGENT_SERVICE_OPEN)),
         }
+    }
+
+    #[cfg(test)]
+    fn question_broker(&self) -> questions::QuestionBroker {
+        self.questions.clone()
     }
 
     /// Bind subsequent operations to one Maple account and one data generation.
@@ -1622,12 +1630,18 @@ impl MapleAgentService {
     /// Deliver the user's answer to a pending ask_user question.
     pub async fn answer_question(&self, request_id: &str, answer: String) -> bool {
         // The ask_user tool registers its pending question in the
-        // process-global broker (`questions::global()`), not this struct's
-        // separate instance; answers must reach that same map or the run
-        // blocks forever waiting for a reply that never arrives.
+        // process-global broker (`questions::global()`). This service
+        // installed its own broker as that global, so answer through it
+        // first; fall back to the global in case a newer service replaced
+        // it, or the run blocks forever waiting for a reply.
+        if self.questions.answer(request_id, answer.clone()).await {
+            return true;
+        }
         match questions::global() {
-            Some(broker) => broker.answer(request_id, answer).await,
-            None => false,
+            Some(broker) if !broker.same_as(&self.questions) => {
+                broker.answer(request_id, answer).await
+            }
+            _ => false,
         }
     }
 
@@ -16916,8 +16930,9 @@ mod tests {
                 self.0.lock().unwrap().push(event.clone());
             }
         }
-        // A fresh global broker per test run; the service constructor must
-        // install the instance it will answer against.
+        // The service constructor installs its own broker as the process
+        // global; parallel tests replace the global, so answer through the
+        // service's instance.
         let sink = Arc::new(CapturingSink::default());
         let state = MapleAgentService::new(MapleAgentHostResources::new(
             AgentPathLayout::from_app_roots(
@@ -16927,7 +16942,7 @@ mod tests {
             sink.clone(),
             AgentToolContextSpec::default(),
         ));
-        let broker = questions::global().expect("service installed the global broker");
+        let broker = state.question_broker();
         let one_question = |id: &str, text: &str| AgentQuestion {
             id: id.to_string(),
             header: "Question".to_string(),

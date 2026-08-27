@@ -679,62 +679,7 @@ impl McpClientTrait for MapleDeveloperClient {
                             .map(|args| vec![serde_json::Value::Object(args.clone())])
                             .unwrap_or_default(),
                     };
-                let mut questions: Vec<crate::agent::AgentQuestion> = Vec::new();
-                for (index, entry) in entries.iter().enumerate() {
-                    let question = entry
-                        .get("question")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if question.is_empty() {
-                        continue;
-                    }
-                    let id = entry
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                        .filter(|id| !id.trim().is_empty())
-                        .unwrap_or_else(|| format!("question_{index}"));
-                    let header = entry
-                        .get("header")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                        .filter(|header| !header.trim().is_empty())
-                        .unwrap_or_else(|| "Question".to_string());
-                    let options: Vec<crate::agent::AgentQuestionOption> = entry
-                        .get("options")
-                        .and_then(|value| value.as_array())
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|option| {
-                            let label = option
-                                .get("label")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            if label.is_empty() {
-                                return None;
-                            }
-                            Some(crate::agent::AgentQuestionOption {
-                                description: option
-                                    .get("description")
-                                    .and_then(|value| value.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                label,
-                            })
-                        })
-                        .take(5)
-                        .collect();
-                    questions.push(crate::agent::AgentQuestion {
-                        id,
-                        header,
-                        question,
-                        options,
-                    });
-                }
+                let questions = parse_user_questions(&entries);
                 if questions.is_empty() {
                     return Ok(error_result("questions must not be empty"));
                 }
@@ -2661,6 +2606,84 @@ fn mutation_key(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Most questions one `request_user_input` call may carry, as the tool
+/// schema promises the model.
+const MAX_USER_QUESTIONS: usize = 3;
+
+/// Build the question batch from the model's entries. Entries without
+/// text are skipped, ids are made unique, and the batch is capped at
+/// `MAX_USER_QUESTIONS` so the answer map always has one slot per id.
+fn parse_user_questions(entries: &[serde_json::Value]) -> Vec<crate::agent::AgentQuestion> {
+    let mut questions: Vec<crate::agent::AgentQuestion> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if questions.len() >= MAX_USER_QUESTIONS {
+            break;
+        }
+        let question = entry
+            .get("question")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if question.is_empty() {
+            continue;
+        }
+        let base_id = entry
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("question_{index}"));
+        let mut id = base_id.clone();
+        let mut suffix = 2;
+        while !seen_ids.insert(id.clone()) {
+            id = format!("{base_id}_{suffix}");
+            suffix += 1;
+        }
+        let header = entry
+            .get("header")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .filter(|header| !header.trim().is_empty())
+            .unwrap_or_else(|| "Question".to_string());
+        let options: Vec<crate::agent::AgentQuestionOption> = entry
+            .get("options")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|option| {
+                let label = option
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if label.is_empty() {
+                    return None;
+                }
+                Some(crate::agent::AgentQuestionOption {
+                    description: option
+                        .get("description")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    label,
+                })
+            })
+            .take(5)
+            .collect();
+        questions.push(crate::agent::AgentQuestion {
+            id,
+            header,
+            question,
+            options,
+        });
+    }
+    questions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2894,6 +2917,35 @@ mod tests {
             ContentBlock::Text(text) => &text.text,
             _ => panic!("expected text content"),
         }
+    }
+
+    #[test]
+    fn parse_user_questions_dedupes_ids_and_caps_batch() {
+        let entries: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+                {"id": "question_1", "question": "First?"},
+                {"question": "Second?"},
+                {"id": "question_1", "question": "Third?"},
+                {"id": "extra", "question": "Fourth?"}
+            ]"#,
+        )
+        .unwrap();
+        let questions = parse_user_questions(&entries);
+        let ids: Vec<&str> = questions.iter().map(|q| q.id.as_str()).collect();
+        assert_eq!(ids, ["question_1", "question_1_2", "question_1_3"]);
+        assert_eq!(questions.len(), MAX_USER_QUESTIONS);
+        assert_eq!(questions[1].question, "Second?");
+    }
+
+    #[test]
+    fn parse_user_questions_skips_blank_entries() {
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(r#"[{"question": "  "}, {"id": " a ", "question": "Real?"}]"#)
+                .unwrap();
+        let questions = parse_user_questions(&entries);
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].id, "a");
+        assert_eq!(questions[0].header, "Question");
     }
 
     #[test]
