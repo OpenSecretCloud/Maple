@@ -1,20 +1,17 @@
-//! Markdown rendering for agent messages: pulldown-cmark events mapped onto
-//! gpui elements. Covers the subset that model output actually produces:
-//! paragraphs, headings, lists, code blocks, blockquotes, rules, and inline
-//! bold/italic/code/strikethrough/link styling.
-//!
-//! Inline styles use `StyledText::with_highlights`, which resolves the
-//! ambient text style at paint time. Block styles (size, weight, monospace)
-//! are set on the wrapping divs so they compose with the parent element.
+//! Markdown parsing for agent messages: pulldown-cmark events resolved into
+//! block-level structures that callers cache per message. Rendering is in
+//! [`super::rich_text`], which turns blocks into interactive elements
+//! (clickable links, drag selection, copyable code blocks).
 //!
 //! Parsing and element building are separate steps: [`parse`] produces a
 //! [`Document`] of resolved blocks that callers cache per message, and
 //! [`render`] turns it into elements each frame. Parsing is the expensive
 //! part; rendering from blocks is a handful of allocations.
-//!
-use gpui::{Div, SharedString, StyledText, div, prelude::*, px};
+
+use gpui::{Div, SharedString, div, prelude::*, px};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use super::rich_text::{self, RenderCtx};
 use super::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +70,8 @@ impl InlineStyle {
 struct Paragraph {
     text: String,
     spans: Vec<(std::ops::Range<usize>, InlineStyle)>,
+    /// Link ranges with their destinations, byte ranges into `text`.
+    links: Vec<(std::ops::Range<usize>, String)>,
 }
 
 impl Paragraph {
@@ -85,6 +84,17 @@ impl Paragraph {
         }
     }
 
+    /// Record that `start..end` belongs to the link at `url`, merging with
+    /// the previous range when it continues the same link.
+    fn extend_link(&mut self, url: &str, start: usize, end: usize) {
+        if let Some((range, existing)) = self.links.last_mut() {
+            if existing == url && range.end == start {
+                range.end = end;
+                return;
+            }
+        }
+        self.links.push((start..end, url.to_string()));
+    }
     fn is_empty(&self) -> bool {
         self.text.trim().is_empty()
     }
@@ -94,12 +104,14 @@ impl Paragraph {
     }
 }
 
-/// One rendered block with its inline highlights already resolved.
+/// One parsed block with its inline highlights already resolved.
 #[derive(Clone)]
 pub enum Block {
     Text {
         text: SharedString,
         highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>,
+        /// Clickable link ranges with destinations, byte ranges into `text`.
+        links: Vec<(std::ops::Range<usize>, String)>,
         text_size: Option<gpui::Pixels>,
         weight: Option<gpui::FontWeight>,
         in_quote: bool,
@@ -107,6 +119,8 @@ pub enum Block {
     },
     Code {
         code: SharedString,
+        /// Fenced code block info string (usually a language tag).
+        language: Option<String>,
         in_quote: bool,
         list_depth: usize,
     },
@@ -141,31 +155,20 @@ fn text_block(
         }
         highlights.push((range, style.highlight()));
     }
+    let links = paragraph
+        .links
+        .into_iter()
+        .filter(|(range, _)| !range.is_empty())
+        .collect();
     Block::Text {
         text: SharedString::new(paragraph.text),
         highlights,
+        links,
         text_size,
         weight,
         in_quote,
         list_depth,
     }
-}
-
-fn styled_paragraph(
-    text: SharedString,
-    highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>,
-    text_size: Option<gpui::Pixels>,
-    weight: Option<gpui::FontWeight>,
-) -> Div {
-    let text = StyledText::new(text).with_highlights(highlights);
-    let mut div = div().w_full();
-    if let Some(size) = text_size {
-        div = div.text_size(size);
-    }
-    if let Some(weight) = weight {
-        div = div.font_weight(weight);
-    }
-    div.child(text)
 }
 
 fn heading_size(level: HeadingLevel) -> gpui::Pixels {
@@ -178,50 +181,45 @@ fn heading_size(level: HeadingLevel) -> gpui::Pixels {
     }
 }
 
-fn code_block(code: SharedString) -> Div {
-    div()
-        .w_full()
-        .my_1()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(gpui::rgb(theme::BG_CODE_BLOCK))
-        .border_1()
-        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
-        .font_family("monospace")
-        .text_size(px(13.))
-        .text_color(gpui::rgb(theme::CODE_TEXT))
-        .child(code)
-}
-
-/// Parse a markdown string once, then render it with [`render`].
-pub fn render_markdown(source: &str) -> Div {
-    render(&parse(source))
-}
-
-/// Build elements from a parsed document.
+/// Build elements from a parsed document (no selection context).
 pub fn render(document: &Document) -> Div {
+    render_with(document, &RenderCtx::default())
+}
+
+/// Build elements from a parsed document, making text blocks selectable
+/// when the context carries a selection entity.
+pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
     let mut container = div().flex().flex_col().gap_2().w_full().pr_6();
-    for block in &document.blocks {
+    for (index, block) in document.blocks.iter().enumerate() {
         container = match block {
             Block::Text {
                 text,
                 highlights,
+                links,
                 text_size,
                 weight,
                 in_quote,
                 list_depth,
             } => container.child(wrap_inline(
-                styled_paragraph(text.clone(), highlights.clone(), *text_size, *weight),
+                rich_text::paragraph(
+                    text.clone(),
+                    highlights.clone(),
+                    links.clone(),
+                    *text_size,
+                    *weight,
+                    ctx.for_block(index),
+                    ctx,
+                ),
                 *in_quote,
                 *list_depth,
             )),
             Block::Code {
                 code,
+                language,
                 in_quote,
                 list_depth,
             } => container.child(wrap_inline(
-                code_block(code.clone()),
+                rich_text::code_block(code.clone(), language.clone(), index, ctx),
                 *in_quote,
                 *list_depth,
             )),
@@ -240,14 +238,18 @@ pub fn render(document: &Document) -> Div {
 /// Parse markdown into resolved blocks.
 pub fn parse(source: &str) -> Document {
     let mut options = Options::empty();
+    // Open link destinations, parallel to the `link` entries pushed onto
+    // `inline_flags`.
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(source, options);
 
     let mut blocks: Vec<Block> = Vec::new();
     let mut paragraph = Paragraph::default();
     let mut inline_flags: Vec<InlineStyle> = Vec::new();
+    let mut link_stack: Vec<String> = Vec::new();
     let mut list_counters: Vec<Option<u64>> = Vec::new();
     let mut code_block_text: Option<String> = None;
+    let mut code_block_language: Option<String> = None;
     let mut in_quote = false;
 
     let current_style = |flags: &[InlineStyle]| -> InlineStyle {
@@ -283,9 +285,16 @@ pub fn parse(source: &str) -> Document {
                     flush_paragraph!();
                     in_quote = true;
                 }
-                Tag::CodeBlock(_) => {
+                Tag::CodeBlock(kind) => {
                     flush_paragraph!();
                     code_block_text = Some(String::new());
+                    code_block_language = match kind {
+                        pulldown_cmark::CodeBlockKind::Fenced(info) => {
+                            let tag = info.split_whitespace().next().unwrap_or("");
+                            (!tag.is_empty()).then(|| tag.to_string())
+                        }
+                        pulldown_cmark::CodeBlockKind::Indented => None,
+                    };
                 }
                 Tag::List(start) => {
                     flush_paragraph!();
@@ -318,10 +327,13 @@ pub fn parse(source: &str) -> Document {
                     strikethrough: true,
                     ..Default::default()
                 }),
-                Tag::Link { .. } => inline_flags.push(InlineStyle {
-                    link: true,
-                    ..Default::default()
-                }),
+                Tag::Link { dest_url, .. } => {
+                    inline_flags.push(InlineStyle {
+                        link: true,
+                        ..Default::default()
+                    });
+                    link_stack.push(dest_url.to_string());
+                }
                 _ => {}
             },
             Event::End(tag) => match tag {
@@ -347,6 +359,7 @@ pub fn parse(source: &str) -> Document {
                     if let Some(code) = code_block_text.take() {
                         blocks.push(Block::Code {
                             code: SharedString::new(code.trim_end().to_string()),
+                            language: code_block_language.take(),
                             in_quote,
                             list_depth: list_counters.len(),
                         });
@@ -358,8 +371,12 @@ pub fn parse(source: &str) -> Document {
                 TagEnd::Item => {
                     flush_paragraph!();
                 }
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                     inline_flags.pop();
+                }
+                TagEnd::Link => {
+                    inline_flags.pop();
+                    link_stack.pop();
                 }
                 _ => {}
             },
@@ -367,13 +384,23 @@ pub fn parse(source: &str) -> Document {
                 if let Some(code) = code_block_text.as_mut() {
                     code.push_str(&chunk);
                 } else {
+                    let start = paragraph.text.len();
                     paragraph.push(&chunk, current_style(&inline_flags));
+                    if let Some(url) = link_stack.last().cloned() {
+                        let end = paragraph.text.len();
+                        paragraph.extend_link(&url, start, end);
+                    }
                 }
             }
             Event::Code(chunk) => {
+                let start = paragraph.text.len();
                 let mut style = current_style(&inline_flags);
                 style.code = true;
                 paragraph.push(&chunk, style);
+                if let Some(url) = link_stack.last().cloned() {
+                    let end = paragraph.text.len();
+                    paragraph.extend_link(&url, start, end);
+                }
             }
             Event::SoftBreak | Event::HardBreak => {
                 if code_block_text.is_none() {
@@ -385,7 +412,12 @@ pub fn parse(source: &str) -> Document {
                 blocks.push(Block::Rule);
             }
             Event::InlineHtml(html) => {
+                let start = paragraph.text.len();
                 paragraph.push(&html, current_style(&inline_flags));
+                if let Some(url) = link_stack.last().cloned() {
+                    let end = paragraph.text.len();
+                    paragraph.extend_link(&url, start, end);
+                }
             }
             Event::Html(html) => {
                 if let Some(code) = code_block_text.as_mut() {
@@ -417,4 +449,53 @@ fn wrap_inline(element: Div, in_quote: bool, list_depth: usize) -> Div {
             .pl_3();
     }
     outer.child(element)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn link_ranges_carry_destinations() {
+        let document = parse("see [the docs](https://example.com/a) now");
+        let Block::Text { text, links, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert_eq!(text.as_ref(), "see the docs now");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].1, "https://example.com/a");
+        assert_eq!(&text[links[0].0.clone()], "the docs");
+    }
+
+    #[test]
+    fn adjacent_links_stay_separate() {
+        let document = parse("[a](https://x.test) and [b](https://y.test)");
+        let Block::Text { links, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].1, "https://x.test");
+        assert_eq!(links[1].1, "https://y.test");
+    }
+
+    #[test]
+    fn fenced_code_keeps_language() {
+        let document = parse("```rust\nfn main() {}\n```");
+        let Block::Code { code, language, .. } = &document.blocks[0] else {
+            panic!("expected a code block");
+        };
+        assert_eq!(code.as_ref(), "fn main() {}");
+        assert_eq!(language.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn indented_code_has_no_language() {
+        let document = parse("text\n\n    indented code\n");
+        assert!(
+            document
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::Code { language: None, .. }))
+        );
+    }
 }

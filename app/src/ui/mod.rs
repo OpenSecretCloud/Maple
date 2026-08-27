@@ -5,6 +5,7 @@ pub mod context_ring;
 pub mod icons;
 pub mod login;
 pub mod markdown;
+pub mod rich_text;
 pub mod settings;
 pub mod text_input;
 pub mod theme;
