@@ -683,6 +683,20 @@ impl AgentBackend {
         Ok(run_id)
     }
 
+    /// Bytes of an image the user attached to a message in `session_id`.
+    pub async fn read_image_attachment(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<u8>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .read_image_attachment(session_id.to_string(), attachment_id.to_string())
+            .await
+    }
+
     pub async fn cancel_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
         self.service
             .handle_for_user(user_id)

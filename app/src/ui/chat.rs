@@ -181,6 +181,12 @@ pub struct ChatScreen {
     /// Per-session count of applied timeline events; a load whose snapshot
     /// predates newer events is discarded instead of clobbering them.
     timeline_revisions: HashMap<String, u64>,
+    /// Decoded images for sent attachments, keyed by attachment id, so the
+    /// transcript shows the picture instead of only its file name.
+    attachment_images: HashMap<String, Arc<gpui::Image>>,
+    /// Attachment ids with a read in flight or already failed; never asked
+    /// for twice.
+    attachment_requests: HashSet<String>,
 }
 
 impl ChatScreen {
@@ -288,6 +294,8 @@ impl ChatScreen {
             root_input: None,
             root_switching: false,
             selection_generation: 0,
+            attachment_images: HashMap::new(),
+            attachment_requests: HashSet::new(),
             timeline_revisions: HashMap::new(),
         };
         this
@@ -624,7 +632,7 @@ impl ChatScreen {
         self.call(
             async move { backend.load_session(&user_id, &session_id).await },
             cx,
-            move |this, result, _cx| {
+            move |this, result, cx| {
                 if this.selection_generation != generation {
                     return;
                 }
@@ -638,6 +646,7 @@ impl ChatScreen {
                     }
                     this.timeline = detail.timeline;
                     this.list_state.reset(this.timeline.len());
+                    this.load_attachment_images(cx);
                 }
             },
         );
@@ -855,6 +864,7 @@ impl ChatScreen {
         self.timeline = timeline;
         self.markdown_cache.clear();
         self.list_state.reset(self.timeline.len());
+        self.load_attachment_images(cx);
         self.follow_transcript = true;
         self.pending_permission = None;
         self.permission_responding = false;
@@ -1358,6 +1368,58 @@ impl ChatScreen {
         self.refresh_context_usage(cx);
     }
 
+    /// Fetch the images behind sent attachments that are not decoded yet.
+    /// Each id is requested once; the result re-measures the rows that
+    /// show it.
+    fn load_attachment_images(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let wanted: Vec<String> = self
+            .timeline
+            .iter()
+            .flat_map(attachment_refs)
+            .map(|(id, _)| id.to_string())
+            .filter(|id| !self.attachment_requests.contains(id))
+            .collect();
+        for id in wanted {
+            self.attachment_requests.insert(id.clone());
+            let backend = self.backend.clone();
+            let user_id = self.user_id.clone();
+            let session = session_id.clone();
+            let attachment_id = id.clone();
+            self.call(
+                async move {
+                    backend
+                        .read_image_attachment(&user_id, &session, &attachment_id)
+                        .await
+                },
+                cx,
+                move |this, result, cx| match result {
+                    Ok(bytes) => this.insert_attachment_image(&id, bytes, cx),
+                    Err(message) => log::debug!("attachment {id} not loaded: {message}"),
+                },
+            );
+        }
+    }
+
+    fn insert_attachment_image(&mut self, id: &str, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        let Some(format) = image_format_from_bytes(&bytes) else {
+            return;
+        };
+        self.attachment_images.insert(
+            id.to_string(),
+            Arc::new(gpui::Image::from_bytes(format, bytes)),
+        );
+        // Rows that show this image change height; tell the list.
+        for (index, item) in self.timeline.iter().enumerate() {
+            if attachment_refs(item).any(|(candidate, _)| candidate == id) {
+                self.list_state.splice(index..index + 1, 1);
+            }
+        }
+        cx.notify();
+    }
+
     /// Apply a timeline item using Maple's merge contract: `append` extends
     /// message/thinking text on the item with the same id; otherwise merge
     /// fields, keeping the previous value when the incoming field is absent.
@@ -1473,6 +1535,7 @@ impl ChatScreen {
             } => {
                 if self.selected_session.as_deref() == Some(session_id.as_str()) {
                     self.apply_timeline_item(&session_id, item);
+                    self.load_attachment_images(cx);
                 } else {
                     return false;
                 }
@@ -1535,6 +1598,7 @@ impl ChatScreen {
             AgentRunEvent::TimelineItem(item) => {
                 if self.is_selected(session_id) {
                     self.apply_timeline_item(session_id, item);
+                    self.load_attachment_images(cx);
                 }
             }
             AgentRunEvent::PermissionRequested { request, item } => {
@@ -1542,6 +1606,7 @@ impl ChatScreen {
                     // The permission row stays in the transcript so the
                     // decision is visible after the card is answered.
                     self.apply_timeline_item(session_id, item);
+                    self.load_attachment_images(cx);
                     let arguments = serde_json::Value::Object(request.arguments);
                     self.pending_permission_arguments = if arguments.is_null() {
                         SharedString::default()
@@ -1577,6 +1642,7 @@ impl ChatScreen {
             AgentRunEvent::Error(item) => {
                 if self.is_selected(session_id) {
                     self.apply_timeline_item(session_id, item);
+                    self.load_attachment_images(cx);
                 }
             }
             AgentRunEvent::Finished(_) => {
@@ -2760,8 +2826,13 @@ impl ChatScreen {
             };
             let chat = chat.read(cx);
             match chat.timeline.get(ix) {
-                Some(item) => render_timeline_item(item, tool_details, &chat.markdown_cache)
-                    .into_any_element(),
+                Some(item) => render_timeline_item(
+                    item,
+                    tool_details,
+                    &chat.markdown_cache,
+                    &chat.attachment_images,
+                )
+                .into_any_element(),
                 None => div().into_any_element(),
             }
         })
@@ -3327,9 +3398,10 @@ fn render_timeline_item(
     item: &AgentTimelineItem,
     tool_details: bool,
     markdown_cache: &MarkdownCache,
+    attachment_images: &HashMap<String, Arc<gpui::Image>>,
 ) -> Div {
     let item = match item.item_type.as_str() {
-        "message" => render_message(item, markdown_cache),
+        "message" => render_message(item, markdown_cache, attachment_images),
         "thinking" | "reasoning" => render_thinking(item),
         "tool" | "toolCall" => {
             // Dispatch on payload shape; runtime titles are humanized
@@ -3353,30 +3425,47 @@ fn render_timeline_item(
     div().pb_2().child(item)
 }
 
-fn render_message(item: &AgentTimelineItem, markdown_cache: &MarkdownCache) -> Div {
+/// Attachment `(id, name)` pairs stored on a user message.
+fn attachment_refs(item: &AgentTimelineItem) -> impl Iterator<Item = (&str, &str)> {
+    item.input
+        .as_ref()
+        .and_then(|input| input.get("imageAttachments"))
+        .and_then(|items| items.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(|id| id.as_str())?;
+            let name = entry.get("name").and_then(|name| name.as_str())?;
+            Some((id, name))
+        })
+}
+
+/// Image format from the file signature; `None` for unsupported data.
+fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some(gpui::ImageFormat::Png)
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some(gpui::ImageFormat::Jpeg)
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some(gpui::ImageFormat::Webp)
+    } else {
+        None
+    }
+}
+
+fn render_message(
+    item: &AgentTimelineItem,
+    markdown_cache: &MarkdownCache,
+    attachment_images: &HashMap<String, Arc<gpui::Image>>,
+) -> Div {
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
-    let has_images = item
-        .input
-        .as_ref()
-        .is_some_and(|input| input.get("imageAttachments").is_some());
+    let mut attachments = attachment_refs(item).peekable();
+    let has_images = attachments.peek().is_some();
     if text.trim().is_empty() && !(is_user && has_images) {
         return div();
     }
     if is_user {
-        let attachments: Vec<String> = item
-            .input
-            .as_ref()
-            .and_then(|input| input.get("imageAttachments"))
-            .and_then(|items| items.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|entry| entry.get("name").and_then(|n| n.as_str()))
-                    .map(ToOwned::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
         div().flex().justify_end().child(
             div()
                 .max_w(gpui::relative(0.75))
@@ -3387,23 +3476,44 @@ fn render_message(item: &AgentTimelineItem, markdown_cache: &MarkdownCache) -> D
                 .border_1()
                 .border_color(gpui::rgb(theme::USER_BUBBLE_BORDER))
                 .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                .when(!attachments.is_empty(), |bubble| {
-                    bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
-                        attachments.into_iter().map(|name| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .px_2()
-                                .py_0p5()
-                                .rounded_md()
-                                .bg(gpui::rgb(theme::BG_ELEVATED))
-                                .text_xs()
-                                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                                .child(icon("paperclip", px(12.), theme::TEXT_SECONDARY))
-                                .child(name)
-                        }),
-                    ))
+                .when(has_images, |bubble| {
+                    bubble.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .mb_1()
+                            .children(attachments.map(|(id, name)| {
+                                match attachment_images.get(id) {
+                                    // The picture itself, scaled to fit; gpui keeps
+                                    // the aspect ratio from the decoded size.
+                                    Some(image) => div().child(
+                                        gpui::img(gpui::ImageSource::Image(Arc::clone(image)))
+                                            .max_w(px(320.))
+                                            .max_h(px(240.))
+                                            .rounded_md()
+                                            .overflow_hidden()
+                                            .object_fit(gpui::ObjectFit::Contain)
+                                            .border_1()
+                                            .border_color(gpui::rgb(theme::BORDER)),
+                                    ),
+                                    // Name chip until the bytes arrive (or if they
+                                    // never do, such as a deleted attachment).
+                                    None => div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_md()
+                                        .bg(gpui::rgb(theme::BG_ELEVATED))
+                                        .text_xs()
+                                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                                        .child(icon("paperclip", px(12.), theme::TEXT_SECONDARY))
+                                        .child(name.to_string()),
+                                }
+                            })),
+                    )
                 })
                 .when(!text.trim().is_empty(), |bubble| {
                     bubble.child(text.to_string())

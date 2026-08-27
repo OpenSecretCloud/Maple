@@ -4028,6 +4028,27 @@ impl AgentRuntimeHandle {
             .map_err(|error| format!("Agent image attachment task failed: {error}"))?
     }
 
+    /// Raw bytes of a stored image attachment, for display in the app.
+    pub async fn read_image_attachment(
+        &self,
+        session_id: String,
+        attachment_id: String,
+    ) -> Result<Vec<u8>, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        account_session_manager(&state.host.paths, user_id)?
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to find Agent task {session_id}: {error}"))?;
+        let store = account_attachment_store(&state.host.paths, user_id)?;
+        tokio::task::spawn_blocking(move || store.read(&session_id, &attachment_id))
+            .await
+            .map_err(|error| format!("Agent image attachment task failed: {error}"))?
+    }
+
     pub async fn list_session_mcp_servers(
         &self,
         session_id: String,
