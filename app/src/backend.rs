@@ -856,6 +856,21 @@ impl AgentBackend {
         .map_err(|error| format!("Slash command resolve failed: {error}"))?
     }
 
+    /// One-line summary of a completed tool call from the cheap title model.
+    pub async fn summarize_tool_call(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        tool_name: String,
+        input: Option<serde_json::Value>,
+        output_text: String,
+    ) -> Result<Option<String>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .summarize_tool_call(session_id, &tool_name, input.as_ref(), &output_text)
+            .await
+    }
     /// Latest context usage for a session from the goose usage ledger:
     /// (context tokens, context limit). The limit comes from the model
     /// catalog for the selected model; MAPLE_CONTEXT_LIMIT is a manual
