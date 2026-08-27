@@ -8,10 +8,12 @@
 //! [`render`] turns it into elements each frame. Parsing is the expensive
 //! part; rendering from blocks is a handful of allocations.
 
-use gpui::{Div, SharedString, div, prelude::*, px};
+use std::rc::Rc;
+
+use gpui::{Div, ElementId, SharedString, div, prelude::*, px};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-use super::rich_text::{self, RenderCtx};
+use super::rich_text::{self, Highlights, Links, RenderCtx};
 use super::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -72,9 +74,17 @@ struct Paragraph {
     spans: Vec<(std::ops::Range<usize>, InlineStyle)>,
     /// Link ranges with their destinations, byte ranges into `text`.
     links: Vec<(std::ops::Range<usize>, String)>,
+    /// Length of the list marker ("• " or "1. ") at the start of `text`.
+    /// A paragraph that holds only its marker counts as empty.
+    marker_len: usize,
 }
 
 impl Paragraph {
+    fn push_marker(&mut self, marker: &str) {
+        self.push(marker, InlineStyle::default());
+        self.marker_len = self.text.len();
+    }
+
     fn push(&mut self, chunk: &str, style: InlineStyle) {
         let start = self.text.len();
         self.text.push_str(chunk);
@@ -87,16 +97,17 @@ impl Paragraph {
     /// Record that `start..end` belongs to the link at `url`, merging with
     /// the previous range when it continues the same link.
     fn extend_link(&mut self, url: &str, start: usize, end: usize) {
-        if let Some((range, existing)) = self.links.last_mut() {
-            if existing == url && range.end == start {
-                range.end = end;
-                return;
-            }
+        if let Some((range, existing)) = self.links.last_mut()
+            && existing == url
+            && range.end == start
+        {
+            range.end = end;
+            return;
         }
         self.links.push((start..end, url.to_string()));
     }
     fn is_empty(&self) -> bool {
-        self.text.trim().is_empty()
+        self.text[self.marker_len..].trim().is_empty()
     }
 
     fn take(&mut self) -> Paragraph {
@@ -109,9 +120,9 @@ impl Paragraph {
 pub enum Block {
     Text {
         text: SharedString,
-        highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>,
+        highlights: Highlights,
         /// Clickable link ranges with destinations, byte ranges into `text`.
-        links: Vec<(std::ops::Range<usize>, String)>,
+        links: Links,
         text_size: Option<gpui::Pixels>,
         weight: Option<gpui::FontWeight>,
         in_quote: bool,
@@ -119,8 +130,9 @@ pub enum Block {
     },
     Code {
         code: SharedString,
-        /// Fenced code block info string (usually a language tag).
-        language: Option<String>,
+        /// Upper-case language tag from the fence info string, or "CODE",
+        /// shown in the block header.
+        label: SharedString,
         in_quote: bool,
         list_depth: usize,
     },
@@ -147,22 +159,23 @@ fn text_block(
         if style.is_plain() {
             continue;
         }
-        if let Some((last_range, last_style)) = highlights.last_mut() {
-            if last_range.end == range.start && *last_style == style.highlight() {
-                last_range.end = range.end;
-                continue;
-            }
+        if let Some((last_range, last_style)) = highlights.last_mut()
+            && last_range.end == range.start
+            && *last_style == style.highlight()
+        {
+            last_range.end = range.end;
+            continue;
         }
         highlights.push((range, style.highlight()));
     }
-    let links = paragraph
+    let links: Links = paragraph
         .links
         .into_iter()
         .filter(|(range, _)| !range.is_empty())
         .collect();
     Block::Text {
         text: SharedString::new(paragraph.text),
-        highlights,
+        highlights: Rc::from(highlights),
         links,
         text_size,
         weight,
@@ -190,6 +203,8 @@ pub fn render(document: &Document) -> Div {
 /// when the context carries a selection entity.
 pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
     let mut container = div().flex().flex_col().gap_2().w_full().pr_6();
+    // One shared name per message; each code block adds its index.
+    let id_name = ctx.id_name();
     for (index, block) in document.blocks.iter().enumerate() {
         container = match block {
             Block::Text {
@@ -215,11 +230,15 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
             )),
             Block::Code {
                 code,
-                language,
+                label,
                 in_quote,
                 list_depth,
             } => container.child(wrap_inline(
-                rich_text::code_block(code.clone(), language.clone(), index, ctx),
+                rich_text::code_block(
+                    code.clone(),
+                    label.clone(),
+                    ElementId::NamedInteger(id_name.clone(), index as u64),
+                ),
                 *in_quote,
                 *list_depth,
             )),
@@ -267,8 +286,8 @@ pub fn parse(source: &str) -> Document {
     // Emit the pending paragraph before a block boundary.
     macro_rules! flush_paragraph {
         () => {
-            if !paragraph.is_empty() {
-                let taken = paragraph.take();
+            let taken = paragraph.take();
+            if !taken.is_empty() {
                 blocks.push(text_block(taken, None, None, in_quote, list_counters.len()));
             }
         };
@@ -308,10 +327,10 @@ pub fn parse(source: &str) -> Document {
                     if let Some(counter) = list_counters.last_mut() {
                         match counter {
                             Some(number) => {
-                                paragraph.push(&format!("{number}. "), InlineStyle::default());
+                                paragraph.push_marker(&format!("{number}. "));
                                 *number += 1;
                             }
-                            None => paragraph.push("• ", InlineStyle::default()),
+                            None => paragraph.push_marker("• "),
                         }
                     }
                 }
@@ -357,9 +376,11 @@ pub fn parse(source: &str) -> Document {
                 }
                 TagEnd::CodeBlock => {
                     if let Some(code) = code_block_text.take() {
+                        let language = code_block_language.take();
+                        let label = language.as_deref().unwrap_or("code").to_uppercase();
                         blocks.push(Block::Code {
                             code: SharedString::new(code.trim_end().to_string()),
-                            language: code_block_language.take(),
+                            label: SharedString::new(label),
                             in_quote,
                             list_depth: list_counters.len(),
                         });
@@ -368,7 +389,7 @@ pub fn parse(source: &str) -> Document {
                 TagEnd::List(_) => {
                     list_counters.pop();
                 }
-                TagEnd::Item => {
+                TagEnd::Item | TagEnd::HtmlBlock => {
                     flush_paragraph!();
                 }
                 TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
@@ -420,8 +441,11 @@ pub fn parse(source: &str) -> Document {
                 }
             }
             Event::Html(html) => {
+                // Block HTML is shown as its source, like inline HTML.
                 if let Some(code) = code_block_text.as_mut() {
                     code.push_str(&html);
+                } else {
+                    paragraph.push(&html, current_style(&inline_flags));
                 }
             }
             _ => {}
@@ -481,21 +505,82 @@ mod tests {
     #[test]
     fn fenced_code_keeps_language() {
         let document = parse("```rust\nfn main() {}\n```");
-        let Block::Code { code, language, .. } = &document.blocks[0] else {
+        let Block::Code { code, label, .. } = &document.blocks[0] else {
             panic!("expected a code block");
         };
         assert_eq!(code.as_ref(), "fn main() {}");
-        assert_eq!(language.as_deref(), Some("rust"));
+        assert_eq!(label.as_ref(), "RUST");
+    }
+
+    #[test]
+    fn code_block_label_is_upper_case() {
+        let document = parse("```sh\nls\n```\n\n    plain\n");
+        let labels: Vec<&str> = document
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Code { label, .. } => Some(label.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, vec!["SH", "CODE"]);
+    }
+
+    #[test]
+    fn list_item_with_leading_code_block_has_no_orphan_marker() {
+        // Unindented lines end the item, so the fence is empty; there must
+        // still be no marker-only paragraph.
+        let document = parse("- ```sh\nls\n```");
+        assert!(
+            !document
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::Text { text, .. } if text.trim() == "•"))
+        );
+
+        let document = parse("- ```sh\n  ls\n  ```\n- second");
+        let Block::Code {
+            code, list_depth, ..
+        } = &document.blocks[0]
+        else {
+            panic!("expected a code block first, got a marker paragraph");
+        };
+        assert_eq!(code.as_ref(), "ls");
+        assert_eq!(*list_depth, 1);
+        let Block::Text { text, .. } = &document.blocks[1] else {
+            panic!("expected the second item");
+        };
+        assert_eq!(text.as_ref(), "• second");
+        assert_eq!(document.blocks.len(), 2);
+    }
+
+    #[test]
+    fn list_item_with_leading_heading_has_no_orphan_marker() {
+        let document = parse("- # Title\n  body");
+        assert!(
+            !document
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::Text { text, .. } if text.trim() == "•"))
+        );
+    }
+
+    #[test]
+    fn block_html_is_kept_as_text() {
+        let document = parse("<div>\nhi\n</div>\n\nafter");
+        let Block::Text { text, .. } = &document.blocks[0] else {
+            panic!("expected html text");
+        };
+        assert!(text.contains("<div>"), "got {text:?}");
     }
 
     #[test]
     fn indented_code_has_no_language() {
         let document = parse("text\n\n    indented code\n");
         assert!(
-            document
-                .blocks
-                .iter()
-                .any(|block| matches!(block, Block::Code { language: None, .. }))
+            document.blocks.iter().any(
+                |block| matches!(block, Block::Code { label, .. } if label.as_ref() == "CODE")
+            )
         );
     }
 }

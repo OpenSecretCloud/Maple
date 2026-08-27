@@ -11,9 +11,10 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Div, Element, Entity, FocusHandle, GlobalElementId, Hitbox,
+    App, ClipboardItem, Div, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox,
     HitboxBehavior, InspectorElementId, LayoutId, MouseButton, Pixels, SharedString, StyledText,
     Window, div, prelude::*,
 };
@@ -21,9 +22,29 @@ use gpui::{
 use super::icons::icon;
 use super::theme;
 
+/// Styled runs of a paragraph, shared between the parsed block and the
+/// element rendered from it each frame.
+pub type Highlights = Rc<[(Range<usize>, HighlightStyleT)]>;
+
+/// Clickable link ranges with destinations, shared like [`Highlights`].
+pub type Links = Rc<[(Range<usize>, String)]>;
+
+/// Registry entries kept on each side of the selection when it overflows.
+const REGISTRY_CAP: usize = 8192;
+const REGISTRY_WINDOW: u64 = 2048;
+
 /// Background drawn under selected text: Maple coral at ~40% alpha.
 fn selection_background() -> gpui::Hsla {
     gpui::rgba(0xff977166).into()
+}
+
+/// Snap a byte index to the nearest char boundary at or before it.
+fn snap_to_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 /// A position inside the transcript's paragraph space.
@@ -56,7 +77,19 @@ impl TextSelection {
         self.anchor.is_some() && self.anchor != self.head
     }
 
+    /// True when a mouse release has nothing to finish.
+    fn is_idle(&self) -> bool {
+        !self.selecting && self.down.is_none()
+    }
+
+    /// Forget the selection and every registered paragraph. Call this when
+    /// the transcript changes session so stale text cannot be copied.
     pub fn clear(&mut self) {
+        self.reset_selection();
+        self.registry.clear();
+    }
+
+    fn reset_selection(&mut self) {
         self.anchor = None;
         self.head = None;
         self.down = None;
@@ -76,6 +109,17 @@ impl TextSelection {
         }
     }
 
+    /// End a drag from a paragraph that is not under the pointer. Leaves
+    /// `down` in place so the hovered paragraph can still detect a click.
+    fn end_drag(&mut self) {
+        self.selecting = false;
+        if self.anchor.is_some() && self.anchor == self.head {
+            // A click without a drag leaves nothing selected.
+            self.anchor = None;
+            self.head = None;
+        }
+    }
+
     /// End a drag. Returns the URL when the press was a click (no drag)
     /// inside a link range.
     fn end_with_click(
@@ -85,12 +129,7 @@ impl TextSelection {
         links: &[(Range<usize>, String)],
     ) -> Option<String> {
         let down = self.down.take();
-        self.selecting = false;
-        if self.anchor.is_some() && self.anchor == self.head {
-            // A click without a drag leaves nothing selected.
-            self.anchor = None;
-            self.head = None;
-        }
+        self.end_drag();
         let down = down?;
         if down.ordinal != ordinal || down.index != index {
             return None;
@@ -120,11 +159,15 @@ impl TextSelection {
         if ordinal < lo.ordinal || ordinal > hi.ordinal {
             return None;
         }
-        let len = self.registry.get(&ordinal).map(String::len)?;
+        let text = self.registry.get(&ordinal)?;
         let start = if ordinal == lo.ordinal { lo.index } else { 0 };
-        let end = if ordinal == hi.ordinal { hi.index } else { len };
-        let (start, end) = (start.min(len), end.min(len));
-        (start < end).then(|| start..end)
+        let end = if ordinal == hi.ordinal {
+            hi.index
+        } else {
+            text.len()
+        };
+        let (start, end) = (snap_to_boundary(text, start), snap_to_boundary(text, end));
+        (start < end).then_some(start..end)
     }
 
     /// The selected text across paragraphs, joined with newlines.
@@ -143,7 +186,7 @@ impl TextSelection {
             } else {
                 text.len()
             };
-            let (start, end) = (start.min(text.len()), end.min(text.len()));
+            let (start, end) = (snap_to_boundary(text, start), snap_to_boundary(text, end));
             if start < end {
                 parts.push(&text[start..end]);
             }
@@ -158,12 +201,25 @@ impl TextSelection {
     }
 
     fn register(&mut self, ordinal: u64, text: &str) {
-        if self.registry.len() > 8192 {
-            // Keep only the neighborhood of the active selection.
+        // A paragraph inside the selection changed (streaming): its byte
+        // indices no longer mean the same characters, so drop the selection.
+        let changed = self
+            .registry
+            .get(&ordinal)
+            .is_some_and(|registered| registered != text);
+        if changed
+            && let Some((lo, hi)) = self.bounds()
+            && (lo.ordinal..=hi.ordinal).contains(&ordinal)
+        {
+            self.reset_selection();
+        }
+        if self.registry.len() > REGISTRY_CAP {
+            // Keep only a window around the active selection.
             match self.bounds() {
-                Some((lo, _)) => {
-                    let floor = lo.ordinal.saturating_sub(4096);
-                    self.registry.retain(|key, _| *key >= floor);
+                Some((lo, hi)) => {
+                    let floor = lo.ordinal.saturating_sub(REGISTRY_WINDOW);
+                    let ceil = hi.ordinal.saturating_add(REGISTRY_WINDOW);
+                    self.registry.retain(|key, _| (floor..=ceil).contains(key));
                 }
                 None => self.registry.clear(),
             }
@@ -191,6 +247,15 @@ impl RenderCtx {
     pub fn for_block(&self, index: usize) -> Option<u64> {
         self.base_ordinal.map(|base| base + index as u64)
     }
+
+    /// Element-id name shared by every code block of the message.
+    pub fn id_name(&self) -> SharedString {
+        if self.id_seed.is_empty() {
+            SharedString::new_static("md")
+        } else {
+            SharedString::from(self.id_seed.clone())
+        }
+    }
 }
 
 /// One paragraph of markdown as an interactive element: styled runs,
@@ -198,8 +263,8 @@ impl RenderCtx {
 pub struct RichText {
     ordinal: Option<u64>,
     text: SharedString,
-    highlights: Vec<(Range<usize>, HighlightStyleT)>,
-    links: Vec<(Range<usize>, String)>,
+    highlights: Highlights,
+    links: Links,
     selection: Option<Entity<TextSelection>>,
     focus: Option<FocusHandle>,
     styled: Option<StyledText>,
@@ -208,19 +273,22 @@ pub struct RichText {
 type HighlightStyleT = gpui::HighlightStyle;
 
 /// Overlay the selection background on the paragraph's styled runs.
+/// `base` must be sorted and non-overlapping. Returns `None` when there is
+/// nothing to overlay and `base` can be used as is.
 fn merged_highlights(
     base: &[(Range<usize>, HighlightStyleT)],
     selection: Option<Range<usize>>,
-    text_len: usize,
-) -> Vec<(Range<usize>, HighlightStyleT)> {
-    let Some(selection) = selection else {
-        return base.to_vec();
-    };
-    let selection = selection.start.min(text_len)..selection.end.min(text_len);
+    text: &str,
+) -> Option<Vec<(Range<usize>, HighlightStyleT)>> {
+    let selection = selection?;
+    let selection = snap_to_boundary(text, selection.start)..snap_to_boundary(text, selection.end);
     if selection.start >= selection.end {
-        return base.to_vec();
+        return None;
     }
-    let mut points: Vec<usize> = vec![selection.start, selection.end];
+    let text_len = text.len();
+    let mut points: Vec<usize> = Vec::with_capacity(2 + base.len() * 2);
+    points.push(selection.start);
+    points.push(selection.end);
     for (range, _) in base {
         // Segment boundaries of the base styles, whether inside or outside
         // the selection, so unstyled gaps keep their original styling.
@@ -229,15 +297,21 @@ fn merged_highlights(
     }
     points.sort_unstable();
     points.dedup();
-    let mut merged: Vec<(Range<usize>, HighlightStyleT)> = Vec::new();
+    let mut merged: Vec<(Range<usize>, HighlightStyleT)> = Vec::with_capacity(points.len());
+    // Base runs are sorted, so a cursor that only moves forward finds the
+    // run that covers each segment.
+    let mut base_ix = 0;
     for pair in points.windows(2) {
         let (start, end) = (pair[0], pair[1]);
         if start >= end {
             continue;
         }
+        while base_ix < base.len() && base[base_ix].0.end <= start {
+            base_ix += 1;
+        }
         let base_style = base
-            .iter()
-            .find(|(range, _)| range.contains(&start))
+            .get(base_ix)
+            .filter(|(range, _)| range.start <= start)
             .map(|(_, style)| *style)
             .unwrap_or_default();
         let selected = selection.start <= start && start < selection.end;
@@ -245,15 +319,16 @@ fn merged_highlights(
         if selected {
             style.background_color = Some(selection_background());
         }
-        if let Some((last_range, last_style)) = merged.last_mut() {
-            if last_range.end == start && *last_style == style {
-                last_range.end = end;
-                continue;
-            }
+        if let Some((last_range, last_style)) = merged.last_mut()
+            && last_range.end == start
+            && *last_style == style
+        {
+            last_range.end = end;
+            continue;
         }
         merged.push((start..end, style));
     }
-    merged
+    Some(merged)
 }
 
 impl RichText {
@@ -263,8 +338,11 @@ impl RichText {
             .as_ref()
             .zip(self.ordinal)
             .and_then(|(entity, ordinal)| entity.read(cx).range_for(ordinal));
-        let highlights = merged_highlights(&self.highlights, selection_range, self.text.len());
-        StyledText::new(self.text.clone()).with_highlights(highlights)
+        let styled = StyledText::new(self.text.clone());
+        match merged_highlights(&self.highlights, selection_range, &self.text) {
+            Some(highlights) => styled.with_highlights(highlights),
+            None => styled.with_highlights(self.highlights.iter().cloned()),
+        }
     }
 }
 
@@ -370,7 +448,6 @@ impl Element for RichText {
         // Press: start a selection at the character under the pointer.
         {
             let entity = entity.clone();
-            let ordinal = ordinal;
             let layout = layout.clone();
             let hitbox = hitbox.clone();
             window.on_mouse_event(
@@ -387,9 +464,11 @@ impl Element for RichText {
                     let Some(entity) = &entity else {
                         return;
                     };
-                    if let (Some(ordinal), Ok(index)) =
-                        (ordinal, layout.index_for_position(event.position))
-                    {
+                    if let Some(ordinal) = ordinal {
+                        // Past the end of a line, Err carries the nearest index.
+                        let index = layout
+                            .index_for_position(event.position)
+                            .unwrap_or_else(|ix| ix);
                         entity.update(cx, |state, cx| {
                             state.begin(SelectionPos { ordinal, index });
                             cx.notify();
@@ -415,9 +494,10 @@ impl Element for RichText {
                     if !entity.read(cx).is_selecting() {
                         return;
                     }
-                    if let (Some(ordinal), Ok(index)) =
-                        (ordinal, layout.index_for_position(event.position))
-                    {
+                    if let Some(ordinal) = ordinal {
+                        let index = layout
+                            .index_for_position(event.position)
+                            .unwrap_or_else(|ix| ix);
                         entity.update(cx, |state, cx| {
                             state.extend(SelectionPos { ordinal, index });
                             cx.notify();
@@ -428,6 +508,9 @@ impl Element for RichText {
         }
 
         // Release: finish the selection; a no-drag press on a link opens it.
+        // Every visible paragraph gets this event, in reverse paint order.
+        // Only the hovered paragraph consumes `down`, so the others cannot
+        // hide a click on a link from it.
         {
             let entity = entity.clone();
             let links = self.links.clone();
@@ -439,28 +522,29 @@ impl Element for RichText {
                     let Some(entity) = &entity else {
                         return;
                     };
+                    if entity.read(cx).is_idle() {
+                        return;
+                    }
                     if !hitbox.is_hovered(window) {
                         entity.update(cx, |state, cx| {
-                            state.end_with_click(0, 0, &[]);
+                            state.end_drag();
                             cx.notify();
                         });
                         return;
                     }
                     let index = layout.index_for_position(event.position).ok();
-                    if let (Some(ordinal), Some(index)) = (ordinal, index) {
-                        let url = entity.update(cx, |state, cx| {
-                            let url = state.end_with_click(ordinal, index, &links);
-                            cx.notify();
-                            url
-                        });
-                        if let Some(url) = url {
-                            open_link(&url);
-                        }
-                    } else {
-                        entity.update(cx, |state, cx| {
-                            state.end_with_click(0, 0, &[]);
-                            cx.notify();
-                        });
+                    let url = entity.update(cx, |state, cx| {
+                        let url = match (ordinal, index) {
+                            (Some(ordinal), Some(index)) => {
+                                state.end_with_click(ordinal, index, &links)
+                            }
+                            _ => state.end_with_click(0, 0, &[]),
+                        };
+                        cx.notify();
+                        url
+                    });
+                    if let Some(url) = url {
+                        open_link(&url);
                     }
                 },
             );
@@ -489,8 +573,8 @@ pub fn open_link(url: &str) {
 /// A styled, selectable paragraph. `ordinal` enables selection when set.
 pub fn paragraph(
     text: SharedString,
-    highlights: Vec<(Range<usize>, HighlightStyleT)>,
-    links: Vec<(Range<usize>, String)>,
+    highlights: Highlights,
+    links: Links,
     text_size: Option<Pixels>,
     weight: Option<gpui::FontWeight>,
     ordinal: Option<u64>,
@@ -516,22 +600,13 @@ pub fn paragraph(
 
 /// Plain (unstyled) selectable text, used for user message bubbles.
 pub fn plain_paragraph(text: SharedString, ordinal: Option<u64>, ctx: &RenderCtx) -> Div {
-    paragraph(text, Vec::new(), Vec::new(), None, None, ordinal, ctx)
+    paragraph(text, Rc::new([]), Rc::new([]), None, None, ordinal, ctx)
 }
 
-/// Code block with a language label and a copy button.
-pub fn code_block(
-    code: SharedString,
-    language: Option<String>,
-    block_ix: usize,
-    ctx: &RenderCtx,
-) -> Div {
+/// Code block with a language label and a copy button. `label` is the
+/// display name of the language; `copy_id` must be unique per block.
+pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -> Div {
     let copy_code = code.clone();
-    let seed = if ctx.id_seed.is_empty() {
-        "md".to_string()
-    } else {
-        ctx.id_seed.clone()
-    };
     div()
         .w_full()
         .my_1()
@@ -553,16 +628,11 @@ pub fn code_block(
                     div()
                         .text_xs()
                         .text_color(gpui::rgb(theme::TEXT_MUTED))
-                        .child(
-                            language
-                                .clone()
-                                .unwrap_or_else(|| "code".to_string())
-                                .to_uppercase(),
-                        ),
+                        .child(label),
                 )
                 .child(
                     div()
-                        .id(gpui::SharedString::from(format!("{seed}-copy-{block_ix}")))
+                        .id(copy_id)
                         .flex()
                         .items_center()
                         .gap_1()
@@ -591,11 +661,6 @@ pub fn code_block(
         )
 }
 
-#[allow(dead_code)]
-fn _unused(element: AnyElement) -> AnyElement {
-    element
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +677,22 @@ mod tests {
         let url = selection.end_with_click(10, 4, &links);
         assert_eq!(url.as_deref(), Some("https://example.test"));
         assert!(!selection.has_selection());
+        assert!(selection.is_idle());
+    }
+
+    #[test]
+    fn end_drag_keeps_down_for_the_hovered_paragraph() {
+        // Another paragraph's listener runs first and must not eat the click.
+        let mut selection = TextSelection::default();
+        selection.begin(pos(10, 4));
+        selection.end_drag();
+        assert!(!selection.is_selecting());
+        assert!(!selection.has_selection());
+        assert!(!selection.is_idle());
+        let links = vec![(3..7, "https://example.test".to_string())];
+        let url = selection.end_with_click(10, 4, &links);
+        assert_eq!(url.as_deref(), Some("https://example.test"));
+        assert!(selection.is_idle());
     }
 
     #[test]
@@ -639,13 +720,94 @@ mod tests {
     }
 
     #[test]
+    fn changed_text_inside_selection_clears_it() {
+        let mut selection = TextSelection::default();
+        selection.register(10, "héllo");
+        selection.begin(pos(10, 0));
+        selection.extend(pos(10, 3));
+        assert!(selection.has_selection());
+        selection.register(10, "h€llo");
+        assert!(!selection.has_selection());
+        assert_eq!(selection.selected_text(), "");
+    }
+
+    #[test]
+    fn stale_indices_snap_to_char_boundaries() {
+        let mut selection = TextSelection::default();
+        selection.registry.insert(10, "h€llo".to_string());
+        // Index 3 is inside the 3-byte euro sign.
+        selection.begin(pos(10, 0));
+        selection.extend(pos(10, 3));
+        assert_eq!(selection.selected_text(), "h");
+        assert_eq!(selection.range_for(10), Some(0..1));
+        let merged = merged_highlights(&[], Some(0..3), "h€llo");
+        assert_eq!(merged.map(|runs| runs[0].0.clone()), Some(0..1));
+    }
+
+    #[test]
+    fn clear_forgets_registered_paragraphs() {
+        let mut selection = TextSelection::default();
+        selection.register(10, "hello");
+        selection.begin(pos(10, 0));
+        selection.clear();
+        assert!(selection.registry.is_empty());
+        assert!(selection.is_idle());
+    }
+
+    #[test]
+    fn registry_stays_bounded_around_the_selection() {
+        let mut selection = TextSelection::default();
+        selection.registry.insert(5, "anchor".to_string());
+        selection.begin(pos(5, 0));
+        selection.extend(pos(5, 3));
+        for ordinal in 0..(REGISTRY_CAP as u64 + 10) {
+            let text = if ordinal == 5 { "anchor" } else { "x" };
+            selection.register(ordinal, text);
+        }
+        assert!(selection.has_selection());
+        assert!(selection.registry.len() <= REGISTRY_CAP + 1);
+        assert!(selection.registry.contains_key(&5));
+    }
+
+    #[test]
     fn merged_highlights_overlay_selection() {
         let base = vec![(0..3, HighlightStyleT::default())];
-        let merged = merged_highlights(&base, Some(2..6), 10);
+        let merged = merged_highlights(&base, Some(2..6), "abcdefghij").expect("overlay");
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].0, 0..2);
         assert!(merged[0].1.background_color.is_none());
         assert_eq!(merged[1].0, 2..6);
         assert!(merged[1].1.background_color.is_some());
+        assert!(merged_highlights(&base, None, "abcdefghij").is_none());
+    }
+
+    #[test]
+    fn merged_highlights_keep_gaps_between_runs() {
+        let bold = HighlightStyleT {
+            font_weight: Some(gpui::FontWeight::BOLD),
+            ..Default::default()
+        };
+        let base = vec![(0..2, bold), (4..6, bold)];
+        let merged = merged_highlights(&base, Some(1..5), "abcdefgh").expect("overlay");
+        let runs: Vec<_> = merged
+            .iter()
+            .map(|(range, style)| {
+                (
+                    range.clone(),
+                    style.font_weight.is_some(),
+                    style.background_color.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            vec![
+                (0..1, true, false),
+                (1..2, true, true),
+                (2..4, false, true),
+                (4..5, true, true),
+                (5..6, true, false),
+            ]
+        );
     }
 }
