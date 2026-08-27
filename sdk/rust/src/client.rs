@@ -424,7 +424,7 @@ async fn collect_response_body(mut body: OpenSecretResponseBody) -> Result<Bytes
     Ok(collected.freeze())
 }
 
-fn uses_mock_attestation(base_url: &str) -> Result<bool> {
+fn is_local_attestation_endpoint(base_url: &str) -> Result<bool> {
     let parsed = reqwest::Url::parse(base_url)
         .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -469,6 +469,19 @@ fn uses_mock_attestation(base_url: &str) -> Result<bool> {
     Ok(is_mock_host)
 }
 
+fn uses_mock_attestation(base_url: &str) -> Result<bool> {
+    let is_local = is_local_attestation_endpoint(base_url)?;
+    let is_plain_http = reqwest::Url::parse(base_url)
+        .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?
+        .scheme()
+        == "http";
+
+    // Local mock documents deliberately bypass Nitro certificate, nonce, and
+    // trusted-release verification. Keep that capability out of normal SDK,
+    // proxy, and Maple builds even if they are pointed at a loopback URL.
+    Ok(cfg!(feature = "mock-attestation") && is_local && is_plain_http)
+}
+
 fn official_attestation_environment(base_url: &str) -> Result<Option<AttestationEnvironment>> {
     let parsed = reqwest::Url::parse(base_url)
         .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?;
@@ -485,9 +498,10 @@ fn default_attestation_environment(base_url: &str) -> Result<AttestationEnvironm
     if let Some(environment) = official_attestation_environment(base_url)? {
         return Ok(environment);
     }
-    if uses_mock_attestation(base_url)? {
+    if is_local_attestation_endpoint(base_url)? {
         // The mock path is feature-gated and bypasses this policy, but client
-        // construction still needs a well-formed embedded policy value.
+        // construction and fully verified local connections still need a
+        // well-formed embedded policy value.
         return Ok(AttestationEnvironment::Production);
     }
     Err(Error::Configuration(
@@ -2654,14 +2668,10 @@ mod tests {
     use crate::PushNotificationKeyPair;
     use futures::StreamExt;
     use serde_json::json;
-    use std::{
-        collections::HashMap,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc, Mutex as StdMutex,
-        },
-        time::Duration,
-    };
+    use std::collections::HashMap;
+    #[cfg(feature = "mock-attestation")]
+    use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc, Mutex as StdMutex};
+    use std::time::Duration;
     use wiremock::{
         matchers::{header, method, path, query_param},
         Match, Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -2847,10 +2857,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     struct AttestationResponder {
         server_public_key: [u8; 32],
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for AttestationResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let nonce = request.url.path().rsplit('/').next().unwrap_or_default();
@@ -2862,12 +2874,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     struct KeyExchangeResponder {
         server_secret_key: [u8; 32],
         session_key: [u8; 32],
         session_id: String,
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for KeyExchangeResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let body: KeyExchangeRequest = serde_json::from_slice(request.body.as_ref()).unwrap();
@@ -2888,12 +2902,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[derive(Clone)]
     struct PerNonceAttestationResponder {
         server_secrets: Arc<StdMutex<HashMap<String, [u8; 32]>>>,
         next_key: Arc<AtomicUsize>,
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for PerNonceAttestationResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let nonce = request.url.path().rsplit('/').next().unwrap_or_default();
@@ -2915,12 +2931,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[derive(Clone)]
     struct PerNonceKeyExchangeResponder {
         server_secrets: Arc<StdMutex<HashMap<String, [u8; 32]>>>,
         session_key: [u8; 32],
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for PerNonceKeyExchangeResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let body: KeyExchangeRequest = serde_json::from_slice(request.body.as_ref()).unwrap();
@@ -2952,6 +2970,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn build_mock_attestation_document(nonce: &str, server_public_key: &[u8; 32]) -> String {
         let payload = CborValue::Map(vec![
             (
@@ -3136,6 +3155,19 @@ mod tests {
     async fn test_client_creation() {
         let client = OpenSecretClient::new("http://localhost:3000").unwrap();
         assert_eq!(client.base_url, "http://localhost:3000");
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    #[test]
+    fn local_mock_bypass_is_disabled_without_feature() {
+        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
+        assert!(!client.use_mock_attestation);
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    #[test]
+    fn local_mock_bypass_requires_explicit_feature() {
+        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
         assert!(client.use_mock_attestation);
     }
 
@@ -3180,18 +3212,22 @@ mod tests {
             assert!(!client.use_mock_attestation, "unexpected mock URL: {url}");
         }
 
+        for url in [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ] {
+            let client = OpenSecretClient::new(url).unwrap();
+            assert_eq!(
+                client.use_mock_attestation,
+                cfg!(feature = "mock-attestation"),
+                "unexpected mock-attestation feature behavior for {url}"
+            );
+        }
+
+        let policy = TrustedReleasePolicy::embedded(AttestationEnvironment::Production).unwrap();
         assert!(
-            OpenSecretClient::new("http://localhost:3000")
-                .unwrap()
-                .use_mock_attestation
-        );
-        assert!(
-            OpenSecretClient::new("http://127.0.0.1:3000")
-                .unwrap()
-                .use_mock_attestation
-        );
-        assert!(
-            OpenSecretClient::new("http://[::1]:3000")
+            !OpenSecretClient::new_with_attestation_policy("https://localhost:3000", policy)
                 .unwrap()
                 .use_mock_attestation
         );
@@ -3217,7 +3253,10 @@ mod tests {
     fn android_emulator_alias_is_not_a_desktop_mock_bypass() {
         let client = OpenSecretClient::new("http://10.0.2.2:3000");
         if cfg!(target_os = "android") {
-            assert!(client.unwrap().use_mock_attestation);
+            assert_eq!(
+                client.unwrap().use_mock_attestation,
+                cfg!(feature = "mock-attestation")
+            );
         } else {
             assert!(client.is_err());
             let policy =
@@ -3242,6 +3281,7 @@ mod tests {
         assert_eq!(tokens.refresh_token.as_deref(), Some("refresh"));
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn concurrent_attestation_handshakes_keep_each_nonce_public_key() {
         let mock_server = MockServer::start().await;
@@ -3784,6 +3824,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn target_replay_budget_is_shared_across_recovery_reasons() {
         let mock_server = MockServer::start().await;
@@ -3864,6 +3905,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn expired_target_with_stale_refresh_session_repairs_each_layer_once() {
         let mock_server = MockServer::start().await;
@@ -3977,6 +4019,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn establishing_a_missing_local_session_does_not_consume_target_replay() {
         let mock_server = MockServer::start().await;
@@ -4716,6 +4759,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn inference_transport_establishes_attestation_and_replays_exact_bytes() {
         let mock_server = MockServer::start().await;
@@ -5048,6 +5092,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn test_refresh_reestablishes_attestation_without_sending_auth_headers() {
         let mock_server = MockServer::start().await;
@@ -5998,6 +6043,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn agent_stream_stale_session_reattests_and_decrypts() {
         let mock_server = MockServer::start().await;
