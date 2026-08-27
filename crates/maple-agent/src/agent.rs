@@ -1688,7 +1688,7 @@ impl AgentRuntimeHandle {
     /// callers should reload the session afterwards.
     pub async fn compact_session(&self, session_id: String) -> Result<(), String> {
         let state = &self.service;
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let agent_manager = {
@@ -1699,6 +1699,9 @@ impl AgentRuntimeHandle {
             ensure_runtime_account(current, &self.account_scope)?;
             Arc::clone(&current.agent_manager)
         };
+        // Compaction is a full model round-trip. Holding the lifecycle fence
+        // for its duration would block every other runtime operation.
+        drop(runtime_lifecycle_guard);
         let agent = agent_manager
             .get_or_create_agent(session_id.clone())
             .await
@@ -1721,27 +1724,28 @@ impl AgentRuntimeHandle {
         output_text: &str,
     ) -> Result<Option<String>, String> {
         let state = &self.service;
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
-        let agent_manager = {
+        self.ensure_accepting_new_work()?;
+        // The summary only needs the account's Maple transport. Building a
+        // provider from it avoids `get_or_create_agent`, which would start
+        // the session's MCP servers just to label one tool call.
+        let maple_api_session = {
             let runtime = state.inner.lock().await;
             let current = runtime
                 .as_ref()
                 .ok_or_else(|| "Agent runtime is not running".to_string())?;
             ensure_runtime_account(current, &self.account_scope)?;
-            Arc::clone(&current.agent_manager)
+            Arc::clone(&current.maple_api_session)
         };
-        let agent = agent_manager
-            .get_or_create_agent(session_id.to_string())
-            .await
-            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
-        let provider = agent
-            .provider()
-            .await
-            .map_err(|error| format!("Failed to resolve Agent summary provider: {error}"))?;
+        // Release the lifecycle fence before the model round-trip so sends,
+        // cancels, and shutdown do not wait on a summary.
+        drop(runtime_lifecycle_guard);
+        let provider: Arc<dyn goose::providers::base::Provider> =
+            Arc::new(MapleProvider::new(maple_api_session));
         let mut model_config =
             goose::model_config::model_config_from_user_config_with_session_settings(
-                provider.get_name(),
+                MAPLE_PROVIDER_NAME,
                 TOOL_SUMMARY_MODEL,
                 None,
                 None,
