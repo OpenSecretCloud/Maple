@@ -178,6 +178,7 @@ fn main() {
                 log::warn!("failed to register bundled fonts: {error}");
             }
             text_input::register_key_bindings(cx);
+            cx.on_action(|_: &QuitApp, cx| cx.quit());
             cx.bind_keys([
                 KeyBinding::new("ctrl-q", QuitApp, None),
                 KeyBinding::new("cmd-q", QuitApp, None),
