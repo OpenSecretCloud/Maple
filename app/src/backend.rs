@@ -157,14 +157,22 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
-fn default_project_root() -> String {
-    std::env::current_dir()
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|_| {
-            home_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-        })
+/// Root the desktop app opens when the account has no saved root. The GUI
+/// must not depend on the directory it was launched from: that is the job of
+/// the `maple acp` command, not a windowed app started from a launcher.
+fn fallback_project_root() -> Option<String> {
+    home_dir().map(|path| path.to_string_lossy().to_string())
+}
+
+/// Root for a GUI start: the saved default when it still is a folder, else
+/// the home directory. Never the process working directory.
+fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
+    config
+        .default_project_root
+        .as_deref()
+        .filter(|path| !path.trim().is_empty() && std::path::Path::new(path).is_dir())
+        .map(str::to_owned)
+        .or_else(fallback_project_root)
 }
 
 impl AgentBackend {
@@ -550,6 +558,24 @@ impl AgentBackend {
     ) -> Result<AgentRuntimeStatus, String> {
         let handle = self.service.handle_for_user(user_id).await?;
         let session = self.auth.session_for(user_id).await?;
+        // The agent falls back to the process working directory when no root
+        // is given. That is right for `maple acp`, not for the GUI: pick the
+        // saved root or the home directory instead.
+        let request = match request {
+            Some(AgentStartRequest {
+                project_root: None,
+                model,
+                mode,
+            }) => {
+                let config = handle.load_config().await?;
+                Some(AgentStartRequest {
+                    project_root: gui_project_root(&config),
+                    model,
+                    mode,
+                })
+            }
+            other => other,
+        };
         // A wedged enclave connection must surface as an error, not an
         // eternal spinner.
         tokio::time::timeout(
@@ -961,11 +987,11 @@ impl AgentBackend {
             .await
     }
 
-    /// Standard start request for this app: agent rooted at the launch
-    /// directory with the configured model and the SmartApprove policy.
+    /// Standard start request for this app: the saved project root (see
+    /// `start_runtime`) with the configured model and the SmartApprove policy.
     pub fn default_start_request(&self) -> AgentStartRequest {
         AgentStartRequest {
-            project_root: Some(default_project_root()),
+            project_root: None,
             model: std::env::var("MAPLE_MODEL").ok(),
             mode: None,
         }
