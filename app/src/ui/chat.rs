@@ -29,13 +29,30 @@ pub struct LoggedOut;
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
 
-/// An image staged in the composer: the file on disk for the thumbnail and
-/// the data URL the runtime stores with the message.
+/// An image staged in the composer: the thumbnail source (a file on disk
+/// or pasted bytes) and the data URL the runtime stores with the message.
 #[derive(Clone)]
 struct DraftImage {
     name: String,
-    path: Arc<std::path::Path>,
+    source: DraftImageSource,
     data_url: String,
+}
+
+/// Where a draft thumbnail comes from. `gpui::ImageSource` is not `Send`,
+/// so drafts hold this and convert when they render.
+#[derive(Clone)]
+enum DraftImageSource {
+    Path(Arc<std::path::Path>),
+    Pasted(Arc<gpui::Image>),
+}
+
+impl From<&DraftImageSource> for gpui::ImageSource {
+    fn from(source: &DraftImageSource) -> Self {
+        match source {
+            DraftImageSource::Path(path) => Self::from(Arc::clone(path)),
+            DraftImageSource::Pasted(image) => Self::Image(Arc::clone(image)),
+        }
+    }
 }
 
 /// Per-item parsed markdown. Interior mutability because the list render
@@ -192,11 +209,19 @@ impl ChatScreen {
             TextInput::new("Ask Maple to work in this folder...", cx)
                 .multiline(8)
                 .clears_on_enter()
-                .on_enter(move |text, _, cx| {
-                    // The handler receives the composer text directly;
-                    // clearing and sending happen without leasing the input.
+                .on_enter({
+                    let weak = weak.clone();
+                    move |text, _, cx| {
+                        // The handler receives the composer text directly;
+                        // clearing and sending happen without leasing the input.
+                        if let Some(this) = weak.upgrade() {
+                            this.update(cx, |chat, cx| chat.send_text(text, cx));
+                        }
+                    }
+                })
+                .on_paste_image(move |image, _, cx| {
                     if let Some(this) = weak.upgrade() {
-                        this.update(cx, |chat, cx| chat.send_text(text, cx));
+                        this.update(cx, |chat, cx| chat.paste_image(image, cx));
                     }
                 })
         });
@@ -972,17 +997,15 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// Open the native image picker and stage the chosen files.
-    fn pick_images(&mut self, cx: &mut Context<Self>) {
-        if self.image_picking {
-            return;
-        }
+    /// How many more images the draft can take, or `None` with a notice
+    /// set when the plan or the limit blocks attachments.
+    fn remaining_image_slots(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         if let Some(plan) = self.sidebar_plan.as_ref() {
             let label = plan.plan_label.to_lowercase();
             if !(label.contains("pro") || label.contains("max") || label.contains("team")) {
                 self.notice = Some("Image attachments need a Pro, Max, or Team plan".into());
                 cx.notify();
-                return;
+                return None;
             }
         }
         let remaining = MAX_DRAFT_IMAGES.saturating_sub(self.draft_images.len());
@@ -990,8 +1013,45 @@ impl ChatScreen {
             self.notice =
                 Some(format!("Attach at most {MAX_DRAFT_IMAGES} images at a time").into());
             cx.notify();
+            return None;
+        }
+        Some(remaining)
+    }
+
+    /// Stage an image pasted into the composer from the clipboard.
+    fn paste_image(&mut self, image: gpui::Image, cx: &mut Context<Self>) {
+        if self.remaining_image_slots(cx).is_none() {
             return;
         }
+        let extension = match image.format {
+            gpui::ImageFormat::Jpeg => "jpg",
+            gpui::ImageFormat::Webp => "webp",
+            _ => "png",
+        };
+        let name = format!("pasted-{}.{extension}", self.draft_images.len() + 1);
+        let image = Arc::new(image);
+        match draft_image_from_bytes(
+            name,
+            &image.bytes,
+            DraftImageSource::Pasted(Arc::clone(&image)),
+        ) {
+            Ok(draft) => {
+                self.notice = None;
+                self.draft_images.push(draft);
+            }
+            Err(message) => self.notice = Some(message.into()),
+        }
+        cx.notify();
+    }
+
+    /// Open the native image picker and stage the chosen files.
+    fn pick_images(&mut self, cx: &mut Context<Self>) {
+        if self.image_picking {
+            return;
+        }
+        let Some(remaining) = self.remaining_image_slots(cx) else {
+            return;
+        };
         self.image_picking = true;
         self.notice = None;
         cx.notify();
@@ -2808,7 +2868,7 @@ impl ChatScreen {
                             .relative()
                             .size_16()
                             .child(
-                                gpui::img(Arc::clone(&image.path))
+                                gpui::img(gpui::ImageSource::from(&image.source))
                                     .size_16()
                                     .rounded_xl()
                                     .object_fit(gpui::ObjectFit::Cover)
@@ -3128,6 +3188,16 @@ fn load_draft_image(path: &std::path::Path) -> Result<DraftImage, String> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "image".to_string());
     let bytes = std::fs::read(path).map_err(|error| format!("Could not read {name}: {error}"))?;
+    draft_image_from_bytes(name, &bytes, DraftImageSource::Path(Arc::from(path)))
+}
+
+/// Build a draft from raw image bytes, checking size and format the same
+/// way the runtime does so errors surface before the send.
+fn draft_image_from_bytes(
+    name: String,
+    bytes: &[u8],
+    source: DraftImageSource,
+) -> Result<DraftImage, String> {
     if bytes.len() > MAX_DRAFT_IMAGE_BYTES {
         return Err(format!("{name} is larger than 10 MB"));
     }
@@ -3142,8 +3212,8 @@ fn load_draft_image(path: &std::path::Path) -> Result<DraftImage, String> {
     };
     Ok(DraftImage {
         name,
-        path: Arc::from(path),
-        data_url: format!("data:{mime};base64,{}", base64_encode(&bytes)),
+        source,
+        data_url: format!("data:{mime};base64,{}", base64_encode(bytes)),
     })
 }
 
@@ -3993,6 +4063,66 @@ mod state_tests {
             assert_eq!(
                 this.active_runs.get("s1").map(String::as_str),
                 Some("run-new")
+            );
+        });
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        // Only the signature matters: the draft checks the magic bytes.
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        bytes.extend_from_slice(&[0; 16]);
+        bytes
+    }
+
+    #[gpui::test]
+    fn test_paste_image_stages_a_draft(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, png_bytes());
+            this.paste_image(image, cx);
+            assert_eq!(this.draft_images.len(), 1);
+            assert_eq!(this.draft_images[0].name, "pasted-1.png");
+            assert!(
+                this.draft_images[0]
+                    .data_url
+                    .starts_with("data:image/png;base64,iVBORw0KGgo")
+            );
+            assert!(matches!(
+                this.draft_images[0].source,
+                DraftImageSource::Pasted(_)
+            ));
+            assert!(this.notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn test_paste_image_rejects_unsupported_format(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let image = gpui::Image::from_bytes(gpui::ImageFormat::Gif, b"GIF89a".to_vec());
+            this.paste_image(image, cx);
+            assert!(this.draft_images.is_empty());
+            assert!(
+                this.notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains("not a PNG, JPEG, or WebP"))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_paste_image_respects_limit(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            for _ in 0..=MAX_DRAFT_IMAGES {
+                let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, png_bytes());
+                this.paste_image(image, cx);
+            }
+            assert_eq!(this.draft_images.len(), MAX_DRAFT_IMAGES);
+            assert!(
+                this.notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains("at most"))
             );
         });
     }

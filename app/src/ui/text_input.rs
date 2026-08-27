@@ -6,12 +6,12 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId,
-    InteractiveElement, KeyBinding, Keystroke, LayoutId, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point, prelude::*, px, relative,
-    rgb, rgba, size,
+    App, Bounds, ClipboardEntry, ClipboardItem, ContentMask, Context, CursorStyle, Element,
+    ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
+    GlobalElementId, InteractiveElement, KeyBinding, Keystroke, LayoutId, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun,
+    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point,
+    prelude::*, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -64,6 +64,7 @@ pub fn register_key_bindings(cx: &mut App) {
 }
 
 type EnterHandler = Box<dyn Fn(String, &mut Window, &mut Context<TextInput>) + 'static>;
+type PasteImageHandler = Box<dyn Fn(gpui::Image, &mut Window, &mut Context<TextInput>) + 'static>;
 
 pub struct TextInput {
     focus_handle: FocusHandle,
@@ -97,6 +98,8 @@ pub struct TextInput {
     /// focus navigation a no-op.
     tab_index: Option<isize>,
     on_enter: Option<EnterHandler>,
+    /// Called when the clipboard holds an image instead of text.
+    on_paste_image: Option<PasteImageHandler>,
 }
 
 impl TextInput {
@@ -120,6 +123,7 @@ impl TextInput {
             clear_on_enter: false,
             tab_index: None,
             on_enter: None,
+            on_paste_image: None,
         }
     }
 
@@ -160,6 +164,15 @@ impl TextInput {
         handler: impl Fn(String, &mut Window, &mut Context<TextInput>) + 'static,
     ) -> Self {
         self.on_enter = Some(Box::new(handler));
+        self
+    }
+
+    /// Receive images pasted with Ctrl-V; text pastes go into the input.
+    pub fn on_paste_image(
+        mut self,
+        handler: impl Fn(gpui::Image, &mut Window, &mut Context<TextInput>) + 'static,
+    ) -> Self {
+        self.on_paste_image = Some(Box::new(handler));
         self
     }
 
@@ -316,7 +329,22 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        if let Some(on_paste_image) = self.on_paste_image.take() {
+            let image = item.entries().iter().find_map(|entry| match entry {
+                ClipboardEntry::Image(image) => Some(image.clone()),
+                ClipboardEntry::String(_) => None,
+            });
+            if let Some(image) = image {
+                on_paste_image(image, window, cx);
+                self.on_paste_image = Some(on_paste_image);
+                return;
+            }
+            self.on_paste_image = Some(on_paste_image);
+        }
+        if let Some(text) = item.text() {
             let text = if self.multiline {
                 text.replace("\r\n", "\n")
             } else {
