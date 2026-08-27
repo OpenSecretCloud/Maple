@@ -10,3 +10,4 @@ prepare_linux_onnxruntime
 
 cd "${TAURI_DIR}"
 cargo test --all-targets --locked
+cargo test --lib --locked --features insecure-local-mock-attestation maple_api::tests

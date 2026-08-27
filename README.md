@@ -54,7 +54,9 @@ just desktop-dev  # Tauri desktop, including Agent Mode and native features
 
 `just desktop-dev` is preferred over a raw `bun tauri dev`: it provisions the
 pinned ONNX Runtime and applies a local Tauri configuration overlay when one is
-present.
+present. It also compiles the explicitly named local mock-attestation feature;
+the bypass activates only for a plain-HTTP local endpoint. Normal debug,
+release, CI, mobile, Docker, and embedded-proxy builds leave that feature off.
 
 ## API configuration
 
@@ -145,7 +147,9 @@ just desktop-build-debug-overlay   # Requires .local/tauri-workspace.json
 ```
 
 Only the overlay recipe applies `.local/tauri-workspace.json` while packaging.
-Use it when a checkout-specific bundle identity is part of the smoke test.
+Use it when a checkout-specific bundle identity is part of the smoke test. Like
+`desktop-dev`, this explicitly local recipe compiles mock attestation support;
+the other desktop build recipes do not.
 
 Linux desktop builds require the system libraries supplied by the Nix shell.
 For an already-built binary in a headless display environment, WebKit may need:

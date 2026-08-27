@@ -66,7 +66,7 @@ desktop-build: _verify-rust-lock
 
 # Run Tauri desktop development build without the Rust file watcher, using workspace-local config when available
 desktop-dev: _verify-rust-lock
-    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch --config ../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch; fi
+    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch --features insecure-local-mock-attestation --config ../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch --features insecure-local-mock-attestation; fi
 
 # Build Tauri desktop debug
 desktop-build-debug: _verify-rust-lock
@@ -78,7 +78,7 @@ desktop-build-debug-overlay: _verify-rust-lock
     set -euo pipefail
     test -f .local/tauri-workspace.json || { echo "missing .local/tauri-workspace.json" >&2; exit 1; }
     cd frontend
-    src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug --no-sign --config ../.local/tauri-workspace.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
+    src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug --features insecure-local-mock-attestation --no-sign --config ../.local/tauri-workspace.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 # Build Tauri desktop release (with CC unset for compatibility)
 desktop-build-no-cc: _verify-rust-lock
