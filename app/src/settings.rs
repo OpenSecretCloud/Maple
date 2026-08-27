@@ -86,6 +86,26 @@ pub fn save_settings(settings: &AppSettings) {
     }
 }
 
+/// Write settings from a background thread so a toggle never blocks the UI
+/// thread on disk I/O. Writes are sequenced: a later snapshot always wins
+/// over an earlier one that finishes late.
+pub fn save_settings_in_background(settings: AppSettings) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    static LAST_WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        let mut last_written = LAST_WRITTEN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if sequence < *last_written {
+            return;
+        }
+        *last_written = sequence;
+        save_settings(&settings);
+    });
+}
+
 /// One aggregated usage row: per session or per model.
 #[derive(Debug, Clone, Default)]
 pub struct UsageRow {

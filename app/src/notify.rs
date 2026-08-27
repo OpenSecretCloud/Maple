@@ -1,0 +1,120 @@
+//! Desktop notifications through the platform's own tool. Every call runs
+//! the command on a separate thread: D-Bus and script launches must not
+//! block the UI thread.
+
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set after the first failed launch so a missing tool logs one warning,
+/// not one per notification.
+static REPORTED_FAILURE: AtomicBool = AtomicBool::new(false);
+
+/// Show a desktop notification with `title` and `body`. Returns at once;
+/// delivery happens on a background thread. Failures are logged once.
+pub fn notify_desktop(title: &str, body: &str) {
+    let title = title.to_string();
+    let body = body.replace('\n', " ");
+    std::thread::spawn(move || {
+        if let Err(error) = send(&title, &body) {
+            if !REPORTED_FAILURE.swap(true, Ordering::Relaxed) {
+                log::warn!("desktop notification failed (further failures are silent): {error}");
+            } else {
+                log::debug!("desktop notification failed: {error}");
+            }
+        }
+    });
+}
+
+fn run(mut command: Command) -> Result<(), String> {
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| error.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("exited with {status}"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn send(title: &str, body: &str) -> Result<(), String> {
+    let mut command = Command::new("notify-send");
+    command
+        .args(["-a", "Maple", "-t", "8000", "-u", "normal"])
+        .arg(title)
+        .arg(body);
+    run(command)
+}
+
+#[cfg(target_os = "macos")]
+fn send(title: &str, body: &str) -> Result<(), String> {
+    let script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        escape_applescript(body),
+        escape_applescript(title)
+    );
+    let mut command = Command::new("osascript");
+    command.args(["-e", &script]);
+    run(command)
+}
+
+#[cfg(target_os = "windows")]
+fn send(title: &str, body: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = format!(
+        concat!(
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;",
+            "$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(",
+            "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);",
+            "$text = $xml.GetElementsByTagName('text');",
+            "$text.Item(0).AppendChild($xml.CreateTextNode('{}')) | Out-Null;",
+            "$text.Item(1).AppendChild($xml.CreateTextNode('{}')) | Out-Null;",
+            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml);",
+            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Maple').Show($toast)"
+        ),
+        escape_powershell(title),
+        escape_powershell(body)
+    );
+    let mut command = Command::new("powershell");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW);
+    run(command)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn send(title: &str, _body: &str) -> Result<(), String> {
+    log::debug!("desktop notifications are not supported on this platform: {title}");
+    Ok(())
+}
+
+/// Escape text for an AppleScript double-quoted string literal.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn escape_applescript(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Escape text for a PowerShell single-quoted string literal.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn escape_powershell(text: &str) -> String {
+    text.replace('\'', "''")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escapes_applescript_quotes() {
+        assert_eq!(escape_applescript(r#"a "b" \c"#), r#"a \"b\" \\c"#);
+    }
+
+    #[test]
+    fn escapes_powershell_quotes() {
+        assert_eq!(escape_powershell("it's"), "it''s");
+    }
+}

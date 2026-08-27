@@ -332,48 +332,40 @@ impl SettingsScreen {
         } else {
             "auto".to_string()
         };
-        settings::save_settings(&self.settings);
+        settings::save_settings_in_background(self.settings.clone());
         cx.notify();
     }
 
     fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
         self.settings.default_web_enabled = !self.settings.default_web_enabled;
-        settings::save_settings(&self.settings);
+        settings::save_settings_in_background(self.settings.clone());
         cx.notify();
     }
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
         self.settings.tool_details = !self.settings.tool_details;
-        settings::save_settings(&self.settings);
+        settings::save_settings_in_background(self.settings.clone());
         cx.notify();
     }
 
     fn toggle_desktop_notifications(&mut self, cx: &mut Context<Self>) {
         self.settings.desktop_notifications = !self.settings.desktop_notifications;
-        settings::save_settings(&self.settings);
+        settings::save_settings_in_background(self.settings.clone());
         if self.settings.desktop_notifications {
             // Fire a test notification so enabling gives immediate feedback
             // and delivery problems surface right away.
             let enabled_at = chrono::Local::now().format("%H:%M").to_string();
-            std::thread::spawn(move || {
-                let result = std::process::Command::new("notify-send")
-                    .args(["-a", "Maple", "-t", "8000", "-u", "normal"])
-                    .arg("Desktop notifications on")
-                    .arg(format!("You will see alerts like this at {enabled_at}."))
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                if let Err(error) = result {
-                    log::warn!("test notification failed: {error}");
-                }
-            });
+            crate::notify::notify_desktop(
+                "Desktop notifications on",
+                &format!("You will see alerts like this at {enabled_at}."),
+            );
         }
         cx.notify();
     }
 
     fn toggle_tool_summaries(&mut self, cx: &mut Context<Self>) {
         self.settings.tool_summaries = !self.settings.tool_summaries;
-        settings::save_settings(&self.settings);
+        settings::save_settings_in_background(self.settings.clone());
         cx.notify();
     }
 

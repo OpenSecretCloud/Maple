@@ -4,6 +4,7 @@
 mod assets;
 mod backend;
 mod billing;
+mod notify;
 mod settings;
 mod ui;
 
