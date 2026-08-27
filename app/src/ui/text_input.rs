@@ -6,11 +6,12 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InteractiveElement,
-    KeyBinding, Keystroke, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, SharedString, Style, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
-    WrappedLine, actions, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size,
+    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId,
+    InteractiveElement, KeyBinding, Keystroke, LayoutId, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun, UTF16Selection,
+    UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point, prelude::*, px, relative,
+    rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -73,6 +74,9 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<TextLayout>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// Horizontal scroll of a single-line input so the cursor stays in
+    /// view when the text is wider than the box.
+    scroll_x: Pixels,
     /// Wrap long text and accept Shift+Enter newlines; the element grows
     /// with the content up to `max_lines`.
     multiline: bool,
@@ -106,6 +110,7 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            scroll_x: px(0.),
             multiline: false,
             fill_height: false,
             max_lines: 8,
@@ -657,6 +662,7 @@ struct TextElement {
 
 struct PrepaintState {
     layout: Option<TextLayout>,
+    scroll_x: Pixels,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
 }
@@ -825,6 +831,32 @@ impl Element for TextElement {
         } else {
             cursor
         };
+        // Single-line inputs do not wrap. Scroll so the cursor stays in
+        // view and clip the paint to the box.
+        let scroll_x = if input.multiline {
+            px(0.)
+        } else {
+            let cursor_x = layout
+                .position_for_index(display_cursor)
+                .map(|p| p.x)
+                .unwrap_or_default();
+            let text_width = layout
+                .lines
+                .iter()
+                .map(|line| line.size(line_height).width)
+                .fold(px(0.), |acc, w| acc.max(w));
+            let width = bounds.size.width;
+            let mut sx = input.scroll_x;
+            if cursor_x - sx > width - px(2.) {
+                sx = cursor_x - width + px(2.);
+            }
+            if cursor_x - sx < px(0.) {
+                sx = cursor_x;
+            }
+            sx.min((text_width - width + px(2.)).max(px(0.)))
+                .max(px(0.))
+        };
+        let text_bounds = Bounds::new(point(bounds.left() - scroll_x, bounds.top()), bounds.size);
         let (selection, cursor) = if selected_range.is_empty() {
             let cursor_pos = layout
                 .position_for_index(display_cursor)
@@ -833,7 +865,10 @@ impl Element for TextElement {
                 Vec::new(),
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos.x, bounds.top() + cursor_pos.y),
+                        point(
+                            text_bounds.left() + cursor_pos.x,
+                            text_bounds.top() + cursor_pos.y,
+                        ),
                         size(px(2.), line_height),
                     ),
                     rgb(0xe7e7ea),
@@ -861,10 +896,13 @@ impl Element for TextElement {
             if start_pos.y == end_pos.y {
                 quads.push(fill(
                     Bounds::from_corners(
-                        point(bounds.left() + start_pos.x, bounds.top() + start_pos.y),
                         point(
-                            bounds.left() + end_pos.x,
-                            bounds.top() + start_pos.y + line_height,
+                            text_bounds.left() + start_pos.x,
+                            text_bounds.top() + start_pos.y,
+                        ),
+                        point(
+                            text_bounds.left() + end_pos.x,
+                            text_bounds.top() + start_pos.y + line_height,
                         ),
                     ),
                     color,
@@ -874,8 +912,14 @@ impl Element for TextElement {
                 // last row from the left edge.
                 quads.push(fill(
                     Bounds::from_corners(
-                        point(bounds.left() + start_pos.x, bounds.top() + start_pos.y),
-                        point(bounds.right(), bounds.top() + start_pos.y + line_height),
+                        point(
+                            text_bounds.left() + start_pos.x,
+                            text_bounds.top() + start_pos.y,
+                        ),
+                        point(
+                            text_bounds.right(),
+                            text_bounds.top() + start_pos.y + line_height,
+                        ),
                     ),
                     color,
                 ));
@@ -883,8 +927,8 @@ impl Element for TextElement {
                 while y < end_pos.y {
                     quads.push(fill(
                         Bounds::from_corners(
-                            point(bounds.left(), bounds.top() + y),
-                            point(bounds.right(), bounds.top() + y + line_height),
+                            point(text_bounds.left(), text_bounds.top() + y),
+                            point(text_bounds.right(), text_bounds.top() + y + line_height),
                         ),
                         color,
                     ));
@@ -892,10 +936,10 @@ impl Element for TextElement {
                 }
                 quads.push(fill(
                     Bounds::from_corners(
-                        point(bounds.left(), bounds.top() + end_pos.y),
+                        point(text_bounds.left(), text_bounds.top() + end_pos.y),
                         point(
-                            bounds.left() + end_pos.x,
-                            bounds.top() + end_pos.y + line_height,
+                            text_bounds.left() + end_pos.x,
+                            text_bounds.top() + end_pos.y + line_height,
                         ),
                     ),
                     color,
@@ -903,8 +947,12 @@ impl Element for TextElement {
             }
             (quads, None)
         };
+        if !input.multiline && input.scroll_x != scroll_x {
+            self.input.update(cx, |input, _| input.scroll_x = scroll_x);
+        }
         PrepaintState {
             layout: Some(layout),
+            scroll_x,
             cursor,
             selection,
         }
@@ -926,33 +974,39 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        for selection in prepaint.selection.drain(..) {
-            window.paint_quad(selection)
-        }
         let layout = prepaint.layout.take().unwrap();
-        let mut origin = bounds.origin;
-        for line in &layout.lines {
-            line.paint(
-                origin,
-                layout.line_height,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            )
-            .ok();
-            origin.y += line.size(layout.line_height).height;
-        }
-
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+        let text_bounds = Bounds::new(
+            point(bounds.left() - prepaint.scroll_x, bounds.top()),
+            bounds.size,
+        );
+        let focused = focus_handle.is_focused(window);
+        let selection = std::mem::take(&mut prepaint.selection);
+        let cursor = prepaint.cursor.take();
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for quad in selection {
+                window.paint_quad(quad)
+            }
+            let mut origin = text_bounds.origin;
+            for line in &layout.lines {
+                line.paint(
+                    origin,
+                    layout.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .ok();
+                origin.y += line.size(layout.line_height).height;
+            }
+            if focused && let Some(cursor) = cursor {
+                window.paint_quad(cursor);
+            }
+        });
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(layout);
-            input.last_bounds = Some(bounds);
+            input.last_bounds = Some(text_bounds);
         });
     }
 }
