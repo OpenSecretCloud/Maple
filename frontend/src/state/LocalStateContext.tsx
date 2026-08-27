@@ -17,6 +17,7 @@ import { aliasModelName, migrateStickyModelName } from "@/utils/utils";
 export const QUICK_MODEL_ALIAS = "auto:quick";
 export const POWERFUL_MODEL_ALIAS = "auto:powerful";
 export const DEFAULT_MODEL_ID = QUICK_MODEL_ALIAS;
+export const SELECTED_MODEL_RESET_AT_KEY = "selectedModelResetAt";
 const SELECTED_MODEL_METADATA_KEY = "selectedModelMetadata";
 type LocalStateStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -86,8 +87,27 @@ export function getInitialWebSearchEnabled(
   return true;
 }
 
+// One-time reset: clear any previously stickied model so Quick becomes the
+// shared default. Presence of the timestamp is the boolean gate; the ISO
+// value is only diagnostic. A later reset should use a new key.
+function resetSelectedModelOnce(storage: LocalStateStorage | null): void {
+  if (!storage) return;
+
+  try {
+    if (storage.getItem(SELECTED_MODEL_RESET_AT_KEY) != null) return;
+
+    storage.removeItem("selectedModel");
+    storage.removeItem(SELECTED_MODEL_METADATA_KEY);
+    storage.setItem(SELECTED_MODEL_RESET_AT_KEY, new Date().toISOString());
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 // Helper to get the initial model from an explicit sticky choice or the shared default.
 function getInitialModel(storage: LocalStateStorage | null): string {
+  resetSelectedModelOnce(storage);
+
   // Check for dev override first
   if (import.meta.env.VITE_DEV_MODEL_OVERRIDE) {
     return aliasModelName(import.meta.env.VITE_DEV_MODEL_OVERRIDE);

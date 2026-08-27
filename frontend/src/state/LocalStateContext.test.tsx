@@ -9,7 +9,12 @@ import type {
   SelectedProjectState,
   SidebarSearchState
 } from "./LocalStateContextDef";
-import { DEFAULT_MODEL_ID, LocalStateProvider, POWERFUL_MODEL_ALIAS } from "./LocalStateContext";
+import {
+  DEFAULT_MODEL_ID,
+  LocalStateProvider,
+  POWERFUL_MODEL_ALIAS,
+  SELECTED_MODEL_RESET_AT_KEY
+} from "./LocalStateContext";
 import {
   useBillingState,
   useModelState,
@@ -139,6 +144,15 @@ function proBillingStatus(): BillingStatus {
   };
 }
 
+function stampSelectedModelReset(storage: CountingMemoryStorage, at = "2026-01-01T00:00:00.000Z") {
+  storage.setItem(SELECTED_MODEL_RESET_AT_KEY, at);
+}
+
+function expectIsoTimestamp(value: string | null) {
+  expect(value).toBeTruthy();
+  expect(Number.isNaN(Date.parse(value ?? ""))).toBe(false);
+}
+
 describe("LocalStateProvider", () => {
   let renderer: ReactTestRenderer | null = null;
 
@@ -207,12 +221,61 @@ describe("LocalStateProvider", () => {
     expectRenderDelta(counts, before, { billing: 1 });
     expect(snapshots.model?.model).toBe(DEFAULT_MODEL_ID);
     expect(storage.getItem("selectedModel")).toBeNull();
+    expectIsoTimestamp(storage.getItem(SELECTED_MODEL_RESET_AT_KEY));
+  });
+
+  test("clears a stored model once, then preserves later sticky choices", () => {
+    const storage = new CountingMemoryStorage();
+    const snapshots: DomainSnapshots = {};
+    const counts = createCounts();
+    storage.setItem("selectedModel", POWERFUL_MODEL_ALIAS);
+    storage.setItem(
+      "selectedModelMetadata",
+      JSON.stringify({
+        id: POWERFUL_MODEL_ALIAS,
+        object: "model",
+        created: 1,
+        owned_by: "opensecret"
+      })
+    );
+
+    act(() => {
+      renderer = create(
+        <LocalStateProvider storage={storage}>
+          <DomainProbes snapshots={snapshots} counts={counts} />
+        </LocalStateProvider>
+      );
+    });
+
+    expect(snapshots.model?.model).toBe(DEFAULT_MODEL_ID);
+    expect(storage.getItem("selectedModel")).toBeNull();
+    expect(storage.getItem("selectedModelMetadata")).toBeNull();
+    const resetAt = storage.getItem(SELECTED_MODEL_RESET_AT_KEY);
+    expectIsoTimestamp(resetAt);
+
+    act(() => renderer?.unmount());
+    renderer = null;
+
+    storage.setItem("selectedModel", POWERFUL_MODEL_ALIAS);
+
+    act(() => {
+      renderer = create(
+        <LocalStateProvider storage={storage}>
+          <DomainProbes snapshots={snapshots} counts={counts} />
+        </LocalStateProvider>
+      );
+    });
+
+    expect(snapshots.model?.model).toBe(POWERFUL_MODEL_ALIAS);
+    expect(storage.getItem("selectedModel")).toBe(POWERFUL_MODEL_ALIAS);
+    expect(storage.getItem(SELECTED_MODEL_RESET_AT_KEY)).toBe(resetAt);
   });
 
   test("keeps a stickied model when a paid plan is loaded", () => {
     const storage = new CountingMemoryStorage();
     const snapshots: DomainSnapshots = {};
     const counts = createCounts();
+    stampSelectedModelReset(storage);
     storage.setItem("selectedModel", POWERFUL_MODEL_ALIAS);
 
     act(() => {
@@ -247,6 +310,7 @@ describe("LocalStateProvider", () => {
     });
 
     expect(snapshots.model?.model).toBe(DEFAULT_MODEL_ID);
+    expectIsoTimestamp(storage.getItem(SELECTED_MODEL_RESET_AT_KEY));
   });
 
   test("preserves an in-memory model choice when storage is unavailable", () => {
@@ -289,6 +353,7 @@ describe("LocalStateProvider", () => {
 
     act(() => snapshots.model?.setModel(DEFAULT_MODEL_ID));
     expect(storage.getItem("selectedModel")).toBeNull();
+    expectIsoTimestamp(storage.getItem(SELECTED_MODEL_RESET_AT_KEY));
 
     act(() => {
       snapshots.model?.setModel("user-selected-model", {
@@ -309,6 +374,7 @@ describe("LocalStateProvider", () => {
     const storage = new CountingMemoryStorage();
     const snapshots: DomainSnapshots = {};
     const counts = createCounts();
+    stampSelectedModelReset(storage);
     storage.setItem("selectedModel", "cached-model");
     storage.setItem(
       "selectedModelMetadata",
