@@ -71,3 +71,26 @@ backtraces:
 CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
   cargo build --release -p maple-gpui
 ```
+
+## Performance
+
+This app must feel instant. Treat frame time and UI-thread stalls as bugs.
+
+- Render functions run on every `cx.notify()`. Do not parse, sort, group,
+  or clone collections inside `render_*`. Precompute when state changes
+  (see `rebuild_project_groups`, `MarkdownCache`) and read it in render.
+- The transcript renders through `gpui::list` with `ListState`. Keep it
+  that way: never emit all timeline items as plain children. When an item
+  changes in place, call `list_state.splice(ix..ix + 1, 1)` so its cached
+  height is re-measured.
+- Never block the UI thread. File dialogs, file reads, and SQLite go
+  through `tokio::task::spawn_blocking` or `AgentBackend::spawn`.
+- Batch events. The backend pump drains the channel and applies a batch
+  in one update; `apply_service_event` returns whether anything visible
+  changed so a batch with no visible change does not re-render.
+- Poll only when needed, and only `cx.notify()` when a value changed.
+  Prefer pushed events over timers.
+- Reuse handles: entities (`cx.new`), SQLite connections, and shaped text
+  are created once and cached, not per frame or per call.
+- Release builds use fat LTO and one codegen unit. Ship release builds
+  for any performance check; the dev profile is `opt-level = 1`.
