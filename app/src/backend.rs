@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentEventSink, AgentRuntimeStatus, AgentSendMessageRequest,
-    AgentServiceEvent, AgentSessionDetail, AgentSessionSummary, AgentStartRequest,
-    AgentToolContextSpec, MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
+    AgentServiceEvent, AgentSessionDetail, AgentSessionSummary, AgentSlashCommand,
+    AgentStartRequest, AgentToolContextSpec, MapleAgentHostResources, MapleAgentService,
+    RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState, NoopAuthEventSink,
@@ -825,6 +826,34 @@ impl AgentBackend {
             .await?
             .compact_session(session_id.to_string())
             .await
+    }
+
+    /// Slash commands (installed skills) for a working directory. Filesystem
+    /// scan, so it runs on a blocking thread.
+    pub async fn list_slash_commands(
+        &self,
+        working_dir: Option<String>,
+    ) -> Result<Vec<AgentSlashCommand>, String> {
+        let service = self.service.clone();
+        tokio::task::spawn_blocking(move || service.list_slash_commands(working_dir.as_deref()))
+            .await
+            .map_err(|error| format!("Slash command scan failed: {error}"))
+    }
+
+    /// Expand `/command args` into the skill prompt; `None` when the command
+    /// matches no skill.
+    pub async fn resolve_slash_command(
+        &self,
+        working_dir: Option<String>,
+        command: String,
+        args: String,
+    ) -> Result<Option<String>, String> {
+        let service = self.service.clone();
+        tokio::task::spawn_blocking(move || {
+            service.resolve_slash_command(working_dir.as_deref(), &command, &args)
+        })
+        .await
+        .map_err(|error| format!("Slash command resolve failed: {error}"))?
     }
 
     /// Latest context usage for a session from the goose usage ledger:
