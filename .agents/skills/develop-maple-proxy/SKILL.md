@@ -89,9 +89,10 @@ bodies as untrusted and potentially sensitive.
 ## Preserve publishing boundaries
 
 Maple's current GitHub Release workflow builds, checksums, attests, uploads,
-and re-verifies four native proxy archives. The first post-integration release
-is still the live publication canary. Never create a proxy GitHub tag or
-Release; a proxy-only binary fix ships through a normal Maple patch release.
+and re-verifies four native proxy archives. Maple v3.3.9 proved this integrated
+publication path for macOS arm64, Linux arm64, Linux x86_64, and Windows
+x86_64. Never create a proxy GitHub tag or Release; a proxy-only binary fix
+ships through a normal Maple patch release.
 
 Crates.io publishing remains separately versioned and manual. On an authorized
 publish, inspect the exact package first:

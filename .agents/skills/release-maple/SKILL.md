@@ -109,9 +109,14 @@ gh api --method POST repos/OpenSecretCloud/Maple/releases/generate-notes \
 ```
 
 Confirm the notes span the intended changes and recheck that `head_sha` is
-still `origin/master`. Present the tag, commit, previous tag, and notes to the
-user before creating the release unless the current request already gives
-unambiguous authority for that exact release.
+still `origin/master`. GitHub's generated body is changelog input, not a
+complete public release description. Draft a concise user-facing summary and
+highlights from the exact release diff, place them above the generated notes,
+and review the complete Markdown in a temporary `notes_file`. Do not publish a
+PR-list-only description when the release has meaningful product changes.
+Present the tag, commit, previous tag, and final notes to the user before
+creating the release unless the current request already gives unambiguous
+authority for that exact release.
 
 ## Publish once
 
@@ -122,7 +127,7 @@ gh release create "$tag" \
   --repo OpenSecretCloud/Maple \
   --target "$head_sha" \
   --title "$tag" \
-  --generate-notes
+  --notes-file "$notes_file"
 ```
 
 Do not create or push a local tag first. Record the release URL and confirm the
@@ -169,6 +174,27 @@ before reporting Maple web production current. A failure in either sibling is
 reported and repaired in that workflow without changing the completed release
 artifacts.
 
+Confirm the production ref and inspect Cloudflare's exact-commit check:
+
+```bash
+pages_sha="$(gh api repos/OpenSecretCloud/Maple/git/ref/heads/pages-production --jq .object.sha)"
+[[ "$pages_sha" == "$head_sha" ]]
+
+gh api "repos/OpenSecretCloud/Maple/commits/$head_sha/check-runs" --jq '
+  [.check_runs[]
+   | select(.name == "Cloudflare Pages")
+   | select(.app.name == "Cloudflare Workers and Pages")
+   | {status, conclusion, started_at, completed_at, details_url}]'
+```
+
+Require a completed successful Cloudflare Pages check corresponding to the
+production-branch promotion, not merely an older preview check on the same
+commit. Inspect its `details_url` when the commit has multiple Pages checks.
+A raw `curl` from an automated VM may be denied by Cloudflare edge policy; a
+Cloudflare-owned successful production check is deployment proof, while an
+allowed-browser smoke is separate live-application evidence. Record either
+boundary instead of turning an edge-policy 403 into a release failure.
+
 On failure, read the failed logs before acting:
 
 ```bash
@@ -205,6 +231,27 @@ published-asset verification job succeeded. Report the embedded proxy version
 separately from the Maple application version. Do not report crates.io or GHCR
 as updated unless their independent publisher was explicitly authorized and
 verified.
+
+Verify that the hosted updater serves the same metadata as the GitHub Release:
+
+```bash
+updater_dir="$(mktemp -d)"
+
+curl --fail --silent --show-error --location --max-time 20 \
+  https://updates.trymaple.ai/latest.json >"$updater_dir/hosted.json"
+curl --fail --silent --show-error --location --max-time 20 \
+  https://github.com/OpenSecretCloud/Maple/releases/latest/download/latest.json \
+  >"$updater_dir/github.json"
+
+jq -e --arg version "$version" '.version == $version' \
+  "$updater_dir/hosted.json" "$updater_dir/github.json"
+jq -S . "$updater_dir/hosted.json" >"$updater_dir/hosted.canonical.json"
+jq -S . "$updater_dir/github.json" >"$updater_dir/github.canonical.json"
+cmp "$updater_dir/hosted.canonical.json" "$updater_dir/github.canonical.json"
+```
+
+Do not report updater publication complete from workflow status alone: require
+the public endpoint to return the intended version and content.
 
 Zapstore starts only after `Release` succeeds and is strictly best effort. Its
 queued, running, skipped, or failed state must not delay release completion,
