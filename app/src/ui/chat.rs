@@ -43,33 +43,51 @@ struct DraftImage {
     /// `None` until the crop finishes (or if the image did not decode).
     thumbnail: Option<Arc<gpui::Image>>,
 }
+/// Which text of a timeline item a parsed document belongs to.
+#[derive(Clone, Copy)]
+enum MarkdownKind {
+    Body = 0,
+    ToolOutput = 1,
+}
+
 /// Per-item parsed markdown. Interior mutability because the list render
-/// callback only has shared access to the screen.
+/// callback only has shared access to the screen. Entries are keyed by
+/// item id and kind and validated by the item's revision and text length,
+/// so no frame hashes message content.
+/// Cached document with the item revision and text length it was parsed at.
+type MarkdownEntry = (u64, usize, Rc<markdown::Document>);
+
 #[derive(Default)]
 struct MarkdownCache {
-    entries: RefCell<HashMap<String, (u64, Rc<markdown::Document>)>>,
+    entries: [RefCell<HashMap<String, MarkdownEntry>>; 2],
     /// Base ordinal per item key, so paragraphs get stable selection keys.
     ordinals: RefCell<HashMap<String, u64>>,
 }
 
 impl MarkdownCache {
     /// Parsed document for `source`, parsed now if the cache is stale.
-    fn get(&self, key: &str, source: &str) -> Rc<markdown::Document> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        source.hash(&mut hasher);
-        let hash = hasher.finish();
-        let mut entries = self.entries.borrow_mut();
-        if let Some((cached_hash, document)) = entries.get(key) {
-            if *cached_hash == hash {
-                return Rc::clone(document);
-            }
+    fn get(
+        &self,
+        id: &str,
+        kind: MarkdownKind,
+        revision: u64,
+        source: &str,
+    ) -> Rc<markdown::Document> {
+        let mut entries = self.entries[kind as usize].borrow_mut();
+        if let Some((cached_revision, cached_len, document)) = entries.get(id)
+            && *cached_revision == revision
+            && *cached_len == source.len()
+        {
+            return Rc::clone(document);
         }
         if entries.len() > 4096 {
             entries.clear();
         }
         let document = Rc::new(markdown::parse(source));
-        entries.insert(key.to_string(), (hash, Rc::clone(&document)));
+        entries.insert(
+            id.to_string(),
+            (revision, source.len(), Rc::clone(&document)),
+        );
         document
     }
 
@@ -86,9 +104,88 @@ impl MarkdownCache {
     }
 
     fn clear(&self) {
-        self.entries.borrow_mut().clear();
+        for entries in &self.entries {
+            entries.borrow_mut().clear();
+        }
         self.ordinals.borrow_mut().clear();
     }
+}
+
+/// Strings a tool or text card shows, derived once per item revision
+/// instead of on every frame.
+#[derive(Default)]
+struct ItemDerived {
+    /// Display text of thinking rows and user bubbles.
+    text: SharedString,
+    /// Readable tool output for the expanded card.
+    output_text: Option<SharedString>,
+    /// First non-empty output line for the collapsed card.
+    preview: Option<SharedString>,
+    /// `input: {json}` for the expanded card.
+    input_line: Option<SharedString>,
+    /// +/- lines of an edit or write tool, capped at `MAX_DIFF_LINES`.
+    diff_lines: Rc<Vec<(char, SharedString)>>,
+}
+
+const MAX_DIFF_LINES: usize = 200;
+
+impl ItemDerived {
+    fn build(item: &AgentTimelineItem) -> Self {
+        let output_text = tool_output_markdown(item).map(SharedString::from);
+        let preview = output_text.as_ref().and_then(|text| {
+            text.lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(|line| SharedString::from(line.to_string()))
+        });
+        Self {
+            text: SharedString::from(
+                maple_display_text(item.text.as_deref().unwrap_or("")).into_owned(),
+            ),
+            output_text,
+            preview,
+            input_line: tool_input_line(item).map(SharedString::from),
+            diff_lines: Rc::new(diff_lines_for(item)),
+        }
+    }
+}
+
+/// Lazily built `ItemDerived` per item id, validated by item revision.
+#[derive(Default)]
+struct DerivedCache {
+    entries: RefCell<HashMap<String, (u64, Rc<ItemDerived>)>>,
+}
+
+impl DerivedCache {
+    fn get(&self, item: &AgentTimelineItem, revision: u64) -> Rc<ItemDerived> {
+        let mut entries = self.entries.borrow_mut();
+        if let Some((cached, derived)) = entries.get(&item.id)
+            && *cached == revision
+        {
+            return Rc::clone(derived);
+        }
+        if entries.len() > 4096 {
+            entries.clear();
+        }
+        let derived = Rc::new(ItemDerived::build(item));
+        entries.insert(item.id.clone(), (revision, Rc::clone(&derived)));
+        derived
+    }
+
+    fn clear(&self) {
+        self.entries.borrow_mut().clear();
+    }
+}
+
+/// Shared read-only state the transcript rows render from.
+struct TranscriptCtx<'a> {
+    markdown_cache: &'a MarkdownCache,
+    derived: &'a DerivedCache,
+    attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
+    chat: &'a gpui::WeakEntity<ChatScreen>,
+    tool_summaries: &'a HashMap<String, String>,
+    summary_requests: &'a HashSet<String>,
+    render: &'a RenderCtx,
 }
 
 pub struct ChatScreen {
@@ -112,8 +209,6 @@ pub struct ChatScreen {
     pending_questions: Vec<PendingQuestion>,
     /// Lazily created answer input for the question card.
     pending_question_input: Option<Entity<TextInput>>,
-    /// Request id whose input currently holds focus.
-    question_focus_id: Option<String>,
     /// Fraction of the context window in use for the selected session.
     context_fraction: Option<f32>,
     /// True while the per-second usage poller task is running.
@@ -122,8 +217,12 @@ pub struct ChatScreen {
     ledger_context_tokens: i64,
     /// Context limit used with the estimate above.
     context_limit: i64,
-    composer_busy: bool,
     composer: Option<Entity<TextInput>>,
+    /// Composer holds non-blank text; refreshed when the composer changes.
+    composer_has_text: bool,
+    /// Palette rows for the composer's current "/" token; rebuilt when the
+    /// composer changes, not per frame.
+    slash_entries: Vec<SlashEntry>,
     models: Vec<String>,
     selected_model: Option<String>,
     models_menu_open: bool,
@@ -187,9 +286,14 @@ pub struct ChatScreen {
     web_enabled: bool,
     /// Settings default applied to newly created tasks.
     default_web_enabled: bool,
-    /// Parsed markdown per timeline item (keyed by item id and a hash of
-    /// the source), so visible messages are parsed once, not every frame.
+    /// Parsed markdown per timeline item (keyed by item id and revision),
+    /// so visible messages are parsed once, not every frame.
     markdown_cache: MarkdownCache,
+    /// Per-item display strings, rebuilt when the item's revision moves.
+    derived: DerivedCache,
+    /// Item id to `(index in timeline, revision)`; the revision counts
+    /// applied updates so caches can tell a changed item from a stable one.
+    timeline_index: HashMap<String, (usize, u64)>,
     /// Sidebar groups: (project root, indices into `sessions`), rebuilt
     /// when sessions or roots change instead of on every render.
     project_groups: Vec<(String, Vec<usize>)>,
@@ -242,9 +346,26 @@ pub struct ChatScreen {
     summary_requests: HashSet<String>,
     /// Summary requests in flight; caps how many ride at once.
     pending_summaries: usize,
+    /// Item ids waiting for a free summary slot, oldest first.
+    summary_queue: std::collections::VecDeque<String>,
+    /// Bumped on session switch; results from an older generation are
+    /// dropped instead of landing on the wrong screen state.
+    summary_generation: u64,
     /// Tool call summaries enabled (settings).
     summaries_enabled: bool,
 }
+
+/// What a session snapshot load replaces once it lands.
+#[derive(Clone, Copy)]
+enum LoadMode {
+    /// Make the session current (sidebar click, boot, root switch).
+    Select,
+    /// Swap the timeline only (mid-run history compaction).
+    Reload,
+}
+
+/// How often a stale snapshot is fetched again before it is applied.
+const LOAD_RETRIES: u8 = 2;
 
 impl ChatScreen {
     pub fn new(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
@@ -341,7 +462,35 @@ impl ChatScreen {
                     }
                 })
         });
+        cx.observe(&composer, |this, composer, cx| {
+            this.composer_changed(&composer, cx);
+        })
+        .detach();
         self.composer = Some(composer);
+    }
+
+    /// The composer text moved: refresh the derived state the render path
+    /// reads (send button enablement, slash palette rows).
+    fn composer_changed(&mut self, composer: &Entity<TextInput>, cx: &mut Context<Self>) {
+        let input = composer.read(cx);
+        let text = input.text_ref();
+        let has_text = !text.trim().is_empty();
+        let entries = match text.strip_prefix('/') {
+            Some(token) if !token.contains(char::is_whitespace) && !token.contains('/') => {
+                slash_entries_for(token, &self.slash_commands)
+            }
+            _ => Vec::new(),
+        };
+        let entries_changed = entries.len() != self.slash_entries.len()
+            || entries
+                .iter()
+                .zip(&self.slash_entries)
+                .any(|(next, previous)| next.name != previous.name);
+        if has_text != self.composer_has_text || entries_changed {
+            self.composer_has_text = has_text;
+            self.slash_entries = entries;
+            cx.notify();
+        }
     }
 
     /// Test seam: pure state without composer wiring or runtime start.
@@ -351,7 +500,7 @@ impl ChatScreen {
 
     fn new_inner_with_placeholder(backend: Arc<AgentBackend>, user_id: String) -> Self {
         let settings = crate::settings::load_settings();
-        let this = Self {
+        Self {
             backend,
             user_id,
             sessions: Vec::new(),
@@ -364,13 +513,13 @@ impl ChatScreen {
             session_setup_pending: false,
             pending_questions: Vec::new(),
             pending_question_input: None,
-            question_focus_id: None,
             context_fraction: None,
             usage_poller_active: false,
             ledger_context_tokens: 0,
             context_limit: 0,
-            composer_busy: false,
             composer: None,
+            composer_has_text: false,
+            slash_entries: Vec::new(),
             models: Vec::new(),
             selected_model: None,
             models_menu_open: false,
@@ -410,6 +559,8 @@ impl ChatScreen {
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
             markdown_cache: MarkdownCache::default(),
+            derived: DerivedCache::default(),
+            timeline_index: HashMap::new(),
             project_groups: Vec::new(),
             archived_indices: Vec::new(),
             collapsed_roots: HashSet::new(),
@@ -434,9 +585,10 @@ impl ChatScreen {
             tool_summaries: HashMap::new(),
             summary_requests: HashSet::new(),
             pending_summaries: 0,
+            summary_queue: std::collections::VecDeque::new(),
+            summary_generation: 0,
             summaries_enabled: settings.tool_summaries,
-        };
-        this
+        }
     }
 
     fn call<T, F>(
@@ -531,8 +683,7 @@ impl ChatScreen {
                     Ok(status) => {
                         this.project_root = status.project_root;
                         this.rebuild_project_groups();
-                        this.timeline.clear();
-                        this.list_state.reset(0);
+                        this.replace_timeline(Vec::new());
                         this.refresh_slash_commands(cx);
                         this.refresh_roots(cx);
                         match this.pending_session_select.take() {
@@ -717,81 +868,88 @@ impl ChatScreen {
     }
 
     fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.load_session(session_id, LoadMode::Select, LOAD_RETRIES, cx);
+    }
+
+    /// Replace the timeline after a mid-run history compaction without
+    /// disturbing the active run or a pending permission.
+    fn reload_timeline(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.load_session(session_id, LoadMode::Reload, LOAD_RETRIES, cx);
+    }
+
+    /// Fetch a session snapshot and apply it. Events that land while the
+    /// snapshot is in flight make it stale (the revision moved); the load
+    /// is then repeated up to `retries` times and finally applied as is,
+    /// so a session that streams while it is opened never stays blank.
+    fn load_session(
+        &mut self,
+        session_id: &str,
+        mode: LoadMode,
+        retries: u8,
+        cx: &mut Context<Self>,
+    ) {
         self.selection_generation += 1;
         let generation = self.selection_generation;
         let revision = *self.timeline_revisions.get(session_id).unwrap_or(&0);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let session_id = session_id.to_string();
+        let target = session_id.clone();
         self.call(
-            async move { backend.load_session(&user_id, &session_id).await },
+            async move { backend.load_session(&user_id, &target).await },
             cx,
             move |this, result, cx| {
                 // A newer selection (or reload) superseded this load.
                 if this.selection_generation != generation {
                     return;
                 }
-                match result {
-                    Ok(detail) => {
-                        // Events applied while the snapshot was in flight are
-                        // newer than the snapshot; keep them instead.
-                        let current = *this
-                            .timeline_revisions
-                            .get(&detail.session.id)
-                            .unwrap_or(&0);
-                        if current != revision {
-                            return;
-                        }
-                        if let Some(existing) = this
-                            .sessions
-                            .iter_mut()
-                            .find(|session| session.id == detail.session.id)
-                        {
-                            *existing = detail.session.clone();
-                        } else {
-                            this.sessions.insert(0, detail.session.clone());
-                        }
-                        this.set_active_session(detail.session, detail.timeline, cx);
-                    }
-                    Err(message) => this.notice = Some(message.into()),
-                }
-            },
-        );
-    }
-
-    /// Replace the timeline after a mid-run history compaction without
-    /// disturbing the active run or a pending permission.
-    fn reload_timeline(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.selection_generation += 1;
-        let generation = self.selection_generation;
-        let revision = *self.timeline_revisions.get(session_id).unwrap_or(&0);
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let session_id = session_id.to_string();
-        self.call(
-            async move { backend.load_session(&user_id, &session_id).await },
-            cx,
-            move |this, result, cx| {
-                if this.selection_generation != generation {
-                    return;
-                }
-                if let Ok(detail) = result {
-                    let current = *this
-                        .timeline_revisions
-                        .get(&detail.session.id)
-                        .unwrap_or(&0);
-                    if current != revision {
+                let detail = match result {
+                    Ok(detail) => detail,
+                    Err(message) => {
+                        this.notice = Some(message.into());
                         return;
                     }
-                    this.timeline = detail.timeline;
-                    this.list_state.reset(this.timeline.len());
-                    this.load_attachment_images(cx);
-                    this.summarize_loaded_tools(cx);
+                };
+                let current = *this
+                    .timeline_revisions
+                    .get(&detail.session.id)
+                    .unwrap_or(&0);
+                if current != revision && retries > 0 {
+                    this.load_session(&session_id, mode, retries - 1, cx);
+                    return;
+                }
+                match mode {
+                    LoadMode::Select => {
+                        this.upsert_session(detail.session.clone());
+                        this.set_active_session(detail.session, detail.timeline, cx);
+                    }
+                    LoadMode::Reload => {
+                        this.replace_timeline(detail.timeline);
+                        this.load_attachment_images(cx);
+                        this.summarize_loaded_tools(cx);
+                        cx.notify();
+                    }
                 }
             },
         );
     }
 
+    /// Install a new timeline and reset every per-item structure that is
+    /// keyed by its contents.
+    fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
+        self.timeline = timeline;
+        self.timeline_index = self
+            .timeline
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item.id.clone(), (index, 0)))
+            .collect();
+        self.markdown_cache.clear();
+        self.derived.clear();
+        self.list_state.reset(self.timeline.len());
+    }
+
+    #[allow(dead_code)] // No delete affordance in the UI yet.
     fn delete_session(&self, session_id: &str, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -805,10 +963,16 @@ impl ChatScreen {
                     this.sessions.retain(|session| session.id != deleted_id);
                     if this.selected_session.as_deref() == Some(&*deleted_id) {
                         this.selected_session = None;
-                        this.timeline.clear();
-                        this.list_state.reset(0);
-                        if let Some(next) = this.sessions.first().cloned() {
-                            let id = next.id;
+                        this.replace_timeline(Vec::new());
+                        // Stay in the runtime's root: a task from another
+                        // project would run its tools in the wrong folder.
+                        let root = this.project_root.clone();
+                        let next = this
+                            .sessions
+                            .iter()
+                            .find(|s| !s.archived && Some(&s.project_root) == root.as_ref())
+                            .map(|s| s.id.clone());
+                        if let Some(id) = next {
                             this.select_session(&id, cx);
                         }
                     }
@@ -863,35 +1027,41 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Ok(Some((tokens, limit))) = result {
-                    this.ledger_context_tokens = tokens;
-                    this.context_limit = limit;
-                    let fraction = if limit > 0 {
-                        tokens as f32 / limit as f32
-                    } else {
-                        0.0
-                    };
-                    this.context_fraction = Some(fraction);
-                    cx.notify();
+                    this.apply_context_usage(tokens, limit, cx);
                 }
             },
         );
     }
 
-    /// Poll context usage once per second while the selected session runs.
-    /// The goose usage ledger gains a row on every inference call, so this
-    /// tracks the ring in real time at each turn boundary.
+    fn apply_context_usage(&mut self, tokens: i64, limit: i64, cx: &mut Context<Self>) {
+        self.ledger_context_tokens = tokens;
+        self.context_limit = limit;
+        let fraction = if limit > 0 {
+            tokens as f32 / limit as f32
+        } else {
+            0.0
+        };
+        if self.context_fraction != Some(fraction) {
+            self.context_fraction = Some(fraction);
+            cx.notify();
+        }
+    }
+
+    /// Fallback refresh of context usage while the selected session runs.
+    /// Turn boundaries refresh it directly (completed items, Finished);
+    /// this timer only covers a missed event, so it is slow and skips
+    /// ticks where the timeline did not move.
     fn start_usage_poller(&mut self, session_id: String, cx: &mut Context<Self>) {
         if self.usage_poller_active {
             return;
         }
         self.usage_poller_active = true;
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
         let target = session_id;
+        let mut last_revision = *self.timeline_revisions.get(&target).unwrap_or(&0);
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(1000))
+                    .timer(std::time::Duration::from_millis(5000))
                     .await;
                 let keep_going = this
                     .update(cx, |this: &mut ChatScreen, cx| {
@@ -900,34 +1070,10 @@ impl ChatScreen {
                             .as_deref()
                             .is_some_and(|selected| selected == target.as_str())
                             && this.active_runs.contains_key(&target);
-                        if running {
-                            let backend = backend.clone();
-                            let user_id = user_id.clone();
-                            let target = target.clone();
-                            let model = this.selected_model.clone();
-                            this.call(
-                                async move {
-                                    backend
-                                        .context_usage(&user_id, &target, model.as_deref())
-                                        .await
-                                },
-                                cx,
-                                |this, result, cx| {
-                                    if let Ok(Some((tokens, limit))) = result {
-                                        this.ledger_context_tokens = tokens;
-                                        this.context_limit = limit;
-                                        let fraction = if limit > 0 {
-                                            tokens as f32 / limit as f32
-                                        } else {
-                                            0.0
-                                        };
-                                        if this.context_fraction != Some(fraction) {
-                                            this.context_fraction = Some(fraction);
-                                            cx.notify();
-                                        }
-                                    }
-                                },
-                            );
+                        let revision = *this.timeline_revisions.get(&target).unwrap_or(&0);
+                        if running && revision != last_revision {
+                            last_revision = revision;
+                            this.refresh_context_usage(cx);
                         }
                         running
                     })
@@ -1003,13 +1149,17 @@ impl ChatScreen {
         if mode == "auto" || mode == "smart_approve" {
             self.permission_mode = mode;
         }
-        self.timeline = timeline;
+        self.replace_timeline(timeline);
         // Ordinals restart for the new session; drop any stale selection.
         if let Some(selection) = &self.selection {
             selection.update(cx, |selection, _| selection.clear());
         }
-        self.markdown_cache.clear();
-        self.list_state.reset(self.timeline.len());
+        // Summaries in flight belong to the previous screen state; their
+        // results are dropped and the queue restarts for this session.
+        self.summary_generation += 1;
+        self.pending_summaries = 0;
+        self.summary_queue.clear();
+        self.summary_requests.clear();
         self.load_attachment_images(cx);
         self.summarize_loaded_tools(cx);
         self.follow_transcript = true;
@@ -1020,8 +1170,35 @@ impl ChatScreen {
         self.models_menu_open = false;
         self.root_menu_open = false;
         self.mcp_menu_open = false;
+        // Questions stay queued per session; the card for this session
+        // starts on its first step with nothing picked.
+        self.reset_question_card(cx);
         self.refresh_session_mcp(cx);
         cx.notify();
+    }
+
+    /// The question shown for the selected session, if any. Other
+    /// sessions' questions stay queued until the user switches to them.
+    fn current_question(&self) -> Option<&PendingQuestion> {
+        let selected = self.selected_session.as_deref()?;
+        self.pending_questions
+            .iter()
+            .find(|question| question.session_id == selected)
+    }
+
+    /// Start the displayed card over: drop the step state and the answer
+    /// input, then recreate the input when a question is showing.
+    fn reset_question_card(&mut self, cx: &mut Context<Self>) {
+        self.question_selected.clear();
+        self.question_step = 0;
+        self.question_step_answers.clear();
+        if let Some(input) = self.pending_question_input.take() {
+            input.update(cx, |input, cx| input.clear(cx));
+        }
+        if self.current_question().is_some() {
+            self.ensure_question_input(cx);
+            self.question_focus_pending = true;
+        }
     }
 
     /// Look up the catalog vision flag for the selected model once.
@@ -1143,7 +1320,9 @@ impl ChatScreen {
             cx,
             move |this, result, cx| {
                 match result {
-                    Ok(session) => this.upsert_session(session),
+                    Ok(session) => {
+                        this.upsert_session(session);
+                    }
                     Err(message) => {
                         if this.selected_session.as_deref() == Some(session_id.as_str()) {
                             this.web_enabled = previous;
@@ -1312,7 +1491,7 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if self.pending_questions.first().is_some() {
+        if self.current_question().is_some() {
             self.skip_question(cx);
             return;
         }
@@ -1323,7 +1502,14 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if self.models_menu_open || self.mode_menu_open || self.mcp_menu_open {
+        self.close_menus_on_escape(cx);
+    }
+
+    /// Escape with nothing else to dismiss: close whichever chip menu is
+    /// open (including the folder picker).
+    fn close_menus_on_escape(&mut self, cx: &mut Context<Self>) {
+        if self.models_menu_open || self.mode_menu_open || self.mcp_menu_open || self.root_menu_open
+        {
             self.models_menu_open = false;
             self.mode_menu_open = false;
             self.mcp_menu_open = false;
@@ -1385,7 +1571,7 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if !self.pending_questions.is_empty() {
+        if self.current_question().is_some() {
             // The run is blocked on the question; sending here would queue a
             // message nobody reads and look like a stall.
             self.notice = Some("Answer the question above first".into());
@@ -1398,7 +1584,7 @@ impl ChatScreen {
         }
         // Enter on an open palette runs the highlighted command instead of
         // sending the partial token.
-        if let Some(command) = self.slash_palette_command(text.trim(), cx) {
+        if let Some(command) = self.slash_palette_command(text.trim()) {
             self.slash_selected = None;
             if let Some(composer) = self.composer.clone() {
                 composer.update(cx, |input, cx| input.clear(cx));
@@ -1421,11 +1607,11 @@ impl ChatScreen {
     /// The command Enter should run when the slash palette is open: the
     /// highlighted entry, falling back to the only or first match. `None`
     /// when the palette is closed or the text is already a full command.
-    fn slash_palette_command(&self, text: &str, cx: &mut Context<Self>) -> Option<String> {
-        if self.pending_questions.first().is_some() {
+    fn slash_palette_command(&self, text: &str) -> Option<String> {
+        if self.current_question().is_some() {
             return None;
         }
-        let entries = self.slash_entries(cx);
+        let entries = &self.slash_entries;
         if entries.is_empty() {
             return None;
         }
@@ -1483,24 +1669,6 @@ impl ChatScreen {
         }
         self.slash_selected = None;
         cx.notify();
-    }
-
-    /// Palette entries for the composer's current "/" token.
-    fn slash_entries(&self, cx: &mut Context<Self>) -> Vec<SlashEntry> {
-        let Some(text) = self
-            .composer
-            .as_ref()
-            .map(|composer| composer.read(cx).text())
-        else {
-            return Vec::new();
-        };
-        let Some(token) = text.strip_prefix('/') else {
-            return Vec::new();
-        };
-        if token.contains(char::is_whitespace) || token.contains('/') {
-            return Vec::new();
-        }
-        slash_entries_for(token, &self.slash_commands)
     }
 
     /// Execute a `/command` when it matches a built-in or a skill. Unknown
@@ -1582,7 +1750,6 @@ impl ChatScreen {
                     return false;
                 }
                 let backend = self.backend.clone();
-                let user_id = self.user_id.clone();
                 let working_dir = self.project_root.clone();
                 let command = name.to_string();
                 let arguments = args.to_string();
@@ -1623,7 +1790,7 @@ impl ChatScreen {
         let vision_capable = self.selected_model_supports_vision();
         let drafts = std::mem::take(&mut self.draft_images);
         let request = AgentSendMessageRequest {
-            session_id: session_id.to_string(),
+            session_id: session_id.clone(),
             text: text.clone(),
             model,
             context_limit: None,
@@ -1658,16 +1825,24 @@ impl ChatScreen {
             cx,
             move |this, result, cx| match result {
                 Ok(run_id) => {
-                    this.active_runs.insert(session_id.to_string(), run_id);
+                    this.active_runs.insert(session_id.clone(), run_id);
                 }
                 Err(message) => {
                     // Show the failure in the transcript and give the draft
-                    // back instead of silently dropping it.
+                    // back instead of silently dropping it. The composer
+                    // belongs to the selected session: a draft from another
+                    // task must not land in it.
                     this.push_local_error("Send failed", &message, cx);
-                    if let Some(composer) = this.composer.clone() {
-                        composer.update(cx, |input, cx| input.set_text(&text, cx));
+                    if this.selected_session.as_deref() == Some(session_id.as_str()) {
+                        if let Some(composer) = this.composer.clone() {
+                            composer.update(cx, |input, cx| input.set_text(&text, cx));
+                        }
+                        let mut restored = drafts;
+                        restored.append(&mut this.draft_images);
+                        this.draft_images = restored;
+                    } else {
+                        this.notice = Some(format!("Send failed: {message}").into());
                     }
-                    this.draft_images = drafts;
                     this.awaiting_first_token = false;
                 }
             },
@@ -1744,7 +1919,7 @@ impl ChatScreen {
     }
 
     fn submit_question(&mut self, cx: &mut Context<Self>) {
-        let Some(question) = self.pending_questions.first().cloned() else {
+        let Some(question) = self.current_question().cloned() else {
             return;
         };
         let step = self
@@ -1779,10 +1954,10 @@ impl ChatScreen {
         let Some(entry) = question.questions.get(step) else {
             return vec!["(no answer provided)".to_string()];
         };
-        if let Some(option_index) = self.question_selected.get(&step) {
-            if let Some(option) = entry.options.get(*option_index) {
-                return vec![option.label.clone()];
-            }
+        if let Some(option_index) = self.question_selected.get(&step)
+            && let Some(option) = entry.options.get(*option_index)
+        {
+            return vec![option.label.clone()];
         }
         let typed = self
             .pending_question_input
@@ -1797,7 +1972,7 @@ impl ChatScreen {
 
     /// Deliver `answer` (free text, a picked option, or joined options).
     fn answer_question(&mut self, answer: String, cx: &mut Context<Self>) {
-        let Some(question) = self.pending_questions.first().cloned() else {
+        let Some(question) = self.current_question().cloned() else {
             return;
         };
         if answer.trim().is_empty() {
@@ -1807,27 +1982,12 @@ impl ChatScreen {
         let callback_request_id = request_id.clone();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        if self
-            .pending_questions
-            .first()
-            .is_some_and(|current| current.request_id == question.request_id)
-        {
-            self.pending_questions.remove(0);
-        }
-        self.question_selected.clear();
-        self.question_step = 0;
-        self.question_step_answers.clear();
-        // Drop the answer input so the next question starts fresh
-        // instead of showing this answer's stale text — and recreate it
-        // right away: a queued question's event already fired, so nothing
-        // else will produce an input for its card.
-        if let Some(input) = self.pending_question_input.take() {
-            input.update(cx, |input, cx| input.clear(cx));
-        }
-        if self.pending_questions.first().is_some() {
-            self.ensure_question_input(cx);
-            self.question_focus_pending = true;
-        }
+        // Drop the answered question and its input so the next card starts
+        // fresh; a queued question's event already fired, so the input is
+        // recreated right away when one is showing.
+        self.pending_questions
+            .retain(|queued| queued.request_id != question.request_id);
+        self.reset_question_card(cx);
         cx.notify();
         self.call(
             async move { backend.answer_question(&user_id, &request_id, answer).await },
@@ -1856,20 +2016,12 @@ impl ChatScreen {
     /// Dismiss a question: cancel the run like the Stop button and
     /// unblock the tool with an empty answer if it is still waiting.
     fn skip_question(&mut self, cx: &mut Context<Self>) {
-        let Some(question) = self.pending_questions.first().cloned() else {
+        let Some(question) = self.current_question().cloned() else {
             return;
         };
-        self.pending_questions.remove(0);
-        self.question_selected.clear();
-        self.question_step = 0;
-        self.question_step_answers.clear();
-        if let Some(input) = self.pending_question_input.take() {
-            input.update(cx, |input, cx| input.clear(cx));
-        }
-        if self.pending_questions.first().is_some() {
-            self.ensure_question_input(cx);
-            self.question_focus_pending = true;
-        }
+        self.pending_questions
+            .retain(|queued| queued.request_id != question.request_id);
+        self.reset_question_card(cx);
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -1914,7 +2066,7 @@ impl ChatScreen {
 
     /// Codex response JSON assembled from the recorded step answers.
     fn composed_question_answer(&mut self, cx: &mut Context<Self>) -> String {
-        let Some(question) = self.pending_questions.first() else {
+        let Some(question) = self.current_question() else {
             return String::new();
         };
         let mut answers = serde_json::Map::new();
@@ -2004,20 +2156,19 @@ impl ChatScreen {
         self.refresh_context_usage(cx);
     }
 
-    /// Ask the title model for a one-line summary of a completed tool call
-    /// whose output is too long to skim. At most a few requests ride at
-    /// once; each item is only ever asked once.
-    fn maybe_summarize_tool(
-        &mut self,
-        session_id: &str,
-        item: &AgentTimelineItem,
-        cx: &mut Context<Self>,
-    ) {
+    /// Ask the title model for a one-line summary of the completed tool
+    /// call at `index` when its output is too long to skim. At most a few
+    /// requests ride at once; the rest wait in `summary_queue`. Each item
+    /// is only ever asked once per session visit.
+    fn maybe_summarize_tool(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(item) = self.timeline.get(index) else {
+            return;
+        };
         if !self.summaries_enabled
-            || self.pending_summaries >= 3
             || !matches!(item.item_type.as_str(), "tool" | "toolCall")
             || item.status.as_deref() != Some("completed")
             || has_tool_input(item, "todos")
+            || item.input.as_ref().is_none_or(serde_json::Value::is_null)
             || self.tool_summaries.contains_key(&item.id)
             || self.summary_requests.contains(&item.id)
         {
@@ -2029,15 +2180,46 @@ impl ChatScreen {
         if output.chars().count() < 400 {
             return;
         }
-        let Some(input) = item.input.clone().filter(|value| !value.is_null()) else {
+        let item_id = item.id.clone();
+        self.summary_requests.insert(item_id.clone());
+        if self.pending_summaries >= 3 {
+            self.summary_queue.push_back(item_id);
+            return;
+        }
+        self.start_summary(item_id, output, cx);
+    }
+
+    /// Start queued summaries while a slot is free.
+    fn drain_summary_queue(&mut self, cx: &mut Context<Self>) {
+        while self.pending_summaries < 3 {
+            let Some(item_id) = self.summary_queue.pop_front() else {
+                return;
+            };
+            let Some(&(index, _)) = self.timeline_index.get(&item_id) else {
+                continue;
+            };
+            let Some(output) = self.timeline.get(index).and_then(tool_output_markdown) else {
+                continue;
+            };
+            self.start_summary(item_id, output, cx);
+        }
+    }
+
+    fn start_summary(&mut self, item_id: String, output: String, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        let item_id = item.id.clone();
+        let Some(&(index, _)) = self.timeline_index.get(&item_id) else {
+            return;
+        };
+        let item = &self.timeline[index];
+        let Some(input) = item.input.clone() else {
+            return;
+        };
         let tool_name = item.title.clone().unwrap_or_else(|| item.item_type.clone());
-        let session_id = session_id.to_string();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.summary_requests.insert(item_id.clone());
+        let generation = self.summary_generation;
         self.pending_summaries += 1;
         self.call(
             async move {
@@ -2047,18 +2229,20 @@ impl ChatScreen {
             },
             cx,
             move |this, result, cx| {
+                // The screen moved to another session meanwhile; the slot
+                // count restarted and this label has nowhere to go.
+                if this.summary_generation != generation {
+                    return;
+                }
                 this.pending_summaries = this.pending_summaries.saturating_sub(1);
                 if let Ok(Some(summary)) = result {
-                    let index = this
-                        .timeline
-                        .iter()
-                        .position(|candidate| candidate.id == item_id);
-                    if let Some(index) = index {
+                    if let Some(&(index, _)) = this.timeline_index.get(&item_id) {
                         this.list_state.splice(index..index + 1, 1);
                     }
                     this.tool_summaries.insert(item_id, summary);
                     cx.notify();
                 }
+                this.drain_summary_queue(cx);
             },
         );
     }
@@ -2066,29 +2250,19 @@ impl ChatScreen {
     /// Request summaries for the long completed tool calls of the loaded
     /// timeline (session switch or reload).
     fn summarize_loaded_tools(&mut self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.selected_session.clone() else {
+        if self.selected_session.is_none() {
             return;
-        };
-        let candidates: Vec<AgentTimelineItem> = self
-            .timeline
-            .iter()
-            .rev()
-            .take(40)
-            .filter(|item| matches!(item.item_type.as_str(), "tool" | "toolCall"))
-            .cloned()
-            .collect();
-        for item in candidates {
-            self.maybe_summarize_tool(&session_id, &item, cx);
+        }
+        let first = self.timeline.len().saturating_sub(40);
+        for index in (first..self.timeline.len()).rev() {
+            self.maybe_summarize_tool(index, cx);
         }
     }
 
     /// Fetch the images behind sent attachments that are not decoded yet.
     /// Each id is requested once; the result re-measures the rows that
-    /// show it.
+    /// show it. Scans the whole timeline: for a loaded snapshot only.
     fn load_attachment_images(&mut self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.selected_session.clone() else {
-            return;
-        };
         let wanted: Vec<String> = self
             .timeline
             .iter()
@@ -2096,6 +2270,23 @@ impl ChatScreen {
             .map(|(id, _)| id.to_string())
             .filter(|id| !self.attachment_requests.contains(id))
             .collect();
+        self.request_attachments(wanted, cx);
+    }
+
+    /// Same for one arriving item, so a streaming run does not rescan the
+    /// timeline on every event.
+    fn load_attachment_images_for(&mut self, item: &AgentTimelineItem, cx: &mut Context<Self>) {
+        let wanted: Vec<String> = attachment_refs(item)
+            .map(|(id, _)| id.to_string())
+            .filter(|id| !self.attachment_requests.contains(id))
+            .collect();
+        self.request_attachments(wanted, cx);
+    }
+
+    fn request_attachments(&mut self, wanted: Vec<String>, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
         for id in wanted {
             self.attachment_requests.insert(id.clone());
             let backend = self.backend.clone();
@@ -2137,14 +2328,19 @@ impl ChatScreen {
     /// Apply a timeline item using Maple's merge contract: `append` extends
     /// message/thinking text on the item with the same id; otherwise merge
     /// fields, keeping the previous value when the incoming field is absent.
-    fn apply_timeline_item(&mut self, session_id: &str, item: AgentTimelineItem) {
+    ///
+    /// Returns the item's index in the timeline.
+    fn apply_timeline_item(&mut self, session_id: &str, item: AgentTimelineItem) -> usize {
         // Streaming delivers one of these per chunk; move the payload
         // rather than copy it.
-        let position = self
-            .timeline
-            .iter()
-            .position(|candidate| candidate.id == item.id);
-        match position {
+        let position = match self.timeline_index.get_mut(&item.id) {
+            Some((index, revision)) => {
+                *revision += 1;
+                Some(*index)
+            }
+            None => None,
+        };
+        let index = match position {
             Some(index) => {
                 let AgentTimelineItem {
                     created_ms: incoming_created,
@@ -2182,30 +2378,65 @@ impl ChatScreen {
                     existing.output = incoming_output.or_else(|| existing.output.take());
                     existing.merge = incoming_merge;
                 }
+                index
             }
             None => {
+                let index = self.timeline.len();
+                self.timeline_index.insert(item.id.clone(), (index, 0));
                 self.timeline.push(item);
-                self.list_state
-                    .splice(self.timeline.len() - 1..self.timeline.len() - 1, 1);
+                self.list_state.splice(index..index, 1);
+                index
             }
-        }
+        };
         *self
             .timeline_revisions
             .entry(session_id.to_string())
             .or_insert(0) += 1;
+        index
     }
 
-    fn upsert_session(&mut self, session: AgentSessionSummary) {
+    /// Insert or replace a session row; returns whether anything changed.
+    fn upsert_session(&mut self, session: AgentSessionSummary) -> bool {
         if let Some(existing) = self
             .sessions
             .iter_mut()
             .find(|candidate| candidate.id == session.id)
         {
+            if session_summary_eq(existing, &session) {
+                return false;
+            }
             *existing = session;
         } else {
             self.sessions.insert(0, session);
         }
         self.rebuild_project_groups();
+        true
+    }
+
+    /// One timeline item arrived for the selected session.
+    fn apply_incoming_item(
+        &mut self,
+        session_id: &str,
+        item: AgentTimelineItem,
+        cx: &mut Context<Self>,
+    ) {
+        if item.role.as_deref() != Some("user") {
+            self.awaiting_first_token = false;
+        }
+        // Cheap gates first so the common streaming chunk does no extra
+        // work; the summary check reads the stored item after the merge.
+        let completed = item.status.as_deref() == Some("completed");
+        let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
+        self.load_attachment_images_for(&item, cx);
+        let index = self.apply_timeline_item(session_id, item);
+        if completed {
+            if is_tool && self.summaries_enabled {
+                self.maybe_summarize_tool(index, cx);
+            }
+            // A finished item marks a turn boundary: the usage ledger has
+            // a new row.
+            self.refresh_context_usage(cx);
+        }
     }
     pub fn handle_service_events(
         &mut self,
@@ -2222,6 +2453,7 @@ impl ChatScreen {
     }
 
     /// Route one backend service event into UI state.
+    #[cfg(test)]
     pub fn handle_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) {
         if self.apply_service_event(event, cx) {
             cx.notify();
@@ -2232,26 +2464,24 @@ impl ChatScreen {
     fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
         match event {
             AgentServiceEvent::RuntimeStatus(status) => {
-                // The status snapshot is authoritative for active runs.
+                // The status snapshot is authoritative for active runs; an
+                // idle heartbeat that repeats it changes nothing.
+                if self.active_runs == status.active_runs {
+                    return false;
+                }
                 self.active_runs = status.active_runs;
             }
             AgentServiceEvent::SessionCreated(session) => {
-                self.upsert_session(session);
+                return self.upsert_session(session);
             }
             AgentServiceEvent::SessionUpdated { session, .. } => {
-                self.upsert_session(session);
+                return self.upsert_session(session);
             }
             AgentServiceEvent::TimelineItem {
                 session_id, item, ..
             } => {
                 if self.selected_session.as_deref() == Some(session_id.as_str()) {
-                    if item.role.as_deref() != Some("user") {
-                        self.awaiting_first_token = false;
-                    }
-                    let summary_item = item.clone();
-                    self.apply_timeline_item(&session_id, item);
-                    self.load_attachment_images(cx);
-                    self.maybe_summarize_tool(&session_id, &summary_item, cx);
+                    self.apply_incoming_item(&session_id, item, cx);
                 } else {
                     return false;
                 }
@@ -2261,43 +2491,40 @@ impl ChatScreen {
                 request_id,
                 questions,
             } => {
+                if self
+                    .pending_questions
+                    .iter()
+                    .any(|queued| queued.request_id == request_id)
+                {
+                    return false;
+                }
                 let preview: String = questions
                     .first()
                     .map(|question| question.question.chars().take(140).collect())
                     .unwrap_or_default();
                 self.notify_desktop("Maple has a question", &preview);
-                let was_empty = self.pending_questions.is_empty();
-                if self.selected_session.as_deref() == Some(session_id.as_str()) {
-                    self.ensure_question_input(cx);
+                // Questions queue per session; one for a task that is not
+                // on screen shows its card when the user switches there.
+                let shows_now = self.current_question().is_none()
+                    && self.selected_session.as_deref() == Some(session_id.as_str());
+                self.pending_questions.push(PendingQuestion {
+                    session_id,
+                    request_id,
+                    questions,
+                });
+                if shows_now {
+                    // A fresh question takes the card; follow-ups queue
+                    // behind it and keep the user's picks on this one.
                     self.question_selected.clear();
-                    if self.pending_questions.is_empty() {
-                        // A fresh question takes the card; follow-ups queue
-                        // behind it once this one is answered.
-                        self.question_focus_pending = true;
-                    }
-                    let preview: String = questions
-                        .first()
-                        .map(|question| question.question.chars().take(140).collect())
-                        .unwrap_or_default();
-                    self.notify_desktop("Maple has a question", &preview);
-                    if !self
-                        .pending_questions
-                        .iter()
-                        .any(|queued| queued.request_id == request_id)
-                    {
-                        self.pending_questions.push(PendingQuestion {
-                            session_id,
-                            request_id,
-                            questions,
-                        });
-                    }
+                    self.ensure_question_input(cx);
+                    self.question_focus_pending = true;
                 }
             }
             AgentServiceEvent::Run {
                 session_id,
                 run_id,
                 event,
-            } => self.handle_run_event(&session_id, &run_id, event, cx),
+            } => return self.handle_run_event(&session_id, &run_id, event, cx),
         }
         true
     }
@@ -2306,17 +2533,27 @@ impl ChatScreen {
         self.selected_session.as_deref() == Some(session_id)
     }
 
+    /// Drop every queued question of a session whose run ended.
+    fn clear_session_questions(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let before = self.pending_questions.len();
+        self.pending_questions
+            .retain(|question| question.session_id != session_id);
+        if self.pending_questions.len() != before && self.is_selected(session_id) {
+            self.reset_question_card(cx);
+        }
+    }
+
     fn handle_run_event(
         &mut self,
         session_id: &str,
         run_id: &str,
         event: maple_agent::agent::AgentRunEvent,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         use maple_agent::agent::AgentRunEvent;
         match event {
             AgentRunEvent::SessionUpdated(session) => {
-                self.upsert_session(session);
+                return self.upsert_session(session);
             }
             AgentRunEvent::Started => {
                 self.active_runs
@@ -2326,21 +2563,15 @@ impl ChatScreen {
             }
             AgentRunEvent::TimelineItem(item) => {
                 if self.is_selected(session_id) {
-                    if item.role.as_deref() != Some("user") {
-                        self.awaiting_first_token = false;
-                    }
-                    let summary_item = item.clone();
-                    self.apply_timeline_item(session_id, item);
-                    self.load_attachment_images(cx);
-                    self.maybe_summarize_tool(session_id, &summary_item, cx);
+                    self.apply_incoming_item(session_id, item, cx);
                 }
             }
             AgentRunEvent::PermissionRequested { request, item } => {
                 if self.is_selected(session_id) {
                     // The permission row stays in the transcript so the
                     // decision is visible after the card is answered.
+                    self.load_attachment_images_for(&item, cx);
                     self.apply_timeline_item(session_id, item);
-                    self.load_attachment_images(cx);
                     let arguments = serde_json::Value::Object(request.arguments);
                     self.pending_permission_arguments = if arguments.is_null() {
                         SharedString::default()
@@ -2380,23 +2611,33 @@ impl ChatScreen {
             }
             AgentRunEvent::Error(item) => {
                 if self.is_selected(session_id) {
+                    self.load_attachment_images_for(&item, cx);
                     self.apply_timeline_item(session_id, item);
-                    self.load_attachment_images(cx);
                 }
             }
             AgentRunEvent::Finished(_) => {
                 // Only retire the run that actually finished; a late
                 // Finished from a cancelled run must not clear a newer one.
-                if self.active_runs.get(session_id).map(String::as_str) == Some(run_id) {
+                let owns_session = self
+                    .active_runs
+                    .get(session_id)
+                    .is_none_or(|active| active == run_id);
+                if owns_session {
                     self.active_runs.remove(session_id);
+                    // The run that asked is gone (stopped or failed): its
+                    // questions would block the composer forever.
+                    self.clear_session_questions(session_id, cx);
                 }
-                if let Some(permission) = &self.pending_permission {
-                    if permission.run_id == run_id {
-                        self.pending_permission = None;
-                        self.permission_responding = false;
-                    }
+                if let Some(permission) = &self.pending_permission
+                    && permission.run_id == run_id
+                {
+                    self.pending_permission = None;
+                    self.permission_responding = false;
                 }
                 self.awaiting_first_token = false;
+                if self.is_selected(session_id) {
+                    self.refresh_context_usage(cx);
+                }
                 let title = self
                     .sessions
                     .iter()
@@ -2409,8 +2650,10 @@ impl ChatScreen {
             AgentRunEvent::QueueChanged(_) | AgentRunEvent::QueuePromoted { .. } => {
                 // Queue chips are rendered from send responses; nothing to do
                 // until queue editing is exposed in the UI.
+                return false;
             }
         }
+        true
     }
 }
 
@@ -2426,7 +2669,7 @@ impl Render for ChatScreen {
         self.window_active = window.is_window_active();
         if self.question_focus_pending {
             self.question_focus_pending = false;
-            if self.pending_questions.first().is_some()
+            if self.current_question().is_some()
                 && let Some(input) = self.pending_question_input.clone()
             {
                 let handle = input.read(cx).focus_handle(cx);
@@ -2457,11 +2700,16 @@ impl Render for ChatScreen {
                             .child(render_waiting_indicator()),
                     )
                 })
-                .when_some(self.pending_questions.first(), |container, question| {
+                .when_some(self.current_question(), |container, question| {
                     let input = self.pending_question_input.clone();
-                    let selected = self.question_selected.clone();
                     let step = self.question_step;
-                    container.child(render_question_card(question, step, input, &selected, cx))
+                    container.child(render_question_card(
+                        question,
+                        step,
+                        input,
+                        &self.question_selected,
+                        cx,
+                    ))
                 })
                 .when_some(self.pending_permission.as_ref(), |container, permission| {
                     container.child(render_permission_card(
@@ -2690,10 +2938,10 @@ impl ChatScreen {
         {
             roots.push(root);
         }
-        if let Some(root) = self.project_root.clone() {
-            if !roots.contains(&root) {
-                roots.push(root);
-            }
+        if let Some(root) = self.project_root.clone()
+            && !roots.contains(&root)
+        {
+            roots.push(root);
         }
         for root in self.recent_roots.iter().chain(
             self.sessions
@@ -2735,11 +2983,28 @@ impl ChatScreen {
         } else {
             self.pinned_roots.push(root.to_string());
         }
-        let mut settings = crate::settings::load_settings();
-        settings.pinned_roots = self.pinned_roots.clone();
-        crate::settings::save_settings(&settings);
         self.rebuild_project_groups();
         cx.notify();
+        // The settings file is read and written off the UI thread.
+        let pinned = self.pinned_roots.clone();
+        self.call(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let mut settings = crate::settings::load_settings();
+                    settings.pinned_roots = pinned;
+                    crate::settings::save_settings_in_background(settings);
+                    Ok(())
+                })
+                .await
+                .map_err(|error| format!("Settings save failed: {error}"))?
+            },
+            cx,
+            |_this, result: Result<(), String>, _cx| {
+                if let Err(message) = result {
+                    log::warn!("{message}");
+                }
+            },
+        );
     }
 
     /// Fold or unfold a project's task list. Unfolding a project that is
@@ -2776,8 +3041,7 @@ impl ChatScreen {
                         this.upsert_session(session);
                         if archived && this.selected_session.as_deref() == Some(&*changed_id) {
                             this.selected_session = None;
-                            this.timeline.clear();
-                            this.list_state.reset(0);
+                            this.replace_timeline(Vec::new());
                             let next = this
                                 .sessions
                                 .iter()
@@ -2839,8 +3103,7 @@ impl ChatScreen {
                         let was_current = this.project_root.as_deref() == Some(&*removed);
                         if was_current {
                             this.selected_session = None;
-                            this.timeline.clear();
-                            this.list_state.reset(0);
+                            this.replace_timeline(Vec::new());
                             this.project_root = next_root.clone();
                         }
                         this.rebuild_project_groups();
@@ -3204,9 +3467,8 @@ impl ChatScreen {
         div().flex().items_center().px_3().py_2().child(gear)
     }
 
-    /// Raise a desktop notification through `notify-send` when enabled and
-    /// the window is not focused. Sent from a thread: D-Bus calls must not
-    /// block the UI thread.
+    /// Raise a desktop notification when enabled and the window is not
+    /// focused.
     fn notify_desktop(&self, title: &str, body: &str) {
         if !self.notify_enabled {
             log::info!("desktop notification skipped (disabled): {title}");
@@ -3217,20 +3479,7 @@ impl ChatScreen {
             return;
         }
         log::info!("desktop notification sent: {title}");
-        let title = title.to_string();
-        let body = body.replace('\n', " ");
-        std::thread::spawn(move || {
-            let result = std::process::Command::new("notify-send")
-                .args(["-a", "Maple", "-t", "8000", "-u", "normal"])
-                .arg(&title)
-                .arg(&body)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            if let Err(error) = result {
-                log::warn!("notify-send failed: {error}");
-            }
-        });
+        crate::notify::notify_desktop(title, &body.replace('\n', " "));
     }
 
     /// Load the plan card from the Maple billing API. Failures keep the
@@ -3588,7 +3837,7 @@ impl ChatScreen {
     /// Lists built-ins plus the project's skill commands, filtered by the
     /// typed prefix; clicking completes the command in the composer.
     fn render_slash_palette(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let entries = self.slash_entries(cx);
+        let entries = &self.slash_entries;
         if entries.is_empty() {
             return None;
         }
@@ -3670,10 +3919,9 @@ impl ChatScreen {
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
         let transcript_focus = self.transcript_focus.clone();
-        let toggled = self.toggled_tools.clone();
-        let summary_requests = self.summary_requests.clone();
         // Only the visible items (plus a small overdraw) are built each
-        // frame; the list measures and caches the rest.
+        // frame; the list measures and caches the rest. Everything else is
+        // read through the entity so nothing is cloned per frame.
         let list = gpui::list(self.list_state.clone(), move |ix, _window, cx| {
             let Some(chat) = entity.upgrade() else {
                 return div().into_any_element();
@@ -3687,19 +3935,22 @@ impl ChatScreen {
                         focus: transcript_focus.clone(),
                         id_seed: item.id.clone(),
                     };
-                    let expanded = tool_details != toggled.contains(&item.id);
-                    render_timeline_item(
-                        item,
-                        expanded,
-                        &chat.markdown_cache,
-                        &chat.attachment_images,
-                        &entity,
-                        ix,
-                        &render_ctx,
-                        &chat.tool_summaries,
-                        &summary_requests,
-                    )
-                    .into_any_element()
+                    let transcript = TranscriptCtx {
+                        markdown_cache: &chat.markdown_cache,
+                        derived: &chat.derived,
+                        attachment_images: &chat.attachment_images,
+                        chat: &entity,
+                        tool_summaries: &chat.tool_summaries,
+                        summary_requests: &chat.summary_requests,
+                        render: &render_ctx,
+                    };
+                    let expanded = tool_details != chat.toggled_tools.contains(&item.id);
+                    let revision = chat
+                        .timeline_index
+                        .get(&item.id)
+                        .map_or(0, |(_, revision)| *revision);
+                    render_timeline_item(item, revision, expanded, ix, &transcript)
+                        .into_any_element()
                 }
                 None => div().into_any_element(),
             }
@@ -3797,11 +4048,7 @@ impl ChatScreen {
     fn render_composer(&mut self, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         let disabled = self.booting;
-        let has_text = self
-            .composer
-            .as_ref()
-            .map(|composer| !composer.read(cx).text().trim().is_empty())
-            .unwrap_or(false);
+        let has_text = self.composer_has_text;
         let has_images = !self.draft_images.is_empty();
         let can_send = !disabled && !running && (has_text || has_images);
         let expanded = self.composer_expanded;
@@ -4166,6 +4413,21 @@ fn row_action(
         .child(icon(icon_name, px(14.), theme::TEXT_SECONDARY))
 }
 
+/// Field-wise equality for session rows; the summary type has no
+/// `PartialEq` of its own.
+fn session_summary_eq(a: &AgentSessionSummary, b: &AgentSessionSummary) -> bool {
+    a.id == b.id
+        && a.title == b.title
+        && a.project_root == b.project_root
+        && a.created_ms == b.created_ms
+        && a.updated_ms == b.updated_ms
+        && a.message_count == b.message_count
+        && a.model == b.model
+        && a.mode == b.mode
+        && a.web_enabled == b.web_enabled
+        && a.archived == b.archived
+}
+
 fn root_display_name(root: &str) -> String {
     std::path::Path::new(root)
         .file_name()
@@ -4286,19 +4548,14 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 fn render_timeline_item(
     item: &AgentTimelineItem,
+    revision: u64,
     expanded: bool,
-    markdown_cache: &MarkdownCache,
-    attachment_images: &HashMap<String, Arc<gpui::Image>>,
-    chat: &gpui::WeakEntity<ChatScreen>,
     ix: usize,
-    ctx: &RenderCtx,
-    tool_summaries: &HashMap<String, String>,
-    summary_requested: &HashSet<String>,
+    transcript: &TranscriptCtx,
 ) -> Div {
-    let summary_requested = summary_requested.contains(&item.id);
     let item = match item.item_type.as_str() {
-        "message" => render_message(item, markdown_cache, attachment_images, chat, ctx),
-        "thinking" | "reasoning" => render_thinking(item),
+        "message" => render_message(item, revision, transcript),
+        "thinking" | "reasoning" => render_thinking(item, revision, transcript),
         "tool" | "toolCall" => {
             // Dispatch on payload shape; runtime titles are humanized
             // ("todo write", "ask user") and vary by detail suffix.
@@ -4307,25 +4564,9 @@ fn render_timeline_item(
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
-                render_tool_with_diff(
-                    item,
-                    expanded,
-                    markdown_cache,
-                    chat,
-                    ix,
-                    tool_summaries,
-                    summary_requested,
-                )
+                render_tool_with_diff(item, revision, expanded, ix, transcript)
             } else {
-                render_tool(
-                    item,
-                    expanded,
-                    markdown_cache,
-                    chat,
-                    ix,
-                    tool_summaries,
-                    summary_requested,
-                )
+                render_tool(item, revision, expanded, ix, transcript)
             }
         }
         "error" => render_error(item),
@@ -4364,13 +4605,10 @@ fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat> {
         None
     }
 }
-fn render_message(
-    item: &AgentTimelineItem,
-    markdown_cache: &MarkdownCache,
-    attachment_images: &HashMap<String, Arc<gpui::Image>>,
-    chat: &gpui::WeakEntity<ChatScreen>,
-    ctx: &RenderCtx,
-) -> Div {
+fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
+    let ctx = transcript.render;
+    let attachment_images = transcript.attachment_images;
+    let chat = transcript.chat;
     let is_user = item.role.as_deref() == Some("user");
     let text = item.text.as_deref().unwrap_or("");
     let mut attachments = attachment_refs(item).peekable();
@@ -4430,7 +4668,7 @@ fn render_message(
                                                 )
                                                 .child(
                                                     gpui::img(gpui::ImageSource::Image(
-                                                        Arc::clone(&image),
+                                                        Arc::clone(image),
                                                     ))
                                                     .max_w(px(320.))
                                                     .max_h(px(240.))
@@ -4462,7 +4700,7 @@ fn render_message(
                 })
                 .when(!text.trim().is_empty(), |bubble| {
                     bubble.child(rich_text::plain_paragraph(
-                        SharedString::from(text.to_string()),
+                        transcript.derived.get(item, revision).text.clone(),
                         ordinal,
                         &user_ctx,
                     ))
@@ -4474,13 +4712,16 @@ fn render_message(
             .pr_2()
             .text_color(gpui::rgb(theme::TEXT_PRIMARY))
             .child(markdown::render_with(
-                &markdown_cache.get(&item.id, text),
+                &transcript
+                    .markdown_cache
+                    .get(&item.id, MarkdownKind::Body, revision, text),
                 ctx,
             ))
     }
 }
-fn render_thinking(item: &AgentTimelineItem) -> Div {
-    let text = maple_display_text(&item.text.clone().unwrap_or_default()).into_owned();
+
+fn render_thinking(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
+    let text = transcript.derived.get(item, revision).text.clone();
     if text.trim().is_empty() {
         div().child(
             div()
@@ -4549,100 +4790,103 @@ fn render_todo(item: &AgentTimelineItem) -> Div {
                 .text_color(gpui::rgb(theme::TEXT_PRIMARY))
                 .child("Plan"),
         );
-    if let Some(serde_json::Value::Object(map)) = item.input.as_ref() {
-        if let Some(serde_json::Value::Array(todos)) = map.get("todos") {
-            for todo in todos {
-                let content = todo
-                    .get("content")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("");
-                let status = todo
-                    .get("status")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("pending");
-                let (marker, color) = match status {
-                    "completed" => ("[x]", theme::STATUS_SUCCESS),
-                    "in_progress" => ("[~]", theme::STATUS_RUNNING),
-                    _ => ("[ ]", theme::TEXT_MUTED),
-                };
-                card = card.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_family("monospace")
-                                .text_color(gpui::rgb(color))
-                                .child(marker.to_string()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(gpui::rgb(if status == "completed" {
-                                    theme::TEXT_MUTED
-                                } else {
-                                    theme::TEXT_PRIMARY
-                                }))
-                                .line_clamp(1)
-                                .child(content.to_string()),
-                        ),
-                );
-            }
+    if let Some(serde_json::Value::Object(map)) = item.input.as_ref()
+        && let Some(serde_json::Value::Array(todos)) = map.get("todos")
+    {
+        for todo in todos {
+            let content = todo
+                .get("content")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let status = todo
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("pending");
+            let (marker, color) = match status {
+                "completed" => ("[x]", theme::STATUS_SUCCESS),
+                "in_progress" => ("[~]", theme::STATUS_RUNNING),
+                _ => ("[ ]", theme::TEXT_MUTED),
+            };
+            card = card.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family("monospace")
+                            .text_color(gpui::rgb(color))
+                            .child(marker.to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(if status == "completed" {
+                                theme::TEXT_MUTED
+                            } else {
+                                theme::TEXT_PRIMARY
+                            }))
+                            .line_clamp(1)
+                            .child(content.to_string()),
+                    ),
+            );
         }
     }
     card
+}
+
+/// +/- lines of an edit or write tool input, stopping at the display cap.
+fn diff_lines_for(item: &AgentTimelineItem) -> Vec<(char, SharedString)> {
+    let mut lines: Vec<(char, SharedString)> = Vec::new();
+    let Some(serde_json::Value::Object(map)) = item.input.as_ref() else {
+        return lines;
+    };
+    let push = |lines: &mut Vec<(char, SharedString)>, sign: char, text: &str| {
+        for line in text.lines() {
+            if lines.len() >= MAX_DIFF_LINES {
+                return false;
+            }
+            lines.push((sign, SharedString::from(line.to_string())));
+        }
+        true
+    };
+    if let Some(path) = map.get("path").and_then(|v| v.as_str()) {
+        push(&mut lines, ' ', path);
+    }
+    if let Some(serde_json::Value::Array(edits)) = map.get("edits") {
+        for edit in edits {
+            if let Some(old) = edit.get("oldText").and_then(|v| v.as_str())
+                && !push(&mut lines, '-', old)
+            {
+                return lines;
+            }
+            if let Some(new) = edit.get("newText").and_then(|v| v.as_str())
+                && !push(&mut lines, '+', new)
+            {
+                return lines;
+            }
+        }
+    }
+    if let Some(content) = map.get("content").and_then(|v| v.as_str()) {
+        push(&mut lines, '+', content);
+    }
+    lines
 }
 
 /// Tool card whose payload renders as a colored diff when it carries
 /// edit/write replacements.
 fn render_tool_with_diff(
     item: &AgentTimelineItem,
+    revision: u64,
     details: bool,
-    markdown_cache: &MarkdownCache,
-    chat: &gpui::WeakEntity<ChatScreen>,
     ix: usize,
-    tool_summaries: &HashMap<String, String>,
-    summary_requested: bool,
+    transcript: &TranscriptCtx,
 ) -> Div {
-    let card = render_tool(
-        item,
-        details,
-        markdown_cache,
-        chat,
-        ix,
-        tool_summaries,
-        summary_requested,
-    );
+    let card = render_tool(item, revision, details, ix, transcript);
     if !details {
         return card;
     }
-    // Build a +/- view from the edit set when present.
-    let mut diff_lines: Vec<(char, String)> = Vec::new();
-    if let Some(serde_json::Value::Object(map)) = item.input.as_ref() {
-        if let Some(path) = map.get("path").and_then(|v| v.as_str()) {
-            diff_lines.push((' ', path.to_string()));
-        }
-        if let Some(serde_json::Value::Array(edits)) = map.get("edits") {
-            for edit in edits {
-                if let Some(old) = edit.get("oldText").and_then(|v| v.as_str()) {
-                    for line in old.lines() {
-                        diff_lines.push(('-', line.to_string()));
-                    }
-                }
-                if let Some(new) = edit.get("newText").and_then(|v| v.as_str()) {
-                    for line in new.lines() {
-                        diff_lines.push(('+', line.to_string()));
-                    }
-                }
-            }
-        }
-        if let Some(content) = map.get("content").and_then(|v| v.as_str()) {
-            for line in content.lines() {
-                diff_lines.push(('+', line.to_string()));
-            }
-        }
-    }
+    let diff_lines = Rc::clone(&transcript.derived.get(item, revision).diff_lines);
     if diff_lines.is_empty() {
         return card;
     }
@@ -4655,7 +4899,7 @@ fn render_tool_with_diff(
         .border_1()
         .border_color(gpui::rgb(theme::BORDER_SUBTLE))
         .overflow_x_hidden();
-    for (sign, line) in diff_lines.into_iter().take(200) {
+    for (sign, line) in diff_lines.iter() {
         let color = match sign {
             '+' => theme::STATUS_SUCCESS,
             '-' => theme::STATUS_ERROR,
@@ -4680,7 +4924,7 @@ fn render_tool_with_diff(
                         .min_w_0()
                         .text_color(gpui::rgb(color))
                         .line_clamp(1)
-                        .child(line),
+                        .child(line.clone()),
                 ),
         );
     }
@@ -4699,20 +4943,20 @@ fn render_tool_with_diff(
 
 fn render_tool(
     item: &AgentTimelineItem,
+    revision: u64,
     details: bool,
-    markdown_cache: &MarkdownCache,
-    chat: &gpui::WeakEntity<ChatScreen>,
     ix: usize,
-    tool_summaries: &HashMap<String, String>,
-    summary_requested: bool,
+    transcript: &TranscriptCtx,
 ) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
     let title = item.title.clone().unwrap_or_else(|| item.item_type.clone());
     let item_id = item.id.clone();
-    let chat_header = chat.clone();
-    let summary = tool_summaries.get(&item.id).cloned();
+    let chat_header = transcript.chat.clone();
+    let summary = transcript.tool_summaries.get(&item.id).cloned();
     let has_summary = summary.is_some();
-    let mut card = div()
+    let summary_requested = transcript.summary_requests.contains(&item.id);
+    let derived = transcript.derived.get(item, revision);
+    let card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
         .flex()
         .flex_col()
@@ -4795,20 +5039,20 @@ fn render_tool(
                     .text_color(gpui::rgb(theme::TEXT_MUTED))
                     .child("Summarizing…"),
             );
-        } else if !has_summary && let Some(preview) = tool_output_preview(item) {
+        } else if !has_summary && let Some(preview) = &derived.preview {
             payload = payload.child(
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::TEXT_MUTED))
                     .line_clamp(1)
-                    .child(preview),
+                    .child(preview.clone()),
             );
         }
         return div().child(card.child(payload));
     }
     // Input stays monospace JSON; the model summary replaces the raw
     // output once it arrives.
-    if let Some(input) = tool_input_line(item) {
+    if let Some(input) = &derived.input_line {
         payload = payload.child(
             div()
                 .text_xs()
@@ -4816,29 +5060,25 @@ fn render_tool(
                 .font_family("monospace")
                 .line_clamp(2)
                 .overflow_x_hidden()
-                .child(input),
+                .child(input.clone()),
         );
     }
-    if !has_summary && let Some(output) = tool_output_markdown(item) {
+    if !has_summary && let Some(output) = &derived.output_text {
         payload = payload.child(
             div()
                 .mt_1()
                 .w_full()
                 .text_sm()
                 .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                .child(markdown::render(
-                    &markdown_cache.get(&format!("{}#output", item.id), &output),
-                )),
+                .child(markdown::render(&transcript.markdown_cache.get(
+                    &item.id,
+                    MarkdownKind::ToolOutput,
+                    revision,
+                    output,
+                ))),
         );
     }
     div().child(card.child(payload))
-}
-
-/// One-line plain preview of a tool output for collapsed cards.
-fn tool_output_preview(item: &AgentTimelineItem) -> Option<String> {
-    let text = tool_output_markdown(item)?;
-    let first = text.lines().find(|line| !line.trim().is_empty())?;
-    (!first.trim().is_empty()).then(|| first.trim().to_string())
 }
 
 fn tool_input_line(item: &AgentTimelineItem) -> Option<String> {
@@ -4863,10 +5103,10 @@ fn extract_output_text(value: &serde_json::Value) -> Option<String> {
             // Common tool result shapes: {"text": ...}, {"stdout": ...},
             // {"content": [{"type": "text", "text": ...}, ...]}.
             for key in ["text", "stdout", "stderr", "output"] {
-                if let Some(inner) = map.get(key) {
-                    if let Some(text) = extract_output_text(inner) {
-                        return Some(text);
-                    }
+                if let Some(inner) = map.get(key)
+                    && let Some(text) = extract_output_text(inner)
+                {
+                    return Some(text);
                 }
             }
             if let Some(serde_json::Value::Array(items)) = map.get("content") {
@@ -5743,34 +5983,275 @@ mod state_tests {
         });
     }
 
+    fn long_tool(id: &str, status: &str) -> AgentTimelineItem {
+        let mut tool = item(id, "tool", None);
+        tool.title = Some("shell".to_string());
+        tool.input = Some(serde_json::json!({"command": "ls"}));
+        tool.status = Some(status.to_string());
+        tool.output = Some(serde_json::json!({"stdout": "x".repeat(600)}));
+        tool
+    }
+
     #[gpui::test]
     fn test_tool_summary_gating(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
-            let long_output = "x".repeat(600);
-            let mut tool = item("tool-1", "tool", None);
-            tool.title = Some("shell".to_string());
-            tool.input = Some(serde_json::json!({"command": "ls"}));
             // Running tools are not summarized.
-            tool.status = Some("running".to_string());
-            tool.output = Some(serde_json::json!({"stdout": long_output.clone()}));
-            this.maybe_summarize_tool("s1", &tool, cx);
+            let index = this.apply_timeline_item("s1", long_tool("tool-1", "running"));
+            this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.is_empty());
             // Completed tools with long output are queued once.
-            tool.status = Some("completed".to_string());
-            this.maybe_summarize_tool("s1", &tool, cx);
+            let index = this.apply_timeline_item("s1", long_tool("tool-1", "completed"));
+            this.maybe_summarize_tool(index, cx);
             assert!(this.summary_requests.contains("tool-1"));
             assert_eq!(this.pending_summaries, 1);
-            this.maybe_summarize_tool("s1", &tool, cx);
+            this.maybe_summarize_tool(index, cx);
             assert_eq!(this.pending_summaries, 1);
             // Short outputs never queue.
             let mut short = item("tool-2", "tool", None);
             short.status = Some("completed".to_string());
             short.input = Some(serde_json::json!({"q": 1}));
             short.output = Some(serde_json::json!({"stdout": "ok"}));
-            this.maybe_summarize_tool("s1", &short, cx);
+            let index = this.apply_timeline_item("s1", short);
+            this.maybe_summarize_tool(index, cx);
             assert!(!this.summary_requests.contains("tool-2"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_tool_summaries_queue_past_the_slot_cap(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.summaries_enabled = true;
+            for n in 0..5 {
+                let index =
+                    this.apply_timeline_item("s1", long_tool(&format!("t{n}"), "completed"));
+                this.maybe_summarize_tool(index, cx);
+            }
+            // Three ride at once; the rest wait instead of being dropped.
+            assert_eq!(this.pending_summaries, 3);
+            assert_eq!(this.summary_queue.len(), 2);
+            assert_eq!(this.summary_requests.len(), 5);
+            // A session switch restarts the slots and drops the queue.
+            let before = this.summary_generation;
+            this.set_active_session(summary("s2", "B"), Vec::new(), cx);
+            assert_eq!(this.summary_generation, before + 1);
+            assert_eq!(this.pending_summaries, 0);
+            assert!(this.summary_queue.is_empty());
+            assert!(this.summary_requests.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_finished_run_drops_its_questions(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.active_runs
+                .insert("s1".to_string(), "run-1".to_string());
+            this.handle_service_event(one_question("q", "Still there?"), cx);
+            this.select_question_option(0, 0, cx);
+            assert!(this.current_question().is_some());
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Cancelled,
+                ),
+                cx,
+            );
+            assert!(this.pending_questions.is_empty());
+            assert!(this.pending_question_input.is_none());
+            assert!(this.question_selected.is_empty());
+            assert_eq!(this.question_step, 0);
+            // The composer is unblocked again.
+            this.booting = false;
+            this.send_text("next".to_string(), cx);
+            assert_ne!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Answer the question above first")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_questions_are_scoped_to_their_session(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let other = AgentServiceEvent::Question {
+            session_id: "s2".to_string(),
+            request_id: "req-other".to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                id: "other".to_string(),
+                header: "Question".to_string(),
+                question: "From another task".to_string(),
+                options: Vec::new(),
+            }],
+        };
+        screen.update(cx, |this, cx| {
+            this.active_runs
+                .insert("s2".to_string(), "run-2".to_string());
+            this.handle_service_event(other, cx);
+            // Queued for later, but not shown and not blocking this task.
+            assert_eq!(this.pending_questions.len(), 1);
+            assert!(this.current_question().is_none());
+            assert!(this.pending_question_input.is_none());
+            this.booting = false;
+            this.send_text("still typing here".to_string(), cx);
+            assert_ne!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Answer the question above first")
+            );
+            // Escape must not cancel the other session's run.
+            this.skip_question(cx);
+            assert_eq!(this.pending_questions.len(), 1);
+            // A second question for the shown session keeps the pick made
+            // on the first card.
+            this.handle_service_event(one_question("a", "First?"), cx);
+            this.select_question_option(0, 0, cx);
+            this.handle_service_event(one_question("b", "Second?"), cx);
+            assert_eq!(this.question_selected.get(&0), Some(&0));
+            // Switching to the other task shows its card.
+            this.set_active_session(summary("s2", "B"), Vec::new(), cx);
+            assert_eq!(
+                this.current_question().map(|q| q.request_id.as_str()),
+                Some("req-other")
+            );
+            assert!(this.pending_question_input.is_some());
+            assert!(this.question_selected.is_empty());
+            // Switching back still shows the first task's card.
+            this.set_active_session(summary("s1", "A"), Vec::new(), cx);
+            assert_eq!(
+                this.current_question().map(|q| q.request_id.as_str()),
+                Some("req-a")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_escape_closes_root_menu(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.root_menu_open = true;
+            this.close_menus_on_escape(cx);
+            assert!(!this.root_menu_open);
+        });
+    }
+
+    #[gpui::test]
+    fn test_idle_events_do_not_redraw(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let status = maple_agent::agent::AgentRuntimeStatus {
+                running: true,
+                project_root: None,
+                model: None,
+                mode: None,
+                active_runs: HashMap::new(),
+            };
+            assert!(
+                !this.apply_service_event(AgentServiceEvent::RuntimeStatus(status.clone()), cx)
+            );
+            assert!(
+                this.apply_service_event(AgentServiceEvent::SessionCreated(summary("s1", "A")), cx)
+            );
+            assert!(
+                !this
+                    .apply_service_event(AgentServiceEvent::SessionCreated(summary("s1", "A")), cx)
+            );
+            assert!(this.apply_service_event(
+                AgentServiceEvent::SessionCreated(summary("s1", "A renamed")),
+                cx
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn test_timeline_index_tracks_items(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            assert_eq!(
+                this.apply_timeline_item("s1", item("a", "message", Some("1"))),
+                0
+            );
+            assert_eq!(
+                this.apply_timeline_item("s1", item("b", "message", Some("2"))),
+                1
+            );
+            assert_eq!(
+                this.apply_timeline_item("s1", item("a", "message", Some("3"))),
+                0
+            );
+            assert_eq!(this.timeline_index.get("a"), Some(&(0, 1)));
+            assert_eq!(this.timeline_index.get("b"), Some(&(1, 0)));
+            this.replace_timeline(vec![item("z", "message", Some("9"))]);
+            assert_eq!(this.timeline_index.get("z"), Some(&(0, 0)));
+            assert!(!this.timeline_index.contains_key("a"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_attachments_requested_from_the_arriving_item(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut sent = user_item("u1", "see this");
+            sent.input = Some(serde_json::json!({
+                "imageAttachments": [{"id": "att-1", "name": "a.png"}]
+            }));
+            this.apply_incoming_item("s1", sent, cx);
+            assert!(this.attachment_requests.contains("att-1"));
+        });
+    }
+
+    #[test]
+    fn test_diff_lines_stop_at_the_cap() {
+        let mut tool = item("edit", "tool", None);
+        tool.input = Some(serde_json::json!({
+            "path": "big.txt",
+            "content": (0..1000).map(|n| n.to_string()).collect::<Vec<_>>().join("\n"),
+        }));
+        let lines = diff_lines_for(&tool);
+        assert_eq!(lines.len(), MAX_DIFF_LINES);
+        assert_eq!(lines[0], (' ', SharedString::from("big.txt")));
+        assert_eq!(lines[1], ('+', SharedString::from("0")));
+    }
+
+    #[test]
+    fn test_markdown_cache_keys_on_revision() {
+        let cache = MarkdownCache::default();
+        let first = cache.get("m", MarkdownKind::Body, 0, "hello");
+        assert!(Rc::ptr_eq(
+            &first,
+            &cache.get("m", MarkdownKind::Body, 0, "hello")
+        ));
+        // Same length, new revision: parsed again.
+        assert!(!Rc::ptr_eq(
+            &first,
+            &cache.get("m", MarkdownKind::Body, 1, "jello")
+        ));
+        // Kinds do not share entries.
+        assert!(!Rc::ptr_eq(
+            &first,
+            &cache.get("m", MarkdownKind::ToolOutput, 0, "hello")
+        ));
+    }
+
+    #[gpui::test]
+    fn test_composer_change_updates_slash_entries(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let input = cx.new(|cx| TextInput::new("", cx));
+        screen.update(cx, |this, cx| {
+            assert!(!this.composer_has_text);
+            input.update(cx, |input, cx| input.set_text("/co", cx));
+            this.composer_changed(&input, cx);
+            assert!(this.composer_has_text);
+            assert_eq!(this.slash_entries.len(), 1);
+            assert_eq!(this.slash_entries[0].name, "compact");
+            input.update(cx, |input, cx| input.set_text("/compact now", cx));
+            this.composer_changed(&input, cx);
+            assert!(this.slash_entries.is_empty());
+            input.update(cx, |input, cx| input.clear(cx));
+            this.composer_changed(&input, cx);
+            assert!(!this.composer_has_text);
         });
     }
     #[test]

@@ -216,6 +216,11 @@ impl TextInput {
         self.content.to_string()
     }
 
+    /// The content without a copy, for checks that only read it.
+    pub fn text_ref(&self) -> &str {
+        &self.content
+    }
+
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
@@ -776,10 +781,11 @@ impl Element for TextElement {
                 _ => None,
             });
             let cache_width = width.unwrap_or(px(0.));
-            if let Some((cached_text, cached_width, rows)) = input.measure_cache.as_ref() {
-                if *cached_text == text && *cached_width == cache_width {
-                    return size(cache_width, line_height * *rows as f32);
-                }
+            if let Some((cached_text, cached_width, rows)) = input.measure_cache.as_ref()
+                && *cached_text == text
+                && *cached_width == cache_width
+            {
+                return size(cache_width, line_height * *rows as f32);
             }
             let style = window.text_style();
             let font_size = style.font_size.to_pixels(window.rem_size());
