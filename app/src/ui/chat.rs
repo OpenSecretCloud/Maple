@@ -3,7 +3,7 @@
 //! facade + event stream.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -164,6 +164,12 @@ pub struct ChatScreen {
     /// Sidebar groups: (project root, indices into `sessions`), rebuilt
     /// when sessions or roots change instead of on every render.
     project_groups: Vec<(String, Vec<usize>)>,
+    /// Indices into `sessions` of archived tasks, newest first.
+    archived_indices: Vec<usize>,
+    /// Roots whose task list is folded in the sidebar.
+    collapsed_roots: HashSet<String>,
+    /// Archived section open in the sidebar.
+    archived_expanded: bool,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Per-session count of applied timeline events; a load whose snapshot
@@ -261,6 +267,9 @@ impl ChatScreen {
             default_web_enabled: crate::settings::load_settings().default_web_enabled,
             markdown_cache: MarkdownCache::default(),
             project_groups: Vec::new(),
+            archived_indices: Vec::new(),
+            collapsed_roots: HashSet::new(),
+            archived_expanded: false,
             root_input: None,
             root_switching: false,
             selection_generation: 0,
@@ -1710,11 +1719,12 @@ impl ChatScreen {
         if let Some(root) = self.project_root.clone() {
             roots.push(root);
         }
-        for root in self
-            .recent_roots
-            .iter()
-            .chain(self.sessions.iter().map(|s| &s.project_root))
-        {
+        for root in self.recent_roots.iter().chain(
+            self.sessions
+                .iter()
+                .filter(|s| !s.archived)
+                .map(|s| &s.project_root),
+        ) {
             if !roots.contains(root) {
                 roots.push(root.clone());
             }
@@ -1726,12 +1736,134 @@ impl ChatScreen {
                     .sessions
                     .iter()
                     .enumerate()
-                    .filter(|(_, session)| session.project_root == root)
+                    .filter(|(_, session)| !session.archived && session.project_root == root)
                     .map(|(index, _)| index)
                     .collect();
                 (root, indices)
             })
             .collect();
+        self.archived_indices = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| session.archived)
+            .map(|(index, _)| index)
+            .collect();
+    }
+
+    /// Fold or unfold a project's task list. Unfolding a project that is
+    /// not current also makes it current, so New Task lands in it.
+    fn toggle_root_collapsed(&mut self, root: &str, cx: &mut Context<Self>) {
+        if self.collapsed_roots.remove(root) {
+            if self.project_root.as_deref() != Some(root) {
+                self.switch_root(root.to_string(), cx);
+            }
+        } else {
+            self.collapsed_roots.insert(root.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Archive or restore one task. The service event updates the row;
+    /// an archived selection moves to the newest task in the same root.
+    fn set_session_archived(&mut self, session_id: &str, archived: bool, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let session_id = session_id.to_string();
+        let changed_id = session_id.clone();
+        self.call(
+            async move {
+                backend
+                    .set_session_archived(&user_id, &session_id, archived)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok(session) => {
+                        let root = session.project_root.clone();
+                        this.upsert_session(session);
+                        if archived && this.selected_session.as_deref() == Some(&*changed_id) {
+                            this.selected_session = None;
+                            this.timeline.clear();
+                            this.list_state.reset(0);
+                            let next = this
+                                .sessions
+                                .iter()
+                                .find(|s| !s.archived && s.project_root == root)
+                                .map(|s| s.id.clone());
+                            if let Some(id) = next {
+                                this.select_session(&id, cx);
+                            }
+                        }
+                    }
+                    Err(error) => this.notice = Some(error.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Archive every task in a project and drop the project from the
+    /// sidebar. The runtime moves to the next project when this one was
+    /// current.
+    fn archive_root(&mut self, root: &str, cx: &mut Context<Self>) {
+        if self.root_switching {
+            return;
+        }
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let path = root.to_string();
+        let fallback = self
+            .project_groups
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .find(|candidate| candidate != root);
+        let task_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|s| !s.archived && s.project_root == root)
+            .map(|s| s.id.clone())
+            .collect();
+        let removed = path.clone();
+        let next_root = fallback.clone();
+        self.call(
+            async move {
+                for id in task_ids {
+                    backend.set_session_archived(&user_id, &id, true).await?;
+                }
+                backend.remove_project_root(&user_id, path, fallback).await
+            },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok(()) => {
+                        this.recent_roots.retain(|candidate| candidate != &removed);
+                        this.collapsed_roots.remove(&removed);
+                        for session in &mut this.sessions {
+                            if session.project_root == removed {
+                                session.archived = true;
+                            }
+                        }
+                        let was_current = this.project_root.as_deref() == Some(&*removed);
+                        if was_current {
+                            this.selected_session = None;
+                            this.timeline.clear();
+                            this.list_state.reset(0);
+                            this.project_root = next_root.clone();
+                        }
+                        this.rebuild_project_groups();
+                        if was_current && let Some(next) = next_root {
+                            this.switch_root(next, cx);
+                        } else {
+                            this.refresh_roots(cx);
+                        }
+                    }
+                    Err(error) => this.notice = Some(error.into()),
+                }
+                cx.notify();
+            },
+        );
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
@@ -1824,18 +1956,21 @@ impl ChatScreen {
                     )
                     .children(self.project_groups.iter().map(|(root, indices)| {
                         let is_current = current_root == Some(root.as_str());
+                        let is_collapsed = self.collapsed_roots.contains(root);
                         let name = root_display_name(root);
                         let tasks = indices.iter().filter_map(|index| self.sessions.get(*index));
+                        let group_name = SharedString::from(format!("project-row-{root}"));
                         div()
                             .flex()
                             .flex_col()
                             .mb_2()
                             .child(
                                 div()
-                                    .id(gpui::SharedString::from(format!("project-{root}")))
+                                    .id(SharedString::from(format!("project-{root}")))
+                                    .group(group_name.clone())
                                     .flex()
                                     .items_center()
-                                    .gap_2()
+                                    .gap_1p5()
                                     .px_2()
                                     .py_1()
                                     .rounded_md()
@@ -1850,60 +1985,169 @@ impl ChatScreen {
                                     .on_click({
                                         let root = root.clone();
                                         cx.listener(move |this, _event, _window, cx| {
-                                            if this.project_root.as_deref() != Some(root.as_str()) {
-                                                this.switch_root(root.clone(), cx);
-                                            }
+                                            this.toggle_root_collapsed(&root, cx);
                                         })
                                     })
+                                    .child(icon(
+                                        if is_collapsed {
+                                            "chevron-right"
+                                        } else {
+                                            "chevron-down"
+                                        },
+                                        px(14.),
+                                        theme::TEXT_SECONDARY,
+                                    ))
                                     .child(icon(
                                         if is_current { "folder-open" } else { "folder" },
                                         px(16.),
                                         theme::TEXT_PRIMARY,
                                     ))
-                                    .child(div().min_w_0().line_clamp(1).child(name)),
+                                    .child(div().flex_1().min_w_0().line_clamp(1).child(name))
+                                    .child(row_action(
+                                        SharedString::from(format!("archive-project-{root}")),
+                                        &group_name,
+                                        "archive",
+                                        {
+                                            let root = root.clone();
+                                            cx.listener(move |this, _event, _window, cx| {
+                                                cx.stop_propagation();
+                                                this.archive_root(&root, cx);
+                                            })
+                                        },
+                                    )),
                             )
-                            .children(tasks.map(|session| {
-                                let is_selected = selected == Some(session.id.as_str());
-                                let session_id = session.id.clone();
-                                div()
-                                    .id(gpui::SharedString::from(format!("session-{}", session.id)))
-                                    .pl_8()
-                                    .pr_2()
-                                    .py_1()
-                                    .rounded_lg()
-                                    .text_sm()
-                                    .when(is_selected, |row| {
-                                        row.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                    })
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                                    .hover(|style| {
-                                        style
-                                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
-                                            .cursor_pointer()
-                                    })
-                                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                                        this.open_session(&session_id, cx);
-                                    }))
-                                    .child(div().line_clamp(1).child(session.title.clone()))
-                            }))
+                            .when(!is_collapsed, |column| {
+                                column.children(tasks.map(|session| {
+                                    self.render_task_row(session, selected, false, cx)
+                                }))
+                            })
                     }))
-                    .child(
-                        div()
-                            .mt_5()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(section_label("Tasks"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(gpui::rgb(theme::TEXT_MUTED))
-                                    .child("Folderless Agent tasks are not available yet."),
-                            ),
-                    ),
+                    .when(!self.archived_indices.is_empty(), |list| {
+                        let expanded = self.archived_expanded;
+                        let count = self.archived_indices.len();
+                        list.child(
+                            div()
+                                .mt_5()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .id("archived-toggle")
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .mb_1()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .hover(|style| {
+                                            style
+                                                .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                                .cursor_pointer()
+                                        })
+                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                            this.archived_expanded = !this.archived_expanded;
+                                            cx.notify();
+                                        }))
+                                        .child(icon(
+                                            if expanded {
+                                                "chevron-down"
+                                            } else {
+                                                "chevron-right"
+                                            },
+                                            px(14.),
+                                            theme::TEXT_SECONDARY,
+                                        ))
+                                        .child(section_label("Archived"))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                                .child(count.to_string()),
+                                        ),
+                                )
+                                .when(expanded, |column| {
+                                    column.children(self.archived_indices.iter().filter_map(
+                                        |index| {
+                                            let session = self.sessions.get(*index)?;
+                                            Some(self.render_task_row(session, selected, true, cx))
+                                        },
+                                    ))
+                                }),
+                        )
+                    }),
             )
             .child(self.render_sidebar_footer(cx))
+    }
+
+    /// One task row. Archived rows show the project name under the title
+    /// and a restore button; live rows show an archive button on hover.
+    fn render_task_row(
+        &self,
+        session: &AgentSessionSummary,
+        selected: Option<&str>,
+        archived: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let is_selected = selected == Some(session.id.as_str());
+        let session_id = session.id.clone();
+        let action_id = session.id.clone();
+        let group_name = SharedString::from(format!("task-row-{}", session.id));
+        div()
+            .id(SharedString::from(format!("session-{}", session.id)))
+            .group(group_name.clone())
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .when(archived, |row| row.pl_2())
+            .when(!archived, |row| row.pl_8())
+            .pr_2()
+            .py_1()
+            .rounded_lg()
+            .text_sm()
+            .when(is_selected, |row| {
+                row.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+            })
+            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+            .hover(|style| {
+                style
+                    .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                    .cursor_pointer()
+            })
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.open_session(&session_id, cx);
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().line_clamp(1).child(session.title.clone()))
+                    .when(archived, |column| {
+                        column.child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                .line_clamp(1)
+                                .child(root_display_name(&session.project_root)),
+                        )
+                    }),
+            )
+            .child(row_action(
+                SharedString::from(format!("archive-session-{}", session.id)),
+                &group_name,
+                if archived {
+                    "archive-restore"
+                } else {
+                    "archive"
+                },
+                cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.set_session_archived(&action_id, !archived, cx);
+                }),
+            ))
     }
 
     /// Sidebar footer: settings gear on the left and the plan usage card on
@@ -2835,6 +3079,28 @@ fn chip(
 }
 
 /// Last path component of a project root, for chips and the sidebar.
+/// Small icon button that shows only while the pointer is over its row.
+fn row_action(
+    id: SharedString,
+    group: &SharedString,
+    icon_name: &str,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .size_5()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .opacity(0.)
+        .group_hover(group.clone(), |style| style.opacity(1.))
+        .hover(|style| style.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED)))
+        .on_click(on_click)
+        .child(icon(icon_name, px(14.), theme::TEXT_SECONDARY))
+}
+
 fn root_display_name(root: &str) -> String {
     std::path::Path::new(root)
         .file_name()
@@ -3566,6 +3832,7 @@ mod state_tests {
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
         AgentSessionSummary {
             web_enabled: true,
+            archived: false,
             id: id.to_string(),
             title: title.to_string(),
             project_root: "/tmp/proj".to_string(),
@@ -3601,6 +3868,25 @@ mod state_tests {
             screen.selected_session = Some("s1".to_string());
             screen
         })
+    }
+
+    #[gpui::test]
+    fn test_archived_tasks_leave_project_groups(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            this.sessions = vec![summary("s1", "Live"), summary("s2", "Old")];
+            this.sessions[1].archived = true;
+            this.rebuild_project_groups();
+            assert_eq!(this.project_groups.len(), 1);
+            assert_eq!(this.project_groups[0].1, vec![0]);
+            assert_eq!(this.archived_indices, vec![1]);
+
+            // A root with only archived tasks does not appear as a project.
+            this.sessions[0].archived = true;
+            this.rebuild_project_groups();
+            assert!(this.project_groups.is_empty());
+            assert_eq!(this.archived_indices, vec![0, 1]);
+        });
     }
 
     #[gpui::test]

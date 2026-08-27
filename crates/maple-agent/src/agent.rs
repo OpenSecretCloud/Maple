@@ -970,6 +970,8 @@ pub struct AgentSessionSummary {
     pub mode: String,
     /// Whether the task can use `web_search` / `open_url`.
     pub web_enabled: bool,
+    /// Hidden from the main task list; can be restored.
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3934,6 +3936,66 @@ impl AgentRuntimeHandle {
             .get_session(&session_id, false)
             .await
             .map_err(|error| format!("Failed to load renamed Agent task: {error}"))?;
+        let summary = session_summary(&session);
+        emit_agent_event(
+            &state.host.events,
+            AgentServiceEvent::SessionUpdated {
+                session_id,
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
+        Ok(summary)
+    }
+
+    /// Archive or restore a task. Archived tasks keep their history and
+    /// stay listed with `archived` set, so the UI can show them apart.
+    pub async fn set_session_archived(
+        &self,
+        session_id: String,
+        archived: bool,
+    ) -> Result<AgentSessionSummary, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let session_id = session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("Agent task ID cannot be empty".to_string());
+        }
+        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)?;
+                    if archived && has_active_session_run(&current.active_runs, &session_id) {
+                        return Err("Stop the running agent before archiving this task".to_string());
+                    }
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)?,
+            }
+        };
+        let current_session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task before archiving: {error}"))?;
+        if current_session.archived_at.is_some() == archived {
+            return Ok(session_summary(&current_session));
+        }
+        session_manager
+            .update(&session_id)
+            .archived_at(archived.then(chrono::Utc::now))
+            .apply()
+            .await
+            .map_err(|error| format!("Failed to archive Agent task: {error}"))?;
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load archived Agent task: {error}"))?;
         let summary = session_summary(&session);
         emit_agent_event(
             &state.host.events,
@@ -8020,6 +8082,7 @@ fn session_summary(session: &Session) -> AgentSessionSummary {
             .map(|model| model.model_name.clone()),
         mode: session.goose_mode.to_string(),
         web_enabled: session_web_enabled(session),
+        archived: session.archived_at.is_some(),
     }
 }
 

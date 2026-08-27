@@ -14,8 +14,11 @@ macro_rules! assets {
 }
 
 assets!(
+    "icons/archive-restore.svg",
+    "icons/archive.svg",
     "icons/arrow-up.svg",
     "icons/chevron-down.svg",
+    "icons/chevron-right.svg",
     "icons/ellipsis.svg",
     "icons/folder-open.svg",
     "icons/folder-plus.svg",

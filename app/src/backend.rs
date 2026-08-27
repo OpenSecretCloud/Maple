@@ -631,6 +631,35 @@ impl AgentBackend {
             .await
     }
 
+    pub async fn set_session_archived(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        archived: bool,
+    ) -> Result<AgentSessionSummary, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_session_archived(session_id.to_string(), archived)
+            .await
+    }
+
+    /// Drop a root from the recent list. `fallback` becomes the runtime
+    /// root when the removed one was current.
+    pub async fn remove_project_root(
+        &self,
+        user_id: &str,
+        path: String,
+        fallback: Option<String>,
+    ) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .remove_project_root(path, fallback)
+            .await
+            .map(|_| ())
+    }
+
     pub async fn delete_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
         self.service
             .handle_for_user(user_id)

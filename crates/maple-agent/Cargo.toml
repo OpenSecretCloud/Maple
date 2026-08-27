@@ -17,6 +17,7 @@ futures-util = { workspace = true }
 once_cell = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose", default-features = false }
 goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose-providers", default-features = false }
 opensecret = "3.6.2"
