@@ -43,9 +43,14 @@ impl Render for TitleBar {
             .pr_3()
             .bg(gpui::rgb(theme::BG_SIDEBAR))
             // Any press in the bar that is not on a control starts a window
-            // drag, which is the standard title-bar behavior.
-            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                window.start_window_move();
+            // drag, which is the standard title-bar behavior. A double
+            // press toggles maximize instead.
+            .on_mouse_down(gpui::MouseButton::Left, |event, window, _| {
+                if event.click_count >= 2 {
+                    window.zoom_window();
+                } else {
+                    window.start_window_move();
+                }
             })
             .child(
                 div()
