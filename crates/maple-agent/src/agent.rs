@@ -327,6 +327,8 @@ pub(crate) enum AgentTransientMcpTransport {
 fn default_mcp_timeout_seconds() -> u64 {
     DEFAULT_MCP_TIMEOUT_SECONDS
 }
+
+/// A skill-derived slash command the composer can offer.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSlashCommand {
@@ -353,14 +355,6 @@ pub struct AgentQuestion {
     pub header: String,
     pub question: String,
     pub options: Vec<AgentQuestionOption>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSlashCommand {
-    pub name: String,
-    pub description: String,
-    pub input_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

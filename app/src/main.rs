@@ -181,8 +181,10 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("ctrl-q", QuitApp, None),
                 KeyBinding::new("cmd-q", QuitApp, None),
+                KeyBinding::new("escape", ui::chat::ChatEscape, Some("Chat")),
+                KeyBinding::new("ctrl-c", ui::chat::CopySelection, Some("Transcript")),
+                KeyBinding::new("cmd-c", ui::chat::CopySelection, Some("Transcript")),
             ]);
-            cx.on_action(|_: &QuitApp, cx| cx.quit());
             cx.set_global(Globals {
                 backend: backend.clone(),
             });

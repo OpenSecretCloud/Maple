@@ -36,8 +36,8 @@ Then read `/tmp/shot.png`. The first request opens a permission dialog on the
 desktop; the user must click Share. A second request while one is pending
 times out, so wait for the first to finish or be cancelled.
 
-Screenshots capture the full desktop. The sidebar plan card is in the bottom
-left of the app window.
+Screenshots capture the full desktop. The app window contains the sidebar
+and chat pane.
 
 ## Ship a test build
 

@@ -16,6 +16,15 @@ pub struct AppSettings {
     /// Whether new tasks can use the web tools.
     #[serde(default = "default_web_enabled")]
     pub default_web_enabled: bool,
+    /// Whether completed tool calls get a one-line model summary.
+    #[serde(default = "default_tool_summaries")]
+    pub tool_summaries: bool,
+    #[serde(default)]
+    pub pinned_roots: Vec<String>,
+    /// Whether run completion, permissions, and questions raise desktop
+    /// notifications while the window is not focused.
+    #[serde(default = "default_desktop_notifications")]
+    pub desktop_notifications: bool,
 }
 
 fn default_web_enabled() -> bool {
@@ -30,12 +39,23 @@ fn default_tool_details() -> bool {
     true
 }
 
+fn default_desktop_notifications() -> bool {
+    true
+}
+
+fn default_tool_summaries() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             default_permission_mode: default_permission_mode(),
             tool_details: default_tool_details(),
             default_web_enabled: default_web_enabled(),
+            tool_summaries: default_tool_summaries(),
+            pinned_roots: Vec::new(),
+            desktop_notifications: default_desktop_notifications(),
         }
     }
 }

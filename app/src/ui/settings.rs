@@ -348,6 +348,35 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    fn toggle_desktop_notifications(&mut self, cx: &mut Context<Self>) {
+        self.settings.desktop_notifications = !self.settings.desktop_notifications;
+        settings::save_settings(&self.settings);
+        if self.settings.desktop_notifications {
+            // Fire a test notification so enabling gives immediate feedback
+            // and delivery problems surface right away.
+            let enabled_at = chrono::Local::now().format("%H:%M").to_string();
+            std::thread::spawn(move || {
+                let result = std::process::Command::new("notify-send")
+                    .args(["-a", "Maple", "-t", "8000", "-u", "normal"])
+                    .arg("Desktop notifications on")
+                    .arg(format!("You will see alerts like this at {enabled_at}."))
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                if let Err(error) = result {
+                    log::warn!("test notification failed: {error}");
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    fn toggle_tool_summaries(&mut self, cx: &mut Context<Self>) {
+        self.settings.tool_summaries = !self.settings.tool_summaries;
+        settings::save_settings(&self.settings);
+        cx.notify();
+    }
+
     fn close(&mut self, cx: &mut Context<Self>) {
         cx.emit(SettingsClosed(self.settings.clone()));
     }
@@ -521,6 +550,32 @@ impl SettingsScreen {
                         },
                         cx.listener(|this, _event, _window, cx| {
                             this.toggle_tool_details(cx);
+                        }),
+                    ))
+                    .child(setting_row(
+                        "Desktop notifications",
+                        "Notify when a task finishes or needs your input while \
+                         the window is not focused.",
+                        if self.settings.desktop_notifications {
+                            "On"
+                        } else {
+                            "Off"
+                        },
+                        cx.listener(|this, _event, _window, cx| {
+                            this.toggle_desktop_notifications(cx);
+                        }),
+                    ))
+                    .child(setting_row(
+                        "Summarize tool calls",
+                        "Completed tool calls with long output get a one-line \
+                         summary from the title model on their cards.",
+                        if self.settings.tool_summaries {
+                            "On"
+                        } else {
+                            "Off"
+                        },
+                        cx.listener(|this, _event, _window, cx| {
+                            this.toggle_tool_summaries(cx);
                         }),
                     ));
             }

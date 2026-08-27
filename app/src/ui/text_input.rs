@@ -65,6 +65,13 @@ pub fn register_key_bindings(cx: &mut App) {
 
 type EnterHandler = Box<dyn Fn(String, &mut Window, &mut Context<TextInput>) + 'static>;
 type PasteImageHandler = Box<dyn Fn(gpui::Image, &mut Window, &mut Context<TextInput>) + 'static>;
+/// First look at a key press with the input's current text. Return true to
+/// consume it. The handler runs while this input is being updated, so it
+/// must not read or update this input entity; defer anything that does.
+type KeyHandler = Box<
+    dyn Fn(&gpui::KeyDownEvent, &SharedString, &mut Window, &mut Context<TextInput>) -> bool
+        + 'static,
+>;
 
 pub struct TextInput {
     focus_handle: FocusHandle,
@@ -100,9 +107,28 @@ pub struct TextInput {
     on_enter: Option<EnterHandler>,
     /// Called when the clipboard holds an image instead of text.
     on_paste_image: Option<PasteImageHandler>,
+    /// First look at every key press; returning true consumes the key.
+    on_key: Option<KeyHandler>,
 }
 
 impl TextInput {
+    /// Intercept key presses before the input's own handling. The composer
+    /// uses this for slash-palette navigation; the handler receives the
+    /// input's current text so it never reads this entity mid-update.
+    pub fn on_key(
+        mut self,
+        handler: impl Fn(
+            &gpui::KeyDownEvent,
+            &SharedString,
+            &mut Window,
+            &mut Context<TextInput>,
+        ) -> bool
+        + 'static,
+    ) -> Self {
+        self.on_key = Some(Box::new(handler));
+        self
+    }
+
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -124,6 +150,7 @@ impl TextInput {
             tab_index: None,
             on_enter: None,
             on_paste_image: None,
+            on_key: None,
         }
     }
 
@@ -1062,6 +1089,14 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if let Some(on_key) = this.on_key.take() {
+                    let consumed = on_key(event, &this.content.clone(), window, cx);
+                    this.on_key = Some(on_key);
+                    if consumed {
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
                 let no_modifiers = !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
                     && !event.keystroke.modifiers.platform;
