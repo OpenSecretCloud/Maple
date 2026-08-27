@@ -150,6 +150,9 @@ pub(crate) struct MapleDeveloperClient {
     /// Routes ask_user questions to the UI; absent in tests.
     questions: Option<crate::agent::questions::QuestionBroker>,
     session_id: Option<String>,
+    /// When false the web tools are left out of the catalog entirely, so
+    /// the model never plans around a tool it cannot call.
+    web_enabled: bool,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
     #[cfg(not(windows))]
@@ -183,6 +186,7 @@ impl MapleDeveloperClient {
             attachment_store: None,
             questions: None,
             session_id: None,
+            web_enabled: true,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
             #[cfg(not(windows))]
@@ -192,6 +196,11 @@ impl MapleDeveloperClient {
 
     pub(super) fn with_attachment_store(mut self, store: Arc<AgentAttachmentStore>) -> Self {
         self.attachment_store = Some(store);
+        self
+    }
+
+    pub(super) fn with_web_enabled(mut self, enabled: bool) -> Self {
+        self.web_enabled = enabled;
         self
     }
 
@@ -560,8 +569,10 @@ impl McpClientTrait for MapleDeveloperClient {
         }
         tools.push(Self::todo_tool());
         tools.push(Self::ask_user_tool());
-        tools.push(web_search_tool());
-        tools.push(open_url_tool());
+        if self.web_enabled {
+            tools.push(web_search_tool());
+            tools.push(open_url_tool());
+        }
 
         if let Some(router) = self.tool_context.transient_mcp() {
             if tools
@@ -693,6 +704,9 @@ impl McpClientTrait for MapleDeveloperClient {
                     cancel_token,
                 )
                 .await);
+            }
+            WEB_SEARCH_TOOL_NAME | OPEN_URL_TOOL_NAME if !self.web_enabled => {
+                error_result("Web access is turned off for this task")
             }
             WEB_SEARCH_TOOL_NAME => match Self::parse_args::<WebSearchParams>(arguments) {
                 Ok(params) => match execute_web_search(

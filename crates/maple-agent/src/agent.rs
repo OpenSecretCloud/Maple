@@ -12,9 +12,8 @@ mod web_permission;
 mod web_tools;
 
 use crate::maple_api::{account_scope, MapleApiSession};
-use attachments::{
-    AgentAttachmentStore, AgentImageAttachment, AgentImageUpload, PreparedAgentImage,
-};
+pub use attachments::AgentImageUpload;
+use attachments::{AgentAttachmentStore, AgentImageAttachment, PreparedAgentImage};
 use developer_tools::MapleDeveloperClient;
 #[cfg(test)]
 use developer_tools::EXTERNAL_MCP_TOOL_NAME;
@@ -90,6 +89,12 @@ const MAPLE_DEVELOPER_TOOLS: [&str; 10] = [
     EXTERNAL_MCP_TOOL_NAME,
 ];
 const MAPLE_SKILLS_TOOLS: [&str; 1] = ["load_skill"];
+/// Maple-owned record in the session's extension data: whether the web
+/// tools (`web_search`, `open_url`) are offered to the model for this task.
+/// Absent means enabled; Maple manages its built-in tools itself rather
+/// than through Goose's per-session extension state.
+const MAPLE_WEB_STATE_KEY: &str = "maple_web";
+const MAPLE_WEB_STATE_VERSION: &str = "1";
 // Goose currently renders the runtime registration key as the model-facing
 // extension heading, so keep this concise and reserve it from user MCP names.
 const MAPLE_SKILLS_CLIENT_KEY: &str = "maple-skills-extension";
@@ -465,6 +470,13 @@ pub enum AgentPermissionRouting {
 pub struct AgentPermissionModeRequest {
     pub session_id: String,
     pub mode: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetSessionWebRequest {
+    pub session_id: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -956,6 +968,8 @@ pub struct AgentSessionSummary {
     pub message_count: usize,
     pub model: Option<String>,
     pub mode: String,
+    /// Whether the task can use `web_search` / `open_url`.
+    pub web_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3750,6 +3764,54 @@ impl AgentRuntimeHandle {
         ))
     }
 
+    /// Whether the catalog marks a model (or the target of an alias) as
+    /// vision capable. None when the catalog is unavailable or lacks it.
+    pub async fn model_supports_vision(&self, model_id: &str) -> Result<Option<bool>, String> {
+        if model_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let maple_api_session = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, self.account_scope.as_ref())?;
+            Arc::clone(&current.maple_api_session)
+        };
+        drop(_runtime_lifecycle_guard);
+
+        let catalog = match maple_api_session.model_catalog().await {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                log::warn!("Failed to fetch Maple Agent model catalog: {error}");
+                return Ok(None);
+            }
+        };
+        let mut concrete_id = model_id.to_string();
+        for alias in &catalog.aliases {
+            if alias.id == model_id {
+                if let Some(vision) = alias.capabilities.as_ref().and_then(|c| c.vision) {
+                    return Ok(Some(vision));
+                }
+                if let Some(target) = alias.target_model.as_deref() {
+                    if !target.trim().is_empty() {
+                        concrete_id = target.to_string();
+                    }
+                }
+                break;
+            }
+        }
+        Ok(catalog
+            .data
+            .iter()
+            .find(|model| model.id == concrete_id)
+            .and_then(|model| model.capabilities.as_ref())
+            .and_then(|capabilities| capabilities.vision))
+    }
+
     pub async fn load_session(&self, session_id: String) -> Result<AgentSessionDetail, String> {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
@@ -5499,6 +5561,55 @@ impl AgentRuntimeHandle {
         Ok(())
     }
 
+    /// Turn the web tools on or off for one task. Takes effect on the next
+    /// turn: the developer client is rebuilt per run from the session.
+    pub async fn set_session_web_enabled(
+        &self,
+        request: AgentSetSessionWebRequest,
+    ) -> Result<AgentSessionSummary, String> {
+        let state = &self.service;
+        let user_id = self.user_id.as_ref();
+        let account_scope = self.account_scope.as_ref();
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let session_id = request.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("Agent task ID cannot be empty".to_string());
+        }
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, account_scope)?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => account_session_manager(&state.host.paths, user_id)?,
+            }
+        };
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        let mut extension_data = session.extension_data.clone();
+        extension_data.set_extension_state(
+            MAPLE_WEB_STATE_KEY,
+            MAPLE_WEB_STATE_VERSION,
+            json!({ "enabled": request.enabled }),
+        );
+        session_manager
+            .update(&session_id)
+            .extension_data(extension_data)
+            .apply()
+            .await
+            .map_err(|error| format!("Failed to persist web setting: {error}"))?;
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        Ok(session_summary(&session))
+    }
+
     pub async fn set_permission_mode(
         &self,
         request: AgentPermissionModeRequest,
@@ -7049,7 +7160,8 @@ async fn configure_session_agent(
         tool_context.clone(),
     )
     .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?
-    .with_attachment_store(attachment_store);
+    .with_attachment_store(attachment_store)
+    .with_web_enabled(session_web_enabled(session));
     agent
         .extension_manager
         .add_client(
@@ -7907,7 +8019,18 @@ fn session_summary(session: &Session) -> AgentSessionSummary {
             .as_ref()
             .map(|model| model.model_name.clone()),
         mode: session.goose_mode.to_string(),
+        web_enabled: session_web_enabled(session),
     }
+}
+
+/// Read Maple's web flag from the session; absent means enabled.
+fn session_web_enabled(session: &Session) -> bool {
+    session
+        .extension_data
+        .get_extension_state(MAPLE_WEB_STATE_KEY, MAPLE_WEB_STATE_VERSION)
+        .and_then(|value| value.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 fn sort_sessions_newest_first(sessions: &mut [AgentSessionSummary]) {
@@ -13282,6 +13405,7 @@ mod tests {
     #[test]
     fn agent_sessions_remain_sorted_by_updated_time_newest_first() {
         let summary = |id: &str, updated_ms: i64| AgentSessionSummary {
+            web_enabled: true,
             id: id.to_string(),
             title: id.to_string(),
             project_root: test_project_path("session-sort"),
