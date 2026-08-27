@@ -5077,6 +5077,7 @@ dependencies = [
  "chrono",
  "env_logger",
  "gpui",
+ "image 0.25.10",
  "log",
  "maple-agent",
  "maple-billing",

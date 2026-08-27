@@ -29,30 +29,17 @@ pub struct LoggedOut;
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
 
-/// An image staged in the composer: the thumbnail source (a file on disk
-/// or pasted bytes) and the data URL the runtime stores with the message.
+/// An image staged in the composer: the data URL the runtime stores with
+/// the message and a square thumbnail, cropped off the UI thread.
 #[derive(Clone)]
 struct DraftImage {
+    /// Unique per staged draft, so a late thumbnail finds its owner even
+    /// after other drafts were removed.
+    id: u64,
     name: String,
-    source: DraftImageSource,
     data_url: String,
-}
-
-/// Where a draft thumbnail comes from. `gpui::ImageSource` is not `Send`,
-/// so drafts hold this and convert when they render.
-#[derive(Clone)]
-enum DraftImageSource {
-    Path(Arc<std::path::Path>),
-    Pasted(Arc<gpui::Image>),
-}
-
-impl From<&DraftImageSource> for gpui::ImageSource {
-    fn from(source: &DraftImageSource) -> Self {
-        match source {
-            DraftImageSource::Path(path) => Self::from(Arc::clone(path)),
-            DraftImageSource::Pasted(image) => Self::Image(Arc::clone(image)),
-        }
-    }
+    /// `None` until the crop finishes (or if the image did not decode).
+    thumbnail: Option<Arc<gpui::Image>>,
 }
 
 /// Per-item parsed markdown. Interior mutability because the list render
@@ -162,6 +149,8 @@ pub struct ChatScreen {
     sidebar_collapsed: bool,
     /// Images staged for the next message.
     draft_images: Vec<DraftImage>,
+    /// Source of `DraftImage::id`.
+    draft_counter: u64,
     /// True while the native file dialog is open.
     image_picking: bool,
     /// Catalog vision flag per model id, looked up when a model is chosen.
@@ -283,6 +272,7 @@ impl ChatScreen {
             pending_session_select: None,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
+            draft_counter: 0,
             image_picking: false,
             model_vision: HashMap::new(),
             session_mcp: Vec::new(),
@@ -1034,22 +1024,46 @@ impl ChatScreen {
             _ => "png",
         };
         let name = format!("pasted-{}.{extension}", self.draft_images.len() + 1);
-        let image = Arc::new(image);
-        match draft_image_from_bytes(
-            name,
-            &image.bytes,
-            DraftImageSource::Pasted(Arc::clone(&image)),
-        ) {
+        let id = self.next_draft_id();
+        match draft_image_from_bytes(id, name, &image.bytes) {
             Ok(draft) => {
                 self.notice = None;
                 self.draft_images.push(draft);
+                self.crop_draft_thumbnail(id, image.bytes, cx);
             }
             Err(message) => self.notice = Some(message.into()),
         }
         cx.notify();
     }
 
-    /// Open the native image picker and stage the chosen files.
+    fn next_draft_id(&mut self) -> u64 {
+        self.draft_counter += 1;
+        self.draft_counter
+    }
+
+    /// Decode and center-crop off the UI thread, then attach the result to
+    /// the draft with `id` if it is still staged.
+    fn crop_draft_thumbnail(&mut self, id: u64, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        self.call(
+            async move {
+                tokio::task::spawn_blocking(move || square_thumbnail(&bytes))
+                    .await
+                    .map_err(|error| format!("Thumbnail task failed: {error}"))?
+            },
+            cx,
+            move |this, result, cx| {
+                let Some(draft) = this.draft_images.iter_mut().find(|draft| draft.id == id) else {
+                    return;
+                };
+                match result {
+                    Ok(image) => draft.thumbnail = Some(Arc::new(image)),
+                    Err(message) => log::debug!("thumbnail for {}: {message}", draft.name),
+                }
+                cx.notify();
+            },
+        );
+    }
+
     fn pick_images(&mut self, cx: &mut Context<Self>) {
         if self.image_picking {
             return;
@@ -1097,7 +1111,12 @@ impl ChatScreen {
             |this, result, cx| {
                 this.image_picking = false;
                 match result {
-                    Ok(images) => this.draft_images.extend(images),
+                    Ok(images) => {
+                        for mut image in images {
+                            image.id = this.next_draft_id();
+                            this.draft_images.push(image);
+                        }
+                    }
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
@@ -2872,14 +2891,23 @@ impl ChatScreen {
                         div()
                             .relative()
                             .size_16()
-                            .child(
-                                gpui::img(gpui::ImageSource::from(&image.source))
-                                    .size_16()
-                                    .rounded_xl()
-                                    .object_fit(gpui::ObjectFit::Cover)
-                                    .border_1()
-                                    .border_color(gpui::rgb(theme::BORDER)),
-                            )
+                            .rounded_xl()
+                            .border_1()
+                            .border_color(gpui::rgb(theme::BORDER))
+                            .bg(gpui::rgb(theme::BG_ELEVATED))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .map(|frame| match &image.thumbnail {
+                                // The thumbnail is already a square crop, so
+                                // it fills the frame and the corners round.
+                                Some(thumbnail) => frame.child(
+                                    gpui::img(gpui::ImageSource::Image(Arc::clone(thumbnail)))
+                                        .size_full()
+                                        .rounded_xl(),
+                                ),
+                                None => frame.child(icon("image", px(20.), theme::TEXT_SECONDARY)),
+                            })
                             .child(
                                 div()
                                     .id(gpui::SharedString::from(format!("draft-remove-{index}")))
@@ -3185,24 +3213,23 @@ fn permission_mode_icon(mode: &str) -> &'static str {
 const MAX_DRAFT_IMAGES: usize = 10;
 const MAX_DRAFT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
-/// Read an image file into a data URL, checking size and format the same
-/// way the runtime does so errors surface before the send.
+/// Read an image file into a draft with its thumbnail, checking size and
+/// format the same way the runtime does so errors surface before the send.
+/// Runs on a blocking thread; the caller assigns the id.
 fn load_draft_image(path: &std::path::Path) -> Result<DraftImage, String> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "image".to_string());
     let bytes = std::fs::read(path).map_err(|error| format!("Could not read {name}: {error}"))?;
-    draft_image_from_bytes(name, &bytes, DraftImageSource::Path(Arc::from(path)))
+    let mut draft = draft_image_from_bytes(0, name, &bytes)?;
+    draft.thumbnail = square_thumbnail(&bytes).ok().map(Arc::new);
+    Ok(draft)
 }
 
 /// Build a draft from raw image bytes, checking size and format the same
 /// way the runtime does so errors surface before the send.
-fn draft_image_from_bytes(
-    name: String,
-    bytes: &[u8],
-    source: DraftImageSource,
-) -> Result<DraftImage, String> {
+fn draft_image_from_bytes(id: u64, name: String, bytes: &[u8]) -> Result<DraftImage, String> {
     if bytes.len() > MAX_DRAFT_IMAGE_BYTES {
         return Err(format!("{name} is larger than 10 MB"));
     }
@@ -3216,10 +3243,46 @@ fn draft_image_from_bytes(
         return Err(format!("{name} is not a PNG, JPEG, or WebP image"));
     };
     Ok(DraftImage {
+        id,
         name,
-        source,
         data_url: format!("data:{mime};base64,{}", base64_encode(bytes)),
+        thumbnail: None,
     })
+}
+
+/// Thumbnail edge in physical pixels: 2x the 64pt box so it stays sharp
+/// on HiDPI screens.
+const DRAFT_THUMBNAIL_PX: u32 = 128;
+
+/// Center-crop to a square and scale down, so the composer can show a
+/// rounded square that is the picture itself. gpui clips with rectangular
+/// masks only, so cropping the pixels is the one way to get round corners
+/// on a cover-fit thumbnail.
+fn square_thumbnail(bytes: &[u8]) -> Result<gpui::Image, String> {
+    let decoded = image::load_from_memory(bytes).map_err(|error| error.to_string())?;
+    let (width, height) = (decoded.width(), decoded.height());
+    let edge = width.min(height);
+    if edge == 0 {
+        return Err("empty image".to_string());
+    }
+    let cropped = decoded.crop_imm((width - edge) / 2, (height - edge) / 2, edge, edge);
+    let scaled = if edge > DRAFT_THUMBNAIL_PX {
+        cropped.resize_exact(
+            DRAFT_THUMBNAIL_PX,
+            DRAFT_THUMBNAIL_PX,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        cropped
+    };
+    let mut png = std::io::Cursor::new(Vec::new());
+    scaled
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|error| error.to_string())?;
+    Ok(gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        png.into_inner(),
+    ))
 }
 
 /// Standard base64 with padding; small enough to avoid another dependency.
@@ -4135,10 +4198,6 @@ mod state_tests {
                     .data_url
                     .starts_with("data:image/png;base64,iVBORw0KGgo")
             );
-            assert!(matches!(
-                this.draft_images[0].source,
-                DraftImageSource::Pasted(_)
-            ));
             assert!(this.notice.is_none());
         });
     }
