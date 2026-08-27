@@ -9,7 +9,7 @@ import type {
   SelectedProjectState,
   SidebarSearchState
 } from "./LocalStateContextDef";
-import { DEFAULT_MODEL_ID, LocalStateProvider, PAID_DEFAULT_MODEL_ID } from "./LocalStateContext";
+import { DEFAULT_MODEL_ID, LocalStateProvider, POWERFUL_MODEL_ALIAS } from "./LocalStateContext";
 import {
   useBillingState,
   useModelState,
@@ -163,7 +163,7 @@ describe("LocalStateProvider", () => {
     });
 
     let before = { ...counts };
-    act(() => snapshots.model?.setModel(PAID_DEFAULT_MODEL_ID));
+    act(() => snapshots.model?.setModel(POWERFUL_MODEL_ALIAS));
     expectRenderDelta(counts, before, { model: 1 });
 
     before = { ...counts };
@@ -186,7 +186,7 @@ describe("LocalStateProvider", () => {
     expectRenderDelta(counts, before, {});
   });
 
-  test("keeps the intentional paid-plan model default scoped to billing and model consumers", () => {
+  test("keeps Quick as the default model when a paid plan is loaded", () => {
     const storage = new CountingMemoryStorage();
     const snapshots: DomainSnapshots = {};
     const counts = createCounts();
@@ -199,11 +199,54 @@ describe("LocalStateProvider", () => {
       );
     });
 
+    expect(snapshots.model?.model).toBe(DEFAULT_MODEL_ID);
+
     const before = { ...counts };
     act(() => snapshots.billing?.setBillingStatus(proBillingStatus()));
 
-    expectRenderDelta(counts, before, { model: 1, billing: 1 });
-    expect(snapshots.model?.model).toBe(PAID_DEFAULT_MODEL_ID);
+    expectRenderDelta(counts, before, { billing: 1 });
+    expect(snapshots.model?.model).toBe(DEFAULT_MODEL_ID);
+    expect(storage.getItem("selectedModel")).toBeNull();
+  });
+
+  test("keeps a stickied model when a paid plan is loaded", () => {
+    const storage = new CountingMemoryStorage();
+    const snapshots: DomainSnapshots = {};
+    const counts = createCounts();
+    storage.setItem("selectedModel", POWERFUL_MODEL_ALIAS);
+
+    act(() => {
+      renderer = create(
+        <LocalStateProvider storage={storage}>
+          <DomainProbes snapshots={snapshots} counts={counts} />
+        </LocalStateProvider>
+      );
+    });
+
+    expect(snapshots.model?.model).toBe(POWERFUL_MODEL_ALIAS);
+
+    act(() => snapshots.billing?.setBillingStatus(proBillingStatus()));
+
+    expect(snapshots.model?.model).toBe(POWERFUL_MODEL_ALIAS);
+    expect(storage.getItem("selectedModel")).toBe(POWERFUL_MODEL_ALIAS);
+  });
+
+  test("ignores leftover paid-default cache when no model is stickied", () => {
+    const storage = new CountingMemoryStorage();
+    const snapshots: DomainSnapshots = {};
+    const counts = createCounts();
+    storage.setItem("paidDefaultsApplied", new Date().toISOString());
+    storage.setItem("cachedBillingStatus", JSON.stringify(proBillingStatus()));
+
+    act(() => {
+      renderer = create(
+        <LocalStateProvider storage={storage}>
+          <DomainProbes snapshots={snapshots} counts={counts} />
+        </LocalStateProvider>
+      );
+    });
+
+    expect(snapshots.model?.model).toBe(DEFAULT_MODEL_ID);
   });
 
   test("preserves an in-memory model choice when storage is unavailable", () => {
