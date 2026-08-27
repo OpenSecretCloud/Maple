@@ -13,6 +13,13 @@ pub struct AppSettings {
     /// Whether tool cards show input/output payloads by default.
     #[serde(default = "default_tool_details")]
     pub tool_details: bool,
+    /// Whether new tasks can use the web tools.
+    #[serde(default = "default_web_enabled")]
+    pub default_web_enabled: bool,
+}
+
+fn default_web_enabled() -> bool {
+    true
 }
 
 fn default_permission_mode() -> String {
@@ -28,6 +35,7 @@ impl Default for AppSettings {
         Self {
             default_permission_mode: default_permission_mode(),
             tool_details: default_tool_details(),
+            default_web_enabled: default_web_enabled(),
         }
     }
 }

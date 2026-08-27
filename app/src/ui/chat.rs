@@ -2,19 +2,25 @@
 //! calls, permission prompts, and the composer. Pure consumer of the backend
 //! facade + event stream.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*, px,
+    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Render, SharedString, Window, div,
+    prelude::*, px,
 };
 
 use maple_agent::agent::{
-    AgentSendMessageRequest, AgentServiceEvent, AgentSessionSummary, AgentTimelineItem,
+    AgentImageUpload, AgentSendMessageRequest, AgentServiceEvent, AgentSessionMcpServer,
+    AgentSessionSummary, AgentTimelineItem,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
+use crate::ui::icons::{icon, wordmark};
 use crate::ui::markdown;
+use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
@@ -22,6 +28,48 @@ pub struct LoggedOut;
 
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
+
+/// An image staged in the composer: the file on disk for the thumbnail and
+/// the data URL the runtime stores with the message.
+#[derive(Clone)]
+struct DraftImage {
+    name: String,
+    path: Arc<std::path::Path>,
+    data_url: String,
+}
+
+/// Per-item parsed markdown. Interior mutability because the list render
+/// callback only has shared access to the screen.
+#[derive(Default)]
+struct MarkdownCache {
+    entries: RefCell<HashMap<String, (u64, Rc<markdown::Document>)>>,
+}
+
+impl MarkdownCache {
+    /// Parsed document for `source`, parsed now if the cache is stale.
+    fn get(&self, key: &str, source: &str) -> Rc<markdown::Document> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        source.hash(&mut hasher);
+        let hash = hasher.finish();
+        let mut entries = self.entries.borrow_mut();
+        if let Some((cached_hash, document)) = entries.get(key) {
+            if *cached_hash == hash {
+                return Rc::clone(document);
+            }
+        }
+        if entries.len() > 4096 {
+            entries.clear();
+        }
+        let document = Rc::new(markdown::parse(source));
+        entries.insert(key.to_string(), (hash, Rc::clone(&document)));
+        document
+    }
+
+    fn clear(&self) {
+        self.entries.borrow_mut().clear();
+    }
+}
 
 pub struct ChatScreen {
     backend: Arc<AgentBackend>,
@@ -32,6 +80,9 @@ pub struct ChatScreen {
     /// Active run per session id, kept across selection changes.
     active_runs: HashMap<String, String>,
     pending_permission: Option<PendingPermission>,
+    /// Pretty-printed tool arguments for the permission card, formatted
+    /// once when the request arrives instead of on every frame.
+    pending_permission_arguments: SharedString,
     permission_responding: bool,
     /// Suppresses duplicate session creation while one is in flight.
     session_setup_pending: bool,
@@ -59,13 +110,11 @@ pub struct ChatScreen {
     /// Compact usage line for the sidebar bottom (tokens used this account).
     sidebar_usage: Option<crate::settings::UsageRow>,
     sidebar_plan: Option<crate::billing::PlanUsage>,
-    runtime_error: Option<String>,
-    notice: Option<String>,
+    runtime_error: Option<SharedString>,
+    notice: Option<SharedString>,
     booting: bool,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
-    /// Drives the transcript scroll; pinned to the bottom on new items.
-    transcript_scroll: gpui::ScrollHandle,
     /// Independent scroll state for the sidebar session list. Sharing one
     /// handle made each container clamp the other's offset, which broke
     /// the transcript's bottom pinning.
@@ -90,6 +139,31 @@ pub struct ChatScreen {
     /// Manual path entry for the root switcher.
     root_input: Option<Entity<TextInput>>,
     root_switching: bool,
+    /// Session to open once a root switch triggered by the sidebar lands.
+    pending_session_select: Option<String>,
+    /// Sidebar hidden; a toggle in the main pane brings it back.
+    sidebar_collapsed: bool,
+    /// Images staged for the next message.
+    draft_images: Vec<DraftImage>,
+    /// True while the native file dialog is open.
+    image_picking: bool,
+    /// Catalog vision flag per model id, looked up when a model is chosen.
+    model_vision: HashMap<String, bool>,
+    /// MCP servers with their enabled state for the selected task.
+    session_mcp: Vec<AgentSessionMcpServer>,
+    mcp_menu_open: bool,
+    /// Composer fills the pane (fullscreen editing).
+    composer_expanded: bool,
+    /// Web tools on for the selected task (mirrors the session record).
+    web_enabled: bool,
+    /// Settings default applied to newly created tasks.
+    default_web_enabled: bool,
+    /// Parsed markdown per timeline item (keyed by item id and a hash of
+    /// the source), so visible messages are parsed once, not every frame.
+    markdown_cache: MarkdownCache,
+    /// Sidebar groups: (project root, indices into `sessions`), rebuilt
+    /// when sessions or roots change instead of on every render.
+    project_groups: Vec<(String, Vec<usize>)>,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Per-session count of applied timeline events; a load whose snapshot
@@ -109,7 +183,8 @@ impl ChatScreen {
     /// Create and wire the composer; called by the real constructor.
     fn attach_composer(&mut self, weak: gpui::WeakEntity<Self>, cx: &mut Context<Self>) {
         let composer = cx.new(|cx| {
-            TextInput::new("Message Maple…", cx)
+            TextInput::new("Ask Maple to work in this folder...", cx)
+                .multiline(8)
                 .clears_on_enter()
                 .on_enter(move |text, _, cx| {
                     // The handler receives the composer text directly;
@@ -136,6 +211,7 @@ impl ChatScreen {
             timeline: Vec::new(),
             active_runs: HashMap::new(),
             pending_permission: None,
+            pending_permission_arguments: SharedString::default(),
             permission_responding: false,
             session_setup_pending: false,
             pending_question: None,
@@ -157,7 +233,6 @@ impl ChatScreen {
             notice: None,
             booting: true,
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
-            transcript_scroll: gpui::ScrollHandle::new(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             follow_transcript: true,
             tool_details: true,
@@ -174,6 +249,18 @@ impl ChatScreen {
             project_root: None,
             recent_roots: Vec::new(),
             root_menu_open: false,
+            pending_session_select: None,
+            sidebar_collapsed: false,
+            draft_images: Vec::new(),
+            image_picking: false,
+            model_vision: HashMap::new(),
+            session_mcp: Vec::new(),
+            mcp_menu_open: false,
+            composer_expanded: false,
+            web_enabled: true,
+            default_web_enabled: crate::settings::load_settings().default_web_enabled,
+            markdown_cache: MarkdownCache::default(),
+            project_groups: Vec::new(),
             root_input: None,
             root_switching: false,
             selection_generation: 0,
@@ -217,7 +304,8 @@ impl ChatScreen {
                         this.project_root = status.project_root;
                     }
                     Err(message) => {
-                        this.runtime_error = Some(format!("Runtime failed to start: {message}"))
+                        this.runtime_error =
+                            Some(format!("Runtime failed to start: {message}").into())
                     }
                 }
                 this.booting = false;
@@ -240,6 +328,7 @@ impl ChatScreen {
             |this, result, cx| {
                 if let Ok(roots) = result {
                     this.recent_roots = roots.into_iter().map(|root| root.path).collect();
+                    this.rebuild_project_groups();
                 }
                 cx.notify();
             },
@@ -252,7 +341,7 @@ impl ChatScreen {
         }
         let path = path.trim().to_string();
         if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
-            self.notice = Some("Enter an absolute directory path".to_string());
+            self.notice = Some("Enter an absolute directory path".into());
             cx.notify();
             return;
         }
@@ -271,13 +360,25 @@ impl ChatScreen {
                 match result {
                     Ok(status) => {
                         this.project_root = status.project_root;
-                        this.selected_session = None;
+                        this.rebuild_project_groups();
                         this.timeline.clear();
                         this.list_state.reset(0);
                         this.refresh_roots(cx);
-                        this.refresh_sessions(cx);
+                        match this.pending_session_select.take() {
+                            Some(session_id) => {
+                                // Keep the auto-select in refresh_sessions
+                                // from racing the explicit choice.
+                                this.selected_session = Some(session_id.clone());
+                                this.refresh_sessions(cx);
+                                this.select_session(&session_id, cx);
+                            }
+                            None => {
+                                this.selected_session = None;
+                                this.refresh_sessions(cx);
+                            }
+                        }
                     }
-                    Err(message) => this.notice = Some(message),
+                    Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -285,32 +386,46 @@ impl ChatScreen {
     }
 
     fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
-        // Best-effort native directory picker; falls back to manual entry.
+        // Best-effort native directory picker on a blocking thread so the
+        // window keeps painting; falls back to manual entry.
         let current = self.project_root.clone().unwrap_or_default();
-        let output = std::process::Command::new("zenity")
-            .arg("--file-selection")
-            .arg("--directory")
-            .arg("--filename")
-            .arg(&current)
-            .output();
-        match output {
-            Ok(output) if output.status.success() => {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    self.switch_root(path, cx);
-                }
-            }
-            _ => {
-                // zenity missing or cancelled: offer manual entry.
-                if self.root_input.is_none() {
-                    let input = cx.new(|cx| {
-                        TextInput::new("/absolute/path/to/project", cx).with_tab_index(0)
-                    });
-                    self.root_input = Some(input);
-                }
-                cx.notify();
-            }
+        self.call(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let output = std::process::Command::new("zenity")
+                        .arg("--file-selection")
+                        .arg("--directory")
+                        .arg("--filename")
+                        .arg(&current)
+                        .output();
+                    match output {
+                        Ok(output) if output.status.success() => Ok(Some(
+                            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                        )),
+                        _ => Ok(None),
+                    }
+                })
+                .await
+                .map_err(|error| format!("Folder picker failed: {error}"))?
+            },
+            cx,
+            |this, result, cx| match result {
+                Ok(Some(path)) if !path.is_empty() => this.switch_root(path, cx),
+                Ok(Some(_)) => {}
+                _ => this.show_root_input(cx),
+            },
+        );
+    }
+
+    /// Manual path entry when the native picker is unavailable.
+    fn show_root_input(&mut self, cx: &mut Context<Self>) {
+        // zenity missing or cancelled: offer manual entry.
+        if self.root_input.is_none() {
+            let input =
+                cx.new(|cx| TextInput::new("/absolute/path/to/project", cx).with_tab_index(0));
+            self.root_input = Some(input);
         }
+        cx.notify();
     }
 
     fn refresh_models(&self, cx: &mut Context<Self>) {
@@ -333,6 +448,7 @@ impl ChatScreen {
                             env_model.or(saved).or_else(|| models.first().cloned());
                     }
                     this.models = models;
+                    this.refresh_vision(cx);
                 }
                 cx.notify();
             },
@@ -342,27 +458,33 @@ impl ChatScreen {
     fn refresh_sessions(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        // Scope the list to the runtime's project root so sessions created
-        // under other roots never leak in (their working directories would
-        // run tools in the wrong place).
-        let root = self.project_root.clone();
+        // The sidebar groups tasks by project, so list every root. Opening
+        // a task under another root switches the runtime first (see
+        // open_session), which keeps tools running in the right directory.
         self.call(
-            async move { backend.list_sessions(&user_id, root).await },
+            async move { backend.list_sessions(&user_id, None).await },
             cx,
             |this, result, cx| {
                 match result {
                     Ok(sessions) => {
                         this.sessions = sessions;
+                        this.rebuild_project_groups();
                         if this.selected_session.is_none() {
-                            if let Some(latest) = this.sessions.first().cloned() {
-                                let id = latest.id.clone();
+                            let root = this.project_root.clone();
+                            let latest = this
+                                .sessions
+                                .iter()
+                                .find(|session| Some(&session.project_root) == root.as_ref())
+                                .cloned();
+                            if let Some(latest) = latest {
+                                let id = latest.id;
                                 this.select_session(&id, cx);
                             } else {
                                 this.new_session(cx);
                             }
                         }
                     }
-                    Err(message) => this.notice = Some(message),
+                    Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
             },
@@ -394,13 +516,33 @@ impl ChatScreen {
                     this.upsert_session(session.clone());
                     let timeline = Vec::new();
                     this.set_active_session(session, timeline, cx);
+                    if !this.default_web_enabled {
+                        this.set_web_enabled(false, cx);
+                    }
                 }
                 Err(message) => {
                     this.session_setup_pending = false;
-                    this.notice = Some(message);
+                    this.notice = Some(message.into());
                 }
             },
         );
+    }
+
+    /// Sidebar click: switch the runtime root first when the task lives
+    /// under another project, then load it.
+    fn open_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let root = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.project_root.clone());
+        match root {
+            Some(root) if self.project_root.as_deref() != Some(root.as_str()) => {
+                self.pending_session_select = Some(session_id.to_string());
+                self.switch_root(root, cx);
+            }
+            _ => self.select_session(session_id, cx),
+        }
     }
 
     fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
@@ -440,7 +582,7 @@ impl ChatScreen {
                         }
                         this.set_active_session(detail.session, detail.timeline, cx);
                     }
-                    Err(message) => this.notice = Some(message),
+                    Err(message) => this.notice = Some(message.into()),
                 }
             },
         );
@@ -493,7 +635,7 @@ impl ChatScreen {
                         this.timeline.clear();
                         this.list_state.reset(0);
                         if let Some(next) = this.sessions.first().cloned() {
-                            let id = next.id.clone();
+                            let id = next.id;
                             this.select_session(&id, cx);
                         }
                     }
@@ -512,10 +654,14 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.tool_details = settings.tool_details;
+        self.default_web_enabled = settings.default_web_enabled;
         if self.uses_default_permission_mode {
-            self.permission_mode = settings.default_permission_mode.clone();
+            self.permission_mode
+                .clone_from(&settings.default_permission_mode);
             self.apply_permission_mode(cx);
         }
+        // Servers may have been added or removed in settings.
+        self.refresh_session_mcp(cx);
         cx.notify();
     }
 
@@ -559,7 +705,7 @@ impl ChatScreen {
         self.usage_poller_active = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        let target = session_id.clone();
+        let target = session_id;
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -593,8 +739,10 @@ impl ChatScreen {
                                         } else {
                                             0.0
                                         };
-                                        this.context_fraction = Some(fraction);
-                                        cx.notify();
+                                        if this.context_fraction != Some(fraction) {
+                                            this.context_fraction = Some(fraction);
+                                            cx.notify();
+                                        }
                                     }
                                 },
                             );
@@ -620,19 +768,19 @@ impl ChatScreen {
         };
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        self.notice = Some("Compacting…".to_string());
+        self.notice = Some("Compacting…".into());
         cx.notify();
         self.call(
             async move { backend.compact_session(&user_id, &session_id).await },
             cx,
             |this, result, cx| match result {
                 Ok(()) => {
-                    this.notice = Some("Conversation compacted".to_string());
+                    this.notice = Some("Conversation compacted".into());
                     let sid = this.selected_session.clone().unwrap_or_default();
                     this.select_session(&sid, cx);
                     this.refresh_context_usage(cx);
                 }
-                Err(message) => this.notice = Some(format!("Compaction failed: {message}")),
+                Err(message) => this.notice = Some(format!("Compaction failed: {message}").into()),
             },
         );
     }
@@ -653,7 +801,7 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Err(message) = result {
-                    this.notice = Some(format!("Could not set permission mode: {message}"));
+                    this.notice = Some(format!("Could not set permission mode: {message}").into());
                     cx.notify();
                 }
             },
@@ -669,19 +817,218 @@ impl ChatScreen {
         self.selected_session = Some(session.id);
         // Adopt the session's stored policy; it persists per session in the
         // runtime.
-        let mode = session.mode.clone();
+        let mode = session.mode;
         if mode == "auto" || mode == "smart_approve" {
             self.permission_mode = mode;
         }
+        self.web_enabled = session.web_enabled;
         self.apply_permission_mode(cx);
         self.timeline = timeline;
+        self.markdown_cache.clear();
         self.list_state.reset(self.timeline.len());
         self.follow_transcript = true;
         self.pending_permission = None;
         self.permission_responding = false;
         self.models_menu_open = false;
         self.root_menu_open = false;
+        self.mcp_menu_open = false;
+        self.refresh_session_mcp(cx);
         cx.notify();
+    }
+
+    /// Look up the catalog vision flag for the selected model once.
+    fn refresh_vision(&mut self, cx: &mut Context<Self>) {
+        let Some(model) = self.selected_model.clone() else {
+            return;
+        };
+        if self.model_vision.contains_key(&model) {
+            return;
+        }
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let lookup = model.clone();
+        self.call(
+            async move { backend.model_supports_vision(&user_id, &lookup).await },
+            cx,
+            move |this, result, cx| {
+                if let Ok(Some(vision)) = result {
+                    this.model_vision.insert(model, vision);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn selected_model_supports_vision(&self) -> bool {
+        self.selected_model
+            .as_ref()
+            .and_then(|model| self.model_vision.get(model))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Reload the MCP server list for the selected task.
+    pub fn refresh_session_mcp(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            self.session_mcp.clear();
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let target = session_id.clone();
+        self.call(
+            async move { backend.list_session_mcp_servers(&user_id, &target).await },
+            cx,
+            move |this, result, cx| {
+                if this.selected_session.as_deref() != Some(session_id.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(servers) => this.session_mcp = servers,
+                    Err(message) => log::debug!("mcp list failed: {message}"),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn toggle_session_mcp(&mut self, name: String, enabled: bool, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let target = session_id.clone();
+        self.call(
+            async move {
+                backend
+                    .set_session_mcp_server_enabled(&user_id, &target, &name, enabled)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                if this.selected_session.as_deref() != Some(session_id.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(servers) => this.session_mcp = servers,
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Persist the web flag for the selected task; the runtime applies it
+    /// on the next turn.
+    fn set_web_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let previous = self.web_enabled;
+        self.web_enabled = enabled;
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let target = session_id.clone();
+        self.call(
+            async move {
+                backend
+                    .set_session_web_enabled(&user_id, &target, enabled)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok(session) => this.upsert_session(session),
+                    Err(message) => {
+                        if this.selected_session.as_deref() == Some(session_id.as_str()) {
+                            this.web_enabled = previous;
+                        }
+                        this.notice =
+                            Some(format!("Could not change web access: {message}").into());
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn toggle_composer_expanded(&mut self, cx: &mut Context<Self>) {
+        self.composer_expanded = !self.composer_expanded;
+        let expanded = self.composer_expanded;
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.set_fill_height(expanded, cx));
+        }
+        cx.notify();
+    }
+
+    /// Open the native image picker and stage the chosen files.
+    fn pick_images(&mut self, cx: &mut Context<Self>) {
+        if self.image_picking {
+            return;
+        }
+        if let Some(plan) = self.sidebar_plan.as_ref() {
+            let label = plan.plan_label.to_lowercase();
+            if !(label.contains("pro") || label.contains("max") || label.contains("team")) {
+                self.notice = Some("Image attachments need a Pro, Max, or Team plan".into());
+                cx.notify();
+                return;
+            }
+        }
+        let remaining = MAX_DRAFT_IMAGES.saturating_sub(self.draft_images.len());
+        if remaining == 0 {
+            self.notice =
+                Some(format!("Attach at most {MAX_DRAFT_IMAGES} images at a time").into());
+            cx.notify();
+            return;
+        }
+        self.image_picking = true;
+        self.notice = None;
+        cx.notify();
+        self.call(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let output = std::process::Command::new("zenity")
+                        .args([
+                            "--file-selection",
+                            "--multiple",
+                            "--separator=\n",
+                            "--title=Add images",
+                            "--file-filter=Images | *.png *.jpg *.jpeg *.webp *.PNG *.JPG *.JPEG *.WEBP",
+                        ])
+                        .output()
+                        .map_err(|error| format!("Could not open the file dialog: {error}"))?;
+                    if !output.status.success() {
+                        // Cancelled.
+                        return Ok(Vec::new());
+                    }
+                    let mut images = Vec::new();
+                    for line in String::from_utf8_lossy(&output.stdout).lines() {
+                        let path = std::path::PathBuf::from(line.trim());
+                        if path.as_os_str().is_empty() {
+                            continue;
+                        }
+                        images.push(load_draft_image(&path)?);
+                        if images.len() >= remaining {
+                            break;
+                        }
+                    }
+                    Ok(images)
+                })
+                .await
+                .map_err(|error| format!("Image picker failed: {error}"))?
+            },
+            cx,
+            |this, result, cx| {
+                this.image_picking = false;
+                match result {
+                    Ok(images) => this.draft_images.extend(images),
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            },
+        );
     }
 
     fn is_run_active(&self) -> bool {
@@ -707,16 +1054,16 @@ impl ChatScreen {
     /// holds the text and clears the input itself.
     fn send_text(&mut self, text: String, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
-            self.notice = Some("Create a task first".to_string());
+            self.notice = Some("Create a task first".into());
             cx.notify();
             return;
         };
         if self.booting {
-            self.notice = Some("Agent runtime is still starting".to_string());
+            self.notice = Some("Agent runtime is still starting".into());
             cx.notify();
             return;
         }
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && self.draft_images.is_empty() {
             return;
         }
         if text.trim() == "/compact" {
@@ -731,16 +1078,24 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let model = self.selected_model.clone();
+        let vision_capable = self.selected_model_supports_vision();
+        let drafts = std::mem::take(&mut self.draft_images);
         let request = AgentSendMessageRequest {
             session_id: session_id.to_string(),
             text: text.clone(),
             model,
             context_limit: None,
             mode: Some(self.permission_mode.clone()),
-            vision_capable: false,
+            vision_capable,
             steer: false,
             queue_id: None,
-            attachments: Vec::new(),
+            attachments: drafts
+                .iter()
+                .map(|image| AgentImageUpload {
+                    name: image.name.clone(),
+                    data_url: image.data_url.clone(),
+                })
+                .collect(),
         };
         // The caller already cleared the composer (the Enter path clears
         // inside the input itself); clearing here would double-lease it.
@@ -761,6 +1116,7 @@ impl ChatScreen {
                     if let Some(composer) = this.composer.clone() {
                         composer.update(cx, |input, cx| input.set_text(&text, cx));
                     }
+                    this.draft_images = drafts;
                 }
             },
         );
@@ -805,7 +1161,7 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Err(message) = result {
-                    this.notice = Some(message);
+                    this.notice = Some(message.into());
                 }
                 cx.notify();
             },
@@ -869,7 +1225,7 @@ impl ChatScreen {
                     }
                     Err(message) => {
                         // Keep the card so the decision can be retried.
-                        this.notice = Some(format!("Permission response failed: {message}"));
+                        this.notice = Some(format!("Permission response failed: {message}").into());
                     }
                 }
                 cx.notify();
@@ -877,7 +1233,7 @@ impl ChatScreen {
         );
     }
 
-    fn sign_out(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -897,6 +1253,7 @@ impl ChatScreen {
         self.models_menu_open = false;
         self.root_menu_open = false;
         cx.notify();
+        self.refresh_vision(cx);
         // Remember the choice across launches via the agent config.
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -912,21 +1269,30 @@ impl ChatScreen {
     /// message/thinking text on the item with the same id; otherwise merge
     /// fields, keeping the previous value when the incoming field is absent.
     fn apply_timeline_item(&mut self, session_id: &str, item: AgentTimelineItem) {
-        let incoming_merge = item.merge.clone();
-        let incoming_created = item.created_ms;
-        let incoming_type = item.item_type.clone();
-        let incoming_role = item.role.clone();
-        let incoming_title = item.title.clone();
-        let incoming_text = item.text.clone();
-        let incoming_status = item.status.clone();
-        let incoming_input = item.input.clone();
-        let incoming_output = item.output.clone();
-        let existing = self
+        // Streaming delivers one of these per chunk; move the payload
+        // rather than copy it.
+        let position = self
             .timeline
-            .iter_mut()
-            .find(|candidate| candidate.id == item.id);
-        match existing {
-            Some(existing) => {
+            .iter()
+            .position(|candidate| candidate.id == item.id);
+        match position {
+            Some(index) => {
+                let AgentTimelineItem {
+                    created_ms: incoming_created,
+                    item_type: incoming_type,
+                    role: incoming_role,
+                    title: incoming_title,
+                    text: incoming_text,
+                    status: incoming_status,
+                    input: incoming_input,
+                    output: incoming_output,
+                    merge: incoming_merge,
+                    ..
+                } = item;
+                let existing = &mut self.timeline[index];
+                // The virtualized list caches item heights; tell it this
+                // one changed so it re-measures.
+                self.list_state.splice(index..index + 1, 1);
                 let append = incoming_merge == "append"
                     && matches!(incoming_type.as_str(), "message" | "thinking")
                     && incoming_text.is_some();
@@ -970,10 +1336,34 @@ impl ChatScreen {
         } else {
             self.sessions.insert(0, session);
         }
+        self.rebuild_project_groups();
+    }
+
+    /// Route a batch of backend service events into UI state with a single
+    /// render at the end.
+    pub fn handle_service_events(
+        &mut self,
+        events: Vec<AgentServiceEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = false;
+        for event in events {
+            changed |= self.apply_service_event(event, cx);
+        }
+        if changed {
+            cx.notify();
+        }
     }
 
     /// Route one backend service event into UI state.
     pub fn handle_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) {
+        if self.apply_service_event(event, cx) {
+            cx.notify();
+        }
+    }
+
+    /// Apply one event; returns false when nothing visible changed.
+    fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
         match event {
             AgentServiceEvent::RuntimeStatus(status) => {
                 // The status snapshot is authoritative for active runs.
@@ -990,6 +1380,8 @@ impl ChatScreen {
             } => {
                 if self.selected_session.as_deref() == Some(session_id.as_str()) {
                     self.apply_timeline_item(&session_id, item);
+                } else {
+                    return false;
                 }
             }
             AgentServiceEvent::Question {
@@ -1022,7 +1414,7 @@ impl ChatScreen {
                 event,
             } => self.handle_run_event(&session_id, &run_id, event, cx),
         }
-        cx.notify();
+        true
     }
 
     fn is_selected(&self, session_id: &str) -> bool {
@@ -1057,20 +1449,28 @@ impl ChatScreen {
                     // The permission row stays in the transcript so the
                     // decision is visible after the card is answered.
                     self.apply_timeline_item(session_id, item);
+                    let arguments = serde_json::Value::Object(request.arguments);
+                    self.pending_permission_arguments = if arguments.is_null() {
+                        SharedString::default()
+                    } else {
+                        serde_json::to_string_pretty(&arguments)
+                            .unwrap_or_default()
+                            .into()
+                    };
                     self.pending_permission = Some(PendingPermission {
                         session_id: session_id.to_string(),
                         run_id: run_id.to_string(),
                         request_id: request.request_id,
                         tool_name: request.tool_name,
                         prompt: request.prompt,
-                        arguments: serde_json::Value::Object(request.arguments),
+                        arguments,
                     });
                     self.permission_responding = false;
                 }
             }
             AgentRunEvent::SetupWarning(message) => {
                 if self.is_selected(session_id) {
-                    self.notice = Some(message);
+                    self.notice = Some(message.into());
                 }
             }
             AgentRunEvent::HistoryReplaced => {
@@ -1112,9 +1512,53 @@ impl ChatScreen {
 impl EventEmitter<LoggedOut> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}
+impl EventEmitter<OpenSettingsSection> for ChatScreen {}
 
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let empty = self.timeline.is_empty();
+        let collapsed = self.sidebar_collapsed;
+        let main = if empty {
+            self.render_empty_state(cx)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .h_full()
+                .min_w_0()
+                .child(self.render_header(cx))
+                .child(self.render_transcript(window, cx))
+                .when_some(self.pending_question.as_ref(), |container, question| {
+                    let input = self.pending_question_input.clone();
+                    container.child(render_question_card(question, input, cx))
+                })
+                .when_some(self.pending_permission.as_ref(), |container, permission| {
+                    container.child(render_permission_card(
+                        permission,
+                        &self.pending_permission_arguments,
+                        self.permission_responding,
+                        cx,
+                    ))
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(900.))
+                        .mx_auto()
+                        .px_4()
+                        .pb_4()
+                        .when(self.composer_expanded, |wrap| {
+                            wrap.flex_none()
+                                .h(gpui::relative(0.7))
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                        })
+                        .child(self.render_composer(cx))
+                        .children(self.render_menu_panel(cx)),
+                )
+        };
         div()
             .flex_1()
             .min_h_0()
@@ -1127,76 +1571,220 @@ impl Render for ChatScreen {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .child(self.render_sidebar(cx))
+                    .when(!collapsed, |row| row.child(self.render_sidebar(cx)))
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_col()
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .child(self.render_header(cx))
-                            .child(self.render_transcript(window, cx))
-                            .when_some(self.pending_question.clone(), |container, question| {
-                                let input = self.pending_question_input.clone();
-                                container.child(render_question_card(question, input, cx))
+                            .when(collapsed, |pane| {
+                                pane.child(
+                                    div()
+                                        .absolute()
+                                        .top_2()
+                                        .left_3()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(self.render_sidebar_toggle(cx))
+                                        .child(wordmark(px(14.), theme::TEXT_PRIMARY)),
+                                )
                             })
-                            .when_some(self.pending_permission.clone(), |container, permission| {
-                                container.child(render_permission_card(
-                                    permission,
-                                    self.permission_responding,
-                                    cx,
-                                ))
-                            })
-                            .child(self.render_composer(cx))
-                            .children(self.render_menu_panel(cx)),
+                            .child(main),
                     ),
             )
     }
 }
 
 impl ChatScreen {
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let sessions = self.sessions.clone();
-        let selected = self.selected_session.clone();
+    /// Panel icon that hides or shows the sidebar.
+    fn render_sidebar_toggle(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
-            .w(gpui::px(260.))
+            .id("sidebar-toggle")
+            .flex_none()
+            .size_7()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .hover(|style| {
+                style
+                    .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                    .cursor_pointer()
+            })
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.sidebar_collapsed = !this.sidebar_collapsed;
+                cx.notify();
+            }))
+            .child(icon("panel-left", px(16.), theme::TEXT_SECONDARY))
+    }
+
+    /// Hero layout for a task with no messages: display heading, composer,
+    /// and privacy note centered in the pane (mirrors EmptyAgentState).
+    fn render_empty_state(&mut self, cx: &mut Context<Self>) -> Div {
+        let expanded = self.composer_expanded;
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .items_center()
+            .justify_center()
+            .px_6()
+            .when(expanded, |pane| pane.py_6())
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(if expanded { 900. } else { 650. }))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_6()
+                    .when(expanded, |column| column.h_full().min_h_0())
+                    .when(!expanded, |column| {
+                        column.child(
+                            div()
+                                .mb_6()
+                                .font_family(crate::assets::FONT_DISPLAY)
+                                .text_size(px(36.))
+                                .line_height(px(48.))
+                                .text_color(gpui::rgb(theme::DISPLAY_TEXT))
+                                .child("Work on anything..."),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w_full()
+                            .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
+                            .child(self.render_composer(cx))
+                            .children(self.render_menu_panel(cx)),
+                    )
+                    .when(!expanded, |column| {
+                        column.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                .child(icon("lock", px(12.), theme::TEXT_MUTED))
+                                .child("Encrypted and private at every step"),
+                        )
+                    })
+                    .when_some(self.runtime_error.clone(), |column, error| {
+                        column.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(gpui::rgb(theme::STATUS_ERROR))
+                                .text_color(gpui::rgb(theme::BG_APP))
+                                .text_sm()
+                                .child(error),
+                        )
+                    })
+                    .when_some(self.notice.clone(), |column, notice| {
+                        column.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(gpui::rgb(theme::STATUS_WARNING))
+                                .text_color(gpui::rgb(theme::BG_APP))
+                                .text_sm()
+                                .child(notice),
+                        )
+                    }),
+            )
+    }
+
+    /// Group sessions by project root: current root first, then the other
+    /// recent roots, then any root that only appears on a stored task.
+    /// Called when sessions or roots change, not per render.
+    fn rebuild_project_groups(&mut self) {
+        let mut roots: Vec<String> = Vec::new();
+        if let Some(root) = self.project_root.clone() {
+            roots.push(root);
+        }
+        for root in self
+            .recent_roots
+            .iter()
+            .chain(self.sessions.iter().map(|s| &s.project_root))
+        {
+            if !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        self.project_groups = roots
+            .into_iter()
+            .map(|root| {
+                let indices = self
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, session)| session.project_root == root)
+                    .map(|(index, _)| index)
+                    .collect();
+                (root, indices)
+            })
+            .collect();
+    }
+
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
+        let selected = self.selected_session.as_deref();
+        let current_root = self.project_root.as_deref();
+        let section_label = |text: &'static str| {
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .child(text.to_uppercase())
+        };
+        div()
+            .w(px(300.))
             .h_full()
             .flex()
             .flex_col()
             .bg(gpui::rgb(theme::BG_SIDEBAR))
-            .border_r_1()
-            .border_color(gpui::rgb(theme::BORDER))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px_4()
-                    .py_3()
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                            .child("Maple"),
-                    )
-                    .child(
-                        div()
-                            .id("new-task")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .bg(gpui::rgb(theme::ACCENT))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                            .hover(|style| {
-                                style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer()
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.new_session(cx);
-                            }))
-                            .child("New task"),
-                    ),
+                    .pl_4()
+                    .pr_3()
+                    .pt_3()
+                    .pb_2()
+                    .child(wordmark(px(16.), theme::TEXT_PRIMARY))
+                    .child(self.render_sidebar_toggle(cx)),
+            )
+            .child(
+                div()
+                    .id("new-task")
+                    .mx_2()
+                    .mt_3()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::ACCENT))
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .cursor_pointer()
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.new_session(cx);
+                    }))
+                    .child(icon("square-pen", px(16.), theme::ACCENT))
+                    .child("New Task"),
             )
             .child(
                 div()
@@ -1206,42 +1794,114 @@ impl ChatScreen {
                     .flex_col()
                     .overflow_y_scroll()
                     .track_scroll(&self.sidebar_scroll)
-                    .px_2()
-                    .gap_1()
-                    .children(sessions.iter().map(|session| {
-                        let is_selected = selected.as_deref() == Some(session.id.as_str());
-                        let session_id = session.id.clone();
+                    .px_4()
+                    .pt_6()
+                    .child(
                         div()
-                            .id(gpui::SharedString::from(format!("session-{}", session.id)))
-                            .px_2()
-                            .py_2()
-                            .rounded_md()
-                            .bg(gpui::rgb(if is_selected {
-                                theme::BG_ELEVATED
-                            } else {
-                                theme::BG_SIDEBAR
-                            }))
-                            .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
-                            .on_click({
-                                let session_id = session_id.clone();
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.select_session(&session_id, cx);
-                                })
-                            })
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .mb_3()
+                            .child(section_label("Projects"))
                             .child(
                                 div()
+                                    .id("new-project")
+                                    .size_6()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .hover(|style| {
+                                        style
+                                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                            .cursor_pointer()
+                                    })
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.choose_root_dialog(cx);
+                                    }))
+                                    .child(icon("folder-plus", px(16.), theme::TEXT_SECONDARY)),
+                            ),
+                    )
+                    .children(self.project_groups.iter().map(|(root, indices)| {
+                        let is_current = current_root == Some(root.as_str());
+                        let name = root_display_name(root);
+                        let tasks = indices.iter().filter_map(|index| self.sessions.get(*index));
+                        div()
+                            .flex()
+                            .flex_col()
+                            .mb_2()
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!("project-{root}")))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
                                     .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                                    .line_clamp(1)
-                                    .child(session.title.clone()),
+                                    .hover(|style| {
+                                        style
+                                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                            .cursor_pointer()
+                                    })
+                                    .on_click({
+                                        let root = root.clone();
+                                        cx.listener(move |this, _event, _window, cx| {
+                                            if this.project_root.as_deref() != Some(root.as_str()) {
+                                                this.switch_root(root.clone(), cx);
+                                            }
+                                        })
+                                    })
+                                    .child(icon(
+                                        if is_current { "folder-open" } else { "folder" },
+                                        px(16.),
+                                        theme::TEXT_PRIMARY,
+                                    ))
+                                    .child(div().min_w_0().line_clamp(1).child(name)),
                             )
+                            .children(tasks.map(|session| {
+                                let is_selected = selected == Some(session.id.as_str());
+                                let session_id = session.id.clone();
+                                div()
+                                    .id(gpui::SharedString::from(format!("session-{}", session.id)))
+                                    .pl_8()
+                                    .pr_2()
+                                    .py_1()
+                                    .rounded_lg()
+                                    .text_sm()
+                                    .when(is_selected, |row| {
+                                        row.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                    })
+                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .hover(|style| {
+                                        style
+                                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                            .cursor_pointer()
+                                    })
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        this.open_session(&session_id, cx);
+                                    }))
+                                    .child(div().line_clamp(1).child(session.title.clone()))
+                            }))
+                    }))
+                    .child(
+                        div()
+                            .mt_5()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(section_label("Tasks"))
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(gpui::rgb(theme::TEXT_MUTED))
-                                    .child(relative_time(session.updated_ms)),
-                            )
-                    })),
+                                    .child("Folderless Agent tasks are not available yet."),
+                            ),
+                    ),
             )
             .child(self.render_sidebar_footer(cx))
     }
@@ -1258,18 +1918,17 @@ impl ChatScreen {
             .items_center()
             .justify_center()
             .rounded_md()
-            .text_lg()
-            .text_color(gpui::rgb(theme::TEXT_MUTED))
+            .size_9()
+            .rounded_full()
             .hover(|style| {
                 style
-                    .bg(gpui::rgb(theme::BG_SIDEBAR_CARD))
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
                     .cursor_pointer()
             })
             .on_click(cx.listener(|_this, _event, _window, cx| {
                 cx.emit(OpenSettings);
             }))
-            .child("⚙");
+            .child(icon("settings", px(16.), theme::TEXT_SECONDARY));
 
         let card = div()
             .flex_1()
@@ -1325,7 +1984,7 @@ impl ChatScreen {
                                 .text_color(gpui::rgb(theme::TEXT_MUTED))
                                 .whitespace_nowrap()
                                 .overflow_hidden()
-                                .child(format!("Resets {}", plan.resets_label)),
+                                .child(format!("· Resets {}", plan.resets_label)),
                         ),
                 )
                 .child(
@@ -1363,10 +2022,8 @@ impl ChatScreen {
             .flex()
             .items_center()
             .gap_2()
-            .px_2()
+            .px_3()
             .py_3()
-            .border_t_1()
-            .border_color(gpui::rgb(theme::BORDER))
             .child(gear)
             .child(card)
     }
@@ -1409,100 +2066,55 @@ impl ChatScreen {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
-        let mut header = div()
+        let title = self
+            .sessions
+            .iter()
+            .find(|session| Some(session.id.as_str()) == self.selected_session.as_deref())
+            .map(|session| SharedString::from(session.title.clone()))
+            .unwrap_or_else(|| SharedString::from("New Task"));
+        div()
             .flex()
             .items_center()
             .justify_between()
-            .px_4()
+            .gap_3()
+            .pl_4()
+            .pr_3()
             .py_2()
-            .border_b_1()
-            .border_color(gpui::rgb(theme::BORDER))
+            .when(self.sidebar_collapsed, |row| row.pl(px(220.)))
             .child(
                 div()
+                    .min_w_0()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                    .child(
-                        self.sessions
-                            .iter()
-                            .find(|session| Some(session.id.clone()) == self.selected_session)
-                            .map(|session| session.title.clone())
-                            .unwrap_or_else(|| "New task".to_string()),
-                    ),
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .line_clamp(1)
+                    .child(title),
             )
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("root-picker")
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(theme::BORDER))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.models_menu_open = false;
-                                this.root_menu_open = !this.root_menu_open;
-                                cx.notify();
-                            }))
-                            .child(format!(
-                                "📁 {}",
-                                self.project_root
-                                    .as_deref()
-                                    .and_then(|path| {
-                                        std::path::Path::new(path)
-                                            .file_name()
-                                            .map(|name| name.to_string_lossy().to_string())
-                                    })
-                                    .unwrap_or_else(|| "project".to_string())
-                            )),
-                    )
-                    .child(
-                        div()
-                            .id("compact-now")
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(theme::BORDER))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.compact_now(cx);
-                            }))
-                            .child("⇲"),
-                    )
-                    .child(
-                        div()
-                            .id("sign-out")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::STATUS_ERROR))
-                                    .cursor_pointer()
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.sign_out(cx);
-                            }))
-                            .child("Sign out"),
-                    ),
-            );
-        header
+                div().flex().items_center().gap_1().child(
+                    div()
+                        .id("header-new-task")
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .hover(|style| {
+                            style
+                                .bg(gpui::rgb(theme::BG_ELEVATED))
+                                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                .cursor_pointer()
+                        })
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.new_session(cx);
+                        }))
+                        .child(icon("square-pen", px(14.), theme::TEXT_SECONDARY))
+                        .child("New Task"),
+                ),
+            )
     }
 
     /// The open header menu as an inline panel. Rendered in normal flow
@@ -1511,16 +2123,14 @@ impl ChatScreen {
         let mut menu = div()
             .flex()
             .flex_col()
-            .mx_4()
-            .my_1()
+            .mt_1()
             .py_1()
-            .rounded_md()
+            .rounded_lg()
             .bg(gpui::rgb(theme::BG_ELEVATED))
             .border_1()
             .border_color(gpui::rgb(theme::BORDER));
         if self.root_menu_open {
             for path in self.recent_roots.iter().take(6) {
-                let path = path.clone();
                 let is_current = self.project_root.as_deref() == Some(path.as_str());
                 menu = menu.child(
                     div()
@@ -1541,7 +2151,7 @@ impl ChatScreen {
                                 this.switch_root(path.clone(), cx);
                             })
                         })
-                        .child(path),
+                        .child(path.clone()),
                 );
             }
             menu = menu.child(
@@ -1555,7 +2165,7 @@ impl ChatScreen {
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.choose_root_dialog(cx);
                     }))
-                    .child("Choose folder…"),
+                    .child("New project…"),
             );
             if let Some(input) = self.root_input.clone() {
                 menu = menu
@@ -1604,12 +2214,12 @@ impl ChatScreen {
             for (mode, label, note) in [
                 (
                     "auto",
-                    "Full access",
+                    "Allow all",
                     "Approve every tool call without asking",
                 ),
                 ("smart_approve", "Ask first", "Confirm each gated tool call"),
             ] {
-                let icon = permission_mode_icon(mode);
+                let mode_icon = icon(permission_mode_icon(mode), px(14.), theme::TEXT_SECONDARY);
                 let mode = mode.to_string();
                 let is_current = self.permission_mode == mode;
                 menu = menu.child(
@@ -1625,7 +2235,7 @@ impl ChatScreen {
                         }))
                         .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
                         .on_click(cx.listener(move |this, _event, _window, cx| {
-                            this.permission_mode = mode.clone();
+                            this.permission_mode.clone_from(&mode);
                             this.uses_default_permission_mode = false;
                             this.mode_menu_open = false;
                             this.apply_permission_mode(cx);
@@ -1636,7 +2246,14 @@ impl ChatScreen {
                                 .flex()
                                 .flex_col()
                                 .gap_0()
-                                .child(div().flex().items_center().gap_1().child(icon).child(label))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .child(mode_icon)
+                                        .child(label),
+                                )
                                 .child(
                                     div()
                                         .text_xs()
@@ -1648,9 +2265,119 @@ impl ChatScreen {
             }
             return Some(menu);
         }
+        if self.mcp_menu_open {
+            menu = menu.child(
+                div()
+                    .px_3()
+                    .pt_1()
+                    .pb_2()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .child("MCP servers"),
+            );
+            if self.session_mcp.is_empty() {
+                menu = menu.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .child("No MCP servers configured."),
+                );
+            }
+            for server in &self.session_mcp {
+                let name = server.name.clone();
+                let enabled = server.enabled;
+                let available = server.available;
+                menu = menu.child(
+                    div()
+                        .id(gpui::SharedString::from(format!("mcp-{name}")))
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .px_3()
+                        .py_1p5()
+                        .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.toggle_session_mcp(name.clone(), !enabled, cx);
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                        .line_clamp(1)
+                                        .child(server.name.clone()),
+                                )
+                                .when(!server.description.is_empty(), |col| {
+                                    col.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                            .line_clamp(2)
+                                            .child(server.description.clone()),
+                                    )
+                                })
+                                .when(!available, |col| {
+                                    col.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(gpui::rgb(theme::STATUS_WARNING))
+                                            .child("Not available in this task"),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .w(px(32.))
+                                .h(px(18.))
+                                .p(px(2.))
+                                .rounded_full()
+                                .bg(gpui::rgb(if enabled {
+                                    theme::ACCENT
+                                } else {
+                                    theme::BORDER
+                                }))
+                                .flex()
+                                .when(enabled, |track| track.justify_end())
+                                .child(div().size(px(14.)).rounded_full().bg(gpui::rgb(
+                                    if enabled {
+                                        theme::BG_APP
+                                    } else {
+                                        theme::TEXT_SECONDARY
+                                    },
+                                ))),
+                        ),
+                );
+            }
+            menu = menu.child(
+                div()
+                    .id("mcp-manage")
+                    .mt_1()
+                    .px_3()
+                    .py_1p5()
+                    .border_t_1()
+                    .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::ACCENT))
+                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.mcp_menu_open = false;
+                        cx.emit(OpenSettingsSection(Section::Mcp));
+                    }))
+                    .child("Manage servers…"),
+            );
+            return Some(menu);
+        }
         if self.models_menu_open {
             menu = menu.children(self.models.iter().map(|model| {
-                let model = model.clone();
                 div()
                     .id(gpui::SharedString::from(format!("model-{model}")))
                     .px_3()
@@ -1664,7 +2391,7 @@ impl ChatScreen {
                             this.pick_model(model.clone(), cx);
                         })
                     })
-                    .child(model)
+                    .child(model.clone())
             }));
             return Some(menu);
         }
@@ -1674,21 +2401,43 @@ impl ChatScreen {
     fn render_transcript(
         &mut self,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         // Follow the newest content while the view sits at (or near) the
         // bottom, or after an explicit jump. Checking before render keeps
         // user scrolls intact mid-stream.
-        let offset = self.transcript_scroll.offset();
-        let max = self.transcript_scroll.max_offset();
-        let at_bottom = max.height <= gpui::px(1.) || offset.y <= -(max.height - gpui::px(48.));
-        if at_bottom || self.follow_transcript {
-            self.follow_transcript = false;
-            self.transcript_scroll.scroll_to_bottom();
+        let count = self.timeline.len();
+        if self.list_state.item_count() != count {
+            self.list_state.reset(count);
         }
-        let empty = self.timeline.is_empty();
-        let booting = self.booting;
-        let items = self.timeline.clone();
+        // Pixel offsets are unreliable here: items that have never been
+        // rendered count as 0 px, so an old chat looks "all visible" until
+        // the user scrolls. The logical position is exact: with bottom
+        // alignment, `item_ix == count` means pinned to the newest item.
+        let at_bottom = self.list_state.logical_scroll_top().item_ix >= count;
+        if self.follow_transcript && !at_bottom {
+            self.list_state.scroll_to(gpui::ListOffset {
+                item_ix: count,
+                offset_in_item: px(0.),
+            });
+        }
+        self.follow_transcript = false;
+        let tool_details = self.tool_details;
+        let entity = cx.entity().downgrade();
+        // Only the visible items (plus a small overdraw) are built each
+        // frame; the list measures and caches the rest.
+        let list = gpui::list(self.list_state.clone(), move |ix, _window, cx| {
+            let Some(chat) = entity.upgrade() else {
+                return div().into_any_element();
+            };
+            let chat = chat.read(cx);
+            match chat.timeline.get(ix) {
+                Some(item) => render_timeline_item(item, tool_details, &chat.markdown_cache)
+                    .into_any_element(),
+                None => div().into_any_element(),
+            }
+        })
+        .size_full();
         div()
             .id("transcript")
             .relative()
@@ -1696,42 +2445,25 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .min_h_0()
-            .px_6()
-            .py_4()
-            .overflow_y_scroll()
-            .track_scroll(&self.transcript_scroll)
-            .overflow_x_hidden()
-            .when(empty, |container| {
-                container.child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_h_0()
-                        .justify_center()
-                        .items_center()
-                        .text_color(gpui::rgb(theme::TEXT_FAINT))
-                        .child(if booting {
-                            "Starting agent runtime…".to_string()
-                        } else {
-                            "Ask Maple anything about this project".to_string()
-                        }),
-                )
-            })
-            .when(!empty, |container| {
-                // Standard chat order: oldest at the top, newest at the
-                // bottom; the container follows the bottom while the user
-                // stays there (see the pinning logic above).
-                let tool_details = self.tool_details;
-                container.children(
-                    items
-                        .iter()
-                        .map(move |item| render_timeline_item(item, tool_details)),
-                )
-            })
+            .child(
+                // The list element does not apply padding itself, so the
+                // gutter lives here. Same column width as the composer.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .max_w(px(900.))
+                    .mx_auto()
+                    .px_6()
+                    .py_4()
+                    .child(list),
+            )
             .child(self.render_scrollbar())
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(
                     div()
+                        .mx_6()
+                        .mb_2()
                         .px_3()
                         .py_2()
                         .rounded_md()
@@ -1744,6 +2476,8 @@ impl ChatScreen {
             .when_some(self.notice.clone(), |container, notice| {
                 container.child(
                     div()
+                        .mx_6()
+                        .mb_2()
                         .px_3()
                         .py_2()
                         .rounded_md()
@@ -1755,29 +2489,28 @@ impl ChatScreen {
             })
     }
 
-    /// Thin scrollbar overlay driven by the transcript scroll handle.
+    /// Thin scrollbar overlay driven by the virtualized list state.
     fn render_scrollbar(&self) -> impl IntoElement {
-        let handle = &self.transcript_scroll;
-        let bounds = handle.bounds();
-        let max = handle.max_offset();
-        let track_height = bounds.size.height;
-        if max.height <= gpui::px(1.) || track_height <= gpui::px(0.) {
+        let state = &self.list_state;
+        let track_height = state.viewport_bounds().size.height;
+        let max = state.max_offset_for_scrollbar().height;
+        if max <= px(1.) || track_height <= px(0.) {
             return div().opacity(0.);
         }
-        let content = max.height + track_height;
+        let content = max + track_height;
         // ratio of visible track to total content
         let ratio = track_height / content;
-        let thumb_height = (track_height * ratio).max(gpui::px(24.));
-        let offset = -handle.offset().y;
-        let scrollable = (track_height - thumb_height).max(gpui::px(0.));
-        let progress = offset / max.height;
+        let thumb_height = (track_height * ratio).max(px(24.));
+        let offset = -state.scroll_px_offset_for_scrollbar().y;
+        let scrollable = (track_height - thumb_height).max(px(0.));
+        let progress = (offset / max).clamp(0., 1.);
         let thumb_top = scrollable * progress;
         div()
             .absolute()
-            .top(gpui::px(0.))
-            .right(gpui::px(2.))
-            .bottom(gpui::px(0.))
-            .w(gpui::px(6.))
+            .top(px(0.))
+            .right(px(2.))
+            .bottom(px(0.))
+            .w(px(6.))
             .flex()
             .flex_col()
             .child(
@@ -1798,151 +2531,381 @@ impl ChatScreen {
             .as_ref()
             .map(|composer| !composer.read(cx).text().trim().is_empty())
             .unwrap_or(false);
-        let can_send = !disabled && !running && has_text;
+        let has_images = !self.draft_images.is_empty();
+        let can_send = !disabled && !running && (has_text || has_images);
+        let expanded = self.composer_expanded;
         let composer = self.composer.clone();
+        let mcp_enabled = self.session_mcp.iter().filter(|s| s.enabled).count();
+        let drafts = &self.draft_images;
         let model_label = self
             .selected_model
             .clone()
-            .unwrap_or_else(|| "default model".to_string());
+            .unwrap_or_else(|| "Model".to_string());
         let bypass = self.permission_mode == "auto";
+        let root_label = self
+            .project_root
+            .as_deref()
+            .map(root_display_name)
+            .unwrap_or_else(|| "Choose folder".to_string());
         div()
-            .m_4()
+            .w_full()
             .flex()
             .flex_col()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .rounded_lg()
-            .bg(gpui::rgb(theme::BG_INPUT))
+            .when(expanded, |container| container.flex_1().min_h_0())
+            .rounded(px(24.))
+            .bg(gpui::rgb(theme::BG_APP))
             .border_1()
-            .border_color(gpui::rgb(theme::BORDER))
+            .border_color(gpui::rgb(theme::ACCENT))
             .when(disabled, |container| container.opacity(0.5))
+            .when(!drafts.is_empty(), |container| {
+                container.child(div().flex().flex_wrap().gap_2().px_4().pt_4().children(
+                    drafts.iter().enumerate().map(|(index, image)| {
+                        div()
+                            .relative()
+                            .size_16()
+                            .child(
+                                gpui::img(Arc::clone(&image.path))
+                                    .size_16()
+                                    .rounded_xl()
+                                    .object_fit(gpui::ObjectFit::Cover)
+                                    .border_1()
+                                    .border_color(gpui::rgb(theme::BORDER)),
+                            )
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!("draft-remove-{index}")))
+                                    .absolute()
+                                    .top(px(-4.))
+                                    .right(px(-4.))
+                                    .size_5()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(gpui::rgb(theme::BG_ELEVATED))
+                                    .border_1()
+                                    .border_color(gpui::rgb(theme::BORDER))
+                                    .hover(|style| style.cursor_pointer())
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        if index < this.draft_images.len() {
+                                            this.draft_images.remove(index);
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(icon("x", px(10.), theme::TEXT_PRIMARY)),
+                            )
+                    }),
+                ))
+            })
             .child(
-                div().flex().items_center().child(
-                    div()
-                        .flex_1()
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                        .children(composer),
-                ),
+                div()
+                    .flex()
+                    .items_start()
+                    .px_4()
+                    .pt_4()
+                    .pb_2()
+                    .when(expanded, |row| row.flex_1().min_h_0())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .when(expanded, |cell| cell.h_full())
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .children(composer),
+                    )
+                    .child(
+                        div()
+                            .id("composer-expand")
+                            .size_6()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.toggle_composer_expanded(cx);
+                            }))
+                            .child(icon(
+                                if expanded { "minimize-2" } else { "maximize-2" },
+                                px(14.),
+                                theme::TEXT_MUTED,
+                            )),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
+                    .px_2()
+                    .pb_2()
+                    .pt_1()
                     .child(
-                        div()
-                            .id("model-picker")
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(if self.models_menu_open {
-                                theme::ACCENT
-                            } else {
-                                theme::BORDER
-                            }))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
+                        chip(
+                            "model-picker",
+                            None,
+                            model_label,
+                            true,
+                            self.models_menu_open,
+                        )
+                        .on_click(cx.listener(
+                            |this, _event, _window, cx| {
                                 this.root_menu_open = false;
                                 this.mode_menu_open = false;
+                                this.mcp_menu_open = false;
                                 this.models_menu_open = !this.models_menu_open;
                                 cx.notify();
-                            }))
-                            .child(model_label),
+                            },
+                        )),
+                    )
+                    .child(
+                        chip(
+                            "permission-mode-toggle",
+                            Some(permission_mode_icon(&self.permission_mode)),
+                            if bypass { "Allow all" } else { "Read only" }.to_string(),
+                            true,
+                            self.mode_menu_open,
+                        )
+                        .on_click(cx.listener(
+                            |this, _event, _window, cx| {
+                                this.root_menu_open = false;
+                                this.models_menu_open = false;
+                                this.mcp_menu_open = false;
+                                this.mode_menu_open = !this.mode_menu_open;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
+                        chip(
+                            "mcp-menu",
+                            Some("puzzle"),
+                            mcp_enabled.to_string(),
+                            false,
+                            self.mcp_menu_open,
+                        )
+                        .on_click(cx.listener(
+                            |this, _event, _window, cx| {
+                                this.root_menu_open = false;
+                                this.models_menu_open = false;
+                                this.mode_menu_open = false;
+                                this.mcp_menu_open = !this.mcp_menu_open;
+                                if this.mcp_menu_open {
+                                    this.refresh_session_mcp(cx);
+                                }
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
+                        chip(
+                            "web-toggle",
+                            Some("globe"),
+                            if self.web_enabled { "Web" } else { "Web off" }.to_string(),
+                            false,
+                            self.web_enabled,
+                        )
+                        .on_click(cx.listener(
+                            |this, _event, _window, cx| {
+                                let next = !this.web_enabled;
+                                this.set_web_enabled(next, cx);
+                            },
+                        )),
                     )
                     .child(
                         div()
-                            .id("permission-mode-toggle")
+                            .id("add-images")
+                            .size_8()
                             .flex()
                             .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
+                            .justify_center()
                             .rounded_md()
-                            .border_1()
-                            .border_color(gpui::rgb(if bypass {
-                                theme::STATUS_WARNING
-                            } else {
-                                theme::BORDER
-                            }))
-                            .text_sm()
-                            .text_color(gpui::rgb(if bypass {
-                                theme::STATUS_WARNING
-                            } else {
-                                theme::TEXT_SECONDARY
-                            }))
-                            .hover(|style| style.cursor_pointer())
+                            .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
+                            .when(self.image_picking, |el| el.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.models_menu_open = false;
-                                this.mode_menu_open = !this.mode_menu_open;
-                                cx.notify();
+                                this.pick_images(cx);
                             }))
-                            .child(permission_mode_icon(&self.permission_mode))
-                            .child(if bypass { "Full access" } else { "Ask first" }),
+                            .child(icon("image", px(16.), theme::TEXT_SECONDARY)),
+                    )
+                    .child(
+                        chip(
+                            "root-picker",
+                            Some("folder-open"),
+                            root_label,
+                            true,
+                            self.root_menu_open,
+                        )
+                        .on_click(cx.listener(
+                            |this, _event, _window, cx| {
+                                this.models_menu_open = false;
+                                this.mode_menu_open = false;
+                                this.mcp_menu_open = false;
+                                this.root_menu_open = !this.root_menu_open;
+                                cx.notify();
+                            },
+                        )),
                     )
                     .child(div().flex_1())
-                    .child(div().id("context-indicator").flex().items_center().child(
-                        crate::ui::context_ring::ContextRing::new(
-                            self.context_fraction.unwrap_or(0.0),
-                        ),
-                    ))
-                    .child(if running {
+                    .child(
                         div()
-                            .id("stop-run")
-                            .px_4()
-                            .py_2()
-                            .rounded_md()
-                            .bg(gpui::rgb(theme::STATUS_ERROR))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::BG_APP))
-                            .hover(|style| style.cursor_pointer())
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.stop(cx);
-                            }))
-                            .child("Stop")
-                    } else {
+                            .id("context-indicator")
+                            .flex()
+                            .items_center()
+                            .mr_1()
+                            .child(crate::ui::context_ring::ContextRing::new(
+                                self.context_fraction.unwrap_or(0.0),
+                            )),
+                    )
+                    .when(running, |row| {
+                        row.child(
+                            div()
+                                .id("stop-run")
+                                .size_8()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_xl()
+                                .bg(gpui::rgb(theme::STATUS_ERROR))
+                                .hover(|style| style.cursor_pointer())
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.stop(cx);
+                                }))
+                                .child(div().size_3().rounded_md().bg(gpui::rgb(theme::BG_APP))),
+                        )
+                    })
+                    .child(
                         div()
                             .id("send-message")
-                            .px_4()
-                            .py_2()
-                            .rounded_md()
-                            .bg(gpui::rgb(if can_send {
-                                theme::ACCENT
-                            } else {
-                                theme::BORDER
-                            }))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .size_8()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(gpui::linear_gradient(
+                                180.,
+                                gpui::linear_color_stop(gpui::rgb(theme::SEND_TOP), 0.),
+                                gpui::linear_color_stop(gpui::rgb(theme::SEND_BOTTOM), 1.),
+                            ))
+                            .when(!can_send, |el| el.opacity(0.4))
                             .when(can_send, |el| {
-                                el.hover(|style| {
-                                    style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer()
-                                })
-                            })
-                            .when(can_send, |el| {
-                                el.on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.send_inner(cx);
-                                }))
+                                el.hover(|style| style.cursor_pointer())
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.send_inner(cx);
+                                    }))
                             })
                             .child(if disabled {
-                                "Starting…".to_string()
+                                icon("loader-circle", px(16.), theme::BG_APP)
                             } else {
-                                "Send".to_string()
-                            })
-                    }),
+                                icon("arrow-up", px(16.), theme::BG_APP)
+                            }),
+                    ),
             )
     }
 }
 
-/// Icon for a permission mode: bolt for full access, shield for ask first.
+/// Borderless toolbar chip: optional leading icon, label, optional chevron.
+fn chip(
+    id: &'static str,
+    leading: Option<&'static str>,
+    label: String,
+    chevron: bool,
+    active: bool,
+) -> gpui::Stateful<Div> {
+    let color = if active {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    div()
+        .id(id)
+        .h_8()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .rounded_md()
+        .text_xs()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(color))
+        .when(active, |el| el.bg(gpui::rgb(theme::BG_ELEVATED)))
+        .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
+        .children(leading.map(|name| icon(name, px(16.), color)))
+        .child(div().whitespace_nowrap().child(label))
+        .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+}
+
+/// Last path component of a project root, for chips and the sidebar.
+fn root_display_name(root: &str) -> String {
+    std::path::Path::new(root)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| root.to_string())
+}
+
+/// Icon name for a permission mode: bolt for allow all, shield for read only.
 fn permission_mode_icon(mode: &str) -> &'static str {
-    if mode == "auto" { "⚡" } else { "🛡" }
+    if mode == "auto" {
+        "zap"
+    } else {
+        "shield-check"
+    }
+}
+
+const MAX_DRAFT_IMAGES: usize = 10;
+const MAX_DRAFT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Read an image file into a data URL, checking size and format the same
+/// way the runtime does so errors surface before the send.
+fn load_draft_image(path: &std::path::Path) -> Result<DraftImage, String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image".to_string());
+    let bytes = std::fs::read(path).map_err(|error| format!("Could not read {name}: {error}"))?;
+    if bytes.len() > MAX_DRAFT_IMAGE_BYTES {
+        return Err(format!("{name} is larger than 10 MB"));
+    }
+    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        return Err(format!("{name} is not a PNG, JPEG, or WebP image"));
+    };
+    Ok(DraftImage {
+        name,
+        path: Arc::from(path),
+        data_url: format!("data:{mime};base64,{}", base64_encode(&bytes)),
+    })
+}
+
+/// Standard base64 with padding; small enough to avoid another dependency.
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Compact token count for the sidebar usage line (k/M).
@@ -1956,9 +2919,13 @@ fn format_usage_tokens(tokens: i64) -> String {
     }
 }
 
-fn render_timeline_item(item: &AgentTimelineItem, tool_details: bool) -> Div {
+fn render_timeline_item(
+    item: &AgentTimelineItem,
+    tool_details: bool,
+    markdown_cache: &MarkdownCache,
+) -> Div {
     let item = match item.item_type.as_str() {
-        "message" => render_message(item),
+        "message" => render_message(item, markdown_cache),
         "thinking" | "reasoning" => render_thinking(item),
         "tool" | "toolCall" => {
             // Dispatch on payload shape; runtime titles are humanized
@@ -1968,9 +2935,9 @@ fn render_timeline_item(item: &AgentTimelineItem, tool_details: bool) -> Div {
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
-                render_tool_with_diff(item, tool_details)
+                render_tool_with_diff(item, tool_details, markdown_cache)
             } else {
-                render_tool(item, tool_details)
+                render_tool(item, tool_details, markdown_cache)
             }
         }
         "error" => render_error(item),
@@ -1982,13 +2949,30 @@ fn render_timeline_item(item: &AgentTimelineItem, tool_details: bool) -> Div {
     div().pb_2().child(item)
 }
 
-fn render_message(item: &AgentTimelineItem) -> Div {
+fn render_message(item: &AgentTimelineItem, markdown_cache: &MarkdownCache) -> Div {
     let is_user = item.role.as_deref() == Some("user");
-    let text = item.text.clone().unwrap_or_default();
-    if text.trim().is_empty() {
+    let text = item.text.as_deref().unwrap_or("");
+    let has_images = item
+        .input
+        .as_ref()
+        .is_some_and(|input| input.get("imageAttachments").is_some());
+    if text.trim().is_empty() && !(is_user && has_images) {
         return div();
     }
     if is_user {
+        let attachments: Vec<String> = item
+            .input
+            .as_ref()
+            .and_then(|input| input.get("imageAttachments"))
+            .and_then(|items| items.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|entry| entry.get("name").and_then(|n| n.as_str()))
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
         div().flex().justify_end().child(
             div()
                 .max_w(gpui::relative(0.75))
@@ -1999,14 +2983,34 @@ fn render_message(item: &AgentTimelineItem) -> Div {
                 .border_1()
                 .border_color(gpui::rgb(theme::USER_BUBBLE_BORDER))
                 .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                .child(text),
+                .when(!attachments.is_empty(), |bubble| {
+                    bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
+                        attachments.into_iter().map(|name| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_md()
+                                .bg(gpui::rgb(theme::BG_ELEVATED))
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                                .child(icon("paperclip", px(12.), theme::TEXT_SECONDARY))
+                                .child(name)
+                        }),
+                    ))
+                })
+                .when(!text.trim().is_empty(), |bubble| {
+                    bubble.child(text.to_string())
+                }),
         )
     } else {
         div()
             .max_w_full()
             .pr_2()
             .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-            .child(markdown::render_markdown(&text))
+            .child(markdown::render(&markdown_cache.get(&item.id, text)))
     }
 }
 fn render_thinking(item: &AgentTimelineItem) -> Div {
@@ -2113,8 +3117,12 @@ fn render_todo(item: &AgentTimelineItem) -> Div {
 
 /// Tool card whose payload renders as a colored diff when it carries
 /// edit/write replacements.
-fn render_tool_with_diff(item: &AgentTimelineItem, details: bool) -> Div {
-    let card = render_tool(item, details);
+fn render_tool_with_diff(
+    item: &AgentTimelineItem,
+    details: bool,
+    markdown_cache: &MarkdownCache,
+) -> Div {
+    let card = render_tool(item, details, markdown_cache);
     if !details {
         return card;
     }
@@ -2188,7 +3196,7 @@ fn render_tool_with_diff(item: &AgentTimelineItem, details: bool) -> Div {
     card.child(diff)
 }
 
-fn render_tool(item: &AgentTimelineItem, details: bool) -> Div {
+fn render_tool(item: &AgentTimelineItem, details: bool, markdown_cache: &MarkdownCache) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
     let title = item.title.clone().unwrap_or_else(|| item.item_type.clone());
     let mut card = div()
@@ -2244,7 +3252,9 @@ fn render_tool(item: &AgentTimelineItem, details: bool) -> Div {
                 .w_full()
                 .text_sm()
                 .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                .child(crate::ui::markdown::render_markdown(&output)),
+                .child(markdown::render(
+                    &markdown_cache.get(&format!("{}#output", item.id), &output),
+                )),
         );
     }
     card
@@ -2365,7 +3375,7 @@ fn render_system(item: &AgentTimelineItem) -> Div {
 }
 
 fn render_question_card(
-    question: crate::backend::PendingQuestion,
+    question: &crate::backend::PendingQuestion,
     input: Option<Entity<TextInput>>,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
@@ -2430,19 +3440,16 @@ fn render_question_card(
 }
 
 fn render_permission_card(
-    permission: PendingPermission,
+    permission: &PendingPermission,
+    arguments: &SharedString,
     responding: bool,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
-    let description = permission
-        .prompt
-        .clone()
-        .unwrap_or_else(|| format!("Run tool {}?", permission.tool_name));
-    let arguments = if permission.arguments.is_null() {
-        String::new()
-    } else {
-        serde_json::to_string_pretty(&permission.arguments).unwrap_or_default()
+    let description: SharedString = match permission.prompt.as_deref() {
+        Some(prompt) => prompt.to_string().into(),
+        None => format!("Run tool {}?", permission.tool_name).into(),
     };
+    let arguments = arguments.clone();
     let mut card = div()
         .m_4()
         .px_4()
@@ -2514,14 +3521,7 @@ fn render_permission_card(
     card.child(buttons)
 }
 
-fn relative_time(when_ms: i64) -> String {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0);
-    relative_time_at(when_ms, now_ms)
-}
-
+#[cfg(test)]
 fn relative_time_at(when_ms: i64, now_ms: i64) -> String {
     // Session timestamps are epoch milliseconds; compare in seconds.
     let seconds = ((now_ms - when_ms).max(0)) / 1000;
@@ -2565,6 +3565,7 @@ mod state_tests {
 
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
         AgentSessionSummary {
+            web_enabled: true,
             id: id.to_string(),
             title: title.to_string(),
             project_root: "/tmp/proj".to_string(),

@@ -57,6 +57,9 @@ pub struct AgentBackend {
     billing: crate::billing::BillingClient,
     /// Cached billing JWT per user id. Replaced after a 401.
     billing_tokens: tokio::sync::Mutex<HashMap<String, String>>,
+    /// Open handle to the usage ledger DB; the context ring polls it every
+    /// second during a run, so it is not reopened per query.
+    usage_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
 }
 
 fn configured_client_id() -> Uuid {
@@ -193,6 +196,7 @@ impl AgentBackend {
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
             billing,
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
+            usage_db: std::sync::Mutex::new(None),
         })
     }
 
@@ -666,6 +670,91 @@ impl AgentBackend {
             .await
     }
 
+    /// Catalog vision flag for a model; None when unknown.
+    pub async fn model_supports_vision(
+        &self,
+        user_id: &str,
+        model: &str,
+    ) -> Result<Option<bool>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .model_supports_vision(model)
+            .await
+    }
+
+    /// MCP servers configured for the account, with the session's enabled
+    /// state for each.
+    pub async fn list_session_mcp_servers(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<Vec<maple_agent::agent::AgentSessionMcpServer>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_session_mcp_servers(session_id.to_string())
+            .await
+    }
+
+    pub async fn set_session_mcp_server_enabled(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        name: &str,
+        enabled: bool,
+    ) -> Result<Vec<maple_agent::agent::AgentSessionMcpServer>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_session_mcp_server_enabled(maple_agent::agent::AgentSetSessionMcpServerRequest {
+                session_id: session_id.to_string(),
+                name: name.to_string(),
+                enabled,
+            })
+            .await
+    }
+
+    pub async fn list_mcp_servers(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_mcp_servers()
+            .await
+    }
+
+    pub async fn save_mcp_servers(
+        &self,
+        user_id: &str,
+        servers: Vec<maple_agent::agent::AgentMcpServer>,
+    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_mcp_servers(servers)
+            .await
+    }
+
+    /// Turn the web tools on or off for a session (next turn onward).
+    pub async fn set_session_web_enabled(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<AgentSessionSummary, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_session_web_enabled(maple_agent::agent::AgentSetSessionWebRequest {
+                session_id: session_id.to_string(),
+                enabled,
+            })
+            .await
+    }
+
     /// Set the permission policy for a session: "smart_approve" asks for
     /// each gated tool, "auto" approves everything (bypass).
     pub async fn set_permission_mode(
@@ -723,9 +812,14 @@ impl AgentBackend {
             },
         };
         let db = crate::backend::account_session_db(&scope);
-        let Ok(conn) = rusqlite::Connection::open(&db) else {
-            return Ok(None);
-        };
+        let mut guard = self.usage_db.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
+            let Ok(conn) = rusqlite::Connection::open(&db) else {
+                return Ok(None);
+            };
+            *guard = Some((db, conn));
+        }
+        let conn = &guard.as_ref().expect("usage db opened above").1;
         let row = conn
             .query_row(
                 "SELECT COALESCE(input_tokens,0) + COALESCE(cache_read_tokens,0) \

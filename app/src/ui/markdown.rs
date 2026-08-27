@@ -7,6 +7,11 @@
 //! ambient text style at paint time. Block styles (size, weight, monospace)
 //! are set on the wrapping divs so they compose with the parent element.
 //!
+//! Parsing and element building are separate steps: [`parse`] produces a
+//! [`Document`] of resolved blocks that callers cache per message, and
+//! [`render`] turns it into elements each frame. Parsing is the expensive
+//! part; rendering from blocks is a handful of allocations.
+//!
 use gpui::{Div, SharedString, StyledText, div, prelude::*, px};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -89,11 +94,38 @@ impl Paragraph {
     }
 }
 
-fn styled_paragraph(
+/// One rendered block with its inline highlights already resolved.
+#[derive(Clone)]
+pub enum Block {
+    Text {
+        text: SharedString,
+        highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>,
+        text_size: Option<gpui::Pixels>,
+        weight: Option<gpui::FontWeight>,
+        in_quote: bool,
+        list_depth: usize,
+    },
+    Code {
+        code: SharedString,
+        in_quote: bool,
+        list_depth: usize,
+    },
+    Rule,
+}
+
+/// A parsed markdown message, ready to render any number of times.
+#[derive(Clone, Default)]
+pub struct Document {
+    pub blocks: Vec<Block>,
+}
+
+fn text_block(
     paragraph: Paragraph,
     text_size: Option<gpui::Pixels>,
     weight: Option<gpui::FontWeight>,
-) -> Div {
+    in_quote: bool,
+    list_depth: usize,
+) -> Block {
     // Only styled spans become highlights; unstyled ranges inherit the
     // ambient text style resolved at paint time.
     let mut highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> = Vec::new();
@@ -109,7 +141,23 @@ fn styled_paragraph(
         }
         highlights.push((range, style.highlight()));
     }
-    let text = StyledText::new(SharedString::new(paragraph.text)).with_highlights(highlights);
+    Block::Text {
+        text: SharedString::new(paragraph.text),
+        highlights,
+        text_size,
+        weight,
+        in_quote,
+        list_depth,
+    }
+}
+
+fn styled_paragraph(
+    text: SharedString,
+    highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>,
+    text_size: Option<gpui::Pixels>,
+    weight: Option<gpui::FontWeight>,
+) -> Div {
+    let text = StyledText::new(text).with_highlights(highlights);
     let mut div = div().w_full();
     if let Some(size) = text_size {
         div = div.text_size(size);
@@ -130,7 +178,7 @@ fn heading_size(level: HeadingLevel) -> gpui::Pixels {
     }
 }
 
-fn code_block(code: String) -> Div {
+fn code_block(code: SharedString) -> Div {
     div()
         .w_full()
         .my_1()
@@ -143,17 +191,59 @@ fn code_block(code: String) -> Div {
         .font_family("monospace")
         .text_size(px(13.))
         .text_color(gpui::rgb(theme::CODE_TEXT))
-        .child(code.trim_end().to_string())
+        .child(code)
 }
 
-/// Render a markdown string into a vertical stack of elements. Call during
-/// render with the ambient window.
+/// Parse a markdown string once, then render it with [`render`].
 pub fn render_markdown(source: &str) -> Div {
+    render(&parse(source))
+}
+
+/// Build elements from a parsed document.
+pub fn render(document: &Document) -> Div {
+    let mut container = div().flex().flex_col().gap_2().w_full().pr_6();
+    for block in &document.blocks {
+        container = match block {
+            Block::Text {
+                text,
+                highlights,
+                text_size,
+                weight,
+                in_quote,
+                list_depth,
+            } => container.child(wrap_inline(
+                styled_paragraph(text.clone(), highlights.clone(), *text_size, *weight),
+                *in_quote,
+                *list_depth,
+            )),
+            Block::Code {
+                code,
+                in_quote,
+                list_depth,
+            } => container.child(wrap_inline(
+                code_block(code.clone()),
+                *in_quote,
+                *list_depth,
+            )),
+            Block::Rule => container.child(
+                div()
+                    .h(px(1.))
+                    .w_full()
+                    .my_1()
+                    .bg(gpui::rgb(theme::BORDER_SUBTLE)),
+            ),
+        };
+    }
+    container
+}
+
+/// Parse markdown into resolved blocks.
+pub fn parse(source: &str) -> Document {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(source, options);
 
-    let mut container = div().flex().flex_col().gap_2().w_full().pr_6();
+    let mut blocks: Vec<Block> = Vec::new();
     let mut paragraph = Paragraph::default();
     let mut inline_flags: Vec<InlineStyle> = Vec::new();
     let mut list_counters: Vec<Option<u64>> = Vec::new();
@@ -177,8 +267,7 @@ pub fn render_markdown(source: &str) -> Div {
         () => {
             if !paragraph.is_empty() {
                 let taken = paragraph.take();
-                let element = styled_paragraph(taken, None, None);
-                container = container.child(wrap_inline(element, in_quote, list_counters.len()));
+                blocks.push(text_block(taken, None, None, in_quote, list_counters.len()));
             }
         };
     }
@@ -242,13 +331,13 @@ pub fn render_markdown(source: &str) -> Div {
                 TagEnd::Heading(level) => {
                     let taken = paragraph.take();
                     if !taken.is_empty() {
-                        let element = styled_paragraph(
+                        blocks.push(text_block(
                             taken,
                             Some(heading_size(level)),
                             Some(gpui::FontWeight::BOLD),
-                        );
-                        container =
-                            container.child(wrap_inline(element, in_quote, list_counters.len()));
+                            in_quote,
+                            list_counters.len(),
+                        ));
                     }
                 }
                 TagEnd::BlockQuote(_) => {
@@ -256,11 +345,11 @@ pub fn render_markdown(source: &str) -> Div {
                 }
                 TagEnd::CodeBlock => {
                     if let Some(code) = code_block_text.take() {
-                        container = container.child(wrap_inline(
-                            code_block(code),
+                        blocks.push(Block::Code {
+                            code: SharedString::new(code.trim_end().to_string()),
                             in_quote,
-                            list_counters.len(),
-                        ));
+                            list_depth: list_counters.len(),
+                        });
                     }
                 }
                 TagEnd::List(_) => {
@@ -293,13 +382,7 @@ pub fn render_markdown(source: &str) -> Div {
             }
             Event::Rule => {
                 flush_paragraph!();
-                container = container.child(
-                    div()
-                        .h(px(1.))
-                        .w_full()
-                        .my_1()
-                        .bg(gpui::rgb(theme::BORDER_SUBTLE)),
-                );
+                blocks.push(Block::Rule);
             }
             Event::InlineHtml(html) => {
                 paragraph.push(&html, current_style(&inline_flags));
@@ -316,9 +399,9 @@ pub fn render_markdown(source: &str) -> Div {
     // Flush any trailing content outside a closing tag (defensive).
     if !paragraph.is_empty() && code_block_text.is_none() {
         let taken = paragraph.take();
-        container = container.child(styled_paragraph(taken, None, None));
+        blocks.push(text_block(taken, None, None, false, 0));
     }
-    container
+    Document { blocks }
 }
 
 /// Apply list indentation and blockquote chrome to an inner block.

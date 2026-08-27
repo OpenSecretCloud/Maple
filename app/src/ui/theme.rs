@@ -37,3 +37,19 @@ pub const PERMISSION_FILL: u32 = 0x191210;
 pub const PERMISSION_BORDER: u32 = 0x784a38;
 
 pub const USER_BUBBLE_BORDER: u32 = 0x262626;
+
+/// Sidebar chrome: segmented toggle track, row hover, selected row.
+pub const BG_SIDEBAR_CHROME: u32 = 0x1c1c1c;
+pub const BG_SIDEBAR_ROW_HOVER: u32 = 0x404040;
+pub const BG_SIDEBAR_ROW_SELECTED: u32 = 0x525252;
+
+/// Empty-state heading. The web app draws a gradient from #c3c3cb to
+/// #9d6c5f; gpui text has no gradient, so this is the visual midpoint.
+pub const DISPLAY_TEXT: u32 = 0xc9b3a6;
+
+/// Send button gradient stops (Maple coral to a darker coral).
+pub const SEND_TOP: u32 = 0xff9771;
+pub const SEND_BOTTOM: u32 = 0xe36e47;
+/// Title bar control buttons.
+pub const BG_TITLE_CONTROL: u32 = 0x3a3a3a;
+pub const BG_TITLE_CONTROL_HOVER: u32 = 0x4a4a4a;

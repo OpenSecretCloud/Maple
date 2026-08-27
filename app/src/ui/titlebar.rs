@@ -1,12 +1,13 @@
 //! Custom window title bar. Wayland compositors draw no server-side
-//! decorations, so the app renders its own: a drag region plus minimize,
-//! maximize, and close controls.
+//! decorations, so the app renders its own: a drag region with a centered
+//! title plus round minimize, maximize, and close controls.
 
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
 
 use super::theme;
 
-const BAR_HEIGHT: gpui::Pixels = px(34.);
+const BAR_HEIGHT: gpui::Pixels = px(40.);
+const CONTROL_SIZE: gpui::Pixels = px(24.);
 
 pub struct TitleBar {
     title: SharedString,
@@ -33,15 +34,14 @@ impl Render for TitleBar {
         let controls = window.window_controls();
         div()
             .id("title-bar")
+            .relative()
             .flex()
             .items_center()
-            .justify_between()
+            .justify_end()
             .w_full()
             .h(BAR_HEIGHT)
-            .pl_3()
+            .pr_3()
             .bg(gpui::rgb(theme::BG_SIDEBAR))
-            .border_b_1()
-            .border_color(gpui::rgb(theme::BORDER_SUBTLE))
             // Any press in the bar that is not on a control starts a window
             // drag, which is the standard title-bar behavior.
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
@@ -49,27 +49,22 @@ impl Render for TitleBar {
             })
             .child(
                 div()
+                    .absolute()
+                    .inset_0()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
-                            .child(self.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_FAINT))
-                            .child(format!("v{}", Self::version())),
-                    ),
+                    .justify_center()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .child(self.title.clone()),
             )
             .child(
                 div()
+                    .relative()
                     .flex()
                     .items_center()
-                    .h_full()
+                    .gap_2()
                     .children(controls.minimize.then(|| {
                         control("title-minimize", "—", |window, _cx| {
                             window.minimize_window();
@@ -97,13 +92,14 @@ fn control(
         .flex()
         .items_center()
         .justify_center()
-        .size(BAR_HEIGHT)
-        .text_sm()
-        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+        .size(CONTROL_SIZE)
+        .rounded_full()
+        .bg(gpui::rgb(theme::BG_TITLE_CONTROL))
+        .text_xs()
+        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
         .hover(|style| {
             style
-                .bg(gpui::rgb(theme::STATUS_ERROR))
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .bg(gpui::rgb(theme::BG_TITLE_CONTROL_HOVER))
                 .cursor_pointer()
         })
         .on_mouse_down(gpui::MouseButton::Left, {
