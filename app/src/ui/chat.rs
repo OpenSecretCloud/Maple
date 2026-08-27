@@ -234,6 +234,7 @@ impl ChatScreen {
     }
 
     fn new_inner_with_placeholder(backend: Arc<AgentBackend>, user_id: String) -> Self {
+        let settings = crate::settings::load_settings();
         let this = Self {
             backend,
             user_id,
@@ -266,14 +267,13 @@ impl ChatScreen {
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
             sidebar_scroll: gpui::ScrollHandle::new(),
             follow_transcript: true,
-            tool_details: true,
+            tool_details: settings.tool_details,
             permission_mode: std::env::var("MAPLE_PERMISSION_MODE")
                 .ok()
                 .filter(|mode| mode == "auto" || mode == "smart_approve")
                 .or_else(|| {
-                    crate::settings::load_settings()
-                        .default_permission_mode
-                        .into()
+                    Some(settings.default_permission_mode.clone())
+                        .filter(|mode| mode == "auto" || mode == "smart_approve")
                 })
                 .unwrap_or_else(|| "smart_approve".to_string()),
             uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
@@ -289,7 +289,7 @@ impl ChatScreen {
             mcp_menu_open: false,
             composer_expanded: false,
             web_enabled: true,
-            default_web_enabled: crate::settings::load_settings().default_web_enabled,
+            default_web_enabled: settings.default_web_enabled,
             markdown_cache: MarkdownCache::default(),
             project_groups: Vec::new(),
             archived_indices: Vec::new(),
@@ -689,7 +689,12 @@ impl ChatScreen {
     ) {
         self.tool_details = settings.tool_details;
         self.default_web_enabled = settings.default_web_enabled;
-        if self.uses_default_permission_mode {
+        if self.uses_default_permission_mode
+            && matches!(
+                settings.default_permission_mode.as_str(),
+                "auto" | "smart_approve"
+            )
+        {
             self.permission_mode
                 .clone_from(&settings.default_permission_mode);
             self.apply_permission_mode(cx);
@@ -3929,7 +3934,13 @@ mod state_tests {
         }
     }
 
+    /// Serializes constructions that read the settings file: the
+    /// persisted-defaults test swaps XDG_CONFIG_HOME process-wide, so no
+    /// other test may read settings while the swap is live.
+    static SETTINGS_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
+        let _guard = SETTINGS_LOCK.lock();
         let backend = std::sync::Arc::new(
             crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
         );
@@ -3938,6 +3949,43 @@ mod state_tests {
             screen.selected_session = Some("s1".to_string());
             screen
         })
+    }
+
+    /// A persisted settings file must shape a freshly built chat screen:
+    /// tool cards collapsed and web off for new tasks without visiting
+    /// the settings screen first.
+    #[gpui::test]
+    fn test_constructor_reads_persisted_defaults(cx: &mut TestAppContext) {
+        let _guard = SETTINGS_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!("maple-gpui-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("maple-gpui");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"tool_details":false,"default_web_enabled":false}"#,
+        )
+        .unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let screen = cx.new(|_cx| {
+            ChatScreen::new_inner(
+                std::sync::Arc::new(
+                    crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
+                        .expect("backend"),
+                ),
+                "user".to_string(),
+            )
+        });
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        screen.update(cx, |this, _cx| {
+            assert!(!this.tool_details);
+            assert!(!this.default_web_enabled);
+        });
     }
 
     #[gpui::test]

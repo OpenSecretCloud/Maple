@@ -5081,6 +5081,7 @@ dependencies = [
  "maple-agent",
  "maple-billing",
  "opensecret",
+ "parking_lot",
  "pulldown-cmark",
  "rusqlite",
  "serde",
