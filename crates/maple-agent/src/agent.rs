@@ -1709,6 +1709,29 @@ fn next_queue_id() -> String {
     format!("queue_{}_{sequence}", unix_ms())
 }
 
+/// One printable line from a summary completion: reasoning blocks removed,
+/// quotes stripped, whitespace collapsed.
+fn normalize_tool_summary(raw: &str) -> Option<String> {
+    let without_reasoning = strip_session_title_reasoning_blocks(raw);
+    let printable: String = without_reasoning
+        .chars()
+        .filter(|character| !character.is_control() || character.is_whitespace())
+        .collect();
+    let first_line = printable
+        .lines()
+        .find(|line| !line.trim().is_empty())?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let line = first_line
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(&first_line)
+        .trim();
+    let summary: String = line.chars().take(100).collect();
+    (!summary.is_empty()).then(|| summary)
+}
+
 fn next_run_id() -> String {
     let sequence = NEXT_RUN_ID
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -13498,6 +13521,7 @@ mod tests {
             message_count: 0,
             model: None,
             mode: DEFAULT_GOOSE_MODE.to_string(),
+            archived: false,
         };
         let mut sessions = vec![
             summary("oldest", 10),
