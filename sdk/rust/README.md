@@ -30,13 +30,13 @@ http = "1"
 ## Quick Start
 
 ```rust
-use opensecret::{OpenSecretClient, Pcr0Environment, Pcr0TrustPolicy, Result};
+use opensecret::{OpenSecretClient, Result};
 use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize client
-    let client = OpenSecretClient::new("https://api.opensecret.com")?;
+    let client = OpenSecretClient::new("https://api.opensecret.cloud")?;
     let client_id = Uuid::parse_str("your-client-id")?;
 
     // Establish secure session
@@ -55,42 +55,20 @@ async fn main() -> Result<()> {
 }
 ```
 
-Production clients verify both the AWS Nitro attestation and the enclave's
-PCR0 deployment identity. `OpenSecretClient::new` uses pinned official PCR0
-values and OpenSecret's signed production history. Development trust must be
-selected explicitly and checks only the development roots and signed history:
+Production clients verify both AWS Nitro authenticity and an atomic
+PCR0/PCR1/PCR2 tuple from the SDK's offline, Sigstore-verified release
+snapshot before key exchange. The convenience constructors recognize only the
+SDK's exact official origins. A custom HTTPS origin must use
+`new_with_attestation_policy` (or the API-key equivalent) with an explicit
+`TrustedReleasePolicy`; unknown remote origins never inherit production trust.
 
-```rust
-let development_client = OpenSecretClient::new_with_pcr0_environment(
-    "https://enclave.secretgpt.ai",
-    Pcr0Environment::Development,
-)?;
-```
-
-The API-key equivalent is
-`OpenSecretClient::new_with_api_key_and_pcr0_environment`. A signed PCR0 added
-to the selected GitHub history is accepted without a client update. Neither
-official policy falls back to the other environment.
-
-Custom deployments can add a static allowlist without replacing the selected
-official trust policy:
-
-```rust
-let policy = Pcr0TrustPolicy::official().with_additional_pcr0s([
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-])?;
-let client = OpenSecretClient::new_with_pcr0_trust_policy(
-    "https://api.opensecret.cloud",
-    policy,
-)?;
-```
-
-Use `Pcr0TrustPolicy::from_static_allowlist(...)` to disable remote history and
-trust only an explicit custom set. Remote entries are size/time bounded and
-must verify against the SDK's hardcoded OpenSecret P-384 signing key. Exact
-localhost, loopback, and unspecified-address development endpoints continue to
-use mock attestation; Android also supports the exact emulator alias
-`10.0.2.2`. Other endpoints must use HTTPS.
+The checked-in snapshot is intentionally empty until a tagged backend release
+is verified and imported. In that staging state, real handshakes return
+`UnreleasedAttestationPolicy` rather than falling back to GitHub PCR histories.
+Exact localhost, loopback, and unspecified-address development endpoints use
+mock attestation only when the `mock-attestation` feature is enabled; Android
+also supports the exact emulator alias `10.0.2.2`. Other endpoints require
+HTTPS.
 
 ## Inference APIs
 
@@ -235,12 +213,12 @@ directory, matching the TypeScript SDK setup.
 Required environment variables in `.env.local`:
 ```bash
 VITE_OPEN_SECRET_API_URL=http://localhost:3000
-VITE_OPEN_SECRET_PCR_ENVIRONMENT=production
+VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT=prod
 VITE_TEST_CLIENT_ID=your-client-id-uuid
 ```
 
-Production is the default when `VITE_OPEN_SECRET_PCR_ENVIRONMENT` is omitted.
-Set it to `development` when the configured URL is a hosted development enclave.
+Production is the default when `VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT` is omitted.
+Set it to `dev` when the configured URL is a hosted development enclave.
 
 Run tests:
 ```bash

@@ -6,6 +6,8 @@
     # Keep Bun aligned with package.json and CI without advancing the SDK's
     # older Node/Rust/system package set. Update all three pins together.
     bun-nixpkgs.url = "github:NixOS/nixpkgs/5912c1772a44e31bf1c63c0390b90501e5026886";
+    # Keep Sigstore's newer Node requirement isolated from the SDK toolchain.
+    sigstore-nixpkgs.url = "github:NixOS/nixpkgs/241313f4e8e508cb9b13278c2b0fa25b9ca27163";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -13,13 +15,39 @@
     };
   };
 
-  outputs = { self, nixpkgs, bun-nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, bun-nixpkgs, sigstore-nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ rust-overlay.overlays.default ];
         pkgs = import nixpkgs { inherit system overlays; };
         bunPkgs = import bun-nixpkgs { inherit system; };
+        sigstorePkgs = import sigstore-nixpkgs { inherit system; };
         sdkBun = assert bunPkgs.bun.version == "1.3.5"; bunPkgs.bun;
+
+        cosignPlatforms = {
+          x86_64-linux = "linux-amd64";
+          aarch64-linux = "linux-arm64";
+          x86_64-darwin = "darwin-amd64";
+          aarch64-darwin = "darwin-arm64";
+        };
+        cosignHashes = {
+          x86_64-linux = "sha256-92Iu088i5V4a5jd8CAl5/3eiLamYHBHfIiouREmR588=";
+          aarch64-linux = "sha256-kOeuC139YPIIFrUsASrd9/wFXrzHvqTOgcQoyoUYwwI=";
+          x86_64-darwin = "sha256-rNGA+LAVviUkDKM6vuih5WTrZc3xo87kclRW0tzrfaY=";
+          aarch64-darwin = "sha256-3sHD+AIyCxnC+88tx7z7PyWOHBgaBGwjoaB0vfky8Qo=";
+        };
+        cosign_3_1_2 = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cosign";
+          version = "3.1.2";
+          src = pkgs.fetchurl {
+            url = "https://github.com/sigstore/cosign/releases/download/v3.1.2/cosign-${cosignPlatforms.${system}}";
+            hash = cosignHashes.${system};
+          };
+          dontUnpack = true;
+          installPhase = ''
+            install -Dm755 "$src" "$out/bin/cosign"
+          '';
+        };
 
         # Try to use rust-toolchain.toml if it exists, otherwise use stable
         rust = if builtins.pathExists ./rust-toolchain.toml
@@ -29,7 +57,8 @@
         commonInputs = with pkgs; [
           # TypeScript/JavaScript tooling
           sdkBun
-          nodejs_20
+          sigstorePkgs.nodejs
+          cosign_3_1_2
           nodePackages.typescript
           nodePackages.typescript-language-server
 

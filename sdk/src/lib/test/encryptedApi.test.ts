@@ -43,10 +43,10 @@ function dependencies(overrides: Partial<EncryptedApiDependencies> = {}): Encryp
     encryptMessage: encryptForTest,
     fetch: async () => new Response(null, { status: 500 }),
     getAttestation: async () => staleAttestation,
-    getApiPcrConfig: () => snapshotPcrConfig({ environment: "development" }),
+    getApiPcrConfig: () => snapshotPcrConfig({ environment: "dev" }),
     getApiUrl: () => "https://api.example.test",
     getPlatformApiUrl: () => "https://platform.example.test",
-    getPlatformPcrConfig: () => snapshotPcrConfig({ environment: "development" }),
+    getPlatformPcrConfig: () => snapshotPcrConfig({ environment: "dev" }),
     getAccessToken: () => window.localStorage.getItem("access_token"),
     refreshAccessToken: async () => {},
     resolveEndpoint: (url) => ({

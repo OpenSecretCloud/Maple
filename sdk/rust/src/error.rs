@@ -17,6 +17,14 @@ pub enum Error {
     #[error("Attestation verification failed: {0}")]
     AttestationVerificationFailed(String),
 
+    #[error(
+        "No published trusted enclave release is available for attestation environment '{environment}'"
+    )]
+    UnreleasedAttestationPolicy { environment: String },
+
+    #[error("Trusted enclave release policy is invalid: {0}")]
+    TrustedReleasePolicy(String),
+
     #[error("Session error: {0}")]
     Session(String),
 

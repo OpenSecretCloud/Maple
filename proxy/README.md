@@ -7,7 +7,8 @@ Environment (TEE) processing.
 ## 🚀 Features
 
 - **OpenAI-Compatible Surface** - Models, chat completions, and embeddings endpoints
-- **Secure TEE Processing** - All requests processed in secure enclaves
+- **Attested TEE Transport** - The OpenSecret SDK establishes an attested,
+  encrypted channel before inference requests are forwarded
 - **Lossless Chat Parameters** - Provider-specific request fields pass through unchanged
 - **Streaming and Non-Streaming** - Supports both chat completion response modes
 - **Flexible Authentication** - Environment variables or per-request API keys
@@ -62,8 +63,7 @@ Set environment variables or use command-line arguments:
 # Environment Variables
 export MAPLE_HOST=127.0.0.1                    # Server host (default: 127.0.0.1)
 export MAPLE_PORT=8080                         # Server port (default: 8080)
-export MAPLE_BACKEND_URL=http://localhost:3000         # Maple backend URL (prod: https://enclave.trymaple.ai)
-export MAPLE_PCR0_ENVIRONMENT=production       # PCR0 trust roots: production (default) or development
+export MAPLE_BACKEND_URL=https://enclave.trymaple.ai   # Maple backend URL
 export MAPLE_API_KEY=your-maple-api-key        # Optional for trusted, non-browser clients only
 export MAPLE_DEBUG=true                        # Enable debug logging
 export MAPLE_ENABLE_CORS=false                 # Default; see browser warning below
@@ -74,10 +74,11 @@ export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between 
 Or use CLI arguments:
 ```bash
 cargo run --locked -- --host 0.0.0.0 --port 8080 --backend-url https://enclave.trymaple.ai
-
-# Development enclaves must be selected explicitly
-cargo run --locked -- --backend-url https://enclave.secretgpt.ai --pcr0-environment development
 ```
+
+For an unsigned local backend, use `just run-local`. That recipe alone enables
+the explicitly named `insecure-local-mock-attestation` Cargo feature. Generic,
+release, Docker, and embedded Maple builds leave the feature disabled.
 
 ## 🛠️ Usage
 
@@ -141,7 +142,7 @@ curl http://localhost:8080/v1/embeddings \
 You can also embed Maple Proxy in your own Rust application:
 
 ```rust
-use maple_proxy::{Config, Pcr0Environment, create_app};
+use maple_proxy::{Config, create_app};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -155,7 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         8081,  // Custom port
         "https://enclave.trymaple.ai".to_string(),
     )
-    .with_pcr0_environment(Pcr0Environment::Production)
     .with_api_key("your-api-key-here".to_string())
     .with_debug(true)
     .with_cors(true);
@@ -497,9 +497,47 @@ cargo run --locked
 ```
 
 1. **Client** makes standard OpenAI API calls to localhost
-2. **Maple Proxy** handles authentication and TEE handshake
-3. **Requests** are securely forwarded to Maple's TEE infrastructure
-4. **Responses** are streamed back to the client in OpenAI format
+2. **Maple Proxy** handles authentication and asks the OpenSecret SDK to
+   establish the TEE channel
+3. **OpenSecret SDK** authenticates and authorizes the enclave before accepting
+   its key and completing key exchange
+4. **Requests** are encrypted and forwarded to Maple's TEE infrastructure
+5. **Responses** are streamed back to the client in OpenAI format
+
+### TEE release authorization
+
+Sigstore/Rekor release authorization belongs in the OpenSecret SDK rather than
+Maple Proxy. For each non-local backend, the SDK:
+
+1. verifies the AWS Nitro attestation document, certificate chain, nonce, and
+   signature;
+2. extracts and validates the complete PCR0/PCR1/PCR2 measurement tuple;
+3. compares that tuple with the release snapshot embedded in the SDK; and
+4. accepts the enclave public key and performs key exchange only after the
+   tuple is present in that snapshot.
+
+Maple Proxy continues to call `perform_attestation_handshake`; it neither
+maintains a second PCR allowlist nor implements a separate Sigstore verifier.
+Keeping this policy in the SDK gives every Rust SDK consumer the same
+fail-closed authorization boundary before application data is sent.
+
+There is no Sigstore, Rekor, or other release-metadata network lookup during a
+runtime handshake. At SDK update time, the release-snapshot updater verifies
+the release manifest and Cosign bundle, including the expected signing identity
+and Rekor evidence, before generating the embedded snapshot. Consumers then
+review the generated snapshot together with the SDK change.
+
+Sigstore makes a release statement and its signing identity tamper-evident in
+an append-only transparency log. It does **not** prove that an artifact was
+reproducibly built, and it does **not** make an old, previously authorized
+release fresh. Reproducibility remains a separate Nix rebuild/compare property;
+rollback prevention, revocation, or minimum-version policy must also be handled
+separately.
+
+> **Integration status:** the embedded release snapshots are intentionally
+> empty until the first signed backend release is reviewed and imported. Remote
+> handshakes therefore fail closed in this draft branch; no release is published
+> by this change.
 
 ## 📝 License
 

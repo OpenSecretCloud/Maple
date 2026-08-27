@@ -143,7 +143,16 @@ export type {
 } from "./developer";
 export type { AttestationDocument } from "./attestation";
 export type { ParsedAttestationView } from "./attestationForView";
-export type { PcrConfig, PcrEnvironment, Pcr0ValidationResult } from "./pcr";
+export {
+  getTrustedReleaseSnapshot,
+  getTrustedReleaseSnapshotId,
+  type AttestationEnvironment,
+  type PcrConfig,
+  type Pcr0ValidationResult,
+  type PcrValidationResult,
+  type TrustedEnclaveRelease,
+  type TrustedEnclaveReleaseSnapshot
+} from "./pcr";
 
 // Export crypto utilities
 // TODO: these can actually just be used internally by the password reset function

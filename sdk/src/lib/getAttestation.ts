@@ -5,10 +5,12 @@ import nacl from "tweetnacl";
 import { ChaCha20Poly1305 } from "@stablelib/chacha20poly1305";
 import { encode, decode } from "@stablelib/base64";
 import {
-  requireTrustedPcr0,
+  assertTrustedReleaseSnapshotIntegrity,
+  requireTrustedPcrs,
+  resolveAttestationEnvironment,
   serializePcrConfig,
   snapshotPcrConfig,
-  validatePcr0Hash,
+  type AttestationEnvironment,
   type PcrConfig
 } from "./pcr";
 
@@ -39,7 +41,7 @@ const SESSION_ID_PATTERN = /^[\x21-\x7e]+$/;
 /** @internal Exported for deterministic handshake tests, not from the package entry point. */
 export interface GetAttestationDependencies {
   verifyAttestation: typeof verifyAttestation;
-  validatePcr0Hash: typeof validatePcr0Hash;
+  requireTrustedPcrs: typeof requireTrustedPcrs;
   keyExchange: typeof keyExchange;
   generateNaclKeyPair: () => NaclKeyPair;
   decryptSessionKey: (
@@ -79,7 +81,7 @@ function decryptSessionKey(
 
 const defaultDependencies: GetAttestationDependencies = {
   verifyAttestation,
-  validatePcr0Hash,
+  requireTrustedPcrs,
   keyExchange,
   generateNaclKeyPair,
   decryptSessionKey,
@@ -274,6 +276,9 @@ export async function getAttestationWithDependencies(
   const policy = snapshotPcrConfig(pcrConfig);
   const scope = await getAttestationScope(configuredApiUrl, policy);
   const localDevelopment = isLocalDevelopmentApiUrl(scope.apiUrl);
+  const expectedEnvironment: AttestationEnvironment | undefined = localDevelopment
+    ? undefined
+    : resolveAttestationEnvironment(scope.apiUrl, policy.environment);
 
   console.groupCollapsed("Attestation");
   try {
@@ -296,7 +301,8 @@ export async function getAttestationWithDependencies(
     console.log("Generated attestation nonce:", attestationNonce);
     const document: AttestationDocument = await dependencies.verifyAttestation(
       attestationNonce,
-      scope.apiUrl
+      scope.apiUrl,
+      expectedEnvironment
     );
 
     if (!document.public_key) {
@@ -308,13 +314,14 @@ export async function getAttestationWithDependencies(
       verifiedPcr0 = "local-development";
       console.warn("LOCAL DEVELOPMENT: PCR0 verification is bypassed for exact HTTP loopback.");
     } else {
-      const trustedPcr = await requireTrustedPcr0(
-        document.pcrs,
-        policy,
-        dependencies.validatePcr0Hash
-      );
-      verifiedPcr0 = trustedPcr.hash;
-      console.log("Attestation PCR0 trust verification succeeded.");
+      await assertTrustedReleaseSnapshotIntegrity();
+      dependencies.requireTrustedPcrs(document.pcrs, expectedEnvironment!);
+      const pcr0 = document.pcrs.get(0);
+      if (!pcr0 || pcr0.length !== 48) {
+        throw new Error("Attestation document must contain a 48-byte PCR0 value.");
+      }
+      verifiedPcr0 = Array.from(pcr0, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      console.log("Attestation trusted-release PCR0/PCR1/PCR2 verification succeeded.");
     }
 
     const clientKeyPair = dependencies.generateNaclKeyPair();

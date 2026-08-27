@@ -3,7 +3,9 @@ import { parseTestPcrEnvironment } from "./testPcrEnvironment";
 
 // Get the API URL from environment variables
 const apiUrl = process.env.VITE_OPEN_SECRET_API_URL;
-const pcrEnvironment = parseTestPcrEnvironment(process.env.VITE_OPEN_SECRET_PCR_ENVIRONMENT);
+const pcrEnvironment = parseTestPcrEnvironment(
+  process.env.VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT
+);
 
 if (!apiUrl) {
   throw new Error("VITE_OPEN_SECRET_API_URL must be set in environment variables");

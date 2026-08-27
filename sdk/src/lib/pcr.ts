@@ -1,508 +1,500 @@
-/**
- * Valid PCR0 values for production environments
- */
-const DEFAULT_PCR0_VALUES = [
-  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b",
-  "74ed417f88cb0ca76c4a3d10f278bd010f1d3f95eafb254d4732511bb50e404507a4049b779c5230137e4091a5582271",
-  "9043fcab93b972d3c14ad2dc8fa78ca7ad374fc937c02435681772a003f7a72876bc4d578089b5c4cf3fe9b480f1aabb",
-  "52c3595b151d93d8b159c257301bfd5aa6f49210de0c55a6cd6df5ebeee44e4206cab950500f5d188f7fa14e6d900b75",
-  "91cb67311e910cce68cd5b7d0de77aa40610d87c6681439b44c46c3ff786ae643956ab2c812478a1da8745b259f07a45",
-  "859065ac81b81d3735130ba08b8af72a7256b603fefb74faabae25ed28cca6edcaa7c10ea32b5948d675c18a9b0f2b1d",
-  "acd82a7d3943e23e95a9dc3ce0b0107ea358d6287f9e3afa245622f7c7e3e0a66142a928b6efcc02f594a95366d3a99d"
-];
+import { z } from "zod";
+import trustedReleaseSnapshotJson from "./trusted-enclave-releases.generated.json";
 
-/**
- * Valid PCR0 values for development environments
- */
-const DEFAULT_PCR0_VALUES_DEV = [
-  "62c0407056217a4c10764ed9045694c29fa93255d3cc04c2f989cdd9a1f8050c8b169714c71f1118ebce2fcc9951d1a9",
-  "cb95519905443f9f66f05f63c548b61ad1561a27fd5717b69285861aaea3c3063fe12a2571773b67fea3c6c11b4d8ec6",
-  "deb5895831b5e4286f5a2dcf5e9c27383821446f8df2b465f141d10743599be20ba3bb381ce063bf7139cc89f7f61d4c",
-  "70ba26c6af1ec3b57ce80e1adcc0ee96d70224d4c7a078f427895cdf68e1c30f09b5ac4c456588d872f3f21ff77c036b",
-  "669404ea71435b8f498b48db7816a5c2ab1d258b1a77685b11d84d15a73189504d79c4dee13a658de9f4a0cbfc39cfe8",
-  "a791bf92c25ffdfd372660e460a0e238c6778c090672df6509ae4bc065cf8668b6baac6b6a11d554af53ee0ff0172ad5",
-  "c4285443b87b9b12a6cea3bef1064ec060f652b235a297095975af8f134e5ed65f92d70d4616fdec80af9dff48bb9f35"
-];
+const SNAPSHOT_SCHEMA = "https://opensecret.cloud/sdk/trusted-enclave-releases/v1";
+const MANIFEST_SCHEMA = "https://opensecret.cloud/attestations/nitro-eif-release/v1";
+const SOURCE_REPOSITORY = "OpenSecretCloud/opensecret";
+const EIF_MEDIA_TYPE = "application/vnd.aws.nitro.eif";
+const PCR_HEX_PATTERN = /^[0-9a-f]{96}$/;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+const COMMIT_HEX_PATTERN = /^[0-9a-f]{40}$/;
+const RELEASE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const WORKFLOW_PATH = ".github/workflows/release-nitro-eif.yml";
+const OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+const LOCAL_DEVELOPMENT_API_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/**
- * Public key used to verify PCR history signatures in SPKI DER format (base64-encoded)
- */
-const PCR_VERIFICATION_PUBLIC_KEY_B64 =
-  "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEHiUY9kFWK1GqBGzczohhwEwElXzgWLDZa9R6wBx3JOBocgSt9+UIzZlJbPDjYeGBfDUXh7Z62BG2vVsh2NgclLB5S7A2ucBBtb1wd8vSQHP8jpdPhZX1slauPgbnROIP";
+export const AttestationEnvironmentSchema = z.enum(["prod", "dev"]);
+export type AttestationEnvironment = z.infer<typeof AttestationEnvironmentSchema>;
 
-/**
- * Remote PCR history URLs
- */
-const PCR_HISTORY_URLS = {
-  prod: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrProdHistory.json",
-  dev: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrDevHistory.json"
-};
+const PcrMeasurementsSchema = z
+  .object({
+    algorithm: z.literal("sha384"),
+    requiredPcrs: z.tuple([z.literal(0), z.literal(1), z.literal(2)]),
+    pcrs: z
+      .object({
+        "0": z
+          .string()
+          .regex(PCR_HEX_PATTERN)
+          .refine((value) => !/^0+$/.test(value)),
+        "1": z
+          .string()
+          .regex(PCR_HEX_PATTERN)
+          .refine((value) => !/^0+$/.test(value)),
+        "2": z
+          .string()
+          .regex(PCR_HEX_PATTERN)
+          .refine((value) => !/^0+$/.test(value))
+      })
+      .strict()
+  })
+  .strict();
 
-const PCR0_HEX_LENGTH = 96;
-const PCR0_HEX_PATTERN = /^[0-9a-f]{96}$/;
-const PCR_HISTORY_TIMEOUT_MS = 5000;
-const PCR_HISTORY_MAX_BYTES = 1024 * 1024;
-const PCR_HISTORY_MAX_ENTRIES = 2048;
-const PCR_SIGNATURE_BYTES = 96;
+const ReleaseManifestSchema = z
+  .object({
+    schema: z.literal(MANIFEST_SCHEMA),
+    environment: AttestationEnvironmentSchema,
+    source: z
+      .object({
+        repository: z.literal(SOURCE_REPOSITORY),
+        repositoryId: z.literal(921901924),
+        ownerId: z.literal(185423582),
+        ref: z.string().startsWith("refs/tags/"),
+        commit: z.string().regex(COMMIT_HEX_PATTERN)
+      })
+      .strict(),
+    release: z
+      .object({
+        tag: z.string().regex(RELEASE_TAG_PATTERN)
+      })
+      .strict(),
+    artifact: z
+      .object({
+        name: z.string().min(1),
+        mediaType: z.literal(EIF_MEDIA_TYPE),
+        sha256: z.string().regex(SHA256_HEX_PATTERN),
+        size: z.number().safe().int().positive()
+      })
+      .strict(),
+    measurements: PcrMeasurementsSchema,
+    build: z
+      .object({
+        system: z.literal("nix"),
+        flakeLockSha256: z.string().regex(SHA256_HEX_PATTERN),
+        derivation: z.enum(["eif-prod", "eif-dev"]),
+        workflowRun: z
+          .string()
+          .regex(
+            /^https:\/\/github\.com\/OpenSecretCloud\/opensecret\/actions\/runs\/[1-9]\d*\/attempts\/[1-9]\d*$/
+          )
+      })
+      .strict()
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    if (manifest.source.ref !== `refs/tags/${manifest.release.tag}`) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["source", "ref"],
+        message: "source ref must be the exact release tag"
+      });
+    }
 
-export type Pcr0ValidationErrorCode =
-  | "PCR0_MISSING"
-  | "PCR0_INVALID_LENGTH"
-  | "PCR0_INVALID_FORMAT"
-  | "PCR0_ALL_ZERO"
-  | "PCR0_UNTRUSTED";
+    if (
+      manifest.artifact.name !== `opensecret-${manifest.release.tag}-${manifest.environment}.eif`
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["artifact", "name"],
+        message: "artifact name must match the release tag and environment"
+      });
+    }
 
-/** A hard attestation failure caused by an invalid or untrusted enclave identity. */
-export class Pcr0ValidationError extends Error {
-  readonly code: Pcr0ValidationErrorCode;
+    if (manifest.build.derivation !== `eif-${manifest.environment}`) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["build", "derivation"],
+        message: "build derivation must match the release environment"
+      });
+    }
+  });
 
-  constructor(code: Pcr0ValidationErrorCode, message: string) {
-    super(message);
-    this.name = "Pcr0ValidationError";
-    this.code = code;
+const TrustedReleaseSchema = z
+  .object({
+    manifestSha256: z.string().regex(SHA256_HEX_PATTERN),
+    bundleSha256: z.string().regex(SHA256_HEX_PATTERN),
+    signer: z
+      .object({
+        oidcIssuer: z.literal(OIDC_ISSUER),
+        identity: z.string().url()
+      })
+      .strict(),
+    transparencyLog: z
+      .object({
+        logIndex: z.string().regex(/^(0|[1-9]\d*)$/),
+        logId: z.string().regex(SHA256_HEX_PATTERN)
+      })
+      .strict(),
+    manifest: ReleaseManifestSchema
+  })
+  .strict()
+  .superRefine((release, context) => {
+    const expectedIdentity = `https://github.com/${SOURCE_REPOSITORY}/${WORKFLOW_PATH}@${release.manifest.source.ref}`;
+    if (release.signer.identity !== expectedIdentity) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["signer", "identity"],
+        message: "signer identity must match the exact release workflow and manifest tag"
+      });
+    }
+  });
+
+const TrustedReleaseSnapshotSchema = z
+  .object({
+    schema: z.literal(SNAPSHOT_SCHEMA),
+    snapshotId: z.string().regex(SHA256_HEX_PATTERN),
+    policy: z
+      .object({
+        oidcIssuer: z.literal(OIDC_ISSUER),
+        sourceRepository: z.literal(SOURCE_REPOSITORY),
+        sourceRepositoryId: z.literal(921901924),
+        sourceRepositoryOwnerId: z.literal(185423582),
+        workflow: z
+          .object({
+            path: z.literal(WORKFLOW_PATH),
+            name: z.literal("Nitro EIF Release"),
+            trigger: z.literal("workflow_dispatch"),
+            environment: z.literal("production-release")
+          })
+          .strict()
+      })
+      .strict(),
+    releases: z.array(TrustedReleaseSchema)
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    const releaseKeys = new Set<string>();
+    const manifestDigests = new Set<string>();
+    snapshot.releases.forEach((release, index) => {
+      const releaseKey = `${release.manifest.environment}:${release.manifest.release.tag}`;
+      if (releaseKeys.has(releaseKey)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["releases", index],
+          message: "duplicate release environment and tag"
+        });
+      }
+      releaseKeys.add(releaseKey);
+
+      if (manifestDigests.has(release.manifestSha256)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["releases", index, "manifestSha256"],
+          message: "duplicate release manifest digest"
+        });
+      }
+      manifestDigests.add(release.manifestSha256);
+    });
+  });
+
+export type TrustedEnclaveRelease = z.infer<typeof TrustedReleaseSchema>;
+export type TrustedEnclaveReleaseSnapshot = z.infer<typeof TrustedReleaseSnapshotSchema>;
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const nested of Object.values(value)) {
+      deepFreeze(nested);
+    }
+    Object.freeze(value);
   }
+  return value;
+}
+
+const TRUSTED_RELEASE_SNAPSHOT = deepFreeze(
+  TrustedReleaseSnapshotSchema.parse(trustedReleaseSnapshotJson)
+);
+let snapshotIntegrityPromise: Promise<void> | undefined;
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (value !== null && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(object)
+        .sort()
+        .map((key) => [key, sortJson(object[key])])
+    );
+  }
+  return value;
+}
+
+async function sha256CanonicalJson(value: unknown): Promise<string> {
+  const canonicalBytes = new TextEncoder().encode(`${JSON.stringify(sortJson(value), null, 2)}\n`);
+  const digest = await crypto.subtle.digest("SHA-256", canonicalBytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function assertTrustedReleaseSnapshotIntegrity(): Promise<void> {
+  snapshotIntegrityPromise ??= (async () => {
+    const snapshotPayload = {
+      schema: TRUSTED_RELEASE_SNAPSHOT.schema,
+      policy: TRUSTED_RELEASE_SNAPSHOT.policy,
+      releases: TRUSTED_RELEASE_SNAPSHOT.releases
+    };
+    const actualSnapshotId = await sha256CanonicalJson(snapshotPayload);
+    if (actualSnapshotId !== TRUSTED_RELEASE_SNAPSHOT.snapshotId) {
+      throw new Error("Embedded trusted-release snapshot ID is invalid.");
+    }
+
+    for (const release of TRUSTED_RELEASE_SNAPSHOT.releases) {
+      const actualManifestSha256 = await sha256CanonicalJson(release.manifest);
+      if (actualManifestSha256 !== release.manifestSha256) {
+        throw new Error(
+          `Embedded trusted-release manifest digest is invalid for ${release.manifest.release.tag}.`
+        );
+      }
+    }
+  })();
+  return snapshotIntegrityPromise;
 }
 
 /**
- * PCR history entry type
+ * Attestation policy configuration.
+ *
+ * Non-loopback deployments whose origin is not one of the SDK's exact official
+ * origins must select an environment explicitly. Raw PCR allowlists and remote
+ * PCR-history URLs are intentionally no longer supported.
  */
-export type PcrHistoryEntry = {
-  PCR0: string;
-  PCR1: string;
-  PCR2: string;
-  timestamp: number;
-  signature: string;
+export type PcrConfig = {
+  environment?: AttestationEnvironment;
+  /** @deprecated Raw PCR overrides are no longer an authorization mechanism. */
+  pcr0Values?: never;
+  /** @deprecated Raw PCR overrides are no longer an authorization mechanism. */
+  pcr0DevValues?: never;
+  /** @deprecated Runtime PCR-history fetching has been removed. */
+  remoteAttestation?: never;
+  /** @deprecated Runtime PCR-history fetching has been removed. */
+  remoteAttestationUrls?: never;
 };
 
-/**
- * Result of PCR0 validation
- */
+/** Return a detached, immutable copy suitable for an attestation session policy. */
+export function snapshotPcrConfig(config?: PcrConfig): PcrConfig {
+  return Object.freeze({ environment: config?.environment });
+}
+
+/** Canonical policy fingerprint input used to scope cached attestation sessions. */
+export function serializePcrConfig(config?: PcrConfig): string {
+  const snapshot = snapshotPcrConfig(config);
+  return JSON.stringify({
+    version: "sigstore-trusted-release-v1",
+    environment: snapshot.environment ?? null,
+    snapshotId: TRUSTED_RELEASE_SNAPSHOT.snapshotId
+  });
+}
+
 export type Pcr0ValidationResult = {
-  /** Whether the PCR0 hash matches a known good value */
+  /** Whether PCR0, PCR1, and PCR2 match one authenticated release as a tuple. */
   isMatch: boolean;
-  /** Human-readable description of the validation result */
+  /** Human-readable description of the validation result. */
   text: string;
-  /** Timestamp of when the PCR was verified (for remote attestation) */
+  /** Environment selected by caller policy. */
+  environment?: AttestationEnvironment;
+  releaseTag?: string;
+  sourceCommit?: string;
+  sourceRef?: string;
+  artifactSha256?: string;
+  manifestSha256?: string;
+  bundleSha256?: string;
+  snapshotId: string;
+  signerIdentity?: string;
+  transparencyLog?: {
+    logIndex: string;
+    logId: string;
+  };
+  /**
+   * Retained for source compatibility. Sigstore v0.3 verification does not
+   * expose Rekor integratedTime as a trusted timestamp.
+   */
   verifiedAt?: string;
 };
 
-/** The OpenSecret deployment environment whose PCR0 roots are trusted. */
-export type PcrEnvironment = "production" | "development";
+export type PcrValidationResult = Pcr0ValidationResult;
 
-/**
- * Configuration options for PCR validation
- */
-export type PcrConfig = {
-  /**
-   * OpenSecret deployment environment to trust (defaults to production).
-   * Only this environment's embedded roots, additional roots, and signed
-   * history are considered during session establishment.
-   */
-  environment?: PcrEnvironment;
-  /**
-   * Additional trusted PCR0 values for production environments.
-   * These and the SDK's built-in production roots are considered only when
-   * `environment` is `"production"`.
-   */
-  pcr0Values?: string[];
-  /**
-   * Additional trusted PCR0 values for development environments.
-   * These and the SDK's built-in development roots are considered only when
-   * `environment` is `"development"`.
-   */
-  pcr0DevValues?: string[];
-  /**
-   * Whether to consult pinned-key signed PCR history after local trust roots miss
-   * (defaults to true). This does not enable or disable Nitro attestation verification.
-   */
-  remoteAttestation?: boolean;
-  /** Custom URLs for pinned-key signed PCR history. Only the selected environment is fetched. */
-  remoteAttestationUrls?: {
-    /** URL for production PCR history */
-    prod?: string;
-    /** URL for development PCR history */
-    dev?: string;
-  };
-};
+const OFFICIAL_ENVIRONMENTS_BY_ORIGIN = new Map<string, AttestationEnvironment>([
+  ["https://api.opensecret.cloud", "prod"],
+  ["https://developer.opensecret.cloud", "prod"],
+  ["https://enclave.trymaple.ai", "prod"],
+  ["https://enclave.secretgpt.ai", "dev"]
+]);
 
-async function readBoundedUtf8Body(response: Response, maxBytes: number): Promise<string> {
-  // Real fetch responses expose a byte stream. Some unit-test and legacy fetch
-  // implementations only expose text(), so keep a byte-counted fallback for them.
-  if (!response.body) {
-    const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > maxBytes) {
-      throw new Error("PCR history response is too large");
-    }
-    return text;
+export function normalizeApiOrigin(apiUrl: string): string {
+  const url = new URL(apiUrl);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("Attestation API URL must not include credentials, a query, or a fragment.");
   }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let totalBytes = 0;
-  let text = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-
-      totalBytes += value.byteLength;
-      if (totalBytes > maxBytes) {
-        try {
-          await reader.cancel("PCR history response is too large");
-        } catch {
-          // Preserve the size-limit failure even if the stream cannot be cancelled.
-        }
-        throw new Error("PCR history response is too large");
-      }
-
-      text += decoder.decode(value, { stream: true });
-    }
-
-    text += decoder.decode();
-    return text;
-  } finally {
-    reader.releaseLock();
+  const isExactLoopback = LOCAL_DEVELOPMENT_API_HOSTS.has(url.hostname.toLowerCase());
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isExactLoopback)) {
+    throw new Error("Attestation API URL must use HTTPS unless it is an exact loopback host.");
   }
+  return url.origin;
 }
 
-type CanonicalPcrConfig = {
-  version: "pcr0-environment-v1";
-  environment: PcrEnvironment;
-  verificationKey: string;
-  defaultPcr0Values: string[];
-  pcr0Values: string[];
-  remoteAttestation: boolean;
-  remoteAttestationUrl: string;
-};
-
-function normalizedValues(values: string[] | undefined): string[] {
-  return [...new Set((values || []).map((value) => value.trim().toLowerCase()))].sort();
+export function normalizeApiBaseUrl(apiUrl: string): string {
+  const origin = normalizeApiOrigin(apiUrl);
+  const url = new URL(apiUrl);
+  const pathname = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
+  return `${origin}${pathname}`;
 }
 
-function normalizePcrEnvironment(environment: unknown): PcrEnvironment {
-  if (environment === undefined || environment === "production") return "production";
-  if (environment === "development") return "development";
-  throw new TypeError('PCR environment must be either "production" or "development".');
-}
-
-/**
- * Takes an immutable snapshot of a PCR policy before an asynchronous handshake.
- * This prevents caller mutations from changing which policy is validated or cached.
- */
-export function snapshotPcrConfig(config?: PcrConfig): PcrConfig {
-  return {
-    environment: normalizePcrEnvironment(config?.environment),
-    pcr0Values: normalizedValues(config?.pcr0Values),
-    pcr0DevValues: normalizedValues(config?.pcr0DevValues),
-    remoteAttestation: config?.remoteAttestation !== false,
-    remoteAttestationUrls: {
-      prod: config?.remoteAttestationUrls?.prod || PCR_HISTORY_URLS.prod,
-      dev: config?.remoteAttestationUrls?.dev || PCR_HISTORY_URLS.dev
-    }
-  };
-}
-
-/** Stable representation used to bind cached sessions to their trust policy. */
-export function serializePcrConfig(config?: PcrConfig): string {
-  const snapshot = snapshotPcrConfig(config);
-  const environment = snapshot.environment || "production";
-  const development = environment === "development";
-  const canonical: CanonicalPcrConfig = {
-    version: "pcr0-environment-v1",
-    environment,
-    verificationKey: PCR_VERIFICATION_PUBLIC_KEY_B64,
-    defaultPcr0Values: [...(development ? DEFAULT_PCR0_VALUES_DEV : DEFAULT_PCR0_VALUES)].sort(),
-    pcr0Values: development ? snapshot.pcr0DevValues || [] : snapshot.pcr0Values || [],
-    remoteAttestation: snapshot.remoteAttestation !== false,
-    remoteAttestationUrl: development
-      ? snapshot.remoteAttestationUrls?.dev || PCR_HISTORY_URLS.dev
-      : snapshot.remoteAttestationUrls?.prod || PCR_HISTORY_URLS.prod
-  };
-
-  return JSON.stringify(canonical);
-}
-
-/** Converts the authenticated Nitro PCR0 value into its canonical SHA-384 hex form. */
-export function pcr0BytesToHex(pcr0: Uint8Array | undefined): string {
-  if (!pcr0) {
-    throw new Pcr0ValidationError("PCR0_MISSING", "Attestation document is missing PCR0.");
-  }
-  if (pcr0.length !== PCR0_HEX_LENGTH / 2) {
-    throw new Pcr0ValidationError(
-      "PCR0_INVALID_LENGTH",
-      "Attestation document contains an invalid PCR0 length."
-    );
-  }
-  if (pcr0.every((byte) => byte === 0)) {
-    throw new Pcr0ValidationError(
-      "PCR0_ALL_ZERO",
-      "Attestation document contains an all-zero PCR0."
-    );
-  }
-
-  const hash = Array.from(pcr0, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  if (!PCR0_HEX_PATTERN.test(hash)) {
-    throw new Pcr0ValidationError(
-      "PCR0_INVALID_FORMAT",
-      "Attestation document contains an invalid PCR0."
-    );
-  }
-  return hash;
-}
-
-/**
- * Enforces PCR0 trust for the already Nitro-authenticated attestation document.
- * Callers must run this before key exchange or session persistence.
- */
-export async function requireTrustedPcr0(
-  pcrs: Map<number, Uint8Array>,
-  config?: PcrConfig,
-  validate: typeof validatePcr0Hash = validatePcr0Hash
-): Promise<{ hash: string; validation: Pcr0ValidationResult }> {
-  const hash = pcr0BytesToHex(pcrs.get(0));
-  const validation = await validate(hash, config);
-  if (!validation.isMatch) {
-    throw new Pcr0ValidationError(
-      "PCR0_UNTRUSTED",
-      "Attestation PCR0 is not in the configured trust roots."
-    );
-  }
-  return { hash, validation };
-}
-
-/**
- * Imports the verification public key into the Web Crypto API
- */
-async function importVerificationKey(): Promise<CryptoKey> {
-  try {
-    // Decode the base64 key to binary
-    const binaryKey = new Uint8Array(
-      atob(PCR_VERIFICATION_PUBLIC_KEY_B64)
-        .split("")
-        .map((c) => c.charCodeAt(0))
-    );
-
-    // Import as SPKI format
-    return await crypto.subtle.importKey(
-      "spki", // The format: SubjectPublicKeyInfo
-      binaryKey, // Pass the Uint8Array directly, not .buffer
-      {
-        name: "ECDSA", // The algorithm
-        namedCurve: "P-384" // The curve (must be P-384 to match our backend)
-      },
-      false, // Not extractable
-      ["verify"] // Only for verification
-    );
-  } catch (error) {
-    console.error("Error importing verification key:", error);
-    throw new Error("Failed to import PCR verification key");
-  }
-}
-
-/**
- * Fetches PCR history from repository
- */
-async function fetchPcrHistory(
-  env: "prod" | "dev",
-  urls?: { prod?: string; dev?: string }
-): Promise<PcrHistoryEntry[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PCR_HISTORY_TIMEOUT_MS);
-  try {
-    const baseUrl = urls?.[env] || PCR_HISTORY_URLS[env];
-    const parsedUrl = new URL(baseUrl);
-    if (
-      (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") ||
-      parsedUrl.username ||
-      parsedUrl.password ||
-      parsedUrl.hash ||
-      baseUrl.length > 2048
-    ) {
-      throw new Error("Invalid PCR history URL");
-    }
-
-    const response = await fetch(baseUrl, {
-      redirect: "error",
-      signal: controller.signal
-    });
-
-    if (!response.ok || response.redirected) {
-      throw new Error(`Failed to fetch PCR history: ${response.status}`);
-    }
-
-    const contentLength = response.headers.get("content-length");
-    if (contentLength && Number(contentLength) > PCR_HISTORY_MAX_BYTES) {
-      throw new Error("PCR history response is too large");
-    }
-
-    const text = await readBoundedUtf8Body(response, PCR_HISTORY_MAX_BYTES);
-
-    const history: unknown = JSON.parse(text);
-    if (
-      !Array.isArray(history) ||
-      history.length === 0 ||
-      history.length > PCR_HISTORY_MAX_ENTRIES ||
-      !history.every(isValidPcrHistoryEntry)
-    ) {
-      throw new Error("PCR history response has an invalid schema");
-    }
-    return history;
-  } catch (error) {
-    console.error("Error fetching PCR history:", error);
-    throw new Error("Failed to fetch PCR history");
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function isValidPcrHistoryEntry(entry: unknown): entry is PcrHistoryEntry {
-  if (!entry || typeof entry !== "object") return false;
-  const candidate = entry as Partial<PcrHistoryEntry>;
+export function resolveAttestationEnvironment(
+  apiUrl: string,
+  explicitEnvironment?: AttestationEnvironment
+): AttestationEnvironment {
   if (
-    typeof candidate.PCR0 !== "string" ||
-    typeof candidate.PCR1 !== "string" ||
-    typeof candidate.PCR2 !== "string" ||
-    !PCR0_HEX_PATTERN.test(candidate.PCR0) ||
-    !PCR0_HEX_PATTERN.test(candidate.PCR1) ||
-    !PCR0_HEX_PATTERN.test(candidate.PCR2) ||
-    typeof candidate.timestamp !== "number" ||
-    !Number.isSafeInteger(candidate.timestamp) ||
-    candidate.timestamp <= 0 ||
-    typeof candidate.signature !== "string" ||
-    candidate.signature.length > 256
+    explicitEnvironment !== undefined &&
+    !AttestationEnvironmentSchema.safeParse(explicitEnvironment).success
   ) {
-    return false;
+    throw new Error("Attestation environment must be exactly prod or dev.");
+  }
+  const origin = normalizeApiOrigin(apiUrl);
+  const officialEnvironment = OFFICIAL_ENVIRONMENTS_BY_ORIGIN.get(origin);
+
+  if (officialEnvironment && explicitEnvironment && explicitEnvironment !== officialEnvironment) {
+    throw new Error(
+      `Attestation environment ${explicitEnvironment} is not allowed for official origin ${origin}.`
+    );
   }
 
-  try {
-    return atob(candidate.signature).length === PCR_SIGNATURE_BYTES;
-  } catch {
-    return false;
+  const environment = officialEnvironment ?? explicitEnvironment;
+  if (!environment) {
+    throw new Error(
+      `Attestation environment must be configured explicitly for non-official origin ${origin}.`
+    );
   }
+
+  return environment;
 }
 
-/**
- * Verifies a PCR0 signature
- */
-async function verifyPcr0Signature(
-  pcr0: string,
-  signatureBase64: string,
-  publicKey: CryptoKey
-): Promise<boolean> {
-  try {
-    // Convert PCR0 string to binary
-    const encoder = new TextEncoder();
-    const pcr0Binary = encoder.encode(pcr0);
-
-    // Convert signature from base64 to binary
-    const signatureBinary = new Uint8Array(
-      atob(signatureBase64)
-        .split("")
-        .map((c) => c.charCodeAt(0))
-    );
-
-    // Verify using Web Crypto API
-    return await crypto.subtle.verify(
-      {
-        name: "ECDSA",
-        hash: { name: "SHA-384" } // Must match the hash used for signing
-      },
-      publicKey,
-      signatureBinary,
-      pcr0Binary
-    );
-  } catch (error) {
-    console.error("Signature verification error:", error);
-    return false;
-  }
+export function getTrustedReleaseSnapshotId(): string {
+  return TRUSTED_RELEASE_SNAPSHOT.snapshotId;
 }
 
-/**
- * Validates a PCR0 against remote history
- */
-async function validatePcrAgainstRemoteHistory(
-  pcr0: string,
-  env: "prod" | "dev",
-  urls?: { prod?: string; dev?: string }
-): Promise<Pcr0ValidationResult | null> {
-  try {
-    // Import the verification key
-    const publicKey = await importVerificationKey();
+export function getTrustedReleaseSnapshot(): TrustedEnclaveReleaseSnapshot {
+  return TRUSTED_RELEASE_SNAPSHOT;
+}
 
-    // Fetch the PCR history
-    const history = await fetchPcrHistory(env, urls);
-
-    // Find a matching entry in the history
-    for (const entry of history) {
-      // Only check if PCR0 matches - we don't care about PCR1 or PCR2
-      if (entry.PCR0 === pcr0) {
-        // Verify the signature (only of PCR0)
-        const isValid = await verifyPcr0Signature(entry.PCR0, entry.signature, publicKey);
-        if (isValid) {
-          return {
-            isMatch: true,
-            text: "PCR0 matches remotely attested value",
-            verifiedAt: new Date(entry.timestamp * 1000).toLocaleString()
-          };
-        }
-      }
-    }
-
-    // No valid match found
-    return null;
-  } catch (error) {
-    console.error("PCR remote validation error:", error);
-    // We return null for remote validation errors so we can fall back to local validation
+function pcrBytesToHex(value: Uint8Array | undefined): string | null {
+  if (!value || value.length !== 48) {
     return null;
   }
+
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function matchedReleaseResult(release: TrustedEnclaveRelease): PcrValidationResult {
+  const { manifest } = release;
+  return {
+    isMatch: true,
+    text: `PCR0/PCR1/PCR2 match Sigstore-verified ${manifest.environment} release ${manifest.release.tag}`,
+    environment: manifest.environment,
+    releaseTag: manifest.release.tag,
+    sourceCommit: manifest.source.commit,
+    sourceRef: manifest.source.ref,
+    artifactSha256: manifest.artifact.sha256,
+    manifestSha256: release.manifestSha256,
+    bundleSha256: release.bundleSha256,
+    snapshotId: TRUSTED_RELEASE_SNAPSHOT.snapshotId,
+    signerIdentity: release.signer.identity,
+    transparencyLog: release.transparencyLog
+  };
+}
+
+export function validatePcrsAgainstSnapshot(
+  pcrs: ReadonlyMap<number, Uint8Array>,
+  environment: AttestationEnvironment,
+  snapshot: TrustedEnclaveReleaseSnapshot = TRUSTED_RELEASE_SNAPSHOT
+): PcrValidationResult {
+  const actualPcrs = {
+    "0": pcrBytesToHex(pcrs.get(0)),
+    "1": pcrBytesToHex(pcrs.get(1)),
+    "2": pcrBytesToHex(pcrs.get(2))
+  };
+
+  if (!actualPcrs["0"] || !actualPcrs["1"] || !actualPcrs["2"]) {
+    return {
+      isMatch: false,
+      text: "Attestation document must contain 48-byte PCR0, PCR1, and PCR2 values",
+      environment,
+      snapshotId: snapshot.snapshotId
+    };
+  }
+
+  const matches = snapshot.releases.filter((release) => {
+    const expected = release.manifest.measurements.pcrs;
+    return (
+      release.manifest.environment === environment &&
+      expected["0"] === actualPcrs["0"] &&
+      expected["1"] === actualPcrs["1"] &&
+      expected["2"] === actualPcrs["2"]
+    );
+  });
+
+  if (matches.length === 0) {
+    return {
+      isMatch: false,
+      text: `PCR0/PCR1/PCR2 do not match a trusted ${environment} release`,
+      environment,
+      snapshotId: snapshot.snapshotId
+    };
+  }
+
+  matches.sort((left, right) =>
+    compareReleaseTags(right.manifest.release.tag, left.manifest.release.tag)
+  );
+  return {
+    ...matchedReleaseResult(matches[0]),
+    snapshotId: snapshot.snapshotId
+  };
+}
+
+function compareReleaseTags(left: string, right: string): number {
+  const leftParts = left.slice(1).split(".").map(BigInt);
+  const rightParts = right.slice(1).split(".").map(BigInt);
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] > rightParts[index]) return 1;
+    if (leftParts[index] < rightParts[index]) return -1;
+  }
+  return 0;
+}
+
+export function requireTrustedPcrs(
+  pcrs: ReadonlyMap<number, Uint8Array>,
+  environment: AttestationEnvironment
+): PcrValidationResult {
+  const result = validatePcrsAgainstSnapshot(pcrs, environment);
+  if (!result.isMatch) {
+    throw new Error(result.text);
+  }
+  return result;
 }
 
 /**
- * Validates a PCR0 hash and returns information about the match
- * @param hash - The PCR0 hash to validate
- * @param config - Optional configuration with custom PCR0 values
- * @returns Object containing match status and descriptive text
+ * Display-only compatibility helper. PCR0 by itself is never used to authorize
+ * key exchange; runtime authorization calls requireTrustedPcrs with PCR0/1/2.
  */
 export async function validatePcr0Hash(
   hash: string,
   config?: PcrConfig
 ): Promise<Pcr0ValidationResult> {
-  const normalizedHash = hash.trim().toLowerCase();
-  const snapshot = snapshotPcrConfig(config);
-  const development = snapshot.environment === "development";
-  const validPcr0Values = development
-    ? [...(snapshot.pcr0DevValues || []), ...DEFAULT_PCR0_VALUES_DEV]
-    : [...(snapshot.pcr0Values || []), ...DEFAULT_PCR0_VALUES];
+  const environment = config?.environment;
+  const matches = TRUSTED_RELEASE_SNAPSHOT.releases.filter(
+    (release) =>
+      (!environment || release.manifest.environment === environment) &&
+      release.manifest.measurements.pcrs["0"] === hash
+  );
 
-  if (validPcr0Values.includes(normalizedHash)) {
-    return {
-      isMatch: true,
-      text: development ? "PCR0 matches development enclave" : "PCR0 matches a known good value"
-    };
-  }
-
-  // If remote attestation is enabled (default is true), check against remote PCR history
-  const remoteAttestationEnabled = snapshot.remoteAttestation !== false;
-
-  if (remoteAttestationEnabled) {
-    try {
-      const remoteResult = await validatePcrAgainstRemoteHistory(
-        normalizedHash,
-        development ? "dev" : "prod",
-        snapshot.remoteAttestationUrls
-      );
-
-      if (remoteResult) return remoteResult;
-    } catch (error) {
-      console.error("Error during remote PCR validation:", error);
-      // We continue with default behavior if remote validation fails
-    }
+  if (matches.length > 0) {
+    matches.sort((left, right) =>
+      compareReleaseTags(right.manifest.release.tag, left.manifest.release.tag)
+    );
+    return matchedReleaseResult(matches[0]);
   }
 
   return {
     isMatch: false,
-    text: "PCR0 does not match a known good value"
+    text: "PCR0 does not match a trusted release; full PCR0/PCR1/PCR2 verification is required",
+    environment,
+    snapshotId: TRUSTED_RELEASE_SNAPSHOT.snapshotId
   };
 }

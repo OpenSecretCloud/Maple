@@ -63,8 +63,8 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 # history.
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose", default-features = false }
 goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose-providers", default-features = false }
-maple-proxy = { version = "0.3.3", path = "../../proxy" }
-opensecret = { version = "3.6.2", path = "../../sdk/rust" }
+maple-proxy = { version = "0.3.3", path = "../../proxy", default-features = false }
+opensecret = { version = "3.6.2", path = "../../sdk/rust", default-features = false }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 rand = "0.8.6"

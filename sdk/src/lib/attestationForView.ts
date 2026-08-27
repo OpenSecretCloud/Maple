@@ -2,7 +2,13 @@ import { encode } from "@stablelib/base64";
 import { type AttestationDocument } from "./attestation";
 import awsRootCertDer from "../assets/aws_root.der";
 import { X509Certificate } from "@peculiar/x509";
-import { validatePcr0Hash, type Pcr0ValidationResult, type PcrConfig } from "./pcr";
+import {
+  assertTrustedReleaseSnapshotIntegrity,
+  validatePcrsAgainstSnapshot,
+  getTrustedReleaseSnapshotId,
+  type Pcr0ValidationResult,
+  type PcrConfig
+} from "./pcr";
 
 export const AWS_ROOT_CERT_DER = awsRootCertDer;
 
@@ -28,6 +34,9 @@ export type ParsedAttestationView = {
   userData: string | null;
   nonce: string | null;
   cert0hash: string;
+  /** Full PCR0/PCR1/PCR2 trusted-release validation and Sigstore provenance. */
+  validatedPcrs: Pcr0ValidationResult;
+  /** @deprecated Use validatedPcrs. */
   validatedPcr0Hash: Pcr0ValidationResult | null;
 };
 
@@ -47,6 +56,7 @@ export async function parseAttestationForView(
   cabundle: Uint8Array[],
   pcrConfig?: PcrConfig
 ): Promise<ParsedAttestationView> {
+  await assertTrustedReleaseSnapshotIntegrity();
   // Add logging to see what we're getting
   console.log("Raw timestamp:", document.timestamp);
   console.log("Date object:", new Date(document.timestamp));
@@ -59,14 +69,13 @@ export async function parseAttestationForView(
     }))
     .filter((pcr) => !pcr.value.match(/^0+$/));
 
-  // Find PCR0 and validate it
-  const pcr0 = pcrs.find((pcr) => pcr.id === 0);
-
-  // Use the single entry point for PCR validation (async)
-  let validatedPcr0Hash: Pcr0ValidationResult | null = null;
-  if (pcr0) {
-    validatedPcr0Hash = await validatePcr0Hash(pcr0.value, pcrConfig);
-  }
+  const validatedPcrs = pcrConfig?.environment
+    ? validatePcrsAgainstSnapshot(document.pcrs, pcrConfig.environment)
+    : {
+        isMatch: false,
+        text: "An attestation environment is required for full PCR0/PCR1/PCR2 verification",
+        snapshotId: getTrustedReleaseSnapshotId()
+      };
 
   // Parse certificates - cabundle first, then leaf certificate
   const certificates = [...cabundle, document.certificate].map((certBytes) => {
@@ -105,6 +114,7 @@ export async function parseAttestationForView(
     userData: document.user_data ? decoder.decode(document.user_data) : null,
     nonce: document.nonce ? decoder.decode(document.nonce) : null,
     cert0hash,
-    validatedPcr0Hash
+    validatedPcrs,
+    validatedPcr0Hash: validatedPcrs
   };
 }

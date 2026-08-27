@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::{Error, OpenSecretClient, Pcr0Environment, Result};
+use opensecret::{AttestationEnvironment, Error, OpenSecretClient, Result, TrustedReleasePolicy};
 use std::env;
 
 #[tokio::test]
@@ -67,7 +67,7 @@ async fn test_attestation_handshake_hosted_selected_environment() -> Result<()> 
 }
 
 #[tokio::test]
-async fn test_hosted_development_rejects_default_production_policy() -> Result<()> {
+async fn test_hosted_development_rejects_explicit_production_policy() -> Result<()> {
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
 
@@ -75,16 +75,18 @@ async fn test_hosted_development_rejects_default_production_policy() -> Result<(
         println!("Skipping hosted policy-separation test - running against localhost");
         return Ok(());
     }
-    if common::selected_pcr0_environment()? != Pcr0Environment::Development {
+    if common::selected_pcr0_environment()? != AttestationEnvironment::Development {
         println!("Skipping hosted development policy-separation test");
         return Ok(());
     }
 
-    let client = OpenSecretClient::new(base_url)?;
-    let error = client.perform_attestation_handshake().await.unwrap_err();
+    let production_policy = TrustedReleasePolicy::embedded(AttestationEnvironment::Production)?;
+    let error = match OpenSecretClient::new_with_attestation_policy(base_url, production_policy) {
+        Ok(_) => panic!("production policy must not be accepted for the development origin"),
+        Err(error) => error,
+    };
 
-    assert!(matches!(error, Error::AttestationVerificationFailed(_)));
-    assert!(client.get_session_id()?.is_none());
+    assert!(matches!(error, Error::Configuration(_)));
     Ok(())
 }
 

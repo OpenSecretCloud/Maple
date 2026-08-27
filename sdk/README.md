@@ -29,12 +29,15 @@ for external users.
 ## Security model
 
 For non-local endpoints, both SDKs require HTTPS, verify AWS Nitro attestation,
-and enforce an environment-scoped PCR0 trust policy before completing key
-exchange. Official PCR0 histories are signed and bundled with the SDKs.
+and require the complete PCR0/PCR1/PCR2 tuple to match an environment-scoped
+trusted-release snapshot before completing key exchange. The snapshot is
+generated during an SDK update only after verifying the backend release
+manifest, Cosign signing identity, and Rekor transparency-log evidence; runtime
+clients do not fetch policy from GitHub, Sigstore, or Rekor.
 
 Mock attestation is limited to exact loopback development endpoints (plus the
 documented Android emulator alias in the Rust SDK). Do not weaken attestation,
-PCR0 validation, or encrypted transport to accommodate a caller.
+trusted-release validation, or encrypted transport to accommodate a caller.
 
 The SDKs use operating-system or Web Crypto randomness for keys, nonces, and
 session material. Never substitute deterministic or convenience randomness in
@@ -60,7 +63,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <OpenSecretProvider
       apiUrl="https://api.example.com"
       clientId="00000000-0000-0000-0000-000000000000"
-      pcrConfig={{ environment: "production" }}
+      pcrConfig={{ environment: "prod" }}
     >
       {children}
     </OpenSecretProvider>
@@ -148,7 +151,7 @@ just publish-cargo
 - Keep the TypeScript and Rust attestation policies aligned intentionally;
   neither SDK's passing tests prove parity with the other.
 - Treat API compatibility, authentication state, encrypted retry behavior, and
-  PCR policy changes as security-sensitive.
+  trusted-release policy changes as security-sensitive.
 - Update source comments and focused tests with behavior changes instead of
   regenerating a standalone documentation site.
 - Validate the built npm package and Rust crate boundary before publishing a

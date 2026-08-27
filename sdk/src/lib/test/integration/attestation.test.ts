@@ -34,12 +34,7 @@ test("Makes CoseSign1 bytes correctly", async () => {
 });
 
 test("Recognizes local development API URLs independent of port", () => {
-  const localApiUrls = [
-    "http://127.0.0.1:31110",
-    "http://localhost:31110/",
-    "http://0.0.0.0:31110",
-    "http://[::1]:31110"
-  ];
+  const localApiUrls = ["http://127.0.0.1:31110", "http://localhost:31110/", "http://[::1]:31110"];
 
   for (const apiUrl of localApiUrls) {
     expect(isLocalDevelopmentApiUrl(apiUrl)).toBe(true);
@@ -51,6 +46,9 @@ test("Does not recognize production or invalid API URLs as local development URL
     "https://api.opensecret.cloud",
     "https://localhost:31110",
     "http://api.opensecret.cloud",
+    "http://0.0.0.0:31110",
+    "http://localhost.example.com:31110",
+    "http://127.0.0.1.example.com:31110",
     "localhost:31110",
     "not a url"
   ];

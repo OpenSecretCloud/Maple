@@ -19,7 +19,6 @@ services:
       
       # Backend configuration (defaults to production)
       - MAPLE_BACKEND_URL=${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai}
-      - MAPLE_PCR0_ENVIRONMENT=${MAPLE_PCR0_ENVIRONMENT:-production}
       
       # Authentication - Uncomment ONLY for private/internal deployments!
       # For public deployments: Keep this commented out - clients will pass their own API keys

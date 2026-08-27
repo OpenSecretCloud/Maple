@@ -216,6 +216,11 @@ requires the complete PCR0/PCR1/PCR2 tuple to match a release authorized for the
 configured environment. Runtime clients do not fetch this policy from GitHub,
 Sigstore, or Rekor.
 
+Until a snapshot-bearing backend release is reviewed and imported, this draft
+integration remains fail-closed and unavailable for real enclave connections.
+Keeping the in-tree TypeScript and Rust snapshots on the same reviewed release
+policy is part of the rollout requirement.
+
 Version changes update:
 
 - `frontend/package.json`

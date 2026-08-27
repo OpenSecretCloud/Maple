@@ -916,7 +916,9 @@ fn map_opensecret_error_kind(error: opensecret::Error) -> ProviderError {
                 ProviderError::NetworkError("The Maple network request failed".to_string())
             }
         }
-        opensecret::Error::AttestationVerificationFailed(_) => {
+        opensecret::Error::AttestationVerificationFailed(_)
+        | opensecret::Error::UnreleasedAttestationPolicy { .. }
+        | opensecret::Error::TrustedReleasePolicy(_) => {
             ProviderError::ExecutionError(ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string())
         }
         opensecret::Error::Session(_)
@@ -969,7 +971,9 @@ pub(crate) fn opensecret_error_category(error: &opensecret::Error) -> &'static s
         opensecret::Error::Serialization(_) => "serialization",
         opensecret::Error::Cbor(_) => "cbor",
         opensecret::Error::Crypto(_) => "crypto",
-        opensecret::Error::AttestationVerificationFailed(_) => "attestation",
+        opensecret::Error::AttestationVerificationFailed(_)
+        | opensecret::Error::UnreleasedAttestationPolicy { .. }
+        | opensecret::Error::TrustedReleasePolicy(_) => "attestation",
         opensecret::Error::Session(_) => "session",
         opensecret::Error::KeyExchange(_) => "key_exchange",
         opensecret::Error::Encryption(_) => "encryption",
@@ -2245,6 +2249,26 @@ mod tests {
         );
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[test]
+    fn trusted_release_policy_errors_are_redacted_attestation_failures() {
+        let errors = [
+            opensecret::Error::UnreleasedAttestationPolicy {
+                environment: "private-environment-detail".to_string(),
+            },
+            opensecret::Error::TrustedReleasePolicy("private-trusted-release-detail".to_string()),
+        ];
+
+        for error in errors {
+            assert_eq!(opensecret_error_category(&error), "attestation");
+            let mapped = map_opensecret_error(error);
+            assert_eq!(
+                mapped,
+                ProviderError::ExecutionError(ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string())
+            );
+            assert!(!mapped.to_string().contains("private"));
+        }
     }
 
     #[tokio::test]

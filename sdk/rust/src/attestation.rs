@@ -26,7 +26,7 @@ pub struct AttestationDocument {
 /// This verifies the certificate chain, document signature, and nonce. Nitro
 /// authenticity alone does not identify an OpenSecret deployment. Production
 /// callers should use `OpenSecretClient`, which additionally enforces its
-/// configured `Pcr0TrustPolicy` before key exchange.
+/// configured `TrustedReleasePolicy` before key exchange.
 #[derive(Default)]
 pub struct AttestationVerifier {
     expected_pcrs: Option<std::collections::HashMap<usize, Vec<u8>>>,

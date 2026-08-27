@@ -3,6 +3,12 @@ import { decode, encode } from "@stablelib/base64";
 import * as cbor from "cbor2";
 import { z } from "zod";
 import { fetchAttestationDocument, getApiUrl } from "./api";
+import {
+  assertTrustedReleaseSnapshotIntegrity,
+  requireTrustedPcrs,
+  resolveAttestationEnvironment,
+  type AttestationEnvironment
+} from "./pcr";
 import awsRootCertDer from "../assets/aws_root.der";
 
 // Assert that the root cert is not empty
@@ -246,7 +252,7 @@ const FakeAttestationDocumentSchema = z.object({
 
 type FakeAttestationDocument = z.infer<typeof FakeAttestationDocumentSchema>;
 
-const LOCAL_DEVELOPMENT_API_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "[::1]"]);
+const LOCAL_DEVELOPMENT_API_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 export function isLocalDevelopmentApiUrl(apiUrl: string): boolean {
   try {
@@ -270,7 +276,8 @@ async function fakeAuthenticate(
 
 export async function verifyAttestation(
   nonce: string,
-  explicitApiUrl?: string
+  explicitApiUrl?: string,
+  expectedEnvironment?: AttestationEnvironment
 ): Promise<AttestationDocument> {
   try {
     const attestationDocumentBase64 = await fetchAttestationDocument(nonce, explicitApiUrl);
@@ -288,6 +295,15 @@ export async function verifyAttestation(
 
     // The real thing!
     const verifiedDocument = await authenticate(attestationDocumentBase64, awsRootCertDer, nonce);
+    if (verifiedDocument.digest !== "SHA384") {
+      throw new Error("Attestation document must use the SHA384 PCR digest algorithm.");
+    }
+    if (!apiUrl) {
+      throw new Error("Attestation API URL is not configured.");
+    }
+    const environment = resolveAttestationEnvironment(apiUrl, expectedEnvironment);
+    await assertTrustedReleaseSnapshotIntegrity();
+    requireTrustedPcrs(verifiedDocument.pcrs, environment);
     return verifiedDocument;
   } catch (error) {
     if (error instanceof Error) {

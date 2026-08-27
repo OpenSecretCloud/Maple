@@ -17,7 +17,7 @@ const accessToken = "push-settings-access-token";
 const platformApiUrl = "https://platform.example.com";
 const verifiedPcr0 =
   "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
-const pcrConfig: PcrConfig = { pcr0Values: [verifiedPcr0], remoteAttestation: false };
+const pcrConfig: PcrConfig = { environment: "prod" };
 
 const originalFetch = globalThis.fetch;
 const originalPlatformApiUrl = getPlatformApiUrl();
