@@ -11,10 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentEventSink, AgentRenameSessionRequest, AgentRuntimeStatus,
-    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
-    AgentSlashCommand, AgentStartRequest, MapleAgentHostResources, MapleAgentService,
-    RecentProjectRoot,
+    AgentCreateSessionRequest, AgentEventSink, AgentProjectTrustStatus, AgentRenameSessionRequest,
+    AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
+    AgentSessionSummary, AgentSlashCommand, AgentStartRequest, MapleAgentHostResources,
+    MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{MapleApiAuthRequest, MapleApiAuthState, NoopAuthEventSink};
 use maple_agent::open_secret_config::configured_pcr0_environment;
@@ -722,6 +722,33 @@ impl AgentBackend {
                     title,
                 },
             )
+            .await
+    }
+
+    /// Whether the project at `path` has skills or other guidance that
+    /// need a trust decision, and what the saved decision is.
+    pub async fn project_trust(
+        &self,
+        user_id: &str,
+        path: String,
+    ) -> Result<AgentProjectTrustStatus, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .get_project_trust(path)
+            .await
+    }
+
+    pub async fn set_project_trust(
+        &self,
+        user_id: &str,
+        path: String,
+        trusted: bool,
+    ) -> Result<AgentProjectTrustStatus, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_project_trust(path, trusted)
             .await
     }
 

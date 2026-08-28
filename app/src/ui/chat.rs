@@ -12,8 +12,8 @@ use gpui::{
     SharedString, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
-    AgentImageUpload, AgentSendMessageRequest, AgentServiceEvent, AgentSessionMcpServer,
-    AgentSessionSummary, AgentSlashCommand, AgentTimelineItem,
+    AgentImageUpload, AgentProjectTrustStatus, AgentSendMessageRequest, AgentServiceEvent,
+    AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentTimelineItem,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -363,6 +363,11 @@ pub struct ChatScreen {
     project_menu: Option<String>,
     /// Root waiting for the user to confirm removal.
     confirm_remove_root: Option<String>,
+    /// Project that has skills or guidance and no trust decision yet.
+    trust_prompt: Option<AgentProjectTrustStatus>,
+    trust_saving: bool,
+    /// Trust status of the project whose overflow menu is open.
+    menu_trust: Option<AgentProjectTrustStatus>,
     /// Slash commands from the installed skills of the current project root.
     slash_commands: Vec<AgentSlashCommand>,
     /// Highlighted row in the open slash palette, if any.
@@ -638,6 +643,9 @@ impl ChatScreen {
             rename_focus_pending: false,
             project_menu: None,
             confirm_remove_root: None,
+            trust_prompt: None,
+            trust_saving: false,
+            menu_trust: None,
             slash_commands: Vec::new(),
             slash_selected: None,
             question_focus_pending: false,
@@ -683,6 +691,7 @@ impl ChatScreen {
                     Ok(status) => {
                         this.runtime_error = None;
                         this.project_root = status.project_root;
+                        this.check_project_trust(cx);
                     }
                     Err(message) => {
                         this.runtime_error =
@@ -741,6 +750,7 @@ impl ChatScreen {
                 match result {
                     Ok(status) => {
                         this.project_root = status.project_root;
+                        this.check_project_trust(cx);
                         this.rebuild_project_groups();
                         this.replace_timeline(Vec::new());
                         this.refresh_slash_commands(cx);
@@ -2816,6 +2826,10 @@ impl Render for ChatScreen {
             .confirm_remove_root
             .clone()
             .map(|root| self.render_confirm_remove(&root, cx));
+        let trust_prompt = self
+            .trust_prompt
+            .clone()
+            .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.timeline.is_empty();
         let collapsed = self.sidebar_collapsed;
         let main = if empty {
@@ -2946,6 +2960,7 @@ impl Render for ChatScreen {
                 )
             })
             .children(confirm_remove)
+            .children(trust_prompt)
     }
 }
 
@@ -3270,12 +3285,189 @@ impl ChatScreen {
     }
 
     fn toggle_project_menu(&mut self, root: &str, cx: &mut Context<Self>) {
+        self.menu_trust = None;
         if self.project_menu.as_deref() == Some(root) {
             self.project_menu = None;
         } else {
             self.project_menu = Some(root.to_string());
+            let backend = self.backend.clone();
+            let user_id = self.user_id.clone();
+            let path = root.to_string();
+            self.call(
+                async move { backend.project_trust(&user_id, path).await },
+                cx,
+                |this, result, cx| {
+                    if let Ok(status) = result
+                        && this.project_menu.as_deref() == Some(status.path.as_str())
+                    {
+                        this.menu_trust = Some(status);
+                        cx.notify();
+                    }
+                },
+            );
         }
         cx.notify();
+    }
+
+    /// Ask for a trust decision when the current project provides skills
+    /// or guidance and none is saved yet.
+    fn check_project_trust(&mut self, cx: &mut Context<Self>) {
+        self.trust_prompt = None;
+        let Some(root) = self.project_root.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.project_trust(&user_id, root).await },
+            cx,
+            |this, result, cx| {
+                if let Ok(status) = result
+                    && this.project_root.as_deref() == Some(status.path.as_str())
+                    && status.available
+                    && !status.protected_features.is_empty()
+                    && status.decision.is_none()
+                {
+                    this.trust_prompt = Some(status);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn set_project_trust(&mut self, path: String, trusted: bool, cx: &mut Context<Self>) {
+        if self.trust_saving {
+            return;
+        }
+        self.trust_saving = true;
+        self.project_menu = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.set_project_trust(&user_id, path, trusted).await },
+            cx,
+            move |this, result, cx| {
+                this.trust_saving = false;
+                match result {
+                    Ok(status) => {
+                        if this.trust_prompt.as_ref().map(|p| &p.path) == Some(&status.path) {
+                            this.trust_prompt = None;
+                        }
+                        this.notice = Some(
+                            if trusted {
+                                "Project trusted: its skills and guidance are available to new tasks"
+                            } else {
+                                "Project kept untrusted"
+                            }
+                            .into(),
+                        );
+                    }
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Modal that asks whether project-provided guidance may be used.
+    fn render_trust_prompt(
+        &self,
+        status: &AgentProjectTrustStatus,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let name = self.root_name(&status.path);
+        let saving = self.trust_saving;
+        let button = |id: &'static str, label: &'static str, primary: bool| {
+            div()
+                .id(id)
+                .px_3()
+                .py_1p5()
+                .rounded_md()
+                .text_sm()
+                .when(primary, |button| {
+                    button
+                        .bg(gpui::rgb(theme::ACCENT))
+                        .text_color(gpui::rgb(theme::BG_APP))
+                })
+                .when(!primary, |button| {
+                    button
+                        .border_1()
+                        .border_color(gpui::rgb(theme::BORDER))
+                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                })
+                .when(saving, |button| button.opacity(0.6))
+                .when(!saving, |button| {
+                    button.hover(|style| style.cursor_pointer().opacity(0.9))
+                })
+                .child(label)
+        };
+        let keep_path = status.path.clone();
+        let trust_path = status.path.clone();
+        div()
+            .id("trust-backdrop")
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .bg(gpui::rgba(0x000000a0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(460.))
+                    .p_5()
+                    .rounded_lg()
+                    .bg(gpui::rgb(theme::BG_ELEVATED))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::BORDER))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .child(format!("Trust {name}?")),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .child(
+                                "Trusting a project lets Maple use project-provided guidance, \
+                                 including agent skills. These instructions can influence how \
+                                 agents work and use tools. Maple's tool permissions still \
+                                 apply, and you can change this choice later from the \
+                                 project's menu.",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family("monospace")
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .child(status.path.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(button("trust-keep", "Keep untrusted", false).on_click(
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.set_project_trust(keep_path.clone(), false, cx);
+                                }),
+                            ))
+                            .child(button("trust-allow", "Trust project", true).on_click(
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.set_project_trust(trust_path.clone(), true, cx);
+                                }),
+                            )),
+                    ),
+            )
     }
 
     /// Ask before a project leaves the sidebar.
@@ -3336,6 +3528,24 @@ impl ChatScreen {
         let rename_root = root.to_string();
         let open_root = root.to_string();
         let remove_root = root.to_string();
+        let trust_item = self
+            .menu_trust
+            .as_ref()
+            .filter(|status| status.available && status.path == root)
+            .map(|status| {
+                let trusted = status.decision == Some(true);
+                let path = status.path.clone();
+                menu_item(
+                    format!("trust-project-{root}"),
+                    if trusted { "shield-check" } else { "lock" },
+                    if trusted {
+                        "Untrust project"
+                    } else {
+                        "Trust project"
+                    },
+                    Box::new(move |this, cx| this.set_project_trust(path.clone(), !trusted, cx)),
+                )
+            });
         gpui::deferred(
             div()
                 .id(SharedString::from(format!("project-menu-{root}")))
@@ -3369,6 +3579,7 @@ impl ChatScreen {
                     "Open folder",
                     Box::new(move |this, cx| this.open_folder(&open_root, cx)),
                 ))
+                .children(trust_item)
                 .child(menu_item(
                     format!("remove-project-{root}"),
                     "trash-2",
