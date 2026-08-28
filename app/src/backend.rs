@@ -11,10 +11,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentEventSink, AgentProjectTrustStatus, AgentRenameSessionRequest,
-    AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
-    AgentSessionSummary, AgentSlashCommand, AgentStartRequest, MapleAgentHostResources,
-    MapleAgentService, RecentProjectRoot,
+    AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentProjectTrustStatus,
+    AgentQueueControlRequest, AgentQueuedMessage, AgentRenameSessionRequest, AgentRuntimeStatus,
+    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
+    AgentSlashCommand, AgentStartRequest, MapleAgentHostResources, MapleAgentService,
+    RecentProjectRoot,
 };
 use maple_agent::maple_api::{MapleApiAuthRequest, MapleApiAuthState, NoopAuthEventSink};
 use maple_agent::open_secret_config::configured_pcr0_environment;
@@ -749,6 +750,41 @@ impl AgentBackend {
             .handle_for_user(user_id)
             .await?
             .set_project_trust(path, trusted)
+            .await
+    }
+
+    /// Drop a message that waits behind the active run.
+    pub async fn cancel_queued_message(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        queue_id: &str,
+    ) -> Result<AgentDesktopQueueSnapshot, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .cancel_queued_message(AgentQueueControlRequest {
+                session_id: session_id.to_string(),
+                queue_id: queue_id.to_string(),
+            })
+            .await
+    }
+
+    /// Take a queued message out of the queue so its text can go back
+    /// into the composer.
+    pub async fn unqueue_message_for_edit(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        queue_id: &str,
+    ) -> Result<AgentQueuedMessage, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .unqueue_message_for_edit(AgentQueueControlRequest {
+                session_id: session_id.to_string(),
+                queue_id: queue_id.to_string(),
+            })
             .await
     }
 

@@ -12,8 +12,9 @@ use gpui::{
     SharedString, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
-    AgentImageUpload, AgentProjectTrustStatus, AgentSendMessageRequest, AgentServiceEvent,
-    AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentTimelineItem,
+    AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
+    AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
+    AgentTimelineItem,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -368,6 +369,9 @@ pub struct ChatScreen {
     trust_saving: bool,
     /// Trust status of the project whose overflow menu is open.
     menu_trust: Option<AgentProjectTrustStatus>,
+    /// Messages waiting behind the selected session's active run.
+    queue: Vec<AgentQueuedMessage>,
+    queue_busy: bool,
     /// Slash commands from the installed skills of the current project root.
     slash_commands: Vec<AgentSlashCommand>,
     /// Highlighted row in the open slash palette, if any.
@@ -426,6 +430,20 @@ impl ChatScreen {
                         let Some(this) = weak.upgrade() else {
                             return false;
                         };
+                        let key = event.keystroke.key.clone();
+                        let steer_combo = key == "enter"
+                            && !event.keystroke.modifiers.shift
+                            && !event.keystroke.modifiers.alt
+                            && (event.keystroke.modifiers.control
+                                || event.keystroke.modifiers.platform);
+                        if steer_combo {
+                            let text = text.to_string();
+                            let weak = weak.clone();
+                            cx.defer(move |cx| {
+                                weak.update(cx, |chat, cx| chat.steer_text(text, cx)).ok();
+                            });
+                            return true;
+                        }
                         let plain = !event.keystroke.modifiers.control
                             && !event.keystroke.modifiers.alt
                             && !event.keystroke.modifiers.platform
@@ -433,7 +451,6 @@ impl ChatScreen {
                         if !plain {
                             return false;
                         }
-                        let key = event.keystroke.key.clone();
                         let token = text.strip_prefix('/').unwrap_or_default();
                         let token_ok = text.starts_with('/')
                             && !token.contains(char::is_whitespace)
@@ -646,6 +663,8 @@ impl ChatScreen {
             trust_prompt: None,
             trust_saving: false,
             menu_trust: None,
+            queue: Vec::new(),
+            queue_busy: false,
             slash_commands: Vec::new(),
             slash_selected: None,
             question_focus_pending: false,
@@ -991,6 +1010,7 @@ impl ChatScreen {
                     LoadMode::Select => {
                         this.upsert_session(detail.session.clone());
                         this.set_active_session(detail.session, detail.timeline, cx);
+                        this.queue = detail.queue.items;
                     }
                     LoadMode::Reload => {
                         this.replace_timeline(detail.timeline);
@@ -1212,6 +1232,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.selected_session = Some(session.id);
+        self.queue.clear();
         // Adopt the session's stored policy; it persists per session in the
         // runtime.
         let mode = session.mode;
@@ -1700,6 +1721,16 @@ impl ChatScreen {
     /// Send the given text; used by the composer Enter hook, which already
     /// holds the text and clears the input itself.
     fn send_text(&mut self, text: String, cx: &mut Context<Self>) {
+        self.send_text_with(text, false, cx);
+    }
+
+    /// Ctrl/Cmd+Enter: send into the active run instead of behind it.
+    /// With no run active this is a plain send.
+    fn steer_text(&mut self, text: String, cx: &mut Context<Self>) {
+        self.send_text_with(text, true, cx);
+    }
+
+    fn send_text_with(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
             self.notice = Some("Create a task first".into());
             cx.notify();
@@ -1740,7 +1771,7 @@ impl ChatScreen {
             }
             return;
         }
-        self.send_to_session(&session_id, text, cx);
+        self.send_to_session(&session_id, text, steer, None, cx);
     }
 
     /// The command Enter should run when the slash palette is open: the
@@ -1904,7 +1935,7 @@ impl ChatScreen {
                     move |this, result, cx| match result {
                         Ok(Some(prompt)) => {
                             this.notice = None;
-                            this.send_to_session(&session_id, prompt, cx);
+                            this.send_to_session(&session_id, prompt, false, None, cx);
                         }
                         Ok(None) => {
                             this.notice = Some("That skill is no longer installed".into());
@@ -1921,13 +1952,29 @@ impl ChatScreen {
         }
     }
 
-    fn send_to_session(&mut self, session_id: &str, text: String, cx: &mut Context<Self>) {
+    /// Dispatch a message. While a run is active the runtime queues it
+    /// behind the run, or with `steer` injects it into the run. `queue_id`
+    /// names an already queued chip to send in place of new text.
+    fn send_to_session(
+        &mut self,
+        session_id: &str,
+        text: String,
+        steer: bool,
+        queue_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let session_id = session_id.to_string();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let model = self.selected_model.clone();
         let vision_capable = self.selected_model_supports_vision();
-        let drafts = std::mem::take(&mut self.draft_images);
+        let run_active = self.active_runs.contains_key(&session_id);
+        // A queued chip keeps its own attachments; new images stay staged.
+        let drafts = if queue_id.is_some() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.draft_images)
+        };
         let request = AgentSendMessageRequest {
             session_id: session_id.clone(),
             text: text.clone(),
@@ -1935,8 +1982,8 @@ impl ChatScreen {
             context_limit: None,
             mode: Some(self.permission_mode.clone()),
             vision_capable,
-            steer: false,
-            queue_id: None,
+            steer: steer && run_active,
+            queue_id,
             attachments: drafts
                 .iter()
                 .map(|image| AgentImageUpload {
@@ -1946,11 +1993,14 @@ impl ChatScreen {
                 .collect(),
         };
         self.notice = None;
-        self.remember_prompt(&text);
-        // Clear the composer at dispatch so no entry path can leave the
-        // sent text behind; a failed send restores it below.
-        if let Some(composer) = self.composer.clone() {
-            composer.update(cx, |input, cx| input.clear(cx));
+        let from_composer = request.queue_id.is_none();
+        if from_composer {
+            self.remember_prompt(&text);
+            // Clear the composer at dispatch so no entry path can leave the
+            // sent text behind; a failed send restores it below.
+            if let Some(composer) = self.composer.clone() {
+                composer.update(cx, |input, cx| input.clear(cx));
+            }
         }
         // Sending closes the chip menus anchored under the composer.
         self.models_menu_open = false;
@@ -1958,7 +2008,9 @@ impl ChatScreen {
         self.mcp_menu_open = false;
         self.root_menu_open = false;
         self.follow_transcript = true;
-        self.awaiting_first_token = true;
+        if !run_active {
+            self.awaiting_first_token = true;
+        }
         cx.notify();
         self.call(
             async move { backend.send_message(&user_id, request).await },
@@ -1973,7 +2025,9 @@ impl ChatScreen {
                     // belongs to the selected session: a draft from another
                     // task must not land in it.
                     this.push_local_error("Send failed", &message, cx);
-                    if this.selected_session.as_deref() == Some(session_id.as_str()) {
+                    if from_composer
+                        && this.selected_session.as_deref() == Some(session_id.as_str())
+                    {
                         if let Some(composer) = this.composer.clone() {
                             composer.update(cx, |input, cx| input.set_text(&text, cx));
                         }
@@ -1987,6 +2041,183 @@ impl ChatScreen {
                 }
             },
         );
+    }
+
+    /// Send a queued chip into the active run now.
+    fn steer_queued(&mut self, queue_id: &str, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let Some(item) = self.queue.iter().find(|item| item.queue_id == queue_id) else {
+            return;
+        };
+        let text = item.text.clone();
+        self.send_to_session(&session_id, text, true, Some(queue_id.to_string()), cx);
+    }
+
+    /// Drop a queued chip.
+    fn remove_queued(&mut self, queue_id: &str, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        if self.queue_busy {
+            return;
+        }
+        self.queue_busy = true;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let queue_id = queue_id.to_string();
+        let target = session_id.clone();
+        self.call(
+            async move {
+                backend
+                    .cancel_queued_message(&user_id, &session_id, &queue_id)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.queue_busy = false;
+                match result {
+                    Ok(snapshot) => {
+                        if this.is_selected(&target) {
+                            this.queue = snapshot.items;
+                        }
+                    }
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Take a queued chip back into the composer. A current draft stays
+    /// below the recalled text.
+    fn edit_queued(&mut self, queue_id: &str, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        if self.queue_busy {
+            return;
+        }
+        self.queue_busy = true;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let queue_id = queue_id.to_string();
+        let target = session_id.clone();
+        self.call(
+            async move {
+                backend
+                    .unqueue_message_for_edit(&user_id, &session_id, &queue_id)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.queue_busy = false;
+                match result {
+                    Ok(item) => {
+                        if this.is_selected(&target) {
+                            this.queue.retain(|queued| queued.queue_id != item.queue_id);
+                            if let Some(composer) = this.composer.clone() {
+                                composer.update(cx, |input, cx| {
+                                    let draft = input.text();
+                                    let restored = if draft.trim().is_empty() {
+                                        item.text.clone()
+                                    } else {
+                                        format!("{}\n{draft}", item.text)
+                                    };
+                                    input.set_text(&restored, cx);
+                                });
+                            }
+                        }
+                    }
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Chips for messages waiting behind the active run.
+    fn render_queue(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.queue.is_empty() {
+            return None;
+        }
+        let busy = self.queue_busy;
+        let action = |id: String, icon_name: &'static str| {
+            div()
+                .id(SharedString::from(id))
+                .size_5()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .when(busy, |button| button.opacity(0.5))
+                .when(!busy, |button| {
+                    button.hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .cursor_pointer()
+                    })
+                })
+                .child(icon(icon_name, px(12.), theme::TEXT_SECONDARY))
+        };
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .px_4()
+                .pt_3()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .child(format!("{} queued for after this turn", self.queue.len())),
+                )
+                .children(self.queue.iter().map(|item| {
+                    let steer_id = item.queue_id.clone();
+                    let edit_id = item.queue_id.clone();
+                    let remove_id = item.queue_id.clone();
+                    let preview: String = item.text.lines().next().unwrap_or("").to_string();
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .rounded_lg()
+                        .bg(gpui::rgb(theme::BG_ELEVATED))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .child(div().flex_1().min_w_0().line_clamp(1).child(preview))
+                        .when(!item.attachments.is_empty(), |row| {
+                            row.child(icon("paperclip", px(12.), theme::TEXT_MUTED))
+                        })
+                        .child(
+                            action(format!("queue-steer-{}", item.queue_id), "arrow-up").on_click(
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.steer_queued(&steer_id, cx);
+                                }),
+                            ),
+                        )
+                        .child(
+                            action(format!("queue-edit-{}", item.queue_id), "pencil").on_click(
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.edit_queued(&edit_id, cx);
+                                }),
+                            ),
+                        )
+                        .child(
+                            action(format!("queue-remove-{}", item.queue_id), "x").on_click(
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.remove_queued(&remove_id, cx);
+                                }),
+                            ),
+                        )
+                })),
+        )
     }
 
     fn push_local_error(&mut self, title: &str, message: &str, cx: &mut Context<Self>) {
@@ -2786,10 +3017,18 @@ impl ChatScreen {
                 self.notify_desktop("Maple", &format!("“{title}” finished"));
                 self.refresh_sidebar_plan(cx);
             }
-            AgentRunEvent::QueueChanged(_) | AgentRunEvent::QueuePromoted { .. } => {
-                // Queue chips are rendered from send responses; nothing to do
-                // until queue editing is exposed in the UI.
-                return false;
+            AgentRunEvent::QueueChanged(snapshot) => {
+                if !self.is_selected(session_id) {
+                    return false;
+                }
+                self.queue = snapshot.items;
+            }
+            AgentRunEvent::QueuePromoted { snapshot, item, .. } => {
+                if !self.is_selected(session_id) {
+                    return false;
+                }
+                self.queue = snapshot.items;
+                self.apply_timeline_item(session_id, item);
             }
         }
         true
@@ -4758,7 +4997,8 @@ impl ChatScreen {
         let disabled = self.booting;
         let has_text = self.composer_has_text;
         let has_images = !self.draft_images.is_empty();
-        let can_send = !disabled && !running && (has_text || has_images);
+        let can_send = !disabled && (has_text || has_images);
+        let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();
         let mcp_enabled = self.session_mcp.iter().filter(|s| s.enabled).count();
@@ -4783,6 +5023,7 @@ impl ChatScreen {
             .border_1()
             .border_color(gpui::rgb(theme::ACCENT))
             .when(disabled, |container| container.opacity(0.5))
+            .children(queue_chips)
             .when(!drafts.is_empty(), |container| {
                 container.child(div().flex().flex_wrap().gap_2().px_4().pt_4().children(
                     drafts.iter().enumerate().map(|(index, image)| {
