@@ -371,6 +371,8 @@ pub struct ChatScreen {
     menu_trust: Option<AgentProjectTrustStatus>,
     /// Messages waiting behind the selected session's active run.
     queue: Vec<AgentQueuedMessage>,
+    /// A newer release, until the banner is dismissed.
+    update: Option<crate::update::UpdateInfo>,
     queue_busy: bool,
     /// Slash commands from the installed skills of the current project root.
     slash_commands: Vec<AgentSlashCommand>,
@@ -665,6 +667,7 @@ impl ChatScreen {
             menu_trust: None,
             queue: Vec::new(),
             queue_busy: false,
+            update: None,
             slash_commands: Vec::new(),
             slash_selected: None,
             question_focus_pending: false,
@@ -1565,6 +1568,69 @@ impl ChatScreen {
                 cx.notify();
             },
         );
+    }
+
+    pub fn set_update(&mut self, info: crate::update::UpdateInfo, cx: &mut Context<Self>) {
+        self.update = Some(info);
+        cx.notify();
+    }
+
+    /// Banner for a newer release, with a link to its page.
+    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let info = self.update.as_ref()?;
+        let url = info.url.clone();
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(gpui::rgb(theme::bg_elevated()))
+                .border_1()
+                .border_color(gpui::rgb(theme::border()))
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_primary()))
+                .child(icon("arrow-up", px(14.), theme::accent()))
+                .child(
+                    div()
+                        .flex_1()
+                        .child(format!("Maple v{} is available", info.version)),
+                )
+                .child(
+                    div()
+                        .id("update-open")
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .text_color(gpui::rgb(theme::accent()))
+                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            if let Err(error) = webbrowser::open(&url) {
+                                this.notice =
+                                    Some(format!("Could not open browser: {error}").into());
+                            }
+                            cx.notify();
+                        }))
+                        .child("Download"),
+                )
+                .child(
+                    div()
+                        .id("update-dismiss")
+                        .size_5()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.update = None;
+                            cx.notify();
+                        }))
+                        .child(icon("x", px(12.), theme::text_secondary())),
+                ),
+        )
     }
 
     /// Keep a sent prompt for Up/Down recall. Repeats move to the end.
@@ -3354,6 +3420,7 @@ impl ChatScreen {
                                 .child(error),
                         )
                     })
+                    .children(self.render_update_banner(cx))
                     .when_some(self.notice.clone(), |column, notice| {
                         column.child(
                             div()

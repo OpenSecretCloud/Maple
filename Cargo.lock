@@ -5087,6 +5087,7 @@ dependencies = [
  "opensecret",
  "parking_lot",
  "pulldown-cmark",
+ "reqwest 0.13.4",
  "rusqlite",
  "serde",
  "serde_json",

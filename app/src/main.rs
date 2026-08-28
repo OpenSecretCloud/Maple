@@ -8,6 +8,7 @@ mod notify;
 mod platform;
 mod settings;
 mod ui;
+mod update;
 
 use std::sync::Arc;
 
@@ -54,6 +55,18 @@ impl MapleApp {
         if let Screen::Chat(chat) = &self.screen {
             chat.update(cx, |chat, cx| chat.handle_service_events(events, cx));
         }
+    }
+
+    /// A newer release exists: tell the chat screen so it shows the banner.
+    fn set_update(&mut self, info: update::UpdateInfo, cx: &mut Context<Self>) {
+        let chat = match &self.screen {
+            Screen::Chat(chat) => Some(chat.clone()),
+            _ => self.parked_chat.clone(),
+        };
+        if let Some(chat) = chat {
+            chat.update(cx, |chat, cx| chat.set_update(info, cx));
+        }
+        cx.notify();
     }
 
     /// Tear down the chat screen and return to a fresh login form.
@@ -501,6 +514,22 @@ fn run_desktop() {
                     },
                 )
                 .expect("failed to open main window");
+            // Ask for a newer release off the UI thread; the banner shows
+            // in the chat when one exists.
+            if update::enabled() {
+                let check = backend.spawn(update::check());
+                let root_window = window;
+                cx.spawn(async move |cx| {
+                    if let Ok(Some(info)) = check.await {
+                        root_window
+                            .update(cx, |app: &mut MapleApp, _window, cx| {
+                                app.set_update(info, cx);
+                            })
+                            .ok();
+                    }
+                })
+                .detach();
+            }
             let root = window
                 .update(cx, |_, window, cx| {
                     // The only window: closing it from the window manager

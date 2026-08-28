@@ -697,6 +697,14 @@ impl SettingsScreen {
                         "Version",
                         format!("v{}", crate::ui::titlebar::TitleBar::version()),
                     ))
+                    .child(info_row(
+                        "Update",
+                        match crate::update::available() {
+                            Some(info) => format!("v{} is available at {}", info.version, info.url),
+                            None if crate::update::enabled() => "Up to date".to_string(),
+                            None => "Update check disabled".to_string(),
+                        },
+                    ))
                     .child(info_row("Backend", self.backend.api_url().to_string()))
                     .child(info_row(
                         "Config directory",

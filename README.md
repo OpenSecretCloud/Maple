@@ -47,15 +47,25 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
   The session persists in `auth.json` (mode 0600) so the next launch and
   the `acp` mode skip sign-in.
 - Agent chat with streaming Markdown, tool calls, permission prompts,
-  agent questions, image attachments, and a context-window indicator.
-- Projects (working directories) with pinned and recent roots.
-- Sessions grouped by project, with archive and restore for sessions and
-  whole projects.
+  agent questions, image attachments (picker, paste, or drag and drop),
+  a per-message Copy button, and a context-window indicator.
+- Message queue: Enter during a run queues the message for the next turn,
+  Ctrl+Enter (Cmd+Enter) steers it into the current turn. Queued messages
+  can be sent now, edited, or removed.
+- Up and Down in an empty composer recall prompts sent in this window.
+- Projects (working directories) with pinned and recent roots, rename,
+  open in the file manager, and remove. Projects that provide skills ask
+  for a trust decision before their guidance loads.
+- Sessions grouped by project, with rename, archive, and restore.
 - Settings: general (permission mode, web tools, tool details,
-  notifications), system prompt, MCP servers, usage totals from the Goose
-  ledger, and about.
+  notifications, appearance), system prompt, MCP servers, usage totals
+  from the Goose ledger, and about.
+- Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
 - Desktop notifications when the agent needs a decision.
+- Release check on launch: a banner links to a newer GitHub release.
+  Nothing is downloaded or installed by the app.
+- Window size and maximized state persist between launches.
 
 ## Prerequisites
 
@@ -127,6 +137,8 @@ All settings are environment variables. None are required.
 | `MAPLE_PERMISSION_MODE` | `smart_approve` or `auto`. Overrides the saved setting. | Saved setting |
 | `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
 | `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
+| `MAPLE_UPDATE_REPO` | GitHub `owner/repo` whose releases the launch check reads. | `benthecarman/maple-gpui` |
+| `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
 | `RUST_LOG` | Log filter. | `info` |
 
 ### File locations
@@ -150,6 +162,12 @@ cargo fmt --all -- --check
 CI runs the same three commands on Linux, macOS, and Windows, plus a
 RustSec audit and a Linux release build. A `v*` tag builds release binaries
 for all three platforms and attaches them to a GitHub release.
+
+## Before a release
+
+- `app/src/update.rs` has the default release repository
+  (`DEFAULT_REPO`). Point it at the repository that publishes the
+  binaries, or set `MAPLE_UPDATE_REPO` at run time.
 
 ## Dependencies to watch
 
