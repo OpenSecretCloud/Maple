@@ -53,14 +53,14 @@ impl InlineStyle {
             });
         }
         if self.code {
-            style.background_color = Some(gpui::hsla(0., 0., 1., 0.08));
-            style.color = Some(gpui::rgb(theme::CODE_TEXT).into());
+            style.background_color = Some(theme::overlay_hover());
+            style.color = Some(gpui::rgb(theme::code_text()).into());
         }
         if self.link {
-            style.color = Some(gpui::rgb(theme::LINK).into());
+            style.color = Some(gpui::rgb(theme::link()).into());
             style.underline = Some(gpui::UnderlineStyle {
                 thickness: px(1.0),
-                color: Some(gpui::rgb(theme::LINK).into()),
+                color: Some(gpui::rgb(theme::link()).into()),
                 wavy: false,
             });
         }
@@ -247,7 +247,7 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                     .h(px(1.))
                     .w_full()
                     .my_1()
-                    .bg(gpui::rgb(theme::BORDER_SUBTLE)),
+                    .bg(gpui::rgb(theme::border_subtle())),
             ),
         };
     }
@@ -469,7 +469,7 @@ fn wrap_inline(element: Div, in_quote: bool, list_depth: usize) -> Div {
     if in_quote {
         outer = outer
             .border_l_2()
-            .border_color(gpui::rgb(theme::BORDER))
+            .border_color(gpui::rgb(theme::border()))
             .pl_3();
     }
     outer.child(element)

@@ -38,7 +38,7 @@ impl Render for TitleBar {
             .w_full()
             .h(BAR_HEIGHT)
             .pr_3()
-            .bg(gpui::rgb(theme::BG_SIDEBAR))
+            .bg(gpui::rgb(theme::bg_sidebar()))
             // Any press in the bar that is not on a control starts a window
             // drag, which is the standard title-bar behavior. A double
             // press toggles maximize instead.
@@ -58,7 +58,7 @@ impl Render for TitleBar {
                     .justify_center()
                     .text_sm()
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .text_color(gpui::rgb(theme::text_primary()))
                     .child(self.title.clone()),
             )
             .child(
@@ -96,12 +96,12 @@ fn control(
         .justify_center()
         .size(CONTROL_SIZE)
         .rounded_full()
-        .bg(gpui::rgb(theme::BG_TITLE_CONTROL))
+        .bg(gpui::rgb(theme::bg_title_control()))
         .text_xs()
-        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+        .text_color(gpui::rgb(theme::text_primary()))
         .hover(|style| {
             style
-                .bg(gpui::rgb(theme::BG_TITLE_CONTROL_HOVER))
+                .bg(gpui::rgb(theme::bg_title_control_hover()))
                 .cursor_pointer()
         })
         .on_mouse_down(gpui::MouseButton::Left, {

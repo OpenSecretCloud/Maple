@@ -3,6 +3,7 @@
 //! form submit and composer send, and an optional multi-line mode that wraps
 //! text and grows with its content (Shift+Enter inserts a newline).
 
+use super::theme;
 use std::ops::Range;
 
 use gpui::{
@@ -10,8 +11,8 @@ use gpui::{
     ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
     GlobalElementId, InteractiveElement, KeyBinding, Keystroke, LayoutId, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point,
-    prelude::*, px, relative, rgb, rgba, size,
+    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px,
+    relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -822,7 +823,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0., 0., 1., 0.3))
+            (input.placeholder.clone(), theme::placeholder())
         } else {
             (input.display_text(), style.color)
         };

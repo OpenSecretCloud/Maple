@@ -611,9 +611,9 @@ pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -
         .w_full()
         .my_1()
         .rounded_md()
-        .bg(gpui::rgb(theme::BG_CODE_BLOCK))
+        .bg(gpui::rgb(theme::bg_code_block()))
         .border_1()
-        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .border_color(gpui::rgb(theme::border_subtle()))
         .overflow_hidden()
         .child(
             div()
@@ -623,11 +623,11 @@ pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -
                 .px_3()
                 .py_1p5()
                 .border_b_1()
-                .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+                .border_color(gpui::rgb(theme::border_subtle()))
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child(label),
                 )
                 .child(
@@ -640,12 +640,12 @@ pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -
                         .py_0p5()
                         .rounded_md()
                         .text_xs()
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                        .hover(|style| style.bg(gpui::hsla(0., 0., 1., 0.08)).cursor_pointer())
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
                         .on_click(move |_, _, cx: &mut App| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy_code.to_string()));
                         })
-                        .child(icon("copy", gpui::px(12.), theme::TEXT_SECONDARY))
+                        .child(icon("copy", gpui::px(12.), theme::text_secondary()))
                         .child("Copy"),
                 ),
         )
@@ -656,7 +656,7 @@ pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -
                 .w_full()
                 .font_family("monospace")
                 .text_size(gpui::px(13.))
-                .text_color(gpui::rgb(theme::CODE_TEXT))
+                .text_color(gpui::rgb(theme::code_text()))
                 .child(code),
         )
 }

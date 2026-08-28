@@ -362,6 +362,17 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    fn cycle_theme(&mut self, cx: &mut Context<Self>) {
+        let next = crate::ui::theme::Preference::parse(&self.settings.theme).next();
+        self.settings.theme = next.as_str().to_string();
+        settings::save_settings_in_background(self.settings.clone());
+        // The root view resolves the palette on its next render and
+        // refreshes every view when it changed.
+        crate::ui::theme::set_preference(next);
+        cx.refresh_windows();
+        cx.notify();
+    }
+
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
         self.settings.tool_details = !self.settings.tool_details;
         settings::save_settings_in_background(self.settings.clone());
@@ -425,7 +436,7 @@ impl Render for SettingsScreen {
             .size_full()
             .flex()
             .flex_col()
-            .bg(gpui::rgb(theme::BG_APP))
+            .bg(gpui::rgb(theme::bg_app()))
             .child(
                 div()
                     .flex()
@@ -434,7 +445,7 @@ impl Render for SettingsScreen {
                     .px_4()
                     .py_3()
                     .border_b_1()
-                    .border_color(gpui::rgb(theme::BORDER))
+                    .border_color(gpui::rgb(theme::border()))
                     .child(
                         div()
                             .id("settings-back")
@@ -442,10 +453,10 @@ impl Render for SettingsScreen {
                             .py_1()
                             .rounded_md()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .text_color(gpui::rgb(theme::text_secondary()))
                             .hover(|style| {
                                 style
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .text_color(gpui::rgb(theme::text_primary()))
                                     .cursor_pointer()
                             })
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -456,7 +467,7 @@ impl Render for SettingsScreen {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .child("Settings"),
                     )
                     .child(div().flex_1())
@@ -467,10 +478,10 @@ impl Render for SettingsScreen {
                             .py_1()
                             .rounded_md()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .hover(|style| {
                                 style
-                                    .text_color(gpui::rgb(theme::STATUS_ERROR))
+                                    .text_color(gpui::rgb(theme::status_error()))
                                     .cursor_pointer()
                             })
                             .on_click(cx.listener(|_this, _event, _window, cx| {
@@ -501,8 +512,8 @@ impl SettingsScreen {
             .gap_1()
             .p_3()
             .border_r_1()
-            .border_color(gpui::rgb(theme::BORDER))
-            .bg(gpui::rgb(theme::BG_SIDEBAR))
+            .border_color(gpui::rgb(theme::border()))
+            .bg(gpui::rgb(theme::bg_sidebar()))
             .children(Section::ALL.iter().map(|section| {
                 let selected = self.section == *section;
                 div()
@@ -515,16 +526,16 @@ impl SettingsScreen {
                     .rounded_md()
                     .text_sm()
                     .text_color(gpui::rgb(if selected {
-                        theme::TEXT_PRIMARY
+                        theme::text_primary()
                     } else {
-                        theme::TEXT_SECONDARY
+                        theme::text_secondary()
                     }))
                     .bg(gpui::rgb(if selected {
-                        theme::BG_ELEVATED
+                        theme::bg_elevated()
                     } else {
-                        theme::BG_SIDEBAR
+                        theme::bg_sidebar()
                     }))
-                    .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
+                    .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
                     .on_click({
                         let section = *section;
                         cx.listener(move |this, _event, _window, cx| {
@@ -575,6 +586,14 @@ impl SettingsScreen {
                         },
                         cx.listener(|this, _event, _window, cx| {
                             this.toggle_web_default(cx);
+                        }),
+                    ))
+                    .child(setting_row(
+                        "Appearance",
+                        "Follow the system theme, or force dark or light.",
+                        crate::ui::theme::Preference::parse(&self.settings.theme).label(),
+                        cx.listener(|this, _event, _window, cx| {
+                            this.cycle_theme(cx);
                         }),
                     ))
                     .child(setting_row(
@@ -634,7 +653,7 @@ impl SettingsScreen {
                                 div()
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(gpui::rgb(theme::ACCENT))
+                                    .text_color(gpui::rgb(theme::accent()))
                                     .child(plan.plan_label.clone()),
                             )
                         }),
@@ -643,7 +662,7 @@ impl SettingsScreen {
                     Some(plan) => plan_card(plan),
                     None => div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_FAINT))
+                        .text_color(gpui::rgb(theme::text_faint()))
                         .child("Plan usage unavailable"),
                 });
                 pane = pane.child(section_title("Usage"));
@@ -666,7 +685,7 @@ impl SettingsScreen {
                 } else {
                     pane = pane.child(
                         div()
-                            .text_color(gpui::rgb(theme::TEXT_FAINT))
+                            .text_color(gpui::rgb(theme::text_faint()))
                             .child("Loading usage…"),
                     );
                 }
@@ -701,7 +720,7 @@ impl SettingsScreen {
             .child(
                 div()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .text_color(gpui::rgb(theme::text_muted()))
                     .child(
                         "Opens every task's system prompt: who the agent is and how it \
                          behaves. Maple appends its tool and runtime guidance after this \
@@ -712,11 +731,11 @@ impl SettingsScreen {
                 div()
                     .p_3()
                     .rounded_md()
-                    .bg(gpui::rgb(theme::BG_INPUT))
+                    .bg(gpui::rgb(theme::bg_input()))
                     .border_1()
-                    .border_color(gpui::rgb(theme::BORDER))
+                    .border_color(gpui::rgb(theme::border()))
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .text_color(gpui::rgb(theme::text_primary()))
                     .child(self.prompt_editor.clone()),
             )
             .child(
@@ -740,7 +759,7 @@ impl SettingsScreen {
             pane = pane.child(
                 div()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .text_color(gpui::rgb(theme::text_secondary()))
                     .child(notice.clone()),
             );
         }
@@ -764,21 +783,21 @@ impl SettingsScreen {
                         .px_3()
                         .py_1p5()
                         .rounded_md()
-                        .bg(gpui::rgb(theme::ACCENT))
+                        .bg(gpui::rgb(theme::accent()))
                         .text_sm()
-                        .text_color(gpui::rgb(theme::BG_APP))
-                        .hover(|style| style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer())
+                        .text_color(gpui::rgb(theme::bg_app()))
+                        .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.open_mcp_editor(None, cx);
                         }))
-                        .child(icon("plus", px(14.), theme::BG_APP))
+                        .child(icon("plus", px(14.), theme::bg_app()))
                         .child("Add server"),
                 ),
         );
         pane = pane.child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                .text_color(gpui::rgb(theme::text_muted()))
                 .child(
                     "Servers configured here are available to every task. \
                      Turn them on or off per task from the composer.",
@@ -790,9 +809,9 @@ impl SettingsScreen {
                     .px_3()
                     .py_2()
                     .rounded_md()
-                    .bg(gpui::rgb(theme::STATUS_WARNING))
+                    .bg(gpui::rgb(theme::status_warning()))
                     .text_sm()
-                    .text_color(gpui::rgb(theme::BG_APP))
+                    .text_color(gpui::rgb(theme::bg_app()))
                     .child(notice.clone()),
             );
         }
@@ -803,7 +822,7 @@ impl SettingsScreen {
             None => {
                 pane = pane.child(
                     div()
-                        .text_color(gpui::rgb(theme::TEXT_FAINT))
+                        .text_color(gpui::rgb(theme::text_faint()))
                         .child("Loading MCP servers…"),
                 );
             }
@@ -811,7 +830,7 @@ impl SettingsScreen {
                 pane = pane.child(
                     div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_FAINT))
+                        .text_color(gpui::rgb(theme::text_faint()))
                         .child("No MCP servers configured."),
                 );
             }
@@ -829,9 +848,9 @@ impl SettingsScreen {
                         .px_4()
                         .py_3()
                         .rounded_lg()
-                        .bg(gpui::rgb(theme::BG_ELEVATED))
+                        .bg(gpui::rgb(theme::bg_elevated()))
                         .border_1()
-                        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+                        .border_color(gpui::rgb(theme::border_subtle()))
                         .child(
                             div()
                                 .flex_1()
@@ -843,21 +862,21 @@ impl SettingsScreen {
                                     div()
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                        .text_color(gpui::rgb(theme::text_primary()))
                                         .child(server.name.clone()),
                                 )
                                 .when(!server.description.is_empty(), |col| {
                                     col.child(
                                         div()
                                             .text_xs()
-                                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                                            .text_color(gpui::rgb(theme::text_secondary()))
                                             .child(server.description.clone()),
                                     )
                                 })
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                        .text_color(gpui::rgb(theme::text_muted()))
                                         .line_clamp(1)
                                         .child(summary),
                                 ),
@@ -885,7 +904,7 @@ impl SettingsScreen {
                                 .rounded_md()
                                 .hover(|style| {
                                     style
-                                        .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                                         .cursor_pointer()
                                 })
                                 .on_click(cx.listener({
@@ -894,7 +913,7 @@ impl SettingsScreen {
                                         this.open_mcp_editor(Some(server.clone()), cx)
                                     }
                                 }))
-                                .child(icon("pencil", px(14.), theme::TEXT_SECONDARY)),
+                                .child(icon("pencil", px(14.), theme::text_secondary())),
                         )
                         .child(
                             div()
@@ -906,7 +925,7 @@ impl SettingsScreen {
                                 .rounded_md()
                                 .hover(|style| {
                                     style
-                                        .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                                         .cursor_pointer()
                                 })
                                 .on_click(cx.listener({
@@ -914,7 +933,7 @@ impl SettingsScreen {
                                         this.remove_mcp_server(&name, cx)
                                     }
                                 }))
-                                .child(icon("trash-2", px(14.), theme::STATUS_ERROR)),
+                                .child(icon("trash-2", px(14.), theme::status_error())),
                         )
                 }));
             }
@@ -932,7 +951,7 @@ impl SettingsScreen {
                     div()
                         .text_xs()
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .text_color(gpui::rgb(theme::text_secondary()))
                         .child(label),
                 )
                 .child(
@@ -940,18 +959,18 @@ impl SettingsScreen {
                         .px_3()
                         .py_2()
                         .rounded_md()
-                        .bg(gpui::rgb(theme::BG_INPUT))
+                        .bg(gpui::rgb(theme::bg_input()))
                         .border_1()
-                        .border_color(gpui::rgb(theme::BORDER))
+                        .border_color(gpui::rgb(theme::border()))
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .text_color(gpui::rgb(theme::text_primary()))
                         .child(input),
                 )
                 .when(!hint.is_empty(), |col| {
                     col.child(
                         div()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child(hint),
                     )
                 })
@@ -964,11 +983,11 @@ impl SettingsScreen {
                 .rounded_md()
                 .text_sm()
                 .text_color(gpui::rgb(if active {
-                    theme::TEXT_PRIMARY
+                    theme::text_primary()
                 } else {
-                    theme::TEXT_SECONDARY
+                    theme::text_secondary()
                 }))
-                .when(active, |el| el.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER)))
+                .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
                 .hover(|style| style.cursor_pointer())
                 .child(label)
         };
@@ -978,14 +997,14 @@ impl SettingsScreen {
             .gap_3()
             .p_4()
             .rounded_lg()
-            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
-            .border_color(gpui::rgb(theme::BORDER))
+            .border_color(gpui::rgb(theme::border()))
             .child(
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .text_color(gpui::rgb(theme::text_primary()))
                     .child(if editor.original_name.is_some() {
                         "Edit server"
                     } else {
@@ -1003,7 +1022,7 @@ impl SettingsScreen {
                         div()
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .text_color(gpui::rgb(theme::text_secondary()))
                             .child("Transport"),
                     )
                     .child(
@@ -1012,7 +1031,7 @@ impl SettingsScreen {
                             .gap_1()
                             .p_1()
                             .rounded_md()
-                            .bg(gpui::rgb(theme::BG_SIDEBAR_CHROME))
+                            .bg(gpui::rgb(theme::bg_sidebar_chrome()))
                             .w(px(320.))
                             .child(
                                 transport_segment(
@@ -1075,12 +1094,12 @@ impl SettingsScreen {
                             .px_3()
                             .py_1p5()
                             .rounded_md()
-                            .bg(gpui::rgb(theme::ACCENT))
+                            .bg(gpui::rgb(theme::accent()))
                             .text_sm()
-                            .text_color(gpui::rgb(theme::BG_APP))
+                            .text_color(gpui::rgb(theme::bg_app()))
                             .when(self.mcp_saving, |el| el.opacity(0.5))
                             .hover(|style| {
-                                style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer()
+                                style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer()
                             })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.submit_mcp_editor(cx);
@@ -1094,10 +1113,10 @@ impl SettingsScreen {
                             .py_1p5()
                             .rounded_md()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .text_color(gpui::rgb(theme::text_secondary()))
                             .hover(|style| {
                                 style
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .text_color(gpui::rgb(theme::text_primary()))
                                     .cursor_pointer()
                             })
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -1123,7 +1142,7 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
         .px_4()
         .py_4()
         .rounded_lg()
-        .bg(gpui::rgb(theme::BG_SIDEBAR_CARD))
+        .bg(gpui::rgb(theme::bg_sidebar_card()))
         .child(
             div()
                 .flex()
@@ -1133,14 +1152,14 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
                     div()
                         .text_base()
                         .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .text_color(gpui::rgb(theme::text_primary()))
                         .whitespace_nowrap()
                         .child(format!("{}% used", plan.percent_used)),
                 )
                 .child(
                     div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .whitespace_nowrap()
                         .child(format!("· Resets {}", plan.resets_label)),
                 ),
@@ -1151,13 +1170,13 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
                 .h(px(6.))
                 .rounded_full()
                 // Darker than the card so the empty part of the track shows.
-                .bg(gpui::rgb(theme::BG_SIDEBAR_PILL))
+                .bg(gpui::rgb(theme::bg_sidebar_pill()))
                 .child(
                     div()
                         .h_full()
                         .w(gpui::relative(fraction.clamp(0., 1.)))
                         .rounded_full()
-                        .bg(gpui::rgb(theme::ACCENT)),
+                        .bg(gpui::rgb(theme::accent())),
                 ),
         )
 }
@@ -1177,14 +1196,14 @@ fn pill_button(
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .bg(gpui::rgb(if on {
-            theme::ACCENT
+            theme::accent()
         } else {
-            theme::BG_SIDEBAR_CARD
+            theme::bg_sidebar_card()
         }))
         .text_color(gpui::rgb(if on {
-            theme::BG_APP
+            theme::bg_app()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         }))
         .hover(|style| style.cursor_pointer())
         .on_click(handler)
@@ -1218,7 +1237,7 @@ fn section_title(label: &str) -> Div {
     div()
         .text_lg()
         .font_weight(gpui::FontWeight::BOLD)
-        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+        .text_color(gpui::rgb(theme::text_primary()))
         .child(label.to_string())
 }
 
@@ -1239,9 +1258,9 @@ fn setting_row(
         .gap_4()
         .p_4()
         .rounded_lg()
-        .bg(gpui::rgb(theme::BG_ELEVATED))
+        .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
-        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .border_color(gpui::rgb(theme::border_subtle()))
         .child(
             div()
                 .flex()
@@ -1251,13 +1270,13 @@ fn setting_row(
                     div()
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .text_color(gpui::rgb(theme::text_primary()))
                         .child(title.to_string()),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child(description.to_string()),
                 ),
         )
@@ -1270,11 +1289,11 @@ fn setting_row(
                 .px_4()
                 .py_2()
                 .rounded_md()
-                .bg(gpui::rgb(theme::BG_INPUT))
+                .bg(gpui::rgb(theme::bg_input()))
                 .border_1()
-                .border_color(gpui::rgb(theme::BORDER))
+                .border_color(gpui::rgb(theme::border()))
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .hover(|style| style.cursor_pointer())
                 .on_click(on_click)
                 .child(value.to_string()),
@@ -1289,19 +1308,19 @@ fn info_row(label: &str, value: String) -> Div {
         .gap_4()
         .p_4()
         .rounded_lg()
-        .bg(gpui::rgb(theme::BG_ELEVATED))
+        .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
-        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .border_color(gpui::rgb(theme::border_subtle()))
         .child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .child(label.to_string()),
         )
         .child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .text_color(gpui::rgb(theme::text_primary()))
                 .child(value),
         )
 }
@@ -1314,14 +1333,14 @@ fn stat(label: &str, value: String) -> Div {
         .child(
             div()
                 .text_xs()
-                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                .text_color(gpui::rgb(theme::text_muted()))
                 .child(label.to_string()),
         )
         .child(
             div()
                 .text_xl()
                 .font_weight(gpui::FontWeight::BOLD)
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .text_color(gpui::rgb(theme::text_primary()))
                 .child(value),
         )
 }
@@ -1331,7 +1350,7 @@ fn usage_table(title: &str, rows: &[crate::settings::UsageRow]) -> Div {
         div()
             .text_sm()
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+            .text_color(gpui::rgb(theme::text_primary()))
             .child(title.to_string()),
     );
     for row in rows.iter().take(10) {
@@ -1344,32 +1363,32 @@ fn usage_table(title: &str, rows: &[crate::settings::UsageRow]) -> Div {
                 .px_3()
                 .py_2()
                 .rounded_md()
-                .bg(gpui::rgb(theme::BG_ELEVATED))
+                .bg(gpui::rgb(theme::bg_elevated()))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .text_color(gpui::rgb(theme::text_primary()))
                         .line_clamp(1)
                         .child(row.label.clone()),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .text_color(gpui::rgb(theme::text_secondary()))
                         .child(format!("{} turns", row.turns)),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .text_color(gpui::rgb(theme::text_secondary()))
                         .child(format_tokens(row.total_tokens)),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child(format!("${:.2}", row.cost)),
                 ),
         );

@@ -125,6 +125,7 @@ impl MapleApp {
     /// Restore the parked chat screen, applying any changed defaults.
     fn close_settings(&mut self, updated: crate::settings::AppSettings, cx: &mut Context<Self>) {
         self.settings = updated;
+        ui::theme::set_preference(ui::theme::Preference::parse(&self.settings.theme));
         if let Some(chat) = self.parked_chat.take() {
             let settings = self.settings.clone();
             chat.update(cx, |chat, cx| chat.apply_defaults(&settings, cx));
@@ -135,8 +136,12 @@ impl MapleApp {
 }
 
 impl Render for MapleApp {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         remember_window_state(window);
+        if ui::theme::resolve(window.appearance()) {
+            // Every view reads the palette in render; make them all redo it.
+            cx.refresh_windows();
+        }
         let titlebar = self.titlebar.clone();
         div()
             .size_full()
@@ -435,7 +440,9 @@ fn run_desktop() {
                 KeyBinding::new("ctrl-c", ui::chat::CopySelection, Some("Transcript")),
                 KeyBinding::new("cmd-c", ui::chat::CopySelection, Some("Transcript")),
             ]);
-            let saved = crate::settings::load_settings()
+            let startup_settings = crate::settings::load_settings();
+            ui::theme::set_preference(ui::theme::Preference::parse(&startup_settings.theme));
+            let saved = startup_settings
                 .window
                 .map(crate::settings::WindowState::clamped);
             let window_size = saved
@@ -503,6 +510,10 @@ fn run_desktop() {
                         cx.quit();
                         true
                     });
+                    // A system theme change must reach every view.
+                    window
+                        .observe_window_appearance(|_window, cx| cx.refresh_windows())
+                        .detach();
                     cx.entity()
                 })
                 .expect("root entity");

@@ -214,9 +214,9 @@ impl Render for LoginScreen {
             .w(gpui::px(380.))
             .p_6()
             .rounded_lg()
-            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
-            .border_color(gpui::rgb(theme::BORDER))
+            .border_color(gpui::rgb(theme::border()))
             .when(busy, |container| container.opacity(0.7))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key.eq_ignore_ascii_case("tab")
@@ -249,7 +249,7 @@ impl Render for LoginScreen {
                         div()
                             .text_xl()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .child("Maple"),
                     )
                     .child(div()),
@@ -257,7 +257,7 @@ impl Render for LoginScreen {
             .child(
                 div()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .text_color(gpui::rgb(theme::text_secondary()))
                     .child(format!("Sign in to {}", self.backend.api_url())),
             );
 
@@ -273,11 +273,15 @@ impl Render for LoginScreen {
                             .justify_center()
                             .py_2()
                             .rounded_md()
-                            .bg(gpui::rgb(if busy { theme::BORDER } else { theme::ACCENT }))
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .bg(gpui::rgb(if busy {
+                                theme::border()
+                            } else {
+                                theme::accent()
+                            }))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .when(!busy, |el| {
                                 el.hover(|style| {
-                                    style.bg(gpui::rgb(theme::ACCENT_HOVER)).cursor_pointer()
+                                    style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer()
                                 })
                             })
                             .when(!busy, |el| el.on_click(cx.listener(Self::submit_clicked)))
@@ -296,19 +300,19 @@ impl Render for LoginScreen {
                                 div()
                                     .h(gpui::px(1.))
                                     .flex_1()
-                                    .bg(gpui::rgb(theme::BORDER_SUBTLE)),
+                                    .bg(gpui::rgb(theme::border_subtle())),
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                    .text_color(gpui::rgb(theme::text_muted()))
                                     .child("or continue with"),
                             )
                             .child(
                                 div()
                                     .h(gpui::px(1.))
                                     .flex_1()
-                                    .bg(gpui::rgb(theme::BORDER_SUBTLE)),
+                                    .bg(gpui::rgb(theme::border_subtle())),
                             ),
                     )
                     .child(
@@ -325,7 +329,7 @@ impl Render for LoginScreen {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .child(format!(
                                 "Finish signing in with {}",
                                 provider_label(*provider)
@@ -334,13 +338,13 @@ impl Render for LoginScreen {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .text_color(gpui::rgb(theme::text_secondary()))
                             .child("Your browser opened the sign-in page. After you approve, the site redirects you; paste that final URL here."),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .line_clamp(2)
                             .child(auth_url.clone()),
                     )
@@ -353,15 +357,15 @@ impl Render for LoginScreen {
                             .py_2()
                             .rounded_md()
                             .bg(gpui::rgb(if busy {
-                                theme::BORDER
+                                theme::border()
                             } else {
-                                theme::ACCENT
+                                theme::accent()
                             }))
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .when(!busy, |el| {
                                 el.hover(|style| {
                                     style
-                                        .bg(gpui::rgb(theme::ACCENT_HOVER))
+                                        .bg(gpui::rgb(theme::accent_hover()))
                                         .cursor_pointer()
                                 })
                             })
@@ -383,7 +387,7 @@ impl Render for LoginScreen {
                             .justify_center()
                             .py_1()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .hover(|style| style.cursor_pointer())
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
@@ -397,7 +401,7 @@ impl Render for LoginScreen {
             card = card.child(
                 div()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::STATUS_ERROR))
+                    .text_color(gpui::rgb(theme::status_error()))
                     .child(message),
             );
         }
@@ -408,7 +412,7 @@ impl Render for LoginScreen {
             .flex()
             .justify_center()
             .items_center()
-            .bg(gpui::rgb(theme::BG_APP))
+            .bg(gpui::rgb(theme::bg_app()))
             .child(card)
     }
 }
@@ -433,11 +437,11 @@ fn oauth_button(
         .py_2()
         .rounded_md()
         .border_1()
-        .border_color(gpui::rgb(theme::BORDER))
+        .border_color(gpui::rgb(theme::border()))
         .text_sm()
-        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+        .text_color(gpui::rgb(theme::text_primary()))
         .when(!busy, |el| {
-            el.hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+            el.hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
         })
         .when(!busy, |el| {
             el.on_click({
@@ -455,7 +459,7 @@ fn field(label: &str, input: Entity<TextInput>) -> Div {
         container = container.child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .child(label.to_string()),
         );
     }
@@ -464,10 +468,10 @@ fn field(label: &str, input: Entity<TextInput>) -> Div {
             .px_3()
             .py_2()
             .rounded_md()
-            .bg(gpui::rgb(theme::BG_INPUT))
+            .bg(gpui::rgb(theme::bg_input()))
             .border_1()
-            .border_color(gpui::rgb(theme::BORDER))
-            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+            .border_color(gpui::rgb(theme::border()))
+            .text_color(gpui::rgb(theme::text_primary()))
             .child(input),
     )
 }

@@ -2213,11 +2213,11 @@ impl ChatScreen {
                 .when(!busy, |button| {
                     button.hover(|style| {
                         style
-                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                             .cursor_pointer()
                     })
                 })
-                .child(icon(icon_name, px(12.), theme::TEXT_SECONDARY))
+                .child(icon(icon_name, px(12.), theme::text_secondary()))
         };
         Some(
             div()
@@ -2229,7 +2229,7 @@ impl ChatScreen {
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child(format!("{} queued for after this turn", self.queue.len())),
                 )
                 .children(self.queue.iter().map(|item| {
@@ -2244,14 +2244,14 @@ impl ChatScreen {
                         .px_3()
                         .py_1()
                         .rounded_lg()
-                        .bg(gpui::rgb(theme::BG_ELEVATED))
+                        .bg(gpui::rgb(theme::bg_elevated()))
                         .border_1()
-                        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+                        .border_color(gpui::rgb(theme::border_subtle()))
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .text_color(gpui::rgb(theme::text_secondary()))
                         .child(div().flex_1().min_w_0().line_clamp(1).child(preview))
                         .when(!item.attachments.is_empty(), |row| {
-                            row.child(icon("paperclip", px(12.), theme::TEXT_MUTED))
+                            row.child(icon("paperclip", px(12.), theme::text_muted()))
                         })
                         .child(
                             action(format!("queue-steer-{}", item.queue_id), "arrow-up").on_click(
@@ -3197,7 +3197,7 @@ impl Render for ChatScreen {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(gpui::rgb(theme::BG_APP))
+            .bg(gpui::rgb(theme::bg_app()))
             .child(
                 div()
                     .flex_1()
@@ -3223,7 +3223,7 @@ impl Render for ChatScreen {
                                         .items_center()
                                         .gap_2()
                                         .child(self.render_sidebar_toggle(cx))
-                                        .child(wordmark(px(14.), theme::TEXT_PRIMARY)),
+                                        .child(wordmark(px(14.), theme::text_primary())),
                                 )
                             })
                             .child(main),
@@ -3252,7 +3252,7 @@ impl Render for ChatScreen {
                                 .max_h(gpui::relative(0.9))
                                 .rounded_lg()
                                 .border_1()
-                                .border_color(gpui::rgb(theme::BORDER)),
+                                .border_color(gpui::rgb(theme::border())),
                         ),
                 )
             })
@@ -3274,14 +3274,14 @@ impl ChatScreen {
             .rounded_md()
             .hover(|style| {
                 style
-                    .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .cursor_pointer()
             })
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
             }))
-            .child(icon("panel-left", px(16.), theme::TEXT_SECONDARY))
+            .child(icon("panel-left", px(16.), theme::text_secondary()))
     }
 
     /// Hero layout for a task with no messages: display heading, composer,
@@ -3314,7 +3314,7 @@ impl ChatScreen {
                                 .font_family(crate::assets::FONT_DISPLAY)
                                 .text_size(px(36.))
                                 .line_height(px(48.))
-                                .text_color(gpui::rgb(theme::DISPLAY_TEXT))
+                                .text_color(gpui::rgb(theme::display_text()))
                                 .child("Work on anything..."),
                         )
                     })
@@ -3337,8 +3337,8 @@ impl ChatScreen {
                                 .items_center()
                                 .gap_1()
                                 .text_xs()
-                                .text_color(gpui::rgb(theme::TEXT_MUTED))
-                                .child(icon("lock", px(12.), theme::TEXT_MUTED))
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(icon("lock", px(12.), theme::text_muted()))
                                 .child("Encrypted and private at every step"),
                         )
                     })
@@ -3348,8 +3348,8 @@ impl ChatScreen {
                                 .px_3()
                                 .py_2()
                                 .rounded_md()
-                                .bg(gpui::rgb(theme::STATUS_ERROR))
-                                .text_color(gpui::rgb(theme::BG_APP))
+                                .bg(gpui::rgb(theme::status_error()))
+                                .text_color(gpui::rgb(theme::bg_app()))
                                 .text_sm()
                                 .child(error),
                         )
@@ -3360,8 +3360,8 @@ impl ChatScreen {
                                 .px_3()
                                 .py_2()
                                 .rounded_md()
-                                .bg(gpui::rgb(theme::STATUS_WARNING))
-                                .text_color(gpui::rgb(theme::BG_APP))
+                                .bg(gpui::rgb(theme::status_warning()))
+                                .text_color(gpui::rgb(theme::bg_app()))
                                 .text_sm()
                                 .child(notice),
                         )
@@ -3684,14 +3684,14 @@ impl ChatScreen {
                 .text_sm()
                 .when(primary, |button| {
                     button
-                        .bg(gpui::rgb(theme::ACCENT))
-                        .text_color(gpui::rgb(theme::BG_APP))
+                        .bg(gpui::rgb(theme::accent()))
+                        .text_color(gpui::rgb(theme::bg_app()))
                 })
                 .when(!primary, |button| {
                     button
                         .border_1()
-                        .border_color(gpui::rgb(theme::BORDER))
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .border_color(gpui::rgb(theme::border()))
+                        .text_color(gpui::rgb(theme::text_secondary()))
                 })
                 .when(saving, |button| button.opacity(0.6))
                 .when(!saving, |button| {
@@ -3716,9 +3716,9 @@ impl ChatScreen {
                     .w(px(460.))
                     .p_5()
                     .rounded_lg()
-                    .bg(gpui::rgb(theme::BG_ELEVATED))
+                    .bg(gpui::rgb(theme::bg_elevated()))
                     .border_1()
-                    .border_color(gpui::rgb(theme::BORDER))
+                    .border_color(gpui::rgb(theme::border()))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -3726,13 +3726,13 @@ impl ChatScreen {
                         div()
                             .text_lg()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .child(format!("Trust {name}?")),
                     )
                     .child(
                         div()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .text_color(gpui::rgb(theme::text_secondary()))
                             .child(
                                 "Trusting a project lets Maple use project-provided guidance, \
                                  including agent skills. These instructions can influence how \
@@ -3745,7 +3745,7 @@ impl ChatScreen {
                         div()
                             .text_xs()
                             .font_family("monospace")
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child(status.path.clone()),
                     )
                     .child(
@@ -3809,17 +3809,17 @@ impl ChatScreen {
                     .px_3()
                     .py_1p5()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .text_color(gpui::rgb(theme::text_primary()))
                     .hover(|style| {
                         style
-                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                             .cursor_pointer()
                     })
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         cx.stop_propagation();
                         on_click(this, cx);
                     }))
-                    .child(icon(icon_name, px(14.), theme::TEXT_SECONDARY))
+                    .child(icon(icon_name, px(14.), theme::text_secondary()))
                     .child(label)
             };
         let rename_root = root.to_string();
@@ -3852,9 +3852,9 @@ impl ChatScreen {
                 .w(px(180.))
                 .py_1()
                 .rounded_md()
-                .bg(gpui::rgb(theme::BG_ELEVATED))
+                .bg(gpui::rgb(theme::bg_elevated()))
                 .border_1()
-                .border_color(gpui::rgb(theme::BORDER))
+                .border_color(gpui::rgb(theme::border()))
                 .shadow_md()
                 .flex()
                 .flex_col()
@@ -3898,14 +3898,14 @@ impl ChatScreen {
                 .text_sm()
                 .when(primary, |button| {
                     button
-                        .bg(gpui::rgb(theme::STATUS_ERROR))
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .bg(gpui::rgb(theme::status_error()))
+                        .text_color(gpui::rgb(theme::text_primary()))
                 })
                 .when(!primary, |button| {
                     button
                         .border_1()
-                        .border_color(gpui::rgb(theme::BORDER))
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .border_color(gpui::rgb(theme::border()))
+                        .text_color(gpui::rgb(theme::text_secondary()))
                 })
                 .hover(|style| style.cursor_pointer().opacity(0.9))
                 .child(label)
@@ -3930,9 +3930,9 @@ impl ChatScreen {
                     .w(px(420.))
                     .p_5()
                     .rounded_lg()
-                    .bg(gpui::rgb(theme::BG_ELEVATED))
+                    .bg(gpui::rgb(theme::bg_elevated()))
                     .border_1()
-                    .border_color(gpui::rgb(theme::BORDER))
+                    .border_color(gpui::rgb(theme::border()))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -3941,13 +3941,13 @@ impl ChatScreen {
                         div()
                             .text_lg()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .child(format!("Remove {name}?")),
                     )
                     .child(
                         div()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .text_color(gpui::rgb(theme::text_secondary()))
                             .child(
                                 "The project leaves the sidebar and its tasks move to \
                                  Archived, where you can restore them. No files are deleted.",
@@ -3957,7 +3957,7 @@ impl ChatScreen {
                         div()
                             .text_xs()
                             .font_family("monospace")
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child(root.to_string()),
                     )
                     .child(
@@ -4102,7 +4102,7 @@ impl ChatScreen {
             div()
                 .text_xs()
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .child(text.to_uppercase())
         };
         div()
@@ -4110,7 +4110,7 @@ impl ChatScreen {
             .h_full()
             .flex()
             .flex_col()
-            .bg(gpui::rgb(theme::BG_SIDEBAR))
+            .bg(gpui::rgb(theme::bg_sidebar()))
             .child(
                 div()
                     .flex()
@@ -4120,7 +4120,7 @@ impl ChatScreen {
                     .pr_3()
                     .pt_3()
                     .pb_2()
-                    .child(wordmark(px(16.), theme::TEXT_PRIMARY))
+                    .child(wordmark(px(16.), theme::text_primary()))
                     .child(self.render_sidebar_toggle(cx)),
             )
             .child(
@@ -4135,16 +4135,16 @@ impl ChatScreen {
                     .items_center()
                     .gap_2()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::ACCENT))
+                    .text_color(gpui::rgb(theme::accent()))
                     .hover(|style| {
                         style
-                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                             .cursor_pointer()
                     })
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.new_session(cx);
                     }))
-                    .child(icon("square-pen", px(16.), theme::ACCENT))
+                    .child(icon("square-pen", px(16.), theme::accent()))
                     .child("New Task"),
             )
             .child(
@@ -4174,13 +4174,13 @@ impl ChatScreen {
                                     .rounded_md()
                                     .hover(|style| {
                                         style
-                                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                                             .cursor_pointer()
                                     })
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.choose_root_dialog(cx);
                                     }))
-                                    .child(icon("folder-plus", px(16.), theme::TEXT_SECONDARY)),
+                                    .child(icon("folder-plus", px(16.), theme::text_secondary())),
                             ),
                     )
                     .children(self.project_groups.iter().map(|(root, indices)| {
@@ -4210,10 +4210,10 @@ impl ChatScreen {
                                     .rounded_md()
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .text_color(gpui::rgb(theme::text_primary()))
                                     .hover(|style| {
                                         style
-                                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                                             .cursor_pointer()
                                     })
                                     .on_click({
@@ -4229,12 +4229,12 @@ impl ChatScreen {
                                             "chevron-down"
                                         },
                                         px(14.),
-                                        theme::TEXT_SECONDARY,
+                                        theme::text_secondary(),
                                     ))
                                     .child(icon(
                                         if is_current { "folder-open" } else { "folder" },
                                         px(16.),
-                                        theme::TEXT_PRIMARY,
+                                        theme::text_primary(),
                                     ))
                                     .when_some(rename_field, |row, field| row.child(field))
                                     .when(
@@ -4266,7 +4266,7 @@ impl ChatScreen {
                                                         this.toggle_pin(&root, cx);
                                                     })
                                                 })
-                                                .child(icon("pin", px(13.), theme::ACCENT)),
+                                                .child(icon("pin", px(13.), theme::accent())),
                                         )
                                     })
                                     .when(!is_pinned, |row| {
@@ -4323,7 +4323,7 @@ impl ChatScreen {
                                         .rounded_md()
                                         .hover(|style| {
                                             style
-                                                .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                                                 .cursor_pointer()
                                         })
                                         .on_click(cx.listener(|this, _event, _window, cx| {
@@ -4337,13 +4337,13 @@ impl ChatScreen {
                                                 "chevron-right"
                                             },
                                             px(14.),
-                                            theme::TEXT_SECONDARY,
+                                            theme::text_secondary(),
                                         ))
                                         .child(section_label("Archived"))
                                         .child(
                                             div()
                                                 .text_xs()
-                                                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                                .text_color(gpui::rgb(theme::text_muted()))
                                                 .child(count.to_string()),
                                         ),
                                 )
@@ -4391,13 +4391,13 @@ impl ChatScreen {
             .rounded_lg()
             .text_sm()
             .when(is_selected, |row| {
-                row.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED))
+                row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                     .font_weight(gpui::FontWeight::MEDIUM)
             })
-            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+            .text_color(gpui::rgb(theme::text_primary()))
             .hover(|style| {
                 style
-                    .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .cursor_pointer()
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -4416,7 +4416,7 @@ impl ChatScreen {
                             column.child(
                                 div()
                                     .text_xs()
-                                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                    .text_color(gpui::rgb(theme::text_muted()))
                                     .line_clamp(1)
                                     .child(self.root_name(&session.project_root)),
                             )
@@ -4462,13 +4462,13 @@ impl ChatScreen {
             .rounded_full()
             .hover(|style| {
                 style
-                    .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .cursor_pointer()
             })
             .on_click(cx.listener(|_this, _event, _window, cx| {
                 cx.emit(OpenSettings);
             }))
-            .child(icon("settings", px(16.), theme::TEXT_SECONDARY));
+            .child(icon("settings", px(16.), theme::text_secondary()));
         div().flex().items_center().px_3().py_2().child(gear)
     }
 
@@ -4526,7 +4526,7 @@ impl ChatScreen {
                     .min_w_0()
                     .text_sm()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .text_color(gpui::rgb(theme::text_primary()))
                     .line_clamp(1)
                     .child(title),
             )
@@ -4541,17 +4541,17 @@ impl ChatScreen {
                         .py_1()
                         .rounded_md()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                        .text_color(gpui::rgb(theme::text_secondary()))
                         .hover(|style| {
                             style
-                                .bg(gpui::rgb(theme::BG_ELEVATED))
-                                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                .bg(gpui::rgb(theme::bg_elevated()))
+                                .text_color(gpui::rgb(theme::text_primary()))
                                 .cursor_pointer()
                         })
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.new_session(cx);
                         }))
-                        .child(icon("square-pen", px(14.), theme::TEXT_SECONDARY))
+                        .child(icon("square-pen", px(14.), theme::text_secondary()))
                         .child("New Task"),
                 ),
             )
@@ -4566,9 +4566,9 @@ impl ChatScreen {
             .mt_1()
             .py_1()
             .rounded_lg()
-            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
-            .border_color(gpui::rgb(theme::BORDER));
+            .border_color(gpui::rgb(theme::border()));
         if self.root_menu_open {
             for path in self.recent_roots.iter().take(6) {
                 let is_current = self.project_root.as_deref() == Some(path.as_str());
@@ -4579,12 +4579,12 @@ impl ChatScreen {
                         .py_1()
                         .text_sm()
                         .text_color(gpui::rgb(if is_current {
-                            theme::ACCENT
+                            theme::accent()
                         } else {
-                            theme::TEXT_PRIMARY
+                            theme::text_primary()
                         }))
                         .line_clamp(1)
-                        .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                        .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                         .on_click({
                             let path = path.clone();
                             cx.listener(move |this, _event, _window, cx| {
@@ -4600,8 +4600,8 @@ impl ChatScreen {
                     .px_3()
                     .py_1()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.choose_root_dialog(cx);
                     }))
@@ -4614,7 +4614,7 @@ impl ChatScreen {
                             .px_3()
                             .pb_1()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child("Or type an absolute path:"),
                     )
                     .child(
@@ -4631,9 +4631,9 @@ impl ChatScreen {
                                     .px_3()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(gpui::rgb(theme::ACCENT))
+                                    .bg(gpui::rgb(theme::accent()))
                                     .text_sm()
-                                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                    .text_color(gpui::rgb(theme::text_primary()))
                                     .hover(|style| style.cursor_pointer())
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         if let Some(path) = this
@@ -4659,7 +4659,7 @@ impl ChatScreen {
                 ),
                 ("smart_approve", "Ask first", "Confirm each gated tool call"),
             ] {
-                let mode_icon = icon(permission_mode_icon(mode), px(14.), theme::TEXT_SECONDARY);
+                let mode_icon = icon(permission_mode_icon(mode), px(14.), theme::text_secondary());
                 let mode = mode.to_string();
                 let is_current = self.permission_mode == mode;
                 menu = menu.child(
@@ -4669,11 +4669,11 @@ impl ChatScreen {
                         .py_1()
                         .text_sm()
                         .text_color(gpui::rgb(if is_current {
-                            theme::ACCENT
+                            theme::accent()
                         } else {
-                            theme::TEXT_PRIMARY
+                            theme::text_primary()
                         }))
-                        .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                        .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             this.permission_mode.clone_from(&mode);
                             this.uses_default_permission_mode = false;
@@ -4697,7 +4697,7 @@ impl ChatScreen {
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                        .text_color(gpui::rgb(theme::text_muted()))
                                         .child(note),
                                 ),
                         ),
@@ -4713,7 +4713,7 @@ impl ChatScreen {
                     .pb_2()
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .text_color(gpui::rgb(theme::text_secondary()))
                     .child("MCP servers"),
             );
             if self.session_mcp.is_empty() {
@@ -4722,7 +4722,7 @@ impl ChatScreen {
                         .px_3()
                         .py_2()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_MUTED))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("No MCP servers configured."),
                 );
             }
@@ -4738,7 +4738,7 @@ impl ChatScreen {
                         .gap_3()
                         .px_3()
                         .py_1p5()
-                        .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                        .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             this.toggle_session_mcp(name.clone(), !enabled, cx);
                         }))
@@ -4752,7 +4752,7 @@ impl ChatScreen {
                                     div()
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                                        .text_color(gpui::rgb(theme::text_primary()))
                                         .line_clamp(1)
                                         .child(server.name.clone()),
                                 )
@@ -4760,7 +4760,7 @@ impl ChatScreen {
                                     col.child(
                                         div()
                                             .text_xs()
-                                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                            .text_color(gpui::rgb(theme::text_muted()))
                                             .line_clamp(2)
                                             .child(server.description.clone()),
                                     )
@@ -4769,7 +4769,7 @@ impl ChatScreen {
                                     col.child(
                                         div()
                                             .text_xs()
-                                            .text_color(gpui::rgb(theme::STATUS_WARNING))
+                                            .text_color(gpui::rgb(theme::status_warning()))
                                             .child("Not available in this task"),
                                     )
                                 }),
@@ -4781,17 +4781,17 @@ impl ChatScreen {
                                 .p(px(2.))
                                 .rounded_full()
                                 .bg(gpui::rgb(if enabled {
-                                    theme::ACCENT
+                                    theme::accent()
                                 } else {
-                                    theme::BORDER
+                                    theme::border()
                                 }))
                                 .flex()
                                 .when(enabled, |track| track.justify_end())
                                 .child(div().size(px(14.)).rounded_full().bg(gpui::rgb(
                                     if enabled {
-                                        theme::BG_APP
+                                        theme::bg_app()
                                     } else {
-                                        theme::TEXT_SECONDARY
+                                        theme::text_secondary()
                                     },
                                 ))),
                         ),
@@ -4804,10 +4804,10 @@ impl ChatScreen {
                     .px_3()
                     .py_1p5()
                     .border_t_1()
-                    .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+                    .border_color(gpui::rgb(theme::border_subtle()))
                     .text_sm()
-                    .text_color(gpui::rgb(theme::ACCENT))
-                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .text_color(gpui::rgb(theme::accent()))
+                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.mcp_menu_open = false;
                         cx.emit(OpenSettingsSection(Section::Mcp));
@@ -4823,8 +4823,8 @@ impl ChatScreen {
                     .px_3()
                     .py_1()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                     .on_click({
                         let model = model.clone();
                         cx.listener(move |this, _event, _window, cx| {
@@ -4854,9 +4854,9 @@ impl ChatScreen {
             .mt_1()
             .py_1()
             .rounded_lg()
-            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
-            .border_color(gpui::rgb(theme::BORDER));
+            .border_color(gpui::rgb(theme::border()));
         for (index, entry) in entries.iter().enumerate() {
             let is_selected = selected == Some(index);
             let name = entry.name.clone();
@@ -4869,9 +4869,9 @@ impl ChatScreen {
                     .gap_2()
                     .px_3()
                     .when(is_selected, |row| {
-                        row.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED))
+                        row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                     })
-                    .hover(|style| style.bg(gpui::rgb(theme::BG_INPUT)).cursor_pointer())
+                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                     .on_click(move |_event, _window, cx: &mut gpui::App| {
                         chat.update(cx, |chat, cx| chat.complete_slash_command(&name, cx))
                             .ok();
@@ -4879,7 +4879,7 @@ impl ChatScreen {
                     .child(
                         div()
                             .font_family("monospace")
-                            .text_color(gpui::rgb(theme::ACCENT))
+                            .text_color(gpui::rgb(theme::accent()))
                             .child(format!("/{}", entry.name)),
                     )
                     .child(
@@ -4887,7 +4887,7 @@ impl ChatScreen {
                             .min_w_0()
                             .flex_1()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .line_clamp(1)
                             .child(entry.description.clone()),
                     ),
@@ -4994,8 +4994,8 @@ impl ChatScreen {
                         .px_3()
                         .py_2()
                         .rounded_md()
-                        .bg(gpui::rgb(theme::STATUS_ERROR))
-                        .text_color(gpui::rgb(theme::BG_APP))
+                        .bg(gpui::rgb(theme::status_error()))
+                        .text_color(gpui::rgb(theme::bg_app()))
                         .text_sm()
                         .child(error),
                 )
@@ -5008,8 +5008,8 @@ impl ChatScreen {
                         .px_3()
                         .py_2()
                         .rounded_md()
-                        .bg(gpui::rgb(theme::STATUS_WARNING))
-                        .text_color(gpui::rgb(theme::BG_APP))
+                        .bg(gpui::rgb(theme::status_warning()))
+                        .text_color(gpui::rgb(theme::bg_app()))
                         .text_sm()
                         .child(notice),
                 )
@@ -5046,7 +5046,7 @@ impl ChatScreen {
                     .h(thumb_height)
                     .mt(thumb_top)
                     .rounded_full()
-                    .bg(gpui::rgba(0xffffff26)),
+                    .bg(theme::scrollbar_thumb()),
             )
     }
 
@@ -5077,16 +5077,16 @@ impl ChatScreen {
             .flex_col()
             .when(expanded, |container| container.flex_1().min_h_0())
             .rounded(px(24.))
-            .bg(gpui::rgb(theme::BG_APP))
+            .bg(gpui::rgb(theme::bg_app()))
             .border_1()
-            .border_color(gpui::rgb(theme::ACCENT))
+            .border_color(gpui::rgb(theme::accent()))
             .when(disabled, |container| container.opacity(0.5))
             // Files dragged from the desktop land as image attachments.
             .can_drop(|dragged, _window, _cx| {
                 dragged.downcast_ref::<gpui::ExternalPaths>().is_some()
             })
             .drag_over::<gpui::ExternalPaths>(|style, _paths, _window, _cx| {
-                style.bg(gpui::rgb(theme::BG_ELEVATED))
+                style.bg(gpui::rgb(theme::bg_elevated()))
             })
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
@@ -5102,8 +5102,8 @@ impl ChatScreen {
                             .size_16()
                             .rounded_xl()
                             .border_1()
-                            .border_color(gpui::rgb(theme::BORDER))
-                            .bg(gpui::rgb(theme::BG_ELEVATED))
+                            .border_color(gpui::rgb(theme::border()))
+                            .bg(gpui::rgb(theme::bg_elevated()))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -5115,7 +5115,9 @@ impl ChatScreen {
                                         .size_full()
                                         .rounded_xl(),
                                 ),
-                                None => frame.child(icon("image", px(20.), theme::TEXT_SECONDARY)),
+                                None => {
+                                    frame.child(icon("image", px(20.), theme::text_secondary()))
+                                }
                             })
                             .child(
                                 div()
@@ -5128,9 +5130,9 @@ impl ChatScreen {
                                     .items_center()
                                     .justify_center()
                                     .rounded_full()
-                                    .bg(gpui::rgb(theme::BG_ELEVATED))
+                                    .bg(gpui::rgb(theme::bg_elevated()))
                                     .border_1()
-                                    .border_color(gpui::rgb(theme::BORDER))
+                                    .border_color(gpui::rgb(theme::border()))
                                     .hover(|style| style.cursor_pointer())
                                     .on_click(cx.listener(move |this, _event, _window, cx| {
                                         if index < this.draft_images.len() {
@@ -5138,7 +5140,7 @@ impl ChatScreen {
                                         }
                                         cx.notify();
                                     }))
-                                    .child(icon("x", px(10.), theme::TEXT_PRIMARY)),
+                                    .child(icon("x", px(10.), theme::text_primary())),
                             )
                     }),
                 ))
@@ -5156,7 +5158,7 @@ impl ChatScreen {
                             .flex_1()
                             .min_w_0()
                             .when(expanded, |cell| cell.h_full())
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .children(composer),
                     )
                     .child(
@@ -5167,14 +5169,16 @@ impl ChatScreen {
                             .items_center()
                             .justify_center()
                             .rounded_md()
-                            .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
+                            .hover(|style| {
+                                style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer()
+                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.toggle_composer_expanded(cx);
                             }))
                             .child(icon(
                                 if expanded { "minimize-2" } else { "maximize-2" },
                                 px(14.),
-                                theme::TEXT_MUTED,
+                                theme::text_muted(),
                             )),
                     ),
             )
@@ -5266,12 +5270,14 @@ impl ChatScreen {
                             .items_center()
                             .justify_center()
                             .rounded_md()
-                            .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
+                            .hover(|style| {
+                                style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer()
+                            })
                             .when(self.image_picking, |el| el.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.pick_images(cx);
                             }))
-                            .child(icon("image", px(16.), theme::TEXT_SECONDARY)),
+                            .child(icon("image", px(16.), theme::text_secondary())),
                     )
                     .child(
                         chip(
@@ -5311,12 +5317,12 @@ impl ChatScreen {
                                 .items_center()
                                 .justify_center()
                                 .rounded_xl()
-                                .bg(gpui::rgb(theme::STATUS_ERROR))
+                                .bg(gpui::rgb(theme::status_error()))
                                 .hover(|style| style.cursor_pointer())
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.stop(cx);
                                 }))
-                                .child(div().size_3().rounded_md().bg(gpui::rgb(theme::BG_APP))),
+                                .child(div().size_3().rounded_md().bg(gpui::rgb(theme::bg_app()))),
                         )
                     })
                     .child(
@@ -5329,8 +5335,8 @@ impl ChatScreen {
                             .rounded_full()
                             .bg(gpui::linear_gradient(
                                 180.,
-                                gpui::linear_color_stop(gpui::rgb(theme::SEND_TOP), 0.),
-                                gpui::linear_color_stop(gpui::rgb(theme::SEND_BOTTOM), 1.),
+                                gpui::linear_color_stop(gpui::rgb(theme::send_top()), 0.),
+                                gpui::linear_color_stop(gpui::rgb(theme::send_bottom()), 1.),
                             ))
                             .when(!can_send, |el| el.opacity(0.4))
                             .when(can_send, |el| {
@@ -5340,9 +5346,9 @@ impl ChatScreen {
                                     }))
                             })
                             .child(if disabled {
-                                icon("loader-circle", px(16.), theme::BG_APP)
+                                icon("loader-circle", px(16.), theme::bg_app())
                             } else {
-                                icon("arrow-up", px(16.), theme::BG_APP)
+                                icon("arrow-up", px(16.), theme::bg_app())
                             }),
                     ),
             )
@@ -5387,9 +5393,9 @@ fn chip(
     active: bool,
 ) -> gpui::Stateful<Div> {
     let color = if active {
-        theme::TEXT_PRIMARY
+        theme::text_primary()
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     div()
         .id(id)
@@ -5402,8 +5408,8 @@ fn chip(
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))
-        .when(active, |el| el.bg(gpui::rgb(theme::BG_ELEVATED)))
-        .hover(|style| style.bg(gpui::rgb(theme::BG_ELEVATED)).cursor_pointer())
+        .when(active, |el| el.bg(gpui::rgb(theme::bg_elevated())))
+        .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
         .children(leading.map(|name| icon(name, px(16.), color)))
         .child(div().whitespace_nowrap().child(label))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
@@ -5427,9 +5433,9 @@ fn row_action(
         .rounded_md()
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover(|style| style.bg(gpui::rgb(theme::BG_SIDEBAR_ROW_SELECTED)))
+        .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .on_click(on_click)
-        .child(icon(icon_name, px(14.), theme::TEXT_SECONDARY))
+        .child(icon(icon_name, px(14.), theme::text_secondary()))
 }
 
 /// Field-wise equality for session rows; the summary type has no
@@ -5636,20 +5642,20 @@ fn copy_message_button(item_id: &str, group: &SharedString, text: &str) -> gpui:
         .py_0p5()
         .rounded_md()
         .text_xs()
-        .text_color(gpui::rgb(theme::TEXT_MUTED))
+        .text_color(gpui::rgb(theme::text_muted()))
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
         .hover(|style| {
             style
-                .bg(gpui::rgb(theme::BG_ELEVATED))
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .bg(gpui::rgb(theme::bg_elevated()))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .cursor_pointer()
         })
         .on_click(move |_event, _window, cx: &mut gpui::App| {
             cx.stop_propagation();
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
         })
-        .child(icon("copy", px(12.), theme::TEXT_SECONDARY))
+        .child(icon("copy", px(12.), theme::text_secondary()))
         .child("Copy")
 }
 
@@ -5686,10 +5692,10 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .px_4()
                     .py_2()
                     .rounded_lg()
-                    .bg(gpui::rgb(theme::BG_USER_BUBBLE))
+                    .bg(gpui::rgb(theme::bg_user_bubble()))
                     .border_1()
-                    .border_color(gpui::rgb(theme::USER_BUBBLE_BORDER))
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .border_color(gpui::rgb(theme::user_bubble_border()))
+                    .text_color(gpui::rgb(theme::text_primary()))
                     .when(has_images, |bubble| {
                         bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
                             attachments.map(|(id, name)| {
@@ -5727,7 +5733,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                                                     .overflow_hidden()
                                                     .object_fit(gpui::ObjectFit::Contain)
                                                     .border_1()
-                                                    .border_color(gpui::rgb(theme::BORDER)),
+                                                    .border_color(gpui::rgb(theme::border())),
                                                 ),
                                         )
                                     }
@@ -5740,10 +5746,10 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                                         .px_2()
                                         .py_0p5()
                                         .rounded_md()
-                                        .bg(gpui::rgb(theme::BG_ELEVATED))
+                                        .bg(gpui::rgb(theme::bg_elevated()))
                                         .text_xs()
-                                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
-                                        .child(icon("paperclip", px(12.), theme::TEXT_SECONDARY))
+                                        .text_color(gpui::rgb(theme::text_secondary()))
+                                        .child(icon("paperclip", px(12.), theme::text_secondary()))
                                         .child(name.to_string()),
                                 }
                             }),
@@ -5766,7 +5772,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .flex()
             .flex_col()
             .gap_0p5()
-            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+            .text_color(gpui::rgb(theme::text_primary()))
             .child(markdown::render_with(
                 &transcript
                     .markdown_cache
@@ -5782,7 +5788,7 @@ fn render_thinking(item: &AgentTimelineItem, revision: u64, transcript: &Transcr
     if text.trim().is_empty() {
         div().child(
             div()
-                .text_color(gpui::rgb(theme::STATUS_RUNNING))
+                .text_color(gpui::rgb(theme::status_running()))
                 .text_sm()
                 .child("Thinking…"),
         )
@@ -5791,9 +5797,9 @@ fn render_thinking(item: &AgentTimelineItem, revision: u64, transcript: &Transcr
             .px_3()
             .py_2()
             .rounded_md()
-            .bg(gpui::rgb(theme::BG_ELEVATED))
+            .bg(gpui::rgb(theme::bg_elevated()))
             .text_sm()
-            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+            .text_color(gpui::rgb(theme::text_secondary()))
             .child(text)
     }
 }
@@ -5813,10 +5819,10 @@ fn maple_display_text(text: &str) -> std::borrow::Cow<'_, str> {
 
 fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {
     match status {
-        Some("completed") => ("completed", theme::STATUS_SUCCESS),
-        Some("failed") | Some("error") => ("failed", theme::STATUS_ERROR),
-        Some("cancelled") | Some("controlled_externally") => ("stopped", theme::TEXT_MUTED),
-        _ => ("running", theme::STATUS_RUNNING),
+        Some("completed") => ("completed", theme::status_success()),
+        Some("failed") | Some("error") => ("failed", theme::status_error()),
+        Some("cancelled") | Some("controlled_externally") => ("stopped", theme::text_muted()),
+        _ => ("running", theme::status_running()),
     }
 }
 
@@ -5837,14 +5843,14 @@ fn render_todo(item: &AgentTimelineItem) -> Div {
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(gpui::rgb(theme::BG_TOOL_CARD))
+        .bg(gpui::rgb(theme::bg_tool_card()))
         .border_1()
-        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .border_color(gpui::rgb(theme::border_subtle()))
         .child(
             div()
                 .text_sm()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .text_color(gpui::rgb(theme::text_primary()))
                 .child("Plan"),
         );
     if let Some(serde_json::Value::Object(map)) = item.input.as_ref()
@@ -5860,9 +5866,9 @@ fn render_todo(item: &AgentTimelineItem) -> Div {
                 .and_then(|value| value.as_str())
                 .unwrap_or("pending");
             let (marker, color) = match status {
-                "completed" => ("[x]", theme::STATUS_SUCCESS),
-                "in_progress" => ("[~]", theme::STATUS_RUNNING),
-                _ => ("[ ]", theme::TEXT_MUTED),
+                "completed" => ("[x]", theme::status_success()),
+                "in_progress" => ("[~]", theme::status_running()),
+                _ => ("[ ]", theme::text_muted()),
             };
             card = card.child(
                 div()
@@ -5879,9 +5885,9 @@ fn render_todo(item: &AgentTimelineItem) -> Div {
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(if status == "completed" {
-                                theme::TEXT_MUTED
+                                theme::text_muted()
                             } else {
-                                theme::TEXT_PRIMARY
+                                theme::text_primary()
                             }))
                             .line_clamp(1)
                             .child(content.to_string()),
@@ -5952,15 +5958,15 @@ fn render_tool_with_diff(
         .flex_col()
         .mt_1()
         .rounded_md()
-        .bg(gpui::rgb(theme::BG_CODE_BLOCK))
+        .bg(gpui::rgb(theme::bg_code_block()))
         .border_1()
-        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .border_color(gpui::rgb(theme::border_subtle()))
         .overflow_x_hidden();
     for (sign, line) in diff_lines.iter() {
         let color = match sign {
-            '+' => theme::STATUS_SUCCESS,
-            '-' => theme::STATUS_ERROR,
-            _ => theme::TEXT_SECONDARY,
+            '+' => theme::status_success(),
+            '-' => theme::status_error(),
+            _ => theme::text_secondary(),
         };
         diff = diff.child(
             div()
@@ -6021,9 +6027,9 @@ fn render_tool(
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(gpui::rgb(theme::BG_TOOL_CARD))
+        .bg(gpui::rgb(theme::bg_tool_card()))
         .border_1()
-        .border_color(gpui::rgb(theme::BORDER_SUBTLE))
+        .border_color(gpui::rgb(theme::border_subtle()))
         .hover(|style| style.cursor_pointer())
         .on_click(move |_event, _window, cx: &mut gpui::App| {
             chat_header
@@ -6041,7 +6047,7 @@ fn render_tool(
                     div()
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .text_color(gpui::rgb(theme::text_primary()))
                         .child(title),
                 )
                 .child(
@@ -6058,7 +6064,7 @@ fn render_tool(
                         "chevron-right"
                     },
                     px(14.),
-                    theme::TEXT_MUTED,
+                    theme::text_muted(),
                 )),
         );
     // The payload region swallows clicks so selecting output text or
@@ -6080,7 +6086,7 @@ fn render_tool(
         payload = payload.child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .line_clamp(2)
                 .child(summary),
         );
@@ -6093,14 +6099,14 @@ fn render_tool(
             payload = payload.child(
                 div()
                     .text_xs()
-                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .text_color(gpui::rgb(theme::text_muted()))
                     .child("Summarizing…"),
             );
         } else if !has_summary && let Some(preview) = &derived.preview {
             payload = payload.child(
                 div()
                     .text_xs()
-                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .text_color(gpui::rgb(theme::text_muted()))
                     .line_clamp(1)
                     .child(preview.clone()),
             );
@@ -6113,7 +6119,7 @@ fn render_tool(
         payload = payload.child(
             div()
                 .text_xs()
-                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                .text_color(gpui::rgb(theme::text_muted()))
                 .font_family("monospace")
                 .line_clamp(2)
                 .overflow_x_hidden()
@@ -6126,7 +6132,7 @@ fn render_tool(
                 .mt_1()
                 .w_full()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .child(markdown::render(&transcript.markdown_cache.get(
                     &item.id,
                     MarkdownKind::ToolOutput,
@@ -6197,8 +6203,8 @@ fn render_error(item: &AgentTimelineItem) -> Div {
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(gpui::rgb(theme::STATUS_ERROR))
-        .text_color(gpui::rgb(theme::BG_APP))
+        .bg(gpui::rgb(theme::status_error()))
+        .text_color(gpui::rgb(theme::bg_app()))
         .text_sm()
         .child(text)
 }
@@ -6209,9 +6215,9 @@ fn render_permission_row(item: &AgentTimelineItem) -> Div {
         .clone()
         .unwrap_or_else(|| "Permission".to_string());
     let status = match item.status.as_deref() {
-        Some("completed") => ("allowed", theme::STATUS_SUCCESS),
-        Some("denied") | Some("cancelled") => ("denied", theme::TEXT_MUTED),
-        _ => ("waiting", theme::STATUS_WARNING),
+        Some("completed") => ("allowed", theme::status_success()),
+        Some("denied") | Some("cancelled") => ("denied", theme::text_muted()),
+        _ => ("waiting", theme::status_warning()),
     };
     div()
         .flex()
@@ -6220,13 +6226,13 @@ fn render_permission_row(item: &AgentTimelineItem) -> Div {
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(gpui::rgb(theme::PERMISSION_FILL))
+        .bg(gpui::rgb(theme::permission_fill()))
         .border_1()
-        .border_color(gpui::rgb(theme::PERMISSION_BORDER))
+        .border_color(gpui::rgb(theme::permission_border()))
         .child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .text_color(gpui::rgb(theme::text_primary()))
                 .child(title),
         )
         .child(
@@ -6248,7 +6254,7 @@ fn render_system(item: &AgentTimelineItem) -> Div {
     }
     div()
         .text_sm()
-        .text_color(gpui::rgb(theme::TEXT_MUTED))
+        .text_color(gpui::rgb(theme::text_muted()))
         .child(text)
 }
 
@@ -6264,16 +6270,16 @@ fn render_question_card(
         .px_4()
         .py_3()
         .rounded_lg()
-        .bg(gpui::rgb(theme::BG_ELEVATED))
+        .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
-        .border_color(gpui::rgb(theme::STATUS_RUNNING))
+        .border_color(gpui::rgb(theme::status_running()))
         .flex()
         .flex_col()
         .gap_2()
         .child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .text_color(gpui::rgb(theme::text_primary()))
                 .child("Question from Maple"),
         );
     let step = step.min(question.questions.len().saturating_sub(1));
@@ -6289,7 +6295,7 @@ fn render_question_card(
             block = block.child(
                 div()
                     .text_xs()
-                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .text_color(gpui::rgb(theme::text_muted()))
                     .child(format!(
                         "Question {} of {}",
                         step + 1,
@@ -6301,13 +6307,13 @@ fn render_question_card(
             div()
                 .text_xs()
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .child(entry.header.clone()),
         );
         block = block.child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .child(entry.question.clone()),
         );
         for (option_index, option) in entry.options.iter().enumerate() {
@@ -6317,11 +6323,11 @@ fn render_question_card(
                 .rounded_full()
                 .border_1()
                 .border_color(gpui::rgb(if is_picked {
-                    theme::ACCENT
+                    theme::accent()
                 } else {
-                    theme::BORDER
+                    theme::border()
                 }))
-                .when(is_picked, |dot| dot.bg(gpui::rgb(theme::ACCENT)));
+                .when(is_picked, |dot| dot.bg(gpui::rgb(theme::accent())));
             // flex_1 is load-bearing: without it the row squeezes this
             // block to a character wide and the label wraps vertically.
             let label_element = if option.description.is_empty() {
@@ -6329,7 +6335,7 @@ fn render_question_card(
                     .flex_1()
                     .min_w_0()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .text_color(gpui::rgb(theme::text_primary()))
                     .child(option.label.clone())
             } else {
                 div()
@@ -6340,13 +6346,13 @@ fn render_question_card(
                     .child(
                         div()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .text_color(gpui::rgb(theme::text_primary()))
                             .child(option.label.clone()),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child(option.description.clone()),
                     )
             };
@@ -6363,7 +6369,7 @@ fn render_question_card(
                     .rounded_md()
                     .hover(|style| {
                         style
-                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                             .cursor_pointer()
                     })
                     .on_click({
@@ -6391,12 +6397,12 @@ fn render_question_card(
                         .px_3()
                         .py_2()
                         .rounded_md()
-                        .bg(gpui::rgb(theme::BG_INPUT))
+                        .bg(gpui::rgb(theme::bg_input()))
                         .border_1()
-                        .border_color(gpui::rgb(theme::BORDER))
+                        .border_color(gpui::rgb(theme::border()))
                         // The input inherits ambient color; without this the
                         // typed answer renders near-black on the dark field.
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .text_color(gpui::rgb(theme::text_primary()))
                         .child(input),
                 )
                 .child(
@@ -6405,9 +6411,9 @@ fn render_question_card(
                         .px_4()
                         .py_2()
                         .rounded_md()
-                        .bg(gpui::rgb(theme::ACCENT))
+                        .bg(gpui::rgb(theme::accent()))
                         .text_sm()
-                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                        .text_color(gpui::rgb(theme::text_primary()))
                         .hover(|style| style.cursor_pointer())
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.submit_question(cx);
@@ -6426,10 +6432,10 @@ fn render_question_card(
             .py_1()
             .rounded_md()
             .text_xs()
-            .text_color(gpui::rgb(theme::TEXT_MUTED))
+            .text_color(gpui::rgb(theme::text_muted()))
             .hover(|style| {
                 style
-                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .text_color(gpui::rgb(theme::text_secondary()))
                     .cursor_pointer()
             })
             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -6452,7 +6458,7 @@ fn render_waiting_indicator() -> Div {
         let dot = div()
             .size(size)
             .rounded_full()
-            .bg(gpui::rgb(theme::TEXT_SECONDARY))
+            .bg(gpui::rgb(theme::text_secondary()))
             .with_animation(
                 gpui::ElementId::Name(format!("waiting-dot-{index}").into()),
                 gpui::Animation::new(duration).repeat(),
@@ -6466,7 +6472,7 @@ fn render_waiting_indicator() -> Div {
     row.child(
         div()
             .text_sm()
-            .text_color(gpui::rgb(theme::TEXT_MUTED))
+            .text_color(gpui::rgb(theme::text_muted()))
             .child("Maple is thinking"),
     )
 }
@@ -6487,29 +6493,29 @@ fn render_permission_card(
         .px_4()
         .py_3()
         .rounded_lg()
-        .bg(gpui::rgb(theme::PERMISSION_FILL))
+        .bg(gpui::rgb(theme::permission_fill()))
         .border_1()
-        .border_color(gpui::rgb(theme::PERMISSION_BORDER))
+        .border_color(gpui::rgb(theme::permission_border()))
         .flex()
         .flex_col()
         .gap_2()
         .child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                .text_color(gpui::rgb(theme::text_primary()))
                 .child("Permission required"),
         )
         .child(
             div()
                 .text_sm()
-                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .text_color(gpui::rgb(theme::text_secondary()))
                 .child(description),
         );
     if !arguments.is_empty() {
         card = card.child(
             div()
                 .text_xs()
-                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                .text_color(gpui::rgb(theme::text_muted()))
                 .font_family("monospace")
                 .max_h(gpui::px(120.))
                 .overflow_hidden()
@@ -6518,8 +6524,8 @@ fn render_permission_card(
     }
     let mut buttons = div().flex().gap_2();
     for (label, allow, color) in [
-        ("Allow once", true, theme::STATUS_SUCCESS),
-        ("Deny", false, theme::STATUS_ERROR),
+        ("Allow once", true, theme::status_success()),
+        ("Deny", false, theme::status_error()),
     ] {
         buttons = buttons.child(
             div()
@@ -6530,9 +6536,9 @@ fn render_permission_card(
                 .px_4()
                 .py_1()
                 .rounded_md()
-                .bg(gpui::rgb(if responding { theme::BORDER } else { color }))
+                .bg(gpui::rgb(if responding { theme::border() } else { color }))
                 .text_sm()
-                .text_color(gpui::rgb(theme::BG_APP))
+                .text_color(gpui::rgb(theme::bg_app()))
                 .when(!responding, |el| {
                     el.hover(|style| style.cursor_pointer())
                         .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -6546,7 +6552,7 @@ fn render_permission_card(
         card = card.child(
             div()
                 .text_xs()
-                .text_color(gpui::rgb(theme::TEXT_MUTED))
+                .text_color(gpui::rgb(theme::text_muted()))
                 .child("Sending decision…"),
         );
     }

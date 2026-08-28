@@ -57,11 +57,11 @@ impl ContextRing {
 
     fn ring_color(fraction: f32) -> gpui::Hsla {
         if fraction >= 0.9 {
-            gpui::rgb(theme::STATUS_ERROR).into()
+            gpui::rgb(theme::status_error()).into()
         } else if fraction >= 0.75 {
-            gpui::rgb(theme::STATUS_WARNING).into()
+            gpui::rgb(theme::status_warning()).into()
         } else {
-            gpui::rgb(theme::ACCENT).into()
+            gpui::rgb(theme::accent()).into()
         }
     }
 }
@@ -123,7 +123,7 @@ impl Element for ContextRing {
         let radius = bounds.size.width.min(bounds.size.height) / 2.0 - px(1.0);
         // Track: full circle in a dim color.
         let track = arc_path(center, radius, 0.0, 0.999);
-        window.paint_path(track, gpui::rgb(theme::BORDER));
+        window.paint_path(track, gpui::rgb(theme::border()));
         // Usage arc from the top.
         let used = self.fraction.clamp(0.0, 1.0);
         if used > 0.01 {

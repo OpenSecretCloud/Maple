@@ -35,6 +35,9 @@ pub struct AppSettings {
     /// Window size and state from the last run.
     #[serde(default)]
     pub window: Option<WindowState>,
+    /// Color theme: "system", "dark", or "light".
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 /// Persisted window geometry. Position is left to the window manager:
@@ -79,6 +82,10 @@ impl AppSettings {
     }
 }
 
+fn default_theme() -> String {
+    "system".to_string()
+}
+
 fn default_web_enabled() -> bool {
     true
 }
@@ -111,6 +118,7 @@ impl Default for AppSettings {
             desktop_notifications: default_desktop_notifications(),
             harness_instructions: String::new(),
             window: None,
+            theme: default_theme(),
         }
     }
 }
