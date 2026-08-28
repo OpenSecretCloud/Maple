@@ -605,8 +605,8 @@ pub struct AgentRunHandle {
     pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
     pub usage: watch::Receiver<Option<AgentRunUsage>>,
     pub event_overflowed: Arc<AtomicBool>,
-    pub permission_responder: Option<AgentRunPermissionResponder>,
-    pub cancellation: Option<AgentRunCancellation>,
+    pub(crate) permission_responder: Option<AgentRunPermissionResponder>,
+    pub(crate) cancellation: Option<AgentRunCancellation>,
     pub queued: Option<AgentQueuedMessage>,
     pub queue: AgentDesktopQueueSnapshot,
 }
@@ -1332,13 +1332,13 @@ async fn sweep_unprompted_acp_sessions(session_manager: &SessionManager) {
         }
     };
     for session in sessions {
-        if is_unprompted_acp_session(&session) {
-            if let Err(error) = session_manager.delete_session(&session.id).await {
-                log::warn!(
-                    "Failed to remove stale provisional ACP task {}: {error}",
-                    session.id
-                );
-            }
+        if is_unprompted_acp_session(&session)
+            && let Err(error) = session_manager.delete_session(&session.id).await
+        {
+            log::warn!(
+                "Failed to remove stale provisional ACP task {}: {error}",
+                session.id
+            );
         }
     }
 }
@@ -1440,7 +1440,7 @@ pub trait AgentEventSink: Send + Sync + 'static {
 }
 
 #[derive(Clone)]
-struct AgentEventDispatcher {
+pub(crate) struct AgentEventDispatcher {
     sink: Arc<dyn AgentEventSink>,
 }
 
@@ -1950,7 +1950,7 @@ fn normalize_tool_summary(raw: &str) -> Option<String> {
         .unwrap_or(&first_line)
         .trim();
     let summary: String = line.chars().take(100).collect();
-    (!summary.is_empty()).then(|| summary)
+    (!summary.is_empty()).then_some(summary)
 }
 
 fn next_run_id() -> String {
@@ -2191,19 +2191,19 @@ async fn generate_agent_session_title(
         .await
         .map_err(|error| format!("Failed to load generated Agent task title: {error}"))?;
     let summary = session_summary(&session);
-    if !title_cancel_token.is_cancelled() {
-        if let Some((dispatcher, _)) = event_target.filter(|(_, policy)| policy.publishes()) {
-            // Keep the authority lock through publication. A later manual title
-            // therefore persists and publishes after this semantic snapshot.
-            emit_agent_event(
-                dispatcher,
-                AgentServiceEvent::SessionUpdated {
-                    session_id: session_id.to_string(),
-                    run_id: None,
-                    session: summary.clone(),
-                },
-            );
-        }
+    if !title_cancel_token.is_cancelled()
+        && let Some((dispatcher, _)) = event_target.filter(|(_, policy)| policy.publishes())
+    {
+        // Keep the authority lock through publication. A later manual title
+        // therefore persists and publishes after this semantic snapshot.
+        emit_agent_event(
+            dispatcher,
+            AgentServiceEvent::SessionUpdated {
+                session_id: session_id.to_string(),
+                run_id: None,
+                session: summary.clone(),
+            },
+        );
     }
     Ok(Some(summary))
 }
@@ -2981,10 +2981,10 @@ impl AgentRuntimeHandle {
         let fallback_path = fallback_path
             .map(|fallback| fallback.trim().to_string())
             .filter(|fallback| !fallback.is_empty());
-        if let Some(fallback) = fallback_path.as_deref() {
-            if fallback == path || !structurally_valid_project_root(fallback) {
-                return Err("Project fallback must be a different absolute folder path".to_string());
-            }
+        if let Some(fallback) = fallback_path.as_deref()
+            && (fallback == path || !structurally_valid_project_root(fallback))
+        {
+            return Err("Project fallback must be a different absolute folder path".to_string());
         }
 
         let (session_manager, active_session_ids) = {
@@ -3149,7 +3149,7 @@ impl AgentRuntimeHandle {
     /// evict its cached Goose agent so the next prompt rebuilds project-scoped
     /// capabilities from that decision. The lease-owned tool context remains
     /// installed; only the derived Agent/tool catalog is refreshed.
-    pub async fn set_project_trust_for_surface_session(
+    pub(crate) async fn set_project_trust_for_surface_session(
         &self,
         path: String,
         trusted: bool,
@@ -3232,7 +3232,7 @@ impl AgentRuntimeHandle {
             .detail)
     }
 
-    pub async fn create_session_with_tool_context(
+    pub(crate) async fn create_session_with_tool_context(
         &self,
         request: Option<AgentCreateSessionRequest>,
         tool_context: Option<AgentToolContextSpec>,
@@ -3248,7 +3248,7 @@ impl AgentRuntimeHandle {
         .await
     }
 
-    pub async fn create_session_with_surface_context(
+    pub(crate) async fn create_session_with_surface_context(
         &self,
         request: Option<AgentCreateSessionRequest>,
         tool_context: Option<AgentToolContextSpec>,
@@ -3600,7 +3600,7 @@ impl AgentRuntimeHandle {
     /// it atomically acquires the task's external tool/MCP lease, rejects live
     /// or already-leased tasks, and returns persisted history without Desktop
     /// overlays or actionable permission routing.
-    pub async fn attach_session_with_surface_context(
+    pub(crate) async fn attach_session_with_surface_context(
         &self,
         session_id: String,
         project_root: String,
@@ -4008,10 +4008,10 @@ impl AgentRuntimeHandle {
         let mut concrete_id = model_id.to_string();
         for alias in &catalog.aliases {
             if alias.id == model_id {
-                if let Some(target) = alias.target_model.as_deref() {
-                    if !target.trim().is_empty() {
-                        concrete_id = target.to_string();
-                    }
+                if let Some(target) = alias.target_model.as_deref()
+                    && !target.trim().is_empty()
+                {
+                    concrete_id = target.to_string();
                 }
                 break;
             }
@@ -4058,10 +4058,10 @@ impl AgentRuntimeHandle {
                 if let Some(vision) = alias.capabilities.as_ref().and_then(|c| c.vision) {
                     return Ok(Some(vision));
                 }
-                if let Some(target) = alias.target_model.as_deref() {
-                    if !target.trim().is_empty() {
-                        concrete_id = target.to_string();
-                    }
+                if let Some(target) = alias.target_model.as_deref()
+                    && !target.trim().is_empty()
+                {
+                    concrete_id = target.to_string();
                 }
                 break;
             }
@@ -4555,12 +4555,12 @@ impl AgentRuntimeHandle {
                 log::warn!("Deleted Agent task {session_id}, but failed to clear images: {error}")
             }
         }
-        if let Some(agent_manager) = agent_manager {
-            if let Err(error) = agent_manager.remove_session_if_loaded(&session_id).await {
-                log::warn!(
-                    "Deleted Goose session {session_id}, but failed to unload its agent: {error}"
-                );
-            }
+        if let Some(agent_manager) = agent_manager
+            && let Err(error) = agent_manager.remove_session_if_loaded(&session_id).await
+        {
+            log::warn!(
+                "Deleted Goose session {session_id}, but failed to unload its agent: {error}"
+            );
         }
         if let Some(permission_modes) = permission_modes {
             permission_modes.lock().await.remove(&session_id);
@@ -4635,15 +4635,14 @@ async fn finalize_cancelled_agent_turn(
             .add_message(session_id, user_message)
             .await
             .map_err(|error| format!("Failed to retain stopped Agent prompt: {error}"))?;
-    } else if let Some(conversation) = session.conversation.take() {
-        if let Some(repaired) =
+    } else if let Some(conversation) = session.conversation.take()
+        && let Some(repaired) =
             repair_cancelled_turn(&conversation, user_message, cancelled_permission_ids)
-        {
-            session_manager
-                .replace_conversation(session_id, &repaired)
-                .await
-                .map_err(|error| format!("Failed to repair stopped Agent tool history: {error}"))?;
-        }
+    {
+        session_manager
+            .replace_conversation(session_id, &repaired)
+            .await
+            .map_err(|error| format!("Failed to repair stopped Agent tool history: {error}"))?;
     }
 
     let stopped_notice = Message::assistant()
@@ -4822,7 +4821,7 @@ impl AgentRuntimeHandle {
         .await
     }
 
-    pub async fn send_message_with_tool_context(
+    pub(crate) async fn send_message_with_tool_context(
         &self,
         request: AgentSendMessageRequest,
         access: AgentToolContextAccess,
@@ -5484,20 +5483,18 @@ impl AgentRuntimeHandle {
                 Ok(_) => ("completed", None),
                 Err(error) => ("failed", Some(error)),
             };
-            if run_was_cancelled {
-                if let Some(error) = message.as_ref() {
-                    let item = error_item(error.clone());
-                    {
-                        let mut timelines = live_timelines.lock().await;
-                        apply_failed_prompt_outcome(
-                            &mut timelines,
-                            &session_id,
-                            permission_routing,
-                            item.clone(),
-                        );
-                    }
-                    task_events.publish(AgentRunEvent::Error(item)).await;
+            if run_was_cancelled && let Some(error) = message.as_ref() {
+                let item = error_item(error.clone());
+                {
+                    let mut timelines = live_timelines.lock().await;
+                    apply_failed_prompt_outcome(
+                        &mut timelines,
+                        &session_id,
+                        permission_routing,
+                        item.clone(),
+                    );
                 }
+                task_events.publish(AgentRunEvent::Error(item)).await;
             }
             // This retained per-run signal is authoritative for non-UI consumers.
             // It is deliberately published after runFinished so a receiver that
@@ -6555,8 +6552,8 @@ async fn automatically_handle_permissions(
             ActionRequiredData::ToolConfirmation { id, .. } => Some(id.clone()),
             _ => None,
         };
-        if let Some(request_id) = tool_request_id.as_ref() {
-            if deliver_tool_permission_if_auto(
+        if let Some(request_id) = tool_request_id.as_ref()
+            && deliver_tool_permission_if_auto(
                 agent,
                 session_id,
                 permission_modes,
@@ -6564,11 +6561,10 @@ async fn automatically_handle_permissions(
                 cancel_token,
             )
             .await
-            {
-                let request_id = request_id.clone();
-                handled.insert(request_id);
-                continue;
-            }
+        {
+            let request_id = request_id.clone();
+            handled.insert(request_id);
+            continue;
         }
         let current_mode = selected_permission_mode(permission_modes, session_id)
             .await
@@ -6643,8 +6639,8 @@ async fn automatically_handle_permissions(
         }
         let Some(request) = ShellPermissionRequest::from_action(&current_mode, working_dir, action)
         else {
-            if let Some(request_id) = tool_request_id {
-                if deliver_tool_permission_if_auto(
+            if let Some(request_id) = tool_request_id
+                && deliver_tool_permission_if_auto(
                     agent,
                     session_id,
                     permission_modes,
@@ -6652,9 +6648,8 @@ async fn automatically_handle_permissions(
                     cancel_token,
                 )
                 .await
-                {
-                    handled.insert(request_id);
-                }
+            {
+                handled.insert(request_id);
             }
             continue;
         };
@@ -6960,23 +6955,23 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                     ));
                 }
                 for item in items {
-                    if let Some(request_id) = pending_permission_request_id(&item) {
-                        if let Some(request) = permission_requests.get(&request_id) {
-                            record_timeline_item(
-                                &live_timelines,
-                                &session_id,
-                                permission_routing,
-                                item.clone(),
-                            )
+                    if let Some(request_id) = pending_permission_request_id(&item)
+                        && let Some(request) = permission_requests.get(&request_id)
+                    {
+                        record_timeline_item(
+                            &live_timelines,
+                            &session_id,
+                            permission_routing,
+                            item.clone(),
+                        )
+                        .await;
+                        events
+                            .publish(AgentRunEvent::PermissionRequested {
+                                request: request.clone(),
+                                item,
+                            })
                             .await;
-                            events
-                                .publish(AgentRunEvent::PermissionRequested {
-                                    request: request.clone(),
-                                    item,
-                                })
-                                .await;
-                            continue;
-                        }
+                        continue;
                     }
                     record_and_emit_timeline_item(
                         &events,
@@ -7431,17 +7426,17 @@ where
     // persists that model immediately, so a cold admin action could otherwise
     // overwrite this task's locked model before the next send. Restore the
     // session snapshot while the caller still holds Maple's lifecycle guard.
-    if manager_result.agent_created && session.provider_name.as_deref() == Some(MAPLE_PROVIDER_NAME)
+    if manager_result.agent_created
+        && session.provider_name.as_deref() == Some(MAPLE_PROVIDER_NAME)
+        && let Some(model_config) = session.model_config.as_ref()
     {
-        if let Some(model_config) = session.model_config.as_ref() {
-            install_maple_provider_config(
-                &manager_result.agent,
-                transport,
-                &session.id,
-                model_config.clone(),
-            )
-            .await?;
-        }
+        install_maple_provider_config(
+            &manager_result.agent,
+            transport,
+            &session.id,
+            model_config.clone(),
+        )
+        .await?;
     }
 
     Ok(manager_result)
@@ -8053,20 +8048,19 @@ fn descriptive_tool_title<T: Serialize>(tool_name: &str, arguments: &T) -> Optio
 fn merged_tool_title(previous: &AgentTimelineItem, incoming: &AgentTimelineItem) -> Option<String> {
     const LOADING_SKILL_PREFIX: &str = "Loading skill: ";
 
-    if incoming.item_type == "tool" {
-        if let Some(skill_name) = previous
+    if incoming.item_type == "tool"
+        && let Some(skill_name) = previous
             .title
             .as_deref()
             .and_then(|title| title.strip_prefix(LOADING_SKILL_PREFIX))
-        {
-            let prefix = match incoming.status.as_deref() {
-                Some("completed") => Some("Loaded skill: "),
-                Some("failed") => Some("Couldn’t load skill: "),
-                _ => None,
-            };
-            if let Some(prefix) = prefix {
-                return Some(format!("{prefix}{skill_name}"));
-            }
+    {
+        let prefix = match incoming.status.as_deref() {
+            Some("completed") => Some("Loaded skill: "),
+            Some("failed") => Some("Couldn’t load skill: "),
+            _ => None,
+        };
+        if let Some(prefix) = prefix {
+            return Some(format!("{prefix}{skill_name}"));
         }
     }
 
@@ -8390,7 +8384,7 @@ fn session_web_enabled(session: &Session) -> bool {
 }
 
 fn sort_sessions_newest_first(sessions: &mut [AgentSessionSummary]) {
-    sessions.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_ms));
 }
 
 async fn record_and_emit_timeline_item(
@@ -9320,10 +9314,9 @@ fn resolve_project_root(requested: Option<&str>, config: &AgentConfig) -> Result
         .default_project_root
         .as_deref()
         .filter(|value| !value.trim().is_empty())
+        && let Ok(root) = normalize_project_root(Path::new(path))
     {
-        if let Ok(root) = normalize_project_root(Path::new(path)) {
-            return Ok(root);
-        }
+        return Ok(root);
     }
 
     std::env::current_dir()
@@ -9911,10 +9904,10 @@ fn replace_queued_message_text(message: &mut Message, text: &str) {
         .unwrap_or(false);
     let replacement =
         Message::user().with_text(agent_image_prompt(text, &attachments, vision_capable));
-    if let Some(content) = replacement.content.into_iter().next() {
-        if let Some(first) = message.content.first_mut() {
-            *first = content;
-        }
+    if let Some(content) = replacement.content.into_iter().next()
+        && let Some(first) = message.content.first_mut()
+    {
+        *first = content;
     }
     message.metadata.set_operation_note(
         MAPLE_IMAGE_ATTACHMENTS_OPERATION,
@@ -10718,7 +10711,6 @@ mod tests {
         assert_eq!(reconcile_context_limit(Some(u64::MAX), None), None);
     }
 
-    use axum::response::IntoResponse;
     use goose_providers::base::{MessageStream, Provider, stream_from_single_message};
     use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
     use goose_providers::errors::ProviderError;
@@ -10726,109 +10718,6 @@ mod tests {
     use rmcp::model::{Annotations, Role as McpRole, TextContent};
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::AtomicUsize;
-
-    struct BlockingMcpCatalogServer {
-        url: String,
-        catalog_entered: Arc<tokio::sync::Notify>,
-        catalog_release: Arc<tokio::sync::Notify>,
-        task: tokio::task::JoinHandle<()>,
-    }
-
-    impl Drop for BlockingMcpCatalogServer {
-        fn drop(&mut self) {
-            self.task.abort();
-        }
-    }
-
-    async fn blocking_mcp_catalog_server() -> BlockingMcpCatalogServer {
-        let catalog_entered = Arc::new(tokio::sync::Notify::new());
-        let catalog_release = Arc::new(tokio::sync::Notify::new());
-        let handler_entered = Arc::clone(&catalog_entered);
-        let handler_release = Arc::clone(&catalog_release);
-        let app = axum::Router::new().route(
-            "/mcp",
-            axum::routing::post(move |axum::Json(payload): axum::Json<Value>| {
-                let handler_entered = Arc::clone(&handler_entered);
-                let handler_release = Arc::clone(&handler_release);
-                async move {
-                    let method = payload["method"].as_str().unwrap_or_default();
-                    if method == "notifications/initialized" {
-                        return axum::http::StatusCode::ACCEPTED.into_response();
-                    }
-
-                    let id = payload["id"].clone();
-                    let result = match method {
-                        "initialize" => json!({
-                            "protocolVersion": payload["params"]["protocolVersion"],
-                            "capabilities": { "tools": {} },
-                            "serverInfo": {
-                                "name": "blocking-maple-setup-test",
-                                "version": "1.0.0"
-                            }
-                        }),
-                        "tools/list" => {
-                            handler_entered.notify_one();
-                            handler_release.notified().await;
-                            json!({
-                                "tools": [{
-                                    "name": "lookup",
-                                    "description": "Exercise post-install setup cancellation",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "properties": {}
-                                    }
-                                }]
-                            })
-                        }
-                        _ => {
-                            return (
-                                axum::http::StatusCode::BAD_REQUEST,
-                                axum::Json(json!({ "error": "unexpected method" })),
-                            )
-                                .into_response();
-                        }
-                    };
-                    axum::Json(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": result
-                    }))
-                    .into_response()
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        BlockingMcpCatalogServer {
-            url: format!("http://{address}/mcp"),
-            catalog_entered,
-            catalog_release,
-            task,
-        }
-    }
-
-    fn blocking_transient_mcp(server: &BlockingMcpCatalogServer) -> AgentTransientMcpServer {
-        AgentTransientMcpServer {
-            name: "paseo-test".to_string(),
-            description: "Deterministic setup cancellation fixture".to_string(),
-            timeout_seconds: 2,
-            transport: AgentTransientMcpTransport::StreamableHttp {
-                url: server.url.clone(),
-                headers: Vec::new(),
-            },
-        }
-    }
-
-    fn leased_test_tool_context() -> AgentToolContextSpec {
-        AgentToolContextSpec::try_new(
-            BTreeMap::from([("TOKEN".to_string(), "lease-secret".to_string())]),
-            BTreeSet::from(["TOKEN".to_string()]),
-            true,
-        )
-        .unwrap()
-    }
 
     struct NoopAgentEventSink;
 
@@ -16377,15 +16266,14 @@ mod tests {
         drop(session_lifecycle_guard);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let removed = service
+                let removed = !service
                     .inner
                     .lock()
                     .await
                     .as_ref()
                     .unwrap()
                     .session_tool_contexts
-                    .get(&session.id)
-                    .is_none();
+                    .contains_key(&session.id);
                 if removed {
                     break;
                 }
@@ -16456,15 +16344,14 @@ mod tests {
         drop(session_lifecycle_guard);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let removed = service
+                let removed = !service
                     .inner
                     .lock()
                     .await
                     .as_ref()
                     .unwrap()
                     .session_tool_contexts
-                    .get(&session.id)
-                    .is_none();
+                    .contains_key(&session.id);
                 if removed {
                     break;
                 }
@@ -17165,10 +17052,10 @@ mod tests {
                     AgentServiceEvent::Question { request_id, .. } => Some(request_id.clone()),
                     _ => None,
                 });
-            if let Some(latest) = found {
-                if latest != request_id {
-                    break latest;
-                }
+            if let Some(latest) = found
+                && latest != request_id
+            {
+                break latest;
             }
             assert!(!ask2.is_finished(), "ask2 returned early");
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;

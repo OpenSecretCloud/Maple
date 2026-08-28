@@ -84,8 +84,6 @@ struct McpEditor {
     headers: Entity<TextInput>,
 }
 
-pub struct OpenSettings;
-
 /// Emitted with the section to open (composer "Manage servers" link).
 pub struct OpenSettingsSection(pub Section);
 

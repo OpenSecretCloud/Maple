@@ -15,9 +15,7 @@ use maple_agent::agent::{
     AgentServiceEvent, AgentSessionDetail, AgentSessionSummary, AgentSlashCommand,
     AgentStartRequest, MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
 };
-use maple_agent::maple_api::{
-    MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState, NoopAuthEventSink,
-};
+use maple_agent::maple_api::{MapleApiAuthRequest, MapleApiAuthState, NoopAuthEventSink};
 use maple_agent::open_secret_config::configured_pcr0_environment;
 use opensecret::OpenSecretClient;
 use tokio::runtime::Runtime;
@@ -39,14 +37,12 @@ pub struct PendingPermission {
     pub request_id: String,
     pub tool_name: String,
     pub prompt: Option<String>,
-    pub arguments: serde_json::Value,
 }
 
-/// The signed-in account identity plus the validated runtime auth snapshot.
+/// The signed-in account identity.
 #[derive(Debug, Clone)]
 pub struct AuthSession {
     pub user_id: String,
-    pub snapshot: MapleApiAuthSnapshot,
 }
 
 pub struct AgentBackend {
@@ -283,11 +279,7 @@ impl AgentBackend {
             &snapshot.access_token,
             snapshot.refresh_token.as_deref(),
         );
-        Ok(AuthSession { user_id, snapshot })
-    }
-
-    pub async fn logout(&self, user_id: &str) -> Result<(), String> {
-        self.auth.clear_auth(user_id).await
+        Ok(AuthSession { user_id })
     }
 
     fn auth_file() -> std::path::PathBuf {
@@ -413,7 +405,6 @@ impl AgentBackend {
                 );
                 AuthSession {
                     user_id: snapshot.user_id.clone(),
-                    snapshot,
                 }
             })
     }
@@ -552,10 +543,6 @@ impl AgentBackend {
             .await
             .insert(user_id.to_string(), token.clone());
         Ok(token)
-    }
-
-    pub async fn runtime_status(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {
-        self.service.handle_for_user(user_id).await?.status().await
     }
 
     pub async fn start_runtime(

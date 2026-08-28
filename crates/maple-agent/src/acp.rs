@@ -723,12 +723,12 @@ impl AcpConnectionContext {
             .map_err(|error| agent_client_protocol::Error::invalid_request().data(error))?;
         let persisted_model = persisted.model.clone();
         let available_models = self.available_models().await?;
-        if let Some(model) = persisted_model.as_ref() {
-            if !available_models.iter().any(|available| available == model) {
-                return Err(agent_client_protocol::Error::invalid_request().data(format!(
+        if let Some(model) = persisted_model.as_ref()
+            && !available_models.iter().any(|available| available == model)
+        {
+            return Err(agent_client_protocol::Error::invalid_request().data(format!(
                     "This Maple Agent task uses model '{model}', which is no longer available; the task remains available in Maple Desktop"
                 )));
-            }
         }
         let bridge_environment = self.bridge_environment.lock().await.clone();
         let (environment, transient_mcp_servers) =
@@ -836,18 +836,17 @@ impl AcpConnectionContext {
 
         let mut projection = AcpToolProjection::default();
         for item in &timeline {
-            if let Some(update) = timeline_update(item, &mut projection, true) {
-                if let Err(error) = self
+            if let Some(update) = timeline_update(item, &mut projection, true)
+                && let Err(error) = self
                     .send_session_update(
                         cx,
                         SessionNotification::new(protocol_session_id.clone(), update),
                         &operation.cancellation,
                     )
                     .await
-                {
-                    self.retire_session(&session_id).await;
-                    return Err(outbound_error(error));
-                }
+            {
+                self.retire_session(&session_id).await;
+                return Err(outbound_error(error));
             }
         }
         drop(operation_guard);
@@ -2477,10 +2476,10 @@ fn ensure_allowed_project_root(cwd: &Path, allowed_roots: &[String]) -> Result<P
         return Ok(cwd);
     }
     for root in allowed_roots {
-        if let Ok(root) = Path::new(root).canonicalize() {
-            if cwd.starts_with(root) {
-                return Ok(cwd);
-            }
+        if let Ok(root) = Path::new(root).canonicalize()
+            && cwd.starts_with(root)
+        {
+            return Ok(cwd);
         }
     }
     Err("ACP session cwd is outside the configured project roots".to_string())

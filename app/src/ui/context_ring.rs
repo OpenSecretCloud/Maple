@@ -3,7 +3,7 @@
 
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, IntoElement, Pixels, Point, Style, Window,
-    div, point, prelude::*, px, relative,
+    point, px,
 };
 
 use super::theme;
@@ -131,14 +131,4 @@ impl Element for ContextRing {
             window.paint_path(arc, Self::ring_color(used));
         }
     }
-}
-
-/// Labeled wrapper: ring plus a percentage when space allows.
-pub fn context_indicator(fraction: f32) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .w(relative(1.))
-        .child(ContextRing::new(fraction))
 }

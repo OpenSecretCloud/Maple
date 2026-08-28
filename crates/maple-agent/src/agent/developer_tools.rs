@@ -147,9 +147,6 @@ pub(crate) struct MapleDeveloperClient {
     tool_context: SharedAgentToolContext,
     contextual_image_context: Option<PlatformExtensionContext>,
     attachment_store: Option<Arc<AgentAttachmentStore>>,
-    /// Routes request_user_input questions to the UI; absent in tests.
-    questions: Option<crate::agent::questions::QuestionBroker>,
-    session_id: Option<String>,
     /// When false the web tools are left out of the catalog entirely, so
     /// the model never plans around a tool it cannot call.
     web_enabled: bool,
@@ -184,8 +181,6 @@ impl MapleDeveloperClient {
             tool_context,
             contextual_image_context,
             attachment_store: None,
-            questions: None,
-            session_id: None,
             web_enabled: true,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
@@ -423,16 +418,14 @@ impl MapleDeveloperClient {
         if let Some(properties) = schema
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
-        {
-            if let Some(source) = properties
+            && let Some(source) = properties
                 .get_mut("source")
                 .and_then(serde_json::Value::as_object_mut)
-            {
-                source.insert("description".to_string(), serde_json::Value::String(
+        {
+            source.insert("description".to_string(), serde_json::Value::String(
                     "Maple attachment reference, local file path, or http(s) URL. Remote URLs require approval in Read only mode."
                         .to_string(),
                 ));
-            }
         }
         if requires_context {
             let properties = schema
@@ -1111,10 +1104,10 @@ impl ArmedShellChild {
 
 impl Drop for ArmedShellChild {
     fn drop(&mut self) {
-        if self.armed {
-            if let Err(error) = self.child.start_kill() {
-                log::warn!("Failed to terminate dropped shell containment unit: {error}");
-            }
+        if self.armed
+            && let Err(error) = self.child.start_kill()
+        {
+            log::warn!("Failed to terminate dropped shell containment unit: {error}");
         }
     }
 }
@@ -1785,13 +1778,13 @@ struct StagedImage {
 
 impl Drop for StagedImage {
     fn drop(&mut self) {
-        if let Err(error) = fs::remove_file(&self.path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                log::warn!(
-                    "Failed to remove staged Agent Mode image {}: {error}",
-                    self.path.display()
-                );
-            }
+        if let Err(error) = fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(
+                "Failed to remove staged Agent Mode image {}: {error}",
+                self.path.display()
+            );
         }
     }
 }
@@ -1943,10 +1936,10 @@ async fn download_bounded_image(
     .map_err(|error| format!("failed to download image: {error}"))?
     .error_for_status()
     .map_err(|error| format!("failed to download image: {error}"))?;
-    if let Some(len) = response.content_length() {
-        if len > MAX_IMAGE_BYTES as u64 {
-            return Err(image_size_error(len));
-        }
+    if let Some(len) = response.content_length()
+        && len > MAX_IMAGE_BYTES as u64
+    {
+        return Err(image_size_error(len));
     }
 
     let mut response = response;
@@ -2284,15 +2277,14 @@ fn write_file_blocking(
         return error_result("Write cancelled");
     }
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                return error_result(format!(
-                    "Failed to create directory {}: {error}",
-                    parent.display()
-                ));
-            }
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return error_result(format!(
+            "Failed to create directory {}: {error}",
+            parent.display()
+        ));
     }
     if cancel_token.is_cancelled() {
         return error_result("Write cancelled");
@@ -2598,10 +2590,10 @@ fn mutation_key(path: &Path) -> PathBuf {
     if let Ok(canonical) = fs::canonicalize(path) {
         return canonical;
     }
-    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
-        if let Ok(canonical_parent) = fs::canonicalize(parent) {
-            return canonical_parent.join(file_name);
-        }
+    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name())
+        && let Ok(canonical_parent) = fs::canonicalize(parent)
+    {
+        return canonical_parent.join(file_name);
     }
     path.to_path_buf()
 }

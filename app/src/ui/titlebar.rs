@@ -24,9 +24,6 @@ impl TitleBar {
     pub fn version() -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
-    pub fn height() -> gpui::Pixels {
-        BAR_HEIGHT
-    }
 }
 
 impl Render for TitleBar {

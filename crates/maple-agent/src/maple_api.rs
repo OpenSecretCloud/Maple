@@ -562,6 +562,12 @@ fn new_native_instance_id() -> String {
     format!("{digest:x}")
 }
 
+impl Default for MapleApiAuthState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MapleApiAuthState {
     pub fn new() -> Self {
         Self::with_validator(Arc::new(BackendCredentialValidator))

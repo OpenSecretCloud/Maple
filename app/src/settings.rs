@@ -136,8 +136,6 @@ pub struct UsageRow {
     pub label: String,
     pub sessions: u64,
     pub turns: u64,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
     pub total_tokens: i64,
     pub cost: f64,
 }
@@ -152,87 +150,71 @@ pub struct UsageSummary {
 /// Read usage totals from the goose usage ledger for one account scope.
 pub fn load_usage(account_scope: &str) -> UsageSummary {
     let db = crate::backend::account_session_db(account_scope);
-    let Ok(mut conn) = Connection::open(&db) else {
+    let Ok(conn) = Connection::open(&db) else {
         return UsageSummary::default();
     };
     let mut summary = UsageSummary::default();
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
-         COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0) FROM usage_ledger",
-    ) {
-        if let Ok(row) = stmt.query_row([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, f64>(4)?,
-            ))
-        }) {
-            summary.totals = UsageRow {
-                label: "All activity".to_string(),
-                sessions: 0,
-                turns: row.0.max(0) as u64,
-                input_tokens: row.1,
-                output_tokens: row.2,
-                total_tokens: row.3,
-                cost: row.4,
-            };
-        }
+        "SELECT COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0) \
+         FROM usage_ledger",
+    ) && let Ok(row) = stmt.query_row([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, f64>(2)?,
+        ))
+    }) {
+        summary.totals = UsageRow {
+            label: "All activity".to_string(),
+            sessions: 0,
+            turns: row.0.max(0) as u64,
+            total_tokens: row.1,
+            cost: row.2,
+        };
     }
 
     if let Ok(mut stmt) = conn.prepare(
         "SELECT model, COUNT(DISTINCT session_id), COUNT(*), \
-         COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
          COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0) \
          FROM usage_ledger GROUP BY model ORDER BY SUM(total_tokens) DESC",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok(UsageRow {
-                label: row
-                    .get::<_, Option<String>>(0)?
-                    .unwrap_or_else(|| "unknown".into()),
-                sessions: row.get::<_, i64>(1)?.max(0) as u64,
-                turns: row.get::<_, i64>(2)?.max(0) as u64,
-                input_tokens: row.get::<_, i64>(3)?,
-                output_tokens: row.get::<_, i64>(4)?,
-                total_tokens: row.get::<_, i64>(5)?,
-                cost: row.get::<_, f64>(6)?,
-            })
-        }) {
-            for row in rows.flatten() {
-                summary.totals.sessions += row.sessions;
-                summary.by_model.push(row);
-            }
+    ) && let Ok(rows) = stmt.query_map([], |row| {
+        Ok(UsageRow {
+            label: row
+                .get::<_, Option<String>>(0)?
+                .unwrap_or_else(|| "unknown".into()),
+            sessions: row.get::<_, i64>(1)?.max(0) as u64,
+            turns: row.get::<_, i64>(2)?.max(0) as u64,
+            total_tokens: row.get::<_, i64>(3)?,
+            cost: row.get::<_, f64>(4)?,
+        })
+    }) {
+        for row in rows.flatten() {
+            summary.totals.sessions += row.sessions;
+            summary.by_model.push(row);
         }
     }
 
     if let Ok(mut stmt) = conn.prepare(
         "SELECT s.name, u.session_id, COUNT(*), \
-         COALESCE(SUM(u.input_tokens),0), COALESCE(SUM(u.output_tokens),0), \
          COALESCE(SUM(u.total_tokens),0), COALESCE(SUM(u.cost),0) \
          FROM usage_ledger u JOIN sessions s ON s.id = u.session_id \
          GROUP BY u.session_id ORDER BY MAX(u.created_timestamp) DESC LIMIT 20",
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok(UsageRow {
-                label: {
-                    let name: String = row.get::<_, Option<String>>(0)?.unwrap_or_default();
-                    let id: String = row.get(1)?;
-                    if name.trim().is_empty() { id } else { name }
-                },
-                sessions: 1,
-                turns: row.get::<_, i64>(2)?.max(0) as u64,
-                input_tokens: row.get::<_, i64>(3)?,
-                output_tokens: row.get::<_, i64>(4)?,
-                total_tokens: row.get::<_, i64>(5)?,
-                cost: row.get::<_, f64>(6)?,
-            })
-        }) {
-            for row in rows.flatten() {
-                summary.by_session.push(row);
-            }
+    ) && let Ok(rows) = stmt.query_map([], |row| {
+        Ok(UsageRow {
+            label: {
+                let name: String = row.get::<_, Option<String>>(0)?.unwrap_or_default();
+                let id: String = row.get(1)?;
+                if name.trim().is_empty() { id } else { name }
+            },
+            sessions: 1,
+            turns: row.get::<_, i64>(2)?.max(0) as u64,
+            total_tokens: row.get::<_, i64>(3)?,
+            cost: row.get::<_, f64>(4)?,
+        })
+    }) {
+        for row in rows.flatten() {
+            summary.by_session.push(row);
         }
     }
 

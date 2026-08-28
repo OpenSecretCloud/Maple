@@ -31,7 +31,6 @@ pub struct LoginScreen {
     oauth: OAuthFlow,
     error: Option<String>,
     busy: bool,
-    focused_once: bool,
 }
 
 impl LoginScreen {
@@ -81,7 +80,6 @@ impl LoginScreen {
             oauth: OAuthFlow::Idle,
             error: None,
             busy: false,
-            focused_once: false,
         }
     }
 

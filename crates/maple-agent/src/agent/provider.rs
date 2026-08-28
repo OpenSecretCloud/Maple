@@ -473,13 +473,8 @@ impl MapleProvider {
 
         let stream = stream.map(move |result| {
             let (mut message, usage) = result?;
-            if replace_legacy_kimi_k3_tool_ids {
-                if let Some(message) = message.as_mut() {
-                    Self::replace_legacy_kimi_k3_tool_ids(
-                        message,
-                        &mut kimi_k3_tool_id_replacements,
-                    );
-                }
+            if replace_legacy_kimi_k3_tool_ids && let Some(message) = message.as_mut() {
+                Self::replace_legacy_kimi_k3_tool_ids(message, &mut kimi_k3_tool_id_replacements);
             }
             request_log.write(&message, usage.as_ref().map(|value| &value.usage))?;
             Ok((message, usage))
@@ -650,10 +645,8 @@ fn error_payload(body: &[u8], truncated: bool) -> Option<Value> {
     if body.is_empty() {
         return None;
     }
-    if !truncated {
-        if let Ok(payload) = serde_json::from_slice(body) {
-            return Some(payload);
-        }
+    if !truncated && let Ok(payload) = serde_json::from_slice(body) {
+        return Some(payload);
     }
 
     let mut message = String::from_utf8_lossy(body).into_owned();
@@ -1373,13 +1366,14 @@ mod tests {
             .await
             .expect("Gemma stream should parse");
 
-        let gemma_requests = gemma_transport.requests.lock().expect("request lock");
-        assert_eq!(gemma_requests[0].body["include_reasoning"], true);
-        assert_eq!(
-            gemma_requests[0].body["chat_template_kwargs"]["enable_thinking"],
-            true
-        );
-        drop(gemma_requests);
+        {
+            let gemma_requests = gemma_transport.requests.lock().expect("request lock");
+            assert_eq!(gemma_requests[0].body["include_reasoning"], true);
+            assert_eq!(
+                gemma_requests[0].body["chat_template_kwargs"]["enable_thinking"],
+                true
+            );
+        }
 
         let llama_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
         let llama_provider = MapleProvider::new(llama_transport.clone());

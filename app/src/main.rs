@@ -11,8 +11,8 @@ mod ui;
 use std::sync::Arc;
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Global, KeyBinding, Pixels, Render, Window,
-    WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
+    App, Application, Bounds, Context, Entity, KeyBinding, Pixels, Render, Window, WindowBounds,
+    WindowOptions, actions, div, prelude::*, px, size,
 };
 
 actions!(maple_app, [QuitApp]);
@@ -23,12 +23,6 @@ use ui::login::{LoginScreen, LoginSucceeded};
 use ui::settings::{Section, SettingsClosed, SettingsScreen, SignOutRequested};
 use ui::text_input;
 use ui::titlebar::TitleBar;
-
-struct Globals {
-    backend: Arc<AgentBackend>,
-}
-
-impl Global for Globals {}
 
 enum Screen {
     Login(Entity<LoginScreen>),
@@ -410,10 +404,6 @@ fn run_desktop() {
                 KeyBinding::new("ctrl-c", ui::chat::CopySelection, Some("Transcript")),
                 KeyBinding::new("cmd-c", ui::chat::CopySelection, Some("Transcript")),
             ]);
-            cx.set_global(Globals {
-                backend: backend.clone(),
-            });
-
             let bounds: Bounds<Pixels> = Bounds::centered(None, size(px(1280.), px(860.)), cx);
             let window = cx
                 .open_window(
@@ -431,7 +421,8 @@ fn run_desktop() {
                         if let Some(user_id) = restored_user.clone() {
                             let chat =
                                 cx.new(|cx| ChatScreen::new(backend.clone(), user_id.clone(), cx));
-                            let root = cx.new(|cx| {
+
+                            cx.new(|cx| {
                                 let mut app = MapleApp {
                                     backend: backend.clone(),
                                     screen: Screen::Chat(chat.clone()),
@@ -442,8 +433,7 @@ fn run_desktop() {
                                 };
                                 app.subscribe_chat(&chat, cx);
                                 app
-                            });
-                            root
+                            })
                         } else {
                             let login = cx.new(|cx| LoginScreen::new(backend.clone(), cx));
                             cx.new(|cx| MapleApp {

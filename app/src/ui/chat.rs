@@ -2591,7 +2591,6 @@ impl ChatScreen {
                         request_id: request.request_id,
                         tool_name: request.tool_name,
                         prompt: request.prompt,
-                        arguments,
                     });
                     self.permission_responding = false;
                 }
@@ -5786,7 +5785,7 @@ mod state_tests {
         let event = one_question("skip", "Skip me");
         screen.update(cx, |this, cx| {
             this.handle_service_event(event, cx);
-            assert!(this.pending_questions.first().is_some());
+            assert!(!this.pending_questions.is_empty());
             this.skip_question(cx);
             assert!(this.pending_questions.is_empty());
             assert!(this.question_selected.is_empty());

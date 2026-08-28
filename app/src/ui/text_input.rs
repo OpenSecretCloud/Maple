@@ -99,7 +99,6 @@ pub struct TextInput {
     /// Render '*' in place of content characters (password fields).
     mask: bool,
     /// Clear the content once the Enter hook has consumed it (composer behavior).
-    clear_on_enter: bool,
     /// Explicit tab order for this input within its surface. Inputs without
     /// distinct indices collapse onto the same tab-stop path, which makes
     /// focus navigation a no-op.
@@ -146,7 +145,6 @@ impl TextInput {
             measure_cache: None,
             is_selecting: false,
             mask: false,
-            clear_on_enter: false,
             tab_index: None,
             on_enter: None,
             on_paste_image: None,
@@ -157,12 +155,6 @@ impl TextInput {
     /// Give this input an explicit position in the tab order.
     pub fn with_tab_index(mut self, index: isize) -> Self {
         self.tab_index = Some(index);
-        self
-    }
-
-    /// Clear the content once the Enter hook has consumed it.
-    pub fn clears_on_enter(mut self) -> Self {
-        self.clear_on_enter = true;
         self
     }
 
@@ -241,9 +233,6 @@ impl TextInput {
         if let Some(on_enter) = self.on_enter.take() {
             on_enter(text, window, cx);
             self.on_enter = Some(on_enter);
-        }
-        if self.clear_on_enter {
-            self.clear(cx);
         }
     }
 
@@ -324,7 +313,7 @@ impl TextInput {
             return None;
         }
         let display = layout.closest_index_for_position(point(position.x, target_y));
-        Some(self.from_display_offset(display))
+        Some(self.content_offset_for_display(display))
     }
 
     fn on_mouse_down(
@@ -428,7 +417,7 @@ impl TextInput {
     }
 
     /// Content byte offset for a display-string byte offset (mask aware).
-    fn from_display_offset(&self, display: usize) -> usize {
+    fn content_offset_for_display(&self, display: usize) -> usize {
         if self.mask {
             let chars = self.content.char_indices().collect::<Vec<_>>();
             chars
@@ -464,7 +453,7 @@ impl TextInput {
         } else {
             layout.closest_index_for_position(local)
         };
-        self.from_display_offset(display)
+        self.content_offset_for_display(display)
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -656,7 +645,7 @@ impl EntityInputHandler for TextInput {
         }
         let local = gpui::point(point.x - bounds.left(), point.y - bounds.top());
         let display = layout.closest_index_for_position(local);
-        Some(self.offset_to_utf16(self.from_display_offset(display)))
+        Some(self.offset_to_utf16(self.content_offset_for_display(display)))
     }
 }
 
