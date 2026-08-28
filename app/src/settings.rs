@@ -32,6 +32,32 @@ pub struct AppSettings {
     /// [`DEFAULT_HARNESS_INSTRUCTIONS`].
     #[serde(default)]
     pub harness_instructions: String,
+    /// Window size and state from the last run.
+    #[serde(default)]
+    pub window: Option<WindowState>,
+}
+
+/// Persisted window geometry. Position is left to the window manager:
+/// Wayland does not expose it, and a stale position can open the window
+/// off-screen after a monitor change.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WindowState {
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl WindowState {
+    /// Keep a saved size inside a sane range so a corrupt file cannot
+    /// open a window too small to use.
+    pub fn clamped(self) -> Self {
+        Self {
+            width: self.width.clamp(640., 8192.),
+            height: self.height.clamp(480., 8192.),
+            maximized: self.maximized,
+        }
+    }
 }
 
 /// Opening system prompt for agents this app hosts: the agent is Maple.
@@ -84,6 +110,7 @@ impl Default for AppSettings {
             project_names: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
             harness_instructions: String::new(),
+            window: None,
         }
     }
 }
@@ -97,6 +124,17 @@ pub fn load_settings() -> AppSettings {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+/// Record the window state for the next launch. Runs on the UI thread at
+/// quit, when a short blocking write is acceptable.
+pub fn save_window_state(state: WindowState) {
+    let mut settings = load_settings();
+    if settings.window == Some(state) {
+        return;
+    }
+    settings.window = Some(state);
+    save_settings(&settings);
 }
 
 pub fn save_settings(settings: &AppSettings) {

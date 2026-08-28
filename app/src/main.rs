@@ -135,7 +135,8 @@ impl MapleApp {
 }
 
 impl Render for MapleApp {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        remember_window_state(window);
         let titlebar = self.titlebar.clone();
         div()
             .size_full()
@@ -148,6 +149,35 @@ impl Render for MapleApp {
                 Screen::Chat(chat) => chat.clone().into_any_element(),
                 Screen::Settings(screen) => screen.clone().into_any_element(),
             })
+    }
+}
+
+/// Last seen window geometry, read back when the app quits.
+static WINDOW_STATE: std::sync::Mutex<Option<crate::settings::WindowState>> =
+    std::sync::Mutex::new(None);
+
+/// Runs on every root render, which includes every resize and maximize.
+fn remember_window_state(window: &Window) {
+    let (bounds, maximized) = match window.window_bounds() {
+        WindowBounds::Windowed(bounds) => (bounds, false),
+        WindowBounds::Maximized(bounds) => (bounds, true),
+        WindowBounds::Fullscreen(bounds) => (bounds, true),
+    };
+    let state = crate::settings::WindowState {
+        width: f32::from(bounds.size.width),
+        height: f32::from(bounds.size.height),
+        maximized,
+    };
+    if let Ok(mut slot) = WINDOW_STATE.lock() {
+        *slot = Some(state);
+    }
+}
+
+/// Write the last seen window state to settings.json.
+fn persist_window_state() {
+    let state = WINDOW_STATE.lock().ok().and_then(|slot| *slot);
+    if let Some(state) = state {
+        crate::settings::save_window_state(state);
     }
 }
 
@@ -405,11 +435,26 @@ fn run_desktop() {
                 KeyBinding::new("ctrl-c", ui::chat::CopySelection, Some("Transcript")),
                 KeyBinding::new("cmd-c", ui::chat::CopySelection, Some("Transcript")),
             ]);
-            let bounds: Bounds<Pixels> = Bounds::centered(None, size(px(1280.), px(860.)), cx);
+            let saved = crate::settings::load_settings()
+                .window
+                .map(crate::settings::WindowState::clamped);
+            let window_size = saved
+                .map(|state| size(px(state.width), px(state.height)))
+                .unwrap_or_else(|| size(px(1280.), px(860.)));
+            let bounds: Bounds<Pixels> = Bounds::centered(None, window_size, cx);
+            let window_bounds = if saved.is_some_and(|state| state.maximized) {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            };
+            cx.on_app_quit(|_cx| async {
+                persist_window_state();
+            })
+            .detach();
             let window = cx
                 .open_window(
                     WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        window_bounds: Some(window_bounds),
                         titlebar: Some(gpui::TitlebarOptions {
                             title: Some(
                                 format!("Maple v{}", ui::titlebar::TitleBar::version()).into(),
@@ -450,7 +495,16 @@ fn run_desktop() {
                 )
                 .expect("failed to open main window");
             let root = window
-                .update(cx, |_, _, cx| cx.entity())
+                .update(cx, |_, window, cx| {
+                    // The only window: closing it from the window manager
+                    // ends the app the same way the title bar button does.
+                    window.on_window_should_close(cx, |_window, cx| {
+                        persist_window_state();
+                        cx.quit();
+                        true
+                    });
+                    cx.entity()
+                })
                 .expect("root entity");
 
             window
