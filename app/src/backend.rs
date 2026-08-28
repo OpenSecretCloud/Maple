@@ -11,9 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentEventSink, AgentRuntimeStatus, AgentSendMessageRequest,
-    AgentServiceEvent, AgentSessionDetail, AgentSessionSummary, AgentSlashCommand,
-    AgentStartRequest, MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
+    AgentCreateSessionRequest, AgentEventSink, AgentRenameSessionRequest, AgentRuntimeStatus,
+    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
+    AgentSlashCommand, AgentStartRequest, MapleAgentHostResources, MapleAgentService,
+    RecentProjectRoot,
 };
 use maple_agent::maple_api::{MapleApiAuthRequest, MapleApiAuthState, NoopAuthEventSink};
 use maple_agent::open_secret_config::configured_pcr0_environment;
@@ -703,6 +704,25 @@ impl AgentBackend {
             .remove_project_root(path, fallback)
             .await
             .map(|_| ())
+    }
+
+    pub async fn rename_session(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        title: String,
+    ) -> Result<AgentSessionSummary, String> {
+        let handle = self.service.handle_for_user(user_id).await?;
+        let session = self.auth.session_for(user_id).await?;
+        handle
+            .rename_session(
+                session,
+                AgentRenameSessionRequest {
+                    session_id: session_id.to_string(),
+                    title,
+                },
+            )
+            .await
     }
 
     pub async fn delete_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {

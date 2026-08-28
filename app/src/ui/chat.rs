@@ -31,6 +31,16 @@ pub struct LoggedOut;
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
 
+/// Menu item callback with access to the chat screen.
+type MenuAction = Box<dyn Fn(&mut ChatScreen, &mut Context<ChatScreen>)>;
+
+/// What an inline sidebar rename edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RenameTarget {
+    Task(String),
+    Project(String),
+}
+
 /// An image staged in the composer: the data URL the runtime stores with
 /// the message and a square thumbnail, cropped off the UI thread.
 #[derive(Clone)]
@@ -334,6 +344,16 @@ pub struct ChatScreen {
     question_step_answers: HashMap<usize, Vec<String>>,
     /// Full-size image shown over the chat until dismissed.
     lightbox: Option<Arc<gpui::Image>>,
+    /// Display names for project roots, from settings.
+    project_names: HashMap<String, String>,
+    /// Inline rename in progress in the sidebar.
+    rename: Option<RenameTarget>,
+    rename_input: Option<Entity<TextInput>>,
+    rename_focus_pending: bool,
+    /// Root whose overflow menu is open.
+    project_menu: Option<String>,
+    /// Root waiting for the user to confirm removal.
+    confirm_remove_root: Option<String>,
     /// Slash commands from the installed skills of the current project root.
     slash_commands: Vec<AgentSlashCommand>,
     /// Highlighted row in the open slash palette, if any.
@@ -579,6 +599,12 @@ impl ChatScreen {
             question_step: 0,
             question_step_answers: HashMap::new(),
             lightbox: None,
+            project_names: settings.project_names.clone(),
+            rename: None,
+            rename_input: None,
+            rename_focus_pending: false,
+            project_menu: None,
+            confirm_remove_root: None,
             slash_commands: Vec::new(),
             slash_selected: None,
             question_focus_pending: false,
@@ -1486,6 +1512,16 @@ impl ChatScreen {
     /// Escape, in priority order: close the photo viewer, skip a pending
     /// question, clear a text selection, close the chip menus.
     fn chat_escape(&mut self, _: &ChatEscape, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.rename.is_some() {
+            self.cancel_rename(cx);
+            return;
+        }
+        if self.confirm_remove_root.is_some() || self.project_menu.is_some() {
+            self.confirm_remove_root = None;
+            self.project_menu = None;
+            cx.notify();
+            return;
+        }
         if self.lightbox.is_some() {
             self.lightbox = None;
             cx.notify();
@@ -2675,6 +2711,17 @@ impl Render for ChatScreen {
                 window.focus(&handle);
             }
         }
+        if self.rename_focus_pending {
+            self.rename_focus_pending = false;
+            if let Some(input) = self.rename_input.clone() {
+                let handle = input.read(cx).focus_handle(cx);
+                window.focus(&handle);
+            }
+        }
+        let confirm_remove = self
+            .confirm_remove_root
+            .clone()
+            .map(|root| self.render_confirm_remove(&root, cx));
         let empty = self.timeline.is_empty();
         let collapsed = self.sidebar_collapsed;
         let main = if empty {
@@ -2804,6 +2851,7 @@ impl Render for ChatScreen {
                         ),
                 )
             })
+            .children(confirm_remove)
     }
 }
 
@@ -2984,13 +3032,21 @@ impl ChatScreen {
         }
         self.rebuild_project_groups();
         cx.notify();
-        // The settings file is read and written off the UI thread.
         let pinned = self.pinned_roots.clone();
+        self.persist_settings(move |settings| settings.pinned_roots = pinned, cx);
+    }
+
+    /// Apply `update` to the settings file off the UI thread.
+    fn persist_settings(
+        &self,
+        update: impl FnOnce(&mut crate::settings::AppSettings) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         self.call(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let mut settings = crate::settings::load_settings();
-                    settings.pinned_roots = pinned;
+                    update(&mut settings);
                     crate::settings::save_settings_in_background(settings);
                     Ok(())
                 })
@@ -3004,6 +3060,324 @@ impl ChatScreen {
                 }
             },
         );
+    }
+
+    /// Display name for a project root: the saved name, else the folder name.
+    fn root_name(&self, root: &str) -> String {
+        self.project_names
+            .get(root)
+            .filter(|name| !name.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| root_display_name(root))
+    }
+
+    /// Start an inline rename of a task or project in the sidebar.
+    fn begin_rename(&mut self, target: RenameTarget, cx: &mut Context<Self>) {
+        let current = match &target {
+            RenameTarget::Task(id) => self
+                .sessions
+                .iter()
+                .find(|session| &session.id == id)
+                .map(|session| session.title.clone())
+                .unwrap_or_default(),
+            RenameTarget::Project(root) => self.root_name(root),
+        };
+        let chat = cx.entity().downgrade();
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("Name", cx).with_tab_index(0);
+            input.set_text(&current, cx);
+            input.on_enter(move |_text, _, cx| {
+                let chat = chat.clone();
+                // commit_rename reads this input; defer out of its update.
+                cx.defer(move |cx| {
+                    if let Some(chat) = chat.upgrade() {
+                        chat.update(cx, |chat, cx| chat.commit_rename(cx));
+                    }
+                });
+            })
+        });
+        self.project_menu = None;
+        self.rename = Some(target);
+        self.rename_input = Some(input);
+        self.rename_focus_pending = true;
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.rename = None;
+        self.rename_input = None;
+        cx.notify();
+    }
+
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.rename.take() else {
+            return;
+        };
+        let name = self
+            .rename_input
+            .take()
+            .map(|input| input.read(cx).text())
+            .unwrap_or_default();
+        let name = name.trim().to_string();
+        cx.notify();
+        if name.is_empty() {
+            return;
+        }
+        match target {
+            RenameTarget::Task(session_id) => {
+                let backend = self.backend.clone();
+                let user_id = self.user_id.clone();
+                self.call(
+                    async move { backend.rename_session(&user_id, &session_id, name).await },
+                    cx,
+                    |this, result, cx| {
+                        match result {
+                            Ok(session) => {
+                                this.upsert_session(session);
+                                this.rebuild_project_groups();
+                            }
+                            Err(message) => this.notice = Some(message.into()),
+                        }
+                        cx.notify();
+                    },
+                );
+            }
+            RenameTarget::Project(root) => {
+                if name == root_display_name(&root) {
+                    self.project_names.remove(&root);
+                } else {
+                    self.project_names.insert(root.clone(), name);
+                }
+                let names = self.project_names.clone();
+                self.persist_settings(move |settings| settings.project_names = names, cx);
+            }
+        }
+    }
+
+    /// Show the project's folder in the file manager.
+    fn open_folder(&mut self, root: &str, cx: &mut Context<Self>) {
+        self.project_menu = None;
+        let path = root.to_string();
+        cx.notify();
+        self.call(
+            async move {
+                tokio::task::spawn_blocking(move || crate::platform::reveal_folder(&path))
+                    .await
+                    .map_err(|error| format!("Could not open the folder: {error}"))?
+            },
+            cx,
+            |this, result, cx| {
+                if let Err(message) = result {
+                    this.notice = Some(message.into());
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn toggle_project_menu(&mut self, root: &str, cx: &mut Context<Self>) {
+        if self.project_menu.as_deref() == Some(root) {
+            self.project_menu = None;
+        } else {
+            self.project_menu = Some(root.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Ask before a project leaves the sidebar.
+    fn request_remove_root(&mut self, root: &str, cx: &mut Context<Self>) {
+        self.project_menu = None;
+        self.confirm_remove_root = Some(root.to_string());
+        cx.notify();
+    }
+
+    fn confirm_remove_root(&mut self, cx: &mut Context<Self>) {
+        if let Some(root) = self.confirm_remove_root.take() {
+            self.archive_root(&root, cx);
+        }
+        cx.notify();
+    }
+
+    /// The rename field for `target` when it is the one being edited.
+    fn rename_field(&self, target: &RenameTarget) -> Option<gpui::Stateful<Div>> {
+        if self.rename.as_ref() != Some(target) {
+            return None;
+        }
+        let input = self.rename_input.clone()?;
+        Some(
+            div()
+                .id("rename-field")
+                .flex_1()
+                .min_w_0()
+                .on_click(|_event, _window, cx| cx.stop_propagation())
+                .child(input),
+        )
+    }
+
+    /// Overflow menu for a project row.
+    fn render_project_menu(&self, root: &str, cx: &mut Context<Self>) -> gpui::Deferred {
+        let menu_item =
+            |id: String, icon_name: &'static str, label: &'static str, on_click: MenuAction| {
+                div()
+                    .id(SharedString::from(id))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1p5()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::BG_SIDEBAR_ROW_HOVER))
+                            .cursor_pointer()
+                    })
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
+                        on_click(this, cx);
+                    }))
+                    .child(icon(icon_name, px(14.), theme::TEXT_SECONDARY))
+                    .child(label)
+            };
+        let rename_root = root.to_string();
+        let open_root = root.to_string();
+        let remove_root = root.to_string();
+        gpui::deferred(
+            div()
+                .id(SharedString::from(format!("project-menu-{root}")))
+                .absolute()
+                .top(px(30.))
+                .right_0()
+                .w(px(180.))
+                .py_1()
+                .rounded_md()
+                .bg(gpui::rgb(theme::BG_ELEVATED))
+                .border_1()
+                .border_color(gpui::rgb(theme::BORDER))
+                .shadow_md()
+                .flex()
+                .flex_col()
+                .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                    this.project_menu = None;
+                    cx.notify();
+                }))
+                .child(menu_item(
+                    format!("rename-project-{root}"),
+                    "pencil",
+                    "Rename project",
+                    Box::new(move |this, cx| {
+                        this.begin_rename(RenameTarget::Project(rename_root.clone()), cx)
+                    }),
+                ))
+                .child(menu_item(
+                    format!("open-project-{root}"),
+                    "folder-open",
+                    "Open folder",
+                    Box::new(move |this, cx| this.open_folder(&open_root, cx)),
+                ))
+                .child(menu_item(
+                    format!("remove-project-{root}"),
+                    "trash-2",
+                    "Remove project",
+                    Box::new(move |this, cx| this.request_remove_root(&remove_root, cx)),
+                )),
+        )
+    }
+
+    /// Modal that confirms a project removal.
+    fn render_confirm_remove(&self, root: &str, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let name = self.root_name(root);
+        let button = |id: &'static str, label: &'static str, primary: bool| {
+            div()
+                .id(id)
+                .px_3()
+                .py_1p5()
+                .rounded_md()
+                .text_sm()
+                .when(primary, |button| {
+                    button
+                        .bg(gpui::rgb(theme::STATUS_ERROR))
+                        .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                })
+                .when(!primary, |button| {
+                    button
+                        .border_1()
+                        .border_color(gpui::rgb(theme::BORDER))
+                        .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                })
+                .hover(|style| style.cursor_pointer().opacity(0.9))
+                .child(label)
+        };
+        div()
+            .id("confirm-remove-backdrop")
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .bg(gpui::rgba(0x000000a0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.confirm_remove_root = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("confirm-remove-card")
+                    .w(px(420.))
+                    .p_5()
+                    .rounded_lg()
+                    .bg(gpui::rgb(theme::BG_ELEVATED))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::BORDER))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .on_click(|_event, _window, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                            .child(format!("Remove {name}?")),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                            .child(
+                                "The project leaves the sidebar and its tasks move to \
+                                 Archived, where you can restore them. No files are deleted.",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family("monospace")
+                            .text_color(gpui::rgb(theme::TEXT_MUTED))
+                            .child(root.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(button("confirm-remove-cancel", "Cancel", false).on_click(
+                                cx.listener(|this, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.confirm_remove_root = None;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(button("confirm-remove-ok", "Remove", true).on_click(
+                                cx.listener(|this, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.confirm_remove_root(cx);
+                                }),
+                            )),
+                    ),
+            )
     }
 
     /// Fold or unfold a project's task list. Unfolding a project that is
@@ -3211,10 +3585,14 @@ impl ChatScreen {
                         let is_current = current_root == Some(root.as_str());
                         let is_collapsed = self.collapsed_roots.contains(root);
                         let is_pinned = self.pinned_roots.iter().any(|pinned| pinned == root);
-                        let name = root_display_name(root);
+                        let name = self.root_name(root);
                         let tasks = indices.iter().filter_map(|index| self.sessions.get(*index));
                         let group_name = SharedString::from(format!("project-row-{root}"));
+                        let rename_field = self.rename_field(&RenameTarget::Project(root.clone()));
+                        let menu = (self.project_menu.as_deref() == Some(root.as_str()))
+                            .then(|| self.render_project_menu(root, cx));
                         div()
+                            .relative()
                             .flex()
                             .flex_col()
                             .mb_2()
@@ -3256,7 +3634,16 @@ impl ChatScreen {
                                         px(16.),
                                         theme::TEXT_PRIMARY,
                                     ))
-                                    .child(div().flex_1().min_w_0().line_clamp(1).child(name))
+                                    .when_some(rename_field, |row, field| row.child(field))
+                                    .when(
+                                        self.rename.as_ref()
+                                            != Some(&RenameTarget::Project(root.clone())),
+                                        |row| {
+                                            row.child(
+                                                div().flex_1().min_w_0().line_clamp(1).child(name),
+                                            )
+                                        },
+                                    )
                                     .when(is_pinned, |row| {
                                         // Pinned: the always-visible pin is
                                         // the unpin button itself.
@@ -3295,14 +3682,14 @@ impl ChatScreen {
                                         ))
                                     })
                                     .child(row_action(
-                                        SharedString::from(format!("archive-project-{root}")),
+                                        SharedString::from(format!("menu-project-{root}")),
                                         &group_name,
-                                        "archive",
+                                        "ellipsis",
                                         {
                                             let root = root.clone();
                                             cx.listener(move |this, _event, _window, cx| {
                                                 cx.stop_propagation();
-                                                this.archive_root(&root, cx);
+                                                this.toggle_project_menu(&root, cx);
                                             })
                                         },
                                     )),
@@ -3312,6 +3699,7 @@ impl ChatScreen {
                                     self.render_task_row(session, selected, false, cx)
                                 }))
                             })
+                            .children(menu)
                     }))
                     .when(!self.archived_indices.is_empty(), |list| {
                         let expanded = self.archived_expanded;
@@ -3383,6 +3771,10 @@ impl ChatScreen {
         let is_selected = selected == Some(session.id.as_str());
         let session_id = session.id.clone();
         let action_id = session.id.clone();
+        let rename_id = session.id.clone();
+        let rename_target = RenameTarget::Task(session.id.clone());
+        let rename_field = self.rename_field(&rename_target);
+        let renaming = rename_field.is_some();
         let group_name = SharedString::from(format!("task-row-{}", session.id));
         div()
             .id(SharedString::from(format!("session-{}", session.id)))
@@ -3409,23 +3801,35 @@ impl ChatScreen {
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.open_session(&session_id, cx);
             }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(div().line_clamp(1).child(session.title.clone()))
-                    .when(archived, |column| {
-                        column.child(
-                            div()
-                                .text_xs()
-                                .text_color(gpui::rgb(theme::TEXT_MUTED))
-                                .line_clamp(1)
-                                .child(root_display_name(&session.project_root)),
-                        )
-                    }),
-            )
+            .when_some(rename_field, |row, field| row.child(field))
+            .when(!renaming, |row| {
+                row.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().line_clamp(1).child(session.title.clone()))
+                        .when(archived, |column| {
+                            column.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                                    .line_clamp(1)
+                                    .child(self.root_name(&session.project_root)),
+                            )
+                        }),
+                )
+            })
+            .child(row_action(
+                SharedString::from(format!("rename-session-{}", session.id)),
+                &group_name,
+                "pencil",
+                cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.begin_rename(RenameTarget::Task(rename_id.clone()), cx);
+                }),
+            ))
             .child(row_action(
                 SharedString::from(format!("archive-session-{}", session.id)),
                 &group_name,

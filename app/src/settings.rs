@@ -21,6 +21,9 @@ pub struct AppSettings {
     pub tool_summaries: bool,
     #[serde(default)]
     pub pinned_roots: Vec<String>,
+    /// Display names for project roots, keyed by absolute path.
+    #[serde(default)]
+    pub project_names: std::collections::HashMap<String, String>,
     /// Whether run completion, permissions, and questions raise desktop
     /// notifications while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
@@ -78,6 +81,7 @@ impl Default for AppSettings {
             default_web_enabled: default_web_enabled(),
             tool_summaries: default_tool_summaries(),
             pinned_roots: Vec::new(),
+            project_names: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
             harness_instructions: String::new(),
         }

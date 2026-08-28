@@ -5,6 +5,7 @@ mod assets;
 mod backend;
 mod billing;
 mod notify;
+mod platform;
 mod settings;
 mod ui;
 
