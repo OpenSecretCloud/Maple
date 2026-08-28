@@ -21,9 +21,8 @@ Environment (TEE) processing.
 
 Maple's current release workflow builds native proxy archives for Linux x86_64,
 Linux ARM64, Apple Silicon macOS, and Windows x86_64 and attaches them to the
-ordinary Maple app Release. No post-integration Maple release has been cut yet,
-so the current `releases/latest` entry does not contain these files. Until the
-first such release is published, build from source as shown below.
+ordinary Maple app Release. Maple v3.3.9 completed the first post-integration
+publication and verification of all four archives plus their checksum manifest.
 
 After that release, verify the assets are present and use the stable download
 URLs, for example:
@@ -288,12 +287,13 @@ cargo run --locked
 
 ## 🐳 Docker Deployment
 
-### Legacy Pre-built Image
+### Pre-built Image
 
 The currently published GHCR `latest` image is the independently released
-standalone proxy 0.3.2. Maple's in-tree source is 0.3.3, and the root container
-workflow currently builds without pushing. Build from source for the current
-code until an explicitly authorized Maple-owned GHCR publisher is added.
+standalone proxy 0.3.2. The first Maple-owned publication deliberately does not
+backfill the in-tree 0.3.3 version. After the next proxy version change ships in
+a successful stable Maple Release, the release-following publisher updates the
+same `ghcr.io/opensecretcloud/maple-proxy` package automatically.
 
 To run the legacy image deliberately:
 
@@ -321,7 +321,7 @@ just docker-run
 
 ### Production Docker Setup
 
-1. **Option A: Use the legacy 0.3.2 image from GHCR**
+1. **Option A: Use the published image from GHCR**
 ```bash
 # In your docker-compose.yml, use:
 image: ghcr.io/opensecretcloud/maple-proxy:latest
@@ -415,8 +415,13 @@ environment:
 The source lives under [`proxy/`](https://github.com/OpenSecretCloud/Maple/tree/master/proxy)
 in the Maple repository. Root, path-scoped workflows run locked Rust checks,
 supply-chain policy, and non-publishing AMD64/ARM64 container builds for proxy
-changes. Production publishing is intentionally handled separately from these
-CI checks.
+changes. After every successful stable Maple Release, a separate serialized
+publisher compares the checked-in proxy version with the previous stable Maple
+Release. It skips unchanged versions; a strictly newer version publishes native
+AMD64/ARM64 images and moves the exact, minor, major, and `latest` tags. Manual
+dispatch retries the current qualifying release but cannot backfill an unchanged
+version. Maple must have Actions write access to the existing organization-scoped
+GHCR package.
 
 `proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
 `frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency

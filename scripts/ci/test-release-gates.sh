@@ -162,9 +162,11 @@ expect_failure "rejects an unknown argument" \
 release_json="${temp_root}/release.json"
 pages_production_json="${temp_root}/pages-production.json"
 proxy_rust_json="${temp_root}/proxy-rust.json"
+proxy_publish_json="${temp_root}/proxy-publish.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/pages-production.yml" > "${pages_production_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/proxy-rust.yml" > "${proxy_rust_json}"
+yq -o=json '.' "${repo_root}/.github/workflows/proxy-publish.yml" > "${proxy_publish_json}"
 
 if rg -n --glob '*.yml' --glob '*.yaml' \
   'gh[[:space:]]+release[[:space:]]+create|softprops/action-gh-release' \
@@ -173,7 +175,7 @@ if rg -n --glob '*.yml' --glob '*.yaml' \
 fi
 pass "repository workflows preserve one Maple GitHub Release object"
 
-python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" <<'PY'
+python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" "${proxy_publish_json}" <<'PY'
 import json
 import re
 import sys
@@ -217,6 +219,9 @@ with open(sys.argv[2], encoding="utf-8") as handle:
 
 with open(sys.argv[3], encoding="utf-8") as handle:
     proxy_rust = json.load(handle)
+
+with open(sys.argv[4], encoding="utf-8") as handle:
+    proxy_container_publish = json.load(handle)
 
 release_jobs = release["jobs"]
 classifier_id = "classify-app-release"
@@ -433,10 +438,122 @@ for required_control in (
 ):
     check(required_control in pages_run, f"Pages production step is missing control: {required_control}")
 
+check(
+    proxy_container_publish.get("permissions") == {"contents": "read"},
+    "Proxy container publisher must default to contents: read",
+)
+check(
+    not secret_names(proxy_container_publish),
+    "Proxy container publisher must use no repository or environment secrets",
+)
+proxy_publish_on = proxy_container_publish.get("on", {})
+check("workflow_dispatch" in proxy_publish_on, "Proxy container publisher must support manual retry")
+proxy_publish_workflow_run = proxy_publish_on.get("workflow_run", {})
+check(
+    proxy_publish_workflow_run.get("workflows") == ["Release"]
+    and proxy_publish_workflow_run.get("types") == ["completed"],
+    "Proxy container publisher must follow completed Release workflows",
+)
+check(
+    proxy_container_publish.get("concurrency")
+    == {"group": "proxy-publishing", "cancel-in-progress": False},
+    "Proxy container publication must serialize without cancellation",
+)
+check(
+    proxy_container_publish.get("env")
+    == {"REGISTRY": "ghcr.io", "IMAGE_NAME": "opensecretcloud/maple-proxy"},
+    "Proxy container publisher must preserve the existing GHCR package",
+)
+
+container_jobs = proxy_container_publish.get("jobs", {})
+check(
+    set(container_jobs) == {"prepare", "build", "publish"},
+    "Proxy container publisher must separate validation, platform builds, and manifest publication",
+)
+prepare = container_jobs["prepare"]
+prepare_if = str(prepare.get("if", ""))
+for required_gate in (
+    "workflow_run.conclusion == 'success'",
+    "workflow_run.event == 'release'",
+    "workflow_run.path == '.github/workflows/release.yml'",
+    "workflow_run.head_repository.full_name == github.repository",
+):
+    check(required_gate in prepare_if, f"Proxy container publisher is missing gate: {required_gate}")
+prepare_runs = "\n".join(str(step.get("run", "")) for step in prepare.get("steps", []))
+for required_control in (
+    "repos/${REPOSITORY}/releases/latest",
+    "repos/${REPOSITORY}/releases?per_page=100",
+    "contents/proxy/Cargo.toml?ref=${sha}",
+    "compare/${release_sha}...master",
+    "plan-proxy-container-publish.sh",
+):
+    check(required_control in prepare_runs, f"Proxy publication plan is missing control: {required_control}")
+
+container_build = container_jobs["build"]
+check(needs(container_build) == ["prepare"], "Proxy container builds must need the validated plan")
+check(
+    container_build.get("if") == "needs.prepare.outputs.publish == 'true'",
+    "Proxy container builds must skip unchanged versions",
+)
+check(
+    container_build.get("permissions") == {"contents": "read", "packages": "write"},
+    "Proxy container builds must have only contents read and packages write",
+)
+container_matrix = container_build.get("strategy", {}).get("matrix", {}).get("include", [])
+check(
+    {entry.get("platform") for entry in container_matrix} == {"linux/amd64", "linux/arm64"},
+    "Proxy container publisher must build native AMD64 and ARM64 images",
+)
+for step in container_build.get("steps", []):
+    if str(step.get("uses", "")).startswith("actions/checkout@"):
+        checkout = step.get("with", {})
+        check(
+            checkout.get("ref") == "${{ needs.prepare.outputs.release_sha }}",
+            "Proxy container builds must checkout the validated release SHA",
+        )
+        check(
+            checkout.get("persist-credentials") is False,
+            "Proxy container checkout must not persist credentials",
+        )
+build_steps = container_build.get("steps", [])
+build_push = [step for step in build_steps if step.get("name") == "Build and push platform image by digest"]
+check(len(build_push) == 1, "Proxy container platforms must push exactly once by digest")
+build_with = build_push[0].get("with", {})
+check(build_with.get("file") == "proxy/Dockerfile", "Proxy container publisher must use proxy/Dockerfile")
+check(
+    "push-by-digest=true" in str(build_with.get("outputs", "")),
+    "Proxy container platforms must publish only by digest before the manifest",
+)
+
+container_publish = container_jobs["publish"]
+check(
+    set(needs(container_publish)) == {"prepare", "build"},
+    "Proxy manifest publisher must wait for the plan and both platform builds",
+)
+check(
+    container_publish.get("permissions") == {"contents": "read", "packages": "write"},
+    "Proxy manifest publisher must have only contents read and packages write",
+)
+publish_runs = "\n".join(str(step.get("run", "")) for step in container_publish.get("steps", []))
+for required_tag in (
+    '"${image}:${PROXY_VERSION}"',
+    '"${image}:${PROXY_MINOR}"',
+    '"${image}:${PROXY_MAJOR}"',
+    '"${image}:latest"',
+):
+    check(required_tag in publish_runs, f"Proxy manifest publisher is missing tag {required_tag}")
+check(
+    "linux/amd64\\nlinux/arm64" in publish_runs,
+    "Proxy manifest publisher must anonymously verify the two public platforms",
+)
+
 PY
 pass "workflow release-gate topology is fail closed with isolated downstream publishers"
 
 bash "${script_dir}/test-proxy-release-artifacts.sh" >/dev/null
 pass "proxy release artifact verifier accepts only the complete native asset set"
+
+bash "${script_dir}/test-plan-proxy-container-publish.sh" >/dev/null
+pass "proxy container publish planner accepts only new exact versions"
 
 printf '1..%d\n' "${passed}"

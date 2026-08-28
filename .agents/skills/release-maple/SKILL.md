@@ -22,8 +22,10 @@ commit, external effect, and authority provided by the user.
   their checksum manifest. Never create a separate proxy Release or proxy tag;
   `/releases/latest` must continue to identify the Maple application release.
 - Maple GitHub Releases do not publish `opensecret` or `maple-proxy` to
-  crates.io and do not push a GHCR image. Those are separately versioned,
-  separately authorized production mutations.
+  crates.io. A successful stable release starts a non-gating GHCR sibling that
+  publishes only when the proxy version changed from the previous stable Maple
+  Release; unchanged versions skip. The container remains separately versioned
+  at `ghcr.io/opensecretcloud/maple-proxy`.
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
@@ -165,6 +167,18 @@ gh run list --repo OpenSecretCloud/Maple --workflow 'Promote Pages production' \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```
 
+Also inspect the independent proxy-container publisher. It should either prove
+the expected exact proxy version and public AMD64/ARM64 manifest or explicitly
+skip because the proxy version did not change. Retry it with manual dispatch;
+never create a proxy tag or Release and never rerun the core Release to repair
+it:
+
+```bash
+gh run list --repo OpenSecretCloud/Maple --workflow 'Publish proxy container' \
+  --limit 10 \
+  --json databaseId,status,conclusion,headSha,createdAt,url
+```
+
 The updater workflow must publish the verified `latest.json` before reporting
 the desktop updater control plane current. The Pages workflow advances the
 machine-owned `pages-production` ref to the exact stable release SHA; its
@@ -228,9 +242,11 @@ nix develop --no-update-lock-file .#ci -c \
 Confirm the release contains all four stable proxy archives and
 `maple-proxy-release-final.sha256`, and that their attestations and the
 published-asset verification job succeeded. Report the embedded proxy version
-separately from the Maple application version. Do not report crates.io or GHCR
-as updated unless their independent publisher was explicitly authorized and
-verified.
+separately from the Maple application version. Do not report crates.io as
+updated unless its independent manual publisher was explicitly authorized and
+verified. Report GHCR as published only after its sibling workflow and anonymous
+manifest verification succeed; otherwise report the unchanged-version skip or
+failure separately.
 
 Verify that the hosted updater serves the same metadata as the GitHub Release:
 

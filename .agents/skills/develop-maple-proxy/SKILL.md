@@ -88,8 +88,8 @@ bodies as untrusted and potentially sensitive.
 
 ## Preserve publishing boundaries
 
-Maple's current GitHub Release workflow builds, checksums, attests, uploads,
-and re-verifies four native proxy archives. Maple v3.3.9 proved this integrated
+Maple's GitHub Release workflow builds, checksums, attests, uploads, and
+re-verifies four native proxy archives. Maple v3.3.9 proved this integrated
 publication path for macOS arm64, Linux arm64, Linux x86_64, and Windows
 x86_64. Never create a proxy GitHub tag or Release; a proxy-only binary fix
 ships through a normal Maple patch release.
@@ -103,9 +103,17 @@ cargo package --locked --manifest-path proxy/Cargo.toml
 
 If the proxy references a new `opensecret` version, publish that SDK crate
 first. Do not publish either crate from Maple's application Release workflow.
-The current root proxy container workflow builds without pushing; adding or
-running a GHCR publisher is a separate production action requiring explicit
-repository, version, image namespace, tag, and credential authority.
+Root proxy container CI builds without pushing. After a successful stable Maple
+Release, `.github/workflows/proxy-publish.yml` independently compares that
+release's proxy version with the previous stable Maple Release. Unchanged
+versions skip, including the unbackfilled 0.3.3 baseline. A strictly newer,
+previously unpublished version automatically publishes Linux AMD64/ARM64 to
+`ghcr.io/opensecretcloud/maple-proxy` with exact, minor, major, and `latest`
+tags. The workflow is serialized, rejects rollback and stale releases, verifies
+the public manifest, and supports manual retry from `master`. Maple's Actions
+repository must retain write access to that existing organization-scoped GHCR
+package. Treat any namespace, trigger, version policy, or package-access change
+as a separate production-authority decision.
 
 ## Report
 

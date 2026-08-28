@@ -8,6 +8,7 @@ on:
     branches: [master]
     paths:
       - ".github/workflows/proxy-container.yml"
+      - ".github/workflows/proxy-publish.yml"
       - ".dockerignore"
       - "proxy/Dockerfile"
       - "proxy/Cargo.toml"
@@ -19,6 +20,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/proxy-container.yml"
+      - ".github/workflows/proxy-publish.yml"
       - ".dockerignore"
       - "proxy/Dockerfile"
       - "proxy/Cargo.toml"
