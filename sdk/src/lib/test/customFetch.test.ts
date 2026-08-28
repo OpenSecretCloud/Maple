@@ -1129,6 +1129,40 @@ describe("createCustomFetch stale-session recovery", () => {
     expect(forcedAttestations).toBe(0);
   });
 
+  test("preserves coded application error metadata without replay", async () => {
+    let requests = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        fetch: async () => {
+          requests += 1;
+          return contractError(
+            503,
+            '{"status":503,"message":"Upstream provider temporarily unavailable"}',
+            "image_description_unavailable"
+          );
+        }
+      })
+    );
+
+    let thrown: unknown;
+    try {
+      await customFetch("https://example.test/v1/responses");
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(requests).toBe(1);
+    expect(thrown).toBeInstanceOf(Error);
+    const requestError = thrown as Error & { status?: number; headers?: Headers };
+    expect(requestError.message).toBe(
+      'Request failed with status 503: {"status":503,"message":"Upstream provider temporarily unavailable"}'
+    );
+    expect(requestError.status).toBe(503);
+    expect(requestError.headers?.get(ERROR_CONTRACT_HEADER)).toBe("1");
+    expect(requestError.headers?.get(ERROR_CODE_HEADER)).toBe("image_description_unavailable");
+  });
+
   test("forwards one endpoint-bound PCR policy through lookup and renewal", async () => {
     const apiUrl = "https://enclave.example.test/base";
     const pcrConfig: PcrConfig = {

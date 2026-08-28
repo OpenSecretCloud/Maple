@@ -310,7 +310,13 @@ export function createCustomFetchWithDependencies(
           " and message:",
           errorText
         );
-        throw new Error(`Request failed with status ${response.status}: ${errorText}`);
+        throw Object.assign(
+          new Error(`Request failed with status ${response.status}: ${errorText}`),
+          {
+            status: response.status,
+            headers: new Headers(response.headers)
+          }
+        );
       }
 
       // Decrypt SSE events
