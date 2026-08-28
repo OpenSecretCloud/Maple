@@ -99,7 +99,6 @@ The `justfile` has recipes for the common tasks. Install
 
 ```sh
 just ci        # all the checks that CI runs
-just check     # fmt, clippy, and tests (no audit)
 just release   # release binary in target/release
 just dist      # release binary copied to dist/ with a SHA-256
 just run       # debug build with debug logs
@@ -192,9 +191,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-CI runs the same three commands on Linux, macOS, and Windows, plus a
-RustSec audit and a Linux release build. `just ci` runs all of them locally. A `v*` tag builds release binaries
-for all three platforms and attaches them to a GitHub release.
+CI runs the same three commands on Linux, macOS, and Windows, plus a Linux
+release build. `just ci` runs the checks locally. A `v*` tag builds release
+binaries for all three platforms and attaches them to a GitHub release.
 
 ## Before a release
 

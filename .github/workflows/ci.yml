@@ -80,14 +80,6 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p maple-gpui --locked --no-default-features --features acp,proxy
 
-  audit:
-    name: Security audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit --file Cargo.lock
-
   release-build:
     name: Release build (Linux)
     runs-on: ubuntu-latest

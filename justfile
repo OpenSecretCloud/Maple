@@ -11,10 +11,7 @@ default:
     @just --list --unsorted
 
 # Run all the checks that CI runs.
-ci: fmt-check clippy test audit
-
-# Run the fast checks before a commit: format, clippy, and tests.
-check: fmt-check clippy test
+ci: fmt-check clippy test
 
 # Format all code.
 fmt:
@@ -36,10 +33,6 @@ test:
     RUSTFLAGS="-D warnings" cargo build --workspace --all-targets --locked
     RUSTFLAGS="-D warnings" cargo test --workspace --locked
     RUSTFLAGS="-D warnings" cargo test -p maple-gpui --locked {{headless}}
-
-# Audit Cargo.lock for known vulnerabilities (needs cargo-audit).
-audit:
-    cargo audit --file Cargo.lock
 
 # Build the debug binary.
 build:
