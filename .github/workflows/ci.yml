@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # No debuginfo in CI: it is most of the dependency artifact size and
+  # nothing here reads it.
+  CARGO_PROFILE_DEV_DEBUG: 0
   RUSTFLAGS: -D warnings
 
 concurrency:
@@ -41,6 +44,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
@@ -61,6 +66,8 @@ jobs:
             libfreetype-dev libclang-dev cmake mesa-vulkan-drivers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
 
@@ -87,6 +94,8 @@ jobs:
             libfreetype-dev libclang-dev cmake
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: cargo build --release -p maple-gpui --locked
       - uses: actions/upload-artifact@v4
         with:

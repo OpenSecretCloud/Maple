@@ -8,6 +8,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # No debuginfo in CI: it is most of the dependency artifact size and
+  # nothing here reads it.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 permissions:
   contents: write
@@ -45,6 +48,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: cargo build --release -p maple-gpui --locked --target ${{ matrix.target }}
       - name: Stage artifact
         shell: bash
