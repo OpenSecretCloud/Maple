@@ -434,7 +434,7 @@ for required_control in (
     "repos/${REPOSITORY}/compare/${release_sha}...master",
     "repos/${REPOSITORY}/compare/${current_sha}...${release_sha}",
     "repos/${REPOSITORY}/git/refs/heads/${PAGES_PRODUCTION_BRANCH}",
-    '-F force=true',
+    '-F force=false',
 ):
     check(required_control in pages_run, f"Pages production step is missing control: {required_control}")
 
