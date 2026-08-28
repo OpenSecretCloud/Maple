@@ -14,7 +14,7 @@ use gpui::{
 use maple_agent::agent::{
     AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
     AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
-    AgentTimelineItem,
+    AgentTimelineItem, compaction_notice_text,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -6081,15 +6081,7 @@ fn render_thinking(item: &AgentTimelineItem, revision: u64, transcript: &Transcr
 
 /// Goose's runtime strings rebranded for Maple users, who never see goose.
 fn maple_display_text(text: &str) -> std::borrow::Cow<'_, str> {
-    match text.trim() {
-        "goose is compacting the conversation..." => {
-            std::borrow::Cow::Borrowed("Compacting the conversation…")
-        }
-        "Context limit reached. Compacting to continue conversation..." => {
-            std::borrow::Cow::Borrowed("Context limit reached — compacting to continue…")
-        }
-        _ => std::borrow::Cow::Borrowed(text),
-    }
+    std::borrow::Cow::Borrowed(compaction_notice_text(text).unwrap_or(text))
 }
 
 fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {

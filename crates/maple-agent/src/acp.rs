@@ -4,7 +4,7 @@ use crate::agent::{
     AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal, AgentRunUsage,
     AgentRuntimeHandle, AgentSendMessageRequest, AgentSessionSummary, AgentTimelineItem,
     AgentToolContextLease, AgentToolContextSpec, AgentTransientMcpServer,
-    AgentTransientMcpTransport,
+    AgentTransientMcpTransport, compaction_notice_text,
 };
 use crate::maple_api::account_scope;
 use agent_client_protocol::schema::v1::{
@@ -1858,11 +1858,30 @@ impl AcpConnectionContext {
                 Some(AgentRunEvent::Finished(terminal)) => {
                     break prompt_result_from_terminal(terminal);
                 }
+                Some(AgentRunEvent::HistoryReplaced) => {
+                    // The client keeps its own transcript and cannot reload
+                    // ours, so only say that the compaction finished.
+                    match self
+                        .send_final_agent_message(
+                            cx,
+                            protocol_session_id.clone(),
+                            COMPACTION_COMPLETED_NOTICE,
+                            &prompt_lifetime,
+                        )
+                        .await
+                    {
+                        Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {}
+                        Err(AcpOutboundSendError::Cancelled) => {
+                            cancel_after_result = true;
+                            break Ok(PromptResponse::new(StopReason::Cancelled));
+                        }
+                        Err(AcpOutboundSendError::Transport(error)) => break Err(error),
+                    }
+                }
                 Some(
                     AgentRunEvent::SessionUpdated(_)
                     | AgentRunEvent::Started
                     | AgentRunEvent::SetupWarning(_)
-                    | AgentRunEvent::HistoryReplaced
                     | AgentRunEvent::QueueChanged(_)
                     | AgentRunEvent::QueuePromoted { .. },
                 ) => {}
@@ -2914,6 +2933,9 @@ where
     });
 }
 
+/// Agent-text notice sent when Goose replaced the history after compaction.
+const COMPACTION_COMPLETED_NOTICE: &str = "Compaction completed.\n";
+
 fn timeline_update(
     item: &AgentTimelineItem,
     tools: &mut AcpToolProjection,
@@ -2941,6 +2963,19 @@ fn timeline_update(
             )
         }),
         "tool" => Some(acp_tool_update(item, tools)),
+        // Compaction is a full model round-trip with no other output. The
+        // reference adapters (claude-agent-acp, codex-acp) tell the client
+        // with a short agent-text notice, so clients render it the same way.
+        "system" => item
+            .text
+            .as_deref()
+            .and_then(compaction_notice_text)
+            .map(|notice| {
+                SessionUpdate::AgentMessageChunk(
+                    ContentChunk::new(ContentBlock::Text(TextContent::new(format!("{notice}\n"))))
+                        .message_id(item.id.as_str()),
+                )
+            }),
         _ => None,
     }
 }
@@ -3419,6 +3454,35 @@ mod tests {
             assert_eq!(encoded["sessionUpdate"], expected_variant);
             assert_eq!(encoded["messageId"], item.id);
         }
+    }
+
+    #[test]
+    fn compaction_notices_reach_the_client_as_agent_text() {
+        let mut projection = AcpToolProjection::default();
+        let system_item = |text: &str| AgentTimelineItem {
+            id: "system-1".to_string(),
+            item_type: "system".to_string(),
+            role: Some("system".to_string()),
+            title: Some("Progress".to_string()),
+            text: Some(text.to_string()),
+            status: None,
+            input: None,
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let update = timeline_update(
+            &system_item("goose is compacting the conversation..."),
+            &mut projection,
+            false,
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(update).unwrap();
+        assert_eq!(encoded["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(encoded["content"]["text"], "Compacting the conversation…\n");
+        assert_eq!(encoded["messageId"], "system-1");
+        // Other runtime notices stay out of the ACP stream.
+        assert!(timeline_update(&system_item("Thinking hard"), &mut projection, false).is_none());
     }
 
     #[test]

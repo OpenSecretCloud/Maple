@@ -7915,6 +7915,19 @@ fn message_to_timeline_items_with_thinking(
         .collect()
 }
 
+/// Maple wording for a Goose compaction notice, or `None` when the text
+/// is not one. Maple users never see the goose name, and ACP clients get
+/// the same wording.
+pub fn compaction_notice_text(text: &str) -> Option<&'static str> {
+    match text.trim() {
+        "goose is compacting the conversation..." => Some("Compacting the conversation…"),
+        "Context limit reached. Compacting to continue conversation..." => {
+            Some("Context limit reached — compacting to continue…")
+        }
+        _ => None,
+    }
+}
+
 fn system_notification_item(
     base_id: &str,
     index: usize,
