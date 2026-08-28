@@ -5542,6 +5542,7 @@ mod state_tests {
         AgentSessionSummary {
             web_enabled: true,
             archived: false,
+            acp: false,
             id: id.to_string(),
             title: title.to_string(),
             project_root: "/tmp/proj".to_string(),

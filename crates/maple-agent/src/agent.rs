@@ -1042,6 +1042,8 @@ pub struct AgentSessionSummary {
     pub web_enabled: bool,
     /// Hidden from the main task list; can be restored.
     pub archived: bool,
+    /// Created by an ACP client (an editor or Buzz), not in the desktop app.
+    pub acp: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -8373,6 +8375,7 @@ fn session_summary(session: &Session) -> AgentSessionSummary {
         mode: session.goose_mode.to_string(),
         web_enabled: session_web_enabled(session),
         archived: session.archived_at.is_some(),
+        acp: session.session_type == SessionType::Acp,
     }
 }
 
@@ -13773,6 +13776,7 @@ mod tests {
             model: None,
             mode: DEFAULT_GOOSE_MODE.to_string(),
             archived: false,
+            acp: false,
         };
         let mut sessions = vec![
             summary("oldest", 10),

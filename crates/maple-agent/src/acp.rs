@@ -3222,6 +3222,7 @@ mod tests {
             mode: mode.to_string(),
             web_enabled: false,
             archived: false,
+            acp: false,
         }
     }
 

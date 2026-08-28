@@ -653,11 +653,16 @@ impl AgentBackend {
         user_id: &str,
         project_root: Option<String>,
     ) -> Result<Vec<AgentSessionSummary>, String> {
-        self.service
+        let mut sessions = self
+            .service
             .handle_for_user(user_id)
             .await?
             .list_sessions(project_root)
-            .await
+            .await?;
+        // Tasks that an ACP client created belong to that client's UI, not
+        // to the desktop task list.
+        sessions.retain(|session| !session.acp);
+        Ok(sessions)
     }
 
     pub async fn create_session(
