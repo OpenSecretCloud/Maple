@@ -41,8 +41,8 @@ use goose::conversation::{Conversation, fix_conversation};
 use goose::execution::manager::{AgentManager, AgentManagerGetResult, RuntimeContext};
 use goose::permission::permission_confirmation::PrincipalType;
 use goose::permission::{Permission, PermissionConfirmation};
-use goose::session::SessionManager;
 use goose::session::session_manager::{Session, SessionType};
+use goose::session::{ExtensionState, SessionManager};
 use goose::skills::{EXTENSION_NAME as SKILLS_EXTENSION_NAME, SkillsClient};
 use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
 use provider::{MAPLE_PROVIDER_NAME, MapleProvider};
@@ -3353,6 +3353,7 @@ impl AgentRuntimeHandle {
             .create_session(root.clone(), title, session_type, permission_mode)
             .await
             .map_err(|e| format!("Failed to create Agent task: {e}"))?;
+        let session = seed_empty_extension_state(&session_manager, session).await?;
         let expected_provisional_session = session.clone();
         // The Goose agent is built below; the caller's prompt must be
         // stored first so the fresh agent picks it up.
@@ -7396,6 +7397,32 @@ where
         .update_provider(provider, model_config, session_id)
         .await
         .map_err(|e| format!("Failed to update Goose provider: {e}"))
+}
+
+/// Write an empty enabled-extensions record into a new session.
+///
+/// Goose loads extensions from the session row when it builds the agent,
+/// and it warns when the row has no record at all. Maple adds its built-in
+/// tools only after the agent exists, so seed an empty record first, as
+/// Goose's own gateway does.
+async fn seed_empty_extension_state(
+    session_manager: &Arc<SessionManager>,
+    session: Session,
+) -> Result<Session, String> {
+    let mut extension_data = session.extension_data.clone();
+    goose::session::EnabledExtensionsState::new(Vec::new())
+        .to_extension_data(&mut extension_data)
+        .map_err(|e| format!("Failed to seed Agent task extension state: {e}"))?;
+    session_manager
+        .update(&session.id)
+        .extension_data(extension_data)
+        .apply()
+        .await
+        .map_err(|e| format!("Failed to seed Agent task extension state: {e}"))?;
+    session_manager
+        .get_session(&session.id, false)
+        .await
+        .map_err(|e| format!("Failed to reload Agent task: {e}"))
 }
 
 async fn get_or_create_session_agent<T>(
