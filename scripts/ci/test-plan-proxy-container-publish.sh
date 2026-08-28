@@ -39,7 +39,7 @@ proxy_version=0.3.3
 major=0
 minor=0.3
 registry_version=0.3.2'
-actual="$("${planner}" 0.3.3 0.3.2 "${tags}")"
+actual="$(bash "${planner}" 0.3.3 0.3.2 "${tags}")"
 [ "${actual}" = "${expected}" ] || fail "new version publish plan did not match"
 pass "publishes a strictly newer exact version"
 
@@ -49,7 +49,7 @@ proxy_version=0.3.2
 major=0
 minor=0.3
 registry_version=0.3.2'
-actual="$("${planner}" 0.3.2 0.3.1 "${tags}")"
+actual="$(bash "${planner}" 0.3.2 0.3.1 "${tags}")"
 [ "${actual}" = "${expected}" ] || fail "existing version plan did not match"
 pass "treats an existing exact version as idempotent"
 
@@ -59,7 +59,7 @@ proxy_version=0.3.3
 major=0
 minor=0.3
 registry_version=0.3.2'
-actual="$("${planner}" 0.3.3 0.3.3 "${tags}")"
+actual="$(bash "${planner}" 0.3.3 0.3.3 "${tags}")"
 [ "${actual}" = "${expected}" ] || fail "unchanged release plan did not match"
 pass "does not backfill an unchanged release version"
 
@@ -69,17 +69,17 @@ proxy_version=0.3.3
 major=0
 minor=0.3
 registry_version=0.3.2'
-actual="$("${planner}" 0.3.3 '' "${tags}")"
+actual="$(bash "${planner}" 0.3.3 '' "${tags}")"
 [ "${actual}" = "${expected}" ] || fail "baseline release plan did not match"
 pass "does not publish the first in-tree baseline"
 
-expect_failure "rejects a release version rollback" "${planner}" 0.3.0 0.3.1 "${tags}"
+expect_failure "rejects a release version rollback" bash "${planner}" 0.3.0 0.3.1 "${tags}"
 printf '{"tags":["latest","0.3.2"]}\n' >"${tags}"
-expect_failure "rejects a registry version rollback" "${planner}" 0.3.1 0.3.0 "${tags}"
-expect_failure "rejects a non-canonical version" "${planner}" 00.3.3 0.3.2 "${tags}"
+expect_failure "rejects a registry version rollback" bash "${planner}" 0.3.1 0.3.0 "${tags}"
+expect_failure "rejects a non-canonical version" bash "${planner}" 00.3.3 0.3.2 "${tags}"
 
 printf '{"tags":"latest"}\n' >"${tags}"
-expect_failure "rejects a malformed registry response" "${planner}" 0.3.3 0.3.2 "${tags}"
+expect_failure "rejects a malformed registry response" bash "${planner}" 0.3.3 0.3.2 "${tags}"
 
 printf '{"tags":[]}\n' >"${tags}"
 expected='publish=true
@@ -88,7 +88,7 @@ proxy_version=1.0.0
 major=1
 minor=1.0
 registry_version='
-actual="$("${planner}" 1.0.0 0.9.0 "${tags}")"
+actual="$(bash "${planner}" 1.0.0 0.9.0 "${tags}")"
 [ "${actual}" = "${expected}" ] || fail "empty registry plan did not match"
 pass "supports the first exact version in an empty registry"
 
