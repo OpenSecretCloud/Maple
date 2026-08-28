@@ -94,6 +94,17 @@ cargo build --release -p maple-gpui  # release binary in target/release
 Release builds use fat LTO and one codegen unit. Use a release build for any
 performance check; the dev profile is `opt-level = 1`.
 
+The `justfile` has recipes for the common tasks. Install
+[just](https://github.com/casey/just) and run `just` to list them:
+
+```sh
+just ci        # all the checks that CI runs
+just check     # fmt, clippy, and tests (no audit)
+just release   # release binary in target/release
+just dist      # release binary copied to dist/ with a SHA-256
+just run       # debug build with debug logs
+```
+
 ## Command line
 
 ```
@@ -182,7 +193,7 @@ cargo fmt --all -- --check
 ```
 
 CI runs the same three commands on Linux, macOS, and Windows, plus a
-RustSec audit and a Linux release build. A `v*` tag builds release binaries
+RustSec audit and a Linux release build. `just ci` runs all of them locally. A `v*` tag builds release binaries
 for all three platforms and attaches them to a GitHub release.
 
 ## Before a release

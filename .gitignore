@@ -3,3 +3,4 @@
 .env.*
 .papercuts.jsonl
 __pycache__/
+/dist
