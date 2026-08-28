@@ -1,17 +1,17 @@
-use super::attachments::{attachment_id_from_source, AgentAttachmentStore};
+use super::attachments::{AgentAttachmentStore, attachment_id_from_source};
 use super::web_tools::{
+    OPEN_URL_TOOL_NAME, OpenUrlParams, WEB_SEARCH_TOOL_NAME, WebSearchParams, WebToolState,
     bound_open_url_tool_error, bound_web_search_tool_error, execute_open_url, execute_web_search,
-    open_url_tool, web_search_tool, OpenUrlParams, WebSearchParams, WebToolState,
-    OPEN_URL_TOOL_NAME, WEB_SEARCH_TOOL_NAME,
+    open_url_tool, web_search_tool,
 };
 use crate::maple_api::MapleWebTransport;
-use goose::agents::mcp_client::{Error, McpClientTrait};
-#[cfg(not(windows))]
-use goose::agents::platform_extensions::developer::shell::{shell_display_name, ShellTool};
-use goose::agents::platform_extensions::developer::shell::{ShellOutput, ShellParams};
-use goose::agents::platform_extensions::developer::DeveloperClient;
-use goose::agents::platform_extensions::PlatformExtensionContext;
 use goose::agents::ToolCallContext;
+use goose::agents::mcp_client::{Error, McpClientTrait};
+use goose::agents::platform_extensions::PlatformExtensionContext;
+use goose::agents::platform_extensions::developer::DeveloperClient;
+use goose::agents::platform_extensions::developer::shell::{ShellOutput, ShellParams};
+#[cfg(not(windows))]
+use goose::agents::platform_extensions::developer::shell::{ShellTool, shell_display_name};
 use goose::config::{Config, DEFAULT_EXTENSION_TIMEOUT};
 use goose::conversation::message::{Message, MessageUsage};
 use goose::providers::base::Provider;
@@ -28,7 +28,7 @@ use rmcp::model::{
     ListToolsResult, ServerCapabilities, TextContent, Tool, ToolAnnotations,
 };
 use rmcp::object;
-use serde::{de::Error as SerdeDeError, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de::Error as SerdeDeError};
 #[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
@@ -42,7 +42,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 #[cfg(not(windows))]
 use tokio::sync::OnceCell;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 #[cfg(windows)]
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
@@ -1825,7 +1825,7 @@ async fn call_bounded_read_image(
             Err(error) => {
                 return Ok(error_result(format!(
                     "Agent image attachment task failed: {error}"
-                )))
+                )));
             }
         }
     } else {
@@ -2967,10 +2967,12 @@ mod tests {
     async fn exposes_only_pi_style_defaults_plus_read_image() {
         let temp = TestDir::new();
         let client = test_client(temp.path().join("sessions"), true);
-        assert!(client
-            .get_info()
-            .and_then(|info| info.instructions.as_deref())
-            .is_some_and(|instructions| instructions.contains("untrusted evidence")));
+        assert!(
+            client
+                .get_info()
+                .and_then(|info| info.instructions.as_deref())
+                .is_some_and(|instructions| instructions.contains("untrusted evidence"))
+        );
         let result = client
             .list_tools("session", None, CancellationToken::new())
             .await
@@ -3010,13 +3012,17 @@ mod tests {
         let read_image = serde_json::to_value(&result.tools[4]).unwrap();
         assert_eq!(read_image["annotations"]["readOnlyHint"], false);
         assert_eq!(read_image["annotations"]["openWorldHint"], true);
-        assert!(read_image["inputSchema"]["properties"]
-            .get("context")
-            .is_none());
-        assert!(read_image["description"]
-            .as_str()
-            .unwrap()
-            .contains("Remote URLs require approval"));
+        assert!(
+            read_image["inputSchema"]["properties"]
+                .get("context")
+                .is_none()
+        );
+        assert!(
+            read_image["description"]
+                .as_str()
+                .unwrap()
+                .contains("Remote URLs require approval")
+        );
         assert_eq!(
             result.tools[2].input_schema["properties"]["edits"]["minItems"],
             1
@@ -3033,10 +3039,12 @@ mod tests {
         assert_eq!(open_url["annotations"]["readOnlyHint"], false);
         assert_eq!(open_url["annotations"]["destructiveHint"], false);
         assert_eq!(open_url["annotations"]["openWorldHint"], true);
-        assert!(open_url["inputSchema"]["required"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("purpose")));
+        assert!(
+            open_url["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("purpose"))
+        );
     }
 
     #[tokio::test]
@@ -3218,15 +3226,19 @@ mod tests {
             read_image.input_schema["properties"]["context"]["maxLength"],
             IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS
         );
-        assert!(read_image.input_schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("context")));
-        assert!(read_image
-            .description
-            .as_deref()
-            .unwrap()
-            .contains("context"));
+        assert!(
+            read_image.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("context"))
+        );
+        assert!(
+            read_image
+                .description
+                .as_deref()
+                .unwrap()
+                .contains("context")
+        );
 
         let mut arguments = Some(object!({
             "source": "icon.png",
@@ -3242,17 +3254,21 @@ mod tests {
     #[test]
     fn contextual_image_context_is_runtime_bounded() {
         let mut missing = Some(object!({ "source": "icon.png" }));
-        assert!(remove_image_description_context(&mut missing)
-            .unwrap_err()
-            .contains("Missing required context"));
+        assert!(
+            remove_image_description_context(&mut missing)
+                .unwrap_err()
+                .contains("Missing required context")
+        );
 
         let mut oversized = Some(object!({
             "source": "icon.png",
             "context": "x".repeat(IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS + 1)
         }));
-        assert!(remove_image_description_context(&mut oversized)
-            .unwrap_err()
-            .contains("character limit"));
+        assert!(
+            remove_image_description_context(&mut oversized)
+                .unwrap_err()
+                .contains("character limit")
+        );
         assert!(oversized.as_ref().unwrap().get("context").is_none());
     }
 
@@ -3274,10 +3290,12 @@ mod tests {
             "A blue circular toolbar icon.".to_string(),
         );
         assert_eq!(result.is_error, Some(false));
-        assert!(result
-            .content
-            .iter()
-            .all(|content| !matches!(content, ContentBlock::Image(_))));
+        assert!(
+            result
+                .content
+                .iter()
+                .all(|content| !matches!(content, ContentBlock::Image(_)))
+        );
         assert!(text(&result).contains("A blue circular toolbar icon."));
         assert_eq!(result.structured_content.unwrap()["width"], 512);
     }
@@ -3300,10 +3318,12 @@ mod tests {
             "helper unavailable".to_string(),
         );
         assert_eq!(result.is_error, Some(true));
-        assert!(result
-            .content
-            .iter()
-            .all(|content| !matches!(content, ContentBlock::Image(_))));
+        assert!(
+            result
+                .content
+                .iter()
+                .all(|content| !matches!(content, ContentBlock::Image(_)))
+        );
         assert!(text(&result).contains("helper unavailable"));
         assert_eq!(result.structured_content.unwrap()["width"], 512);
     }
@@ -3449,9 +3469,11 @@ mod tests {
         assert_eq!(payload["include_reasoning"], false);
         assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
         assert!(payload.get("thinking_effort").is_none());
-        assert!(payload
-            .get("tools")
-            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)));
+        assert!(
+            payload
+                .get("tools")
+                .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty))
+        );
 
         let user_content = payload["messages"]
             .as_array()
@@ -3676,16 +3698,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.is_error, Some(false));
-        assert!(result
-            .content
-            .iter()
-            .any(|content| matches!(content, ContentBlock::Image(_))));
-        assert!(result
-            .structured_content
-            .as_ref()
-            .and_then(|value| value.get("source"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| value == source));
+        assert!(
+            result
+                .content
+                .iter()
+                .any(|content| matches!(content, ContentBlock::Image(_)))
+        );
+        assert!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value == source)
+        );
     }
 
     #[tokio::test]

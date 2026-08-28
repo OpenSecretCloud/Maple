@@ -245,18 +245,22 @@ mod tests {
 
     #[test]
     fn validation_is_generic_and_bounded() {
-        assert!(AgentToolContextSpec::try_new(
-            BTreeMap::from([("CUSTOM_TOKEN".to_string(), "value".to_string())]),
-            BTreeSet::new(),
-            false,
-        )
-        .is_ok());
-        assert!(AgentToolContextSpec::try_new(
-            BTreeMap::from([("BAD=KEY".to_string(), "value".to_string())]),
-            BTreeSet::new(),
-            false,
-        )
-        .is_err());
+        assert!(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("CUSTOM_TOKEN".to_string(), "value".to_string())]),
+                BTreeSet::new(),
+                false,
+            )
+            .is_ok()
+        );
+        assert!(
+            AgentToolContextSpec::try_new(
+                BTreeMap::from([("BAD=KEY".to_string(), "value".to_string())]),
+                BTreeSet::new(),
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -278,9 +282,11 @@ mod tests {
         started_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("cancellation thread should start");
-        assert!(finished_rx
-            .recv_timeout(std::time::Duration::from_millis(50))
-            .is_err());
+        assert!(
+            finished_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err()
+        );
         drop(launch);
         finished_rx
             .recv_timeout(std::time::Duration::from_secs(1))

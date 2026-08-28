@@ -75,7 +75,7 @@ Use Markdown formatting for all responses.
 
 #[cfg(test)]
 mod tests {
-    use super::{system_prompt, AGENT_OPERATING_PROMPT};
+    use super::{AGENT_OPERATING_PROMPT, system_prompt};
 
     const MAPLE_HARNESS_INSTRUCTIONS: &str =
         "You are a general-purpose AI agent called Maple, created by Maple AI.

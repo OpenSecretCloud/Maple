@@ -1,24 +1,24 @@
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
-use goose_providers::base::{collect_stream, MessageStream, Provider};
+use goose_providers::base::{MessageStream, Provider, collect_stream};
 use goose_providers::conversation::message::{Message, MessageContent};
 use goose_providers::conversation::token_usage::ProviderUsage;
 use goose_providers::errors::ProviderError;
 use goose_providers::formats::openai::{
-    create_request_with_options, response_to_streaming_message, OpenAiFormatOptions,
+    OpenAiFormatOptions, create_request_with_options, response_to_streaming_message,
 };
 use goose_providers::images::ImageFormat;
 use goose_providers::model::ModelConfig;
-use goose_providers::request_log::{start_log, LoggerHandleExt};
+use goose_providers::request_log::{LoggerHandleExt, start_log};
 use goose_providers::retry::{
-    should_retry, RetryConfig, DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_INITIAL_RETRY_INTERVAL_MS,
-    DEFAULT_MAX_RETRY_INTERVAL_MS,
+    DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_INITIAL_RETRY_INTERVAL_MS, DEFAULT_MAX_RETRY_INTERVAL_MS,
+    RetryConfig, should_retry,
 };
 use opensecret::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
 use rmcp::model::Tool;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::cell::Cell;
-use std::future::{ready, Future};
+use std::future::{Future, ready};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
@@ -1964,10 +1964,12 @@ mod tests {
             .expect("tool item")
             .expect("tool item should parse");
         let message = message.expect("tool item should contain a message");
-        assert!(message
-            .content
-            .iter()
-            .any(|content| matches!(content, MessageContent::ToolRequest(_))));
+        assert!(
+            message
+                .content
+                .iter()
+                .any(|content| matches!(content, MessageContent::ToolRequest(_)))
+        );
 
         let error = stream
             .next()
@@ -2581,8 +2583,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconstructs_fragmented_parallel_tool_calls_with_empty_finish_reasons_and_formats_schema(
-    ) {
+    async fn reconstructs_fragmented_parallel_tool_calls_with_empty_finish_reasons_and_formats_schema()
+     {
         let sse = concat!(
             "data: {\"id\":\"tools-1\",\"object\":\"chat.completion.chunk\",",
             "\"created\":1,\"model\":\"test-model\",\"choices\":[{\"index\":0,",

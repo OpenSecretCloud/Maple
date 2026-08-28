@@ -665,13 +665,13 @@ impl MapleApiAuthState {
 mod tests {
     use super::*;
     use axum::{
+        Json, Router,
         extract::{Path, State},
-        http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+        http::{HeaderMap, StatusCode, header::AUTHORIZATION},
         response::{IntoResponse, Response},
         routing::{get, post},
-        Json, Router,
     };
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
     use ciborium::value::Value as CborValue;
     use goose_providers::{base::Provider, conversation::message::Message, model::ModelConfig};
     use opensecret::types::KeyExchangeRequest;
@@ -981,10 +981,12 @@ mod tests {
             .unwrap();
         assert_eq!(replaced.revision, 2);
         assert_eq!(replaced.access_token, "user-a|access-two");
-        assert!(state
-            .set_auth_with_sink(sink.clone(), auth_request("user-b", "other"))
-            .await
-            .is_err());
+        assert!(
+            state
+                .set_auth_with_sink(sink.clone(), auth_request("user-b", "other"))
+                .await
+                .is_err()
+        );
 
         state.clear_auth("user-a").await.unwrap();
         assert!(retained.auth_snapshot().await.is_err());

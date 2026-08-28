@@ -1,9 +1,10 @@
 use crate::agent::{
-    AgentCreateSessionRequest, AgentHostEventPolicy, AgentMcpKeyValue, AgentPermissionDecision,
-    AgentPermissionRequest, AgentRunCancellation, AgentRunEvent, AgentRunPermissionResponder,
-    AgentRunTerminal, AgentRunUsage, AgentRuntimeHandle, AgentSendMessageRequest,
-    AgentSessionSummary, AgentTimelineItem, AgentToolContextLease, AgentToolContextSpec,
-    AgentTransientMcpServer, AgentTransientMcpTransport, AGENT_TOOL_CONTEXT_INACTIVE_ERROR,
+    AGENT_TOOL_CONTEXT_INACTIVE_ERROR, AgentCreateSessionRequest, AgentHostEventPolicy,
+    AgentMcpKeyValue, AgentPermissionDecision, AgentPermissionRequest, AgentRunCancellation,
+    AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal, AgentRunUsage,
+    AgentRuntimeHandle, AgentSendMessageRequest, AgentSessionSummary, AgentTimelineItem,
+    AgentToolContextLease, AgentToolContextSpec, AgentTransientMcpServer,
+    AgentTransientMcpTransport,
 };
 use crate::maple_api::account_scope;
 use agent_client_protocol::schema::v1::{
@@ -32,8 +33,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
@@ -2673,8 +2674,10 @@ fn ensure_acp_session_is_loadable<'a>(
 fn acp_session_modes() -> SessionModeState {
     SessionModeState::new(
         "interactive",
-        vec![SessionMode::new("interactive", "Interactive")
-            .description("Maple asks the ACP caller to approve sensitive tools")],
+        vec![
+            SessionMode::new("interactive", "Interactive")
+                .description("Maple asks the ACP caller to approve sensitive tools"),
+        ],
     )
 }
 
@@ -3258,12 +3261,16 @@ mod tests {
                 .id,
             "read-only"
         );
-        assert!(ensure_acp_session_is_loadable(&sessions, "allow-all")
-            .unwrap_err()
-            .contains("only Read only"));
-        assert!(ensure_acp_session_is_loadable(&sessions, "missing")
-            .unwrap_err()
-            .contains("does not exist"));
+        assert!(
+            ensure_acp_session_is_loadable(&sessions, "allow-all")
+                .unwrap_err()
+                .contains("only Read only")
+        );
+        assert!(
+            ensure_acp_session_is_loadable(&sessions, "missing")
+                .unwrap_err()
+                .contains("does not exist")
+        );
     }
 
     #[tokio::test]
@@ -3549,10 +3556,12 @@ mod tests {
             encoded["requestedSchema"]["properties"]["trustProject"]["default"],
             false
         );
-        assert!(encoded["message"]
-            .as_str()
-            .unwrap()
-            .contains("Normal tool permissions still apply"));
+        assert!(
+            encoded["message"]
+                .as_str()
+                .unwrap()
+                .contains("Normal tool permissions still apply")
+        );
     }
 
     #[test]
@@ -3584,10 +3593,12 @@ mod tests {
             acp_permission_decision(&RequestPermissionOutcome::Cancelled),
             Ok(AgentPermissionDecision::Cancel)
         );
-        assert!(acp_permission_decision(&RequestPermissionOutcome::Selected(
-            SelectedPermissionOutcome::new("allow_always")
-        ))
-        .is_err());
+        assert!(
+            acp_permission_decision(&RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new("allow_always")
+            ))
+            .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -3637,12 +3648,14 @@ mod tests {
             first,
         );
 
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(10),
-            tracker.reserve(1, &cancellation),
-        )
-        .await
-        .is_err());
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                tracker.reserve(1, &cancellation),
+            )
+            .await
+            .is_err()
+        );
 
         settled_tx.send(()).unwrap();
         let second = tokio::time::timeout(

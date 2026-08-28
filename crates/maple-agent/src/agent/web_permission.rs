@@ -1,5 +1,5 @@
 use super::web_tools::{
-    normalize_public_https_url, validate_purpose, OPEN_URL_TOOL_NAME, WEB_SEARCH_TOOL_NAME,
+    OPEN_URL_TOOL_NAME, WEB_SEARCH_TOOL_NAME, normalize_public_https_url, validate_purpose,
 };
 use goose::agents::Agent;
 use goose::conversation::message::{ActionRequired, ActionRequiredData, Message, MessageContent};
@@ -331,9 +331,11 @@ mod tests {
             context.current_user_prompt.chars().count(),
             MAX_CURRENT_PROMPT_CHARS
         );
-        assert!(context
-            .current_user_prompt
-            .contains(PROMPT_TRUNCATION_MARKER));
+        assert!(
+            context
+                .current_user_prompt
+                .contains(PROMPT_TRUNCATION_MARKER)
+        );
         assert!(context.current_user_prompt.ends_with("END"));
     }
 

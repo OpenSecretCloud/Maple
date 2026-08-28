@@ -1,7 +1,7 @@
 [package]
 name = "maple-gpui"
 description = "Native Maple desktop app (gpui frontend over the maple-agent runtime)"
-edition = "2024"
+edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish = false

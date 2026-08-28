@@ -890,8 +890,10 @@ mod tests {
         assert!(bounded.chars().count() <= max_chars);
         assert!(bounded.ends_with(OPEN_URL_TRUNCATION_MARKER));
         assert!(!bounded.contains(image_url));
-        assert!(!Parser::new_ext(&bounded, Options::all())
-            .any(|event| matches!(event, Event::Start(Tag::Image { .. }))));
+        assert!(
+            !Parser::new_ext(&bounded, Options::all())
+                .any(|event| matches!(event, Event::Start(Tag::Image { .. })))
+        );
     }
 
     #[test]

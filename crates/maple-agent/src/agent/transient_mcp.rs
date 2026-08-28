@@ -6,8 +6,8 @@
 //! cancellation token; revoking it fails in-flight calls closed and tears down
 //! the transport.
 
-use goose::agents::mcp_client::{Error as McpError, McpClientTrait};
 use goose::agents::ToolCallContext;
+use goose::agents::mcp_client::{Error as McpError, McpClientTrait};
 use goose::session_context::{SESSION_ID_HEADER, TOOL_CALL_REQUEST_ID_HEADER, WORKING_DIR_HEADER};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, CancelledNotificationParam, ClientRequest, Extensions,
@@ -17,15 +17,15 @@ use rmcp::model::{
     Tool,
 };
 use rmcp::service::{PeerRequestOptions, RoleClient, RunningService};
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{Peer, ServiceError, ServiceExt};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 const TRANSIENT_MCP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);

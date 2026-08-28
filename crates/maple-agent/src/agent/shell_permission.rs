@@ -225,7 +225,9 @@ impl ShellPermissionClassifier {
             ) {
                 Ok(model_config) => model_config,
                 Err(error) => {
-                    log::warn!("Read-only shell classifier could not configure {CLASSIFIER_MODEL}: {error}");
+                    log::warn!(
+                        "Read-only shell classifier could not configure {CLASSIFIER_MODEL}: {error}"
+                    );
                     return ShellPermissionOutcome::RequiresApproval;
                 }
             };

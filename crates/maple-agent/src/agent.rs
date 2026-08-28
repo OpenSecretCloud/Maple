@@ -11,12 +11,12 @@ mod transient_mcp;
 mod web_permission;
 mod web_tools;
 
-use crate::maple_api::{account_scope, MapleApiSession};
+use crate::maple_api::{MapleApiSession, account_scope};
 pub use attachments::AgentImageUpload;
 use attachments::{AgentAttachmentStore, AgentImageAttachment, PreparedAgentImage};
-use developer_tools::MapleDeveloperClient;
 #[cfg(test)]
 use developer_tools::EXTERNAL_MCP_TOOL_NAME;
+use developer_tools::MapleDeveloperClient;
 use futures_util::StreamExt;
 use goose::agents::extension::Envs;
 use goose::agents::mcp_client::McpClientTrait;
@@ -25,47 +25,47 @@ use goose::agents::{
     SessionConfig, ToolCallContext,
 };
 use goose::config::{
-    ConfigError, GooseMode, PermissionManager, DEFAULT_EXTENSION_DESCRIPTION,
-    DEFAULT_EXTENSION_TIMEOUT,
+    ConfigError, DEFAULT_EXTENSION_DESCRIPTION, DEFAULT_EXTENSION_TIMEOUT, GooseMode,
+    PermissionManager,
 };
 use goose::conversation::message::{
     ActionRequiredData, ErrorContent, Message, MessageContent, MessageErrorKind,
     SystemNotificationContent, SystemNotificationType,
 };
-use goose::conversation::{fix_conversation, Conversation};
+use goose::conversation::{Conversation, fix_conversation};
 use goose::execution::manager::{AgentManager, AgentManagerGetResult, RuntimeContext};
 use goose::permission::permission_confirmation::PrincipalType;
 use goose::permission::{Permission, PermissionConfirmation};
-use goose::session::session_manager::{Session, SessionType};
 use goose::session::SessionManager;
-use goose::skills::{SkillsClient, EXTENSION_NAME as SKILLS_EXTENSION_NAME};
-use icu_properties::{props::DefaultIgnorableCodePoint, CodePointSetData};
-use provider::{MapleProvider, MAPLE_PROVIDER_NAME};
+use goose::session::session_manager::{Session, SessionType};
+use goose::skills::{EXTENSION_NAME as SKILLS_EXTENSION_NAME, SkillsClient};
+use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
+use provider::{MAPLE_PROVIDER_NAME, MapleProvider};
 use rmcp::model::{
     CallToolResult, ContentBlock, InitializeResult, JsonObject, ListToolsResult, ServerNotification,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shell_permission::{
-    local_read_image_request_id, local_read_request_id, ShellPermissionClassifier,
-    ShellPermissionOutcome, ShellPermissionRequest,
+    ShellPermissionClassifier, ShellPermissionOutcome, ShellPermissionRequest,
+    local_read_image_request_id, local_read_request_id,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 pub use tool_context::AgentToolContextSpec;
 use tool_context::SharedAgentToolContext;
 use transient_mcp::{TransientMcpConfig, TransientMcpRouter};
 use web_permission::{
-    web_search_request_id, OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext,
-    WebPermissionOutcome,
+    OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext, WebPermissionOutcome,
+    web_search_request_id,
 };
 use web_tools::WebToolState;
 
@@ -2829,7 +2829,7 @@ impl AgentRuntimeHandle {
             Err(error) => {
                 return Err(format!(
                     "Failed to clear device-local Agent Mode data: {error}"
-                ))
+                ));
             }
         }
         Ok(())
@@ -8639,19 +8639,26 @@ fn configure_embedded_goose(
     fs::create_dir_all(goose_path_root.join("state"))
         .map_err(|e| format!("Failed to create Goose state dir: {e}"))?;
 
-    std::env::set_var("GOOSE_PATH_ROOT", goose_path_root);
-    // Maple's native provider owns upstream authentication. Goose must never
-    // receive or persist a credential or retain the legacy loopback proxy URL.
-    std::env::remove_var("OPENAI_API_KEY");
-    std::env::remove_var("OPENAI_BASE_URL");
-    std::env::remove_var("GOOSE_DISABLE_KEYRING");
-    std::env::remove_var("GOOSE_MAX_TOKENS");
-    // Maple still routes approvals through Goose's legacy reply loop. Keep the
-    // experimental state-machine loop off until upstream makes it the default.
-    std::env::remove_var("GOOSE_STATE_MACHINE");
-    std::env::remove_var("GOOSE_TOOL_PAIR_SUMMARIZATION");
-    std::env::remove_var("GOOSE_PROVIDER");
-    std::env::remove_var("GOOSE_MODEL");
+    // SAFETY: this runs on the runtime bootstrap path before Goose starts
+    // any thread that reads the environment. No other thread reads or
+    // writes these variables concurrently.
+    unsafe {
+        std::env::set_var("GOOSE_PATH_ROOT", goose_path_root);
+        // Maple's native provider owns upstream authentication. Goose must
+        // never receive or persist a credential or retain the legacy loopback
+        // proxy URL.
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("OPENAI_BASE_URL");
+        std::env::remove_var("GOOSE_DISABLE_KEYRING");
+        std::env::remove_var("GOOSE_MAX_TOKENS");
+        // Maple still routes approvals through Goose's legacy reply loop. Keep
+        // the experimental state-machine loop off until upstream makes it the
+        // default.
+        std::env::remove_var("GOOSE_STATE_MACHINE");
+        std::env::remove_var("GOOSE_TOOL_PAIR_SUMMARIZATION");
+        std::env::remove_var("GOOSE_PROVIDER");
+        std::env::remove_var("GOOSE_MODEL");
+    }
 
     remove_maple_owned_goose_file(
         &goose_path_root.join("config").join("secrets.yaml"),
@@ -10712,7 +10719,7 @@ mod tests {
     }
 
     use axum::response::IntoResponse;
-    use goose_providers::base::{stream_from_single_message, MessageStream, Provider};
+    use goose_providers::base::{MessageStream, Provider, stream_from_single_message};
     use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
     use goose_providers::errors::ProviderError;
     use goose_providers::model::ModelConfig;
@@ -11487,13 +11494,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(edited.text, "then open the readme");
-        assert!(handle
-            .load_session(session.id.clone())
-            .await
-            .unwrap()
-            .queue
-            .items
-            .is_empty());
+        assert!(
+            handle
+                .load_session(session.id.clone())
+                .await
+                .unwrap()
+                .queue
+                .items
+                .is_empty()
+        );
 
         let restaged = handle
             .send_message(AgentSendMessageRequest {
@@ -11783,13 +11792,15 @@ mod tests {
             vec!["first", "second"]
         );
         assert!(after_take.items.is_empty());
-        assert!(take_all_desktop_queue_items_from_map(
-            &state.desktop_queues,
-            &account_scope,
-            session_id,
-        )
-        .await
-        .is_none());
+        assert!(
+            take_all_desktop_queue_items_from_map(
+                &state.desktop_queues,
+                &account_scope,
+                session_id,
+            )
+            .await
+            .is_none()
+        );
 
         let _ = fs::remove_dir_all(test_root);
     }
@@ -12267,27 +12278,33 @@ mod tests {
 
     #[test]
     fn run_cancellation_scope_rejects_cross_surface_and_wrong_session_access() {
-        assert!(validate_run_cancellation_scope(
-            "session-1",
-            AgentPermissionRouting::CallingSurface,
-            None,
-            AgentPermissionRouting::Desktop,
-        )
-        .is_err());
-        assert!(validate_run_cancellation_scope(
-            "session-1",
-            AgentPermissionRouting::CallingSurface,
-            Some("session-2"),
-            AgentPermissionRouting::CallingSurface,
-        )
-        .is_err());
-        assert!(validate_run_cancellation_scope(
-            "session-1",
-            AgentPermissionRouting::CallingSurface,
-            Some("session-1"),
-            AgentPermissionRouting::CallingSurface,
-        )
-        .is_ok());
+        assert!(
+            validate_run_cancellation_scope(
+                "session-1",
+                AgentPermissionRouting::CallingSurface,
+                None,
+                AgentPermissionRouting::Desktop,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_run_cancellation_scope(
+                "session-1",
+                AgentPermissionRouting::CallingSurface,
+                Some("session-2"),
+                AgentPermissionRouting::CallingSurface,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_run_cancellation_scope(
+                "session-1",
+                AgentPermissionRouting::CallingSurface,
+                Some("session-1"),
+                AgentPermissionRouting::CallingSurface,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -12470,9 +12487,11 @@ mod tests {
 
         configure_embedded_goose_params(&config, DEFAULT_AGENT_MODEL, DEFAULT_GOOSE_MODE).unwrap();
 
-        assert!(!config
-            .get_param::<bool>("GOOSE_TOOL_PAIR_SUMMARIZATION")
-            .unwrap());
+        assert!(
+            !config
+                .get_param::<bool>("GOOSE_TOOL_PAIR_SUMMARIZATION")
+                .unwrap()
+        );
         let _ = fs::remove_dir_all(test_root);
     }
 
@@ -12863,9 +12882,9 @@ mod tests {
 
     #[tokio::test]
     async fn untrusted_skills_client_keeps_project_instructions_out_of_context() {
+        use goose::agents::ToolCallContext;
         use goose::agents::extension::PlatformExtensionContext;
         use goose::agents::mcp_client::McpClientTrait;
-        use goose::agents::ToolCallContext;
 
         let test_root = recent_roots_test_dir("skills-discovery");
         let project = test_root.join("project");
@@ -12940,8 +12959,8 @@ mod tests {
 
     #[tokio::test]
     async fn maple_skills_registration_is_unprefixed_transient_and_coexists_with_skills_mcp() {
-        use goose::agents::mcp_client::McpClientTrait;
         use goose::agents::ToolCallContext;
+        use goose::agents::mcp_client::McpClientTrait;
 
         let test_root = recent_roots_test_dir("skills-registration");
         let project = test_root.join("project");
@@ -13041,12 +13060,16 @@ mod tests {
         attach_prepared_skills_client(&agent, initial_skills).await;
 
         let prompt_extensions = agent.extension_manager.get_extensions_info(&project).await;
-        assert!(prompt_extensions
-            .iter()
-            .any(|extension| extension.name == MAPLE_SKILLS_CLIENT_KEY));
-        assert!(!prompt_extensions
-            .iter()
-            .any(|extension| extension.name.contains("runtime_only")));
+        assert!(
+            prompt_extensions
+                .iter()
+                .any(|extension| extension.name == MAPLE_SKILLS_CLIENT_KEY)
+        );
+        assert!(
+            !prompt_extensions
+                .iter()
+                .any(|extension| extension.name.contains("runtime_only"))
+        );
 
         let tools = agent.list_tools(&session.id, None).await;
         let maple_tool = tools
@@ -13089,21 +13112,29 @@ mod tests {
         assert_eq!(persisted_extensions.extensions, vec![mcp_config]);
 
         let tools_after_detach = agent.list_tools(&session.id, None).await;
-        assert!(!tools_after_detach
-            .iter()
-            .any(|tool| tool.name.as_ref() == "load_skill"));
-        assert!(tools_after_detach
-            .iter()
-            .any(|tool| tool.name.as_ref() == "skills__load_skill"));
+        assert!(
+            !tools_after_detach
+                .iter()
+                .any(|tool| tool.name.as_ref() == "load_skill")
+        );
+        assert!(
+            tools_after_detach
+                .iter()
+                .any(|tool| tool.name.as_ref() == "skills__load_skill")
+        );
 
         attach_prepared_skills_client(&agent, prepared_skills).await;
         let tools_after_restore = agent.list_tools(&session.id, None).await;
-        assert!(tools_after_restore
-            .iter()
-            .any(|tool| tool.name.as_ref() == "load_skill"));
-        assert!(tools_after_restore
-            .iter()
-            .any(|tool| tool.name.as_ref() == "skills__load_skill"));
+        assert!(
+            tools_after_restore
+                .iter()
+                .any(|tool| tool.name.as_ref() == "load_skill")
+        );
+        assert!(
+            tools_after_restore
+                .iter()
+                .any(|tool| tool.name.as_ref() == "skills__load_skill")
+        );
 
         let _ = fs::remove_dir_all(test_root);
     }
@@ -13220,9 +13251,11 @@ mod tests {
             unreachable!();
         };
         environment[0].key = "NODE_OPTIONS".to_string();
-        assert!(normalize_mcp_servers(vec![unsafe_server])
-            .unwrap_err()
-            .contains("cannot override"));
+        assert!(
+            normalize_mcp_servers(vec![unsafe_server])
+                .unwrap_err()
+                .contains("cannot override")
+        );
 
         let duplicate_headers = AgentMcpServer {
             name: "http".to_string(),
@@ -13244,9 +13277,11 @@ mod tests {
                 ],
             },
         };
-        assert!(normalize_mcp_servers(vec![duplicate_headers])
-            .unwrap_err()
-            .contains("duplicate HTTP header"));
+        assert!(
+            normalize_mcp_servers(vec![duplicate_headers])
+                .unwrap_err()
+                .contains("duplicate HTTP header")
+        );
     }
 
     #[test]
@@ -13466,21 +13501,24 @@ mod tests {
         update_runtime_project_root_after_removal(&mut runtime_root, &removed, None);
 
         assert!(runtime_root.as_os_str().is_empty());
-        assert!(ensure_session_project_root_is_visible(
-            &runtime_root,
-            std::slice::from_ref(&removed)
-        )
-        .is_err());
-        assert!(ensure_session_project_root_is_visible(
-            Path::new(&removed),
-            std::slice::from_ref(&removed),
-        )
-        .is_err());
-        assert!(ensure_session_project_root_is_visible(
-            Path::new(&test_project_path("remove-visible")),
-            std::slice::from_ref(&removed),
-        )
-        .is_ok());
+        assert!(
+            ensure_session_project_root_is_visible(&runtime_root, std::slice::from_ref(&removed))
+                .is_err()
+        );
+        assert!(
+            ensure_session_project_root_is_visible(
+                Path::new(&removed),
+                std::slice::from_ref(&removed),
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_session_project_root_is_visible(
+                Path::new(&test_project_path("remove-visible")),
+                std::slice::from_ref(&removed),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -13807,9 +13845,11 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(select_mcp_servers(&configured, None).unwrap().len(), 1);
-        assert!(select_mcp_servers(&configured, Some(&[]))
-            .unwrap()
-            .is_empty());
+        assert!(
+            select_mcp_servers(&configured, Some(&[]))
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             select_mcp_servers(&configured, Some(&["optional".to_string()])).unwrap()[0].name,
             "optional"
@@ -14030,9 +14070,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
-        assert!(results
-            .iter()
-            .all(|result| matches!(result.action, InspectionAction::RequireApproval(None))));
+        assert!(
+            results
+                .iter()
+                .all(|result| matches!(result.action, InspectionAction::RequireApproval(None)))
+        );
         for tool in ["web_search", "open_url"] {
             assert_eq!(
                 manager.get_smart_approve_permission(tool),
@@ -14109,13 +14151,17 @@ mod tests {
             std::slice::from_ref(&image),
             false,
         );
-        assert!(nonvision
-            .as_concat_text()
-            .contains(&image.attachment.source));
-        assert!(!nonvision
-            .content
-            .iter()
-            .any(|content| matches!(content, MessageContent::Image(_))));
+        assert!(
+            nonvision
+                .as_concat_text()
+                .contains(&image.attachment.source)
+        );
+        assert!(
+            !nonvision
+                .content
+                .iter()
+                .any(|content| matches!(content, MessageContent::Image(_)))
+        );
         let nonvision_item = message_to_timeline_items(&nonvision, false)
             .into_iter()
             .next()
@@ -14136,10 +14182,12 @@ mod tests {
 
         let vision = user_message_with_images("Why is this misaligned?", &[image], true);
         assert!(!vision.as_concat_text().contains("maple-attachment://"));
-        assert!(vision
-            .content
-            .iter()
-            .any(|content| matches!(content, MessageContent::Image(_))));
+        assert!(
+            vision
+                .content
+                .iter()
+                .any(|content| matches!(content, MessageContent::Image(_)))
+        );
     }
 
     #[test]
@@ -14375,15 +14423,17 @@ mod tests {
             ),
         )])));
 
-        assert!(update_live_permission_status(
-            &live_timelines,
-            session_id,
-            AgentPermissionRouting::Desktop,
-            "request-1",
-            "allow_once",
-        )
-        .await
-        .is_none());
+        assert!(
+            update_live_permission_status(
+                &live_timelines,
+                session_id,
+                AgentPermissionRouting::Desktop,
+                "request-1",
+                "allow_once",
+            )
+            .await
+            .is_none()
+        );
         assert_eq!(
             update_live_permission_status(
                 &live_timelines,
@@ -15094,21 +15144,22 @@ mod tests {
             .with_text("visible response")
             .with_content(audience_text("provider-private-state", McpRole::Assistant))
             .with_content(audience_text(" plus visible detail", McpRole::User));
-        let persisted_items =
-            conversation_to_timeline_items(&Conversation::new_unvalidated(
-                vec![mixed_text.clone()],
-            ));
+        let persisted_items = conversation_to_timeline_items(&Conversation::new_unvalidated(vec![
+            mixed_text.clone(),
+        ]));
         let live_items = message_to_timeline_items(&mixed_text.user_visible_content(), true);
         assert_eq!(persisted_items.len(), 1);
         assert_eq!(
             persisted_items[0].text.as_deref(),
             Some("visible response plus visible detail")
         );
-        assert!(!persisted_items[0]
-            .text
-            .as_deref()
-            .unwrap()
-            .contains("provider-private-state"));
+        assert!(
+            !persisted_items[0]
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("provider-private-state")
+        );
         assert!(timeline_projection_matches(
             &live_items,
             &persisted_items,
@@ -15253,16 +15304,22 @@ mod tests {
         let overlaid = overlay_live_timeline_items(persisted, live);
 
         assert!(overlaid.iter().any(|item| item.id == "prior-user-text"));
-        assert!(overlaid
-            .iter()
-            .any(|item| item.id == "prior-assistant-text"));
+        assert!(
+            overlaid
+                .iter()
+                .any(|item| item.id == "prior-assistant-text")
+        );
         assert!(overlaid.iter().any(|item| item.id == "current-user-text"));
-        assert!(overlaid
-            .iter()
-            .any(|item| item.id == "live-thought-thinking"));
-        assert!(!overlaid
-            .iter()
-            .any(|item| item.id == "persisted-copy-thinking"));
+        assert!(
+            overlaid
+                .iter()
+                .any(|item| item.id == "live-thought-thinking")
+        );
+        assert!(
+            !overlaid
+                .iter()
+                .any(|item| item.id == "persisted-copy-thinking")
+        );
     }
 
     #[tokio::test]
@@ -15366,11 +15423,13 @@ mod tests {
             .items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "current-user-text");
-        assert!(!items[0]
-            .text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("provider-private-state"));
+        assert!(
+            !items[0]
+                .text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("provider-private-state")
+        );
     }
 
     #[tokio::test]
@@ -15443,9 +15502,11 @@ mod tests {
         .await;
 
         assert!(overlaid.iter().any(|item| item.id == "prior-user-text"));
-        assert!(overlaid
-            .iter()
-            .any(|item| item.id == "prior-assistant-text"));
+        assert!(
+            overlaid
+                .iter()
+                .any(|item| item.id == "prior-assistant-text")
+        );
         assert_eq!(
             overlaid
                 .iter()
@@ -15457,12 +15518,16 @@ mod tests {
             timeline_thinking_texts(&overlaid),
             vec!["Authoritative live thought"]
         );
-        assert!(overlaid
-            .iter()
-            .any(|item| item.id == "live-provider-response-thinking"));
-        assert!(!overlaid
-            .iter()
-            .any(|item| item.id == "persisted-split-request-thinking"));
+        assert!(
+            overlaid
+                .iter()
+                .any(|item| item.id == "live-provider-response-thinking")
+        );
+        assert!(
+            !overlaid
+                .iter()
+                .any(|item| item.id == "persisted-split-request-thinking")
+        );
         assert_eq!(
             overlaid
                 .iter()
@@ -15573,10 +15638,12 @@ mod tests {
             .expect("account B session should reload");
         assert_eq!(loaded_a.name, "Account A chat");
         assert_eq!(loaded_b.name, "Account B chat");
-        assert!(reopened_a
-            .get_session(&account_b_only_session.id, true)
-            .await
-            .is_err());
+        assert!(
+            reopened_a
+                .get_session(&account_b_only_session.id, true)
+                .await
+                .is_err()
+        );
 
         reopened_a
             .delete_session(&session_a.id)
@@ -15682,23 +15749,31 @@ mod tests {
         .await
         .expect("target session deletion should succeed");
 
-        assert!(session_manager
-            .get_session(&target.id, false)
-            .await
-            .is_err());
-        assert!(session_manager
-            .get_session(&survivor.id, false)
-            .await
-            .is_ok());
+        assert!(
+            session_manager
+                .get_session(&target.id, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            session_manager
+                .get_session(&survivor.id, false)
+                .await
+                .is_ok()
+        );
         assert!(!live_timelines.lock().await.contains_key(&target.id));
         assert!(live_timelines.lock().await.contains_key(&survivor.id));
         let permissions = pending_permissions.lock().await;
-        assert!(!permissions
-            .keys()
-            .any(|(session_id, _)| session_id == &target.id));
-        assert!(permissions
-            .keys()
-            .any(|(session_id, _)| session_id == &survivor.id));
+        assert!(
+            !permissions
+                .keys()
+                .any(|(session_id, _)| session_id == &target.id)
+        );
+        assert!(
+            permissions
+                .keys()
+                .any(|(session_id, _)| session_id == &survivor.id)
+        );
         drop(permissions);
         assert!(
             !web_tool_state
@@ -15878,9 +15953,11 @@ mod tests {
         assert!(timeline.iter().any(|item| {
             item.id == "elicitation-stopped-input" && item.status.as_deref() == Some("cancelled")
         }));
-        assert!(!timeline
-            .iter()
-            .any(|item| { item.text.as_deref() == Some("speculative partial event") }));
+        assert!(
+            !timeline
+                .iter()
+                .any(|item| { item.text.as_deref() == Some("speculative partial event") })
+        );
 
         let first_turn_session = session_manager
             .create_session(
@@ -15923,13 +16000,17 @@ mod tests {
         assert_eq!(first_turn_reloaded.name, "Retained first prompt");
         assert_eq!(first_turn_conversation.len(), 2);
         assert_eq!(first_turn_conversation.first(), Some(&first_turn_user));
-        assert!(first_turn_conversation
-            .last()
-            .is_some_and(|message| !message.is_agent_visible()));
-        assert!(!live_timelines
-            .lock()
-            .await
-            .contains_key(&first_turn_session.id));
+        assert!(
+            first_turn_conversation
+                .last()
+                .is_some_and(|message| !message.is_agent_visible())
+        );
+        assert!(
+            !live_timelines
+                .lock()
+                .await
+                .contains_key(&first_turn_session.id)
+        );
 
         let _ = fs::remove_dir_all(test_root);
     }
@@ -16116,23 +16197,27 @@ mod tests {
             context: leased.clone(),
         };
 
-        assert!(resolve_session_tool_context(
-            &mut contexts,
-            "account-1",
-            "session-1",
-            None,
-            &AgentToolContextSpec::default(),
-        )
-        .is_err());
-        assert!(resolve_session_tool_context(
-            &mut contexts,
-            "account-1",
-            "session-1",
-            Some(&access),
-            &AgentToolContextSpec::default(),
-        )
-        .unwrap()
-        .ptr_eq(&leased));
+        assert!(
+            resolve_session_tool_context(
+                &mut contexts,
+                "account-1",
+                "session-1",
+                None,
+                &AgentToolContextSpec::default(),
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_session_tool_context(
+                &mut contexts,
+                "account-1",
+                "session-1",
+                Some(&access),
+                &AgentToolContextSpec::default(),
+            )
+            .unwrap()
+            .ptr_eq(&leased)
+        );
 
         leased.revoke();
         let error = match resolve_session_tool_context(
@@ -16357,14 +16442,16 @@ mod tests {
         let session_lifecycle_guard = service.session_lifecycle.lock().await;
         drop(pending);
         assert!(context.is_revoked());
-        assert!(service
-            .inner
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .session_tool_contexts
-            .contains_key(&session.id));
+        assert!(
+            service
+                .inner
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .session_tool_contexts
+                .contains_key(&session.id)
+        );
 
         drop(session_lifecycle_guard);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -16386,10 +16473,12 @@ mod tests {
         })
         .await
         .expect("dropping an armed pending installation should clean its exact lease");
-        assert!(session_manager
-            .get_session(&session.id, false)
-            .await
-            .is_ok());
+        assert!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .is_ok()
+        );
 
         drop(service);
         drop(session_manager);
@@ -16737,11 +16826,12 @@ mod tests {
             .unwrap();
         assert!(!persisted.user_set_name);
         assert!(should_name_session_from_prompt(&persisted));
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty());
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
 
         drop(state);
         drop(session_manager);
@@ -16919,11 +17009,12 @@ mod tests {
             .unwrap();
         assert_eq!(persisted.name, "Original task");
         assert!(!persisted.user_set_name);
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty());
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
 
         drop(stale_handle);
         drop(state);
@@ -16989,11 +17080,12 @@ mod tests {
             .unwrap();
         assert_eq!(persisted.name, "Original task");
         assert!(!persisted.user_set_name);
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty());
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
 
         drop(state);
         drop(session_manager);
@@ -17194,8 +17286,10 @@ mod tests {
             normalize_generated_session_title("<analysis>ignore me</analysis>"),
             None
         );
-        assert!(normalize_generated_session_title(&"word ".repeat(100))
-            .is_some_and(|title| title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS));
+        assert!(
+            normalize_generated_session_title(&"word ".repeat(100))
+                .is_some_and(|title| title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS)
+        );
     }
 
     #[test]
@@ -17828,16 +17922,17 @@ mod tests {
                 .name,
             DEFAULT_AGENT_SESSION_TITLE
         );
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .any(|event| matches!(
-                event,
-                AgentServiceEvent::SessionUpdated { session, .. }
-                    if session.title == DEFAULT_AGENT_SESSION_TITLE
-            )));
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    AgentServiceEvent::SessionUpdated { session, .. }
+                        if session.title == DEFAULT_AGENT_SESSION_TITLE
+                ))
+        );
 
         drop(agent);
         drop(session_manager);
@@ -17884,16 +17979,17 @@ mod tests {
                 .name,
             "Friendly Check-In"
         );
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .any(|event| matches!(
-                event,
-                AgentServiceEvent::SessionUpdated { session, .. }
-                    if session.title == "Friendly Check-In"
-            )));
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    AgentServiceEvent::SessionUpdated { session, .. }
+                        if session.title == "Friendly Check-In"
+                ))
+        );
 
         drop(agent);
         drop(session_manager);
@@ -17994,16 +18090,17 @@ mod tests {
                 .iter()
                 .any(|message| message.id == user_message.id)
         }));
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .any(|event| matches!(
-                event,
-                AgentServiceEvent::SessionUpdated { session, .. }
-                    if session.title == "Friendly Check-In"
-            )));
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    AgentServiceEvent::SessionUpdated { session, .. }
+                        if session.title == "Friendly Check-In"
+                ))
+        );
 
         drop(agent);
         drop(session_manager);
@@ -18067,11 +18164,12 @@ mod tests {
                 .name,
             "Explain reactive titles"
         );
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty());
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
 
         drop(agent);
         drop(session_manager);
@@ -18144,15 +18242,18 @@ mod tests {
         // task was joined before deletion returned.
         title_release.notify_waiters();
         tokio::task::yield_now().await;
-        assert!(session_manager
-            .get_session(&session.id, false)
-            .await
-            .is_err());
-        assert!(sink
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty());
+        assert!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
 
         drop(agent);
         drop(session_manager);
@@ -18321,9 +18422,11 @@ mod tests {
         assert_eq!(capture.reasoning, Some(false));
         assert!(!capture.request_params_present);
         assert_eq!(capture.system, SESSION_TITLE_SYSTEM_PROMPT);
-        assert!(capture
-            .user
-            .contains(&"a".repeat(SESSION_TITLE_MAX_INPUT_CHARS)));
+        assert!(
+            capture
+                .user
+                .contains(&"a".repeat(SESSION_TITLE_MAX_INPUT_CHARS))
+        );
         assert!(!capture.user.contains("TAIL"));
         assert_eq!(capture.tool_count, 0);
 

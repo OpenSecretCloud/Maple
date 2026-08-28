@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
-use crate::agent::{emit_agent_event, AgentEventDispatcher, AgentServiceEvent};
+use crate::agent::{AgentEventDispatcher, AgentServiceEvent, emit_agent_event};
 
 type PendingQuestions = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
 
