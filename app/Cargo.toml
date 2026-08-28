@@ -28,6 +28,7 @@ acp = ["maple-agent/acp"]
 proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http"]
 
 [dependencies]
+dirs = "6"
 maple-agent = { path = "../crates/maple-agent", default-features = false }
 maple-billing = { path = "../crates/maple-billing" }
 gpui = { version = "0.2.2", optional = true }

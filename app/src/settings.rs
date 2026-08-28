@@ -6,7 +6,6 @@
 // there by design.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
-use rusqlite::Connection;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -189,10 +188,23 @@ fn settings_file() -> PathBuf {
 }
 
 pub fn load_settings() -> AppSettings {
-    std::fs::read_to_string(settings_file())
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    let path = settings_file();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Cannot read settings at {}: {error}", path.display());
+            }
+            return AppSettings::default();
+        }
+    };
+    serde_json::from_str(&text).unwrap_or_else(|error| {
+        log::warn!(
+            "Settings at {} are not valid; using defaults: {error}",
+            path.display()
+        );
+        AppSettings::default()
+    })
 }
 
 /// Record the window state for the next launch. Runs on the UI thread at
@@ -208,16 +220,8 @@ pub fn save_window_state(state: WindowState) {
 
 pub fn save_settings(settings: &AppSettings) {
     let path = settings_file();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(text) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(&path, text);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
+    if let Err(error) = maple_agent::private_file::write_private_json(&path, settings) {
+        log::error!("Cannot save settings to {}: {error}", path.display());
     }
 }
 
@@ -261,7 +265,7 @@ pub struct UsageSummary {
 /// Read usage totals from the goose usage ledger for one account scope.
 pub fn load_usage(account_scope: &str) -> UsageSummary {
     let db = crate::backend::account_session_db(account_scope);
-    let Ok(conn) = Connection::open(&db) else {
+    let Some(conn) = crate::backend::open_session_db_read_only(&db) else {
         return UsageSummary::default();
     };
     let mut summary = UsageSummary::default();

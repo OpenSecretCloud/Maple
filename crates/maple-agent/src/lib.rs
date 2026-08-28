@@ -12,3 +12,4 @@ pub mod acp;
 pub mod agent;
 pub mod maple_api;
 pub mod open_secret_config;
+pub mod private_file;

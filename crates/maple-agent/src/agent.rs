@@ -57,7 +57,6 @@ use shell_permission::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -2725,10 +2724,9 @@ async fn start_runtime_for_user(
 
     let config_dir = agent_config_dir(&state.host.paths, user_id).map_err(|e| e.to_string())?;
     let goose_path_root = config_dir.join("goose");
-    fs::create_dir_all(goose_path_root.join("data"))
-        .map_err(|e| format!("Failed to create Goose data dir: {e}"))?;
     fs::create_dir_all(goose_path_root.join("config"))
         .map_err(|e| format!("Failed to create Goose config dir: {e}"))?;
+    let history_dir = account_history_dir(&state.host.paths, user_id)?;
     // Goose resolves the global AGENTS.md relative to this path root, not the
     // real home. Link the user's ~/.agents/AGENTS.md in so it is honored.
     link_global_agents_md(&goose_path_root);
@@ -2756,7 +2754,7 @@ async fn start_runtime_for_user(
         DEFAULT_GOOSE_MODE,
         login_shell_search_paths,
     )?;
-    let session_manager = Arc::new(SessionManager::new(goose_path_root.join("data")));
+    let session_manager = Arc::new(SessionManager::new(history_dir));
     // A crash can strand a zero-message ACP probe before its connection-owned
     // rollback runs. Such rows have never admitted user work; sweep them before
     // the runtime becomes visible, while renamed or messaged tasks survive.
@@ -2899,9 +2897,9 @@ impl AgentRuntimeHandle {
             stop_runtime_for_user(state, &self.user_id).await?;
         }
 
-        let account_dir = account_config_dir_path(&state.host.paths, &self.user_id)
+        let local_account_dir = account_local_data_dir_path(&state.host.paths, &self.user_id)
             .map_err(|error| error.to_string())?;
-        clear_agent_history(&account_dir)
+        clear_agent_history(&local_account_dir)
             .map_err(|error| format!("Failed to clear Agent Mode history: {error}"))?;
         account_attachment_store(&state.host.paths, &self.user_id)?.clear()
     }
@@ -9566,19 +9564,45 @@ fn account_session_manager(
     paths: &AgentPathLayout,
     user_id: &str,
 ) -> Result<Arc<SessionManager>, String> {
-    let account_dir = agent_config_dir(paths, user_id).map_err(|error| error.to_string())?;
-    session_manager_for_account_dir(&account_dir)
+    Ok(Arc::new(SessionManager::new(account_history_dir(
+        paths, user_id,
+    )?)))
 }
 
-fn session_manager_for_account_dir(account_dir: &Path) -> Result<Arc<SessionManager>, String> {
-    let data_dir = account_dir.join("goose/data");
+/// Path of the Goose session store (`sessions/sessions.db` and friends)
+/// below an account directory.
+const AGENT_HISTORY_SUBDIR: &str = "goose/data";
+
+/// The Goose data directory for one account, ready to open. Session history
+/// is device-local, so it lives in the local data root, next to the
+/// attachments. The account `config.json` stays in the config root, which a
+/// user may sync between machines.
+fn account_history_dir(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
+    let local_account_dir =
+        account_local_data_dir_path(paths, user_id).map_err(|error| error.to_string())?;
+    history_dir_for_account_dir(&local_account_dir)
+}
+
+fn history_dir_for_account_dir(account_dir: &Path) -> Result<PathBuf, String> {
+    let data_dir = account_dir.join(AGENT_HISTORY_SUBDIR);
     fs::create_dir_all(&data_dir)
         .map_err(|error| format!("Failed to create Goose data dir: {error}"))?;
-    Ok(Arc::new(SessionManager::new(data_dir)))
+    if let Some(parent) = data_dir.parent() {
+        set_owner_only_dir_permissions(parent);
+    }
+    set_owner_only_dir_permissions(&data_dir);
+    Ok(data_dir)
+}
+
+#[cfg(test)]
+fn session_manager_for_account_dir(account_dir: &Path) -> Result<Arc<SessionManager>, String> {
+    Ok(Arc::new(SessionManager::new(history_dir_for_account_dir(
+        account_dir,
+    )?)))
 }
 
 fn clear_agent_history(account_dir: &Path) -> Result<(), anyhow::Error> {
-    remove_agent_history_path(&account_dir.join("goose/data"))
+    remove_agent_history_path(&account_dir.join(AGENT_HISTORY_SUBDIR))
 }
 
 fn remove_agent_history_path(path: &Path) -> Result<(), anyhow::Error> {
@@ -10819,11 +10843,7 @@ fn ensure_session_project_root_is_visible(
 }
 
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), anyhow::Error> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_string_pretty(value)?)?;
-    set_owner_only_permissions(path);
+    crate::private_file::write_private_json(path, value)?;
     Ok(())
 }
 
@@ -10836,15 +10856,7 @@ fn write_device_local_json_file<T: Serialize + ?Sized>(
         .ok_or_else(|| anyhow::anyhow!("Device-local Agent data path has no parent"))?;
     fs::create_dir_all(parent)?;
     set_owner_only_dir_permissions(parent);
-
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    let json = serde_json::to_string_pretty(value)?;
-    temporary.write_all(json.as_bytes())?;
-    temporary.as_file_mut().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| anyhow::Error::new(error.error))?;
-    set_owner_only_permissions(path);
+    crate::private_file::write_private_json(path, value)?;
     Ok(())
 }
 

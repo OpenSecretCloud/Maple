@@ -175,10 +175,29 @@ All settings are environment variables. None are required.
 
 ### File locations
 
+The roots follow the platform, the same way the Tauri app's
+`app_config_dir` and `app_local_data_dir` do. `XDG_CONFIG_HOME` and
+`XDG_DATA_HOME` override them on every platform.
+
+| Root | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Config | `~/.config/maple-gpui/` | `~/Library/Application Support/maple-gpui/` | `%APPDATA%\maple-gpui\` |
+| Local data | `~/.local/share/maple-gpui/` | `~/Library/Application Support/maple-gpui/` | `%LOCALAPPDATA%\maple-gpui\` |
+
 | Path | Content |
 | --- | --- |
-| `$XDG_CONFIG_HOME/maple-gpui/` (`~/.config/maple-gpui/`) | `auth.json`, `settings.json`, and per-account Goose state under `agent/accounts/<scope>/` |
-| `$XDG_DATA_HOME/maple-gpui/logs/maple-gpui.log` (`~/.local/share/maple-gpui/logs/`) | Log file. Panics are logged here too. |
+| `<config>/settings.json` | App settings. |
+| `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, MCP servers, project trust). May roam between machines. |
+| `<config>/agent/accounts/<scope>/goose/config/` | Goose permission file for the account. |
+| `<config>/agent/goose-runtime/` | Goose process configuration. |
+| `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
+| `<local data>/agent/accounts/<scope>/goose/data/sessions/sessions.db` | Goose session history and usage ledger (SQLite, WAL). |
+| `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
+| `<local data>/agent/acp/accounts/<scope>/config.json` | ACP configuration. |
+| `<local data>/logs/maple-gpui.log` | Log file. Panics are logged here too. |
+
+`<scope>` is the SHA-256 of the account's user id. Small JSON files are
+written atomically (temp file, sync, rename) with owner-only permissions.
 
 These directories are separate from the Tauri app's directories. The two
 apps must not share Goose session storage.

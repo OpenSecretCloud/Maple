@@ -123,9 +123,10 @@ pub fn app_config_root() -> PathBuf {
     config_root()
 }
 
-/// Path to the goose sessions database for one account scope.
+/// Path to the goose sessions database for one account scope. The agent
+/// runtime owns and writes this file; the app only reads it.
 pub fn account_session_db(account_scope: &str) -> PathBuf {
-    config_root()
+    local_data_root()
         .join("agent")
         .join("accounts")
         .join(account_scope)
@@ -135,22 +136,55 @@ pub fn account_session_db(account_scope: &str) -> PathBuf {
         .join("sessions.db")
 }
 
+/// Open the goose sessions database for reading. Returns `None` when the
+/// file does not exist yet (read-only open never creates it). The busy
+/// timeout covers the short locks goose takes for WAL checkpoints.
+pub fn open_session_db_read_only(path: &std::path::Path) -> Option<rusqlite::Connection> {
+    use rusqlite::OpenFlags;
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_URI;
+    let conn = match rusqlite::Connection::open_with_flags(path, flags) {
+        Ok(conn) => conn,
+        Err(error) => {
+            if path.exists() {
+                log::warn!("Cannot open session db {}: {error}", path.display());
+            }
+            return None;
+        }
+    };
+    if let Err(error) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
+        log::warn!("Cannot set busy timeout on {}: {error}", path.display());
+    }
+    Some(conn)
+}
+
+/// Root for configuration that may roam between machines. Mirrors Tauri's
+/// `app_config_dir`: `~/.config` on Linux, `~/Library/Application Support`
+/// on macOS, `%APPDATA%` on Windows. `XDG_CONFIG_HOME` overrides it on
+/// every platform so tests and portable installs can redirect it.
 fn config_root() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| home_dir().map(|home| home.join(".config")))
+    let base = env_dir("XDG_CONFIG_HOME")
+        .or_else(dirs::config_dir)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_DIR_NAME)
 }
 
+/// Root for device-local data: session history, attachments, logs, and
+/// credentials. Mirrors Tauri's `app_local_data_dir`: `~/.local/share` on
+/// Linux, `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on
+/// Windows. `XDG_DATA_HOME` overrides it on every platform.
 pub fn local_data_root() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| home_dir().map(|home| home.join(".local").join("share")))
+    let base = env_dir("XDG_DATA_HOME")
+        .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_DIR_NAME)
+}
+
+fn env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -289,26 +323,26 @@ impl AgentBackend {
         Ok(AuthSession { user_id })
     }
 
+    /// Credentials are device-local, like the web app's `localStorage`.
+    /// They must not sit in a roaming profile (`%APPDATA%`), so they live in
+    /// the local data root rather than next to `settings.json`.
     fn auth_file() -> std::path::PathBuf {
-        config_root().join("auth.json")
+        local_data_root().join("auth.json")
     }
 
     fn persist_auth(&self, user_id: &str, access_token: &str, refresh_token: Option<&str>) {
         let path = Self::auth_file();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let record = serde_json::json!({
             "user_id": user_id,
             "api_url": self.api_url,
             "access_token": access_token,
             "refresh_token": refresh_token,
         });
-        let _ = std::fs::write(&path, record.to_string());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        if let Err(error) = maple_agent::private_file::write_private_json(&path, &record) {
+            log::error!(
+                "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
+                path.display()
+            );
         }
     }
 
@@ -331,7 +365,12 @@ impl AgentBackend {
     }
 
     fn clear_persisted_auth() {
-        let _ = std::fs::remove_file(Self::auth_file());
+        let path = Self::auth_file();
+        if let Err(error) = std::fs::remove_file(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::error!("Cannot remove credentials at {}: {error}", path.display());
+        }
     }
 
     /// Restore a persisted session before the UI starts. Validates the
@@ -1088,7 +1127,7 @@ impl AgentBackend {
         let db = crate::backend::account_session_db(&scope);
         let mut guard = self.usage_db.lock().unwrap_or_else(|e| e.into_inner());
         if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
-            let Ok(conn) = rusqlite::Connection::open(&db) else {
+            let Some(conn) = crate::backend::open_session_db_read_only(&db) else {
                 return Ok(None);
             };
             *guard = Some((db, conn));
