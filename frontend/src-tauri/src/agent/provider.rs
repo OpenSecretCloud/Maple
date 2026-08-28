@@ -10,22 +10,28 @@ use goose_providers::formats::openai::{
 use goose_providers::images::ImageFormat;
 use goose_providers::model::ModelConfig;
 use goose_providers::request_log::{start_log, LoggerHandleExt};
-use goose_providers::retry::{
-    should_retry, RetryConfig, DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_INITIAL_RETRY_INTERVAL_MS,
-    DEFAULT_MAX_RETRY_INTERVAL_MS,
+use goose_providers::retry::RetryConfig;
+use opensecret::{
+    InferenceRequest, InferenceResponse, InferenceSendBudget, OpenSecretClient,
+    OpenSecretResponseBody,
 };
-use opensecret::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
 use rmcp::model::Tool;
 use serde_json::{json, Value};
 use std::cell::Cell;
-use std::future::{ready, Future};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::collections::VecDeque;
+use std::future::Future;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use tokio_util::io::StreamReader;
 use tokio_util::sync::CancellationToken;
 
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
+const OUTPUT_TOKEN_LIMIT_FIELDS: [&str; 3] =
+    ["max_tokens", "max_completion_tokens", "max_output_tokens"];
 pub(super) const MAPLE_PROVIDER_NAME: &str = "maple";
 const AUTHENTICATION_ERROR_MESSAGE: &str = "Maple authentication failed";
 pub(super) const ATTESTATION_VERIFICATION_ERROR_MESSAGE: &str =
@@ -34,12 +40,14 @@ pub(super) const SECURE_CONNECTION_ERROR_MESSAGE: &str =
     "Maple's encrypted connection could not be recovered";
 const ERROR_CONTRACT_HEADER: &str = "x-opensecret-error-contract";
 const ERROR_CODE_HEADER: &str = "x-opensecret-error-code";
+const CLIENT_REPLAY_HEADER: &str = "x-opensecret-client-replay";
 const ERROR_CONTRACT_VERSION: &[u8] = b"1";
 const SESSION_NOT_FOUND_ERROR_CODE: &[u8] = b"session_not_found";
-
-/// Extra transient inference attempts after the first failure. Goose's 1s × 2^n
-/// backoff, capped at 30s, then covers roughly three minutes of provider blips.
-const TRANSIENT_MAX_RETRIES: usize = 10;
+const INFERENCE_CAPACITY_ERROR_CODE: &[u8] = b"inference_capacity";
+const CLIENT_REPLAY_SAFE: &[u8] = b"safe";
+const INFERENCE_CAPACITY_ERROR_MESSAGE: &str = "Inference capacity is temporarily unavailable";
+const STREAM_ENDED_BEFORE_COMPLETION_MESSAGE: &str =
+    "Maple's response stream ended before completion";
 const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 // Agent Mode forwards the selected catalog ID unchanged for direct model
 // selections. Keep Gemma's provider-specific opt-in scoped to that explicit
@@ -47,7 +55,9 @@ const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 const GEMMA4_AGENT_MODEL_ID: &str = "gemma4-31b";
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 const MAX_STREAM_LINE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_RETRY_AFTER_SECS: f64 = 3_600.0;
+const DEFAULT_CAPACITY_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_CAPACITY_RETRY_DELAY_SECS: u64 = 60;
+const MAX_LOGICAL_INFERENCE_SENDS: usize = 2;
 #[cfg(not(test))]
 const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(test)]
@@ -104,6 +114,11 @@ fn remember_terminal_run_error(error: &ProviderError) {
         ProviderError::ExecutionError(message) if message == SECURE_CONNECTION_ERROR_MESSAGE => {
             SECURE_CONNECTION_ERROR_MESSAGE
         }
+        ProviderError::ExecutionError(message)
+            if message == STREAM_ENDED_BEFORE_COMPLETION_MESSAGE =>
+        {
+            STREAM_ENDED_BEFORE_COMPLETION_MESSAGE
+        }
         _ => return,
     };
 
@@ -133,6 +148,7 @@ pub(crate) trait MapleInferenceTransport: Send + Sync {
     async fn send_inference_request(
         self: Arc<Self>,
         request: InferenceRequest,
+        send_budget: InferenceSendBudget,
         cancel_token: CancellationToken,
     ) -> opensecret::Result<InferenceResponse>;
 }
@@ -145,6 +161,7 @@ impl MapleInferenceTransport for OpenSecretClient {
     async fn send_inference_request(
         self: Arc<Self>,
         request: InferenceRequest,
+        send_budget: InferenceSendBudget,
         cancel_token: CancellationToken,
     ) -> opensecret::Result<InferenceResponse> {
         tokio::select! {
@@ -152,15 +169,28 @@ impl MapleInferenceTransport for OpenSecretClient {
             _ = cancel_token.cancelled() => {
                 Err(opensecret::Error::Other("Inference request was cancelled".to_string()))
             }
-            response = OpenSecretClient::send_inference_request(&self, request) => response,
+            response = OpenSecretClient::send_inference_request_with_budget(
+                &self,
+                request,
+                send_budget,
+            ) => response,
         }
     }
 }
 
 pub(crate) struct MapleProvider {
     transport: Arc<dyn MapleInferenceTransport>,
-    #[cfg(test)]
-    test_retry_config: Option<RetryConfig>,
+}
+
+pub(super) fn clear_output_token_limits(model_config: &mut ModelConfig) {
+    // Goose can restore or materialize its own output defaults for Maple's
+    // sessions and auxiliary calls. Maple uses the model's context window.
+    model_config.max_tokens = None;
+    if let Some(params) = model_config.request_params.as_mut() {
+        for field in OUTPUT_TOKEN_LIMIT_FIELDS {
+            params.remove(field);
+        }
+    }
 }
 
 impl MapleProvider {
@@ -168,17 +198,7 @@ impl MapleProvider {
     where
         T: MapleInferenceTransport + 'static,
     {
-        Self {
-            transport,
-            #[cfg(test)]
-            test_retry_config: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_test_retry_config(mut self, retry_config: RetryConfig) -> Self {
-        self.test_retry_config = Some(retry_config);
-        self
+        Self { transport }
     }
 
     fn build_request(
@@ -188,7 +208,7 @@ impl MapleProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<Value, ProviderError> {
-        create_request_with_options(
+        let mut request = create_request_with_options(
             model_config,
             system,
             messages,
@@ -202,7 +222,16 @@ impl MapleProvider {
         )
         .map_err(|error| {
             ProviderError::RequestFailed(format!("Failed to create Maple request: {error}"))
-        })
+        })?;
+        // Keep this policy at Maple's final Agent request boundary too: resumed
+        // sessions and Goose fast-model calls can bypass our config constructors.
+        // Generic SDK/API caller requests do not pass through this provider.
+        if let Some(fields) = request.as_object_mut() {
+            for field in OUTPUT_TOKEN_LIMIT_FIELDS {
+                fields.remove(field);
+            }
+        }
+        Ok(request)
     }
 
     fn gemma_agent_model_config(
@@ -281,6 +310,7 @@ impl MapleProvider {
     async fn send_attempt(
         &self,
         request: InferenceRequest,
+        send_budget: InferenceSendBudget,
         cancellation: &CancellationToken,
     ) -> Result<InferenceResponse, ProviderError> {
         // The transport owns authentication reconciliation and must get a chance
@@ -288,8 +318,11 @@ impl MapleProvider {
         // take too long. Cancelling and then awaiting the transport future keeps
         // a rotated SDK JWT from being stranded only in native memory.
         let transport_cancellation = cancellation.child_token();
-        let response = Arc::clone(&self.transport)
-            .send_inference_request(request, transport_cancellation.clone());
+        let response = Arc::clone(&self.transport).send_inference_request(
+            request,
+            send_budget,
+            transport_cancellation.clone(),
+        );
         tokio::pin!(response);
         let response_start_timeout = tokio::time::sleep(RESPONSE_START_TIMEOUT);
         tokio::pin!(response_start_timeout);
@@ -353,30 +386,135 @@ impl MapleProvider {
             LinesCodec::new_with_max_length(MAX_STREAM_LINE_BYTES),
         )
         .map_err(anyhow::Error::from);
-        let parsed = response_to_streaming_message(lines);
+        let saw_done = Arc::new(AtomicBool::new(false));
+        let guarded_lines = futures_util::stream::unfold((lines, false, false), {
+            let saw_done = Arc::clone(&saw_done);
+            move |(mut lines, stream_saw_done, finished)| {
+                let saw_done = Arc::clone(&saw_done);
+                async move {
+                    if finished {
+                        return None;
+                    }
 
-        Box::pin(parsed.map(move |result| {
-            result.map_err(|error| {
-                if parser_cancellation.is_cancelled() {
-                    cancellation_error()
-                } else if let Some(error) = secure_connection_stream_error(&error) {
-                    remember_terminal_run_error(&error);
-                    error
-                } else {
-                    invalid_stream_error()
+                    match lines.next().await {
+                        Some(Ok(line)) => {
+                            let line_is_done = is_done_sse_line(&line);
+                            if line_is_done {
+                                saw_done.store(true, Ordering::Release);
+                            }
+                            Some((Ok(line), (lines, stream_saw_done || line_is_done, false)))
+                        }
+                        Some(Err(error)) => Some((Err(error), (lines, stream_saw_done, true))),
+                        None if stream_saw_done => None,
+                        None => Some((
+                            Err(anyhow::Error::new(MissingDoneMarker)),
+                            (lines, stream_saw_done, true),
+                        )),
+                    }
                 }
-            })
-        }))
+            }
+        });
+        let parsed: MessageStream = Box::pin(
+            response_to_streaming_message(Box::pin(guarded_lines)).map(move |result| {
+                result.map_err(|error| {
+                    if parser_cancellation.is_cancelled() {
+                        cancellation_error()
+                    } else if let Some(error) = secure_connection_stream_error(&error) {
+                        remember_terminal_run_error(&error);
+                        error
+                    } else if missing_done_marker(&error) {
+                        stream_ended_before_completion_error()
+                    } else {
+                        invalid_stream_error()
+                    }
+                })
+            }),
+        );
+
+        Self::enforce_stream_terminal_contract(parsed, saw_done)
+    }
+
+    fn enforce_stream_terminal_contract(
+        parsed: MessageStream,
+        saw_done: Arc<AtomicBool>,
+    ) -> MessageStream {
+        // Goose independently retries empty model turns even when the provider
+        // retry budget is zero. It also executes a parsed tool request before
+        // polling the following stream item. Buffer tool requests until DONE,
+        // and turn any otherwise-empty or unterminated stream into a terminal
+        // error so neither path can replay or dispatch accepted work.
+        Box::pin(futures_util::stream::unfold(
+            (parsed, VecDeque::new(), false, false),
+            move |(mut parsed, mut buffered, produced_output, finished)| {
+                let saw_done = Arc::clone(&saw_done);
+                async move {
+                    if let Some(item) = buffered.pop_front() {
+                        return Some((item, (parsed, buffered, produced_output, finished)));
+                    }
+                    if finished {
+                        return None;
+                    }
+
+                    let mut produced_output = produced_output;
+                    loop {
+                        match parsed.next().await {
+                            Some(Ok(item)) => {
+                                produced_output |= stream_item_has_agent_turn_output(&item);
+                                if !buffered.is_empty()
+                                    || (stream_item_contains_tool_request(&item)
+                                        && !saw_done.load(Ordering::Acquire))
+                                {
+                                    buffered.push_back(Ok(item));
+                                    continue;
+                                }
+                                return Some((
+                                    Ok(item),
+                                    (parsed, buffered, produced_output, false),
+                                ));
+                            }
+                            Some(Err(error)) => {
+                                buffered.clear();
+                                return Some((
+                                    Err(error),
+                                    (parsed, buffered, produced_output, true),
+                                ));
+                            }
+                            None if !buffered.is_empty() && saw_done.load(Ordering::Acquire) => {
+                                let item = buffered
+                                    .pop_front()
+                                    .expect("buffer was checked as non-empty");
+                                return Some((item, (parsed, buffered, produced_output, true)));
+                            }
+                            None if produced_output && saw_done.load(Ordering::Acquire) => {
+                                return None;
+                            }
+                            None => {
+                                buffered.clear();
+                                return Some((
+                                    Err(stream_ended_before_completion_error()),
+                                    (parsed, buffered, produced_output, true),
+                                ));
+                            }
+                        }
+                    }
+                }
+            },
+        ))
     }
 
     async fn stream_attempt(
         &self,
         payload_bytes: &[u8],
+        send_budget: InferenceSendBudget,
         cancellation: &CancellationToken,
-    ) -> Result<MessageStream, ProviderError> {
-        let request = Self::inference_request(payload_bytes.to_vec())?;
-        let response = self.send_attempt(request, cancellation).await?;
-        let response = ensure_success(response).await?;
+    ) -> Result<MessageStream, StreamAttemptFailure> {
+        let request = Self::inference_request(payload_bytes.to_vec())
+            .map_err(StreamAttemptFailure::without_replay)?;
+        let response = self
+            .send_attempt(request, send_budget, cancellation)
+            .await
+            .map_err(StreamAttemptFailure::without_replay)?;
+        let response = ensure_success_for_attempt(response).await?;
         Ok(Self::message_stream_from_response(
             response,
             cancellation.clone(),
@@ -388,59 +526,37 @@ impl MapleProvider {
         payload_bytes: &[u8],
         cancellation: &CancellationToken,
     ) -> Result<MessageStream, ProviderError> {
-        let config = Provider::retry_config(self);
-        let mut attempts = 0;
+        let send_budget = InferenceSendBudget::new(MAX_LOGICAL_INFERENCE_SENDS)
+            .expect("the fixed inference send budget must be non-zero");
+        let first_failure = match self
+            .stream_attempt(payload_bytes, send_budget.clone(), cancellation)
+            .await
+        {
+            Ok(stream) => return Ok(stream),
+            Err(failure) => failure,
+        };
+        let Some(delay) = first_failure.replay_delay else {
+            remember_terminal_run_error(&first_failure.error);
+            return Err(first_failure.error);
+        };
+        if send_budget.remaining() == 0 {
+            return Err(first_failure.error);
+        }
 
-        loop {
-            let error = match self.stream_attempt(payload_bytes, cancellation).await {
-                Ok(mut stream) => {
-                    // TODO(upstream): Remove this Maple-specific bridge from Agent Mode once
-                    // Maple's pinned Goose revision provides equivalent first-item handling:
-                    // https://github.com/aaif-goose/goose/issues/10887
-                    // If auxiliary complete() calls still need this protection, scope it to
-                    // that path instead. Recovery after any successful item remains out of
-                    // scope here:
-                    // https://github.com/aaif-goose/goose/issues/10897
-                    let first = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return Err(cancellation_error()),
-                        first = stream.next() => first,
-                    };
-                    match first {
-                        Some(Ok(first)) => {
-                            return Ok(Box::pin(
-                                futures_util::stream::once(ready(Ok(first))).chain(stream),
-                            ));
-                        }
-                        Some(Err(error)) => error,
-                        None => return Ok(stream),
-                    }
-                }
-                Err(error) => error,
-            };
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(cancellation_error()),
+            _ = tokio::time::sleep(delay) => {}
+        }
 
-            if !should_retry(&error, &config) || attempts >= config.max_retries() {
-                remember_terminal_run_error(&error);
-                return Err(error);
-            }
-            attempts += 1;
-            let delay = match &error {
-                ProviderError::RateLimitExceeded {
-                    retry_delay: Some(provider_delay),
-                    ..
-                } => *provider_delay,
-                _ => config.delay_for_attempt(attempts),
-            };
-            let skip_backoff = std::env::var("GOOSE_PROVIDER_SKIP_BACKOFF")
-                .unwrap_or_default()
-                .parse::<bool>()
-                .unwrap_or(false);
-            if !skip_backoff {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => return Err(cancellation_error()),
-                    _ = tokio::time::sleep(delay) => {}
-                }
+        match self
+            .stream_attempt(payload_bytes, send_budget, cancellation)
+            .await
+        {
+            Ok(stream) => Ok(stream),
+            Err(failure) => {
+                remember_terminal_run_error(&failure.error);
+                Err(failure.error)
             }
         }
     }
@@ -453,8 +569,9 @@ impl MapleProvider {
         tools: &[Tool],
         enable_primary_agent_thinking: bool,
     ) -> Result<MessageStream, ProviderError> {
-        let effective_model_config =
+        let mut effective_model_config =
             Self::gemma_agent_model_config(model_config, enable_primary_agent_thinking);
+        clear_output_token_limits(&mut effective_model_config);
         let payload = self.build_request(&effective_model_config, system, messages, tools)?;
         let payload_bytes = serde_json::to_vec(&payload).map_err(|error| {
             ProviderError::RequestFailed(format!("Failed to serialize Maple request: {error}"))
@@ -496,21 +613,10 @@ impl Provider for MapleProvider {
     }
 
     fn retry_config(&self) -> RetryConfig {
-        #[cfg(test)]
-        if let Some(config) = &self.test_retry_config {
-            return config.clone();
-        }
-
-        // Retrying deterministic client failures can repeat side effects and
-        // causes the SDK to repeat its own stale-session recovery for a 400. One
-        // shared transient budget covers both setup and pre-first-item failures.
-        RetryConfig::new(
-            TRANSIENT_MAX_RETRIES,
-            DEFAULT_INITIAL_RETRY_INTERVAL_MS,
-            DEFAULT_BACKOFF_MULTIPLIER,
-            DEFAULT_MAX_RETRY_INTERVAL_MS,
-        )
-        .transient_only()
+        // Maple owns the sole replay, and only for OpenSecret's explicit
+        // pre-acceptance capacity contract. Goose must never add another replay
+        // for network, HTTP, or pre-first-item stream errors.
+        RetryConfig::new(0, 0, 1.0, 0).transient_only()
     }
 
     async fn stream(
@@ -549,35 +655,108 @@ fn invalid_stream_error() -> ProviderError {
     ProviderError::NetworkError("Maple's response stream was invalid".to_string())
 }
 
-async fn ensure_success(response: InferenceResponse) -> Result<InferenceResponse, ProviderError> {
+fn stream_ended_before_completion_error() -> ProviderError {
+    let error = ProviderError::ExecutionError(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string());
+    remember_terminal_run_error(&error);
+    error
+}
+
+fn stream_item_contains_tool_request(item: &(Option<Message>, Option<ProviderUsage>)) -> bool {
+    item.0.as_ref().is_some_and(Message::is_tool_call)
+}
+
+fn stream_item_has_agent_turn_output(item: &(Option<Message>, Option<ProviderUsage>)) -> bool {
+    item.0.as_ref().is_some_and(|message| {
+        message.metadata.output_token_limit_reached
+            || message.content.iter().any(|content| match content {
+                MessageContent::Text(text) => !text.text.is_empty(),
+                MessageContent::Image(image) => !image.data.is_empty(),
+                MessageContent::Thinking(thinking) => {
+                    !thinking.thinking.is_empty() || !thinking.signature.is_empty()
+                }
+                MessageContent::RedactedThinking(thinking) => !thinking.data.is_empty(),
+                MessageContent::SystemNotification(notification) => !notification.msg.is_empty(),
+                _ => true,
+            })
+    })
+}
+
+struct StreamAttemptFailure {
+    error: ProviderError,
+    replay_delay: Option<Duration>,
+}
+
+impl StreamAttemptFailure {
+    fn without_replay(error: ProviderError) -> Self {
+        Self {
+            error,
+            replay_delay: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MissingDoneMarker;
+
+impl std::fmt::Display for MissingDoneMarker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE)
+    }
+}
+
+impl std::error::Error for MissingDoneMarker {}
+
+fn missing_done_marker(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<MissingDoneMarker>().is_some())
+}
+
+fn is_done_sse_line(line: &str) -> bool {
+    line.strip_prefix("data: ")
+        .or_else(|| line.strip_prefix("data:"))
+        .is_some_and(|payload| payload.trim() == "[DONE]")
+}
+
+async fn ensure_success_for_attempt(
+    response: InferenceResponse,
+) -> Result<InferenceResponse, StreamAttemptFailure> {
     if response.status().is_success() {
         return Ok(response);
     }
 
     let status = response.status();
+    if has_exact_inference_capacity_contract(status, response.headers()) {
+        let replay_delay = capacity_retry_delay(response.headers());
+        return Err(StreamAttemptFailure {
+            error: ProviderError::RateLimitExceeded {
+                details: INFERENCE_CAPACITY_ERROR_MESSAGE.to_string(),
+                retry_delay: replay_delay,
+            },
+            replay_delay,
+        });
+    }
+
     let terminal_session_failure = has_exact_session_not_found_contract(status, response.headers());
-    let retry_after_header = response
-        .headers()
-        .get("retry-after")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
     let (_parts, body) = response.into_parts();
-    let (body, truncated) = collect_bounded_body(body).await?;
+    let (body, truncated) = collect_bounded_body(body)
+        .await
+        .map_err(StreamAttemptFailure::without_replay)?;
     let payload = error_payload(&body, truncated);
-    let retry_delay = retry_after_delay(payload.as_ref(), retry_after_header.as_deref());
     let error = if terminal_session_failure {
         ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
     } else {
         map_http_error(status, payload.as_ref())
     };
 
-    match error {
-        ProviderError::RateLimitExceeded { details, .. } => Err(ProviderError::RateLimitExceeded {
-            details,
-            retry_delay,
-        }),
-        error => Err(error),
-    }
+    Err(StreamAttemptFailure::without_replay(error))
+}
+
+#[cfg(test)]
+async fn ensure_success(response: InferenceResponse) -> Result<InferenceResponse, ProviderError> {
+    ensure_success_for_attempt(response)
+        .await
+        .map_err(|failure| failure.error)
 }
 
 fn has_exact_session_not_found_contract(
@@ -601,6 +780,51 @@ fn has_exact_session_not_found_contract(
         return false;
     };
     code_values.next().is_none() && code.as_bytes() == SESSION_NOT_FOUND_ERROR_CODE
+}
+
+fn has_exact_inference_capacity_contract(
+    status: tauri::http::StatusCode,
+    headers: &tauri::http::HeaderMap,
+) -> bool {
+    matches!(
+        status,
+        tauri::http::StatusCode::TOO_MANY_REQUESTS | tauri::http::StatusCode::SERVICE_UNAVAILABLE
+    ) && has_exact_header(headers, ERROR_CONTRACT_HEADER, ERROR_CONTRACT_VERSION)
+        && has_exact_header(headers, ERROR_CODE_HEADER, INFERENCE_CAPACITY_ERROR_CODE)
+        && has_exact_header(headers, CLIENT_REPLAY_HEADER, CLIENT_REPLAY_SAFE)
+}
+
+fn has_exact_header(headers: &tauri::http::HeaderMap, name: &str, expected: &[u8]) -> bool {
+    let mut values = headers.get_all(name).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    values.next().is_none() && value.as_bytes() == expected
+}
+
+fn capacity_retry_delay(headers: &tauri::http::HeaderMap) -> Option<Duration> {
+    let mut values = headers.get_all(tauri::http::header::RETRY_AFTER).iter();
+    let Some(value) = values.next() else {
+        return Some(DEFAULT_CAPACITY_RETRY_DELAY);
+    };
+    if values.next().is_some() {
+        return Some(DEFAULT_CAPACITY_RETRY_DELAY);
+    }
+    let bytes = value.as_bytes();
+    let canonical = bytes == b"0"
+        || (bytes
+            .first()
+            .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+            && bytes.iter().all(u8::is_ascii_digit));
+    if !canonical {
+        return Some(DEFAULT_CAPACITY_RETRY_DELAY);
+    }
+
+    let seconds = value
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())?;
+    (seconds <= MAX_CAPACITY_RETRY_DELAY_SECS).then(|| Duration::from_secs(seconds))
 }
 
 async fn collect_bounded_body(
@@ -661,38 +885,6 @@ fn error_payload(body: &[u8], truncated: bool) -> Option<Value> {
         message.push_str(" [response truncated]");
     }
     Some(json!({ "message": message }))
-}
-
-fn retry_after_delay(payload: Option<&Value>, header: Option<&str>) -> Option<Duration> {
-    let body_seconds = payload
-        .and_then(|payload| payload.get("error"))
-        .and_then(|error| error.get("metadata"))
-        .and_then(|metadata| metadata.get("retry_after_seconds"))
-        .and_then(Value::as_f64);
-    body_seconds
-        .and_then(retry_duration_from_seconds)
-        .or_else(|| header.and_then(parse_retry_after_header))
-}
-
-fn retry_duration_from_seconds(seconds: f64) -> Option<Duration> {
-    if !seconds.is_finite() || seconds < 0.0 {
-        return None;
-    }
-
-    Some(Duration::from_secs_f64(seconds.min(MAX_RETRY_AFTER_SECS)))
-}
-
-fn parse_retry_after_header(value: &str) -> Option<Duration> {
-    let value = value.trim();
-    if let Ok(seconds) = value.parse::<u64>() {
-        return retry_duration_from_seconds(seconds as f64);
-    }
-
-    let retry_at = httpdate::parse_http_date(value).ok()?;
-    let delay = retry_at
-        .duration_since(SystemTime::now())
-        .unwrap_or(Duration::ZERO);
-    retry_duration_from_seconds(delay.as_secs_f64())
 }
 
 fn map_http_error(status: tauri::http::StatusCode, payload: Option<&Value>) -> ProviderError {
@@ -992,6 +1184,7 @@ mod tests {
     use goose_providers::retry::should_retry;
     use rmcp::object;
     use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use tokio::sync::Notify;
 
@@ -1006,17 +1199,23 @@ mod tests {
 
     struct FakeTransport {
         requests: Mutex<Vec<CapturedRequest>>,
+        send_limits: Mutex<Vec<usize>>,
         responses: Mutex<VecDeque<opensecret::Result<InferenceResponse>>>,
         request_notify: Notify,
     }
 
     struct PendingTransport;
 
+    struct DoubleSendCapacityTransport {
+        calls: AtomicUsize,
+    }
+
     #[async_trait]
     impl MapleInferenceTransport for PendingTransport {
         async fn send_inference_request(
             self: Arc<Self>,
             _request: InferenceRequest,
+            _send_budget: InferenceSendBudget,
             cancel_token: CancellationToken,
         ) -> opensecret::Result<InferenceResponse> {
             cancel_token.cancelled().await;
@@ -1042,6 +1241,7 @@ mod tests {
         fn with_results(responses: Vec<opensecret::Result<InferenceResponse>>) -> Self {
             Self {
                 requests: Mutex::new(Vec::new()),
+                send_limits: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses.into()),
                 request_notify: Notify::new(),
             }
@@ -1053,6 +1253,10 @@ mod tests {
 
         fn remaining_response_count(&self) -> usize {
             self.responses.lock().expect("response lock").len()
+        }
+
+        fn send_limits(&self) -> Vec<usize> {
+            self.send_limits.lock().expect("send limit lock").clone()
         }
 
         async fn wait_for_request_count(&self, expected: usize) {
@@ -1071,8 +1275,18 @@ mod tests {
         async fn send_inference_request(
             self: Arc<Self>,
             request: InferenceRequest,
+            send_budget: InferenceSendBudget,
             _cancel_token: CancellationToken,
         ) -> opensecret::Result<InferenceResponse> {
+            self.send_limits
+                .lock()
+                .expect("send limit lock")
+                .push(send_budget.remaining());
+            if !send_budget.try_reserve_send() {
+                return Err(opensecret::Error::Other(
+                    "Inference request send budget exhausted".to_string(),
+                ));
+            }
             let (parts, body) = request.into_parts();
             let captured = CapturedRequest {
                 method: parts.method.to_string(),
@@ -1092,6 +1306,21 @@ mod tests {
                 .expect("response lock")
                 .pop_front()
                 .expect("a fake response should be queued")
+        }
+    }
+
+    #[async_trait]
+    impl MapleInferenceTransport for DoubleSendCapacityTransport {
+        async fn send_inference_request(
+            self: Arc<Self>,
+            _request: InferenceRequest,
+            send_budget: InferenceSendBudget,
+            _cancel_token: CancellationToken,
+        ) -> opensecret::Result<InferenceResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert!(send_budget.try_reserve_send());
+            assert!(send_budget.try_reserve_send());
+            Ok(capacity_response(503, Some("0")))
         }
     }
 
@@ -1117,6 +1346,53 @@ mod tests {
 
     fn response(status: u16, chunks: Vec<Vec<u8>>, retry_after: Option<&str>) -> InferenceResponse {
         response_with_items(status, chunks.into_iter().map(Ok).collect(), retry_after)
+    }
+
+    fn add_capacity_contract(response: &mut InferenceResponse) {
+        response.headers_mut().insert(
+            ERROR_CONTRACT_HEADER,
+            tauri::http::HeaderValue::from_static("1"),
+        );
+        response.headers_mut().insert(
+            ERROR_CODE_HEADER,
+            tauri::http::HeaderValue::from_static("inference_capacity"),
+        );
+        response.headers_mut().insert(
+            CLIENT_REPLAY_HEADER,
+            tauri::http::HeaderValue::from_static("safe"),
+        );
+    }
+
+    fn capacity_response(status: u16, retry_after: Option<&str>) -> InferenceResponse {
+        let mut response = response(
+            status,
+            vec![br#"{"error":{"message":"private upstream capacity detail"}}"#.to_vec()],
+            retry_after,
+        );
+        add_capacity_contract(&mut response);
+        response
+    }
+
+    fn unpolled_capacity_response(
+        status: u16,
+        retry_after: Option<&str>,
+        body_polls: Arc<AtomicUsize>,
+    ) -> InferenceResponse {
+        let body: OpenSecretResponseBody = Box::pin(futures_util::stream::once(async move {
+            body_polls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, opensecret::Error>(b"private upstream capacity detail".to_vec().into())
+        }));
+        let mut response = InferenceResponse::new(body);
+        *response.status_mut() =
+            tauri::http::StatusCode::from_u16(status).expect("valid fake status");
+        if let Some(retry_after) = retry_after {
+            response.headers_mut().insert(
+                tauri::http::header::RETRY_AFTER,
+                tauri::http::HeaderValue::from_str(retry_after).expect("valid retry header"),
+            );
+        }
+        add_capacity_contract(&mut response);
+        response
     }
 
     fn error_contract_response(contract: Option<&str>, code: Option<&str>) -> InferenceResponse {
@@ -1181,10 +1457,6 @@ mod tests {
         event
     }
 
-    fn fast_retry_config(max_retries: usize) -> RetryConfig {
-        RetryConfig::new(max_retries, 0, 1.0, 0).transient_only()
-    }
-
     fn fragmented_success_response() -> InferenceResponse {
         let response_bytes = concat!(
             "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",",
@@ -1209,6 +1481,43 @@ mod tests {
                 response_bytes[91..response_bytes.len() - 7].to_vec(),
                 response_bytes[response_bytes.len() - 7..].to_vec(),
             ],
+            None,
+        )
+    }
+
+    fn single_text_response(done_line: Option<&str>) -> InferenceResponse {
+        let event = json!({
+            "id": "single-text",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "test-model",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hello" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        });
+        let mut sse = format!("data: {event}\n\n");
+        if let Some(done_line) = done_line {
+            sse.push_str(done_line);
+            sse.push_str("\n\n");
+        }
+        response(200, vec![sse.into_bytes()], None)
+    }
+
+    fn usage_only_response() -> InferenceResponse {
+        let event = json!({
+            "id": "usage-only",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "test-model",
+            "choices": [],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1 }
+        });
+        response(
+            200,
+            vec![format!("data: {event}\n\ndata: [DONE]\n\n").into_bytes()],
             None,
         )
     }
@@ -1287,16 +1596,6 @@ mod tests {
         response
     }
 
-    fn notifying_malformed_response(error_read: Arc<Notify>) -> InferenceResponse {
-        let body: OpenSecretResponseBody = Box::pin(futures_util::stream::once(async move {
-            error_read.notify_one();
-            Ok(b"data: transient-invalid-stream\n\n".to_vec().into())
-        }));
-        let mut response = InferenceResponse::new(body);
-        *response.status_mut() = tauri::http::StatusCode::OK;
-        response
-    }
-
     #[tokio::test]
     async fn formats_openai_request_and_preserves_images_and_thinking() {
         let transport = Arc::new(FakeTransport::new(fragmented_success_response()));
@@ -1352,6 +1651,72 @@ mod tests {
             request.body["messages"][1]["content"][1]["image_url"]["url"],
             "data:image/png;base64,aGVsbG8="
         );
+    }
+
+    #[tokio::test]
+    async fn agent_and_auxiliary_requests_omit_inherited_output_token_limits() {
+        for auxiliary in [false, true] {
+            let transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+            let provider = MapleProvider::new(transport.clone());
+            let model_config = ModelConfig::new("deepseek-v4-flash")
+                .with_canonical_limits(MAPLE_PROVIDER_NAME)
+                .with_context_limit(Some(1_048_576))
+                .with_temperature(Some(0.25))
+                .with_merged_request_params(HashMap::from([
+                    ("max_tokens".to_string(), json!(64)),
+                    ("max_completion_tokens".to_string(), json!(64)),
+                    ("max_output_tokens".to_string(), json!(64)),
+                    ("include_reasoning".to_string(), json!(false)),
+                ]));
+            assert!(model_config.max_tokens.is_some());
+            let messages = [Message::user().with_text("Keep generating within model context")];
+
+            // This also exercises the final formatter policy independently of
+            // stream_request's config cleanup, as for a restored config.
+            let formatted = provider
+                .build_request(&model_config, "system", &messages, &[])
+                .expect("format Maple request");
+            for field in OUTPUT_TOKEN_LIMIT_FIELDS {
+                assert!(formatted.get(field).is_none());
+            }
+
+            if auxiliary {
+                provider
+                    .complete(&model_config, "system", &messages, &[])
+                    .await
+                    .expect("auxiliary completion");
+            } else {
+                let stream = provider
+                    .stream(&model_config, "system", &messages, &[])
+                    .await
+                    .expect("Agent stream");
+                collect_stream(stream)
+                    .await
+                    .expect("completed Agent stream");
+            }
+
+            let requests = transport.requests.lock().expect("request lock");
+            assert_eq!(requests.len(), 1);
+            let request = &requests[0];
+            for field in OUTPUT_TOKEN_LIMIT_FIELDS {
+                assert!(request.body.get(field).is_none());
+            }
+            assert_eq!(request.body["model"], "deepseek-v4-flash");
+            assert_eq!(request.body["temperature"], 0.25);
+            assert_eq!(request.body["include_reasoning"], false);
+            assert_eq!(
+                request.body["messages"][1]["content"],
+                messages[0].as_concat_text()
+            );
+            assert_eq!(model_config.context_limit, Some(1_048_576));
+            assert_eq!(model_config.temperature, Some(0.25));
+            assert!(model_config.max_tokens.is_some());
+            assert!(model_config
+                .request_params
+                .as_ref()
+                .unwrap()
+                .contains_key("max_output_tokens"));
+        }
     }
 
     #[tokio::test]
@@ -1668,13 +2033,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retries_invalid_stream_before_first_item_with_the_same_request() {
+    async fn malformed_stream_before_first_item_is_terminal_without_replay() {
         let transport = Arc::new(FakeTransport::queued(vec![
             malformed_response("transient-invalid-stream"),
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
 
         let stream = provider
             .stream(
@@ -1684,25 +2048,17 @@ mod tests {
                 &[],
             )
             .await
-            .expect("replacement stream should start");
-        let (message, usage) = collect_stream(stream)
+            .expect("successful response headers should start the stream");
+        let error = collect_stream(stream)
             .await
-            .expect("replacement stream should parse");
-        let text = message
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                MessageContent::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
+            .expect_err("malformed stream should fail without replay");
 
-        assert_eq!(text, "Hello world");
-        assert_eq!(usage.usage.total_tokens, Some(5));
-        let requests = transport.requests.lock().expect("request lock");
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].raw_body, requests[1].raw_body);
-        assert_eq!(requests[0].body, requests[1].body);
+        assert_eq!(
+            error,
+            ProviderError::NetworkError("Maple's response stream was invalid".to_string())
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
@@ -1729,8 +2085,7 @@ mod tests {
             interrupted,
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
 
         let mut stream = provider
             .stream(
@@ -1789,8 +2144,7 @@ mod tests {
             interrupted,
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
 
         let mut stream = provider
             .stream(
@@ -1818,22 +2172,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shares_one_retry_budget_across_status_and_first_item_failures() {
-        let mut responses = vec![response(
-            503,
-            vec![br#"{"error":{"message":"temporarily unavailable"}}"#.to_vec()],
-            None,
-        )];
-        responses.extend(
-            (0..TRANSIENT_MAX_RETRIES)
-                .map(|index| malformed_response(&format!("invalid-stream-{index}"))),
-        );
-        responses.push(fragmented_success_response());
-        let transport = Arc::new(FakeTransport::queued(responses));
+    async fn exact_capacity_contract_replays_once_with_the_same_unpolled_request() {
+        let body_polls = Arc::new(AtomicUsize::new(0));
+        let transport = Arc::new(FakeTransport::queued(vec![
+            unpolled_capacity_response(503, Some("0"), Arc::clone(&body_polls)),
+            fragmented_success_response(),
+            fragmented_success_response(),
+        ]));
         let provider = MapleProvider::new(Arc::clone(&transport));
-        let default_max_retries = Provider::retry_config(&provider).max_retries();
-        assert_eq!(default_max_retries, TRANSIENT_MAX_RETRIES);
-        let provider = provider.with_test_retry_config(fast_retry_config(default_max_retries));
+
+        let stream = provider
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await
+            .expect("the replay response should start");
+        let (_, usage) = collect_stream(stream)
+            .await
+            .expect("the replay response should parse");
+
+        assert_eq!(usage.usage.total_tokens, Some(5));
+        assert_eq!(body_polls.load(Ordering::SeqCst), 0);
+        let requests = transport.requests.lock().expect("request lock");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].raw_body, requests[1].raw_body);
+        assert_eq!(requests[0].body, requests[1].body);
+        drop(requests);
+        assert_eq!(transport.send_limits(), vec![2, 1]);
+        assert_eq!(transport.remaining_response_count(), 1);
+        assert_eq!(Provider::retry_config(&provider).max_retries(), 0);
+    }
+
+    #[tokio::test]
+    async fn internal_repair_exhausting_the_budget_prevents_an_outer_capacity_replay() {
+        let transport = Arc::new(DoubleSendCapacityTransport {
+            calls: AtomicUsize::new(0),
+        });
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let result = provider
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(ProviderError::RateLimitExceeded {
+                retry_delay: Some(Duration::ZERO),
+                ..
+            })
+        ));
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_capacity_response_stops_after_two_total_sends() {
+        let transport = Arc::new(FakeTransport::queued(vec![
+            capacity_response(429, Some("0")),
+            capacity_response(503, Some("0")),
+            fragmented_success_response(),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
 
         let result = provider
             .stream(
@@ -1844,20 +2250,51 @@ mod tests {
             )
             .await;
         let error = match result {
-            Ok(_) => panic!("the shared retry budget should be exhausted"),
+            Ok(_) => panic!("the second capacity response should stop the send"),
             Err(error) => error,
         };
 
         assert_eq!(
             error,
-            ProviderError::NetworkError("Maple's response stream was invalid".to_string())
+            ProviderError::RateLimitExceeded {
+                details: INFERENCE_CAPACITY_ERROR_MESSAGE.to_string(),
+                retry_delay: Some(Duration::ZERO),
+            }
         );
-        assert_eq!(transport.request_count(), TRANSIENT_MAX_RETRIES + 1);
+        assert_eq!(transport.request_count(), 2);
         assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
-    async fn retries_an_incomplete_tool_call_before_it_is_yielded() {
+    async fn over_budget_capacity_delay_does_not_replay() {
+        let transport = Arc::new(FakeTransport::queued(vec![
+            capacity_response(503, Some("61")),
+            fragmented_success_response(),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let result = provider
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(ProviderError::RateLimitExceeded {
+                retry_delay: None,
+                ..
+            })
+        ));
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn incomplete_tool_call_before_output_is_terminal_without_replay() {
         let interrupted = response_with_items(
             200,
             vec![
@@ -1868,8 +2305,7 @@ mod tests {
         );
         let replacement = response(200, vec![complete_tool_call_sse()], None);
         let transport = Arc::new(FakeTransport::queued(vec![interrupted, replacement]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
 
         let stream = provider
             .stream(
@@ -1879,42 +2315,157 @@ mod tests {
                 &[],
             )
             .await
-            .expect("replacement tool stream should start");
-        let (message, usage) = collect_stream(stream)
+            .expect("successful response headers should start the stream");
+        let error = collect_stream(stream)
             .await
-            .expect("replacement tool stream should parse");
-        let calls = message
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                MessageContent::ToolRequest(request) => request.tool_call.as_ref().ok(),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "web_search");
+            .expect_err("the malformed tool stream should fail");
         assert_eq!(
-            calls[0]
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("query")),
-            Some(&json!("maple"))
+            error,
+            ProviderError::NetworkError("Maple's response stream was invalid".to_string())
         );
-        assert_eq!(usage.usage.total_tokens, Some(5));
-        assert_eq!(transport.request_count(), 2);
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
-    async fn leaves_an_incomplete_tool_call_ending_in_done_as_an_empty_stream() {
+    async fn valid_completion_without_done_is_terminal_and_not_replayed() {
+        let transport = Arc::new(FakeTransport::queued(vec![
+            single_text_response(None),
+            fragmented_success_response(),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+        let model_config = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("hello")];
+
+        let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
+            let result = match provider
+                .stream(&model_config, "system", &messages, &[])
+                .await
+            {
+                Ok(stream) => collect_stream(stream).await.map(|_| ()),
+                Err(error) => Err(error),
+            };
+            (result, take_terminal_run_error())
+        })
+        .await;
+
+        assert_eq!(
+            result,
+            Err(ProviderError::ExecutionError(
+                STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string()
+            ))
+        );
+        assert_eq!(
+            terminal_error.as_deref(),
+            Some(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE)
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn incomplete_tool_call_without_done_is_terminal_and_not_replayed() {
+        let transport = Arc::new(FakeTransport::queued(vec![
+            response(200, vec![incomplete_tool_call_sse()], None),
+            fragmented_success_response(),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let stream = provider
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("search")],
+                &[],
+            )
+            .await
+            .expect("successful response headers should start the stream");
+        let error = collect_stream(stream)
+            .await
+            .expect_err("missing DONE should fail the incomplete tool stream");
+
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string())
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn compact_done_marker_is_accepted() {
+        let transport = Arc::new(FakeTransport::new(single_text_response(Some(
+            "data:[DONE]",
+        ))));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let stream = provider
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await
+            .expect("stream should start");
+        let (message, usage) = collect_stream(stream)
+            .await
+            .expect("compact DONE marker should complete the stream");
+
+        assert!(message
+            .content
+            .iter()
+            .any(|content| matches!(content, MessageContent::Text(text) if text.text == "Hello")));
+        assert_eq!(usage.usage.total_tokens, Some(2));
+        assert_eq!(transport.request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn incomplete_tool_call_ending_in_done_is_terminal_and_not_replayed() {
         let mut incomplete_then_done = incomplete_tool_call_sse();
         incomplete_then_done.extend_from_slice(b"data: [DONE]\n\n");
         let transport = Arc::new(FakeTransport::queued(vec![
             response(200, vec![incomplete_then_done], None),
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let model_config = ModelConfig::new("test-model");
+        let messages = [Message::user().with_text("search")];
+
+        let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
+            let result = match provider
+                .stream(&model_config, "system", &messages, &[])
+                .await
+            {
+                Ok(stream) => collect_stream(stream).await.map(|_| ()),
+                Err(error) => Err(error),
+            };
+            (result, take_terminal_run_error())
+        })
+        .await;
+
+        assert_eq!(
+            result,
+            Err(ProviderError::ExecutionError(
+                STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string()
+            ))
+        );
+        assert_eq!(
+            terminal_error.as_deref(),
+            Some(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE)
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn complete_tool_call_without_done_is_terminal_before_tool_is_yielded() {
+        let transport = Arc::new(FakeTransport::queued(vec![
+            response(200, vec![complete_tool_call_event()], None),
+            fragmented_success_response(),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
 
         let mut stream = provider
             .stream(
@@ -1924,15 +2475,85 @@ mod tests {
                 &[],
             )
             .await
-            .expect("DONE should preserve Goose's empty-stream recovery path");
+            .expect("successful response headers should start the stream");
+        let error = stream
+            .next()
+            .await
+            .expect("missing DONE should surface a terminal item")
+            .expect_err("the tool request must remain withheld");
 
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string())
+        );
         assert!(stream.next().await.is_none());
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
-    async fn does_not_retry_after_a_complete_tool_call_is_yielded() {
+    async fn leading_whitespace_pseudo_done_does_not_release_a_tool_call() {
+        let mut tool_then_pseudo_done = complete_tool_call_event();
+        tool_then_pseudo_done.extend_from_slice(b" data: [DONE]\n\n");
+        let transport = Arc::new(FakeTransport::queued(vec![
+            response(200, vec![tool_then_pseudo_done], None),
+            fragmented_success_response(),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let mut stream = provider
+            .stream(
+                &ModelConfig::new("test-model"),
+                "system",
+                &[Message::user().with_text("search")],
+                &[],
+            )
+            .await
+            .expect("successful response headers should start the stream");
+        let error = stream
+            .next()
+            .await
+            .expect("invalid terminal marker should surface a terminal item")
+            .expect_err("the tool request must remain withheld");
+
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string())
+        );
+        assert!(stream.next().await.is_none());
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn complete_tool_call_with_done_is_yielded_once() {
+        let transport = Arc::new(FakeTransport::new(response(
+            200,
+            vec![complete_tool_call_sse()],
+            None,
+        )));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let (message, _) = collect_stream(
+            provider
+                .stream(
+                    &ModelConfig::new("test-model"),
+                    "system",
+                    &[Message::user().with_text("search")],
+                    &[],
+                )
+                .await
+                .expect("successful response headers should start the stream"),
+        )
+        .await
+        .expect("DONE should release the buffered tool request");
+
+        assert!(message.is_tool_call());
+        assert_eq!(transport.request_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn complete_tool_call_is_withheld_before_terminal_stream_error() {
         let interrupted = response_with_items(
             200,
             vec![
@@ -1947,8 +2568,7 @@ mod tests {
             interrupted,
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
 
         let mut stream = provider
             .stream(
@@ -1959,32 +2579,72 @@ mod tests {
             )
             .await
             .expect("complete tool item should start the stream");
-        let (message, _) = stream
-            .next()
-            .await
-            .expect("tool item")
-            .expect("tool item should parse");
-        let message = message.expect("tool item should contain a message");
-        assert!(message
-            .content
-            .iter()
-            .any(|content| matches!(content, MessageContent::ToolRequest(_))));
-
         let error = stream
             .next()
             .await
             .expect("the interruption should be surfaced")
-            .expect_err("the interruption should remain an error");
+            .expect_err("the tool request must remain withheld");
         assert_eq!(
             error,
             ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
+        );
+        assert!(stream.next().await.is_none());
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn usage_only_done_stream_is_terminal_and_not_replayed() {
+        let transport = Arc::new(FakeTransport::queued(vec![
+            usage_only_response(),
+            fragmented_success_response(),
+        ]));
+        let provider = MapleProvider::new(Arc::clone(&transport));
+
+        let error = collect_stream(
+            provider
+                .stream(
+                    &ModelConfig::new("test-model"),
+                    "system",
+                    &[Message::user().with_text("hello")],
+                    &[],
+                )
+                .await
+                .expect("successful response headers should start the stream"),
+        )
+        .await
+        .expect_err("usage without assistant output must be terminal");
+
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string())
         );
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
-    async fn maps_rate_limit_without_exposing_body_and_preserves_retry_hint() {
+    async fn empty_message_done_stream_is_terminal() {
+        let parsed: MessageStream = Box::pin(futures_util::stream::iter([Ok((
+            Some(Message::assistant()),
+            None,
+        ))]));
+        let saw_done = Arc::new(AtomicBool::new(true));
+
+        let error = collect_stream(MapleProvider::enforce_stream_terminal_contract(
+            parsed, saw_done,
+        ))
+        .await
+        .expect_err("an empty assistant message must not reach Goose as an empty turn");
+
+        assert_eq!(
+            error,
+            ProviderError::ExecutionError(STREAM_ENDED_BEFORE_COMPLETION_MESSAGE.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_rate_limit_does_not_gain_replay_authority_from_retry_after() {
         let response = response(
             429,
             vec![br#"{"error":{"message":"private upstream detail"}}"#.to_vec()],
@@ -1999,46 +2659,149 @@ mod tests {
             error,
             ProviderError::RateLimitExceeded {
                 details: "Maple rate limit exceeded".to_string(),
-                retry_delay: Some(Duration::from_secs(7)),
+                retry_delay: None,
             }
         );
     }
 
-    #[test]
-    fn invalid_body_retry_hint_falls_back_to_retry_after_header() {
-        let valid = json!({
-            "error": { "metadata": { "retry_after_seconds": 2.5 } }
-        });
-        assert_eq!(
-            retry_after_delay(Some(&valid), Some("7")),
-            Some(Duration::from_secs_f64(2.5))
+    #[tokio::test]
+    async fn exact_capacity_error_is_fixed_and_does_not_read_its_body() {
+        for status in [429, 503] {
+            let body_polls = Arc::new(AtomicUsize::new(0));
+            let error = match ensure_success(unpolled_capacity_response(
+                status,
+                Some("7"),
+                Arc::clone(&body_polls),
+            ))
+            .await
+            {
+                Ok(_) => panic!("capacity response should fail"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error,
+                ProviderError::RateLimitExceeded {
+                    details: INFERENCE_CAPACITY_ERROR_MESSAGE.to_string(),
+                    retry_delay: Some(Duration::from_secs(7)),
+                }
+            );
+            assert_eq!(body_polls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn capacity_contract_is_exact_and_fail_closed_without_replay() {
+        let mut missing_contract = capacity_response(503, Some("0"));
+        missing_contract.headers_mut().remove(ERROR_CONTRACT_HEADER);
+        let mut future_contract = capacity_response(503, Some("0"));
+        future_contract.headers_mut().insert(
+            ERROR_CONTRACT_HEADER,
+            tauri::http::HeaderValue::from_static("2"),
+        );
+        let mut duplicate_contract = capacity_response(503, Some("0"));
+        duplicate_contract.headers_mut().append(
+            ERROR_CONTRACT_HEADER,
+            tauri::http::HeaderValue::from_static("1"),
         );
 
-        let invalid = json!({
-            "error": { "metadata": { "retry_after_seconds": "not-a-number" } }
-        });
-        assert_eq!(
-            retry_after_delay(Some(&invalid), Some("7")),
-            Some(Duration::from_secs(7))
+        let mut missing_code = capacity_response(429, Some("0"));
+        missing_code.headers_mut().remove(ERROR_CODE_HEADER);
+        let mut wrong_code = capacity_response(429, Some("0"));
+        wrong_code.headers_mut().insert(
+            ERROR_CODE_HEADER,
+            tauri::http::HeaderValue::from_static("Inference_Capacity"),
+        );
+        let mut duplicate_code = capacity_response(429, Some("0"));
+        duplicate_code.headers_mut().append(
+            ERROR_CODE_HEADER,
+            tauri::http::HeaderValue::from_static("inference_capacity"),
         );
 
-        let negative = json!({
-            "error": { "metadata": { "retry_after_seconds": -1 } }
-        });
-        assert_eq!(
-            retry_after_delay(Some(&negative), Some("9")),
-            Some(Duration::from_secs(9))
+        let mut missing_replay = capacity_response(503, Some("0"));
+        missing_replay.headers_mut().remove(CLIENT_REPLAY_HEADER);
+        let mut wrong_replay = capacity_response(503, Some("0"));
+        wrong_replay.headers_mut().insert(
+            CLIENT_REPLAY_HEADER,
+            tauri::http::HeaderValue::from_static("SAFE"),
         );
+        let mut duplicate_replay = capacity_response(503, Some("0"));
+        duplicate_replay.headers_mut().append(
+            CLIENT_REPLAY_HEADER,
+            tauri::http::HeaderValue::from_static("safe"),
+        );
+
+        let invalid = vec![
+            missing_contract,
+            future_contract,
+            duplicate_contract,
+            missing_code,
+            wrong_code,
+            duplicate_code,
+            missing_replay,
+            wrong_replay,
+            duplicate_replay,
+            capacity_response(500, Some("0")),
+            capacity_response(529, Some("0")),
+        ];
+
+        for response in invalid {
+            assert!(!has_exact_inference_capacity_contract(
+                response.status(),
+                response.headers()
+            ));
+            let transport = Arc::new(FakeTransport::queued(vec![
+                response,
+                fragmented_success_response(),
+            ]));
+            let provider = MapleProvider::new(Arc::clone(&transport));
+            let result = provider
+                .stream(
+                    &ModelConfig::new("test-model"),
+                    "system",
+                    &[Message::user().with_text("hello")],
+                    &[],
+                )
+                .await;
+
+            assert!(result.is_err());
+            assert_eq!(transport.request_count(), 1);
+            assert_eq!(transport.remaining_response_count(), 1);
+        }
     }
 
     #[test]
-    fn parses_http_date_retry_after_header() {
-        let retry_at = SystemTime::now() + Duration::from_secs(120);
-        let header = httpdate::fmt_http_date(retry_at);
-        let delay = retry_after_delay(None, Some(&header)).expect("HTTP date should parse");
+    fn capacity_retry_after_is_canonical_and_bounded() {
+        let cases = [
+            (None, Some(Duration::from_secs(1))),
+            (Some("0"), Some(Duration::ZERO)),
+            (Some("7"), Some(Duration::from_secs(7))),
+            (Some("60"), Some(Duration::from_secs(60))),
+            (Some("61"), None),
+            (Some("01"), Some(Duration::from_secs(1))),
+            (Some("-1"), Some(Duration::from_secs(1))),
+            (Some("1.5"), Some(Duration::from_secs(1))),
+            (Some("1e2"), Some(Duration::from_secs(1))),
+            (
+                Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+                Some(Duration::from_secs(1)),
+            ),
+            (Some("999999999999999999999999999999999999"), None),
+        ];
 
-        assert!(delay >= Duration::from_secs(118));
-        assert!(delay <= Duration::from_secs(120));
+        for (value, expected) in cases {
+            let response = capacity_response(503, value);
+            assert_eq!(capacity_retry_delay(response.headers()), expected);
+        }
+
+        let mut duplicated = capacity_response(503, Some("7"));
+        duplicated.headers_mut().append(
+            tauri::http::header::RETRY_AFTER,
+            tauri::http::HeaderValue::from_static("9"),
+        );
+        assert_eq!(
+            capacity_retry_delay(duplicated.headers()),
+            Some(Duration::from_secs(1))
+        );
     }
 
     #[tokio::test]
@@ -2088,7 +2851,7 @@ mod tests {
 
     #[test]
     fn forbidden_errors_are_request_failures_not_authentication() {
-        let retry_config = fast_retry_config(3);
+        let retry_config = RetryConfig::new(3, 0, 1.0, 0).transient_only();
         let errors = [
             map_http_error(tauri::http::StatusCode::FORBIDDEN, None),
             map_opensecret_error(opensecret::Error::Api {
@@ -2158,7 +2921,7 @@ mod tests {
 
     #[test]
     fn secure_connection_sdk_errors_are_fixed_and_non_transient() {
-        let retry_config = fast_retry_config(3);
+        let retry_config = RetryConfig::new(3, 0, 1.0, 0).transient_only();
         let errors = vec![
             opensecret::Error::Session("private session detail".to_string()),
             opensecret::Error::KeyExchange("private key detail".to_string()),
@@ -2190,8 +2953,7 @@ mod tests {
             response(401, vec![br#"{"message":"Invalid JWT"}"#.to_vec()], None),
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
 
@@ -2218,8 +2980,7 @@ mod tests {
             error_contract_response(Some("1"), Some("session_not_found")),
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
 
@@ -2255,8 +3016,7 @@ mod tests {
             )),
             Ok(fragmented_success_response()),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
 
@@ -2292,8 +3052,7 @@ mod tests {
             )),
             Ok(fragmented_success_response()),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
 
@@ -2334,15 +3093,18 @@ mod tests {
             failed,
             fragmented_success_response(),
         ]));
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
+        let provider = MapleProvider::new(Arc::clone(&transport));
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
 
         let (result, terminal_error) = with_run_cancellation(CancellationToken::new(), async {
-            let result = provider
+            let result = match provider
                 .stream(&model_config, "system", &messages, &[])
-                .await;
+                .await
+            {
+                Ok(stream) => collect_stream(stream).await.map(|_| ()),
+                Err(error) => Err(error),
+            };
             (result, take_terminal_run_error())
         })
         .await;
@@ -2424,20 +3186,19 @@ mod tests {
         const PRIVATE_MALFORMED_LINE: &str = "private-decrypted-malformed-completion";
         let provider = MapleProvider::new(Arc::new(FakeTransport::new(malformed_response(
             PRIVATE_MALFORMED_LINE,
-        ))))
-        .with_test_retry_config(fast_retry_config(0));
-        let result = provider
+        ))));
+        let stream = provider
             .stream(
                 &ModelConfig::new("test-model"),
                 "system",
                 &[Message::user().with_text("hello")],
                 &[],
             )
-            .await;
-        let error = match result {
-            Ok(_) => panic!("malformed completion data should fail"),
-            Err(error) => error,
-        };
+            .await
+            .expect("successful response headers should start the stream");
+        let error = collect_stream(stream)
+            .await
+            .expect_err("malformed completion data should fail");
         assert_eq!(
             error,
             ProviderError::NetworkError("Maple's response stream was invalid".to_string())
@@ -2467,6 +3228,7 @@ mod tests {
         assert!(matches!(result, Err(ProviderError::RequestFailed(_))));
         assert_eq!(transport.requests.lock().expect("request lock").len(), 1);
         let retry_config = Provider::retry_config(&provider);
+        assert_eq!(retry_config.max_retries(), 0);
         assert!(!should_retry(
             &ProviderError::RequestFailed("invalid".to_string()),
             &retry_config
@@ -2513,10 +3275,12 @@ mod tests {
         let cancellation = CancellationToken::new();
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
-        let stream = with_run_cancellation(
-            cancellation.clone(),
-            provider.stream(&model_config, "system", &messages, &[]),
-        );
+        let stream = with_run_cancellation(cancellation.clone(), async {
+            let stream = provider
+                .stream(&model_config, "system", &messages, &[])
+                .await?;
+            collect_stream(stream).await.map(|_| ())
+        });
         tokio::pin!(stream);
 
         tokio::select! {
@@ -2533,15 +3297,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_interrupts_first_item_retry_backoff() {
-        let error_read = Arc::new(Notify::new());
+    async fn cancellation_interrupts_capacity_contract_delay() {
         let transport = Arc::new(FakeTransport::queued(vec![
-            notifying_malformed_response(Arc::clone(&error_read)),
+            capacity_response(503, Some("60")),
             fragmented_success_response(),
         ]));
-        let retry_config = RetryConfig::new(3, 60_000, 1.0, 60_000).transient_only();
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(retry_config);
+        let provider = MapleProvider::new(Arc::clone(&transport));
         let cancellation = CancellationToken::new();
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
@@ -2552,14 +3313,14 @@ mod tests {
         tokio::pin!(stream);
 
         tokio::select! {
-            _ = error_read.notified() => {}
+            _ = transport.wait_for_request_count(1) => {}
             result = &mut stream => panic!("stream unexpectedly finished before cancellation: {}", result.is_ok()),
         }
 
         cancellation.cancel();
         let result = tokio::time::timeout(Duration::from_secs(1), stream)
             .await
-            .expect("cancellation should interrupt backoff");
+            .expect("cancellation should interrupt the capacity delay");
         assert!(
             matches!(result, Err(ProviderError::ExecutionError(message)) if message.contains("cancelled"))
         );
@@ -2569,16 +3330,17 @@ mod tests {
 
     #[tokio::test]
     async fn stalled_response_stream_has_a_bounded_idle_timeout() {
-        let provider = MapleProvider::new(Arc::new(FakeTransport::new(pending_success_response())))
-            .with_test_retry_config(fast_retry_config(0));
-        let result = provider
+        let provider = MapleProvider::new(Arc::new(FakeTransport::new(pending_success_response())));
+        let stream = provider
             .stream(
                 &ModelConfig::new("test-model"),
                 "system",
                 &[Message::user().with_text("hello")],
                 &[],
             )
-            .await;
+            .await
+            .expect("successful response headers should start the stream");
+        let result = collect_stream(stream).await;
         assert!(matches!(result, Err(ProviderError::NetworkError(_))));
     }
 

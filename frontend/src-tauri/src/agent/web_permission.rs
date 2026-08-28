@@ -12,7 +12,6 @@ use tokio_util::sync::CancellationToken;
 const READ_ONLY_MODE: &str = "smart_approve";
 const CLASSIFIER_MODEL: &str = "llama3-3-70b";
 const CLASSIFIER_TEMPERATURE: f32 = 0.0;
-const CLASSIFIER_MAX_TOKENS: i32 = 256;
 const CLASSIFIER_TOOL_NAME: &str = "maple__classify_web_permission";
 const CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CURRENT_PROMPT_CHARS: usize = 4_096;
@@ -184,7 +183,7 @@ impl WebPermissionClassifier {
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
-            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
+            .with_max_tokens(None);
         let input = match serde_json::to_string(request) {
             Ok(input) => input,
             Err(error) => {
@@ -484,10 +483,10 @@ mod tests {
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
-            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
+            .with_max_tokens(None);
         assert_eq!(model_config.model_name, CLASSIFIER_MODEL);
         assert_eq!(model_config.temperature, Some(CLASSIFIER_TEMPERATURE));
-        assert_eq!(model_config.max_tokens, Some(CLASSIFIER_MAX_TOKENS));
+        assert_eq!(model_config.max_tokens, None);
         assert_eq!(model_config.reasoning, Some(false));
         assert!(model_config.request_params.is_none());
     }
@@ -540,7 +539,7 @@ mod tests {
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(CLASSIFIER_TEMPERATURE))
-            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
+            .with_max_tokens(None);
 
         provider
             .complete(
@@ -556,7 +555,8 @@ mod tests {
         let payload = captured.lock().unwrap().take().unwrap();
         assert_eq!(payload["model"], CLASSIFIER_MODEL);
         assert_eq!(payload["temperature"], CLASSIFIER_TEMPERATURE);
-        assert_eq!(payload["max_tokens"], CLASSIFIER_MAX_TOKENS);
+        assert!(payload.get("max_tokens").is_none());
+        assert!(payload.get("max_completion_tokens").is_none());
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["stream_options"]["include_usage"], true);
         assert!(payload.get("include_reasoning").is_none());

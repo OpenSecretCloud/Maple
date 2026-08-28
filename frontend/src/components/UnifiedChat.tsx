@@ -69,7 +69,11 @@ import {
 import { ModelSelector } from "@/components/ModelSelector";
 import { useBillingState, useModelState, useSelectedProjectState } from "@/state/useLocalState";
 import { isKnownFreePlan } from "@/billing/billingAccess";
-import { useOpenSecret } from "@opensecret/react";
+import {
+  findOpenSecretInferenceCapacityError,
+  OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER,
+  useOpenSecret
+} from "@opensecret/react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";
@@ -117,6 +121,7 @@ import type {
   ResponseFunctionWebSearch,
   ResponseFunctionToolCall,
   ResponseFunctionToolCallOutputItem,
+  ResponseCreateParamsStreaming,
   ResponseOutputItemAddedEvent,
   ResponseOutputItemDoneEvent,
   ResponseReasoningItem,
@@ -192,6 +197,7 @@ import {
   unregisterChatOptimisticMessage
 } from "@/services/chatOptimisticMessageOwnership";
 import { toolKindFromName } from "@/services/toolPresentation";
+import { withInferenceCapacityRetry } from "@/services/inferenceCapacityRetry";
 
 const CHAT_ALERT_CLASS = "absolute top-16 left-1/2 z-50 w-full max-w-2xl -translate-x-1/2 px-4";
 const STREAM_EVENT_DEBUG_STORAGE_KEY = "maple:sse-debug";
@@ -4440,21 +4446,25 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         return true;
       };
 
-      const createResponseStream = async (
-        targetConversationId: string,
-        discardOwnedItemsOnError: boolean
-      ) => {
-        const stream = await openai.responses.create(
-          {
-            conversation: targetConversationId,
-            model: requestModel,
-            input: [{ role: "user", content: messageContent }],
-            metadata: { internal_message_id: localMessageId },
-            stream: true,
-            store: true,
-            ...(requestWebSearchEnabled && { tools: [{ type: "web_search" }] })
-          },
-          { signal: run.signal }
+      const createResponseStream = async (targetConversationId: string) => {
+        const responseParams: ResponseCreateParamsStreaming = {
+          conversation: targetConversationId,
+          model: requestModel,
+          input: [{ role: "user", content: messageContent }],
+          metadata: { internal_message_id: localMessageId },
+          stream: true,
+          store: true,
+          ...(requestWebSearchEnabled && { tools: [{ type: "web_search" }] })
+        };
+        const stream = await withInferenceCapacityRetry(
+          (maxInferenceSends) =>
+            openai.responses.create(responseParams, {
+              signal: run.signal,
+              headers: {
+                [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: String(maxInferenceSends)
+              }
+            }),
+          run.signal
         );
 
         if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return null;
@@ -4464,7 +4474,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             runtimeKey,
             run.token,
             localMessageId,
-            discardOwnedItemsOnError
+            false
           );
         } finally {
           runtimeStore.setAssistantStreaming(runtimeKey, run.token, false);
@@ -4634,7 +4644,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           window.dispatchEvent(new Event("conversationcreated"));
         }
 
-        const terminalState = await createResponseStream(conversationId, isFollowUpConversation);
+        const terminalState = await createResponseStream(conversationId);
         completedSuccessfully = terminalState === "completed";
         scheduleBillingRefresh();
       } catch (error) {
@@ -4709,42 +4719,30 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
               status403Error.message || "Access denied. Please check your subscription.";
           }
           restoreOriginComposer(displayError);
+        } else if (findOpenSecretInferenceCapacityError(error)) {
+          restoreOriginComposer(
+            "Inference capacity is temporarily unavailable. Your message was restored. Please try again shortly."
+          );
         } else if (error instanceof Error && error.name !== "AbortError") {
           if (isFollowUpConversation && conversationId) {
             try {
-              console.log("Waiting 1s before retry...");
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-              if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) return;
+              const finalCheckResponse = await openai.conversations.items.list(conversationId, {
+                limit: 5,
+                order: "desc"
+              });
+              const foundMessage = finalCheckResponse.data.find(
+                (item) => item.id === localMessageId
+              );
 
-              console.log("Retrying request once...");
-              const terminalState = await createResponseStream(conversationId, false);
-              completedSuccessfully = terminalState === "completed";
-              scheduleBillingRefresh();
-              console.log("Retry completed successfully");
-              return;
-            } catch (retryError) {
-              console.error("Retry failed:", retryError);
-              if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) return;
-
-              try {
-                const finalCheckResponse = await openai.conversations.items.list(conversationId, {
-                  limit: 5,
-                  order: "desc"
-                });
-                const foundMessage = finalCheckResponse.data.find(
-                  (item) => item.id === localMessageId
-                );
-
-                if (!foundMessage) {
-                  console.log("Message not found after retry - restoring input");
-                  restoreOriginComposer("Failed to send message. Please try again.");
-                } else {
-                  console.log("Message found after retry failure - it actually went through");
-                }
-              } catch (finalCheckError) {
-                console.error("Final check failed:", finalCheckError);
+              if (!foundMessage) {
+                console.log("Message not found after send failure - restoring input");
                 restoreOriginComposer("Failed to send message. Please try again.");
+              } else {
+                console.log("Message found after send failure - it actually went through");
               }
+            } catch (finalCheckError) {
+              console.error("Final check failed:", finalCheckError);
+              restoreOriginComposer("Failed to send message. Please try again.");
             }
           } else {
             const optimisticMessageId = getRegisteredChatOptimisticMessage(runtimeStore, run.token);

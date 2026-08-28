@@ -339,7 +339,9 @@ export type OpenSecretContextType = {
    *   defaultHeaders: {
    *     "Accept-Encoding": "identity"
    *   },
-   *   fetch: os.aiCustomFetch
+   *   fetch: os.aiCustomFetch,
+   *   // OpenSecret exposes an explicit replay contract; keep transport retries disabled.
+   *   maxRetries: 0
    * });
    * ```
    */

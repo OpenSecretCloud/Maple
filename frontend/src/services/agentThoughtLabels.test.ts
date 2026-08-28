@@ -966,9 +966,11 @@ describe("requestAgentThoughtLabel", () => {
     expect(requestedBody).toMatchObject({
       model: "llama3-3-70b",
       temperature: 0,
-      max_tokens: 64,
       stream: false
     });
+    expect(requestedBody).not.toHaveProperty("max_tokens");
+    expect(requestedBody).not.toHaveProperty("max_completion_tokens");
+    expect(requestedBody).not.toHaveProperty("max_output_tokens");
     expect(requestedBody).not.toHaveProperty("include_reasoning");
     expect(requestedBody).not.toHaveProperty("chat_template_kwargs");
     expect(requestedBody).not.toHaveProperty("conversation");

@@ -17,7 +17,14 @@ use reqwest::{
     Client,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{net::IpAddr, pin::Pin};
+use std::{
+    net::IpAddr,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -34,6 +41,44 @@ pub type InferenceRequest = HttpRequest<Bytes>;
 /// A decrypted HTTP response from an OpenSecret inference endpoint.
 pub type InferenceResponse = HttpResponse<OpenSecretResponseBody>;
 
+/// A cloneable, request-local ceiling on inference HTTP sends.
+///
+/// Attestation, token refresh, and other control-plane requests do not consume
+/// this budget. A permit is reserved only immediately before an inference HTTP
+/// request is sent.
+#[derive(Clone, Debug)]
+pub struct InferenceSendBudget {
+    remaining: Arc<AtomicUsize>,
+}
+
+impl InferenceSendBudget {
+    /// Creates a budget that permits at most `max_sends` inference HTTP sends.
+    pub fn new(max_sends: usize) -> Result<Self> {
+        if max_sends == 0 {
+            return Err(Error::Configuration(
+                "Inference send budget must allow at least one send".to_string(),
+            ));
+        }
+        Ok(Self {
+            remaining: Arc::new(AtomicUsize::new(max_sends)),
+        })
+    }
+
+    /// Returns the number of inference HTTP sends still available.
+    pub fn remaining(&self) -> usize {
+        self.remaining.load(Ordering::Acquire)
+    }
+
+    /// Reserves one inference HTTP send, returning false when exhausted.
+    pub fn try_reserve_send(&self) -> bool {
+        self.remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EncryptedBody {
@@ -44,6 +89,7 @@ const MAX_INFERENCE_SSE_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct OpenSecretClient {
     client: Client,
+    inference_client: Client,
     base_url: String,
     session_manager: SessionManager,
     refresh_lock: Mutex<()>,
@@ -493,6 +539,10 @@ impl OpenSecretClient {
 
         Ok(Self {
             client: Client::new(),
+            inference_client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()?,
             base_url: base_url.trim_end_matches('/').to_string(),
             session_manager: SessionManager::new(),
             refresh_lock: Mutex::new(()),
@@ -530,6 +580,10 @@ impl OpenSecretClient {
 
         Ok(Self {
             client: Client::new(),
+            inference_client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()?,
             base_url: base_url.trim_end_matches('/').to_string(),
             session_manager: SessionManager::new_with_api_key(api_key),
             refresh_lock: Mutex::new(()),
@@ -940,6 +994,21 @@ impl OpenSecretClient {
         &self,
         request: InferenceRequest,
     ) -> Result<InferenceResponse> {
+        self.send_inference_request_with_budget(request, InferenceSendBudget::new(2)?)
+            .await
+    }
+
+    /// Sends an inference request while sharing a caller-owned send budget.
+    ///
+    /// This is equivalent to [`Self::send_inference_request`], except the SDK's
+    /// safe authentication or session repair replays consume the same budget as
+    /// any outer caller retry. The budget is request-local and may be cloned
+    /// across those nested layers.
+    pub async fn send_inference_request_with_budget(
+        &self,
+        request: InferenceRequest,
+        send_budget: InferenceSendBudget,
+    ) -> Result<InferenceResponse> {
         let (parts, body) = request.into_parts();
         if parts.uri.scheme().is_some() || parts.uri.authority().is_some() {
             return Err(Error::Configuration(
@@ -973,6 +1042,7 @@ impl OpenSecretClient {
                     &headers,
                     body.clone(),
                     &auth,
+                    &send_budget,
                 )
                 .await;
 
@@ -990,6 +1060,9 @@ impl OpenSecretClient {
                     match recovery {
                         Some(RecoveryAction::Reattest) => {
                             self.perform_attestation_handshake().await?;
+                            if send_budget.remaining() == 0 {
+                                return self.finish_inference_response(response, session_key).await;
+                            }
                             replayed = true;
                         }
                         Some(RecoveryAction::RefreshAccessToken) => {
@@ -1001,6 +1074,11 @@ impl OpenSecretClient {
                                 .await,
                                 Ok(true)
                             ) {
+                                if send_budget.remaining() == 0 {
+                                    return self
+                                        .finish_inference_response(response, session_key)
+                                        .await;
+                                }
                                 replayed = true;
                             } else {
                                 return self.finish_inference_response(response, session_key).await;
@@ -1025,6 +1103,7 @@ impl OpenSecretClient {
         caller_headers: &HttpHeaderMap,
         body: Bytes,
         auth: &ResolvedAuth,
+        send_budget: &InferenceSendBudget,
     ) -> Result<(reqwest::Response, [u8; 32])> {
         let session = self.session_manager.get_session()?.ok_or_else(|| {
             Error::Session(
@@ -1058,7 +1137,15 @@ impl OpenSecretClient {
                 encrypted: BASE64.encode(encrypted),
             })
         };
-        let request = self.client.request(method.clone(), url).headers(headers);
+        let request = self
+            .inference_client
+            .request(method.clone(), url)
+            .headers(headers);
+        if !send_budget.try_reserve_send() {
+            return Err(Error::Other(
+                "Inference request send budget exhausted".to_string(),
+            ));
+        }
         let response = match encrypted_body {
             Some(encrypted_body) => request.json(&encrypted_body).send().await?,
             None => request.send().await?,
@@ -4451,7 +4538,11 @@ mod tests {
             .uri("/v1/chat/completions")
             .body(request_body)
             .unwrap();
-        let response = client.send_inference_request(request).await.unwrap();
+        let send_budget = InferenceSendBudget::new(2).unwrap();
+        let response = client
+            .send_inference_request_with_budget(request, send_budget.clone())
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
@@ -4462,6 +4553,112 @@ mod tests {
             collect_response_body(response.into_body()).await.unwrap(),
             error_body
         );
+        assert_eq!(send_budget.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn exhausted_inference_budget_refreshes_auth_without_a_second_send() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = crypto::generate_random_bytes::<32>();
+        let request_body = Bytes::from_static(br#"{"model":"test","messages":[]}"#);
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        client
+            .session_manager
+            .set_tokens(
+                "expired_access".to_string(),
+                Some("refresh_token".to_string()),
+            )
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer expired_access"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("jwt expired"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
+                &session_key,
+                &json!({
+                    "access_token": "fresh_access",
+                    "refresh_token": "fresh_refresh"
+                }),
+            )))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer fresh_access"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/chat/completions")
+            .body(request_body)
+            .unwrap();
+        let send_budget = InferenceSendBudget::new(1).unwrap();
+        let response = client
+            .send_inference_request_with_budget(request, send_budget.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+        assert_eq!(send_budget.remaining(), 0);
+        assert_eq!(
+            client.get_access_token().unwrap().as_deref(),
+            Some("fresh_access")
+        );
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn inference_transport_does_not_follow_redirects_outside_the_send_budget() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        client
+            .session_manager
+            .set_session(Uuid::new_v4(), [49u8; 32])
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/v1/embeddings"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/chat/completions")
+            .body(Bytes::from_static(br#"{"model":"test","messages":[]}"#))
+            .unwrap();
+        let send_budget = InferenceSendBudget::new(2).unwrap();
+        let response = client
+            .send_inference_request_with_budget(request, send_budget.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(send_budget.remaining(), 1);
+        mock_server.verify().await;
     }
 
     #[tokio::test]

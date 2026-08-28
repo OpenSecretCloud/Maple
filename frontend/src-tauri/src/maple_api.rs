@@ -1,7 +1,7 @@
 use crate::open_secret_config::configured_pcr0_environment;
 use opensecret::{
-    InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest, WebExtractResponse,
-    WebSearchRequest, WebSearchResponse,
+    InferenceRequest, InferenceResponse, InferenceSendBudget, OpenSecretClient, WebExtractRequest,
+    WebExtractResponse, WebSearchRequest, WebSearchResponse,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -258,6 +258,7 @@ impl MapleApiSession {
     pub(crate) async fn send_inference_request(
         self: Arc<Self>,
         request: InferenceRequest,
+        send_budget: InferenceSendBudget,
         cancel_token: CancellationToken,
     ) -> Result<InferenceResponse, opensecret::Error> {
         let snapshot = self
@@ -273,7 +274,9 @@ impl MapleApiSession {
                 _ = operation_cancel.cancelled() => {
                     Err(opensecret::Error::Other("Inference request was cancelled".to_string()))
                 }
-                response = snapshot.client.send_inference_request(request) => response,
+                response = snapshot
+                    .client
+                    .send_inference_request_with_budget(request, send_budget) => response,
             };
             if let Err(error) = session.record_refresh(&snapshot).await {
                 log::warn!("Failed to reconcile refreshed Maple API credentials: {error}");
@@ -410,9 +413,10 @@ impl crate::agent::provider::MapleInferenceTransport for MapleApiSession {
     async fn send_inference_request(
         self: Arc<Self>,
         request: InferenceRequest,
+        send_budget: InferenceSendBudget,
         cancel_token: CancellationToken,
     ) -> opensecret::Result<InferenceResponse> {
-        MapleApiSession::send_inference_request(self, request, cancel_token).await
+        MapleApiSession::send_inference_request(self, request, send_budget, cancel_token).await
     }
 }
 
