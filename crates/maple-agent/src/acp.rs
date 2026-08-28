@@ -4,7 +4,7 @@ use crate::agent::{
     AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal, AgentRunUsage,
     AgentRuntimeHandle, AgentSendMessageRequest, AgentSessionSummary, AgentTimelineItem,
     AgentToolContextLease, AgentToolContextSpec, AgentTransientMcpServer,
-    AgentTransientMcpTransport, compaction_notice_text,
+    AgentTransientMcpTransport, SENSITIVE_BRIDGE_ENV, compaction_notice_text,
 };
 use crate::maple_api::account_scope;
 use agent_client_protocol::schema::v1::{
@@ -60,13 +60,6 @@ const ALLOWED_BRIDGE_ENV: [&str; 6] = [
     "BUZZ_API_TOKEN",
     "BUZZ_ACP_DISPLAY_NAME",
     "PATH",
-];
-const SENSITIVE_BRIDGE_ENV: [&str; 5] = [
-    "BUZZ_RELAY_URL",
-    "BUZZ_PRIVATE_KEY",
-    "BUZZ_AUTH_TAG",
-    "BUZZ_API_TOKEN",
-    "BUZZ_ACP_DISPLAY_NAME",
 ];
 static NEXT_ACP_MESSAGE_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -2611,19 +2604,6 @@ fn filter_bridge_environment(environment: HashMap<String, String>) -> HashMap<St
                 && value.len() <= 16 * 1024
         })
         .collect()
-}
-
-/// Tool context for the desktop surface. It keeps the ACP bridge's Buzz
-/// credentials out of every tool environment that the desktop app starts.
-pub fn default_tool_context_spec() -> Result<AgentToolContextSpec, String> {
-    AgentToolContextSpec::try_new(
-        BTreeMap::new(),
-        SENSITIVE_BRIDGE_ENV
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        false,
-    )
 }
 
 fn bridge_tool_context_spec(

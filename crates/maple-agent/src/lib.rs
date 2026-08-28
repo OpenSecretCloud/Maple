@@ -7,6 +7,7 @@
 //! [`agent::MapleAgentService`] with its own [`agent::AgentEventSink`] and
 //! drives it through [`agent::AgentRuntimeHandle`] method calls.
 
+#[cfg(feature = "acp")]
 pub mod acp;
 pub mod agent;
 pub mod maple_api;

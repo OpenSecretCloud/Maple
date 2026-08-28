@@ -10,11 +10,26 @@ publish = false
 name = "maple-gpui"
 path = "src/main.rs"
 
+[features]
+default = ["desktop", "acp", "proxy"]
+# The gpui window. Without it the binary is headless and needs no display
+# libraries; only `acp` and `proxy` modes remain.
+desktop = [
+    "dep:gpui",
+    "dep:image",
+    "dep:unicode-segmentation",
+    "dep:pulldown-cmark",
+]
+# `maple-gpui acp`: the Agent Client Protocol server on stdio.
+acp = ["maple-agent/acp"]
+# `maple-gpui proxy`: the OpenAI-compatible HTTP endpoint.
+proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http"]
+
 [dependencies]
-maple-agent = { path = "../crates/maple-agent" }
+maple-agent = { path = "../crates/maple-agent", default-features = false }
 maple-billing = { path = "../crates/maple-billing" }
-gpui = { version = "0.2.2", features = ["test-support"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+gpui = { version = "0.2.2", features = ["test-support"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,14 +38,14 @@ env_logger = "0.11"
 webbrowser = "1"
 opensecret = "3.6.2"
 uuid = { version = "1", features = ["v4"] }
-unicode-segmentation = "1"
-pulldown-cmark = { version = "0.13", default-features = false }
+unicode-segmentation = { version = "1", optional = true }
+pulldown-cmark = { version = "0.13", default-features = false, optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
-maple-proxy = "0.3.2"
+maple-proxy = { version = "0.3.2", optional = true }
 reqwest = { workspace = true, features = ["json"] }
-axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 [dev-dependencies]
 parking_lot = "0.12"

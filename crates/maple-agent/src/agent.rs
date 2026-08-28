@@ -1,3 +1,8 @@
+// The ACP host (`crate::acp`) drives this runtime through `pub(crate)`
+// hooks: surface sessions, tool-context leases, run-scoped permission and
+// cancellation handles. Without the `acp` feature nobody calls them, and
+// that is expected.
+#![cfg_attr(not(feature = "acp"), allow(dead_code))]
 mod attachments;
 mod developer_tools;
 #[cfg(target_os = "macos")]
@@ -60,8 +65,10 @@ use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
-pub use tool_context::AgentToolContextSpec;
+#[cfg(feature = "acp")]
+pub(crate) use tool_context::SENSITIVE_BRIDGE_ENV;
 use tool_context::SharedAgentToolContext;
+pub use tool_context::{AgentToolContextSpec, default_tool_context_spec};
 use transient_mcp::{TransientMcpConfig, TransientMcpRouter};
 use web_permission::{
     OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext, WebPermissionOutcome,

@@ -5,6 +5,11 @@
 //! never touches the agent runtime directly, so this seam can later be moved
 //! behind a process or socket boundary without touching UI code.
 
+// This module is the desktop frontend's boundary. A headless build (no
+// `desktop` feature) uses only a few entry points, so the rest is unused
+// there by design.
+#![cfg_attr(not(feature = "desktop"), allow(dead_code))]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
@@ -181,7 +186,7 @@ impl AgentBackend {
         let paths =
             maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root());
         // Keeps ACP bridge credentials out of desktop tool environments.
-        let default_tool_context = maple_agent::acp::default_tool_context_spec()?;
+        let default_tool_context = maple_agent::agent::default_tool_context_spec()?;
         let service = MapleAgentService::new(MapleAgentHostResources::new(
             paths,
             Arc::new(ChannelEventSink(event_tx)),
@@ -589,6 +594,7 @@ impl AgentBackend {
     /// Serve ACP on stdin/stdout for `user_id` until the peer closes stdin.
     /// Starts the runtime first, rooted at the process working directory,
     /// and stops it when the connection ends.
+    #[cfg(feature = "acp")]
     pub fn run_acp_stdio(&self, user_id: &str) -> Result<(), String> {
         self.runtime.block_on(async {
             let handle = self.service.handle_for_user(user_id).await?;

@@ -47,6 +47,12 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy headless (no desktop feature)
+        run: cargo clippy -p maple-gpui --all-targets --locked --no-default-features --features acp,proxy -- -D warnings
+      - name: Clippy single modes
+        run: |
+          cargo clippy -p maple-gpui --locked --no-default-features --features acp -- -D warnings
+          cargo clippy -p maple-gpui --locked --no-default-features --features proxy -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -70,6 +76,9 @@ jobs:
           cache-on-failure: true
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+      - name: Test headless (no desktop feature)
+        if: runner.os == 'Linux'
+        run: cargo test -p maple-gpui --locked --no-default-features --features acp,proxy
 
   audit:
     name: Security audit

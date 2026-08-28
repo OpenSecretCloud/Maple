@@ -3,6 +3,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use tokio_util::sync::CancellationToken;
 
+/// Variables an ACP bridge (Buzz) hands to the agent process. They are
+/// scrubbed from every tool environment, in every surface, so a shell tool
+/// cannot read the bridge's credentials.
+pub(crate) const SENSITIVE_BRIDGE_ENV: [&str; 5] = [
+    "BUZZ_RELAY_URL",
+    "BUZZ_PRIVATE_KEY",
+    "BUZZ_AUTH_TAG",
+    "BUZZ_API_TOKEN",
+    "BUZZ_ACP_DISPLAY_NAME",
+];
+
+/// Tool context for the desktop surface. It keeps the ACP bridge's Buzz
+/// credentials out of every tool environment that the desktop app starts.
+pub fn default_tool_context_spec() -> Result<AgentToolContextSpec, String> {
+    AgentToolContextSpec::try_new(
+        BTreeMap::new(),
+        SENSITIVE_BRIDGE_ENV
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        false,
+    )
+}
+
 const MAX_TOOL_CONTEXT_KEYS: usize = 16;
 const MAX_TOOL_CONTEXT_KEY_BYTES: usize = 64;
 const MAX_TOOL_CONTEXT_VALUE_BYTES: usize = 16 * 1024;

@@ -1,6 +1,11 @@
 //! Sidebar plan card data derived from the Maple billing status. The HTTP
 //! client lives in the `maple-billing` crate.
 
+// This module is the desktop frontend's boundary. A headless build (no
+// `desktop` feature) uses only a few entry points, so the rest is unused
+// there by design.
+#![cfg_attr(not(feature = "desktop"), allow(dead_code))]
+
 pub use maple_billing::{BillingClient, BillingError, BillingStatus};
 
 /// Billing API base URL. `MAPLE_BILLING_API_URL` overrides the default.

@@ -1,6 +1,11 @@
 //! App settings persisted to ~/.config/maple-gpui/settings.json and local
 //! usage aggregation read from the goose usage ledger.
 
+// This module is the desktop frontend's boundary. A headless build (no
+// `desktop` feature) uses only a few entry points, so the rest is unused
+// there by design.
+#![cfg_attr(not(feature = "desktop"), allow(dead_code))]
+
 use rusqlite::Connection;
 use std::path::PathBuf;
 

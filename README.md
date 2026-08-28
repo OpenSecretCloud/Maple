@@ -126,6 +126,26 @@ Without `--cors`, the proxy rejects requests that carry browser-only headers
 (`Origin`, `Sec-Fetch-Site`) so a web page cannot spend a saved key through
 loopback. With `--cors`, a default key is refused for the same reason.
 
+## Build features
+
+The default build has every mode. Cargo features turn modes off, so a
+server or CI machine can build the `acp` or `proxy` mode without the gpui
+window and its display libraries:
+
+| Feature | What it adds |
+| --- | --- |
+| `desktop` | The gpui window. Without it the binary is headless. |
+| `acp` | `maple-gpui acp` and `maple_agent::acp`. |
+| `proxy` | `maple-gpui proxy`. |
+
+```sh
+cargo build --release -p maple-gpui --no-default-features --features acp
+cargo build --release -p maple-gpui --no-default-features --features proxy
+```
+
+A mode that is compiled out exits with status 2 and a message that names
+the missing feature.
+
 ## Configuration
 
 All settings are environment variables. None are required.
