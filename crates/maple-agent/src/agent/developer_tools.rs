@@ -2769,6 +2769,8 @@ mod tests {
         test_tool_context(values, scrub_from_parent, ephemeral).snapshot()
     }
 
+    // Only the Unix shell tests use it; Windows builds deny dead code.
+    #[cfg(unix)]
     fn empty_tool_context_snapshot() -> AgentToolContextSnapshot {
         test_tool_context_snapshot(BTreeMap::new(), BTreeSet::new(), false)
     }
