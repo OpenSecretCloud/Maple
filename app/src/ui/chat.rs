@@ -35,6 +35,19 @@ pub struct OpenSettings;
 /// Menu item callback with access to the chat screen.
 type MenuAction = Box<dyn Fn(&mut ChatScreen, &mut Context<ChatScreen>)>;
 
+/// A queued message pulled into the composer; it keeps its place in the
+/// queue until the edit is sent or discarded.
+#[derive(Debug, Clone)]
+struct QueueEdit {
+    queue_id: String,
+    /// The composer text before the edit began, restored afterwards.
+    draft: String,
+}
+
+const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder...";
+const QUEUE_EDIT_PLACEHOLDER: &str =
+    "Edit the queued message, then send to keep its place. Escape discards.";
+
 /// What an inline sidebar rename edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RenameTarget {
@@ -374,6 +387,10 @@ pub struct ChatScreen {
     /// A newer release, until the banner is dismissed.
     update: Option<crate::update::UpdateInfo>,
     queue_busy: bool,
+    queue_edit: Option<QueueEdit>,
+    /// Sidebar task filter, lower-cased; empty shows everything.
+    sidebar_filter: String,
+    search_input: Option<Entity<TextInput>>,
     /// Slash commands from the installed skills of the current project root.
     slash_commands: Vec<AgentSlashCommand>,
     /// Highlighted row in the open slash palette, if any.
@@ -414,6 +431,10 @@ impl ChatScreen {
         this.attach_composer(weak, cx);
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
         this.transcript_focus = Some(cx.focus_handle());
+        let search = cx.new(|cx| TextInput::new("Search tasks", cx).with_tab_index(2));
+        cx.observe(&search, |this, input, cx| this.search_changed(&input, cx))
+            .detach();
+        this.search_input = Some(search);
         this.start(cx);
         this
     }
@@ -421,7 +442,7 @@ impl ChatScreen {
     /// Create and wire the composer; called by the real constructor.
     fn attach_composer(&mut self, weak: gpui::WeakEntity<Self>, cx: &mut Context<Self>) {
         let composer = cx.new(|cx| {
-            TextInput::new("Ask Maple to work in this folder...", cx)
+            TextInput::new(COMPOSER_PLACEHOLDER, cx)
                 .multiline(8)
                 .on_key({
                     let weak = weak.clone();
@@ -667,6 +688,9 @@ impl ChatScreen {
             menu_trust: None,
             queue: Vec::new(),
             queue_busy: false,
+            queue_edit: None,
+            sidebar_filter: String::new(),
+            search_input: None,
             update: None,
             slash_commands: Vec::new(),
             slash_selected: None,
@@ -1235,6 +1259,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.selected_session = Some(session.id);
+        self.abandon_queue_edit(cx);
         self.queue.clear();
         // Adopt the session's stored policy; it persists per session in the
         // runtime.
@@ -1764,6 +1789,14 @@ impl ChatScreen {
             self.cancel_rename(cx);
             return;
         }
+        if self.queue_edit.is_some() {
+            self.discard_queue_edit(cx);
+            return;
+        }
+        if !self.sidebar_filter.is_empty() {
+            self.clear_search(cx);
+            return;
+        }
         if self.confirm_remove_root.is_some() || self.project_menu.is_some() {
             self.confirm_remove_root = None;
             self.project_menu = None;
@@ -1895,7 +1928,8 @@ impl ChatScreen {
             }
             return;
         }
-        self.send_to_session(&session_id, text, steer, None, cx);
+        let queue_id = self.queue_edit.as_ref().map(|edit| edit.queue_id.clone());
+        self.send_to_session(&session_id, text, steer, queue_id, cx);
     }
 
     /// The command Enter should run when the slash palette is open: the
@@ -2117,7 +2151,11 @@ impl ChatScreen {
                 .collect(),
         };
         self.notice = None;
-        let from_composer = request.queue_id.is_none();
+        let editing = self
+            .queue_edit
+            .as_ref()
+            .is_some_and(|edit| Some(&edit.queue_id) == request.queue_id.as_ref());
+        let from_composer = request.queue_id.is_none() || editing;
         if from_composer {
             self.remember_prompt(&text);
             // Clear the composer at dispatch so no entry path can leave the
@@ -2125,6 +2163,10 @@ impl ChatScreen {
             if let Some(composer) = self.composer.clone() {
                 composer.update(cx, |input, cx| input.clear(cx));
             }
+        }
+        if editing {
+            // The edit is on its way; give the stashed draft back.
+            self.finish_queue_edit(cx);
         }
         // Sending closes the chip menus anchored under the composer.
         self.models_menu_open = false;
@@ -2214,49 +2256,121 @@ impl ChatScreen {
         );
     }
 
-    /// Take a queued chip back into the composer. A current draft stays
-    /// below the recalled text.
+    /// Pull a queued chip into the composer. The runtime holds its place
+    /// until the edit is sent (Enter updates it in place) or discarded.
     fn edit_queued(&mut self, queue_id: &str, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        if self.queue_busy {
+        if self.queue_busy || self.queue_edit.is_some() {
             return;
         }
+        let Some(item) = self.queue.iter().find(|item| item.queue_id == queue_id) else {
+            return;
+        };
+        let text = item.text.clone();
         self.queue_busy = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
+        let held_id = queue_id.clone();
         self.call(
             async move {
                 backend
-                    .unqueue_message_for_edit(&user_id, &session_id, &queue_id)
+                    .begin_queued_message_edit(&user_id, &session_id, &queue_id)
                     .await
             },
             cx,
             move |this, result, cx| {
                 this.queue_busy = false;
                 match result {
-                    Ok(item) => {
-                        if this.is_selected(&target) {
-                            this.queue.retain(|queued| queued.queue_id != item.queue_id);
-                            if let Some(composer) = this.composer.clone() {
-                                composer.update(cx, |input, cx| {
-                                    let draft = input.text();
-                                    let restored = if draft.trim().is_empty() {
-                                        item.text.clone()
-                                    } else {
-                                        format!("{}\n{draft}", item.text)
-                                    };
-                                    input.set_text(&restored, cx);
-                                });
-                            }
+                    Ok(()) if this.is_selected(&target) => {
+                        let draft = this
+                            .composer
+                            .as_ref()
+                            .map(|composer| composer.read(cx).text())
+                            .unwrap_or_default();
+                        this.queue_edit = Some(QueueEdit {
+                            queue_id: held_id.clone(),
+                            draft,
+                        });
+                        if let Some(composer) = this.composer.clone() {
+                            composer.update(cx, |input, cx| {
+                                input.set_text(&text, cx);
+                                input.set_placeholder(QUEUE_EDIT_PLACEHOLDER, cx);
+                            });
                         }
+                    }
+                    Ok(()) => {
+                        // Selection moved while the hold was requested.
+                        this.release_queue_hold(&target, &held_id, cx);
                     }
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
+            },
+        );
+    }
+
+    /// Drop the edit without changing the queued message; the stashed
+    /// draft returns to the composer.
+    fn discard_queue_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        if let Some(edit) = self.queue_edit.as_ref() {
+            let queue_id = edit.queue_id.clone();
+            self.release_queue_hold(&session_id, &queue_id, cx);
+        }
+        self.finish_queue_edit(cx);
+    }
+
+    /// The edit ended (sent or discarded): restore the composer.
+    fn finish_queue_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.queue_edit.take() else {
+            return;
+        };
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| {
+                input.set_text(&edit.draft, cx);
+                input.set_placeholder(COMPOSER_PLACEHOLDER, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// An edit cannot follow a session switch; release the hold and put the
+    /// composer back.
+    fn abandon_queue_edit(&mut self, cx: &mut Context<Self>) {
+        if self.queue_edit.is_none() {
+            return;
+        }
+        if let (Some(previous), Some(edit)) =
+            (self.selected_session.clone(), self.queue_edit.as_ref())
+        {
+            let queue_id = edit.queue_id.clone();
+            self.release_queue_hold(&previous, &queue_id, cx);
+        }
+        self.finish_queue_edit(cx);
+    }
+
+    fn release_queue_hold(&self, session_id: &str, queue_id: &str, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let session_id = session_id.to_string();
+        let queue_id = queue_id.to_string();
+        self.call(
+            async move {
+                backend
+                    .end_queued_message_edit(&user_id, &session_id, &queue_id)
+                    .await
+            },
+            cx,
+            |_this, result, _cx| {
+                if let Err(message) = result {
+                    log::debug!("end_queued_message_edit failed: {message}");
+                }
             },
         );
     }
@@ -2302,7 +2416,15 @@ impl ChatScreen {
                     let steer_id = item.queue_id.clone();
                     let edit_id = item.queue_id.clone();
                     let remove_id = item.queue_id.clone();
-                    let preview: String = item.text.lines().next().unwrap_or("").to_string();
+                    let editing = self
+                        .queue_edit
+                        .as_ref()
+                        .is_some_and(|edit| edit.queue_id == item.queue_id);
+                    let preview: String = if editing {
+                        "Editing in the composer…".to_string()
+                    } else {
+                        item.text.lines().next().unwrap_or("").to_string()
+                    };
                     div()
                         .flex()
                         .items_center()
@@ -2315,31 +2437,45 @@ impl ChatScreen {
                         .border_color(gpui::rgb(theme::border_subtle()))
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_secondary()))
+                        .when(editing, |row| {
+                            row.border_color(gpui::rgb(theme::accent()))
+                                .text_color(gpui::rgb(theme::text_muted()))
+                        })
                         .child(div().flex_1().min_w_0().line_clamp(1).child(preview))
                         .when(!item.attachments.is_empty(), |row| {
                             row.child(icon("paperclip", px(12.), theme::text_muted()))
                         })
-                        .child(
-                            action(format!("queue-steer-{}", item.queue_id), "arrow-up").on_click(
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.steer_queued(&steer_id, cx);
-                                }),
-                            ),
-                        )
-                        .child(
-                            action(format!("queue-edit-{}", item.queue_id), "pencil").on_click(
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.edit_queued(&edit_id, cx);
-                                }),
-                            ),
-                        )
-                        .child(
-                            action(format!("queue-remove-{}", item.queue_id), "x").on_click(
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.remove_queued(&remove_id, cx);
-                                }),
-                            ),
-                        )
+                        .when(!editing, |row| {
+                            row.child(
+                                action(format!("queue-steer-{}", item.queue_id), "arrow-up")
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        this.steer_queued(&steer_id, cx);
+                                    })),
+                            )
+                            .child(
+                                action(format!("queue-edit-{}", item.queue_id), "pencil").on_click(
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        this.edit_queued(&edit_id, cx);
+                                    }),
+                                ),
+                            )
+                            .child(
+                                action(format!("queue-remove-{}", item.queue_id), "x").on_click(
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        this.remove_queued(&remove_id, cx);
+                                    }),
+                                ),
+                            )
+                        })
+                        .when(editing, |row| {
+                            row.child(
+                                action(format!("queue-discard-{}", item.queue_id), "x").on_click(
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.discard_queue_edit(cx);
+                                    }),
+                                ),
+                            )
+                        })
                 })),
         )
     }
@@ -3473,26 +3609,61 @@ impl ChatScreen {
                 roots.push(root.clone());
             }
         }
+        let filtering = !self.sidebar_filter.is_empty();
         self.project_groups = roots
             .into_iter()
             .map(|root| {
-                let indices = self
+                let indices: Vec<usize> = self
                     .sessions
                     .iter()
                     .enumerate()
-                    .filter(|(_, session)| !session.archived && session.project_root == root)
+                    .filter(|(_, session)| {
+                        !session.archived
+                            && session.project_root == root
+                            && self.matches_filter(session)
+                    })
                     .map(|(index, _)| index)
                     .collect();
                 (root, indices)
             })
+            // While searching, a project with no matching task is noise.
+            .filter(|(_, indices)| !filtering || !indices.is_empty())
             .collect();
         self.archived_indices = self
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, session)| session.archived)
+            .filter(|(_, session)| session.archived && self.matches_filter(session))
             .map(|(index, _)| index)
             .collect();
+    }
+
+    fn search_changed(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
+        let filter = input.read(cx).text_ref().trim().to_lowercase();
+        if filter != self.sidebar_filter {
+            self.sidebar_filter = filter;
+            self.rebuild_project_groups();
+            cx.notify();
+        }
+    }
+
+    fn clear_search(&mut self, cx: &mut Context<Self>) {
+        if let Some(input) = self.search_input.clone() {
+            input.update(cx, |input, cx| input.clear(cx));
+        }
+        self.sidebar_filter.clear();
+        self.rebuild_project_groups();
+        cx.notify();
+    }
+
+    /// Whether a task row passes the sidebar filter.
+    fn matches_filter(&self, session: &AgentSessionSummary) -> bool {
+        self.sidebar_filter.is_empty()
+            || session.title.to_lowercase().contains(&self.sidebar_filter)
+            || self
+                .root_name(&session.project_root)
+                .to_lowercase()
+                .contains(&self.sidebar_filter)
     }
 
     /// Pin or unpin a project root. Pinned roots sort to the top of the
@@ -4224,6 +4395,43 @@ impl ChatScreen {
                     .track_scroll(&self.sidebar_scroll)
                     .px_4()
                     .pt_6()
+                    .children(self.search_input.clone().map(|input| {
+                        let active = !self.sidebar_filter.is_empty();
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .mb_3()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                            .border_1()
+                            .border_color(gpui::rgb(if active {
+                                theme::accent()
+                            } else {
+                                theme::border_subtle()
+                            }))
+                            .text_sm()
+                            .child(icon("search", px(14.), theme::text_muted()))
+                            .child(div().flex_1().min_w_0().child(input))
+                            .when(active, |row| {
+                                row.child(
+                                    div()
+                                        .id("search-clear")
+                                        .size_5()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_md()
+                                        .hover(|style| style.cursor_pointer())
+                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                            this.clear_search(cx);
+                                        }))
+                                        .child(icon("x", px(12.), theme::text_secondary())),
+                                )
+                            })
+                    }))
                     .child(
                         div()
                             .flex()
@@ -6907,6 +7115,43 @@ mod state_tests {
             let answer = this.composed_question_answer(cx);
             let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
             assert_eq!(parsed["answers"]["pick"]["answers"][0], "A");
+        });
+    }
+
+    #[gpui::test]
+    fn test_sidebar_filter_hides_non_matching_tasks_and_empty_projects(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _| {
+            let mut a = summary("s1", "Fix login bug");
+            a.project_root = "/work/alpha".to_string();
+            let mut b = summary("s2", "Write docs");
+            b.project_root = "/work/beta".to_string();
+            let mut c = summary("s3", "Old login task");
+            c.project_root = "/work/beta".to_string();
+            c.archived = true;
+            this.sessions = vec![a, b, c];
+            this.rebuild_project_groups();
+            assert_eq!(this.project_groups.len(), 2);
+            assert_eq!(this.archived_indices, vec![2]);
+
+            this.sidebar_filter = "login".to_string();
+            this.rebuild_project_groups();
+            // Only alpha has a live match; beta drops out while searching.
+            assert_eq!(this.project_groups.len(), 1);
+            assert_eq!(this.project_groups[0].0, "/work/alpha");
+            assert_eq!(this.project_groups[0].1, vec![0]);
+            // Archived rows are searched too.
+            assert_eq!(this.archived_indices, vec![2]);
+
+            // A project name matches all of its tasks.
+            this.sidebar_filter = "beta".to_string();
+            this.rebuild_project_groups();
+            assert_eq!(this.project_groups.len(), 1);
+            assert_eq!(this.project_groups[0].1, vec![1]);
+
+            this.sidebar_filter.clear();
+            this.rebuild_project_groups();
+            assert_eq!(this.project_groups.len(), 2);
         });
     }
 

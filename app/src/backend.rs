@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentProjectTrustStatus,
-    AgentQueueControlRequest, AgentQueuedMessage, AgentRenameSessionRequest, AgentRuntimeStatus,
+    AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
     AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
     AgentSlashCommand, AgentStartRequest, MapleAgentHostResources, MapleAgentService,
     RecentProjectRoot,
@@ -770,18 +770,36 @@ impl AgentBackend {
             .await
     }
 
-    /// Take a queued message out of the queue so its text can go back
-    /// into the composer.
-    pub async fn unqueue_message_for_edit(
+    /// Hold a queued message while the user edits it: it is not promoted
+    /// into the run until the edit ends.
+    pub async fn begin_queued_message_edit(
         &self,
         user_id: &str,
         session_id: &str,
         queue_id: &str,
-    ) -> Result<AgentQueuedMessage, String> {
+    ) -> Result<(), String> {
         self.service
             .handle_for_user(user_id)
             .await?
-            .unqueue_message_for_edit(AgentQueueControlRequest {
+            .begin_queued_message_edit(AgentQueueControlRequest {
+                session_id: session_id.to_string(),
+                queue_id: queue_id.to_string(),
+            })
+            .await
+    }
+
+    /// Release a queued message held by [`Self::begin_queued_message_edit`]
+    /// without changing it.
+    pub async fn end_queued_message_edit(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        queue_id: &str,
+    ) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .end_queued_message_edit(AgentQueueControlRequest {
                 session_id: session_id.to_string(),
                 queue_id: queue_id.to_string(),
             })

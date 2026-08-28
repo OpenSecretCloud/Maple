@@ -51,7 +51,9 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
   a per-message Copy button, and a context-window indicator.
 - Message queue: Enter during a run queues the message for the next turn,
   Ctrl+Enter (Cmd+Enter) steers it into the current turn. Queued messages
-  can be sent now, edited, or removed.
+  can be sent now, edited in the composer (the message keeps its place in
+  the queue), or removed.
+- Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
 - Projects (working directories) with pinned and recent roots, rename,
   open in the file manager, and remove. Projects that provide skills ask

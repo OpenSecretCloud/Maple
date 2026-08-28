@@ -214,6 +214,11 @@ impl TextInput {
         &self.content
     }
 
+    pub fn set_placeholder(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.placeholder = SharedString::from(text.to_string());
+        cx.notify();
+    }
+
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
