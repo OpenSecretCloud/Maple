@@ -3306,6 +3306,7 @@ impl ChatScreen {
         // work; the summary check reads the stored item after the merge.
         let completed = item.status.as_deref() == Some("completed");
         let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
+        self.retire_decided_permission(&item);
         self.load_attachment_images_for(&item, cx);
         let index = self.apply_timeline_item(session_id, item);
         if completed {
@@ -3317,6 +3318,27 @@ impl ChatScreen {
             self.refresh_context_usage(cx);
         }
     }
+    /// Drop the permission card when the runtime decided its request
+    /// without the card: switching the session to "Allow all" approves
+    /// every pending request and replaces the permission row with a
+    /// status.
+    fn retire_decided_permission(&mut self, item: &AgentTimelineItem) {
+        let Some(permission) = &self.pending_permission else {
+            return;
+        };
+        if item.status.is_none() {
+            return;
+        }
+        if item
+            .id
+            .strip_prefix("permission-")
+            .is_some_and(|request_id| request_id == permission.request_id)
+        {
+            self.pending_permission = None;
+            self.permission_responding = false;
+        }
+    }
+
     pub fn handle_service_events(
         &mut self,
         events: Vec<AgentServiceEvent>,
@@ -7574,6 +7596,48 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.handle_service_event(event, cx);
             assert!(this.timeline.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_decided_permission_row_clears_the_card(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            this.pending_permission = Some(PendingPermission {
+                session_id: "s1".to_string(),
+                run_id: "r1".to_string(),
+                request_id: "req-1".to_string(),
+                tool_name: "shell".to_string(),
+                prompt: None,
+            });
+            this.permission_responding = true;
+            // A row for another request must not clear the card.
+            let mut other = item("permission-req-2", "permission", None);
+            other.status = Some("allow_once".to_string());
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".to_string(),
+                    run_id: None,
+                    item: other,
+                },
+                cx,
+            );
+            assert!(this.pending_permission.is_some());
+            // The runtime approved the request (Allow all) and replaced
+            // its row with a decision.
+            let mut decided = item("permission-req-1", "permission", None);
+            decided.status = Some("allow_once".to_string());
+            this.handle_service_event(
+                AgentServiceEvent::TimelineItem {
+                    session_id: "s1".to_string(),
+                    run_id: None,
+                    item: decided,
+                },
+                cx,
+            );
+            assert!(this.pending_permission.is_none());
+            assert!(!this.permission_responding);
         });
     }
 
