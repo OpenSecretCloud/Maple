@@ -116,12 +116,6 @@ impl AgentBackend {
 }
 
 /// App configuration root (XDG-style), also used by the settings store.
-/// Opening system prompt for agents this app hosts: the agent is Maple.
-/// The runtime appends its tool and runtime guidance after this text.
-const MAPLE_HARNESS_INSTRUCTIONS: &str =
-    "You are a general-purpose AI agent called Maple, created by Maple AI.
-You run in the Maple app's Agent Mode; users know you simply as Maple.";
-
 pub fn app_config_root() -> PathBuf {
     config_root()
 }
@@ -181,7 +175,7 @@ fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> 
 }
 
 impl AgentBackend {
-    pub fn new(api_url: String) -> Result<Self, String> {
+    pub fn new(api_url: String, harness_instructions: String) -> Result<Self, String> {
         // Enforce the credential-bearing URL policy before any client is
         // built, including the login-time SDK client.
         let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
@@ -194,7 +188,7 @@ impl AgentBackend {
             paths,
             Arc::new(ChannelEventSink(event_tx)),
             default_tool_context,
-            MAPLE_HARNESS_INSTRUCTIONS.to_string(),
+            harness_instructions,
         ));
         let runtime =
             Runtime::new().map_err(|error| format!("failed to start runtime: {error}"))?;
@@ -215,6 +209,13 @@ impl AgentBackend {
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
             usage_db: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Replace the opening system prompt text for tasks this app hosts.
+    /// Applies to agents built after the call, so to a task's next fresh
+    /// agent, not to one already loaded.
+    pub fn set_harness_instructions(&self, harness_instructions: String) {
+        self.service.set_harness_instructions(harness_instructions);
     }
 
     pub fn api_url(&self) -> &str {

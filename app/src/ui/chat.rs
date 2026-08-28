@@ -5583,7 +5583,8 @@ mod state_tests {
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                .expect("backend"),
         );
         cx.new(|_cx| {
             let mut screen = ChatScreen::new_inner(backend, "user".to_string());
@@ -5612,8 +5613,11 @@ mod state_tests {
         let screen = cx.new(|_cx| {
             ChatScreen::new_inner(
                 std::sync::Arc::new(
-                    crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
-                        .expect("backend"),
+                    crate::backend::AgentBackend::new(
+                        "http://127.0.0.1:9".to_string(),
+                        String::new(),
+                    )
+                    .expect("backend"),
                 ),
                 "user".to_string(),
             )
@@ -6272,7 +6276,7 @@ mod state_tests {
         let _guard = SETTINGS_LOCK.lock();
         let mut this = ChatScreen::new_inner(
             std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
                     .expect("backend"),
             ),
             "user".to_string(),

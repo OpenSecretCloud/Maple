@@ -204,7 +204,8 @@ fn configured_api_url() -> String {
 /// sign-in saved by the desktop app and hosts its own agent runtime, so
 /// the desktop app does not need to run.
 fn run_acp() -> Result<(), String> {
-    let backend = AgentBackend::new(configured_api_url())?;
+    let harness_instructions = settings::load_settings().effective_harness_instructions();
+    let backend = AgentBackend::new(configured_api_url(), harness_instructions)?;
     let user_id = backend.restore_now().ok_or_else(|| {
         "No saved Maple sign-in. Open the desktop app and sign in first.".to_string()
     })?;
@@ -215,7 +216,11 @@ fn run_desktop() {
     init_logging(LogOutput::FileAndStderr);
 
     let backend = Arc::new(
-        AgentBackend::new(configured_api_url()).expect("failed to initialize agent backend"),
+        AgentBackend::new(
+            configured_api_url(),
+            settings::load_settings().effective_harness_instructions(),
+        )
+        .expect("failed to initialize agent backend"),
     );
 
     // Restore a persisted session before the UI starts so sign-in can be

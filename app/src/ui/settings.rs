@@ -1,5 +1,6 @@
 //! Settings screen: left navigation with content panes, following Maple's
-//! settings layout. Sections: General (defaults), MCP servers, Usage, About.
+//! settings layout. Sections: General (defaults), System prompt, MCP
+//! servers, Usage, About.
 
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ pub struct SignOutRequested;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
+    Prompt,
     Mcp,
     Usage,
     About,
@@ -32,13 +34,20 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Prompt => "System prompt",
             Self::Mcp => "MCP servers",
             Self::Usage => "Usage",
             Self::About => "About",
         }
     }
 
-    const ALL: [Self; 4] = [Self::General, Self::Mcp, Self::Usage, Self::About];
+    const ALL: [Self; 5] = [
+        Self::General,
+        Self::Prompt,
+        Self::Mcp,
+        Self::Usage,
+        Self::About,
+    ];
 }
 
 pub struct SettingsScreen {
@@ -54,6 +63,9 @@ pub struct SettingsScreen {
     mcp_editor: Option<McpEditor>,
     mcp_notice: Option<String>,
     mcp_saving: bool,
+    /// Editor for the opening system prompt text (harness instructions).
+    prompt_editor: Entity<TextInput>,
+    prompt_notice: Option<String>,
 }
 
 /// Form state for adding or editing one MCP server.
@@ -88,6 +100,14 @@ impl SettingsScreen {
         section: Section,
         cx: &mut Context<Self>,
     ) -> Self {
+        let prompt_text = settings.effective_harness_instructions();
+        let prompt_editor = cx.new(|cx| {
+            let mut input = TextInput::new("You are …", cx)
+                .with_tab_index(1)
+                .multiline(16);
+            input.set_text(&prompt_text, cx);
+            input
+        });
         let this = Self {
             backend,
             user_id,
@@ -99,6 +119,8 @@ impl SettingsScreen {
             mcp_editor: None,
             mcp_notice: None,
             mcp_saving: false,
+            prompt_editor,
+            prompt_notice: None,
         };
         this.load_usage(cx);
         this.load_plan(cx);
@@ -369,6 +391,31 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    /// Persist the editor text as the harness instructions and hand it to
+    /// the running backend. Text equal to the default is saved as empty so
+    /// a future default change still applies.
+    fn save_prompt(&mut self, cx: &mut Context<Self>) {
+        let text = self.prompt_editor.read(cx).text().trim().to_string();
+        self.settings.harness_instructions = if text == settings::DEFAULT_HARNESS_INSTRUCTIONS {
+            String::new()
+        } else {
+            text
+        };
+        settings::save_settings_in_background(self.settings.clone());
+        self.backend
+            .set_harness_instructions(self.settings.effective_harness_instructions());
+        self.prompt_notice = Some("Saved. New tasks use this prompt.".to_string());
+        cx.notify();
+    }
+
+    fn reset_prompt(&mut self, cx: &mut Context<Self>) {
+        self.prompt_editor.update(cx, |input, cx| {
+            input.set_text(settings::DEFAULT_HARNESS_INSTRUCTIONS, cx);
+        });
+        self.prompt_notice = None;
+        cx.notify();
+    }
+
     fn close(&mut self, cx: &mut Context<Self>) {
         cx.emit(SettingsClosed(self.settings.clone()));
     }
@@ -571,6 +618,9 @@ impl SettingsScreen {
                         }),
                     ));
             }
+            Section::Prompt => {
+                pane = pane.child(self.render_prompt_pane(cx));
+            }
             Section::Mcp => {
                 pane = pane.child(self.render_mcp_pane(cx));
             }
@@ -644,6 +694,61 @@ impl SettingsScreen {
 }
 
 impl SettingsScreen {
+    fn render_prompt_pane(&self, cx: &mut Context<Self>) -> Div {
+        let mut pane = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(section_title("System prompt"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_MUTED))
+                    .child(
+                        "Opens every task's system prompt: who the agent is and how it \
+                         behaves. Maple appends its tool and runtime guidance after this \
+                         text. Changes apply to tasks started after you save.",
+                    ),
+            )
+            .child(
+                div()
+                    .p_3()
+                    .rounded_md()
+                    .bg(gpui::rgb(theme::BG_INPUT))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::BORDER))
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .child(self.prompt_editor.clone()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(pill_button(
+                        "prompt-save".to_string(),
+                        "Save",
+                        true,
+                        cx.listener(|this, _event, _window, cx| this.save_prompt(cx)),
+                    ))
+                    .child(pill_button(
+                        "prompt-reset".to_string(),
+                        "Reset to default",
+                        false,
+                        cx.listener(|this, _event, _window, cx| this.reset_prompt(cx)),
+                    )),
+            );
+        if let Some(notice) = &self.prompt_notice {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                    .child(notice.clone()),
+            );
+        }
+        pane
+    }
+
     fn render_mcp_pane(&self, cx: &mut Context<Self>) -> Div {
         let mut pane = div().flex().flex_col().gap_4();
         pane = pane.child(

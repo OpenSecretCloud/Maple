@@ -25,6 +25,29 @@ pub struct AppSettings {
     /// notifications while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
     pub desktop_notifications: bool,
+    /// Opening system prompt text for agents this app hosts. Empty means
+    /// [`DEFAULT_HARNESS_INSTRUCTIONS`].
+    #[serde(default)]
+    pub harness_instructions: String,
+}
+
+/// Opening system prompt for agents this app hosts: the agent is Maple.
+/// The runtime appends its tool and runtime guidance after this text.
+pub const DEFAULT_HARNESS_INSTRUCTIONS: &str =
+    "You are a general-purpose AI agent called Maple, created by Maple AI.
+You run in the Maple app's Agent Mode; users know you simply as Maple.";
+
+impl AppSettings {
+    /// The harness instructions to hand the runtime: the saved text, or the
+    /// default when nothing is saved.
+    pub fn effective_harness_instructions(&self) -> String {
+        let saved = self.harness_instructions.trim();
+        if saved.is_empty() {
+            DEFAULT_HARNESS_INSTRUCTIONS.to_string()
+        } else {
+            saved.to_string()
+        }
+    }
 }
 
 fn default_web_enabled() -> bool {
@@ -56,6 +79,7 @@ impl Default for AppSettings {
             tool_summaries: default_tool_summaries(),
             pinned_roots: Vec::new(),
             desktop_notifications: default_desktop_notifications(),
+            harness_instructions: String::new(),
         }
     }
 }

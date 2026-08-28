@@ -1517,8 +1517,10 @@ pub struct MapleAgentHostResources {
     events: AgentEventDispatcher,
     default_tool_context: AgentToolContextSpec,
     /// Opening system prompt text from the host: who the agent is and how
-    /// it behaves. A task's caller-supplied prompt (ACP) replaces it.
-    harness_instructions: String,
+    /// it behaves. A task's caller-supplied prompt (ACP) replaces it. The
+    /// host may change it at any time; agents built afterwards use the new
+    /// text.
+    harness_instructions: Arc<std::sync::RwLock<String>>,
 }
 
 impl MapleAgentHostResources {
@@ -1532,8 +1534,15 @@ impl MapleAgentHostResources {
             paths,
             events: AgentEventDispatcher::new(event_sink),
             default_tool_context,
-            harness_instructions,
+            harness_instructions: Arc::new(std::sync::RwLock::new(harness_instructions)),
         }
+    }
+
+    fn harness_instructions(&self) -> String {
+        self.harness_instructions
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -2576,6 +2585,16 @@ async fn join_agent_tasks(
 }
 
 impl MapleAgentService {
+    /// Replace the host's opening system prompt text. Agents built after
+    /// this call use it; agents already running keep their prompt.
+    pub fn set_harness_instructions(&self, harness_instructions: String) {
+        *self
+            .host
+            .harness_instructions
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = harness_instructions;
+    }
+
     pub async fn shutdown_all(&self) -> Result<(), String> {
         let _runtime_lifecycle_guard = self.runtime_lifecycle.lock().await;
         stop_runtime_inner(self, None).await
@@ -3440,7 +3459,7 @@ impl AgentRuntimeHandle {
                         SessionAgentConfiguration {
                             web_tool_state: &web_tool_state,
                             session: &session,
-                            harness_instructions: &state.host.harness_instructions,
+                            harness_instructions: state.host.harness_instructions(),
                             model: &model,
                             context_limit: request.context_limit,
                             mode: &mode,
@@ -3772,7 +3791,7 @@ impl AgentRuntimeHandle {
                     SessionAgentConfiguration {
                         web_tool_state: &web_tool_state,
                         session: &session,
-                        harness_instructions: &state.host.harness_instructions,
+                        harness_instructions: state.host.harness_instructions(),
                         model: &model,
                         context_limit: session
                             .model_config
@@ -4377,7 +4396,7 @@ impl AgentRuntimeHandle {
             &agent_manager,
             &maple_api_session,
             &session,
-            &state.host.harness_instructions,
+            &state.host.harness_instructions(),
             RuntimeContext::default(),
         )
         .await
@@ -5070,7 +5089,7 @@ impl AgentRuntimeHandle {
                 SessionAgentConfiguration {
                     web_tool_state: &web_tool_state,
                     session: &session,
-                    harness_instructions: &state.host.harness_instructions,
+                    harness_instructions: state.host.harness_instructions(),
                     model: &model,
                     context_limit: request.context_limit,
                     mode: &effective_mode,
@@ -6011,7 +6030,7 @@ impl AgentRuntimeHandle {
                         &agent_manager,
                         &maple_api_session,
                         &session,
-                        &state.host.harness_instructions,
+                        &state.host.harness_instructions(),
                         RuntimeContext::default(),
                     )
                     .await
@@ -7312,7 +7331,7 @@ struct AgentSkillsScope<'a> {
 struct SessionAgentConfiguration<'a> {
     web_tool_state: &'a Arc<WebToolState>,
     session: &'a Session,
-    harness_instructions: &'a str,
+    harness_instructions: String,
     model: &'a str,
     context_limit: Option<usize>,
     mode: &'a str,
@@ -7448,7 +7467,7 @@ async fn configure_session_agent(
         agent_manager,
         maple_api_session,
         session,
-        harness_instructions,
+        &harness_instructions,
         RuntimeContext::default(),
     )
     .await?;
