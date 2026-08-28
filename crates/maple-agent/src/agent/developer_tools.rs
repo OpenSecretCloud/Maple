@@ -3659,7 +3659,13 @@ mod tests {
             Some(Path::new("/tmp/project")),
         )
         .unwrap();
-        assert_eq!(local["source"], "/tmp/project/images/pixel.png");
+        // Path::join uses the platform separator, so compare against it
+        // rather than a literal that only holds on Unix.
+        let expected = Path::new("/tmp/project")
+            .join("images/pixel.png")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(local["source"], expected);
     }
 
     #[tokio::test]
