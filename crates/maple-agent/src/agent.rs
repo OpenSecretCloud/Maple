@@ -150,6 +150,35 @@ pub(crate) const AGENT_TOOL_CONTEXT_INACTIVE_ERROR: &str =
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_QUEUE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TOOL_CONTEXT_INSTALLATION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Caller-supplied system prompt per task id. A surface such as ACP sets it
+/// when it creates the task; the Goose agent for that task gets it as a
+/// system prompt extension the moment the agent is built. In memory only:
+/// the caller owns the prompt and resends it on a new session.
+static SESSION_SYSTEM_PROMPTS: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, String>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn store_session_system_prompt(session_id: &str, prompt: Option<String>) {
+    let mut prompts = SESSION_SYSTEM_PROMPTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        Some(prompt) => {
+            prompts.insert(session_id.to_string(), prompt);
+        }
+        None => {
+            prompts.remove(session_id);
+        }
+    }
+}
+
+fn session_system_prompt(session_id: &str) -> Option<String> {
+    SESSION_SYSTEM_PROMPTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(session_id)
+        .cloned()
+}
 const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
 const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 const MAPLE_IMAGE_ATTACHMENTS_OPERATION: &str = "mapleImageAttachments";
@@ -426,6 +455,10 @@ pub struct AgentCreateSessionRequest {
     pub context_limit: Option<usize>,
     pub mode: Option<String>,
     pub mcp_server_names: Option<Vec<String>>,
+    /// Caller-owned system prompt, appended to Maple's own. Surfaces such
+    /// as ACP pass the persona text their client supplies with the task.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1483,6 +1516,9 @@ pub struct MapleAgentHostResources {
     paths: AgentPathLayout,
     events: AgentEventDispatcher,
     default_tool_context: AgentToolContextSpec,
+    /// Opening system prompt text from the host: who the agent is and how
+    /// it behaves. A task's caller-supplied prompt (ACP) replaces it.
+    harness_instructions: String,
 }
 
 impl MapleAgentHostResources {
@@ -1490,11 +1526,13 @@ impl MapleAgentHostResources {
         paths: AgentPathLayout,
         event_sink: Arc<dyn AgentEventSink>,
         default_tool_context: AgentToolContextSpec,
+        harness_instructions: String,
     ) -> Self {
         Self {
             paths,
             events: AgentEventDispatcher::new(event_sink),
             default_tool_context,
+            harness_instructions,
         }
     }
 }
@@ -3220,6 +3258,7 @@ impl AgentRuntimeHandle {
             context_limit: None,
             mode: None,
             mcp_server_names: None,
+            system_prompt: None,
         });
         let (
             agent_manager,
@@ -3287,6 +3326,9 @@ impl AgentRuntimeHandle {
             .await
             .map_err(|e| format!("Failed to create Agent task: {e}"))?;
         let expected_provisional_session = session.clone();
+        // The Goose agent is built below; the caller's prompt must be
+        // stored first so the fresh agent picks it up.
+        store_session_system_prompt(&session.id, request.system_prompt.clone());
         let installation_id = next_tool_context_installation_id();
         let tool_context_access = AgentToolContextAccess {
             account_scope: Arc::clone(&self.account_scope),
@@ -3398,6 +3440,7 @@ impl AgentRuntimeHandle {
                         SessionAgentConfiguration {
                             web_tool_state: &web_tool_state,
                             session: &session,
+                            harness_instructions: &state.host.harness_instructions,
                             model: &model,
                             context_limit: request.context_limit,
                             mode: &mode,
@@ -3729,6 +3772,7 @@ impl AgentRuntimeHandle {
                     SessionAgentConfiguration {
                         web_tool_state: &web_tool_state,
                         session: &session,
+                        harness_instructions: &state.host.harness_instructions,
                         model: &model,
                         context_limit: session
                             .model_config
@@ -4333,6 +4377,7 @@ impl AgentRuntimeHandle {
             &agent_manager,
             &maple_api_session,
             &session,
+            &state.host.harness_instructions,
             RuntimeContext::default(),
         )
         .await
@@ -5025,6 +5070,7 @@ impl AgentRuntimeHandle {
                 SessionAgentConfiguration {
                     web_tool_state: &web_tool_state,
                     session: &session,
+                    harness_instructions: &state.host.harness_instructions,
                     model: &model,
                     context_limit: request.context_limit,
                     mode: &effective_mode,
@@ -5965,6 +6011,7 @@ impl AgentRuntimeHandle {
                         &agent_manager,
                         &maple_api_session,
                         &session,
+                        &state.host.harness_instructions,
                         RuntimeContext::default(),
                     )
                     .await
@@ -7265,6 +7312,7 @@ struct AgentSkillsScope<'a> {
 struct SessionAgentConfiguration<'a> {
     web_tool_state: &'a Arc<WebToolState>,
     session: &'a Session,
+    harness_instructions: &'a str,
     model: &'a str,
     context_limit: Option<usize>,
     mode: &'a str,
@@ -7331,6 +7379,7 @@ async fn get_or_create_session_agent<T>(
     agent_manager: &Arc<AgentManager>,
     transport: &Arc<T>,
     session: &Session,
+    harness_instructions: &str,
     runtime_context: RuntimeContext,
 ) -> Result<AgentManagerGetResult, String>
 where
@@ -7345,10 +7394,14 @@ where
     // names goose and AAIF even though users only ever meet Maple's Agent
     // Mode. Brand the base prompt as Maple the moment the agent is created;
     // cached agents keep the override for their whole lifetime.
+    // The harness that hosts this task supplies the opening instructions:
+    // the desktop is Maple; an ACP caller sends its own persona.
     if manager_result.agent_created {
+        let harness_instructions =
+            session_system_prompt(&session.id).unwrap_or_else(|| harness_instructions.to_string());
         manager_result
             .agent
-            .override_system_prompt(system_prompt::MAPLE_SYSTEM_PROMPT_TEMPLATE.to_string())
+            .override_system_prompt(system_prompt::system_prompt(&harness_instructions))
             .await;
     }
 
@@ -7383,6 +7436,7 @@ async fn configure_session_agent(
     let SessionAgentConfiguration {
         web_tool_state,
         session,
+        harness_instructions,
         model,
         context_limit,
         mode,
@@ -7394,6 +7448,7 @@ async fn configure_session_agent(
         agent_manager,
         maple_api_session,
         session,
+        harness_instructions,
         RuntimeContext::default(),
     )
     .await?;
@@ -11110,6 +11165,7 @@ mod tests {
             paths.clone(),
             event_sink,
             AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
         ));
         (test_root, paths, service)
     }
@@ -12482,6 +12538,7 @@ mod tests {
             &agent_manager,
             &transport,
             &session,
+            "You are a test agent.",
             RuntimeContext::default(),
         )
         .await
@@ -12572,6 +12629,7 @@ mod tests {
             &agent_manager,
             &transport,
             &glm_session,
+            "You are a test agent.",
             RuntimeContext::default(),
         )
         .await
@@ -12591,6 +12649,7 @@ mod tests {
             &agent_manager,
             &transport,
             &kimi_session,
+            "You are a test agent.",
             RuntimeContext::default(),
         )
         .await
@@ -12633,6 +12692,7 @@ mod tests {
             &agent_manager,
             &transport,
             &persisted_glm,
+            "You are a test agent.",
             RuntimeContext::default(),
         )
         .await
@@ -16778,6 +16838,7 @@ mod tests {
             paths.clone(),
             Arc::new(NoopAgentEventSink),
             AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
         ));
         let restarted_handle = restarted.handle_for_user(first_user).await.unwrap();
         let listed = restarted_handle.list_sessions(None).await.unwrap();
@@ -16941,6 +17002,7 @@ mod tests {
             ),
             sink.clone(),
             AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
         ));
         let broker = state.question_broker();
         let one_question = |id: &str, text: &str| AgentQuestion {
@@ -17009,6 +17071,7 @@ mod tests {
             ),
             Arc::new(NoopAgentEventSink),
             AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
         ));
         let stale_handle = state.handle_for_user("user-to-clear").await.unwrap();
         let scope = account_scope("user-to-clear").unwrap();
@@ -17029,6 +17092,7 @@ mod tests {
             ),
             Arc::new(NoopAgentEventSink),
             AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
         ));
         let handle = state.handle_for_user("user-during-shutdown").await.unwrap();
 

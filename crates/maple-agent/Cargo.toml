@@ -30,6 +30,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 tempfile = "3"
 icu_properties = "2.1.1"
 sha2 = "0.10"
+agent-client-protocol = { version = "=2.0.0", default-features = false, features = ["unstable_elicitation", "unstable_end_turn_token_usage"] }
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]

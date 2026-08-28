@@ -7,6 +7,7 @@
 //! [`agent::MapleAgentService`] with its own [`agent::AgentEventSink`] and
 //! drives it through [`agent::AgentRuntimeHandle`] method calls.
 
+pub mod acp;
 pub mod agent;
 pub mod maple_api;
 pub mod open_secret_config;

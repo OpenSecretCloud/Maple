@@ -156,12 +156,67 @@ impl Render for MapleApp {
     }
 }
 
-fn main() {
-    init_logging();
+/// What the process does, decided from the first command-line argument.
+#[derive(Debug, PartialEq, Eq)]
+enum StartupMode {
+    /// `maple-gpui acp`: bridge stdio to the desktop app's ACP socket.
+    Acp,
+    Version,
+    Desktop,
+}
 
-    let api_url = std::env::var("MAPLE_API_URL")
-        .unwrap_or_else(|_| "https://enclave.trymaple.ai".to_string());
-    let backend = Arc::new(AgentBackend::new(api_url).expect("failed to initialize agent backend"));
+fn startup_mode(args: impl IntoIterator<Item = String>) -> StartupMode {
+    match args.into_iter().next().as_deref() {
+        Some("acp") => StartupMode::Acp,
+        Some("--version" | "-V") => StartupMode::Version,
+        _ => StartupMode::Desktop,
+    }
+}
+
+fn version_text() -> &'static str {
+    concat!("maple-gpui ", env!("CARGO_PKG_VERSION"))
+}
+
+fn main() {
+    match startup_mode(std::env::args().skip(1)) {
+        StartupMode::Acp => {
+            // stdout is the ACP channel. Logs go to the log file only, so
+            // the client's stderr capture stays quiet. The inherited
+            // RUST_LOG belongs to the client (Buzz sets `buzz_acp=info`),
+            // so it is ignored here or it would silence Maple's own log.
+            init_logging(LogOutput::FileOnly);
+            if let Err(error) = run_acp() {
+                log::error!("{error}");
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        StartupMode::Version => println!("{}", version_text()),
+        StartupMode::Desktop => run_desktop(),
+    }
+}
+
+fn configured_api_url() -> String {
+    std::env::var("MAPLE_API_URL").unwrap_or_else(|_| "https://enclave.trymaple.ai".to_string())
+}
+
+/// `maple-gpui acp`: a standalone ACP agent over stdio. It reuses the
+/// sign-in saved by the desktop app and hosts its own agent runtime, so
+/// the desktop app does not need to run.
+fn run_acp() -> Result<(), String> {
+    let backend = AgentBackend::new(configured_api_url())?;
+    let user_id = backend.restore_now().ok_or_else(|| {
+        "No saved Maple sign-in. Open the desktop app and sign in first.".to_string()
+    })?;
+    backend.run_acp_stdio(&user_id)
+}
+
+fn run_desktop() {
+    init_logging(LogOutput::FileAndStderr);
+
+    let backend = Arc::new(
+        AgentBackend::new(configured_api_url()).expect("failed to initialize agent backend"),
+    );
 
     // Restore a persisted session before the UI starts so sign-in can be
     // skipped entirely when the credentials are still valid.
@@ -307,7 +362,15 @@ fn main() {
 /// Log to stderr and to `<data dir>/logs/maple-gpui.log` so a freeze or
 /// crash leaves evidence on disk. `RUST_LOG` still controls the level;
 /// the default is `info`. Panics are logged as well.
-fn init_logging() {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogOutput {
+    /// Log file plus stderr, with `RUST_LOG` honored. The desktop default.
+    FileAndStderr,
+    /// Log file only, with the default filter. For stdio protocol modes.
+    FileOnly,
+}
+
+fn init_logging(output: LogOutput) {
     let log_dir = backend::local_data_root().join("logs");
     let file = std::fs::create_dir_all(&log_dir).ok().and_then(|_| {
         std::fs::OpenOptions::new()
@@ -317,13 +380,22 @@ fn init_logging() {
             .ok()
     });
     // goose is chatty at info during a run; its warnings still show.
-    let mut builder = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,goose=warn"),
-    );
+    const DEFAULT_FILTER: &str = "info,goose=warn";
+    let mut builder = match output {
+        LogOutput::FileAndStderr => env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or(DEFAULT_FILTER),
+        ),
+        LogOutput::FileOnly => {
+            let mut builder = env_logger::Builder::new();
+            builder.parse_filters(DEFAULT_FILTER);
+            builder
+        }
+    };
+    let stderr = output == LogOutput::FileAndStderr;
     if let Some(file) = file {
         builder.target(env_logger::Target::Pipe(Box::new(TeeWriter {
             file: std::io::BufWriter::with_capacity(16 * 1024, file),
-            stderr: std::io::stderr(),
+            stderr: stderr.then(std::io::stderr),
         })));
     }
     builder.init();
@@ -343,7 +415,7 @@ fn init_logging() {
 /// once so a crash still leaves them on disk; info lines are batched.
 struct TeeWriter {
     file: std::io::BufWriter<std::fs::File>,
-    stderr: std::io::Stderr,
+    stderr: Option<std::io::Stderr>,
 }
 
 impl std::io::Write for TeeWriter {
@@ -353,12 +425,48 @@ impl std::io::Write for TeeWriter {
         if urgent || buf.windows(5).any(|w| w == b"panic") {
             let _ = self.file.flush();
         }
-        self.stderr.write_all(buf)?;
+        if let Some(stderr) = &mut self.stderr {
+            stderr.write_all(buf)?;
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         let _ = self.file.flush();
-        self.stderr.flush()
+        match &mut self.stderr {
+            Some(stderr) => stderr.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StartupMode, startup_mode, version_text};
+
+    fn mode(args: &[&str]) -> StartupMode {
+        startup_mode(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn version_flags_use_the_fast_path() {
+        assert_eq!(mode(&["--version"]), StartupMode::Version);
+        assert_eq!(mode(&["-V"]), StartupMode::Version);
+        assert_eq!(
+            version_text(),
+            format!("maple-gpui {}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn acp_subcommand_keeps_precedence_over_following_flags() {
+        assert_eq!(mode(&["acp"]), StartupMode::Acp);
+        assert_eq!(mode(&["acp", "--version"]), StartupMode::Acp);
+    }
+
+    #[test]
+    fn other_arguments_keep_desktop_startup() {
+        assert_eq!(mode(&[]), StartupMode::Desktop);
+        assert_eq!(mode(&["--unknown"]), StartupMode::Desktop);
     }
 }

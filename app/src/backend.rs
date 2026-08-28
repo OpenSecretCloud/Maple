@@ -5,7 +5,7 @@
 //! never touches the agent runtime directly, so this seam can later be moved
 //! behind a process or socket boundary without touching UI code.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,8 +13,7 @@ use std::sync::Arc;
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentEventSink, AgentRuntimeStatus, AgentSendMessageRequest,
     AgentServiceEvent, AgentSessionDetail, AgentSessionSummary, AgentSlashCommand,
-    AgentStartRequest, AgentToolContextSpec, MapleAgentHostResources, MapleAgentService,
-    RecentProjectRoot,
+    AgentStartRequest, MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState, NoopAuthEventSink,
@@ -117,6 +116,12 @@ impl AgentBackend {
 }
 
 /// App configuration root (XDG-style), also used by the settings store.
+/// Opening system prompt for agents this app hosts: the agent is Maple.
+/// The runtime appends its tool and runtime guidance after this text.
+const MAPLE_HARNESS_INSTRUCTIONS: &str =
+    "You are a general-purpose AI agent called Maple, created by Maple AI.
+You run in the Maple app's Agent Mode; users know you simply as Maple.";
+
 pub fn app_config_root() -> PathBuf {
     config_root()
 }
@@ -183,12 +188,13 @@ impl AgentBackend {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let paths =
             maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root());
-        let default_tool_context =
-            AgentToolContextSpec::try_new(BTreeMap::new(), BTreeSet::new(), false)?;
+        // Keeps ACP bridge credentials out of desktop tool environments.
+        let default_tool_context = maple_agent::acp::default_tool_context_spec()?;
         let service = MapleAgentService::new(MapleAgentHostResources::new(
             paths,
             Arc::new(ChannelEventSink(event_tx)),
             default_tool_context,
+            MAPLE_HARNESS_INSTRUCTIONS.to_string(),
         ));
         let runtime =
             Runtime::new().map_err(|error| format!("failed to start runtime: {error}"))?;
@@ -588,6 +594,23 @@ impl AgentBackend {
 
     pub async fn stop_runtime(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {
         self.service.handle_for_user(user_id).await?.stop().await
+    }
+
+    /// Serve ACP on stdin/stdout for `user_id` until the peer closes stdin.
+    /// Starts the runtime first, rooted at the process working directory,
+    /// and stops it when the connection ends.
+    pub fn run_acp_stdio(&self, user_id: &str) -> Result<(), String> {
+        self.runtime.block_on(async {
+            let handle = self.service.handle_for_user(user_id).await?;
+            let session = self.auth.session_for(user_id).await?;
+            handle.start(session, None).await?;
+            let config = maple_agent::acp::load_acp_config(&local_data_root(), user_id)?;
+            let result = maple_agent::acp::serve_stdio(handle.clone(), config).await;
+            if let Err(error) = handle.stop().await {
+                log::warn!("failed to stop the agent runtime after ACP: {error}");
+            }
+            result
+        })
     }
 
     /// Roots recently used by this account, most recent first.
