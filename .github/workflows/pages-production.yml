@@ -124,7 +124,7 @@ jobs:
             --method PATCH \
             "repos/${REPOSITORY}/git/refs/heads/${PAGES_PRODUCTION_BRANCH}" \
             -f sha="${release_sha}" \
-            -F force=true \
+            -F force=false \
             --jq '.object.sha')"
           [ "${updated_sha}" = "${release_sha}" ] || \
             fail "GitHub did not update the production branch to the release SHA"
