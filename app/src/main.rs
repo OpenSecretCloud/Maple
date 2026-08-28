@@ -159,18 +159,94 @@ impl Render for MapleApp {
 /// What the process does, decided from the first command-line argument.
 #[derive(Debug, PartialEq, Eq)]
 enum StartupMode {
-    /// `maple-gpui acp`: bridge stdio to the desktop app's ACP socket.
+    /// `maple-gpui acp`: serve the Agent Client Protocol on stdio.
     Acp,
+    /// `maple-gpui proxy`: serve an OpenAI-compatible HTTP endpoint.
+    Proxy(Result<ProxyArgs, String>),
     Version,
     Desktop,
 }
 
+/// Settings for `maple-gpui proxy`, from flags with environment fallbacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProxyArgs {
+    host: String,
+    port: u16,
+    /// Maple API key used when a request carries no `Authorization` header.
+    /// Never combined with `cors`: browser-reachable endpoints must not
+    /// spend a saved credential.
+    api_key: Option<String>,
+    /// Accept requests from any browser origin.
+    cors: bool,
+}
+
 fn startup_mode(args: impl IntoIterator<Item = String>) -> StartupMode {
-    match args.into_iter().next().as_deref() {
+    let mut args = args.into_iter();
+    match args.next().as_deref() {
         Some("acp") => StartupMode::Acp,
+        Some("proxy") => StartupMode::Proxy(parse_proxy_args(args)),
         Some("--version" | "-V") => StartupMode::Version,
         _ => StartupMode::Desktop,
     }
+}
+
+const PROXY_USAGE: &str =
+    "usage: maple-gpui proxy [--host HOST] [--port PORT] [--api-key KEY] [--cors]
+  --host HOST     bind address (default 127.0.0.1, env MAPLE_PROXY_HOST)
+  --port PORT     bind port (default 8080, env MAPLE_PROXY_PORT)
+  --api-key KEY   Maple API key for requests without an Authorization header
+                  (env MAPLE_API_KEY); not allowed together with --cors
+  --cors          allow browser origins; every request must then carry its own key";
+
+fn parse_proxy_args(args: impl Iterator<Item = String>) -> Result<ProxyArgs, String> {
+    let env = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    };
+    let mut host = env("MAPLE_PROXY_HOST").unwrap_or_else(|| "127.0.0.1".to_string());
+    let mut port = match env("MAPLE_PROXY_PORT") {
+        Some(value) => value
+            .parse::<u16>()
+            .map_err(|_| format!("MAPLE_PROXY_PORT is not a port number: {value}"))?,
+        None => 8080,
+    };
+    let mut api_key = env("MAPLE_API_KEY");
+    let mut cors = false;
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        let mut value = |flag: &str| {
+            args.next()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("{flag} needs a value\n{PROXY_USAGE}"))
+        };
+        match arg.as_str() {
+            "--host" => host = value("--host")?,
+            "--port" => {
+                let text = value("--port")?;
+                port = text
+                    .parse::<u16>()
+                    .map_err(|_| format!("--port is not a port number: {text}"))?;
+            }
+            "--api-key" => api_key = Some(value("--api-key")?),
+            "--cors" => cors = true,
+            "--help" | "-h" => return Err(PROXY_USAGE.to_string()),
+            other => return Err(format!("unknown argument: {other}\n{PROXY_USAGE}")),
+        }
+    }
+    if cors && api_key.is_some() {
+        return Err(
+            "--cors cannot be combined with a default API key (--api-key or MAPLE_API_KEY): \
+             a browser-reachable proxy must not spend a saved credential. Drop --cors or the key."
+                .to_string(),
+        );
+    }
+    Ok(ProxyArgs {
+        host,
+        port,
+        api_key,
+        cors,
+    })
 }
 
 fn version_text() -> &'static str {
@@ -191,9 +267,96 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        StartupMode::Proxy(args) => {
+            let args = match args {
+                Ok(args) => args,
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(if message == PROXY_USAGE { 0 } else { 2 });
+                }
+            };
+            init_logging(LogOutput::FileAndStderr);
+            if let Err(error) = run_proxy(args) {
+                log::error!("{error}");
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         StartupMode::Version => println!("{}", version_text()),
         StartupMode::Desktop => run_desktop(),
     }
+}
+
+/// `maple-gpui proxy`: an OpenAI-compatible endpoint in front of Maple's
+/// enclave, for tools that speak the OpenAI API. Runs until killed.
+fn run_proxy(args: ProxyArgs) -> Result<(), String> {
+    use axum::http::{Method, StatusCode, header::ORIGIN};
+    use axum::response::IntoResponse;
+    use tower_http::cors::{AllowHeaders, Any, CorsLayer};
+
+    let backend_url = maple_agent::maple_api::validate_api_url(&configured_api_url())?;
+    let pcr0 = maple_agent::open_secret_config::configured_pcr0_environment()?;
+    let mut config = maple_proxy::Config::new(args.host.clone(), args.port, backend_url)
+        .with_pcr0_environment(pcr0)
+        .with_debug(false)
+        // The browser boundary is owned below so the Authorization header
+        // can be allowed explicitly and browser requests rejected when CORS
+        // is off; maple-proxy's permissive layer stays out.
+        .with_cors(false);
+    if let Some(api_key) = args.api_key.clone() {
+        config = config.with_api_key(api_key);
+    }
+    let addr = config
+        .socket_addr()
+        .map_err(|error| format!("Invalid proxy address: {error}"))?;
+    let app = maple_proxy::create_app(config);
+    let app = if args.cors {
+        app.layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                // Authorization is not covered by `*` under Fetch; mirror
+                // the preflight list so bearer keys and SDK headers pass.
+                .allow_headers(AllowHeaders::mirror_request()),
+        )
+    } else {
+        // Disabling CORS alone only hides responses. A no-cors browser POST
+        // can still reach loopback and spend the saved key, so fail closed
+        // on browser-only headers before the body is read.
+        app.layer(axum::middleware::from_fn(
+            |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                if request.headers().contains_key(ORIGIN)
+                    || request.headers().contains_key("sec-fetch-site")
+                {
+                    return StatusCode::FORBIDDEN.into_response();
+                }
+                next.run(request).await
+            },
+        ))
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Failed to start the proxy runtime: {error}"))?;
+    runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|error| format!("Failed to bind {addr}: {error}"))?;
+        log::info!(
+            "Maple proxy listening on http://{addr} (cors={}, default key={})",
+            args.cors,
+            args.api_key.is_some()
+        );
+        eprintln!("Maple proxy listening on http://{addr}");
+        eprintln!("  GET  /v1/models    POST /v1/chat/completions    POST /v1/embeddings");
+        if args.api_key.is_none() {
+            eprintln!("  Requests must send: Authorization: Bearer <Maple API key>");
+        }
+        axum::serve(listener, app)
+            .await
+            .map_err(|error| format!("Proxy server error: {error}"))
+    })
 }
 
 fn configured_api_url() -> String {
@@ -467,6 +630,39 @@ mod tests {
     fn acp_subcommand_keeps_precedence_over_following_flags() {
         assert_eq!(mode(&["acp"]), StartupMode::Acp);
         assert_eq!(mode(&["acp", "--version"]), StartupMode::Acp);
+    }
+
+    #[test]
+    fn proxy_flags_parse_with_defaults() {
+        let StartupMode::Proxy(Ok(args)) = mode(&["proxy"]) else {
+            panic!("proxy without flags must parse");
+        };
+        assert_eq!(args.host, "127.0.0.1");
+        assert_eq!(args.port, 8080);
+        assert!(!args.cors);
+
+        let StartupMode::Proxy(Ok(args)) =
+            mode(&["proxy", "--host", "0.0.0.0", "--port", "9999", "--cors"])
+        else {
+            panic!("proxy flags must parse");
+        };
+        assert_eq!(
+            (args.host.as_str(), args.port, args.cors),
+            ("0.0.0.0", 9999, true)
+        );
+
+        assert!(matches!(
+            mode(&["proxy", "--port", "x"]),
+            StartupMode::Proxy(Err(_))
+        ));
+        assert!(matches!(
+            mode(&["proxy", "--bogus"]),
+            StartupMode::Proxy(Err(_))
+        ));
+        assert!(matches!(
+            mode(&["proxy", "--cors", "--api-key", "k"]),
+            StartupMode::Proxy(Err(_))
+        ));
     }
 
     #[test]

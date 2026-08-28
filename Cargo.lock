@@ -5075,6 +5075,7 @@ dependencies = [
 name = "maple-gpui"
 version = "0.6.3"
 dependencies = [
+ "axum",
  "chrono",
  "env_logger",
  "gpui",
@@ -5082,6 +5083,7 @@ dependencies = [
  "log",
  "maple-agent",
  "maple-billing",
+ "maple-proxy",
  "opensecret",
  "parking_lot",
  "pulldown-cmark",
@@ -5089,6 +5091,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower-http 0.6.11",
  "unicode-segmentation",
  "uuid",
  "webbrowser",
