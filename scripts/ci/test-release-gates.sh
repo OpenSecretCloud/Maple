@@ -175,6 +175,13 @@ if rg -n --glob '*.yml' --glob '*.yaml' \
 fi
 pass "repository workflows preserve one Maple GitHub Release object"
 
+[ -x "${repo_root}/scripts/ci/inspect-proxy-container-manifest.sh" ] || \
+  fail "proxy container inspector must be executable"
+if rg -n 'ghcr-(push|build-push|login)' "${repo_root}/proxy/justfile"; then
+  fail "local proxy recipes must not retain a GHCR write path"
+fi
+pass "proxy container publication has one GitHub Actions writer"
+
 python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" "${proxy_publish_json}" <<'PY'
 import json
 import re
@@ -456,19 +463,23 @@ check(
 )
 check(
     proxy_container_publish.get("concurrency")
-    == {"group": "proxy-publishing", "cancel-in-progress": False},
-    "Proxy container publication must serialize without cancellation",
+    == {"group": "proxy-publishing", "queue": "max", "cancel-in-progress": False},
+    "Proxy container publication must serialize without dropping pending releases",
 )
 check(
     proxy_container_publish.get("env")
-    == {"REGISTRY": "ghcr.io", "IMAGE_NAME": "opensecretcloud/maple-proxy"},
+    == {
+        "REGISTRY": "ghcr.io",
+        "IMAGE_NAME": "opensecretcloud/maple-proxy",
+        "UNBACKFILLED_PROXY_BASELINE": "0.3.3",
+    },
     "Proxy container publisher must preserve the existing GHCR package",
 )
 
 container_jobs = proxy_container_publish.get("jobs", {})
 check(
-    set(container_jobs) == {"prepare", "build", "publish"},
-    "Proxy container publisher must separate validation, platform builds, and manifest publication",
+    set(container_jobs) == {"prepare", "build", "publish", "finalize"},
+    "Proxy container publisher must separate validation, builds, exact publication, and alias reconciliation",
 )
 prepare = container_jobs["prepare"]
 prepare_if = str(prepare.get("if", ""))
@@ -483,11 +494,21 @@ prepare_runs = "\n".join(str(step.get("run", "")) for step in prepare.get("steps
 for required_control in (
     "repos/${REPOSITORY}/releases/latest",
     "repos/${REPOSITORY}/releases?per_page=100",
-    "contents/proxy/Cargo.toml?ref=${sha}",
+    'git show "${sha}:proxy/Cargo.toml"',
     "compare/${release_sha}...master",
+    "proxy container runtime inputs changed without a proxy version bump",
+    '"${UNBACKFILLED_PROXY_BASELINE}"',
     "plan-proxy-container-publish.sh",
 ):
     check(required_control in prepare_runs, f"Proxy publication plan is missing control: {required_control}")
+prepare_checkouts = [
+    step for step in prepare.get("steps", []) if str(step.get("uses", "")).startswith("actions/checkout@")
+]
+check(len(prepare_checkouts) == 1, "Proxy plan must have one trusted checkout")
+check(
+    prepare_checkouts[0].get("with", {}).get("fetch-depth") == 0,
+    "Proxy plan must fetch history for release and runtime-input comparisons",
+)
 
 container_build = container_jobs["build"]
 check(needs(container_build) == ["prepare"], "Proxy container builds must need the validated plan")
@@ -524,6 +545,10 @@ check(
     "push-by-digest=true" in str(build_with.get("outputs", "")),
     "Proxy container platforms must publish only by digest before the manifest",
 )
+check(
+    build_with.get("provenance") == "mode=max" and build_with.get("sbom") is False,
+    "Proxy container platforms must publish max-mode provenance without an SBOM",
+)
 
 container_publish = container_jobs["publish"]
 check(
@@ -531,20 +556,57 @@ check(
     "Proxy manifest publisher must wait for the plan and both platform builds",
 )
 check(
+    container_publish.get("if") == "needs.prepare.outputs.publish == 'true'",
+    "Proxy exact manifest publisher must run only for a required build",
+)
+check(
     container_publish.get("permissions") == {"contents": "read", "packages": "write"},
     "Proxy manifest publisher must have only contents read and packages write",
 )
 publish_runs = "\n".join(str(step.get("run", "")) for step in container_publish.get("steps", []))
-for required_tag in (
-    '"${image}:${PROXY_VERSION}"',
-    '"${image}:${PROXY_MINOR}"',
-    '"${image}:${PROXY_MAJOR}"',
-    '"${image}:latest"',
-):
-    check(required_tag in publish_runs, f"Proxy manifest publisher is missing tag {required_tag}")
 check(
-    "linux/amd64\\nlinux/arm64" in publish_runs,
-    "Proxy manifest publisher must anonymously verify the two public platforms",
+    '--tag "${image}:${PROXY_VERSION}"' in publish_runs,
+    "Proxy exact manifest publisher must tag the immutable version",
+)
+for forbidden_alias in ("PROXY_MINOR", "PROXY_MAJOR", 'image}:latest'):
+    check(
+        forbidden_alias not in publish_runs,
+        f"Proxy exact manifest publisher must not update mutable alias {forbidden_alias}",
+    )
+
+container_finalize = container_jobs["finalize"]
+check(
+    set(needs(container_finalize)) == {"prepare", "build", "publish"},
+    "Proxy finalizer must observe both the optional build and exact publication",
+)
+finalize_if = str(container_finalize.get("if", ""))
+for required_gate in (
+    "always()",
+    "needs.prepare.outputs.publish == 'true'",
+    "needs.prepare.outputs.reconcile == 'true'",
+    "needs.publish.result == 'success'",
+):
+    check(required_gate in finalize_if, f"Proxy finalizer is missing gate: {required_gate}")
+check(
+    container_finalize.get("permissions") == {"contents": "read", "packages": "write"},
+    "Proxy finalizer must have only contents read and packages write",
+)
+finalize_runs = "\n".join(str(step.get("run", "")) for step in container_finalize.get("steps", []))
+for required_control in (
+    "inspect-proxy-container-manifest.sh",
+    "published exact tag does not match the current proxy runtime inputs",
+    'for tag in "${PROXY_MINOR}" "${PROXY_MAJOR}" latest',
+    "docker buildx imagetools create",
+    "per-platform SLSA provenance",
+):
+    check(required_control in finalize_runs, f"Proxy finalizer is missing control: {required_control}")
+check(
+    any(
+        step.get("if") == "needs.prepare.outputs.publish == 'true'"
+        and str(step.get("uses", "")).startswith("actions/download-artifact@")
+        for step in container_finalize.get("steps", [])
+    ),
+    "Proxy finalizer must compare a new exact manifest with both build outputs",
 )
 
 PY
@@ -554,6 +616,6 @@ bash "${script_dir}/test-proxy-release-artifacts.sh" >/dev/null
 pass "proxy release artifact verifier accepts only the complete native asset set"
 
 bash "${script_dir}/test-plan-proxy-container-publish.sh" >/dev/null
-pass "proxy container publish planner accepts only new exact versions"
+pass "proxy container publish planner preserves immutable versions and recovery"
 
 printf '1..%d\n' "${passed}"
