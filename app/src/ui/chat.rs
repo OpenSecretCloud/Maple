@@ -213,6 +213,18 @@ struct TranscriptCtx<'a> {
     tool_summaries: &'a HashMap<String, String>,
     summary_requests: &'a HashSet<String>,
     render: &'a RenderCtx,
+    /// Message being spoken, if any.
+    speech: Option<&'a SpeechState>,
+    /// The account can use text-to-speech.
+    speech_available: bool,
+}
+
+/// Text-to-speech progress for one message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpeechState {
+    pub item_id: String,
+    /// False while the first chunk is still being synthesized.
+    pub playing: bool,
 }
 
 pub struct ChatScreen {
@@ -410,6 +422,20 @@ pub struct ChatScreen {
     summary_generation: u64,
     /// Tool call summaries enabled (settings).
     summaries_enabled: bool,
+    /// Microphone and speaker, on their own thread.
+    audio: Arc<crate::audio::AudioEngine>,
+    /// Voice endpoints the account offers; refreshed after runtime start.
+    audio_caps: maple_agent::agent::AudioCapabilities,
+    /// The microphone is open.
+    recording: bool,
+    /// A recording is at Whisper.
+    transcribing: bool,
+    /// Text-to-speech in progress.
+    speech: Option<SpeechState>,
+    /// Bumped on every speak or stop; stale chunks are dropped.
+    speech_generation: u64,
+    tts_voice: String,
+    tts_speed: f32,
 }
 
 /// What a session snapshot load replaces once it lands.
@@ -701,6 +727,14 @@ impl ChatScreen {
             summary_queue: std::collections::VecDeque::new(),
             summary_generation: 0,
             summaries_enabled: settings.tool_summaries,
+            audio: Arc::new(crate::audio::AudioEngine::new()),
+            audio_caps: maple_agent::agent::AudioCapabilities::default(),
+            recording: false,
+            transcribing: false,
+            speech: None,
+            speech_generation: 0,
+            tts_voice: settings.tts_voice,
+            tts_speed: settings.tts_speed,
         }
     }
 
@@ -751,8 +785,215 @@ impl ChatScreen {
                 this.refresh_slash_commands(cx);
                 this.refresh_sessions(cx);
                 this.refresh_sidebar_plan(cx);
+                this.refresh_audio_capabilities(cx);
             },
         );
+    }
+
+    fn refresh_audio_capabilities(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.audio_capabilities(&user_id).await },
+            cx,
+            |this, result, cx| match result {
+                Ok(caps) => {
+                    if caps != this.audio_caps {
+                        this.audio_caps = caps;
+                        cx.notify();
+                    }
+                }
+                Err(message) => log::debug!("audio capabilities unavailable: {message}"),
+            },
+        );
+    }
+
+    // ----- Voice: microphone to Whisper -----
+
+    /// Mic button: start a recording, or stop it and transcribe.
+    fn toggle_recording(&mut self, cx: &mut Context<Self>) {
+        if self.transcribing {
+            return;
+        }
+        if self.recording {
+            self.finish_recording(cx);
+        } else {
+            self.begin_recording(cx);
+        }
+    }
+
+    fn begin_recording(&mut self, cx: &mut Context<Self>) {
+        self.stop_speech(cx);
+        self.notice = None;
+        let audio = Arc::clone(&self.audio);
+        cx.spawn(async move |this, cx| {
+            let result = audio.start_recording().await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.recording = true,
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_recording(&mut self, cx: &mut Context<Self>) {
+        self.recording = false;
+        self.transcribing = true;
+        cx.notify();
+        let audio = Arc::clone(&self.audio);
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        cx.spawn(async move |this, cx| {
+            let result = match audio.stop_recording().await {
+                Ok(wav) => {
+                    let task_backend = backend.clone();
+                    backend
+                        .spawn(async move { task_backend.transcribe_audio(&user_id, wav).await })
+                        .await
+                }
+                .unwrap_or_else(|_| Err("Transcription was cancelled".to_string())),
+                Err(message) => Err(message),
+            };
+            this.update(cx, |this, cx| {
+                this.transcribing = false;
+                match result {
+                    Ok(text) if text.is_empty() => {
+                        this.notice = Some("No speech was recognized".into());
+                    }
+                    Ok(text) => this.insert_transcript(&text, cx),
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Append a transcript to the composer, after a space when text is
+    /// already there.
+    fn insert_transcript(&mut self, transcript: &str, cx: &mut Context<Self>) {
+        let Some(composer) = self.composer.clone() else {
+            return;
+        };
+        composer.update(cx, |input, cx| {
+            let current = input.text_ref().trim_end().to_string();
+            let text = if current.is_empty() {
+                transcript.to_string()
+            } else {
+                format!("{current} {transcript}")
+            };
+            input.set_text(&text, cx);
+        });
+    }
+
+    // ----- Voice: text-to-speech -----
+
+    /// Speak button: read a message aloud, or stop when it is the one
+    /// already playing.
+    fn toggle_speech(&mut self, item_id: String, text: String, cx: &mut Context<Self>) {
+        if self
+            .speech
+            .as_ref()
+            .is_some_and(|speech| speech.item_id == item_id)
+        {
+            self.stop_speech(cx);
+            return;
+        }
+        self.speak(item_id, text, cx);
+    }
+
+    fn stop_speech(&mut self, cx: &mut Context<Self>) {
+        self.speech_generation += 1;
+        self.audio.stop_playback(self.speech_generation);
+        if self.speech.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Synthesize `text` chunk by chunk and queue each one as it lands,
+    /// so playback starts after the first chunk instead of the last.
+    fn speak(&mut self, item_id: String, text: String, cx: &mut Context<Self>) {
+        self.stop_speech(cx);
+        let chunks = speech_chunks(&text);
+        if chunks.is_empty() {
+            self.notice = Some("There is nothing to read aloud".into());
+            cx.notify();
+            return;
+        }
+        let generation = self.speech_generation;
+        self.speech = Some(SpeechState {
+            item_id,
+            playing: false,
+        });
+        self.notice = None;
+        cx.notify();
+
+        let audio = Arc::clone(&self.audio);
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let voice = self.tts_voice.clone();
+        let speed = self.tts_speed;
+        cx.spawn(async move |this, cx| {
+            let is_current = |this: &gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                this.read_with(cx, |this, _| this.speech_generation == generation)
+                    .unwrap_or(false)
+            };
+            for (ix, chunk) in chunks.into_iter().enumerate() {
+                let task_backend = backend.clone();
+                let user_id = user_id.clone();
+                let voice = voice.clone();
+                let synthesized = backend
+                    .spawn(async move {
+                        task_backend
+                            .synthesize_speech(&user_id, chunk, voice, speed)
+                            .await
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("Text-to-speech was cancelled".to_string()));
+                if !is_current(&this, cx) {
+                    return;
+                }
+                let played = match synthesized {
+                    Ok(wav) => audio.play(generation, wav).await,
+                    Err(message) => Err(message),
+                };
+                if let Err(message) = played {
+                    this.update(cx, |this, cx| {
+                        if this.speech_generation == generation {
+                            this.speech = None;
+                            this.notice = Some(message.into());
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                    return;
+                }
+                if ix == 0 {
+                    this.update(cx, |this, cx| {
+                        if let Some(speech) = this.speech.as_mut()
+                            && this.speech_generation == generation
+                        {
+                            speech.playing = true;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }
+            }
+            audio.await_idle(generation).await;
+            this.update(cx, |this, cx| {
+                if this.speech_generation == generation && this.speech.take().is_some() {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn refresh_roots(&self, cx: &mut Context<Self>) {
@@ -1110,6 +1351,8 @@ impl ChatScreen {
         self.default_web_enabled = settings.default_web_enabled;
         self.notify_enabled = settings.desktop_notifications;
         self.summaries_enabled = settings.tool_summaries;
+        self.tts_voice.clone_from(&settings.tts_voice);
+        self.tts_speed = settings.tts_speed;
         self.pinned_roots = settings.pinned_roots.clone();
         self.rebuild_project_groups();
         if self.uses_default_permission_mode
@@ -2756,6 +2999,11 @@ impl ChatScreen {
     }
 
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.stop_speech(cx);
+        if self.recording {
+            self.recording = false;
+            self.audio.cancel_recording();
+        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
@@ -5223,6 +5471,8 @@ impl ChatScreen {
                         tool_summaries: &chat.tool_summaries,
                         summary_requests: &chat.summary_requests,
                         render: &render_ctx,
+                        speech: chat.speech.as_ref(),
+                        speech_available: chat.audio_caps.speech,
                     };
                     let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                     let revision = chat
@@ -5554,6 +5804,34 @@ impl ChatScreen {
                             }))
                             .child(icon("image", px(16.), theme::text_secondary())),
                     )
+                    .when(self.audio_caps.transcription, |row| {
+                        let recording = self.recording;
+                        let transcribing = self.transcribing;
+                        row.child(
+                            div()
+                                .id("record-voice")
+                                .size_8()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
+                                .hover(|style| {
+                                    style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer()
+                                })
+                                .when(transcribing, |el| el.opacity(0.5))
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_recording(cx);
+                                }))
+                                .child(if transcribing {
+                                    icon("loader-circle", px(16.), theme::text_secondary())
+                                } else if recording {
+                                    icon("square", px(14.), theme::bg_app())
+                                } else {
+                                    icon("mic", px(16.), theme::text_secondary())
+                                }),
+                        )
+                    })
                     .child(
                         chip(
                             "root-picker",
@@ -6041,7 +6319,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .children(copy)
     } else {
         div()
-            .group(group)
+            .group(group.clone())
             .max_w_full()
             .pr_2()
             .flex()
@@ -6054,7 +6332,269 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .get(&item.id, MarkdownKind::Body, revision, text),
                 ctx,
             ))
-            .children(copy.map(|button| div().flex().child(button)))
+            .children(copy.map(|button| {
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(button)
+                    .when(transcript.speech_available, |row| {
+                        let speech = transcript.speech.filter(|speech| speech.item_id == item.id);
+                        row.child(speak_message_button(
+                            &item.id,
+                            &group,
+                            text,
+                            speech,
+                            chat.clone(),
+                        ))
+                    })
+            }))
+    }
+}
+
+/// Hover-revealed button that reads one message aloud; stays visible and
+/// turns into Stop while that message plays.
+fn speak_message_button(
+    item_id: &str,
+    group: &SharedString,
+    text: &str,
+    speech: Option<&SpeechState>,
+    chat: gpui::WeakEntity<ChatScreen>,
+) -> gpui::Stateful<Div> {
+    let text = text.to_string();
+    let item_id = item_id.to_string();
+    let (icon_name, label) = match speech {
+        None => ("volume-2", "Speak"),
+        Some(SpeechState { playing: false, .. }) => ("loader-circle", "Preparing…"),
+        Some(SpeechState { playing: true, .. }) => ("square", "Stop"),
+    };
+    let active = speech.is_some();
+    div()
+        .id(SharedString::from(format!("speak-message-{item_id}")))
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_1p5()
+        .py_0p5()
+        .rounded_md()
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_muted()))
+        .opacity(if active { 1. } else { 0. })
+        .group_hover(group.clone(), |style| style.opacity(1.))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_elevated()))
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .cursor_pointer()
+        })
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            cx.stop_propagation();
+            let item_id = item_id.clone();
+            let text = text.clone();
+            chat.update(cx, |chat, cx| chat.toggle_speech(item_id, text, cx))
+                .ok();
+        })
+        .child(icon(icon_name, px(12.), theme::text_secondary()))
+        .child(label)
+}
+
+/// Longest chunk sent to text-to-speech, in words. Mirrors the Maple web
+/// app; the model handles short passages best.
+const SPEECH_CHUNK_MAX_WORDS: usize = 300;
+
+/// Split markdown into plain-text chunks for text-to-speech: fenced code
+/// and rules are dropped, inline markup is stripped, and paragraphs are
+/// grouped up to [`SPEECH_CHUNK_MAX_WORDS`].
+pub(crate) fn speech_chunks(text: &str) -> Vec<String> {
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+        let is_rule = compact.len() >= 3
+            && (compact.chars().all(|c| c == '-')
+                || compact.chars().all(|c| c == '*')
+                || compact.chars().all(|c| c == '_'));
+        let spoken = if is_rule {
+            String::new()
+        } else {
+            strip_inline_markdown(trimmed)
+        };
+        if spoken.is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(&spoken);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+
+    let mut chunks: Vec<String> = Vec::new();
+    let mut chunk = String::new();
+    let mut chunk_words = 0;
+    for paragraph in paragraphs {
+        let words = paragraph.split_whitespace().count();
+        if chunk_words > 0 && chunk_words + words > SPEECH_CHUNK_MAX_WORDS {
+            chunks.push(std::mem::take(&mut chunk));
+            chunk_words = 0;
+        }
+        if words > SPEECH_CHUNK_MAX_WORDS {
+            // One very long paragraph: split by sentence-ish boundaries.
+            let mut piece = String::new();
+            let mut piece_words = 0;
+            for word in paragraph.split_whitespace() {
+                if !piece.is_empty() {
+                    piece.push(' ');
+                }
+                piece.push_str(word);
+                piece_words += 1;
+                let ends_sentence = word.ends_with(['.', '!', '?', ';', ':']);
+                if piece_words >= SPEECH_CHUNK_MAX_WORDS
+                    || (piece_words >= SPEECH_CHUNK_MAX_WORDS / 2 && ends_sentence)
+                {
+                    chunks.push(std::mem::take(&mut piece));
+                    piece_words = 0;
+                }
+            }
+            if !piece.is_empty() {
+                chunk = piece;
+                chunk_words = piece_words;
+            }
+            continue;
+        }
+        if !chunk.is_empty() {
+            chunk.push(' ');
+        }
+        chunk.push_str(&paragraph);
+        chunk_words += words;
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+/// Drop heading marks, list markers, emphasis, inline code ticks, and
+/// link targets from one markdown line.
+fn strip_inline_markdown(line: &str) -> String {
+    let mut rest = line.trim_start_matches('#').trim_start();
+    rest = rest.trim_start_matches('>').trim_start();
+    if let Some(stripped) = rest
+        .strip_prefix("- ")
+        .or_else(|| rest.strip_prefix("* "))
+        .or_else(|| rest.strip_prefix("+ "))
+    {
+        rest = stripped;
+    } else if let Some(dot) = rest.find(". ")
+        && dot <= 3
+        && rest[..dot].chars().all(|c| c.is_ascii_digit())
+    {
+        rest = &rest[dot + 2..];
+    }
+    if let Some(stripped) = rest
+        .strip_prefix("[ ] ")
+        .or_else(|| rest.strip_prefix("[x] "))
+    {
+        rest = stripped;
+    }
+
+    // Links: keep the label, drop the target. Images: drop entirely.
+    let mut out = String::with_capacity(rest.len());
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '!' if chars.peek() == Some(&'[') => {
+                let tail: String = chars.clone().collect();
+                if let Some(skip) = link_end(&tail) {
+                    for _ in 0..skip {
+                        chars.next();
+                    }
+                }
+            }
+            '[' => {
+                let tail: String = chars.clone().collect();
+                if let Some(close) = tail.find("](")
+                    && let Some(end) = tail[close..].find(')')
+                {
+                    out.push_str(&tail[..close]);
+                    for _ in 0..close + end + 1 {
+                        chars.next();
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            '*' | '_' | '`' | '~' => {}
+            _ => out.push(c),
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Characters to skip after `!` for an image `[alt](src)`.
+fn link_end(tail: &str) -> Option<usize> {
+    let close = tail.find("](")?;
+    let end = tail[close..].find(')')?;
+    Some(close + end + 1)
+}
+
+#[cfg(test)]
+mod speech_tests {
+    use super::*;
+
+    #[test]
+    fn chunks_drop_code_and_markup() {
+        let text = "# Title\n\nSee [the docs](https://x.y) for **bold** `code`.\n\n```rs\nfn x() {}\n```\n\n---\n\n- item one\n1. item two\n![alt](img.png)";
+        assert_eq!(
+            speech_chunks(text),
+            vec!["Title See the docs for bold code. item one item two".to_string()]
+        );
+    }
+
+    #[test]
+    fn chunks_group_paragraphs_up_to_the_word_cap() {
+        let paragraph = "word ".repeat(200).trim().to_string();
+        let text = format!("{paragraph}\n\n{paragraph}\n\n{paragraph}");
+        let chunks = speech_chunks(&text);
+        assert_eq!(chunks.len(), 3);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.split_whitespace().count() == 200)
+        );
+    }
+
+    #[test]
+    fn a_long_paragraph_splits_at_sentences() {
+        let sentence = "one two three four five six seven eight nine ten. ";
+        let text = sentence.repeat(50);
+        let chunks = speech_chunks(&text);
+        assert!(chunks.len() >= 2);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.split_whitespace().count() <= SPEECH_CHUNK_MAX_WORDS)
+        );
+        assert!(chunks.iter().all(|chunk| chunk.ends_with('.')));
+    }
+
+    #[test]
+    fn blank_text_has_no_chunks() {
+        assert!(speech_chunks("```\ncode only\n```").is_empty());
+        assert!(speech_chunks("   \n\n").is_empty());
     }
 }
 

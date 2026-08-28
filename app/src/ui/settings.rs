@@ -394,6 +394,28 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    fn cycle_tts_voice(&mut self, cx: &mut Context<Self>) {
+        let voices = settings::TTS_VOICES;
+        let current = voices
+            .iter()
+            .position(|(id, _)| *id == self.settings.tts_voice)
+            .unwrap_or(0);
+        self.settings.tts_voice = voices[(current + 1) % voices.len()].0.to_string();
+        settings::save_settings_in_background(self.settings.clone());
+        cx.notify();
+    }
+
+    fn cycle_tts_speed(&mut self, cx: &mut Context<Self>) {
+        let speeds = settings::TTS_SPEEDS;
+        let current = speeds
+            .iter()
+            .position(|speed| (*speed - self.settings.tts_speed).abs() < 0.01)
+            .unwrap_or(0);
+        self.settings.tts_speed = speeds[(current + 1) % speeds.len()];
+        settings::save_settings_in_background(self.settings.clone());
+        cx.notify();
+    }
+
     fn toggle_tool_summaries(&mut self, cx: &mut Context<Self>) {
         self.settings.tool_summaries = !self.settings.tool_summaries;
         settings::save_settings_in_background(self.settings.clone());
@@ -632,6 +654,24 @@ impl SettingsScreen {
                         },
                         cx.listener(|this, _event, _window, cx| {
                             this.toggle_tool_summaries(cx);
+                        }),
+                    ))
+                    .child(section_title("Voice"))
+                    .child(setting_row(
+                        "Speech voice",
+                        "The voice that reads messages aloud. Click to move to \
+                         the next voice.",
+                        settings::tts_voice_label(&self.settings.tts_voice),
+                        cx.listener(|this, _event, _window, cx| {
+                            this.cycle_tts_voice(cx);
+                        }),
+                    ))
+                    .child(setting_row(
+                        "Speech speed",
+                        "How fast messages are read aloud.",
+                        &format!("{:.1}×", self.settings.tts_speed),
+                        cx.listener(|this, _event, _window, cx| {
+                            this.cycle_tts_speed(cx);
                         }),
                     ));
             }

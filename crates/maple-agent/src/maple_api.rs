@@ -255,6 +255,55 @@ impl MapleApiSession {
         response.map_err(map_sdk_error)
     }
 
+    /// POST a JSON body to an audio endpoint and collect the whole
+    /// response. Audio responses are small (one spoken chunk or one
+    /// transcript), so buffering is fine.
+    pub(crate) async fn audio_request(
+        &self,
+        path: &'static str,
+        accept: &'static str,
+        body: Vec<u8>,
+    ) -> Result<AudioResponse, String> {
+        use futures_util::TryStreamExt;
+
+        let mut request = InferenceRequest::new(body.into());
+        *request.method_mut() = http::Method::POST;
+        *request.uri_mut() = http::Uri::from_static(path);
+        request
+            .headers_mut()
+            .insert(http::header::ACCEPT, http::HeaderValue::from_static(accept));
+        request.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
+
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.send_inference_request(request).await;
+        self.record_refresh(&snapshot).await?;
+        let response = response.map_err(|error| {
+            log::warn!("Maple audio request failed: {error}");
+            "The audio request failed".to_string()
+        })?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let chunks: Vec<bytes::Bytes> = response
+            .into_body()
+            .try_collect()
+            .await
+            .map_err(|error| format!("The audio response could not be read: {error}"))?;
+        Ok(AudioResponse {
+            status,
+            content_type,
+            body: chunks.concat(),
+        })
+    }
+
     pub(crate) async fn send_inference_request(
         self: Arc<Self>,
         request: InferenceRequest,
@@ -454,6 +503,14 @@ fn map_sdk_error(error: opensecret::Error) -> String {
         crate::agent::provider::opensecret_error_category(&error)
     );
     "Maple API authentication failed".to_string()
+}
+
+/// A buffered response from a Maple audio endpoint.
+pub(crate) struct AudioResponse {
+    pub status: u16,
+    /// Media type without parameters, lower case; empty when absent.
+    pub content_type: String,
+    pub body: Vec<u8>,
 }
 
 pub fn account_scope(user_id: &str) -> Result<String, String> {

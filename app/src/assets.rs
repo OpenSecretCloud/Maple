@@ -29,6 +29,7 @@ assets!(
     "icons/image.svg",
     "icons/loader-circle.svg",
     "icons/lock.svg",
+    "icons/mic.svg",
     "icons/maple-wordmark.svg",
     "icons/maximize-2.svg",
     "icons/minimize-2.svg",
@@ -45,6 +46,7 @@ assets!(
     "icons/square-pen.svg",
     "icons/square.svg",
     "icons/trash-2.svg",
+    "icons/volume-2.svg",
     "icons/x.svg",
     "icons/zap.svg",
 );

@@ -4,6 +4,8 @@
 
 #[cfg(feature = "desktop")]
 mod assets;
+#[cfg(feature = "desktop")]
+mod audio;
 mod backend;
 mod billing;
 #[cfg(feature = "desktop")]

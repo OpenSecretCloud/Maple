@@ -19,6 +19,8 @@ desktop = [
     "dep:image",
     "dep:unicode-segmentation",
     "dep:pulldown-cmark",
+    "dep:cpal",
+    "dep:rodio",
 ]
 # `maple-gpui acp`: the Agent Client Protocol server on stdio.
 acp = ["maple-agent/acp"]
@@ -40,6 +42,8 @@ opensecret = "3.6.2"
 uuid = { version = "1", features = ["v4"] }
 unicode-segmentation = { version = "1", optional = true }
 pulldown-cmark = { version = "0.13", default-features = false, optional = true }
+cpal = { version = "0.17", optional = true }
+rodio = { version = "0.22", default-features = false, features = ["playback", "wav"], optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 maple-proxy = { version = "0.3.2", optional = true }

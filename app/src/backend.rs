@@ -878,6 +878,42 @@ impl AgentBackend {
             .await
     }
 
+    /// Which voice endpoints the account offers.
+    pub async fn audio_capabilities(
+        &self,
+        user_id: &str,
+    ) -> Result<maple_agent::agent::AudioCapabilities, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .audio_capabilities()
+            .await
+    }
+
+    /// WAV audio for `text` in the given voice.
+    pub async fn synthesize_speech(
+        &self,
+        user_id: &str,
+        text: String,
+        voice: String,
+        speed: f32,
+    ) -> Result<Vec<u8>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .synthesize_speech(&text, &voice, speed)
+            .await
+    }
+
+    /// Transcript text for a WAV recording.
+    pub async fn transcribe_audio(&self, user_id: &str, wav: Vec<u8>) -> Result<String, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .transcribe_audio(wav)
+            .await
+    }
+
     /// MCP servers configured for the account, with the session's enabled
     /// state for each.
     pub async fn list_session_mcp_servers(

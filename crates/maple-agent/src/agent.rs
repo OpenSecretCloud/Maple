@@ -400,6 +400,46 @@ pub struct AgentMcpConnectionError {
     pub error: String,
 }
 
+const TTS_MODEL: &str = "voxtral-tts";
+const TRANSCRIPTION_MODEL: &str = "whisper-large-v3";
+
+/// Voice endpoints the signed-in account can use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AudioCapabilities {
+    pub transcription: bool,
+    pub speech: bool,
+}
+
+/// A user-facing message for a failed audio response, or `None` on success.
+fn audio_error_message(response: &crate::maple_api::AudioResponse) -> Option<String> {
+    if (200..300).contains(&response.status) {
+        return None;
+    }
+    if matches!(response.status, 402 | 403) {
+        return Some("Voice features need a Pro, Max, or Team plan".to_string());
+    }
+    Some(match audio_error_detail(&response.body) {
+        Some(detail) => format!("Voice request failed: {detail}"),
+        None => format!("Voice request failed with HTTP {}", response.status),
+    })
+}
+
+/// The `message`, `detail`, or `error` text of a JSON error body.
+fn audio_error_detail(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    ["message", "detail", "error"]
+        .iter()
+        .find_map(|key| {
+            let field = value.get(key)?;
+            field
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| field.get("message")?.as_str().map(str::to_string))
+        })
+        .map(|detail| detail.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|detail| !detail.is_empty())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionMcpServer {
@@ -4032,6 +4072,108 @@ impl AgentRuntimeHandle {
             model.context_window,
             model.max_context_tokens,
         ))
+    }
+
+    /// The live Maple API session for a one-off request outside a run.
+    async fn maple_api_session(&self) -> Result<Arc<MapleApiSession>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let runtime = state.inner.lock().await;
+        let current = runtime
+            .as_ref()
+            .ok_or_else(|| "Agent runtime is not running".to_string())?;
+        ensure_runtime_account(current, self.account_scope.as_ref())?;
+        Ok(Arc::clone(&current.maple_api_session))
+    }
+
+    /// Which voice endpoints the account's model list offers. Follows the
+    /// Maple web app: a `whisper` model enables transcription, a `tts`
+    /// model enables speech.
+    pub async fn audio_capabilities(&self) -> Result<AudioCapabilities, String> {
+        let models = self.maple_api_session().await?.model_ids().await?;
+        let has = |marker: &str| {
+            models
+                .iter()
+                .any(|model| model.to_ascii_lowercase().contains(marker))
+        };
+        Ok(AudioCapabilities {
+            transcription: has("whisper"),
+            speech: has("tts"),
+        })
+    }
+
+    /// Turn `text` into WAV audio with Maple's text-to-speech model.
+    pub async fn synthesize_speech(
+        &self,
+        text: &str,
+        voice: &str,
+        speed: f32,
+    ) -> Result<Vec<u8>, String> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "input": text,
+            "model": TTS_MODEL,
+            "voice": voice,
+            "speed": speed,
+        }))
+        .map_err(|error| error.to_string())?;
+        let response = self
+            .maple_api_session()
+            .await?
+            .audio_request("/v1/audio/speech", "audio/wav", body)
+            .await?;
+        if let Some(message) = audio_error_message(&response) {
+            return Err(message);
+        }
+        if response.content_type.contains("json") {
+            // The provider reports its own failures as a JSON body on 200.
+            return Err(match audio_error_detail(&response.body) {
+                Some(detail) => format!("Text-to-speech provider returned an error: {detail}"),
+                None => "Text-to-speech provider returned an error response".to_string(),
+            });
+        }
+        let is_audio = response.content_type.starts_with("audio/")
+            || response.content_type == "application/octet-stream"
+            || response.content_type.is_empty();
+        if !is_audio {
+            return Err(format!(
+                "Text-to-speech returned unexpected content: {}",
+                response.content_type
+            ));
+        }
+        if response.body.is_empty() {
+            return Err("Text-to-speech returned an empty audio file".to_string());
+        }
+        Ok(response.body)
+    }
+
+    /// Transcribe WAV audio with Maple's Whisper model.
+    pub async fn transcribe_audio(&self, wav: Vec<u8>) -> Result<String, String> {
+        use base64::Engine;
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "file": base64::engine::general_purpose::STANDARD.encode(&wav),
+            "filename": "recording.wav",
+            "content_type": "audio/wav",
+            "model": TRANSCRIPTION_MODEL,
+        }))
+        .map_err(|error| error.to_string())?;
+        let response = self
+            .maple_api_session()
+            .await?
+            .audio_request("/v1/audio/transcriptions", "application/json", body)
+            .await?;
+        if let Some(message) = audio_error_message(&response) {
+            return Err(message);
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&response.body)
+            .map_err(|error| format!("Transcription returned invalid JSON: {error}"))?;
+        Ok(parsed
+            .get("text")
+            .and_then(|text| text.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string())
     }
 
     /// Whether the catalog marks a model (or the target of an alias) as

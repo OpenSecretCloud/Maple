@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev \
-            libfreetype-dev libclang-dev cmake
+            libfreetype-dev libclang-dev cmake libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -69,7 +69,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev \
-            libfreetype-dev libclang-dev cmake mesa-vulkan-drivers
+            libfreetype-dev libclang-dev cmake libasound2-dev mesa-vulkan-drivers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -99,7 +99,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev \
-            libfreetype-dev libclang-dev cmake
+            libfreetype-dev libclang-dev cmake libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

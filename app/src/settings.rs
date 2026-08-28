@@ -43,6 +43,60 @@ pub struct AppSettings {
     /// Color theme: "system", "dark", or "light".
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Text-to-speech voice id; see [`TTS_VOICES`].
+    #[serde(default = "default_tts_voice")]
+    pub tts_voice: String,
+    /// Text-to-speech speed multiplier; see [`TTS_SPEEDS`].
+    #[serde(default = "default_tts_speed")]
+    pub tts_speed: f32,
+}
+
+/// Voxtral voice ids with their labels, in the order the settings row
+/// cycles through them. Mirrors the Maple web app.
+pub const TTS_VOICES: [(&str, &str); 20] = [
+    ("neutral_female", "Neutral — Female"),
+    ("neutral_male", "Neutral — Male"),
+    ("casual_female", "Casual — Female"),
+    ("casual_male", "Casual — Male"),
+    ("cheerful_female", "Cheerful — Female"),
+    ("ar_male", "Arabic-accented — Male"),
+    ("de_female", "German-accented — Female"),
+    ("de_male", "German-accented — Male"),
+    ("es_female", "Spanish-accented — Female"),
+    ("es_male", "Spanish-accented — Male"),
+    ("fr_female", "French-accented — Female"),
+    ("fr_male", "French-accented — Male"),
+    ("hi_female", "Hindi-accented — Female"),
+    ("hi_male", "Hindi-accented — Male"),
+    ("it_female", "Italian-accented — Female"),
+    ("it_male", "Italian-accented — Male"),
+    ("nl_female", "Dutch-accented — Female"),
+    ("nl_male", "Dutch-accented — Male"),
+    ("pt_female", "Portuguese-accented — Female"),
+    ("pt_male", "Portuguese-accented — Male"),
+];
+
+/// Speech speeds the settings row cycles through.
+pub const TTS_SPEEDS: [f32; 6] = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0];
+
+pub const DEFAULT_TTS_VOICE: &str = "casual_female";
+pub const DEFAULT_TTS_SPEED: f32 = 1.0;
+
+/// Label for a voice id; the id itself when it is unknown.
+pub fn tts_voice_label(voice: &str) -> &str {
+    TTS_VOICES
+        .iter()
+        .find(|(id, _)| *id == voice)
+        .map(|(_, label)| *label)
+        .unwrap_or(voice)
+}
+
+fn default_tts_voice() -> String {
+    DEFAULT_TTS_VOICE.to_string()
+}
+
+fn default_tts_speed() -> f32 {
+    DEFAULT_TTS_SPEED
 }
 
 /// Persisted window geometry. Position is left to the window manager:
@@ -124,6 +178,8 @@ impl Default for AppSettings {
             harness_instructions: String::new(),
             window: None,
             theme: default_theme(),
+            tts_voice: default_tts_voice(),
+            tts_speed: default_tts_speed(),
         }
     }
 }
