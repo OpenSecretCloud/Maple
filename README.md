@@ -1,90 +1,162 @@
 # maple-gpui
 
-Native Maple desktop app: the Maple Agent Mode flow rebuilt in
-[gpui](https://crates.io/crates/gpui) over the unchanged Maple agent runtime.
+Native Maple desktop app. It rebuilds Maple Agent Mode in
+[gpui](https://crates.io/crates/gpui) on top of the Maple agent runtime
+ported from the Tauri app.
 
-Scope: Desktop Agent Mode only. ACP, proxy, and daemon work stay out of the
-GUI; see "Architecture" below for where they will attach.
+The same binary also runs as an Agent Client Protocol (ACP) agent and as an
+OpenAI-compatible proxy. See "Command line" below.
 
 ## Layout
 
 ```
-crates/maple-agent/   Backend: Maple's transport-neutral agent runtime,
-                      extracted from ../Maple's src-tauri with Tauri removed.
-                      Owns embedded Goose, the Maple provider over the
-                      OpenSecret SDK, developer tools, permission policy,
-                      and account-scoped session storage.
-app/                  Frontend: gpui binary. Owns the window, login screen,
-                      chat UI, and the backend adapter.
-docs/                 Reference material: theme spec, flow checklist, gpui
-                      cheat sheet, and the review reports that shaped the
-                      current code.
+app/                  The maple-gpui binary. Owns the window, login, chat,
+                      settings, notifications, and the backend adapter.
+crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
+                      the Tauri app with Tauri removed. Owns embedded Goose,
+                      the Maple provider over the OpenSecret SDK, developer
+                      tools, permission policy, account-scoped session
+                      storage, and the ACP server.
+crates/maple-billing/ HTTP client for the Maple billing API.
+docs/                 Theme spec measured from the Tauri app.
+scripts/              Developer helpers (screenshot on GNOME Wayland).
 ```
 
 ### Backend / frontend boundary
 
 `app/src/backend.rs` is the only file that imports `maple_agent`. It owns a
-private Tokio runtime, exposes an async facade (`AgentBackend`) plus one
-event stream, and converts nothing else. The UI talks to that facade only.
-This mirrors Maple's own edge-adapter pattern (`agent_tauri.rs` and
-`agent_acp.rs` are sibling adapters over `MapleAgentService`), so a future
-process split — GUI talking to a CLI/daemon over a socket, or ACP/proxy as
-separate pieces — replaces the facade without touching UI code.
+private Tokio runtime and exposes an async facade (`AgentBackend`) plus one
+event stream. The UI talks to that facade only. This mirrors Maple's own
+edge-adapter pattern, so a future process split replaces the facade without
+touching UI code.
 
-The runtime itself was copied from `../Maple/frontend/src-tauri/src`
-(`agent.rs`, `agent/*`, `maple_api.rs`, `open_secret_config.rs`) and changed
-only to remove Tauri:
+The runtime was copied from `Maple/frontend/src-tauri/src` (`agent.rs`,
+`agent/*`, `maple_api.rs`, `open_secret_config.rs`) and changed only to
+remove Tauri:
 
-- `tauri::http` types → the `http` crate (`agent/provider.rs`)
-- Tauri event/command adapters dropped; auth state and the agent event sink
-  are injectable traits
+- `tauri::http` types → the `http` crate
+- Tauri event and command adapters dropped; auth state and the agent event
+  sink are injectable traits
 - public visibility opened on the service surface the app consumes
 
-Goose is pinned to the same aaif-goose fork revision as Maple. The port was
-diff-audited file by file; the runtime passes its full 290-test suite.
+Goose is pinned to the same aaif-goose fork revision as Maple.
+
+## Features
+
+- Sign in with email and password, or with GitHub, Google, or Apple OAuth.
+  The session persists in `auth.json` (mode 0600) so the next launch and
+  the `acp` mode skip sign-in.
+- Agent chat with streaming Markdown, tool calls, permission prompts,
+  agent questions, image attachments, and a context-window indicator.
+- Projects (working directories) with pinned and recent roots.
+- Sessions grouped by project, with archive and restore for sessions and
+  whole projects.
+- Settings: general (permission mode, web tools, tool details,
+  notifications), system prompt, MCP servers, usage totals from the Goose
+  ledger, and about.
+- Billing status from the Maple billing API.
+- Desktop notifications when the agent needs a decision.
 
 ## Prerequisites
 
-- Rust 1.94+ (stable)
+- Rust stable (edition 2024; 1.94 or newer)
 - Linux: `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libfontconfig-dev`,
-  `libfreetype-dev`, and a Vulkan loader (any ICD; Lavapipe works for
-  headless testing). Debian/Ubuntu:
+  `libfreetype-dev`, `libclang-dev`, `cmake`, and a Vulkan loader.
+  Debian/Ubuntu:
 
   ```sh
   sudo apt install libxkbcommon-dev libxkbcommon-x11-dev \
-       libfontconfig-dev libfreetype-dev mesa-vulkan-drivers
+       libfontconfig-dev libfreetype-dev libclang-dev cmake \
+       mesa-vulkan-drivers
   ```
 
-## Running
+- macOS and Windows: the Rust toolchain only.
 
-```bash
-cargo run -p maple-gpui
+## Build and run
+
+```sh
+cargo run -p maple-gpui              # desktop app, dev profile
+cargo build --release -p maple-gpui  # release binary in target/release
 ```
 
-Configuration:
+Release builds use fat LTO and one codegen unit. Use a release build for any
+performance check; the dev profile is `opt-level = 1`.
 
-- `MAPLE_API_URL` — OpenSecret backend. Defaults to
-  `https://enclave.trymaple.ai`; point it at `http://127.0.0.1:3000` for a
-  local OpenSecret dev backend.
-- The agent's project root is the working directory you launch from.
-- App data lives under `~/.config/maple-gpui` and `~/.local/share/maple-gpui`
-  (separate from the Tauri app's directories; the two apps must not share
-  Goose session storage).
+## Command line
 
-Sign in with your Maple email and password (OpenSecret `/login`). Tokens are
-kept in memory only — Sign out or quit drops them, and you sign in again on
-the next launch.
+```
+maple-gpui                 Open the desktop app.
+maple-gpui acp             Serve the Agent Client Protocol on stdio.
+maple-gpui proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
+maple-gpui --version       Print the version.
+```
 
-## Headless QA
+### `maple-gpui acp`
 
-The UI was verified headless with Xvfb + Lavapipe and an XTEST input
-injector; those tools live in git history (`app/examples/`) if needed
-again.
+Runs a standalone ACP agent over stdio for editors and ACP clients. It
+reuses the sign-in saved by the desktop app and hosts its own runtime, so
+the desktop app does not need to run. Logs go to the log file only; stdout
+is the ACP channel. If no sign-in is saved, it exits with a message that
+tells the user to sign in from the desktop app first.
 
+### `maple-gpui proxy`
+
+```
+--host HOST     bind address (default 127.0.0.1, env MAPLE_PROXY_HOST)
+--port PORT     bind port (default 8080, env MAPLE_PROXY_PORT)
+--api-key KEY   Maple API key for requests without an Authorization header
+                (env MAPLE_API_KEY); not allowed together with --cors
+--cors          allow browser origins; every request must then carry its
+                own key
+```
+
+Without `--cors`, the proxy rejects requests that carry browser-only headers
+(`Origin`, `Sec-Fetch-Site`) so a web page cannot spend a saved key through
+loopback. With `--cors`, a default key is refused for the same reason.
+
+## Configuration
+
+All settings are environment variables. None are required.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `MAPLE_API_URL` | OpenSecret backend. Use `http://127.0.0.1:3000` for a local dev backend. | `https://enclave.trymaple.ai` |
+| `MAPLE_BILLING_API_URL` | Maple billing API. | `https://billing.opensecret.cloud` |
+| `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
+| `MAPLE_MODEL` | Model to select at start. | Runtime default |
+| `MAPLE_PERMISSION_MODE` | `smart_approve` or `auto`. Overrides the saved setting. | Saved setting |
+| `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
+| `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
+| `RUST_LOG` | Log filter. | `info` |
+
+### File locations
+
+| Path | Content |
+| --- | --- |
+| `$XDG_CONFIG_HOME/maple-gpui/` (`~/.config/maple-gpui/`) | `auth.json`, `settings.json`, and per-account Goose state under `agent/accounts/<scope>/` |
+| `$XDG_DATA_HOME/maple-gpui/logs/maple-gpui.log` (`~/.local/share/maple-gpui/logs/`) | Log file. Panics are logged here too. |
+
+These directories are separate from the Tauri app's directories. The two
+apps must not share Goose session storage.
 
 ## Tests
 
-```bash
-cargo test -p maple-agent   # the ported runtime suite from Maple (290 tests)
-cargo check --workspace
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
+
+CI runs the same three commands on Linux, macOS, and Windows, plus a
+RustSec audit and a Linux release build. A `v*` tag builds release binaries
+for all three platforms and attaches them to a GitHub release.
+
+## Dependencies to watch
+
+`Cargo.toml` patches `opensecret` to a git branch that adds a root workspace
+manifest around the in-tree Rust SDK, so the `get_model_catalog()` method is
+reachable. Drop the patch when the SDK publishes that method to crates.io.
+
+## License
+
+MIT. See `LICENSE`.
