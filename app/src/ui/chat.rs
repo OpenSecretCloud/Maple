@@ -41,6 +41,9 @@ enum RenameTarget {
     Project(String),
 }
 
+/// Sent prompts kept for Up/Down recall.
+const PROMPT_HISTORY_LIMIT: usize = 50;
+
 /// An image staged in the composer: the data URL the runtime stores with
 /// the message and a square thumbnail, cropped off the UI thread.
 #[derive(Clone)]
@@ -346,6 +349,12 @@ pub struct ChatScreen {
     lightbox: Option<Arc<gpui::Image>>,
     /// Display names for project roots, from settings.
     project_names: HashMap<String, String>,
+    /// Sent prompts, oldest first, for Up/Down recall in the composer.
+    prompt_history: Vec<String>,
+    /// Position in `prompt_history` while browsing; `None` when typing.
+    history_index: Option<usize>,
+    /// The unsent draft saved when browsing started.
+    history_draft: String,
     /// Inline rename in progress in the sidebar.
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
@@ -428,6 +437,27 @@ impl ChatScreen {
                             "down" | "up" if token_ok => this.update(cx, |chat, cx| {
                                 chat.navigate_slash_palette(&key, token, cx)
                             }),
+                            "down" | "up" => {
+                                let recalled = this
+                                    .update(cx, |chat, _| chat.recall_prompt(&key, text.as_ref()));
+                                match recalled {
+                                    Some(recalled) => {
+                                        let weak = weak.clone();
+                                        cx.defer(move |cx| {
+                                            weak.update(cx, |chat, cx| {
+                                                if let Some(composer) = chat.composer.clone() {
+                                                    composer.update(cx, |input, cx| {
+                                                        input.set_text(&recalled, cx)
+                                                    });
+                                                }
+                                            })
+                                            .ok();
+                                        });
+                                        true
+                                    }
+                                    None => false,
+                                }
+                            }
                             "tab" if token_ok => {
                                 let name = this.update(cx, |chat, _| {
                                     let entries = slash_entries_for(token, &chat.slash_commands);
@@ -600,6 +630,9 @@ impl ChatScreen {
             question_step_answers: HashMap::new(),
             lightbox: None,
             project_names: settings.project_names.clone(),
+            prompt_history: Vec::new(),
+            history_index: None,
+            history_draft: String::new(),
             rename: None,
             rename_input: None,
             rename_focus_pending: false,
@@ -1503,6 +1536,66 @@ impl ChatScreen {
         );
     }
 
+    /// Keep a sent prompt for Up/Down recall. Repeats move to the end.
+    fn remember_prompt(&mut self, text: &str) {
+        let text = text.trim();
+        self.history_index = None;
+        self.history_draft.clear();
+        if text.is_empty() {
+            return;
+        }
+        self.prompt_history.retain(|entry| entry != text);
+        self.prompt_history.push(text.to_string());
+        if self.prompt_history.len() > PROMPT_HISTORY_LIMIT {
+            let excess = self.prompt_history.len() - PROMPT_HISTORY_LIMIT;
+            self.prompt_history.drain(..excess);
+        }
+    }
+
+    /// Up/Down in the composer walks sent prompts when the composer is
+    /// empty or still shows a recalled prompt. Returns the text to show,
+    /// or `None` when the key should move the caret instead.
+    fn recall_prompt(&mut self, key: &str, current: &str) -> Option<String> {
+        let browsing = self
+            .history_index
+            .and_then(|index| self.prompt_history.get(index))
+            .is_some_and(|entry| entry == current);
+        if !browsing && !current.trim().is_empty() {
+            return None;
+        }
+        if self.prompt_history.is_empty() {
+            return None;
+        }
+        match key {
+            "up" => {
+                let next = match self.history_index {
+                    Some(0) => return None,
+                    Some(index) if browsing => index - 1,
+                    _ => {
+                        self.history_draft = current.to_string();
+                        self.prompt_history.len() - 1
+                    }
+                };
+                self.history_index = Some(next);
+                Some(self.prompt_history[next].clone())
+            }
+            "down" => {
+                let index = self.history_index?;
+                if !browsing {
+                    return None;
+                }
+                if index + 1 < self.prompt_history.len() {
+                    self.history_index = Some(index + 1);
+                    Some(self.prompt_history[index + 1].clone())
+                } else {
+                    self.history_index = None;
+                    Some(std::mem::take(&mut self.history_draft))
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn is_run_active(&self) -> bool {
         self.selected_session
             .as_ref()
@@ -1843,6 +1936,7 @@ impl ChatScreen {
                 .collect(),
         };
         self.notice = None;
+        self.remember_prompt(&text);
         // Clear the composer at dispatch so no entry path can leave the
         // sent text behind; a failed send restores it below.
         if let Some(composer) = self.composer.clone() {
@@ -5008,6 +5102,35 @@ fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat> {
         None
     }
 }
+/// Hover-revealed button that copies one message's text.
+fn copy_message_button(item_id: &str, group: &SharedString, text: &str) -> gpui::Stateful<Div> {
+    let text = text.to_string();
+    div()
+        .id(SharedString::from(format!("copy-message-{item_id}")))
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_1p5()
+        .py_0p5()
+        .rounded_md()
+        .text_xs()
+        .text_color(gpui::rgb(theme::TEXT_MUTED))
+        .opacity(0.)
+        .group_hover(group.clone(), |style| style.opacity(1.))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::BG_ELEVATED))
+                .text_color(gpui::rgb(theme::TEXT_SECONDARY))
+                .cursor_pointer()
+        })
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            cx.stop_propagation();
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        })
+        .child(icon("copy", px(12.), theme::TEXT_SECONDARY))
+        .child("Copy")
+}
+
 fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
     let ctx = transcript.render;
     let attachment_images = transcript.attachment_images;
@@ -5019,6 +5142,8 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
     if text.trim().is_empty() && !(is_user && has_images) {
         return div();
     }
+    let group = SharedString::from(format!("message-{}", item.id));
+    let copy = (!text.trim().is_empty()).then(|| copy_message_button(&item.id, &group, text));
     if is_user {
         let user_ctx = RenderCtx {
             selection: ctx.selection.clone(),
@@ -5027,24 +5152,25 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             id_seed: format!("{}#user", ctx.id_seed),
         };
         let ordinal = user_ctx.base_ordinal;
-        div().flex().justify_end().child(
-            div()
-                .max_w(gpui::relative(0.75))
-                .px_4()
-                .py_2()
-                .rounded_lg()
-                .bg(gpui::rgb(theme::BG_USER_BUBBLE))
-                .border_1()
-                .border_color(gpui::rgb(theme::USER_BUBBLE_BORDER))
-                .text_color(gpui::rgb(theme::TEXT_PRIMARY))
-                .when(has_images, |bubble| {
-                    bubble.child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .mb_1()
-                            .children(attachments.map(|(id, name)| {
+        div()
+            .group(group)
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap_0p5()
+            .child(
+                div()
+                    .max_w(gpui::relative(0.75))
+                    .px_4()
+                    .py_2()
+                    .rounded_lg()
+                    .bg(gpui::rgb(theme::BG_USER_BUBBLE))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::USER_BUBBLE_BORDER))
+                    .text_color(gpui::rgb(theme::TEXT_PRIMARY))
+                    .when(has_images, |bubble| {
+                        bubble.child(div().flex().flex_wrap().gap_2().mb_1().children(
+                            attachments.map(|(id, name)| {
                                 match attachment_images.get(id) {
                                     // The picture itself, scaled to fit; click
                                     // opens it full size. gpui keeps the aspect
@@ -5098,21 +5224,26 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                                         .child(icon("paperclip", px(12.), theme::TEXT_SECONDARY))
                                         .child(name.to_string()),
                                 }
-                            })),
-                    )
-                })
-                .when(!text.trim().is_empty(), |bubble| {
-                    bubble.child(rich_text::plain_paragraph(
-                        transcript.derived.get(item, revision).text.clone(),
-                        ordinal,
-                        &user_ctx,
-                    ))
-                }),
-        )
+                            }),
+                        ))
+                    })
+                    .when(!text.trim().is_empty(), |bubble| {
+                        bubble.child(rich_text::plain_paragraph(
+                            transcript.derived.get(item, revision).text.clone(),
+                            ordinal,
+                            &user_ctx,
+                        ))
+                    }),
+            )
+            .children(copy)
     } else {
         div()
+            .group(group)
             .max_w_full()
             .pr_2()
+            .flex()
+            .flex_col()
+            .gap_0p5()
             .text_color(gpui::rgb(theme::TEXT_PRIMARY))
             .child(markdown::render_with(
                 &transcript
@@ -5120,6 +5251,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .get(&item.id, MarkdownKind::Body, revision, text),
                 ctx,
             ))
+            .children(copy.map(|button| div().flex().child(button)))
     }
 }
 
@@ -6180,6 +6312,26 @@ mod state_tests {
             let answer = this.composed_question_answer(cx);
             let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
             assert_eq!(parsed["answers"]["pick"]["answers"][0], "A");
+        });
+    }
+
+    #[gpui::test]
+    fn test_prompt_history_recall(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _| {
+            this.remember_prompt("first");
+            this.remember_prompt("second");
+            // Up from an empty composer walks back; Down returns to the draft.
+            assert_eq!(this.recall_prompt("up", ""), Some("second".into()));
+            assert_eq!(this.recall_prompt("up", "second"), Some("first".into()));
+            assert_eq!(this.recall_prompt("up", "first"), None);
+            assert_eq!(this.recall_prompt("down", "first"), Some("second".into()));
+            assert_eq!(this.recall_prompt("down", "second"), Some(String::new()));
+            // Typed text that is not a recalled prompt keeps the caret keys.
+            assert_eq!(this.recall_prompt("up", "typing"), None);
+            // Re-sending an old prompt moves it to the end.
+            this.remember_prompt("first");
+            assert_eq!(this.recall_prompt("up", ""), Some("first".into()));
         });
     }
 
