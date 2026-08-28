@@ -1627,6 +1627,64 @@ impl ChatScreen {
         }
     }
 
+    /// Stage images dropped onto the composer. Files that are not PNG,
+    /// JPEG, or WebP are skipped with a notice.
+    fn add_image_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        let (images, other): (Vec<_>, Vec<_>) = paths.into_iter().partition(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp"
+                    )
+                })
+        });
+        if !other.is_empty() {
+            self.notice = Some(
+                format!(
+                    "Only PNG, JPEG, and WebP images can be attached ({} file{} skipped)",
+                    other.len(),
+                    if other.len() == 1 { "" } else { "s" }
+                )
+                .into(),
+            );
+            cx.notify();
+        }
+        if images.is_empty() {
+            return;
+        }
+        let Some(remaining) = self.remaining_image_slots(cx) else {
+            return;
+        };
+        self.call(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    images
+                        .iter()
+                        .take(remaining)
+                        .map(|path| load_draft_image(path))
+                        .collect::<Result<Vec<_>, String>>()
+                })
+                .await
+                .map_err(|error| format!("Image load failed: {error}"))?
+            },
+            cx,
+            |this, result, cx| {
+                match result {
+                    Ok(images) => {
+                        for mut image in images {
+                            image.id = this.next_draft_id();
+                            this.draft_images.push(image);
+                        }
+                    }
+                    Err(message) => this.notice = Some(message.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
     fn is_run_active(&self) -> bool {
         self.selected_session
             .as_ref()
@@ -5023,6 +5081,18 @@ impl ChatScreen {
             .border_1()
             .border_color(gpui::rgb(theme::ACCENT))
             .when(disabled, |container| container.opacity(0.5))
+            // Files dragged from the desktop land as image attachments.
+            .can_drop(|dragged, _window, _cx| {
+                dragged.downcast_ref::<gpui::ExternalPaths>().is_some()
+            })
+            .drag_over::<gpui::ExternalPaths>(|style, _paths, _window, _cx| {
+                style.bg(gpui::rgb(theme::BG_ELEVATED))
+            })
+            .on_drop(
+                cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
+                    this.add_image_paths(paths.paths().to_vec(), cx);
+                }),
+            )
             .children(queue_chips)
             .when(!drafts.is_empty(), |container| {
                 container.child(div().flex().flex_wrap().gap_2().px_4().pt_4().children(
