@@ -417,11 +417,14 @@ in the Maple repository. Root, path-scoped workflows run locked Rust checks,
 supply-chain policy, and non-publishing AMD64/ARM64 container builds for proxy
 changes. After every successful stable Maple Release, a separate serialized
 publisher compares the checked-in proxy version with the previous stable Maple
-Release. It skips unchanged versions; a strictly newer version publishes native
-AMD64/ARM64 images and moves the exact, minor, major, and `latest` tags. Manual
-dispatch retries the current qualifying release but cannot backfill an unchanged
-version. Maple must have Actions write access to the existing organization-scoped
-GHCR package.
+Release and rejects changed container inputs without a version bump. Version
+`0.3.3` remains the explicit unbackfilled migration baseline. A new or missing
+later version publishes native AMD64/ARM64 images with per-platform provenance,
+verifies their exact build digests and release labels, then reconciles the minor,
+major, and `latest` aliases. Existing exact versions are verified without being
+overwritten, and manual dispatch safely retries verification or alias repair.
+Maple must have Actions write access to the existing organization-scoped GHCR
+package; local recipes intentionally cannot publish to it.
 
 `proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
 `frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency

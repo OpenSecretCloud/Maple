@@ -673,7 +673,9 @@
             src = ./.github/workflows;
           } ''
             cd "$src"
-            actionlint ./*.yml
+            # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
+            # Release-gate tests assert that the only intended value is queue: max.
+            actionlint -ignore 'unexpected key "queue" for "concurrency" section' ./*.yml
             touch "$out"
           '';
 

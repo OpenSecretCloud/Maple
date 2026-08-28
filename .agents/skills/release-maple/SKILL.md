@@ -23,9 +23,12 @@ commit, external effect, and authority provided by the user.
   `/releases/latest` must continue to identify the Maple application release.
 - Maple GitHub Releases do not publish `opensecret` or `maple-proxy` to
   crates.io. A successful stable release starts a non-gating GHCR sibling that
-  publishes only when the proxy version changed from the previous stable Maple
-  Release; unchanged versions skip. The container remains separately versioned
-  at `ghcr.io/opensecretcloud/maple-proxy`.
+  builds only for a new or missing non-baseline proxy version. It treats exact
+  version tags as immutable, verifies release provenance and container inputs,
+  and repairs minor, major, and `latest` aliases without rebuilding an existing
+  exact image. Version `0.3.3` is the explicit unbackfilled migration baseline.
+  The container remains separately versioned at
+  `ghcr.io/opensecretcloud/maple-proxy`.
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
@@ -168,10 +171,10 @@ gh run list --repo OpenSecretCloud/Maple --workflow 'Promote Pages production' \
 ```
 
 Also inspect the independent proxy-container publisher. It should either prove
-the expected exact proxy version and public AMD64/ARM64 manifest or explicitly
-skip because the proxy version did not change. Retry it with manual dispatch;
-never create a proxy tag or Release and never rerun the core Release to repair
-it:
+the expected immutable proxy version, public AMD64/ARM64 manifest, per-platform
+provenance, and aliases; publish a missing eligible version; or explicitly skip
+the unbackfilled `0.3.3` baseline. Retry it with manual dispatch; never create a
+proxy tag or Release and never rerun the core Release to repair it:
 
 ```bash
 gh run list --repo OpenSecretCloud/Maple --workflow 'Publish proxy container' \
