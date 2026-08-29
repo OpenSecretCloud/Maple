@@ -236,10 +236,10 @@ pub struct ChatScreen {
     timeline: Vec<AgentTimelineItem>,
     /// Active run per session id, kept across selection changes.
     active_runs: HashMap<String, String>,
-    pending_permission: Option<PendingPermission>,
-    /// Pretty-printed tool arguments for the permission card, formatted
-    /// once when the request arrives instead of on every frame.
-    pending_permission_arguments: SharedString,
+    /// Permission requests waiting for a decision, one per request,
+    /// across every session. The card shows the first one for the
+    /// selected session; the others wait until their session is opened.
+    pending_permissions: Vec<PendingPermission>,
     permission_responding: bool,
     /// Suppresses duplicate session creation while one is in flight.
     session_setup_pending: bool,
@@ -655,8 +655,7 @@ impl ChatScreen {
             selected_session: None,
             timeline: Vec::new(),
             active_runs: HashMap::new(),
-            pending_permission: None,
-            pending_permission_arguments: SharedString::default(),
+            pending_permissions: Vec::new(),
             permission_responding: false,
             session_setup_pending: false,
             pending_questions: Vec::new(),
@@ -1755,7 +1754,6 @@ impl ChatScreen {
         self.follow_transcript = true;
         self.awaiting_first_token = false;
         self.lightbox = None;
-        self.pending_permission = None;
         self.permission_responding = false;
         self.models_menu_open = false;
         self.root_menu_open = false;
@@ -3397,7 +3395,7 @@ impl ChatScreen {
     }
 
     fn respond_permission(&mut self, allow: bool, cx: &mut Context<Self>) {
-        let Some(permission) = self.pending_permission.clone() else {
+        let Some(permission) = self.current_permission().cloned() else {
             return;
         };
         if self.permission_responding {
@@ -3407,6 +3405,7 @@ impl ChatScreen {
         cx.notify();
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let request_id = permission.request_id.clone();
         self.call(
             async move {
                 backend
@@ -3419,11 +3418,12 @@ impl ChatScreen {
                     .await
             },
             cx,
-            |this, result, cx| {
+            move |this, result, cx| {
                 this.permission_responding = false;
                 match result {
                     Ok(()) => {
-                        this.pending_permission = None;
+                        this.pending_permissions
+                            .retain(|pending| pending.request_id != request_id);
                     }
                     Err(message) => {
                         // Keep the card so the decision can be retried.
@@ -3815,20 +3815,29 @@ impl ChatScreen {
     /// every pending request and replaces the permission row with a
     /// status.
     fn retire_decided_permission(&mut self, item: &AgentTimelineItem) {
-        let Some(permission) = &self.pending_permission else {
-            return;
-        };
         if item.status.is_none() {
             return;
         }
-        if item
-            .id
-            .strip_prefix("permission-")
-            .is_some_and(|request_id| request_id == permission.request_id)
-        {
-            self.pending_permission = None;
+        let Some(request_id) = item.id.strip_prefix("permission-") else {
+            return;
+        };
+        let showing = self
+            .current_permission()
+            .is_some_and(|permission| permission.request_id == request_id);
+        let before = self.pending_permissions.len();
+        self.pending_permissions
+            .retain(|pending| pending.request_id != request_id);
+        if showing && self.pending_permissions.len() != before {
             self.permission_responding = false;
         }
+    }
+
+    /// The permission card shown for the selected session, if any.
+    fn current_permission(&self) -> Option<&PendingPermission> {
+        let selected = self.selected_session.as_deref()?;
+        self.pending_permissions
+            .iter()
+            .find(|permission| permission.session_id == selected)
     }
 
     pub fn handle_service_events(
@@ -3984,31 +3993,40 @@ impl ChatScreen {
                 }
             }
             AgentRunEvent::PermissionRequested { request, item } => {
-                if self.is_selected(session_id) {
+                let selected = self.is_selected(session_id);
+                if selected {
                     // The permission row stays in the transcript so the
                     // decision is visible after the card is answered.
                     self.load_attachment_images_for(&item, cx);
                     self.apply_timeline_item(session_id, item);
-                    let arguments = serde_json::Value::Object(request.arguments);
-                    self.pending_permission_arguments = if arguments.is_null() {
-                        SharedString::default()
-                    } else {
-                        serde_json::to_string_pretty(&arguments)
-                            .unwrap_or_default()
-                            .into()
-                    };
-                    let prompt = request
-                        .prompt
-                        .clone()
-                        .unwrap_or_else(|| format!("Run tool {}?", request.tool_name));
-                    self.notify_desktop("Maple needs permission", &prompt);
-                    self.pending_permission = Some(PendingPermission {
-                        session_id: session_id.to_string(),
-                        run_id: run_id.to_string(),
-                        request_id: request.request_id,
-                        tool_name: request.tool_name,
-                        prompt: request.prompt,
-                    });
+                }
+                let arguments = serde_json::Value::Object(request.arguments);
+                let arguments: std::sync::Arc<str> = if arguments.is_null() {
+                    "".into()
+                } else {
+                    serde_json::to_string_pretty(&arguments)
+                        .unwrap_or_default()
+                        .into()
+                };
+                let prompt = request
+                    .prompt
+                    .clone()
+                    .unwrap_or_else(|| format!("Run tool {}?", request.tool_name));
+                self.notify_desktop("Maple needs permission", &prompt);
+                // The request is kept even when its session is not on
+                // screen: the run blocks until it is answered, so the card
+                // must appear when the user opens that session.
+                self.pending_permissions
+                    .retain(|pending| pending.request_id != request.request_id);
+                self.pending_permissions.push(PendingPermission {
+                    session_id: session_id.to_string(),
+                    run_id: run_id.to_string(),
+                    request_id: request.request_id,
+                    tool_name: request.tool_name,
+                    prompt: request.prompt,
+                    arguments,
+                });
+                if selected {
                     self.permission_responding = false;
                 }
             }
@@ -4047,10 +4065,12 @@ impl ChatScreen {
                     // questions would block the composer forever.
                     self.clear_session_questions(session_id, cx);
                 }
-                if let Some(permission) = &self.pending_permission
-                    && permission.run_id == run_id
-                {
-                    self.pending_permission = None;
+                let showing = self
+                    .current_permission()
+                    .is_some_and(|permission| permission.run_id == run_id);
+                self.pending_permissions
+                    .retain(|permission| permission.run_id != run_id);
+                if showing {
                     self.permission_responding = false;
                 }
                 self.awaiting_first_token = false;
@@ -4153,10 +4173,9 @@ impl Render for ChatScreen {
                         cx,
                     ))
                 })
-                .when_some(self.pending_permission.as_ref(), |container, permission| {
+                .when_some(self.current_permission(), |container, permission| {
                     container.child(render_permission_card(
                         permission,
-                        &self.pending_permission_arguments,
                         self.permission_responding,
                         cx,
                     ))
@@ -8249,7 +8268,6 @@ fn render_waiting_indicator() -> Div {
 
 fn render_permission_card(
     permission: &PendingPermission,
-    arguments: &SharedString,
     responding: bool,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
@@ -8257,7 +8275,7 @@ fn render_permission_card(
         Some(prompt) => prompt.to_string().into(),
         None => format!("Run tool {}?", permission.tool_name).into(),
     };
-    let arguments = arguments.clone();
+    let arguments: SharedString = permission.arguments.clone().into();
     let mut card = div()
         .m_4()
         .px_4()
@@ -8604,12 +8622,13 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
-            this.pending_permission = Some(PendingPermission {
+            this.pending_permissions.push(PendingPermission {
                 session_id: "s1".to_string(),
                 run_id: "r1".to_string(),
                 request_id: "req-1".to_string(),
                 tool_name: "shell".to_string(),
                 prompt: None,
+                arguments: "".into(),
             });
             this.permission_responding = true;
             // A row for another request must not clear the card.
@@ -8623,7 +8642,7 @@ mod state_tests {
                 },
                 cx,
             );
-            assert!(this.pending_permission.is_some());
+            assert!(this.current_permission().is_some());
             // The runtime approved the request (Allow all) and replaced
             // its row with a decision.
             let mut decided = item("permission-req-1", "permission", None);
@@ -8636,8 +8655,53 @@ mod state_tests {
                 },
                 cx,
             );
-            assert!(this.pending_permission.is_none());
+            assert!(this.current_permission().is_none());
             assert!(!this.permission_responding);
+        });
+    }
+
+    #[gpui::test]
+    fn test_permission_for_other_session_waits_until_selected(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("s1".to_string());
+            let request = maple_agent::agent::AgentPermissionRequest {
+                request_id: "req-2".to_string(),
+                tool_name: "shell".to_string(),
+                arguments: serde_json::Map::new(),
+                prompt: None,
+            };
+            this.handle_service_event(
+                AgentServiceEvent::Run {
+                    session_id: "s2".to_string(),
+                    run_id: "r2".to_string(),
+                    event: maple_agent::agent::AgentRunEvent::PermissionRequested {
+                        request,
+                        item: item("permission-req-2", "permission", None),
+                    },
+                },
+                cx,
+            );
+            // Not shown for the session on screen.
+            assert!(this.current_permission().is_none());
+            // Shown once that session is opened.
+            this.selected_session = Some("s2".to_string());
+            assert_eq!(
+                this.current_permission().map(|p| p.request_id.as_str()),
+                Some("req-2")
+            );
+            // Gone when its run ends.
+            this.handle_service_event(
+                AgentServiceEvent::Run {
+                    session_id: "s2".to_string(),
+                    run_id: "r2".to_string(),
+                    event: maple_agent::agent::AgentRunEvent::Finished(
+                        maple_agent::agent::AgentRunTerminal::Cancelled,
+                    ),
+                },
+                cx,
+            );
+            assert!(this.current_permission().is_none());
         });
     }
 

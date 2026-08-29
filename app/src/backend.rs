@@ -44,6 +44,9 @@ pub struct PendingPermission {
     pub request_id: String,
     pub tool_name: String,
     pub prompt: Option<String>,
+    /// Pretty-printed tool arguments, formatted once when the request
+    /// arrives instead of on every frame.
+    pub arguments: Arc<str>,
 }
 
 /// The signed-in account identity.
