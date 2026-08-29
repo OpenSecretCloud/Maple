@@ -255,8 +255,12 @@ pub struct ChatScreen {
     pending_question_input: Option<Entity<TextInput>>,
     /// Fraction of the context window in use for the selected session.
     context_fraction: Option<f32>,
-    /// True while the per-second usage poller task is running.
-    usage_poller_active: bool,
+    /// Session the usage poller follows, if one is running. A run on a
+    /// newly selected session replaces the poller of the previous one.
+    usage_poller_session: Option<String>,
+    /// Bumped when a poller is replaced; the old task exits at its next
+    /// tick instead of racing the new one.
+    usage_poller_generation: u64,
     /// Last ledger-confirmed context tokens for the selected session.
     ledger_context_tokens: i64,
     /// Context limit used with the estimate above.
@@ -672,7 +676,8 @@ impl ChatScreen {
             pending_questions: Vec::new(),
             pending_question_input: None,
             context_fraction: None,
-            usage_poller_active: false,
+            usage_poller_session: None,
+            usage_poller_generation: 0,
             ledger_context_tokens: 0,
             context_limit: 0,
             composer: None,
@@ -1644,10 +1649,17 @@ impl ChatScreen {
     /// this timer only covers a missed event, so it is slow and skips
     /// ticks where the timeline did not move.
     fn start_usage_poller(&mut self, session_id: String, cx: &mut Context<Self>) {
-        if self.usage_poller_active {
+        if !self.is_selected(&session_id) {
             return;
         }
-        self.usage_poller_active = true;
+        if self.usage_poller_session.as_deref() == Some(session_id.as_str()) {
+            return;
+        }
+        // A poller for another session may still be alive; it exits at
+        // its next tick because the generation moved.
+        self.usage_poller_generation += 1;
+        let generation = self.usage_poller_generation;
+        self.usage_poller_session = Some(session_id.clone());
         let target = session_id;
         let mut last_revision = *self.timeline_revisions.get(&target).unwrap_or(&0);
         cx.spawn(async move |this, cx| {
@@ -1657,24 +1669,23 @@ impl ChatScreen {
                     .await;
                 let keep_going = this
                     .update(cx, |this: &mut ChatScreen, cx| {
-                        let running = this
-                            .selected_session
-                            .as_deref()
-                            .is_some_and(|selected| selected == target.as_str())
-                            && this.active_runs.contains_key(&target);
+                        if this.usage_poller_generation != generation {
+                            return false;
+                        }
+                        let running =
+                            this.is_selected(&target) && this.active_runs.contains_key(&target);
                         let revision = *this.timeline_revisions.get(&target).unwrap_or(&0);
                         if running && revision != last_revision {
                             last_revision = revision;
                             this.refresh_context_usage(cx);
                         }
+                        if !running {
+                            this.usage_poller_session = None;
+                        }
                         running
                     })
                     .unwrap_or(false);
                 if !keep_going {
-                    this.update(cx, |this: &mut ChatScreen, _cx| {
-                        this.usage_poller_active = false;
-                    })
-                    .ok();
                     return;
                 }
             }
@@ -1783,6 +1794,15 @@ impl ChatScreen {
         // starts on its first step with nothing picked.
         self.reset_question_card(cx);
         self.refresh_session_mcp(cx);
+        // A run already going on this task got no poller while it was off
+        // screen (Started fired for an unselected task).
+        if let Some(session_id) = self
+            .selected_session
+            .clone()
+            .filter(|id| self.active_runs.contains_key(id))
+        {
+            self.start_usage_poller(session_id, cx);
+        }
         cx.notify();
     }
 
@@ -9688,6 +9708,27 @@ mod state_tests {
             assert!(this.toggled_tools.contains("gone"));
             this.toggle_tool("t2", cx);
             assert!(!this.toggled_tools.contains("t2"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_usage_poller_follows_the_selected_session(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.start_usage_poller("s1".to_string(), cx);
+            assert_eq!(this.usage_poller_session.as_deref(), Some("s1"));
+            let first = this.usage_poller_generation;
+            // Same session: the running poller is kept.
+            this.start_usage_poller("s1".to_string(), cx);
+            assert_eq!(this.usage_poller_generation, first);
+            // A run on another session that is not on screen gets none.
+            this.start_usage_poller("s2".to_string(), cx);
+            assert_eq!(this.usage_poller_session.as_deref(), Some("s1"));
+            // Once that session is selected, its run replaces the poller.
+            this.selected_session = Some("s2".to_string());
+            this.start_usage_poller("s2".to_string(), cx);
+            assert_eq!(this.usage_poller_session.as_deref(), Some("s2"));
+            assert_ne!(this.usage_poller_generation, first);
         });
     }
 
