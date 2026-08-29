@@ -236,6 +236,10 @@ pub struct ChatScreen {
     timeline: Vec<AgentTimelineItem>,
     /// Active run per session id, kept across selection changes.
     active_runs: HashMap<String, String>,
+    /// Ids of runs whose Finished event already arrived, newest last and
+    /// capped at `FINISHED_RUNS_KEPT`. A send that returns after its run
+    /// finished must not mark that run active again.
+    finished_runs: std::collections::VecDeque<String>,
     /// Permission requests waiting for a decision, one per request,
     /// across every session. The card shows the first one for the
     /// selected session; the others wait until their session is opened.
@@ -479,6 +483,9 @@ enum LoadMode {
 /// How often a stale snapshot is fetched again before it is applied.
 const LOAD_RETRIES: u8 = 2;
 
+/// Finished run ids remembered for a late send acknowledgement.
+const FINISHED_RUNS_KEPT: usize = 64;
+
 impl ChatScreen {
     pub fn new(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
@@ -658,6 +665,7 @@ impl ChatScreen {
             selected_session: None,
             timeline: Vec::new(),
             active_runs: HashMap::new(),
+            finished_runs: std::collections::VecDeque::new(),
             pending_permissions: Vec::new(),
             permission_responding: false,
             session_setup_pending: false,
@@ -2874,7 +2882,11 @@ impl ChatScreen {
             cx,
             move |this, result, cx| match result {
                 Ok(run_id) => {
-                    this.active_runs.insert(session_id.clone(), run_id);
+                    // A short run can finish before the send returns; its
+                    // Finished event already retired it.
+                    if !this.finished_runs.contains(&run_id) {
+                        this.active_runs.insert(session_id.clone(), run_id);
+                    }
                 }
                 Err(message) => {
                     // Show the failure in the transcript and give the draft
@@ -4086,6 +4098,10 @@ impl ChatScreen {
                 }
             }
             AgentRunEvent::Finished(_) => {
+                if self.finished_runs.len() >= FINISHED_RUNS_KEPT {
+                    self.finished_runs.pop_front();
+                }
+                self.finished_runs.push_back(run_id.to_string());
                 // Only retire the run that actually finished; a late
                 // Finished from a cancelled run must not clear a newer one.
                 let owns_session = self
@@ -9549,6 +9565,42 @@ mod state_tests {
         this.rebuild_project_groups();
         let roots: Vec<&String> = this.project_groups.iter().map(|(root, _)| root).collect();
         assert_eq!(roots, vec!["/c", "/a", "/b"]);
+    }
+
+    #[gpui::test]
+    fn test_late_send_ack_does_not_revive_a_finished_run(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Started,
+                cx,
+            );
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert!(this.active_runs.is_empty());
+            assert!(this.finished_runs.contains(&"run-1".to_string()));
+            // Bounded: old ids fall off the front.
+            for ix in 0..FINISHED_RUNS_KEPT + 5 {
+                this.handle_run_event(
+                    "s1",
+                    &format!("run-x{ix}"),
+                    maple_agent::agent::AgentRunEvent::Finished(
+                        maple_agent::agent::AgentRunTerminal::Completed,
+                    ),
+                    cx,
+                );
+            }
+            assert_eq!(this.finished_runs.len(), FINISHED_RUNS_KEPT);
+            assert!(!this.finished_runs.contains(&"run-1".to_string()));
+        });
     }
 
     #[gpui::test]
