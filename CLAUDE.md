@@ -1,56 +1,25 @@
 # maple-gpui
 
 GPUI desktop app for Maple. Workspace crates: `app` (binary `maple-gpui`),
-`crates/maple-agent`, `crates/maple-billing`.
+`crates/maple-agent`, `crates/maple-billing`. See `README.md` for the
+layout, prerequisites, and command line modes.
 
-## Run the app from the shell
+## Build, test, run
 
-The dev machine runs GNOME on Wayland. The shell that runs Claude Code has no
-display variables, so set them:
-
-```sh
-export WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/$(id -u) \
-  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
-cargo build -p maple-gpui
-RUST_LOG=warn,maple_gpui=debug ./target/debug/maple-gpui 2>/tmp/maple-run.log &
-```
-
-Wait for the window with `timeout 12 tail -f /dev/null` (not `sleep`).
-
-To stop the app, use `pkill -x maple-gpui` (exact process name). Do not use
-`pkill -f` or `pgrep -f` with the binary path: the pattern also matches the
-shell that runs the command and kills it (exit code 144).
-
-## Take a screenshot
-
-Use the xdg desktop portal. Other tools do not work on this machine:
-`grim` (no wlr-screencopy on GNOME), `import -window root` (X11 auth is
-rejected), `gdbus ... org.gnome.Shell.Screenshot` (GNOME 41+ allow-list),
-and `gnome-screenshot` (falls back to X11 and hangs).
+`just` lists the recipes. `just ci` runs the same checks as CI (format,
+clippy with `-D warnings` for every feature set, tests). Run it before a
+commit.
 
 ```sh
-scripts/screenshot.py /tmp/shot.png
+just build     # debug binary
+just run       # debug binary with RUST_LOG=warn,maple_gpui=debug
+just release   # release binary (fat LTO, one codegen unit)
+just headless  # acp and proxy modes only, no window
 ```
 
-Then read `/tmp/shot.png`. The first request opens a permission dialog on the
-desktop; the user must click Share. A second request while one is pending
-times out, so wait for the first to finish or be cancelled.
-
-Screenshots capture the full desktop. The app window contains the sidebar
-and chat pane.
-
-## Ship a test build
-
-When a screenshot is not possible, ship a release build for the user to test:
-
-```sh
-cargo build --release -p maple-gpui
-name=maple-gpui-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)-$(git rev-parse --short HEAD)-linux-x86_64
-upload-thing put target/release/maple-gpui --private --name "$name"
-```
-
-Upload the raw binary. Do not tar or zip it. Add `-dirty` to the name when
-the tree has uncommitted changes. Give the user the URL and the SHA-256.
+To stop a running app, use `pkill -x maple-gpui` (exact process name).
+`pkill -f` with the binary path also matches the shell that runs the
+command and kills it.
 
 ## Logs and freezes
 
@@ -64,13 +33,8 @@ If the app freezes, dump all thread backtraces while it is still hung:
 gdb -p "$(pgrep -x maple-gpui)" -batch -ex "thread apply all bt" > /tmp/maple-hang.txt 2>&1
 ```
 
-The default release profile strips symbols. For a test build with usable
-backtraces:
-
-```sh
-CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
-  cargo build --release -p maple-gpui
-```
+The default release profile strips symbols. `just release-debug` builds a
+release binary that keeps line tables for usable backtraces.
 
 ## Performance
 
@@ -96,5 +60,5 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
   Prefer pushed events over timers.
 - Reuse handles: entities (`cx.new`), SQLite connections, and shaped text
   are created once and cached, not per frame or per call.
-- Release builds use fat LTO and one codegen unit. Ship release builds
+- Release builds use fat LTO and one codegen unit. Use release builds
   for any performance check; the dev profile is `opt-level = 1`.
