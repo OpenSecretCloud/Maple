@@ -1347,7 +1347,10 @@ impl ChatScreen {
                             let latest = this
                                 .sessions
                                 .iter()
-                                .find(|session| Some(&session.project_root) == root.as_ref())
+                                .find(|session| {
+                                    !session.archived
+                                        && Some(&session.project_root) == root.as_ref()
+                                })
                                 .cloned();
                             if let Some(latest) = latest {
                                 let id = latest.id;
@@ -4410,7 +4413,7 @@ impl ChatScreen {
                 || this
                     .sessions
                     .iter()
-                    .any(|session| session.project_root == root)
+                    .any(|session| !session.archived && session.project_root == root)
         };
         let mut roots: Vec<String> = Vec::new();
         for root in self
@@ -5092,11 +5095,20 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let path = root.to_string();
+        // Pick the fallback from every known project, not only from the
+        // sidebar groups, which a search filter may have narrowed.
         let fallback = self
-            .project_groups
+            .pinned_roots
             .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .find(|candidate| candidate != root);
+            .chain(self.recent_roots.iter())
+            .chain(
+                self.sessions
+                    .iter()
+                    .filter(|s| !s.archived)
+                    .map(|s| &s.project_root),
+            )
+            .find(|candidate| candidate.as_str() != root)
+            .cloned();
         let task_ids: Vec<String> = self
             .sessions
             .iter()
@@ -5118,6 +5130,18 @@ impl ChatScreen {
                     Ok(()) => {
                         this.recent_roots.retain(|candidate| candidate != &removed);
                         this.collapsed_roots.remove(&removed);
+                        if this
+                            .pinned_roots
+                            .iter()
+                            .any(|candidate| candidate == &removed)
+                        {
+                            this.pinned_roots.retain(|candidate| candidate != &removed);
+                            let pinned = this.pinned_roots.clone();
+                            this.persist_settings(
+                                move |settings| settings.pinned_roots = pinned,
+                                cx,
+                            );
+                        }
                         for session in &mut this.sessions {
                             if session.project_root == removed {
                                 session.archived = true;
