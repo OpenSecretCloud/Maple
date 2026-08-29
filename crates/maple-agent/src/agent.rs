@@ -4919,6 +4919,9 @@ async fn delete_persisted_agent_session(
         .await
         .map_err(|e| format!("Failed to delete Agent task {session_id}: {e}"))?;
 
+    // The caller-owned prompt is keyed by task id; a deleted task never
+    // needs it again, and the map would otherwise grow for the process life.
+    store_session_system_prompt(session_id, None);
     live_timelines.lock().await.remove(session_id);
     pending_permissions
         .lock()
@@ -16087,6 +16090,8 @@ mod tests {
                 &provenance_cancel,
             )
             .await;
+        store_session_system_prompt(&target.id, Some("target persona".to_string()));
+        store_session_system_prompt(&survivor.id, Some("survivor persona".to_string()));
         delete_persisted_agent_session(
             &session_manager,
             &pending_permissions,
@@ -16103,6 +16108,12 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert_eq!(session_system_prompt(&target.id), None);
+        assert_eq!(
+            session_system_prompt(&survivor.id).as_deref(),
+            Some("survivor persona")
+        );
+        store_session_system_prompt(&survivor.id, None);
         assert!(
             session_manager
                 .get_session(&survivor.id, false)
