@@ -1584,8 +1584,6 @@ impl ChatScreen {
         self.summaries_enabled = settings.tool_summaries;
         self.tts_voice.clone_from(&settings.tts_voice);
         self.tts_speed = settings.tts_speed;
-        self.pinned_roots = settings.pinned_roots.clone();
-        self.rebuild_project_groups();
         if self.uses_default_permission_mode
             && matches!(
                 settings.default_permission_mode.as_str(),
@@ -4488,26 +4486,9 @@ impl ChatScreen {
     fn persist_settings(
         &self,
         update: impl FnOnce(&mut crate::settings::AppSettings) + Send + 'static,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
-        self.call(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let mut settings = crate::settings::load_settings();
-                    update(&mut settings);
-                    crate::settings::save_settings_in_background(settings);
-                    Ok(())
-                })
-                .await
-                .map_err(|error| format!("Settings save failed: {error}"))?
-            },
-            cx,
-            |_this, result: Result<(), String>, _cx| {
-                if let Err(message) = result {
-                    log::warn!("{message}");
-                }
-            },
-        );
+        crate::settings::update_settings_in_background(update);
     }
 
     /// Display name for a project root: the saved name, else the folder name.

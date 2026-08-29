@@ -353,20 +353,22 @@ impl SettingsScreen {
         } else {
             "auto".to_string()
         };
-        settings::save_settings_in_background(self.settings.clone());
+        let mode = self.settings.default_permission_mode.clone();
+        settings::update_settings_in_background(move |s| s.default_permission_mode = mode);
         cx.notify();
     }
 
     fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
         self.settings.default_web_enabled = !self.settings.default_web_enabled;
-        settings::save_settings_in_background(self.settings.clone());
+        let enabled = self.settings.default_web_enabled;
+        settings::update_settings_in_background(move |s| s.default_web_enabled = enabled);
         cx.notify();
     }
 
     fn cycle_theme(&mut self, cx: &mut Context<Self>) {
         let next = crate::ui::theme::Preference::parse(&self.settings.theme).next();
         self.settings.theme = next.as_str().to_string();
-        settings::save_settings_in_background(self.settings.clone());
+        settings::update_settings_in_background(move |s| s.theme = next.as_str().to_string());
         // The root view resolves the palette on its next render and
         // refreshes every view when it changed.
         crate::ui::theme::set_preference(next);
@@ -376,13 +378,15 @@ impl SettingsScreen {
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
         self.settings.tool_details = !self.settings.tool_details;
-        settings::save_settings_in_background(self.settings.clone());
+        let enabled = self.settings.tool_details;
+        settings::update_settings_in_background(move |s| s.tool_details = enabled);
         cx.notify();
     }
 
     fn toggle_desktop_notifications(&mut self, cx: &mut Context<Self>) {
         self.settings.desktop_notifications = !self.settings.desktop_notifications;
-        settings::save_settings_in_background(self.settings.clone());
+        let enabled = self.settings.desktop_notifications;
+        settings::update_settings_in_background(move |s| s.desktop_notifications = enabled);
         if self.settings.desktop_notifications {
             // Fire a test notification so enabling gives immediate feedback
             // and delivery problems surface right away.
@@ -402,7 +406,8 @@ impl SettingsScreen {
             .position(|(id, _)| *id == self.settings.tts_voice)
             .unwrap_or(0);
         self.settings.tts_voice = voices[(current + 1) % voices.len()].0.to_string();
-        settings::save_settings_in_background(self.settings.clone());
+        let voice = self.settings.tts_voice.clone();
+        settings::update_settings_in_background(move |s| s.tts_voice = voice);
         cx.notify();
     }
 
@@ -413,13 +418,15 @@ impl SettingsScreen {
             .position(|speed| (*speed - self.settings.tts_speed).abs() < 0.01)
             .unwrap_or(0);
         self.settings.tts_speed = speeds[(current + 1) % speeds.len()];
-        settings::save_settings_in_background(self.settings.clone());
+        let speed = self.settings.tts_speed;
+        settings::update_settings_in_background(move |s| s.tts_speed = speed);
         cx.notify();
     }
 
     fn toggle_tool_summaries(&mut self, cx: &mut Context<Self>) {
         self.settings.tool_summaries = !self.settings.tool_summaries;
-        settings::save_settings_in_background(self.settings.clone());
+        let enabled = self.settings.tool_summaries;
+        settings::update_settings_in_background(move |s| s.tool_summaries = enabled);
         cx.notify();
     }
 
@@ -433,7 +440,8 @@ impl SettingsScreen {
         } else {
             text
         };
-        settings::save_settings_in_background(self.settings.clone());
+        let instructions = self.settings.harness_instructions.clone();
+        settings::update_settings_in_background(move |s| s.harness_instructions = instructions);
         self.backend
             .set_harness_instructions(self.settings.effective_harness_instructions());
         self.prompt_notice = Some("Saved. New tasks use this prompt.".to_string());

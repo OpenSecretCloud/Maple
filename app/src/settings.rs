@@ -208,41 +208,84 @@ pub fn load_settings() -> AppSettings {
 }
 
 /// Record the window state for the next launch. Runs on the UI thread at
-/// quit, when a short blocking write is acceptable.
+/// quit and waits for the write, so updates queued earlier also land.
 pub fn save_window_state(state: WindowState) {
-    let mut settings = load_settings();
-    if settings.window == Some(state) {
-        return;
-    }
-    settings.window = Some(state);
-    save_settings(&settings);
+    update_settings_and_wait(move |settings| settings.window = Some(state));
 }
 
-pub fn save_settings(settings: &AppSettings) {
+fn save_settings(settings: &AppSettings) {
     let path = settings_file();
     if let Err(error) = maple_agent::private_file::write_private_json(&path, settings) {
         log::error!("Cannot save settings to {}: {error}", path.display());
     }
 }
 
-/// Write settings from a background thread so a toggle never blocks the UI
-/// thread on disk I/O. Writes are sequenced: a later snapshot always wins
-/// over an earlier one that finishes late.
-pub fn save_settings_in_background(settings: AppSettings) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-    static LAST_WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
-    let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::thread::spawn(move || {
-        let mut last_written = LAST_WRITTEN
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if sequence < *last_written {
-            return;
-        }
-        *last_written = sequence;
-        save_settings(&settings);
+type SettingsUpdate = Box<dyn FnOnce(&mut AppSettings) + Send>;
+
+/// One queued change and, optionally, a channel to signal once it is on disk.
+struct SettingsWrite {
+    update: SettingsUpdate,
+    done: Option<std::sync::mpsc::Sender<()>>,
+}
+
+/// The single writer thread. Every change goes through it in call order
+/// as a read-modify-write of the file, so two callers that change
+/// different fields both land and a later change to one field always
+/// wins over an earlier one.
+fn settings_writer() -> &'static std::sync::mpsc::Sender<SettingsWrite> {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<SettingsWrite>> =
+        std::sync::OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<SettingsWrite>();
+        std::thread::Builder::new()
+            .name("settings-writer".into())
+            .spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    // Coalesce a burst of changes into one write.
+                    let mut batch = vec![first];
+                    while let Ok(next) = rx.try_recv() {
+                        batch.push(next);
+                    }
+                    let mut settings = load_settings();
+                    let mut acks = Vec::new();
+                    for write in batch {
+                        (write.update)(&mut settings);
+                        acks.extend(write.done);
+                    }
+                    save_settings(&settings);
+                    for ack in acks {
+                        let _ = ack.send(());
+                    }
+                }
+            })
+            .expect("spawn settings writer");
+        tx
+    })
+}
+
+fn queue_settings_write(write: SettingsWrite) {
+    if settings_writer().send(write).is_err() {
+        log::error!("Settings writer is gone; change not saved");
+    }
+}
+
+/// Apply `update` to the settings file from the writer thread so a
+/// toggle never blocks the UI thread on disk I/O.
+pub fn update_settings_in_background(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
+    queue_settings_write(SettingsWrite {
+        update: Box::new(update),
+        done: None,
     });
+}
+
+/// Apply `update` and block until it and every earlier update are on disk.
+pub fn update_settings_and_wait(update: impl FnOnce(&mut AppSettings) + Send + 'static) {
+    let (done, rx) = std::sync::mpsc::channel::<()>();
+    queue_settings_write(SettingsWrite {
+        update: Box::new(update),
+        done: Some(done),
+    });
+    let _ = rx.recv();
 }
 
 /// One aggregated usage row: per session or per model.
