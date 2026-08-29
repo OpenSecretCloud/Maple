@@ -72,12 +72,17 @@ pub fn add_word(word: &str) {
     });
 }
 
-fn is_user_word(word: &str) -> bool {
-    let guard = USER_WORDS.read().unwrap_or_else(|e| e.into_inner());
-    let Some(words) = guard.as_ref() else {
-        return false;
-    };
-    words.contains(word) || words.contains(&word.to_lowercase())
+/// Whether the user list accepts `word` as typed, or in lower case, or
+/// stripped of surrounding apostrophes. `words` is the list snapshot the
+/// caller already holds, so a pass over a text locks it once.
+fn is_user_word(words: &HashSet<String>, word: &str) -> bool {
+    let bare = word.trim_matches('\'');
+    if words.contains(word) || (bare != word && words.contains(bare)) {
+        return true;
+    }
+    let lower = word.to_lowercase();
+    let lower_bare = lower.trim_matches('\'');
+    words.contains(&lower) || (lower_bare != lower && words.contains(lower_bare))
 }
 
 /// Start the dictionary parse on a background thread. Safe to call more
@@ -157,35 +162,56 @@ fn should_check(text: &str, range: &Range<usize>, word: &str) -> bool {
 /// Byte ranges of the words in `text` that the dictionary rejects. Empty
 /// until the dictionary is loaded. Text inside backtick code spans is
 /// skipped.
+///
+/// This runs on the UI thread after every keystroke, so it avoids work
+/// per word: the user list is locked once per pass, a token is copied
+/// only when it holds a curly quote, and the lower-case form is built
+/// only for a word the dictionary already rejected.
 pub fn misspelled_ranges(text: &str) -> Vec<Range<usize>> {
     let Some(dictionary) = dictionary() else {
         return Vec::new();
     };
+    let user_words = USER_WORDS.read().unwrap_or_else(|e| e.into_inner());
+    let user_words = user_words.as_ref();
     let mut out = Vec::new();
     let mut in_code = false;
-    for (start, word) in text.split_word_bound_indices() {
-        if word.starts_with('`') {
+    let mut straightened = String::new();
+    for (start, token) in text.split_word_bound_indices() {
+        if token.starts_with('`') {
             in_code = !in_code;
             continue;
         }
-        if in_code || !word.chars().any(|ch| ch.is_alphabetic()) {
+        if in_code || !token.chars().any(|ch| ch.is_alphabetic()) {
             continue;
         }
-        let range = start..start + word.len();
+        let range = start..start + token.len();
         // Segmentation keeps a trailing apostrophe-s attached ("it's"), but
         // curly quotes make the checker fall back to the raw token.
-        let word = word.replace('\u{2019}', "'");
-        if !should_check(text, &range, &word) {
+        let word: &str = if token.contains('\u{2019}') {
+            straightened.clear();
+            straightened.extend(
+                token
+                    .chars()
+                    .map(|ch| if ch == '\u{2019}' { '\'' } else { ch }),
+            );
+            &straightened
+        } else {
+            token
+        };
+        if !should_check(text, &range, word) {
+            continue;
+        }
+        if dictionary.check(word) {
             continue;
         }
         let bare = word.trim_matches('\'');
-        if !dictionary.check(&word)
-            && !dictionary.check(bare)
-            && !is_user_word(&word)
-            && !is_user_word(bare)
-        {
-            out.push(range);
+        if bare != word && dictionary.check(bare) {
+            continue;
         }
+        if user_words.is_some_and(|words| is_user_word(words, word)) {
+            continue;
+        }
+        out.push(range);
     }
     out
 }
@@ -248,6 +274,17 @@ mod tests {
     fn accepts_bundled_extra_words() {
         load();
         assert!(misspelled_ranges("Maple talks to OpenSecret over gpui").is_empty());
+    }
+
+    #[test]
+    fn user_words_match_case_insensitively_and_without_quotes() {
+        let words: HashSet<String> = ["maple", "Ben"].map(String::from).into_iter().collect();
+        assert!(is_user_word(&words, "maple"));
+        assert!(is_user_word(&words, "Maple"));
+        assert!(is_user_word(&words, "'maple'"));
+        assert!(is_user_word(&words, "Ben"));
+        assert!(!is_user_word(&words, "ben"));
+        assert!(!is_user_word(&words, "oak"));
     }
 
     #[test]
