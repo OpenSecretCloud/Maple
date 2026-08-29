@@ -100,7 +100,13 @@ pub(crate) fn is_remote_file_source(source: &str) -> bool {
     if source.starts_with("maple-attachment://") {
         return false;
     }
-    if source.starts_with(r"\\") || source.starts_with("//") {
+    // UNC paths. Windows accepts either separator in either position, so
+    // `/\server\share` and `\/server/share` reach a network share too.
+    let mut leading = source.chars();
+    if let (Some(first), Some(second)) = (leading.next(), leading.next())
+        && matches!(first, '/' | '\\')
+        && matches!(second, '/' | '\\')
+    {
         return true;
     }
 
@@ -430,6 +436,9 @@ mod tests {
             "HTTP://127.0.0.1/pixel.png",
             r"\\server\share\pixel.png",
             r"\\?\UNC\server\share\pixel.png",
+            r"/\server\share\pixel.png",
+            r"\/server/share/pixel.png",
+            "//server/share/pixel.png",
             "file://server/share/pixel.png",
             "smb://server/share/pixel.png",
         ] {
