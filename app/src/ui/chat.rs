@@ -1729,8 +1729,10 @@ impl ChatScreen {
         timeline: Vec<AgentTimelineItem>,
         cx: &mut Context<Self>,
     ) {
-        self.selected_session = Some(session.id);
+        // Release the edit hold against the session that owns it, before
+        // the selection moves to the new one.
         self.abandon_queue_edit(cx);
+        self.selected_session = Some(session.id);
         self.queue.clear();
         // Adopt the session's stored policy; it persists per session in the
         // runtime.
