@@ -60,16 +60,24 @@ enum RenameTarget {
 const PROMPT_HISTORY_LIMIT: usize = 50;
 
 /// An image staged in the composer: the data URL the runtime stores with
-/// the message and a square thumbnail, cropped off the UI thread.
+/// the message and a square thumbnail, both built off the UI thread.
 #[derive(Clone)]
 struct DraftImage {
     /// Unique per staged draft, so a late thumbnail finds its owner even
     /// after other drafts were removed.
     id: u64,
     name: String,
-    data_url: String,
+    /// `None` while the base64 encode is still running; the send waits
+    /// for it. Shared so the send does not copy up to 13 MB per image.
+    data_url: Option<Arc<str>>,
     /// `None` until the crop finishes (or if the image did not decode).
     thumbnail: Option<Arc<gpui::Image>>,
+}
+
+impl DraftImage {
+    fn ready(&self) -> bool {
+        self.data_url.is_some()
+    }
 }
 /// Which text of a timeline item a parsed document belongs to.
 #[derive(Clone, Copy)]
@@ -2033,12 +2041,17 @@ impl ChatScreen {
             _ => "png",
         };
         let name = format!("pasted-{}.{extension}", self.draft_images.len() + 1);
-        let id = self.next_draft_id();
-        match draft_image_from_bytes(id, name, &image.bytes) {
-            Ok(draft) => {
+        match draft_image_mime(&name, &image.bytes) {
+            Ok(mime) => {
+                let id = self.next_draft_id();
                 self.notice = None;
-                self.draft_images.push(draft);
-                self.crop_draft_thumbnail(id, image.bytes, cx);
+                self.draft_images.push(DraftImage {
+                    id,
+                    name,
+                    data_url: None,
+                    thumbnail: None,
+                });
+                self.prepare_draft_image(id, mime, image.bytes, cx);
             }
             Err(message) => self.notice = Some(message.into()),
         }
@@ -2050,14 +2063,26 @@ impl ChatScreen {
         self.draft_counter
     }
 
-    /// Decode and center-crop off the UI thread, then attach the result to
-    /// the draft with `id` if it is still staged.
-    fn crop_draft_thumbnail(&mut self, id: u64, bytes: Vec<u8>, cx: &mut Context<Self>) {
+    /// Encode the data URL and center-crop the thumbnail off the UI
+    /// thread, then attach both to the draft with `id` if it is still
+    /// staged. A pasted image can be 10 MB; encoding it inline stalled
+    /// the frame.
+    fn prepare_draft_image(
+        &mut self,
+        id: u64,
+        mime: &'static str,
+        bytes: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
         self.call(
             async move {
-                tokio::task::spawn_blocking(move || square_thumbnail(&bytes))
-                    .await
-                    .map_err(|error| format!("Thumbnail task failed: {error}"))?
+                tokio::task::spawn_blocking(move || {
+                    let data_url = encode_data_url(mime, &bytes);
+                    let thumbnail = square_thumbnail(&bytes);
+                    Ok::<_, String>((data_url, thumbnail))
+                })
+                .await
+                .map_err(|error| format!("Image task failed: {error}"))?
             },
             cx,
             move |this, result, cx| {
@@ -2065,8 +2090,21 @@ impl ChatScreen {
                     return;
                 };
                 match result {
-                    Ok(image) => draft.thumbnail = Some(Arc::new(image)),
-                    Err(message) => log::debug!("thumbnail for {}: {message}", draft.name),
+                    Ok((data_url, thumbnail)) => {
+                        draft.data_url = Some(data_url);
+                        match thumbnail {
+                            Ok(image) => draft.thumbnail = Some(Arc::new(image)),
+                            Err(message) => {
+                                log::debug!("thumbnail for {}: {message}", draft.name)
+                            }
+                        }
+                    }
+                    Err(message) => {
+                        // Without a data URL the draft can never be sent.
+                        let name = std::mem::take(&mut draft.name);
+                        this.draft_images.retain(|draft| draft.id != id);
+                        this.notice = Some(format!("Could not prepare {name}: {message}").into());
+                    }
                 }
                 cx.notify();
             },
@@ -2655,6 +2693,15 @@ impl ChatScreen {
         if text.trim().is_empty() && self.draft_images.is_empty() {
             return;
         }
+        if !self.draft_images.iter().all(DraftImage::ready) {
+            // The encode is still on its way; keep the text for the retry.
+            self.notice = Some("Images are still being prepared; try again in a moment".into());
+            if let Some(composer) = self.composer.clone() {
+                composer.update(cx, |input, cx| input.set_text(&text, cx));
+            }
+            cx.notify();
+            return;
+        }
         // Enter on an open palette runs the highlighted command instead of
         // sending the partial token.
         if let Some(command) = self.slash_palette_command(text.trim()) {
@@ -2894,9 +2941,12 @@ impl ChatScreen {
             queue_id,
             attachments: drafts
                 .iter()
-                .map(|image| AgentImageUpload {
-                    name: image.name.clone(),
-                    data_url: image.data_url.clone(),
+                .filter_map(|image| {
+                    let data_url = image.data_url.as_deref()?;
+                    Some(AgentImageUpload {
+                        name: image.name.clone(),
+                        data_url: data_url.to_string(),
+                    })
                 })
                 .collect(),
         };
@@ -6612,7 +6662,8 @@ impl ChatScreen {
         let disabled = self.booting;
         let has_text = self.composer_has_text;
         let has_images = !self.draft_images.is_empty();
-        let can_send = !disabled && (has_text || has_images);
+        let images_ready = self.draft_images.iter().all(DraftImage::ready);
+        let can_send = !disabled && images_ready && (has_text || has_images);
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();
@@ -7102,32 +7153,42 @@ fn load_draft_image(path: &std::path::Path) -> Result<DraftImage, String> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "image".to_string());
     let bytes = std::fs::read(path).map_err(|error| format!("Could not read {name}: {error}"))?;
-    let mut draft = draft_image_from_bytes(0, name, &bytes)?;
-    draft.thumbnail = square_thumbnail(&bytes).ok().map(Arc::new);
-    Ok(draft)
+    let mime = draft_image_mime(&name, &bytes)?;
+    Ok(DraftImage {
+        id: 0,
+        name,
+        data_url: Some(encode_data_url(mime, &bytes)),
+        thumbnail: square_thumbnail(&bytes).ok().map(Arc::new),
+    })
 }
 
-/// Build a draft from raw image bytes, checking size and format the same
-/// way the runtime does so errors surface before the send.
-fn draft_image_from_bytes(id: u64, name: String, bytes: &[u8]) -> Result<DraftImage, String> {
+/// Check size and format the same way the runtime does, so errors
+/// surface before the send. Cheap: reads the signature only.
+fn draft_image_mime(name: &str, bytes: &[u8]) -> Result<&'static str, String> {
     if bytes.len() > MAX_DRAFT_IMAGE_BYTES {
         return Err(format!("{name} is larger than 10 MB"));
     }
-    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        "image/png"
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Ok("image/png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "image/jpeg"
+        Ok("image/jpeg")
     } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        "image/webp"
+        Ok("image/webp")
     } else {
-        return Err(format!("{name} is not a PNG, JPEG, or WebP image"));
-    };
-    Ok(DraftImage {
-        id,
-        name,
-        data_url: format!("data:{mime};base64,{}", base64_encode(bytes)),
-        thumbnail: None,
-    })
+        Err(format!("{name} is not a PNG, JPEG, or WebP image"))
+    }
+}
+
+/// The `data:` URL the runtime stores with the message. Runs on a
+/// blocking thread: the payload can be 10 MB.
+fn encode_data_url(mime: &str, bytes: &[u8]) -> Arc<str> {
+    use base64::Engine as _;
+    let mut url = String::with_capacity(mime.len() + 16 + bytes.len().div_ceil(3) * 4);
+    url.push_str("data:");
+    url.push_str(mime);
+    url.push_str(";base64,");
+    base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut url);
+    Arc::from(url)
 }
 
 /// Thumbnail edge in physical pixels: 2x the 64pt box so it stays sharp
@@ -7163,33 +7224,6 @@ fn square_thumbnail(bytes: &[u8]) -> Result<gpui::Image, String> {
         gpui::ImageFormat::Png,
         png.into_inner(),
     ))
-}
-
-/// Standard base64 with padding; small enough to avoid another dependency.
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(TABLE[(n >> 18) as usize & 63] as char);
-        out.push(TABLE[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            TABLE[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            TABLE[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
 }
 
 fn render_timeline_item(
@@ -9937,13 +9971,17 @@ mod state_tests {
             this.paste_image(image, cx);
             assert_eq!(this.draft_images.len(), 1);
             assert_eq!(this.draft_images[0].name, "pasted-1.png");
-            assert!(
-                this.draft_images[0]
-                    .data_url
-                    .starts_with("data:image/png;base64,iVBORw0KGgo")
-            );
+            // The encode runs off the UI thread; the draft is staged at
+            // once and cannot be sent until it lands.
+            assert!(!this.draft_images[0].ready());
             assert!(this.notice.is_none());
         });
+    }
+
+    #[test]
+    fn test_data_url_encodes_the_signature() {
+        let url = encode_data_url("image/png", &png_bytes());
+        assert!(url.starts_with("data:image/png;base64,iVBORw0KGgo"));
     }
 
     #[gpui::test]
