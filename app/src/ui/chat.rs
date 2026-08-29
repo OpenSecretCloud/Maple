@@ -5207,6 +5207,8 @@ impl ChatScreen {
     /// current.
     fn archive_root(&mut self, root: &str, cx: &mut Context<Self>) {
         if self.root_switching {
+            self.notice = Some("Wait for the project switch to finish, then try again".into());
+            cx.notify();
             return;
         }
         let backend = self.backend.clone();
@@ -9800,6 +9802,16 @@ mod state_tests {
             assert!(this.queue.is_empty());
             assert!(this.queue_edit.is_none());
             assert!(this.pending_permissions.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_archive_root_during_a_switch_sets_a_notice(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.root_switching = true;
+            this.archive_root("/tmp/proj", cx);
+            assert!(this.notice.is_some());
         });
     }
 
