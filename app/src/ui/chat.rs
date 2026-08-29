@@ -85,11 +85,17 @@ enum MarkdownKind {
 /// Cached document with the item revision and text length it was parsed at.
 type MarkdownEntry = (u64, usize, Rc<markdown::Document>);
 
+/// Gap between selection ordinal bases of two items.
+const ORDINAL_SPACING: u64 = 4096;
+
 #[derive(Default)]
 struct MarkdownCache {
     entries: [RefCell<HashMap<String, MarkdownEntry>>; 2],
     /// Base ordinal per item key, so paragraphs get stable selection keys.
     ordinals: RefCell<HashMap<String, u64>>,
+    /// The base the next unseen key gets; bases only grow, so this is
+    /// the maximum without scanning the map on every miss.
+    next_base: std::cell::Cell<u64>,
 }
 
 impl MarkdownCache {
@@ -126,7 +132,8 @@ impl MarkdownCache {
         if let Some(base) = ordinals.get(key) {
             return *base;
         }
-        let base = ordinals.values().copied().max().unwrap_or(0) + 4096;
+        let base = self.next_base.get() + ORDINAL_SPACING;
+        self.next_base.set(base);
         ordinals.insert(key.to_string(), base);
         base
     }
@@ -136,6 +143,7 @@ impl MarkdownCache {
             entries.borrow_mut().clear();
         }
         self.ordinals.borrow_mut().clear();
+        self.next_base.set(0);
     }
 }
 
@@ -9615,6 +9623,17 @@ mod state_tests {
             &first,
             &cache.get("m", MarkdownKind::ToolOutput, 0, "hello")
         ));
+    }
+
+    #[test]
+    fn test_ordinal_bases_are_stable_and_spaced() {
+        let cache = MarkdownCache::default();
+        let a = cache.ordinal_for("a");
+        let b = cache.ordinal_for("b");
+        assert_eq!(cache.ordinal_for("a"), a);
+        assert!(b >= a + ORDINAL_SPACING);
+        cache.clear();
+        assert_eq!(cache.ordinal_for("c"), a);
     }
 
     #[gpui::test]
