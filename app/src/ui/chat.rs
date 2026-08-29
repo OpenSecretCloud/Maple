@@ -3861,6 +3861,7 @@ impl ChatScreen {
                 if self.selected_session.as_deref() == Some(session_id.as_str()) {
                     self.apply_incoming_item(&session_id, item, cx);
                 } else {
+                    self.bump_timeline_revision(&session_id);
                     return false;
                 }
             }
@@ -3935,6 +3936,16 @@ impl ChatScreen {
         self.selected_session.as_deref() == Some(session_id)
     }
 
+    /// Count a timeline event for a session that is not on screen. A
+    /// snapshot load for that session in flight sees the moved revision
+    /// and fetches again, so chunks that land while it loads are not lost.
+    fn bump_timeline_revision(&mut self, session_id: &str) {
+        *self
+            .timeline_revisions
+            .entry(session_id.to_string())
+            .or_insert(0) += 1;
+    }
+
     /// Drop every queued question of a session whose run ended.
     fn clear_session_questions(&mut self, session_id: &str, cx: &mut Context<Self>) {
         let before = self.pending_questions.len();
@@ -3966,6 +3977,9 @@ impl ChatScreen {
             AgentRunEvent::TimelineItem(item) => {
                 if self.is_selected(session_id) {
                     self.apply_incoming_item(session_id, item, cx);
+                } else {
+                    self.bump_timeline_revision(session_id);
+                    return false;
                 }
             }
             AgentRunEvent::PermissionRequested { request, item } => {
@@ -4004,6 +4018,9 @@ impl ChatScreen {
                 });
                 if selected {
                     self.permission_responding = false;
+                } else {
+                    self.bump_timeline_revision(session_id);
+                    return false;
                 }
             }
             AgentRunEvent::SetupWarning(message) => {
@@ -4023,6 +4040,9 @@ impl ChatScreen {
                 if self.is_selected(session_id) {
                     self.load_attachment_images_for(&item, cx);
                     self.apply_timeline_item(session_id, item);
+                } else {
+                    self.bump_timeline_revision(session_id);
+                    return false;
                 }
             }
             AgentRunEvent::Finished(_) => {
@@ -8573,6 +8593,22 @@ mod state_tests {
         };
         screen.update(cx, |this, cx| {
             this.handle_service_event(event, cx);
+            assert!(this.timeline.is_empty());
+            // The revision still moves so a snapshot load of that session
+            // in flight retries instead of applying a stale snapshot.
+            assert_eq!(this.timeline_revisions.get("other"), Some(&1));
+            assert!(!this.timeline_revisions.contains_key("s1"));
+            this.handle_run_event(
+                "other",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::TimelineItem(item(
+                    "m10",
+                    "message",
+                    Some("more"),
+                )),
+                cx,
+            );
+            assert_eq!(this.timeline_revisions.get("other"), Some(&2));
             assert!(this.timeline.is_empty());
         });
     }
