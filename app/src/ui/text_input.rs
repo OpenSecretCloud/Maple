@@ -116,6 +116,9 @@ pub struct TextInput {
     /// Byte ranges of misspelled words, refreshed on every content change
     /// so prepaint only reads it.
     misspelled: Vec<Range<usize>>,
+    /// `spell::generation()` at the last check. Text set before the
+    /// dictionary finished loading is re-checked when this falls behind.
+    spell_generation: u32,
     /// The misspelled word under the open right-click menu, with its
     /// replacement candidates.
     spell_menu: Option<(Range<usize>, Vec<String>)>,
@@ -163,6 +166,7 @@ impl TextInput {
             on_key: None,
             spell_check: false,
             misspelled: Vec::new(),
+            spell_generation: 0,
             spell_menu: None,
         }
     }
@@ -177,6 +181,7 @@ impl TextInput {
     /// Recompute the misspelled ranges. Call after every content change.
     fn refresh_spelling(&mut self) {
         if self.spell_check && !self.mask {
+            self.spell_generation = spell::generation();
             self.misspelled = spell::misspelled_ranges(&self.content);
         }
     }
@@ -479,7 +484,32 @@ impl TextInput {
                     .collect()
             })
             .unwrap_or_default();
-        let has_suggestions = !suggestions.is_empty();
+        let add_word = self.spell_menu.as_ref().map(|(range, _)| {
+            let range = range.clone();
+            div()
+                .id("text-input-add-word")
+                .px_3()
+                .py_1p5()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_primary()))
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.context_menu = None;
+                    this.spell_menu = None;
+                    if range.end <= this.content.len() {
+                        spell::add_word(&this.content[range.clone()]);
+                    }
+                    this.refresh_spelling();
+                    cx.notify();
+                }))
+                .child("Add to dictionary")
+        });
+        let has_spell_items = add_word.is_some();
         let item = |id: &'static str,
                     label: &'static str,
                     enabled: bool,
@@ -532,7 +562,8 @@ impl TextInput {
                             cx.notify();
                         }))
                         .children(suggestions)
-                        .when(has_suggestions, |menu| {
+                        .children(add_word)
+                        .when(has_spell_items, |menu| {
                             menu.child(div().my_1().h(px(1.)).bg(gpui::rgb(theme::border())))
                         })
                         .child(item(
@@ -1090,6 +1121,14 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        {
+            // Text set before the dictionary loaded has no ranges yet;
+            // one atomic compare per frame, a re-check only on change.
+            let input = self.input.read(cx);
+            if input.spell_check && input.spell_generation != spell::generation() {
+                self.input.update(cx, |input, _| input.refresh_spelling());
+            }
+        }
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();

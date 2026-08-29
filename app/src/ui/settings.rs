@@ -102,7 +102,8 @@ impl SettingsScreen {
         let prompt_editor = cx.new(|cx| {
             let mut input = TextInput::new("You are …", cx)
                 .with_tab_index(1)
-                .multiline(16);
+                .multiline(16)
+                .spell_check();
             input.set_text(&prompt_text, cx);
             input
         });
