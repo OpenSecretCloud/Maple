@@ -3411,10 +3411,21 @@ impl ChatScreen {
                     merge: incoming_merge,
                     ..
                 } = item;
+                let is_newest = index + 1 == self.timeline.len();
                 let existing = &mut self.timeline[index];
                 // The virtualized list caches item heights; tell it this
-                // one changed so it re-measures.
-                self.list_state.splice(index..index + 1, 1);
+                // one changed so it re-measures. The newest item is the
+                // exception: a splice drops its cached height to zero until
+                // the next paint, which collapses the list's scroll range.
+                // A wheel event in that window clamps back to the bottom
+                // and re-pins the view, so streaming would make the
+                // transcript impossible to scroll up. The newest item is
+                // measured on every layout while it is visible, and its
+                // stale height is a better estimate than zero once the user
+                // scrolls away mid-stream.
+                if !is_newest {
+                    self.list_state.splice(index..index + 1, 1);
+                }
                 let append = incoming_merge == "append"
                     && matches!(incoming_type.as_str(), "message" | "thinking")
                     && incoming_text.is_some();
@@ -3789,7 +3800,7 @@ impl Render for ChatScreen {
                 .h_full()
                 .min_w_0()
                 .child(self.render_header())
-                .child(self.render_transcript(window, cx))
+                .child(self.render_transcript(cx))
                 .when(self.awaiting_first_token && self.is_run_active(), |main| {
                     // Same gutter as transcript text so the dots line up
                     main.child(
@@ -5598,11 +5609,7 @@ impl ChatScreen {
         Some(palette)
     }
 
-    fn render_transcript(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_transcript(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         // Follow the newest content while the view sits at (or near) the
         // bottom, or after an explicit jump. Checking before render keeps
         // user scrolls intact mid-stream.
@@ -8586,5 +8593,123 @@ mod state_tests {
                     .is_some_and(|notice| notice.contains("at most"))
             );
         });
+    }
+
+    #[gpui::test]
+    fn test_streaming_chunk_keeps_wheel_scrolling_up(cx: &mut TestAppContext) {
+        /// A paragraph long enough to need real vertical space when rendered.
+        const PARA: &str = "The quick brown fox jumps over the lazy dog. \
+            Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump! ";
+
+        // Hosts only the transcript so the list gets a realistic viewport,
+        // independent of the rest of the screen's layout.
+        struct TranscriptHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for TranscriptHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                // Fixed size: the test window's own bounds are not applied
+                // to the root view in the harness, and a percentage height
+                // collapses to zero.
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.update(cx, |chat, cx| chat.render_transcript(cx)))
+            }
+        }
+
+        let chat = cx.new(|_| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            let mut this = ChatScreen::new_inner(backend, "user".to_string());
+            this.selected_session = Some("s1".to_string());
+            this
+        });
+
+        // A long history, then a streaming answer that is already tall
+        // while the view is pinned to the newest item.
+        chat.update(cx, |this, _cx| {
+            let mut timeline = Vec::new();
+            for i in 0..20 {
+                timeline.push(item(
+                    &format!("u{i}"),
+                    "message",
+                    Some(&format!("User {i} {PARA}")),
+                ));
+                timeline.push(item(
+                    &format!("a{i}"),
+                    "message",
+                    Some(&format!("Reply {i} {PARA}{PARA}")),
+                ));
+            }
+            this.replace_timeline(timeline);
+            this.apply_timeline_item("s1", item("stream", "message", Some("Answer: ")));
+            for _ in 0..30 {
+                this.apply_timeline_item(
+                    "s1",
+                    AgentTimelineItem {
+                        merge: "append".to_string(),
+                        text: Some(PARA.repeat(3)),
+                        ..item("stream", "message", None)
+                    },
+                );
+            }
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| TranscriptHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        let center = cx.update(|window, _cx| window.bounds().center());
+
+        let pinned = cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top());
+        assert_eq!(
+            (pinned.item_ix, pinned.offset_in_item),
+            (41, px(0.)),
+            "the transcript must start pinned to the newest item, got {pinned:?}"
+        );
+
+        let wheel_up = |cx: &mut gpui::VisualTestContext| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: center,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100.))),
+                ..Default::default()
+            });
+        };
+
+        // Control: an idle wheel moves the viewport up.
+        wheel_up(cx);
+        let moved = cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top());
+        assert_ne!(
+            (moved.item_ix, moved.offset_in_item),
+            (pinned.item_ix, pinned.offset_in_item),
+            "an idle wheel must move the viewport, got {moved:?}"
+        );
+
+        // A streamed chunk lands. No repaint runs before the user's wheel
+        // event, exactly like a frame that is still pending.
+        cx.update(|_window, app| {
+            chat.update(app, |this, _cx| {
+                this.apply_timeline_item(
+                    "s1",
+                    AgentTimelineItem {
+                        merge: "append".to_string(),
+                        text: Some(PARA.to_string()),
+                        ..item("stream", "message", None)
+                    },
+                );
+            })
+        });
+        wheel_up(cx);
+
+        let after = cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top());
+        assert_ne!(
+            (after.item_ix, after.offset_in_item),
+            (pinned.item_ix, pinned.offset_in_item),
+            "a wheel between a streamed chunk and the next paint must move the viewport up, got {after:?}"
+        );
     }
 }

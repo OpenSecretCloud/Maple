@@ -82,7 +82,11 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
 - The transcript renders through `gpui::list` with `ListState`. Keep it
   that way: never emit all timeline items as plain children. When an item
   changes in place, call `list_state.splice(ix..ix + 1, 1)` so its cached
-  height is re-measured.
+  height is re-measured — except the newest item, which must not be
+  spliced on streaming updates. A splice marks the item unmeasured (0 px)
+  until the next paint; a wheel event in that window clamps back to the
+  bottom and re-pins the view, so streaming would block scrolling up
+  (regression test: `test_streaming_chunk_keeps_wheel_scrolling_up`).
 - Never block the UI thread. File dialogs, file reads, and SQLite go
   through `tokio::task::spawn_blocking` or `AgentBackend::spawn`.
 - Batch events. The backend pump drains the channel and applies a batch
