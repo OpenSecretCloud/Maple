@@ -49,8 +49,6 @@ bbqr
 bbqrs
 bcrt
 bech
-benthecarman
-benthecarman's
 bip
 bips
 bitbox
