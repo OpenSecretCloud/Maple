@@ -682,7 +682,16 @@ impl McpClientTrait for MapleDeveloperClient {
                 let session_id = ctx.session_id.clone();
                 // The UI answers with codex's response shape:
                 // {"answers": {"<id>": {"answers": ["..."]}}}
-                let answer = broker.ask(&session_id, questions).await;
+                // Stopping the task must not leave the tool waiting on a
+                // card the UI has already torn down; the broker's pending
+                // guard cleans up when the ask future is dropped.
+                let answer = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        return Ok(error_result("request_user_input cancelled"));
+                    }
+                    answer = broker.ask(&session_id, questions) => answer,
+                };
                 if answer.trim().is_empty() {
                     text_result("(no answer provided)".to_string())
                 } else {
@@ -3563,6 +3572,54 @@ mod tests {
         .await;
         assert_eq!(result.is_error, Some(false));
         assert!(text(&result).contains("Use read_image"));
+    }
+
+    #[tokio::test]
+    async fn request_user_input_observes_cancellation() {
+        struct NullSink;
+        impl crate::agent::AgentEventSink for NullSink {
+            fn emit(&self, _event: &crate::agent::AgentServiceEvent) {}
+        }
+        let broker = crate::agent::questions::init_global(crate::agent::AgentEventDispatcher::new(
+            Arc::new(NullSink),
+        ));
+        let temp = TestDir::new();
+        let client = Arc::new(test_client(temp.path().to_path_buf(), false));
+        let cancel_token = CancellationToken::new();
+        let call = {
+            let client = Arc::clone(&client);
+            let cancel_token = cancel_token.clone();
+            tokio::spawn(async move {
+                client
+                    .call_tool(
+                        &ToolCallContext::new("session".to_string(), None, None),
+                        "request_user_input",
+                        Some(object!({
+                            "questions": [{
+                                "id": "q1",
+                                "header": "Scope",
+                                "question": "Which one?",
+                                "options": [{ "label": "a", "description": "A" }]
+                            }]
+                        })),
+                        cancel_token,
+                    )
+                    .await
+            })
+        };
+        while broker.pending_count().await == 0 {
+            tokio::task::yield_now().await;
+        }
+        cancel_token.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+            .await
+            .expect("cancelled request_user_input must return")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("cancelled"));
+        tokio::task::yield_now().await;
+        assert_eq!(broker.pending_count().await, 0);
     }
 
     #[tokio::test]
