@@ -44,6 +44,9 @@ struct QueueEdit {
     draft: String,
 }
 
+/// Width of the task sidebar.
+const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
+
 const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder...";
 const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)...";
 const QUEUE_EDIT_PLACEHOLDER: &str =
@@ -137,6 +140,23 @@ impl ProjectGroup {
             tasks,
         }
     }
+}
+
+/// One row of the virtualized sidebar list, in display order. Rebuilt
+/// with the project groups and when a section folds; the list builds
+/// only the rows on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidebarEntry {
+    NewTask,
+    ProjectsHeader,
+    /// Index into `project_groups`.
+    Project(usize),
+    /// Index into `sessions`.
+    Task {
+        session: usize,
+        archived: bool,
+    },
+    ArchivedHeader,
 }
 
 /// Which text of a timeline item a parsed document belongs to.
@@ -365,10 +385,11 @@ pub struct ChatScreen {
     booting: bool,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
-    /// Independent scroll state for the sidebar session list. Sharing one
-    /// handle made each container clamp the other's offset, which broke
-    /// the transcript's bottom pinning.
-    sidebar_scroll: gpui::ScrollHandle,
+    /// Virtualized sidebar list; its own state so the transcript's
+    /// bottom pinning is never disturbed by sidebar scrolling.
+    sidebar_list: gpui::ListState,
+    /// Rows of the sidebar list, in display order.
+    sidebar_entries: Vec<SidebarEntry>,
     /// Set when the transcript should jump to its newest content on the
     /// next render (session switch or send); streaming follows only while
     /// the view is already at the bottom.
@@ -776,7 +797,8 @@ impl ChatScreen {
             notice: None,
             booting: true,
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
-            sidebar_scroll: gpui::ScrollHandle::new(),
+            sidebar_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
+            sidebar_entries: Vec::new(),
             follow_transcript: true,
             tool_details: settings.tool_details,
             permission_mode: std::env::var("MAPLE_PERMISSION_MODE")
@@ -4705,6 +4727,47 @@ impl ChatScreen {
             .collect();
         self.project_groups = groups;
         self.archived_indices = archived_indices;
+        self.rebuild_sidebar_entries();
+    }
+
+    /// Flatten the groups into list rows, honoring folded projects and
+    /// the archived section. Every row is re-measured; the scroll
+    /// position is kept.
+    fn rebuild_sidebar_entries(&mut self) {
+        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::ProjectsHeader];
+        for (index, group) in self.project_groups.iter().enumerate() {
+            entries.push(SidebarEntry::Project(index));
+            if !self.collapsed_roots.contains(&*group.root) {
+                entries.extend(group.tasks.iter().map(|&session| SidebarEntry::Task {
+                    session,
+                    archived: false,
+                }));
+            }
+        }
+        if !self.archived_indices.is_empty() {
+            entries.push(SidebarEntry::ArchivedHeader);
+            if self.archived_expanded {
+                entries.extend(
+                    self.archived_indices
+                        .iter()
+                        .map(|&session| SidebarEntry::Task {
+                            session,
+                            archived: true,
+                        }),
+                );
+            }
+        }
+        let old_count = self.sidebar_list.item_count();
+        self.sidebar_entries = entries;
+        self.sidebar_list
+            .splice(0..old_count, self.sidebar_entries.len());
+    }
+
+    /// A row changed its height (a rename field came or went): let the
+    /// list measure again.
+    fn remeasure_sidebar(&self) {
+        let count = self.sidebar_list.item_count();
+        self.sidebar_list.splice(0..count, count);
     }
 
     /// Rebuild the per-session sidebar strings when the session list
@@ -4809,10 +4872,12 @@ impl ChatScreen {
         self.rename = Some(target);
         self.rename_input = Some(input);
         self.rename_focus_pending = true;
+        self.remeasure_sidebar();
         cx.notify();
     }
 
     fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.remeasure_sidebar();
         self.rename = None;
         self.rename_input = None;
         cx.notify();
@@ -4828,6 +4893,7 @@ impl ChatScreen {
             .map(|input| input.read(cx).text())
             .unwrap_or_default();
         let name = name.trim().to_string();
+        self.remeasure_sidebar();
         cx.notify();
         if name.is_empty() {
             return;
@@ -5296,6 +5362,7 @@ impl ChatScreen {
         } else {
             self.collapsed_roots.insert(root.to_string());
         }
+        self.rebuild_sidebar_entries();
         cx.notify();
     }
 
@@ -5447,17 +5514,18 @@ impl ChatScreen {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let selected = self.selected_session.as_deref();
-        let current_root = self.project_root.as_deref();
-        let section_label = |text: &'static str| {
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .child(text.to_uppercase())
-        };
+        let entity = cx.entity().downgrade();
+        // Only the rows on screen (plus a small overdraw) are built each
+        // frame; the list keeps the heights of the rest.
+        let list = gpui::list(self.sidebar_list.clone(), move |ix, _window, cx| {
+            let Some(chat) = entity.upgrade() else {
+                return div().into_any_element();
+            };
+            chat.update(cx, |chat, cx| chat.render_sidebar_entry(ix, cx))
+        })
+        .size_full();
         div()
-            .w(px(300.))
+            .w(SIDEBAR_WIDTH)
             .h_full()
             .flex()
             .flex_col()
@@ -5516,235 +5584,238 @@ impl ChatScreen {
                 div()
                     .id("session-list")
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.sidebar_scroll)
+                    .min_h_0()
                     .px_4()
                     .pt_6()
-                    .child(
-                        div()
-                            .id("new-task")
-                            .mb_3()
-                            .px_2()
-                            .py_1p5()
-                            .rounded_md()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::accent()))
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                    .cursor_pointer()
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.new_session(cx);
-                            }))
-                            .child(icon("square-pen", px(16.), theme::accent()))
-                            .child("New Task"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .mb_3()
-                            .child(section_label("Projects"))
-                            .child(
-                                div()
-                                    .id("new-project")
-                                    .size_6()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .hover(|style| {
-                                        style
-                                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                            .cursor_pointer()
-                                    })
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.choose_root_dialog(cx);
-                                    }))
-                                    .child(icon("folder-plus", px(16.), theme::text_secondary())),
-                            ),
-                    )
-                    .children(self.project_groups.iter().map(|group| {
-                        let root = &group.root;
-                        let is_current = current_root == Some(&**root);
-                        let is_collapsed = self.collapsed_roots.contains(&**root);
-                        let is_pinned = self.pinned_roots.iter().any(|pinned| **pinned == **root);
-                        let name = group.name.clone();
-                        let tasks = group.tasks.iter().copied();
-                        let group_name = group.group.clone();
-                        let rename_field =
-                            self.rename_field(&RenameTarget::Project(root.to_string()));
-                        let menu = (self.project_menu.as_deref() == Some(&**root))
-                            .then(|| self.render_project_menu(root, cx));
-                        div()
-                            .relative()
-                            .flex()
-                            .flex_col()
-                            .mb_2()
-                            .child(
-                                div()
-                                    .id(group.element_id.clone())
-                                    .group(group_name.clone())
-                                    .flex()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(gpui::rgb(theme::text_primary()))
-                                    .hover(|style| {
-                                        style
-                                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                            .cursor_pointer()
-                                    })
-                                    .on_click({
-                                        let root = Arc::clone(root);
-                                        cx.listener(move |this, _event, _window, cx| {
-                                            this.toggle_root_collapsed(&root, cx);
-                                        })
-                                    })
-                                    .child(icon(
-                                        if is_collapsed {
-                                            "chevron-right"
-                                        } else {
-                                            "chevron-down"
-                                        },
-                                        px(14.),
-                                        theme::text_secondary(),
-                                    ))
-                                    .child(icon(
-                                        if is_current { "folder-open" } else { "folder" },
-                                        px(16.),
-                                        theme::text_primary(),
-                                    ))
-                                    .when_some(rename_field, |row, field| row.child(field))
-                                    .when(
-                                        !matches!(&self.rename, Some(RenameTarget::Project(renaming)) if **renaming == **root),
-                                        |row| {
-                                            row.child(
-                                                div().flex_1().min_w_0().line_clamp(1).child(name),
-                                            )
-                                        },
-                                    )
-                                    .when(is_pinned, |row| {
-                                        // Pinned: the always-visible pin is
-                                        // the unpin button itself.
-                                        row.child(
-                                            div()
-                                                .id(group.pin_id.clone())
-                                                .size_5()
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .hover(|style| style.cursor_pointer())
-                                                .on_click({
-                                                    let root = Arc::clone(root);
-                                                    cx.listener(move |this, _event, _window, cx| {
-                                                        cx.stop_propagation();
-                                                        this.toggle_pin(&root, cx);
-                                                    })
-                                                })
-                                                .child(icon("pin", px(13.), theme::accent())),
-                                        )
-                                    })
-                                    .when(!is_pinned, |row| {
-                                        row.child(row_action(
-                                            group.pin_id.clone(),
-                                            &group_name,
-                                            "pin",
-                                            {
-                                                let root = Arc::clone(root);
-                                                cx.listener(move |this, _event, _window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.toggle_pin(&root, cx);
-                                                })
-                                            },
-                                        ))
-                                    })
-                                    .child(row_action(
-                                        group.menu_id.clone(),
-                                        &group_name,
-                                        "ellipsis",
-                                        {
-                                            let root = Arc::clone(root);
-                                            cx.listener(move |this, _event, _window, cx| {
-                                                cx.stop_propagation();
-                                                this.toggle_project_menu(&root, cx);
-                                            })
-                                        },
-                                    )),
-                            )
-                            .when(!is_collapsed, |column| {
-                                column.children(
-                                    tasks.map(|index| self.render_task_row(index, selected, false, cx)),
-                                )
-                            })
-                            .children(menu)
-                    }))
-                    .when(!self.archived_indices.is_empty(), |list| {
-                        let expanded = self.archived_expanded;
-                        let count = self.archived_indices.len();
-                        list.child(
-                            div()
-                                .mt_5()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .id("archived-toggle")
-                                        .flex()
-                                        .items_center()
-                                        .gap_1p5()
-                                        .mb_1()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .hover(|style| {
-                                            style
-                                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                                .cursor_pointer()
-                                        })
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
-                                            this.archived_expanded = !this.archived_expanded;
-                                            cx.notify();
-                                        }))
-                                        .child(icon(
-                                            if expanded {
-                                                "chevron-down"
-                                            } else {
-                                                "chevron-right"
-                                            },
-                                            px(14.),
-                                            theme::text_secondary(),
-                                        ))
-                                        .child(section_label("Archived"))
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(gpui::rgb(theme::text_muted()))
-                                                .child(count.to_string()),
-                                        ),
-                                )
-                                .when(expanded, |column| {
-                                    column.children(
-                                        self.archived_indices
-                                            .iter()
-                                            .map(|index| self.render_task_row(*index, selected, true, cx)),
-                                    )
-                                }),
-                        )
-                    }),
+                    .child(list),
             )
             .child(self.render_sidebar_footer(cx))
+    }
+
+    /// One row of the sidebar list.
+    fn render_sidebar_entry(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.selected_session.as_deref();
+        match self.sidebar_entries.get(ix).copied() {
+            Some(SidebarEntry::NewTask) => div()
+                .id("new-task")
+                .mb_3()
+                .px_2()
+                .py_1p5()
+                .rounded_md()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_sm()
+                .text_color(gpui::rgb(theme::accent()))
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.new_session(cx);
+                }))
+                .child(icon("square-pen", px(16.), theme::accent()))
+                .child("New Task")
+                .into_any_element(),
+            Some(SidebarEntry::ProjectsHeader) => div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .mb_3()
+                .child(section_label("PROJECTS"))
+                .child(
+                    div()
+                        .id("new-project")
+                        .size_6()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .hover(|style| {
+                            style
+                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                .cursor_pointer()
+                        })
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.choose_root_dialog(cx);
+                        }))
+                        .child(icon("folder-plus", px(16.), theme::text_secondary())),
+                )
+                .into_any_element(),
+            Some(SidebarEntry::Project(index)) => self.render_project_header(index, cx),
+            Some(SidebarEntry::Task { session, archived }) => {
+                let row = self.render_task_row(session, selected, archived, cx);
+                // The last live row of a project carries the gap before
+                // the next section.
+                let last_of_group = !archived
+                    && !matches!(
+                        self.sidebar_entries.get(ix + 1),
+                        Some(SidebarEntry::Task {
+                            archived: false,
+                            ..
+                        })
+                    );
+                div()
+                    .when(last_of_group, |row| row.mb_2())
+                    .child(row)
+                    .into_any_element()
+            }
+            Some(SidebarEntry::ArchivedHeader) => {
+                let expanded = self.archived_expanded;
+                let count = self.archived_indices.len();
+                div()
+                    .id("archived-toggle")
+                    .mt_5()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .mb_1()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                            .cursor_pointer()
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.archived_expanded = !this.archived_expanded;
+                        this.rebuild_sidebar_entries();
+                        cx.notify();
+                    }))
+                    .child(icon(
+                        if expanded {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        },
+                        px(14.),
+                        theme::text_secondary(),
+                    ))
+                    .child(section_label("ARCHIVED"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(count.to_string()),
+                    )
+                    .into_any_element()
+            }
+            None => div().into_any_element(),
+        }
+    }
+
+    /// A project header row with its fold chevron, pin, and overflow
+    /// menu. The menu overlays the rows below it.
+    fn render_project_header(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(group) = self.project_groups.get(index) else {
+            return div().into_any_element();
+        };
+        let root = &group.root;
+        let is_current = self.project_root.as_deref() == Some(&**root);
+        let is_collapsed = self.collapsed_roots.contains(&**root);
+        let is_pinned = self.pinned_roots.iter().any(|pinned| **pinned == **root);
+        let rename_field = self.rename_field(&RenameTarget::Project(root.to_string()));
+        let renaming = rename_field.is_some();
+        let menu = (self.project_menu.as_deref() == Some(&**root))
+            .then(|| self.render_project_menu(root, cx));
+        div()
+            .relative()
+            .when(is_collapsed, |column| column.mb_2())
+            .child(
+                div()
+                    .id(group.element_id.clone())
+                    .group(group.group.clone())
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                            .cursor_pointer()
+                    })
+                    .on_click({
+                        let root = Arc::clone(root);
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.toggle_root_collapsed(&root, cx);
+                        })
+                    })
+                    .child(icon(
+                        if is_collapsed {
+                            "chevron-right"
+                        } else {
+                            "chevron-down"
+                        },
+                        px(14.),
+                        theme::text_secondary(),
+                    ))
+                    .child(icon(
+                        if is_current { "folder-open" } else { "folder" },
+                        px(16.),
+                        theme::text_primary(),
+                    ))
+                    .when_some(rename_field, |row, field| row.child(field))
+                    .when(!renaming, |row| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .line_clamp(1)
+                                .child(group.name.clone()),
+                        )
+                    })
+                    .when(is_pinned, |row| {
+                        // Pinned: the always-visible pin is the unpin
+                        // button itself.
+                        row.child(
+                            div()
+                                .id(group.pin_id.clone())
+                                .size_5()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(|style| style.cursor_pointer())
+                                .on_click({
+                                    let root = Arc::clone(root);
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.toggle_pin(&root, cx);
+                                    })
+                                })
+                                .child(icon("pin", px(13.), theme::accent())),
+                        )
+                    })
+                    .when(!is_pinned, |row| {
+                        row.child(row_action(group.pin_id.clone(), &group.group, "pin", {
+                            let root = Arc::clone(root);
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_pin(&root, cx);
+                            })
+                        }))
+                    })
+                    .child(row_action(
+                        group.menu_id.clone(),
+                        &group.group,
+                        "ellipsis",
+                        {
+                            let root = Arc::clone(root);
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_project_menu(&root, cx);
+                            })
+                        },
+                    )),
+            )
+            .children(menu)
+            .into_any_element()
     }
 
     /// One task row. Archived rows show the project name under the title
@@ -7174,6 +7245,15 @@ fn git_branch(git_dir: &std::path::Path) -> Option<String> {
 }
 
 /// Last path component of a project root, for chips and the sidebar.
+/// Upper-case section heading in the sidebar.
+fn section_label(text: &'static str) -> Div {
+    div()
+        .text_xs()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(theme::text_secondary()))
+        .child(text)
+}
+
 /// Small icon button that shows only while the pointer is over its row.
 fn row_action(
     id: SharedString,
@@ -10050,6 +10130,53 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_sidebar_entries_follow_folds(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut b = summary("s2", "B");
+            b.project_root = "/work/beta".to_string();
+            let mut old = summary("s3", "Old");
+            old.archived = true;
+            this.sessions = vec![summary("s1", "A"), b, old];
+            this.rebuild_project_groups();
+            assert_eq!(
+                this.sidebar_entries,
+                vec![
+                    SidebarEntry::NewTask,
+                    SidebarEntry::ProjectsHeader,
+                    SidebarEntry::Project(0),
+                    SidebarEntry::Task {
+                        session: 0,
+                        archived: false
+                    },
+                    SidebarEntry::Project(1),
+                    SidebarEntry::Task {
+                        session: 1,
+                        archived: false
+                    },
+                    SidebarEntry::ArchivedHeader,
+                ]
+            );
+            assert_eq!(this.sidebar_list.item_count(), 7);
+            this.toggle_root_collapsed("/tmp/proj", cx);
+            assert!(!this.sidebar_entries.contains(&SidebarEntry::Task {
+                session: 0,
+                archived: false
+            }));
+            this.archived_expanded = true;
+            this.rebuild_sidebar_entries();
+            assert_eq!(
+                this.sidebar_entries.last(),
+                Some(&SidebarEntry::Task {
+                    session: 2,
+                    archived: true
+                })
+            );
+            assert_eq!(this.sidebar_list.item_count(), this.sidebar_entries.len());
+        });
+    }
+
+    #[gpui::test]
     fn test_finished_only_clears_its_own_run(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -10128,6 +10255,63 @@ mod state_tests {
                 this.notice
                     .as_deref()
                     .is_some_and(|notice| notice.contains("at most"))
+            );
+        });
+    }
+
+    /// The sidebar list builds its rows by updating the chat entity from
+    /// inside the list callback during a draw; that must be legal and
+    /// must only build the rows in view.
+    #[gpui::test]
+    fn test_sidebar_list_draws_rows_from_the_entity(cx: &mut TestAppContext) {
+        struct SidebarHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for SidebarHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(300.))
+                    .h(px(400.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.update(cx, |chat, cx| chat.render_sidebar(cx)))
+            }
+        }
+
+        let chat = cx.new(|_| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            let mut this = ChatScreen::new_inner(backend, "user".to_string());
+            this.selected_session = Some("s1".to_string());
+            this.sessions = (0..200)
+                .map(|n| summary(&format!("s{n}"), &format!("Task {n}")))
+                .collect();
+            this.rebuild_project_groups();
+            this
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| SidebarHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(300.), px(400.)));
+        cx.update(|_window, app| {
+            let chat = chat.read(app);
+            assert_eq!(chat.sidebar_list.item_count(), chat.sidebar_entries.len());
+            let top = chat.sidebar_list.logical_scroll_top();
+            assert_eq!(top.item_ix, 0);
+        });
+        // The list scrolls: a wheel moves the logical top down the rows.
+        let center = cx.update(|window, _cx| window.bounds().center());
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: center,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-300.))),
+            ..Default::default()
+        });
+        cx.update(|_window, app| {
+            let top = chat.read(app).sidebar_list.logical_scroll_top();
+            assert!(
+                top.item_ix > 0,
+                "wheel must scroll the sidebar, got {top:?}"
             );
         });
     }
