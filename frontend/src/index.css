@@ -156,8 +156,10 @@
 
     --maple-success: 80 32% 42%; /* #7B8F4A */
     --maple-warning: 36 57% 59%; /* #D4A35A */
+    --maple-warning-foreground: 36 57% 35%;
     --maple-on-warning: 0 0% 100%;
     --maple-error: 12 60% 54%; /* #D05E41 */
+    --maple-error-foreground: 12 60% 42%;
     --maple-info: 213 15% 56%; /* #7E8DA1 */
 
     --maple-surface: 0 0% 98%; /* #FAFAFA */
@@ -273,8 +275,10 @@
 
     --maple-success: 80 32% 48%;
     --maple-warning: 36 57% 55%;
+    --maple-warning-foreground: 36 70% 70%;
     --maple-on-warning: 0 0% 100%;
     --maple-error: 12 60% 50%;
+    --maple-error-foreground: 12 70% 70%;
     --maple-info: 213 15% 50%;
 
     --maple-surface: 0 0% 9%; /* Neutral 900 */

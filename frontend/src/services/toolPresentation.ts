@@ -1,4 +1,5 @@
-export type AgentToolKind = "shell" | "file-read" | "file-write" | "web" | "mcp" | "generic";
+export type ToolKind = "shell" | "file-read" | "file-write" | "web" | "mcp" | "generic";
+export type ToolActivityStatus = "active" | "completed" | "incomplete" | "error";
 
 const SHELL_TOOL_NAMES = new Set(["shell"]);
 const FILE_READ_TOOL_NAMES = new Set([
@@ -19,7 +20,7 @@ const FILE_WRITE_TOOL_NAMES = new Set([
   "str_replace_based_edit_tool",
   "apply_patch"
 ]);
-const WEB_TOOL_NAMES = new Set(["web_search", "open_url"]);
+const WEB_TOOL_NAMES = new Set(["web_search", "open_url", "open_urls"]);
 const MAPLE_EXTENSION_NAMES = new Set(["developer"]);
 const SHELL_TOOL_LABELS = new Set(["terminal", "shell"]);
 const FILE_READ_TOOL_LABELS = new Set([
@@ -31,7 +32,7 @@ const FILE_READ_TOOL_LABELS = new Set([
   "search"
 ]);
 const FILE_WRITE_TOOL_LABELS = new Set(["edit", "write", "editor", "edit file", "write file"]);
-const WEB_TOOL_LABELS = new Set(["web search", "open url"]);
+const WEB_TOOL_LABELS = new Set(["web search", "open url", "open urls"]);
 
 function toolNameFromTimelineId(id: string): string | null {
   const encodedName = id.startsWith("functions.") ? id.slice("functions.".length) : null;
@@ -42,7 +43,7 @@ function toolNameFromTimelineId(id: string): string | null {
   return name.trim() || null;
 }
 
-function agentToolKindFromTitle(title: string | null | undefined): AgentToolKind {
+function toolKindFromTitle(title: string | null | undefined): ToolKind {
   const label = title?.split(":", 1)[0]?.trim().toLowerCase();
   if (!label) return "generic";
   if (SHELL_TOOL_LABELS.has(label)) return "shell";
@@ -52,10 +53,7 @@ function agentToolKindFromTitle(title: string | null | undefined): AgentToolKind
   return "generic";
 }
 
-export function agentToolKind(id: string, title?: string | null): AgentToolKind {
-  const encodedName = toolNameFromTimelineId(id);
-  if (!encodedName) return agentToolKindFromTitle(title);
-
+export function toolKindFromName(encodedName: string): ToolKind {
   const namespaceSeparator = encodedName.indexOf("__");
   const namespace = namespaceSeparator >= 0 ? encodedName.slice(0, namespaceSeparator) : null;
   const toolName =
@@ -69,7 +67,12 @@ export function agentToolKind(id: string, title?: string | null): AgentToolKind 
   return "generic";
 }
 
-export function agentToolKindLabel(kind: AgentToolKind): string {
+export function toolKindFromAgentTimeline(id: string, title?: string | null): ToolKind {
+  const encodedName = toolNameFromTimelineId(id);
+  return encodedName ? toolKindFromName(encodedName) : toolKindFromTitle(title);
+}
+
+export function toolKindLabel(kind: ToolKind): string {
   switch (kind) {
     case "shell":
       return "Shell command";

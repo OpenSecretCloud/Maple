@@ -11,22 +11,19 @@ import {
 import { flushSync } from "react-dom";
 import {
   ArrowUp,
-  Check,
   Plus,
   Image,
   FileText,
   X,
   Mic,
   SquarePen,
-  Search,
   Loader2,
   Globe,
   Expand,
   Shrink,
   Volume2,
   Square,
-  LockKeyhole,
-  ChevronRight
+  LockKeyhole
 } from "lucide-react";
 import RecordRTC from "recordrtc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -64,6 +61,7 @@ import {
   ChatUserTurn
 } from "@/components/chat/ChatTurn";
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
+import { ToolActivityCard } from "@/components/ToolActivityCard";
 import {
   continueChatComposerList,
   continueChatComposerListBeforeInput
@@ -181,11 +179,19 @@ import {
 import { recoverFailedSendAfterDestinationAdoption } from "@/services/chatSendFailureRecovery";
 import { isImageDescriptionUnavailableError } from "@/services/chatResponseErrors";
 import {
+  chatToolCallStatus,
+  chatToolOutputStatus,
+  chatToolTitle,
+  chatWebSearchStatus,
+  formatChatToolArguments
+} from "@/services/chatToolPresentation";
+import {
   getRegisteredChatOptimisticMessage,
   markOptimisticMessageIncomplete,
   registerChatOptimisticMessage,
   unregisterChatOptimisticMessage
 } from "@/services/chatOptimisticMessageOwnership";
+import { toolKindFromName } from "@/services/toolPresentation";
 
 const CHAT_ALERT_CLASS = "absolute top-16 left-1/2 z-50 w-full max-w-2xl -translate-x-1/2 px-4";
 const STREAM_EVENT_DEBUG_STORAGE_KEY = "maple:sse-debug";
@@ -424,10 +430,6 @@ function isToolCallItem(item: Message): item is ToolCallItem {
 
 function isToolOutputItem(item: Message): item is ToolOutputItem {
   return item.type === "tool_output";
-}
-
-function toolOutputHasResult(item: ToolOutputItem): boolean {
-  return item.status === "completed" || item.output.length > 0;
 }
 
 function getReasoningContentLength(content?: ReasoningContentItem[]): number {
@@ -909,118 +911,49 @@ interface Conversation {
   };
 }
 
-function getToolCallQuery(functionCall: ToolCallItem): string {
-  try {
-    const args = JSON.parse(functionCall.arguments);
-    return args.query || "";
-  } catch {
-    return "";
-  }
-}
-
-function isOpenUrlTool(functionCall: ToolCallItem): boolean {
-  return functionCall.name === "open_url" || functionCall.name === "open_urls";
-}
-
-type ChatWebToolCardStatus = "active" | "completed" | "incomplete" | "error";
-
-function ChatWebToolCard({
-  title,
-  status,
+function ChatToolDetails({
+  input,
   output,
-  preview,
-  hasMore = false,
-  isExpanded = false,
+  isExpanded,
   onToggleExpanded
 }: {
-  title: string;
-  status: ChatWebToolCardStatus;
+  input?: string;
   output?: string;
-  preview?: string;
-  hasMore?: boolean;
-  isExpanded?: boolean;
-  onToggleExpanded?: () => void;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
 }) {
-  const isActive = status === "active";
-  const isError = status === "error";
-  const isIncomplete = status === "incomplete";
-  const statusText = isActive
-    ? "In progress"
-    : isError
-      ? "Failed"
-      : isIncomplete
-        ? "Incomplete"
-        : "Completed";
-  const statusIcon = isActive ? (
-    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-  ) : isError ? (
-    <X className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
-  ) : isIncomplete ? (
-    <X className="h-4 w-4 shrink-0 text-maple-warning" aria-hidden="true" />
-  ) : (
-    <Check className="h-4 w-4 shrink-0 text-maple-success" aria-hidden="true" />
-  );
-  const summary = (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
-      {statusIcon}
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
-        {title}
-      </span>
-      <span
-        className={`shrink-0 text-xs ${
-          isError
-            ? "text-destructive"
-            : isIncomplete
-              ? "text-maple-warning"
-              : "text-muted-foreground"
-        }`}
-        role="status"
-        aria-live="polite"
-      >
-        {statusText}
-      </span>
-    </div>
-  );
-
-  if (output === undefined) {
-    return (
-      <div
-        className={`mb-2 flex items-center gap-2 rounded-2xl px-3 py-2 text-sm ${
-          isError ? "bg-destructive/5" : "bg-muted/30"
-        }`}
-      >
-        {summary}
-      </div>
-    );
-  }
+  const preview = output ? truncateMarkdownPreservingLinks(output, 150) : "";
+  const hasMore = Boolean(output && output.length > 150);
 
   return (
-    <details
-      open={isError}
-      className={`group mb-2 rounded-3xl border px-4 py-3 text-sm ${
-        isError ? "border-destructive/35 bg-destructive/5" : "border-muted/40 bg-muted/20"
-      }`}
-    >
-      <summary className="flex cursor-pointer list-none items-center gap-2">
-        <ChevronRight
-          className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
-          aria-hidden="true"
-        />
-        {summary}
-      </summary>
-      <div className="mt-2 pl-6 text-foreground/80">
-        <Markdown content={isExpanded ? output : (preview ?? output)} />
-        {hasMore && onToggleExpanded ? (
-          <button
-            type="button"
-            onClick={onToggleExpanded}
-            className="ml-2 text-xs font-medium text-primary hover:text-primary/80"
-          >
-            {isExpanded ? "Show less" : "Show more"}
-          </button>
-        ) : null}
-      </div>
-    </details>
+    <>
+      {input?.trim() ? (
+        <div>
+          <p className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">Input</p>
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/70 px-2 py-1.5 text-xs text-muted-foreground">
+            {input}
+          </pre>
+        </div>
+      ) : null}
+      {output !== undefined && output.length > 0 ? (
+        <div>
+          <p className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">Output</p>
+          <div className="text-foreground/80">
+            <Markdown content={isExpanded ? output : preview} />
+            {hasMore ? (
+              <button
+                type="button"
+                onClick={onToggleExpanded}
+                aria-expanded={isExpanded}
+                className="ml-2 text-xs font-medium text-primary hover:text-primary/80"
+              >
+                {isExpanded ? "Show less" : "Show more"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -1028,199 +961,80 @@ function ChatWebToolCard({
 function ToolCallRenderer({
   tool,
   toolOutputs,
+  statusOutputs,
   relatedCall
 }: {
   tool: ConversationContent;
   toolOutputs?: ToolOutputItem[];
+  statusOutputs?: ToolOutputItem[];
   relatedCall?: ToolCallItem;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (tool.type === "web_search_call") {
     const webSearch = tool as ResponseFunctionWebSearch;
-    const isActive = webSearch.status === "in_progress" || webSearch.status === "searching";
 
     return (
-      <ChatWebToolCard
+      <ToolActivityCard
+        kind="web"
         title="Web Search"
-        status={isActive ? "active" : webSearch.status === "completed" ? "completed" : "error"}
+        status={chatWebSearchStatus(webSearch.status)}
       />
     );
   }
 
   if (tool.type === "tool_call") {
     const functionCall = tool as ToolCallItem;
-    const isWebSearch = functionCall.name === "web_search";
-    const isOpenUrl = isOpenUrlTool(functionCall);
-    const isWebTool = isWebSearch || isOpenUrl;
-    const query = getToolCallQuery(functionCall);
     const availableToolOutputs = toolOutputs ?? [];
+    const relatedToolOutputs = statusOutputs ?? availableToolOutputs;
     const combinedOutput = availableToolOutputs
       .map((toolOutput) => toolOutput.output || "")
       .filter(Boolean)
       .join("\n\n");
-    const hasToolOutput = combinedOutput.length > 0;
-    const isCompleted = availableToolOutputs.some(toolOutputHasResult);
-    const isError = functionCall.status === "error";
-    const isIncomplete = functionCall.status === "incomplete";
-    const isFailed = isError || isIncomplete;
-    const isActive = !isCompleted && !isFailed;
+    const formattedInput = formatChatToolArguments(functionCall.arguments);
+    const hasDetails = Boolean(formattedInput.trim() || combinedOutput.length > 0);
+    const cardProps = {
+      kind: toolKindFromName(functionCall.name),
+      title: chatToolTitle(functionCall.name, functionCall.arguments),
+      status: chatToolCallStatus(functionCall.status, relatedToolOutputs)
+    };
 
-    if (hasToolOutput) {
-      const preview = truncateMarkdownPreservingLinks(combinedOutput, 150);
-      const hasMore = combinedOutput.length > 150;
-
-      if (isWebTool) {
-        return (
-          <ChatWebToolCard
-            title={isWebSearch ? (query ? `Web Search: "${query}"` : "Web Search") : "Open URL"}
-            status={isError ? "error" : isIncomplete ? "incomplete" : "completed"}
-            output={combinedOutput}
-            preview={preview}
-            hasMore={hasMore}
-            isExpanded={isExpanded}
-            onToggleExpanded={() => setIsExpanded(!isExpanded)}
-          />
-        );
-      }
-
-      return (
-        <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
-          <div className="mb-2 flex items-center gap-2">
-            {isWebSearch ? (
-              <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
-            ) : (
-              <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
-            )}
-            <span className="font-medium text-foreground">
-              {isWebSearch
-                ? query
-                  ? `Searched: "${query}"`
-                  : "Web Search"
-                : query
-                  ? `Ran "${functionCall.name}" for "${query}"`
-                  : `Tool "${functionCall.name}" completed`}
-            </span>
-          </div>
-          <div className="pl-6 text-foreground/80">
-            <Markdown content={isExpanded ? combinedOutput : preview} />
-            {hasMore && (
-              <button
-                type="button"
-                onClick={() => setIsExpanded(!isExpanded)}
-                className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
-              >
-                {isExpanded ? "Show less" : "Show more"}
-              </button>
-            )}
-          </div>
-        </div>
-      );
-    }
-
-    if (isWebTool) {
-      return (
-        <ChatWebToolCard
-          title={isWebSearch ? (query ? `Web Search: "${query}"` : "Web Search") : "Open URL"}
-          status={
-            isError ? "error" : isIncomplete ? "incomplete" : isActive ? "active" : "completed"
-          }
-        />
-      );
-    }
+    if (!hasDetails) return <ToolActivityCard {...cardProps} />;
 
     return (
-      <div
-        className={`mb-2 flex items-center gap-2 rounded-2xl bg-muted/30 px-3 py-2 text-sm ${
-          isActive ? "text-muted-foreground" : "text-foreground"
-        }`}
-      >
-        {isActive ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : isFailed ? (
-          <X className={`h-3.5 w-3.5 ${isError ? "text-maple-error" : "text-maple-warning"}`} />
-        ) : (
-          <Check className="h-3.5 w-3.5 text-maple-success" />
-        )}
-        <span>
-          {isCompleted
-            ? query
-              ? `Ran "${functionCall.name}" for "${query}"`
-              : `Ran "${functionCall.name}"`
-            : isFailed
-              ? isError
-                ? `Tool "${functionCall.name}" failed`
-                : `Tool "${functionCall.name}" incomplete`
-              : query
-                ? `Running "${functionCall.name}" for "${query}"...`
-                : `Running "${functionCall.name}"...`}
-        </span>
-      </div>
+      <ToolActivityCard {...cardProps}>
+        <ChatToolDetails
+          input={formattedInput}
+          output={combinedOutput}
+          isExpanded={isExpanded}
+          onToggleExpanded={() => setIsExpanded(!isExpanded)}
+        />
+      </ToolActivityCard>
     );
   }
 
   if (tool.type === "tool_output") {
     const toolOutput = tool as ToolOutputItem;
     const output = toolOutput.output || "";
-    const query = relatedCall ? getToolCallQuery(relatedCall) : "";
-    const isWebSearch = relatedCall?.name === "web_search";
-    const isOpenUrl = relatedCall ? isOpenUrlTool(relatedCall) : false;
+    const cardProps = relatedCall
+      ? {
+          kind: toolKindFromName(relatedCall.name),
+          title: chatToolTitle(relatedCall.name, relatedCall.arguments)
+        }
+      : ({ kind: "generic", title: "Tool result" } as const);
 
-    // Show preview (first 150 chars to match grouped rendering)
-    const preview = truncateMarkdownPreservingLinks(output, 150);
-    const hasMore = output.length > 150;
-
-    if (isWebSearch || isOpenUrl) {
-      return (
-        <ChatWebToolCard
-          title={isWebSearch ? (query ? `Web Search: "${query}"` : "Web Search") : "Open URL"}
-          status={
-            toolOutput.status === "error"
-              ? "error"
-              : toolOutput.status === "incomplete"
-                ? "incomplete"
-                : "completed"
-          }
-          output={output}
-          preview={preview}
-          hasMore={hasMore}
-          isExpanded={isExpanded}
-          onToggleExpanded={() => setIsExpanded(!isExpanded)}
-        />
-      );
+    if (!output.length) {
+      return <ToolActivityCard {...cardProps} status={chatToolOutputStatus(toolOutput.status)} />;
     }
 
     return (
-      <div className="mb-2 rounded-3xl border border-muted/40 bg-muted/20 px-4 py-3 text-sm">
-        <div className="mb-2 flex items-center gap-2">
-          {isWebSearch ? (
-            <Search className="h-4 w-4 flex-shrink-0 text-[hsl(var(--maple-primary))]" />
-          ) : (
-            <Check className="h-4 w-4 flex-shrink-0 text-maple-success" />
-          )}
-          <span className="font-medium text-foreground">
-            {isWebSearch
-              ? query
-                ? `Searched: "${query}"`
-                : "Web Search"
-              : relatedCall
-                ? `Tool "${relatedCall.name}" result`
-                : "Tool Result"}
-          </span>
-        </div>
-        <div className="pl-6 text-foreground/80">
-          <Markdown content={isExpanded ? output : preview} />
-          {hasMore && (
-            <button
-              type="button"
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="ml-2 text-xs text-primary hover:text-primary/80 font-medium"
-            >
-              {isExpanded ? "Show less" : "Show more"}
-            </button>
-          )}
-        </div>
-      </div>
+      <ToolActivityCard {...cardProps} status={chatToolOutputStatus(toolOutput.status)}>
+        <ChatToolDetails
+          output={output}
+          isExpanded={isExpanded}
+          onToggleExpanded={() => setIsExpanded(!isExpanded)}
+        />
+      </ToolActivityCard>
     );
   }
 
@@ -1278,13 +1092,17 @@ const MessageList = memo(
       return toolCalls;
     }, [messages]);
 
-    const completedToolCallIds = useMemo(() => {
-      return new Set(
-        messages
-          .filter((message): message is ToolOutputItem => isToolOutputItem(message))
-          .filter(toolOutputHasResult)
-          .map((message) => message.call_id)
-      );
+    const toolOutputsByCallId = useMemo(() => {
+      const toolOutputs = new Map<string, ToolOutputItem[]>();
+
+      messages.forEach((message) => {
+        if (!isToolOutputItem(message)) return;
+        const outputs = toolOutputs.get(message.call_id) ?? [];
+        outputs.push(message);
+        toolOutputs.set(message.call_id, outputs);
+      });
+
+      return toolOutputs;
     }, [messages]);
 
     // Group messages into user turns and assistant turns
@@ -1337,11 +1155,6 @@ const MessageList = memo(
 
         if (itemType === "tool_call") {
           const toolCall = item as ToolCallItem;
-          const renderedToolCall =
-            completedToolCallIds.has(toolCall.call_id) && toolCall.status !== "completed"
-              ? ({ ...toolCall, status: "completed" } as ToolCallItem)
-              : toolCall;
-
           const matchedOutputs: ToolOutputItem[] = [];
           let nextIndex = index + 1;
 
@@ -1361,9 +1174,12 @@ const MessageList = memo(
               data-history-anchor-ids={[item.id, ...matchedOutputs.map((output) => output.id)].join(
                 " "
               )}
-              className="mb-2"
             >
-              <ToolCallRenderer tool={renderedToolCall} toolOutputs={matchedOutputs} />
+              <ToolCallRenderer
+                tool={toolCall}
+                toolOutputs={matchedOutputs}
+                statusOutputs={toolOutputsByCallId.get(toolCall.call_id)}
+              />
             </div>
           );
 
@@ -1377,7 +1193,7 @@ const MessageList = memo(
         if (itemType === "tool_output") {
           const output = item as ToolOutputItem;
           renderedItems.push(
-            <div key={item.id} data-history-anchor-ids={item.id} className="mb-2">
+            <div key={item.id} data-history-anchor-ids={item.id}>
               <ToolCallRenderer tool={output} relatedCall={toolCallsByCallId.get(output.call_id)} />
             </div>
           );
@@ -1387,7 +1203,7 @@ const MessageList = memo(
         if (itemType === "web_search_call") {
           const webSearch = item as unknown as ResponseFunctionWebSearch;
           renderedItems.push(
-            <div key={item.id} data-history-anchor-ids={item.id} className="mb-2">
+            <div key={item.id} data-history-anchor-ids={item.id}>
               <ToolCallRenderer tool={webSearch} />
             </div>
           );
