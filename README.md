@@ -214,16 +214,26 @@ monitoring, artifact verification, and explicit store handoff. Do not use the
 legacy `just release` recipe to create an unreviewed local tag.
 
 When the OpenSecret enclave changes, publish and verify its tagged Sigstore
-release evidence, then update the trusted-release snapshot in the OpenSecret
-SDK. Maple does not maintain its own PCR allowlist: before key exchange, the SDK
-requires the complete PCR0/PCR1/PCR2 tuple to match a release authorized for the
-configured environment. Runtime clients do not fetch this policy from GitHub,
-Sigstore, or Rekor.
+release evidence, then promote that exact evidence into the appropriate TUF
+channel before deploying the enclave. Maple does not maintain its own PCR
+allowlist: before key exchange, the SDK requires the complete PCR0/PCR1/PCR2
+tuple to match a release dynamically authorized for the configured environment
+by `attestations.trymaple.ai`. Runtime clients fetch only that fixed-origin TUF
+repository; they do not call GitHub, Fulcio, or Rekor.
 
-Until a snapshot-bearing backend release is reviewed and imported, this draft
-integration remains fail-closed and unavailable for real enclave connections.
-Keeping the in-tree TypeScript and Rust snapshots on the same reviewed release
-policy is part of the rollout requirement.
+The TypeScript and Rust SDKs embed the same TUF bootstrap root, not an ordinary
+release snapshot. Normal enclave releases therefore require no SDK release.
+The SDK changes only when its client contract changes. Normal root rotations
+arrive through the authenticated, sequential TUF root chain; replacing or
+advancing the embedded bootstrap out of band is forbidden until a reviewed
+bridge-history migration exists. Until the production root and initial
+repository are reviewed and published, the checked-in placeholder root keeps
+this draft integration fail-closed for real enclave connections.
+
+Packaged Maple selects trust policy only for exact official backend origins.
+Supporting an arbitrary hosted backend requires an explicit custom TUF
+repository and bootstrap-root integration; a custom URL never inherits the
+Maple production trust policy.
 
 Version changes update:
 

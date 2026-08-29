@@ -67,7 +67,6 @@ jobs:
             bun audit --audit-level=high
             bun run format:check
             bun run build
-            bun run test:trusted-release-updater
             VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000 \
               VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT=dev \
               bun test \

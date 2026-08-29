@@ -9,7 +9,9 @@ pub mod trusted_release;
 pub mod types;
 
 pub use client::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
-pub use error::{Error, Result};
+pub use error::{Error, InferenceTimeoutPhase, Result};
 pub use push::*;
-pub use trusted_release::{AttestationEnvironment, TrustedReleasePolicy};
+pub use trusted_release::{
+    AttestationEnvironment, TrustedReleaseConfig, TrustedReleaseManager, TrustedReleasePolicy,
+};
 pub use types::*;

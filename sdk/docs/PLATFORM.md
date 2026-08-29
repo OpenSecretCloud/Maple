@@ -351,7 +351,7 @@ function PlatformManagement() {
 
 ### Attestation Verification
 
-- `pcrConfig`: Selects the `"prod"` or `"dev"` trusted-release environment enforced before non-loopback session establishment. The complete PCR0/PCR1/PCR2 tuple must match the SDK's embedded, Sigstore-verified release snapshot; callers cannot add custom roots or runtime history URLs.
+- `pcrConfig`: Selects the `"prod"` or `"dev"` trusted-release environment enforced before non-loopback session establishment. Before each new session, the SDK refreshes authenticated release policy from the fixed `https://attestations.trymaple.ai/tuf` origin and requires the complete PCR0/PCR1/PCR2 tuple to match one active manifest. Callers cannot add custom roots or runtime history URLs. The browser validates TUF authorization but does not claim to reverify the portable Sigstore bundle; full bundle and builder-policy verification is a release-promotion boundary.
 - `getAttestation`: Gets an attested session after enforcing the effective trusted-release policy before key exchange.
 - `authenticate`: Authenticates an attestation document.
 - `parseAttestationForView`: Parses an attestation document for viewing.

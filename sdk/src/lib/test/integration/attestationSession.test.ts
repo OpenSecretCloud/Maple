@@ -67,7 +67,7 @@ test("never reads legacy unversioned session keys", async () => {
   expect(window.sessionStorage.getItem("sessionId")).toBeNull();
 });
 
-test("rejects expired or cross-policy cached sessions", async () => {
+test("rejects stale cached sessions before requesting a fresh attestation document", async () => {
   const apiUrl = "https://custom.example/prod";
   const policy = { environment: "prod" as const };
   const cacheKey = await getAttestationSessionStorageKey(apiUrl, policy);
@@ -82,6 +82,9 @@ test("rejects expired or cross-policy cached sessions", async () => {
     throw new Error("fresh attestation required");
   }) as typeof fetch;
 
-  await expect(getAttestation(false, apiUrl, policy)).rejects.toThrow("fresh attestation required");
+  await expect(getAttestation(false, apiUrl, policy)).rejects.toThrow(
+    "TUF root has not been bootstrapped"
+  );
+  expect(globalThis.fetch).not.toHaveBeenCalled();
   expect(window.sessionStorage.getItem(cacheKey)).toBeNull();
 });

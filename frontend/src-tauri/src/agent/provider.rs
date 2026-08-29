@@ -49,7 +49,10 @@ const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 const MAX_STREAM_LINE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RETRY_AFTER_SECS: f64 = 3_600.0;
 #[cfg(not(test))]
-const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(300);
+// A missing or stale encrypted session can make this call perform the same
+// bounded TUF root-rotation refresh as initial credential validation before it
+// reaches inference. This remains an outer UX cap, not an SDK-wide deadline.
+const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(test)]
 const RESPONSE_START_TIMEOUT: Duration = Duration::from_millis(100);
 #[cfg(not(test))]
@@ -916,6 +919,19 @@ fn map_opensecret_error_kind(error: opensecret::Error) -> ProviderError {
                 ProviderError::NetworkError("The Maple network request failed".to_string())
             }
         }
+        opensecret::Error::TrustedReleaseNetwork(_) => ProviderError::NetworkError(
+            "Maple could not refresh its enclave trust policy".to_string(),
+        ),
+        opensecret::Error::InferenceTimeout {
+            phase: opensecret::InferenceTimeoutPhase::Ordinary,
+            ..
+        } => ProviderError::ExecutionError("The Maple inference request timed out".to_string()),
+        opensecret::Error::InferenceTimeout {
+            phase: opensecret::InferenceTimeoutPhase::Recovery,
+            ..
+        } => ProviderError::NetworkError(
+            "Maple could not recover the secure inference session in time".to_string(),
+        ),
         opensecret::Error::AttestationVerificationFailed(_)
         | opensecret::Error::UnreleasedAttestationPolicy { .. }
         | opensecret::Error::TrustedReleasePolicy(_) => {
@@ -968,6 +984,8 @@ fn secure_connection_stream_error(error: &anyhow::Error) -> Option<ProviderError
 pub(crate) fn opensecret_error_category(error: &opensecret::Error) -> &'static str {
     match error {
         opensecret::Error::Http(_) => "http",
+        opensecret::Error::TrustedReleaseNetwork(_) => "attestation_network",
+        opensecret::Error::InferenceTimeout { .. } => "inference_timeout",
         opensecret::Error::Serialization(_) => "serialization",
         opensecret::Error::Cbor(_) => "cbor",
         opensecret::Error::Crypto(_) => "crypto",
@@ -2269,6 +2287,54 @@ mod tests {
             );
             assert!(!mapped.to_string().contains("private"));
         }
+    }
+
+    #[test]
+    fn trusted_release_network_errors_are_redacted_and_retryable() {
+        let private_detail = "private-attestation-origin.example";
+        let error = opensecret::Error::TrustedReleaseNetwork(private_detail.to_string());
+
+        assert_eq!(opensecret_error_category(&error), "attestation_network");
+        let mapped = map_opensecret_error(error);
+        assert_eq!(
+            mapped,
+            ProviderError::NetworkError(
+                "Maple could not refresh its enclave trust policy".to_string()
+            )
+        );
+        assert!(!mapped.to_string().contains(private_detail));
+        assert!(should_retry(&mapped, &fast_retry_config(1)));
+    }
+
+    #[test]
+    fn inference_timeout_errors_are_redacted_with_phase_safe_retry_semantics() {
+        let ordinary = opensecret::Error::InferenceTimeout {
+            phase: opensecret::InferenceTimeoutPhase::Ordinary,
+            timeout_secs: 987,
+        };
+        assert_eq!(opensecret_error_category(&ordinary), "inference_timeout");
+        let mapped = map_opensecret_error(ordinary);
+        assert_eq!(
+            mapped,
+            ProviderError::ExecutionError("The Maple inference request timed out".to_string())
+        );
+        assert!(!mapped.to_string().contains("987"));
+        assert!(!should_retry(&mapped, &fast_retry_config(1)));
+
+        let recovery = opensecret::Error::InferenceTimeout {
+            phase: opensecret::InferenceTimeoutPhase::Recovery,
+            timeout_secs: 987,
+        };
+        assert_eq!(opensecret_error_category(&recovery), "inference_timeout");
+        let mapped = map_opensecret_error(recovery);
+        assert_eq!(
+            mapped,
+            ProviderError::NetworkError(
+                "Maple could not recover the secure inference session in time".to_string()
+            )
+        );
+        assert!(!mapped.to_string().contains("987"));
+        assert!(should_retry(&mapped, &fast_retry_config(1)));
     }
 
     #[tokio::test]

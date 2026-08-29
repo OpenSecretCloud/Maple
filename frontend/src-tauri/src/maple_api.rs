@@ -11,7 +11,10 @@ use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
 
 const AUTH_CHANGED_EVENT: &str = "maple-api-auth-changed";
-const CREDENTIAL_VALIDATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+// Initial validation may need to traverse up to 32 bounded TUF root updates
+// before it can perform enclave attestation and fetch the account. This is an
+// outer UX cap; the SDK owns the tighter per-request trust-fetch deadlines.
+const CREDENTIAL_VALIDATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -55,6 +55,11 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
+That published 0.3.2 crate predates the in-tree dynamic TUF/Sigstore trust
+path documented below. The new behavior is currently unreleased and must ship
+only after the breaking Rust SDK release, with a breaking proxy version such as
+0.4.0. Do not infer the behavior below from installing 0.3.2.
+
 ## ⚙️ Configuration
 
 Set environment variables or use command-line arguments:
@@ -67,9 +72,18 @@ export MAPLE_BACKEND_URL=https://enclave.trymaple.ai   # Maple backend URL
 export MAPLE_API_KEY=your-maple-api-key        # Optional for trusted, non-browser clients only
 export MAPLE_DEBUG=true                        # Enable debug logging
 export MAPLE_ENABLE_CORS=false                 # Default; see browser warning below
-export MAPLE_REQUEST_TIMEOUT_SECS=300          # Backend request timeout
+export MAPLE_REQUEST_TIMEOUT_SECS=300          # Response-start/non-streaming timeout
 export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between chunks
 ```
+
+Initial attestation has its own timeout. Within each inference call, SDK-owned
+session and authentication recovery share one cumulative recovery budget. Both
+use a 15-minute minimum so a cold, bounded TUF root-rotation sequence is not cut
+off by a shorter inference timeout. `MAPLE_REQUEST_TIMEOUT_SECS` applies
+independently to each actual inference attempt through response headers and any
+buffered non-streaming body; values above 15 minutes also extend the attestation
+and recovery caps. After streaming headers arrive, the separate stream idle
+timeout governs each response chunk.
 
 Or use CLI arguments:
 ```bash
@@ -79,6 +93,13 @@ cargo run --locked -- --host 0.0.0.0 --port 8080 --backend-url https://enclave.t
 For an unsigned local backend, use `just run-local`. That recipe alone enables
 the explicitly named `insecure-local-mock-attestation` Cargo feature. Generic,
 release, Docker, and embedded Maple builds leave the feature disabled.
+
+The packaged proxy automatically selects attestation policy only for the exact
+official Maple/OpenSecret origins. An arbitrary remote HTTPS backend needs a
+custom library integration that supplies its own `TrustedReleaseConfig` and
+bootstrap root; the proxy CLI does not yet expose that trust configuration.
+Unknown remote origins therefore fail closed instead of inheriting Maple
+production policy.
 
 ## 🛠️ Usage
 
@@ -402,7 +423,7 @@ The Docker image:
 environment:
   - MAPLE_BACKEND_URL=https://enclave.trymaple.ai  # Production backend
   - MAPLE_ENABLE_CORS=true                         # Enable for web apps
-  - MAPLE_REQUEST_TIMEOUT_SECS=300                 # Backend request timeout
+  - MAPLE_REQUEST_TIMEOUT_SECS=300                 # Response-start/non-streaming timeout
   - MAPLE_STREAM_IDLE_TIMEOUT_SECS=300             # Streaming idle timeout
   - RUST_LOG=info                                  # Logging level
   # - MAPLE_API_KEY=xxx                            # Only for private deployments!
@@ -509,35 +530,37 @@ cargo run --locked
 Sigstore/Rekor release authorization belongs in the OpenSecret SDK rather than
 Maple Proxy. For each non-local backend, the SDK:
 
-1. verifies the AWS Nitro attestation document, certificate chain, nonce, and
-   signature;
-2. extracts and validates the complete PCR0/PCR1/PCR2 measurement tuple;
-3. compares that tuple with the release snapshot embedded in the SDK; and
-4. accepts the enclave public key and performs key exchange only after the
-   tuple is present in that snapshot.
+1. refreshes signed release policy from `https://attestations.trymaple.ai/tuf`,
+   verifies its TUF chain and each selected portable Sigstore bundle locally;
+2. creates a fresh nonce, requests the AWS Nitro attestation document, and
+   verifies its certificate chain, nonce, and signature;
+3. extracts the complete PCR0/PCR1/PCR2 measurement tuple;
+4. rechecks the held policy against current local rollback state and expiry,
+   then compares the tuple with one complete active release manifest; and
+5. accepts the enclave public key and performs key exchange only after that
+   atomic tuple is authorized.
 
 Maple Proxy continues to call `perform_attestation_handshake`; it neither
 maintains a second PCR allowlist nor implements a separate Sigstore verifier.
 Keeping this policy in the SDK gives every Rust SDK consumer the same
 fail-closed authorization boundary before application data is sent.
 
-There is no Sigstore, Rekor, or other release-metadata network lookup during a
-runtime handshake. At SDK update time, the release-snapshot updater verifies
-the release manifest and Cosign bundle, including the expected signing identity
-and Rekor evidence, before generating the embedded snapshot. Consumers then
-review the generated snapshot together with the SDK change.
+Runtime policy requests go only to `attestations.trymaple.ai`; the SDK does not
+contact GitHub, Fulcio, Rekor, or Sigstore's TUF service during a handshake.
+It starts from its embedded Maple TUF root, verifies current expiring policy and
+the exact immutable manifest/bundle bytes, and performs the Sigstore verification
+offline with TUF-authenticated trust roots and builder policy.
 
 Sigstore makes a release statement and its signing identity tamper-evident in
 an append-only transparency log. It does **not** prove that an artifact was
-reproducibly built, and it does **not** make an old, previously authorized
-release fresh. Reproducibility remains a separate Nix rebuild/compare property;
-rollback prevention, revocation, or minimum-version policy must also be handled
-separately.
+reproducibly built or decide whether a historical release is still current.
+Reproducibility remains a separate Nix rebuild/compare property; TUF supplies
+current authorization, bounded freshness, explicit rollback, and revocation.
 
-> **Integration status:** the embedded release snapshots are intentionally
-> empty until the first signed backend release is reviewed and imported. Remote
-> handshakes therefore fail closed in this draft branch; no release is published
-> by this change.
+> **Integration status:** the embedded TUF root is intentionally an unconfigured,
+> fail-closed placeholder until production bootstrap is reviewed. Remote
+> handshakes therefore fail closed in this draft branch; no release or policy is
+> published by this change.
 
 ## 📝 License
 

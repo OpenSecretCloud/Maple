@@ -63,8 +63,8 @@ function ProofDisplay({
 
         <p className="text-sm dark:text-white/70 text-foreground/70">
           The OpenSecret SDK authenticates the live AWS Nitro document and requires its exact
-          PCR0/PCR1/PCR2 tuple to appear in the SDK&apos;s embedded snapshot of authorized tagged
-          releases before accepting the enclave key.
+          PCR0/PCR1/PCR2 tuple to appear in the current, TUF-authenticated release policy before
+          accepting the enclave key.
         </p>
 
         {parsedDocument.pcrs
@@ -95,7 +95,7 @@ function ProofDisplay({
               </p>
             )}
             <p>
-              SDK snapshot:{" "}
+              TUF policy ID:{" "}
               <span className="font-mono break-all">{releaseValidation.snapshotId}</span>
             </p>
             {releaseValidation.transparencyLog && (
@@ -559,9 +559,8 @@ function ProofFAQ() {
                 enforce attestation before key exchange
               </li>
               <li>
-                <strong>Release authorization</strong>: The pinned OpenSecret release workflow and
-                Sigstore trust roots used to generate the SDK&apos;s embedded snapshot are
-                controlled as documented
+                <strong>Release authorization</strong>: The SDK&apos;s embedded TUF root, protected
+                promotion workflow, and online TUF signing key are controlled as documented
               </li>
               <li>
                 <strong>Code</strong>: The authorized open-source enclave code does what it claims
@@ -586,11 +585,12 @@ function ProofFAQ() {
               server code is open source
             </a>
             . The document on this page is fetched live and authenticated against AWS&apos;s Nitro
-            root. The SDK then checks the full PCR0/PCR1/PCR2 tuple against an embedded snapshot
-            generated from a verified tagged-release manifest and Cosign bundle. You can separately
-            verify that release&apos;s Sigstore/Rekor evidence and rebuild the source to compare its
-            measurements. Sigstore does not by itself prove reproducibility or that an authorized
-            release is the newest.
+            root. The SDK then fetches current policy from attestations.trymaple.ai, verifies its
+            TUF chain from the embedded root, and checks the full PCR0/PCR1/PCR2 tuple against one
+            active manifest. The protected promotion verifies that manifest&apos;s Cosign and Rekor
+            evidence; Rust clients also verify the portable bundle locally. You can rebuild the
+            source to compare its measurements. Sigstore does not by itself prove reproducibility or
+            that an authorized release is current.
           </p>
         </details>
       </div>
@@ -791,7 +791,7 @@ function Verify() {
               />
               <SecurityFact
                 title="Code Integrity"
-                description="The enclave is measured at boot. Before key exchange, the SDK requires the exact PCR0/PCR1/PCR2 tuple to match its embedded authorized-release snapshot."
+                description="The enclave is measured at boot. Before key exchange, the SDK requires the exact PCR0/PCR1/PCR2 tuple to match a release in current TUF-authenticated policy."
               />
               <SecurityFact
                 title="Remote Attestation"
@@ -803,7 +803,7 @@ function Verify() {
               />
               <SecurityFact
                 title="Release Provenance"
-                description="The SDK snapshot is generated only after the tagged manifest's Cosign identity, signature, and Rekor evidence verify. Freshness, rollback, and revocation remain separate policies."
+                description="Protected promotion verifies the tagged manifest's Cosign identity, signature, and Rekor evidence, then TUF authorizes it with freshness and rollback protection. Rust clients also reverify the portable Sigstore bundle locally."
               />
               <SecurityFact
                 title="Breach Resilience"

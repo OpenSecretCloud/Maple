@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 test.skipIf(!runLive)(
-  "hosted enclave establishes a session only after embedded trusted-release validation",
+  "hosted enclave establishes a session only after TUF-authorized release validation",
   async () => {
     const requests: string[] = [];
     globalThis.fetch = async (input, init) => {

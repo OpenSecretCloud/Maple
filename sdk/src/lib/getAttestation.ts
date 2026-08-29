@@ -1,17 +1,18 @@
-import { verifyAttestation, isLocalDevelopmentApiUrl } from "./attestation";
+import { verifyAttestationDocument, isLocalDevelopmentApiUrl } from "./attestation";
 import type { AttestationDocument } from "./attestation";
 import { getApiUrl, keyExchange } from "./api";
 import nacl from "tweetnacl";
 import { ChaCha20Poly1305 } from "@stablelib/chacha20poly1305";
 import { encode, decode } from "@stablelib/base64";
 import {
-  assertTrustedReleaseSnapshotIntegrity,
-  requireTrustedPcrs,
+  requireTrustedPcrsAgainstSnapshot,
   resolveAttestationEnvironment,
+  resolveTrustedPcrPolicy,
   serializePcrConfig,
   snapshotPcrConfig,
   type AttestationEnvironment,
-  type PcrConfig
+  type PcrConfig,
+  type TrustedEnclaveReleaseSnapshot
 } from "./pcr";
 
 export interface Attestation {
@@ -40,8 +41,9 @@ const SESSION_ID_PATTERN = /^[\x21-\x7e]+$/;
 
 /** @internal Exported for deterministic handshake tests, not from the package entry point. */
 export interface GetAttestationDependencies {
-  verifyAttestation: typeof verifyAttestation;
-  requireTrustedPcrs: typeof requireTrustedPcrs;
+  verifyAttestation: typeof verifyAttestationDocument;
+  resolveTrustedPcrPolicy: typeof resolveTrustedPcrPolicy;
+  requireTrustedPcrsAgainstSnapshot: typeof requireTrustedPcrsAgainstSnapshot;
   keyExchange: typeof keyExchange;
   generateNaclKeyPair: () => NaclKeyPair;
   decryptSessionKey: (
@@ -80,8 +82,9 @@ function decryptSessionKey(
 }
 
 const defaultDependencies: GetAttestationDependencies = {
-  verifyAttestation,
-  requireTrustedPcrs,
+  verifyAttestation: verifyAttestationDocument,
+  resolveTrustedPcrPolicy,
+  requireTrustedPcrsAgainstSnapshot,
   keyExchange,
   generateNaclKeyPair,
   decryptSessionKey,
@@ -297,6 +300,14 @@ export async function getAttestationWithDependencies(
       }
     }
 
+    let trustedPolicy: TrustedEnclaveReleaseSnapshot | undefined;
+    if (!localDevelopment) {
+      // The backend's pending attestation secret is short-lived. Resolve TUF
+      // before requesting a nonce-bound document so repository refresh latency
+      // cannot consume that key-exchange window.
+      trustedPolicy = await dependencies.resolveTrustedPcrPolicy(expectedEnvironment!);
+    }
+
     const attestationNonce = dependencies.randomUUID();
     console.log("Generated attestation nonce:", attestationNonce);
     const document: AttestationDocument = await dependencies.verifyAttestation(
@@ -314,8 +325,11 @@ export async function getAttestationWithDependencies(
       verifiedPcr0 = "local-development";
       console.warn("LOCAL DEVELOPMENT: PCR0 verification is bypassed for exact HTTP loopback.");
     } else {
-      await assertTrustedReleaseSnapshotIntegrity();
-      dependencies.requireTrustedPcrs(document.pcrs, expectedEnvironment!);
+      await dependencies.requireTrustedPcrsAgainstSnapshot(
+        document.pcrs,
+        expectedEnvironment!,
+        trustedPolicy!
+      );
       const pcr0 = document.pcrs.get(0);
       if (!pcr0 || pcr0.length !== 48) {
         throw new Error("Attestation document must contain a 48-byte PCR0 value.");

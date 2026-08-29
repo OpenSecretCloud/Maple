@@ -153,6 +153,14 @@ export {
   type TrustedEnclaveRelease,
   type TrustedEnclaveReleaseSnapshot
 } from "./pcr";
+export {
+  ATTESTATION_TUF_BASE_URL,
+  AttestationTrustError,
+  type AttestationBuilderIdentity,
+  type NitroReleaseManifest,
+  type SigstoreEvidence,
+  type VerifiedAttestationPolicy
+} from "./attestationTuf";
 
 // Export crypto utilities
 // TODO: these can actually just be used internally by the password reset function

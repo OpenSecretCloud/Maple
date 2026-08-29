@@ -1,5 +1,23 @@
 use thiserror::Error;
 
+/// Phase whose explicit inference-request time budget was exhausted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InferenceTimeoutPhase {
+    /// Request transmission, response headers, or buffered response body.
+    Ordinary,
+    /// Session or authentication recovery, including dynamic trust refresh and reattestation.
+    Recovery,
+}
+
+impl std::fmt::Display for InferenceTimeoutPhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Ordinary => "ordinary",
+            Self::Recovery => "recovery",
+        })
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("HTTP request failed: {0}")]
@@ -24,6 +42,15 @@ pub enum Error {
 
     #[error("Trusted enclave release policy is invalid: {0}")]
     TrustedReleasePolicy(String),
+
+    #[error("Trusted enclave release policy network is unavailable: {0}")]
+    TrustedReleaseNetwork(String),
+
+    #[error("Inference {phase} phase timed out after {timeout_secs} seconds")]
+    InferenceTimeout {
+        phase: InferenceTimeoutPhase,
+        timeout_secs: u64,
+    },
 
     #[error("Session error: {0}")]
     Session(String),

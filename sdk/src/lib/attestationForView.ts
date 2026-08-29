@@ -3,12 +3,12 @@ import { type AttestationDocument } from "./attestation";
 import awsRootCertDer from "../assets/aws_root.der";
 import { X509Certificate } from "@peculiar/x509";
 import {
-  assertTrustedReleaseSnapshotIntegrity,
   validatePcrsAgainstSnapshot,
   getTrustedReleaseSnapshotId,
   type Pcr0ValidationResult,
   type PcrConfig
 } from "./pcr";
+import { refreshAttestationPolicy } from "./attestationTuf";
 
 export const AWS_ROOT_CERT_DER = awsRootCertDer;
 
@@ -56,7 +56,6 @@ export async function parseAttestationForView(
   cabundle: Uint8Array[],
   pcrConfig?: PcrConfig
 ): Promise<ParsedAttestationView> {
-  await assertTrustedReleaseSnapshotIntegrity();
   // Add logging to see what we're getting
   console.log("Raw timestamp:", document.timestamp);
   console.log("Date object:", new Date(document.timestamp));
@@ -70,7 +69,11 @@ export async function parseAttestationForView(
     .filter((pcr) => !pcr.value.match(/^0+$/));
 
   const validatedPcrs = pcrConfig?.environment
-    ? validatePcrsAgainstSnapshot(document.pcrs, pcrConfig.environment)
+    ? validatePcrsAgainstSnapshot(
+        document.pcrs,
+        pcrConfig.environment,
+        await refreshAttestationPolicy(pcrConfig.environment)
+      )
     : {
         isMatch: false,
         text: "An attestation environment is required for full PCR0/PCR1/PCR2 verification",

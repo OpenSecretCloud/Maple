@@ -1,0 +1,5 @@
+{
+  "schema": "https://attestations.trymaple.ai/schemas/unpublished-tuf-root/v1",
+  "status": "unpublished",
+  "message": "Generated production TUF root metadata has not been published yet. Release builds must replace this file."
+}

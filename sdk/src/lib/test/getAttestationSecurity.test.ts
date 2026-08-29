@@ -6,7 +6,11 @@ import {
   getAttestationWithDependencies,
   type GetAttestationDependencies
 } from "../getAttestation";
-import type { PcrConfig } from "../pcr";
+import {
+  requireTrustedPcrsAgainstSnapshot,
+  type PcrConfig,
+  type TrustedEnclaveReleaseSnapshot
+} from "../pcr";
 
 const REMOTE_API_URL = "https://enclave.example.test/api";
 const LOCAL_API_URL = "http://127.0.0.1:31110";
@@ -15,6 +19,19 @@ const TRUSTED_PCR0 = new Uint8Array(48).fill(0x2a);
 const SESSION_KEY = new Uint8Array(32).fill(0x5a);
 const PCR_CONFIG: PcrConfig = {
   environment: "prod"
+};
+const TEST_POLICY: TrustedEnclaveReleaseSnapshot = {
+  environment: "prod",
+  sequence: 1,
+  policyId: "01".repeat(32),
+  metadataVersions: { root: 1, timestamp: 1, snapshot: 1, targets: 1 },
+  expires: {
+    root: "2099-01-01T00:00:00.000Z",
+    timestamp: "2099-01-01T00:00:00.000Z",
+    snapshot: "2099-01-01T00:00:00.000Z",
+    targets: "2099-01-01T00:00:00.000Z"
+  },
+  releases: []
 };
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -47,7 +64,8 @@ function dependencies(
 ): GetAttestationDependencies {
   return {
     verifyAttestation: async () => attestationDocument(TRUSTED_PCR0),
-    requireTrustedPcrs: () => ({
+    resolveTrustedPcrPolicy: async () => TEST_POLICY,
+    requireTrustedPcrsAgainstSnapshot: async () => ({
       isMatch: true,
       text: "PCR tuple matches a test trusted release",
       environment: "prod",
@@ -85,7 +103,7 @@ describe("attested session establishment", () => {
       encrypted_session_key: "must-not-be-used",
       session_id: "must-not-be-created"
     }));
-    const requireTrustedPcrs = mock(() => ({
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => ({
       isMatch: true,
       text: "must not validate a missing PCR",
       snapshotId: "test-snapshot"
@@ -95,13 +113,13 @@ describe("attested session establishment", () => {
       establish(
         dependencies({
           verifyAttestation: async () => attestationDocument(),
-          requireTrustedPcrs,
+          requireTrustedPcrsAgainstSnapshot,
           keyExchange
         })
       )
     ).rejects.toThrow(/PCR/i);
 
-    expect(requireTrustedPcrs).toHaveBeenCalled();
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalled();
     expect(keyExchange).not.toHaveBeenCalled();
     expect(window.sessionStorage.length).toBe(0);
   });
@@ -111,7 +129,7 @@ describe("attested session establishment", () => {
       encrypted_session_key: "must-not-be-used",
       session_id: "must-not-be-created"
     }));
-    const requireTrustedPcrs = mock(() => ({
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => ({
       isMatch: true,
       text: "must not validate a malformed PCR",
       snapshotId: "test-snapshot"
@@ -121,13 +139,13 @@ describe("attested session establishment", () => {
       establish(
         dependencies({
           verifyAttestation: async () => attestationDocument(new Uint8Array(47)),
-          requireTrustedPcrs,
+          requireTrustedPcrsAgainstSnapshot,
           keyExchange
         })
       )
     ).rejects.toThrow(/PCR/i);
 
-    expect(requireTrustedPcrs).toHaveBeenCalled();
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalled();
     expect(keyExchange).not.toHaveBeenCalled();
     expect(window.sessionStorage.length).toBe(0);
   });
@@ -137,7 +155,7 @@ describe("attested session establishment", () => {
       encrypted_session_key: "must-not-be-used",
       session_id: "must-not-be-created"
     }));
-    const requireTrustedPcrs = mock(() => {
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => {
       throw new Error("PCR tuple is not trusted");
     });
 
@@ -145,13 +163,13 @@ describe("attested session establishment", () => {
       establish(
         dependencies({
           verifyAttestation: async () => attestationDocument(new Uint8Array(48)),
-          requireTrustedPcrs,
+          requireTrustedPcrsAgainstSnapshot,
           keyExchange
         })
       )
     ).rejects.toThrow(/PCR/i);
 
-    expect(requireTrustedPcrs).toHaveBeenCalled();
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalled();
     expect(keyExchange).not.toHaveBeenCalled();
     expect(window.sessionStorage.length).toBe(0);
   });
@@ -161,22 +179,138 @@ describe("attested session establishment", () => {
       encrypted_session_key: "must-not-be-used",
       session_id: "must-not-be-created"
     }));
-    const requireTrustedPcrs = mock(() => {
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => {
       throw new Error("PCR tuple does not match a trusted release");
     });
 
-    await expect(establish(dependencies({ requireTrustedPcrs, keyExchange }))).rejects.toThrow(
-      /PCR/i
-    );
+    await expect(
+      establish(dependencies({ requireTrustedPcrsAgainstSnapshot, keyExchange }))
+    ).rejects.toThrow(/PCR/i);
 
-    expect(requireTrustedPcrs).toHaveBeenCalledWith(expect.any(Map), "prod");
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalledWith(
+      expect.any(Map),
+      "prod",
+      TEST_POLICY
+    );
     expect(keyExchange).not.toHaveBeenCalled();
     expect(window.sessionStorage.length).toBe(0);
   });
 
+  test("an asynchronous trust refresh failure cannot generate keys or reach key exchange", async () => {
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => {
+      throw new Error("TUF timestamp is expired");
+    });
+    const generateNaclKeyPair = mock(() => ({
+      publicKey: new Uint8Array(32),
+      secretKey: new Uint8Array(32)
+    }));
+    const keyExchange = mock(async () => ({
+      encrypted_session_key: "must-not-be-used",
+      session_id: "must-not-be-created"
+    }));
+
+    await expect(
+      establish(
+        dependencies({ requireTrustedPcrsAgainstSnapshot, generateNaclKeyPair, keyExchange })
+      )
+    ).rejects.toThrow("TUF timestamp is expired");
+
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalledTimes(1);
+    expect(generateNaclKeyPair).not.toHaveBeenCalled();
+    expect(keyExchange).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  test("loads current trust policy before creating a nonce or requesting attestation", async () => {
+    const events: string[] = [];
+    const result = await establish(
+      dependencies({
+        resolveTrustedPcrPolicy: async () => {
+          events.push("policy");
+          return TEST_POLICY;
+        },
+        randomUUID: () => {
+          events.push("nonce");
+          return ATTESTATION_NONCE;
+        },
+        verifyAttestation: async () => {
+          events.push("attestation");
+          return attestationDocument(TRUSTED_PCR0);
+        },
+        requireTrustedPcrsAgainstSnapshot: async () => {
+          events.push("pcrs");
+          return {
+            isMatch: true,
+            text: "trusted",
+            environment: "prod",
+            snapshotId: TEST_POLICY.policyId
+          };
+        },
+        keyExchange: async () => {
+          events.push("key-exchange");
+          return {
+            encrypted_session_key: "test-encrypted-session-key",
+            session_id: "trusted-session"
+          };
+        }
+      })
+    );
+
+    expect(result.sessionId).toBe("trusted-session");
+    expect(events).toEqual(["policy", "nonce", "attestation", "pcrs", "key-exchange"]);
+  });
+
+  test("a policy refresh failure happens before nonce creation or attestation GET", async () => {
+    const randomUUID = mock(() => ATTESTATION_NONCE);
+    const verifyAttestation = mock(async () => attestationDocument(TRUSTED_PCR0));
+    const keyExchange = mock(async () => ({
+      encrypted_session_key: "must-not-be-used",
+      session_id: "must-not-be-created"
+    }));
+
+    await expect(
+      establish(
+        dependencies({
+          resolveTrustedPcrPolicy: async () => {
+            throw new Error("TUF refresh unavailable");
+          },
+          randomUUID,
+          verifyAttestation,
+          keyExchange
+        })
+      )
+    ).rejects.toThrow("TUF refresh unavailable");
+
+    expect(randomUUID).not.toHaveBeenCalled();
+    expect(verifyAttestation).not.toHaveBeenCalled();
+    expect(keyExchange).not.toHaveBeenCalled();
+  });
+
+  test("rechecks loaded policy expiry after attestation and before key exchange", async () => {
+    const expired = {
+      ...TEST_POLICY,
+      expires: { ...TEST_POLICY.expires, timestamp: "2000-01-01T00:00:00.000Z" }
+    };
+    const keyExchange = mock(async () => ({
+      encrypted_session_key: "must-not-be-used",
+      session_id: "must-not-be-created"
+    }));
+
+    await expect(
+      establish(
+        dependencies({
+          resolveTrustedPcrPolicy: async () => expired,
+          requireTrustedPcrsAgainstSnapshot,
+          keyExchange
+        })
+      )
+    ).rejects.toThrow("timestamp metadata is expired");
+    expect(keyExchange).not.toHaveBeenCalled();
+  });
+
   test("an allowed PCR0 establishes and reuses a policy-scoped cached session", async () => {
     const verifyAttestation = mock(async () => attestationDocument(TRUSTED_PCR0));
-    const requireTrustedPcrs = mock(() => ({
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => ({
       isMatch: true,
       text: "PCR tuple matches a test trusted release",
       environment: "prod",
@@ -186,7 +320,13 @@ describe("attested session establishment", () => {
       encrypted_session_key: "test-encrypted-session-key",
       session_id: "trusted-session"
     }));
-    const deps = dependencies({ verifyAttestation, requireTrustedPcrs, keyExchange });
+    const resolveTrustedPcrPolicy = mock(async () => TEST_POLICY);
+    const deps = dependencies({
+      verifyAttestation,
+      resolveTrustedPcrPolicy,
+      requireTrustedPcrsAgainstSnapshot,
+      keyExchange
+    });
 
     const established = await establish(deps);
     const cached = await establish(deps);
@@ -194,8 +334,13 @@ describe("attested session establishment", () => {
     expect(established).toEqual({ sessionKey: SESSION_KEY, sessionId: "trusted-session" });
     expect(cached).toEqual(established);
     expect(verifyAttestation).toHaveBeenCalledTimes(1);
-    expect(requireTrustedPcrs).toHaveBeenCalledTimes(1);
-    expect(requireTrustedPcrs).toHaveBeenCalledWith(expect.any(Map), "prod");
+    expect(resolveTrustedPcrPolicy).toHaveBeenCalledTimes(1);
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalledTimes(1);
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalledWith(
+      expect.any(Map),
+      "prod",
+      TEST_POLICY
+    );
     expect(keyExchange).toHaveBeenCalledTimes(1);
     expect(
       window.sessionStorage.getItem(
@@ -221,7 +366,7 @@ describe("attested session establishment", () => {
       establish(
         dependencies({
           verifyAttestation,
-          requireTrustedPcrs: () => {
+          requireTrustedPcrsAgainstSnapshot: async () => {
             throw new Error("PCR tuple is not in changed policy");
           },
           keyExchange
@@ -253,7 +398,7 @@ describe("attested session establishment", () => {
     await establish(dependencies());
 
     const verifyAttestation = mock(async () => attestationDocument(TRUSTED_PCR0));
-    const requireTrustedPcrs = mock(() => {
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => {
       throw new Error("PCR tuple belongs to the production environment");
     });
     const keyExchange = mock(async () => ({
@@ -266,14 +411,18 @@ describe("attested session establishment", () => {
 
     await expect(
       establish(
-        dependencies({ verifyAttestation, requireTrustedPcrs, keyExchange }),
+        dependencies({ verifyAttestation, requireTrustedPcrsAgainstSnapshot, keyExchange }),
         REMOTE_API_URL,
         developmentPolicy
       )
     ).rejects.toThrow(/PCR/i);
 
     expect(verifyAttestation).toHaveBeenCalledTimes(1);
-    expect(requireTrustedPcrs).toHaveBeenCalledWith(expect.any(Map), "dev");
+    expect(requireTrustedPcrsAgainstSnapshot).toHaveBeenCalledWith(
+      expect.any(Map),
+      "dev",
+      TEST_POLICY
+    );
     expect(keyExchange).not.toHaveBeenCalled();
   });
 
@@ -347,25 +496,28 @@ describe("attested session establishment", () => {
   });
 
   test("bypasses PCR validation only for an exact HTTP loopback API URL", async () => {
-    const requireTrustedPcrs = mock(() => {
+    const requireTrustedPcrsAgainstSnapshot = mock(async () => {
       throw new Error("loopback must not invoke PCR validation");
     });
     const keyExchange = mock(async () => ({
       encrypted_session_key: "test-encrypted-session-key",
       session_id: "local-session"
     }));
+    const resolveTrustedPcrPolicy = mock(async () => TEST_POLICY);
 
     const result = await establish(
       dependencies({
         verifyAttestation: async () => attestationDocument(),
-        requireTrustedPcrs,
+        resolveTrustedPcrPolicy,
+        requireTrustedPcrsAgainstSnapshot,
         keyExchange
       }),
       LOCAL_API_URL
     );
 
     expect(result).toEqual({ sessionKey: SESSION_KEY, sessionId: "local-session" });
-    expect(requireTrustedPcrs).not.toHaveBeenCalled();
+    expect(resolveTrustedPcrPolicy).not.toHaveBeenCalled();
+    expect(requireTrustedPcrsAgainstSnapshot).not.toHaveBeenCalled();
     expect(keyExchange).toHaveBeenCalledTimes(1);
   });
 

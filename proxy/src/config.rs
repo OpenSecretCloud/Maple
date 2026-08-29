@@ -18,7 +18,9 @@ pub struct Config {
     #[arg(short, long, env = "MAPLE_PORT", default_value = "8080")]
     pub port: u16,
 
-    /// OpenSecret/Maple backend URL
+    /// OpenSecret/Maple backend URL. The packaged binary supplies trust policy
+    /// for exact official origins; arbitrary remote HTTPS deployments require
+    /// a library integration with an explicit TrustedReleaseConfig.
     #[arg(
         long,
         env = "MAPLE_BACKEND_URL",
@@ -38,7 +40,10 @@ pub struct Config {
     #[arg(long, env = "MAPLE_ENABLE_CORS")]
     pub enable_cors: bool,
 
-    /// Timeout for backend request setup and non-streaming responses, in seconds
+    /// Per-attempt timeout through response headers and any buffered
+    /// non-streaming body, in seconds. Initial attestation and each inference
+    /// call's cumulative SDK recovery budget use at least 15 minutes so a
+    /// bounded TUF root-rotation sequence is not truncated by a shorter timeout.
     #[arg(
         long,
         env = "MAPLE_REQUEST_TIMEOUT_SECS",
@@ -111,7 +116,8 @@ impl Config {
         self
     }
 
-    /// Builder-style method to set the backend request timeout
+    /// Builder-style method to set the per-attempt inference timeout. Values
+    /// below 15 minutes do not shorten the separate attestation/recovery floor.
     pub fn with_request_timeout_secs(mut self, request_timeout_secs: u64) -> Self {
         self.request_timeout_secs = request_timeout_secs;
         self

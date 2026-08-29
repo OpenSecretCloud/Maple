@@ -4,10 +4,11 @@ import * as cbor from "cbor2";
 import { z } from "zod";
 import { fetchAttestationDocument, getApiUrl } from "./api";
 import {
-  assertTrustedReleaseSnapshotIntegrity,
-  requireTrustedPcrs,
+  requireTrustedPcrsAgainstSnapshot,
   resolveAttestationEnvironment,
-  type AttestationEnvironment
+  resolveTrustedPcrPolicy,
+  type AttestationEnvironment,
+  type TrustedEnclaveReleaseSnapshot
 } from "./pcr";
 import awsRootCertDer from "../assets/aws_root.der";
 
@@ -274,7 +275,8 @@ async function fakeAuthenticate(
   return zodParsed;
 }
 
-export async function verifyAttestation(
+/** @internal Verify the nonce-bound Nitro document without loading release policy. */
+export async function verifyAttestationDocument(
   nonce: string,
   explicitApiUrl?: string,
   expectedEnvironment?: AttestationEnvironment
@@ -301,9 +303,7 @@ export async function verifyAttestation(
     if (!apiUrl) {
       throw new Error("Attestation API URL is not configured.");
     }
-    const environment = resolveAttestationEnvironment(apiUrl, expectedEnvironment);
-    await assertTrustedReleaseSnapshotIntegrity();
-    requireTrustedPcrs(verifiedDocument.pcrs, environment);
+    resolveAttestationEnvironment(apiUrl, expectedEnvironment);
     return verifiedDocument;
   } catch (error) {
     if (error instanceof Error) {
@@ -314,4 +314,46 @@ export async function verifyAttestation(
       throw new Error("Couldn't process attestation document.");
     }
   }
+}
+
+/**
+ * Verify the Nitro document and authorize its complete PCR tuple with current
+ * TUF policy. Session establishment uses verifyAttestationDocument internally
+ * so this policy refresh happens exactly once before key exchange.
+ */
+export async function verifyAttestation(
+  nonce: string,
+  explicitApiUrl?: string,
+  expectedEnvironment?: AttestationEnvironment
+): Promise<AttestationDocument> {
+  return await verifyAttestationWithDependencies(nonce, explicitApiUrl, expectedEnvironment, {
+    verifyDocument: verifyAttestationDocument,
+    resolveTrustedPcrPolicy,
+    requireTrustedPcrsAgainstSnapshot
+  });
+}
+
+/** @internal Exported for deterministic ordering tests, not from the package entry point. */
+export async function verifyAttestationWithDependencies(
+  nonce: string,
+  explicitApiUrl: string | undefined,
+  expectedEnvironment: AttestationEnvironment | undefined,
+  dependencies: {
+    verifyDocument: typeof verifyAttestationDocument;
+    resolveTrustedPcrPolicy: typeof resolveTrustedPcrPolicy;
+    requireTrustedPcrsAgainstSnapshot: typeof requireTrustedPcrsAgainstSnapshot;
+  }
+): Promise<AttestationDocument> {
+  const apiUrl = explicitApiUrl || getApiUrl();
+  let environment: AttestationEnvironment | undefined;
+  let policy: TrustedEnclaveReleaseSnapshot | undefined;
+  if (apiUrl && !isLocalDevelopmentApiUrl(apiUrl)) {
+    environment = resolveAttestationEnvironment(apiUrl, expectedEnvironment);
+    policy = await dependencies.resolveTrustedPcrPolicy(environment);
+  }
+  const document = await dependencies.verifyDocument(nonce, explicitApiUrl, expectedEnvironment);
+  if (environment && policy) {
+    await dependencies.requireTrustedPcrsAgainstSnapshot(document.pcrs, environment, policy);
+  }
+  return document;
 }

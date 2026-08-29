@@ -33,6 +33,16 @@ PURE_FRONTEND_PREFIXES = ("frontend/public/", "frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"frontend/icon.svg", "frontend/index.html"})
 SDK_FRONTEND_PREFIXES = ("sdk/src/",)
 SDK_TEST_PREFIXES = ("sdk/src/lib/test/",)
+SDK_ATTESTATION_RUNTIME_FILES = frozenset(
+    {
+        "sdk/src/lib/attestation-tuf-root.generated.json",
+        "sdk/src/lib/attestation.ts",
+        "sdk/src/lib/attestationForView.ts",
+        "sdk/src/lib/attestationTuf.ts",
+        "sdk/src/lib/getAttestation.ts",
+        "sdk/src/lib/pcr.ts",
+    }
+)
 SDK_FRONTEND_FILES = frozenset(
     {
         "sdk/bun.lock",
@@ -184,6 +194,11 @@ def classify_path(path: str) -> frozenset[str]:
         return frozenset()
     if path.startswith(SDK_TEST_PREFIXES):
         return frozenset()
+    if path in SDK_ATTESTATION_RUNTIME_FILES:
+        # These files are embedded in the WebView application. In particular,
+        # rotating the TUF bootstrap root must exercise packaged iOS and Android
+        # builds instead of only the standalone frontend lane.
+        return frozenset({"frontend", "ios", "android"})
     if path in SDK_FRONTEND_FILES or path.startswith(SDK_FRONTEND_PREFIXES):
         return frozenset({"frontend"})
     if path == "sdk/rust/Cargo.toml" or path.startswith(SDK_RUST_RUNTIME_PREFIXES):
