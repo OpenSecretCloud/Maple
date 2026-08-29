@@ -12,7 +12,7 @@ use gpui::{
     GlobalElementId, InteractiveElement, KeyBinding, LayoutId, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun, UTF16Selection,
     UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px, relative, rgb,
-    rgba, size,
+    size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -1265,7 +1265,7 @@ impl Element for TextElement {
                         ),
                         size(px(2.), line_height),
                     ),
-                    rgb(0xe7e7ea),
+                    rgb(theme::text_cursor()),
                 )),
             )
         } else {
@@ -1285,7 +1285,7 @@ impl Element for TextElement {
             };
             let start_pos = layout.position_for_index(start).unwrap_or_default();
             let end_pos = layout.position_for_index(end).unwrap_or_default();
-            let color = rgba(0x4a7dff40);
+            let color = theme::text_selection();
             let mut quads = Vec::new();
             if start_pos.y == end_pos.y {
                 quads.push(fill(

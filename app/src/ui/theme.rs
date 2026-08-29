@@ -168,6 +168,19 @@ tokens! {
     /// Title bar control buttons.
     bg_title_control: 0x3a3a3a, 0xe5e5e5;
     bg_title_control_hover: 0x4a4a4a, 0xd4d4d4;
+
+    /// Text input caret; near the primary text color of each palette.
+    text_cursor: 0xe7e7ea, 0x262626;
+}
+
+/// Translucent selection highlight in text inputs. Blue on both palettes,
+/// a little stronger on light where the white field washes it out.
+pub fn text_selection() -> gpui::Rgba {
+    if is_light() {
+        gpui::rgba(0x4a7dff4d)
+    } else {
+        gpui::rgba(0x4a7dff40)
+    }
 }
 
 /// Translucent fill for hover states and inline code over any surface.
