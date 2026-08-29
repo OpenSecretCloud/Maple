@@ -1053,10 +1053,14 @@ impl ChatScreen {
 
     fn switch_root(&mut self, path: String, cx: &mut Context<Self>) {
         if self.root_switching {
+            // The sidebar choice that asked for this switch is abandoned;
+            // otherwise a later switch would open a task nobody clicked.
+            self.pending_session_select = None;
             return;
         }
         let path = path.trim().to_string();
         if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
+            self.pending_session_select = None;
             self.notice = Some("Enter an absolute directory path".into());
             cx.notify();
             return;
@@ -1096,7 +1100,10 @@ impl ChatScreen {
                             }
                         }
                     }
-                    Err(message) => this.notice = Some(message.into()),
+                    Err(message) => {
+                        this.pending_session_select = None;
+                        this.notice = Some(message.into());
+                    }
                 }
                 cx.notify();
             },
@@ -9258,6 +9265,22 @@ mod state_tests {
                 this.current_question().map(|q| q.request_id.as_str()),
                 Some("req-a")
             );
+        });
+    }
+
+    #[gpui::test]
+    fn test_pending_select_is_dropped_when_the_switch_does_not_start(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.root_switching = true;
+            this.pending_session_select = Some("s2".to_string());
+            this.switch_root("/tmp/other".to_string(), cx);
+            assert_eq!(this.pending_session_select, None);
+            this.root_switching = false;
+            this.pending_session_select = Some("s2".to_string());
+            this.switch_root("relative".to_string(), cx);
+            assert_eq!(this.pending_session_select, None);
+            assert!(!this.root_switching);
         });
     }
 
