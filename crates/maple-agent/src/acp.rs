@@ -590,11 +590,13 @@ impl AcpConnectionContext {
             )
             .await
             .map_err(internal_acp_error)?;
-        let session_id = canonical_session_id_text(&created.detail.session.id)?;
+        // Own the lease before anything can fail, so an early return
+        // releases the tool context instead of leaking it.
         let lease = created
             .tool_context_lease
             .expect("an explicit Agent tool context must return a lease");
         let unpublished = UnpublishedAcpSession::new(lease);
+        let session_id = canonical_session_id_text(&created.detail.session.id)?;
         let finalization = self.finalization.lock().await;
         if self.closed.load(Ordering::SeqCst) {
             drop(finalization);
