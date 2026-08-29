@@ -9662,11 +9662,15 @@ fn resolve_project_root(requested: Option<&str>, config: &AgentConfig) -> Result
         return normalize_project_root(Path::new(path));
     }
 
+    // A removed project persists only as a device-local tombstone; the
+    // roaming default may still name it. Never boot into a hidden root.
     if let Some(path) = config
         .default_project_root
         .as_deref()
         .filter(|value| !value.trim().is_empty())
+        && !is_removed_project_root(path, &config.removed_project_roots)
         && let Ok(root) = normalize_project_root(Path::new(path))
+        && !is_removed_project_root(&path_string(&root), &config.removed_project_roots)
     {
         return Ok(root);
     }
@@ -9674,6 +9678,10 @@ fn resolve_project_root(requested: Option<&str>, config: &AgentConfig) -> Result
     std::env::current_dir()
         .map_err(|e| format!("Failed to read current directory: {e}"))
         .and_then(|path| normalize_project_root(&path))
+}
+
+fn is_removed_project_root(path: &str, removed_project_roots: &[String]) -> bool {
+    removed_project_roots.iter().any(|removed| removed == path)
 }
 
 fn normalize_project_root(path: &Path) -> Result<PathBuf, String> {
@@ -14427,6 +14435,34 @@ mod tests {
             assert!(!migrate_agent_config(&mut config));
             assert_eq!(config.default_model, model);
         }
+    }
+
+    #[test]
+    fn startup_root_skips_a_removed_default_project() {
+        let removed_dir = std::env::temp_dir().join(format!(
+            "maple-agent-removed-default-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&removed_dir).unwrap();
+        let removed = path_string(&removed_dir.canonicalize().unwrap());
+        let config = AgentConfig {
+            default_project_root: Some(removed.clone()),
+            default_model: DEFAULT_AGENT_MODEL.to_string(),
+            mcp_servers: Vec::new(),
+            project_trust: Vec::new(),
+            removed_project_roots: vec![removed.clone()],
+        };
+
+        let resolved = resolve_project_root(None, &config).unwrap();
+        assert_ne!(path_string(&resolved), removed);
+
+        let mut visible = config.clone();
+        visible.removed_project_roots.clear();
+        assert_eq!(
+            path_string(&resolve_project_root(None, &visible).unwrap()),
+            removed
+        );
+        let _ = fs::remove_dir_all(&removed_dir);
     }
 
     #[test]
