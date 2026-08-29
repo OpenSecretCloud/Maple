@@ -10,6 +10,7 @@ mod backend;
 mod billing;
 #[cfg(feature = "desktop")]
 mod desktop;
+mod env;
 #[cfg(feature = "desktop")]
 mod notify;
 #[cfg(feature = "desktop")]
@@ -222,7 +223,7 @@ fn run_proxy(args: ProxyArgs) -> Result<(), String> {
 }
 
 fn configured_api_url() -> String {
-    std::env::var("MAPLE_API_URL").unwrap_or_else(|_| "https://enclave.trymaple.ai".to_string())
+    env::env_string("MAPLE_API_URL").unwrap_or_else(|| "https://enclave.trymaple.ai".to_string())
 }
 
 /// `maple-gpui acp`: a standalone ACP agent over stdio. It reuses the

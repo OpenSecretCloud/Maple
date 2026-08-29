@@ -26,17 +26,11 @@ pub fn available() -> Option<&'static UpdateInfo> {
 }
 
 pub fn enabled() -> bool {
-    !std::env::var("MAPLE_DISABLE_UPDATE_CHECK")
-        .map(|value| matches!(value.trim(), "1" | "true" | "yes"))
-        .unwrap_or(false)
+    !crate::env::env_flag("MAPLE_DISABLE_UPDATE_CHECK")
 }
 
 fn repo() -> String {
-    std::env::var("MAPLE_UPDATE_REPO")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_REPO.to_string())
+    crate::env::env_string("MAPLE_UPDATE_REPO").unwrap_or_else(|| DEFAULT_REPO.to_string())
 }
 
 /// Ask GitHub for the latest release. Runs on the backend runtime; the

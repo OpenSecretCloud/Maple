@@ -10,9 +10,8 @@ pub use maple_billing::{BillingClient, BillingError, BillingStatus};
 
 /// Billing API base URL. `MAPLE_BILLING_API_URL` overrides the default.
 pub fn configured_billing_api_url() -> String {
-    std::env::var("MAPLE_BILLING_API_URL")
-        .ok()
-        .map(|url| url.trim().trim_end_matches('/').to_string())
+    crate::env::env_string("MAPLE_BILLING_API_URL")
+        .map(|url| url.trim_end_matches('/').to_string())
         .filter(|url| !url.is_empty())
         .unwrap_or_else(|| maple_billing::DEFAULT_BILLING_API_URL.to_string())
 }

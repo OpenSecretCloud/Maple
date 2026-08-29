@@ -76,8 +76,7 @@ pub struct AgentBackend {
 }
 
 fn configured_client_id() -> Uuid {
-    std::env::var("MAPLE_CLIENT_ID")
-        .ok()
+    crate::env::env_string("MAPLE_CLIENT_ID")
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| DEFAULT_CLIENT_ID.parse().expect("valid uuid"))
 }
