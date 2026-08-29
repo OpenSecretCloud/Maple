@@ -210,7 +210,7 @@ struct TranscriptCtx<'a> {
     derived: &'a DerivedCache,
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
-    tool_summaries: &'a HashMap<String, String>,
+    tool_summaries: &'a HashMap<String, SharedString>,
     summary_requests: &'a HashSet<String>,
     render: &'a RenderCtx,
     /// Message being spoken, if any.
@@ -410,7 +410,7 @@ pub struct ChatScreen {
     /// Set when a pending question should steal focus at the next render.
     question_focus_pending: bool,
     /// One-line model summaries per completed tool item id.
-    tool_summaries: HashMap<String, String>,
+    tool_summaries: HashMap<String, SharedString>,
     /// Item ids with a summary request sent; never asked twice.
     summary_requests: HashSet<String>,
     /// Summary requests in flight; caps how many ride at once.
@@ -1253,14 +1253,32 @@ impl ChatScreen {
         let session_id = session_id.to_string();
         let target = session_id.clone();
         self.call(
-            async move { backend.load_session(&user_id, &target).await },
+            async move {
+                // The stored summaries load off-thread while the runtime
+                // builds the session detail.
+                let store = backend.clone();
+                let store_user = user_id.clone();
+                let store_target = target.clone();
+                let summaries = tokio::task::spawn_blocking(move || {
+                    store.load_tool_summaries_blocking(&store_user, &store_target)
+                });
+                let (detail, summaries) =
+                    tokio::join!(backend.load_session(&user_id, &target), summaries);
+                let summaries = summaries
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_else(|error| {
+                        log::warn!("Cannot load tool summaries: {error}");
+                        HashMap::new()
+                    });
+                Ok::<_, String>((detail?, summaries))
+            },
             cx,
             move |this, result, cx| {
                 // A newer selection (or reload) superseded this load.
                 if this.selection_generation != generation {
                     return;
                 }
-                let detail = match result {
+                let (detail, summaries) = match result {
                     Ok(detail) => detail,
                     Err(message) => {
                         this.notice = Some(message.into());
@@ -1275,6 +1293,13 @@ impl ChatScreen {
                     this.load_session(&session_id, mode, retries - 1, cx);
                     return;
                 }
+                // Stored summaries stand in for the model calls the
+                // timeline would otherwise request again.
+                this.tool_summaries.extend(
+                    summaries
+                        .into_iter()
+                        .map(|(id, summary)| (id, SharedString::from(summary))),
+                );
                 match mode {
                     LoadMode::Select => {
                         this.upsert_session(detail.session.clone());
@@ -3101,11 +3126,27 @@ impl ChatScreen {
         let user_id = self.user_id.clone();
         let generation = self.summary_generation;
         self.pending_summaries += 1;
+        let store_id = item_id.clone();
         self.call(
             async move {
-                backend
+                let summary = backend
                     .summarize_tool_call(&user_id, &session_id, tool_name, Some(input), output)
-                    .await
+                    .await?;
+                if let Some(summary) = &summary {
+                    let summary = summary.clone();
+                    let store = backend.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(error) = store.store_tool_summary_blocking(
+                            &user_id,
+                            &session_id,
+                            &store_id,
+                            &summary,
+                        ) {
+                            log::warn!("Cannot store tool summary: {error}");
+                        }
+                    });
+                }
+                Ok::<_, String>(summary)
             },
             cx,
             move |this, result, cx| {
@@ -3119,7 +3160,8 @@ impl ChatScreen {
                     if let Some(&(index, _)) = this.timeline_index.get(&item_id) {
                         this.list_state.splice(index..index + 1, 1);
                     }
-                    this.tool_summaries.insert(item_id, summary);
+                    this.tool_summaries
+                        .insert(item_id, SharedString::from(summary));
                     cx.notify();
                 }
                 this.drain_summary_queue(cx);
@@ -6873,11 +6915,14 @@ fn render_tool(
     transcript: &TranscriptCtx,
 ) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
-    let title = item.title.clone().unwrap_or_else(|| item.item_type.clone());
     let item_id = item.id.clone();
     let chat_header = transcript.chat.clone();
     let summary = transcript.tool_summaries.get(&item.id).cloned();
     let has_summary = summary.is_some();
+    // The model summary stands in for the raw `tool: args` title.
+    let title = summary.clone().unwrap_or_else(|| {
+        SharedString::from(item.title.clone().unwrap_or_else(|| item.item_type.clone()))
+    });
     let summary_requested = transcript.summary_requests.contains(&item.id);
     let derived = transcript.derived.get(item, revision);
     let card = div()
@@ -6909,6 +6954,7 @@ fn render_tool(
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(gpui::rgb(theme::text_primary()))
+                        .line_clamp(1)
                         .child(title),
                 )
                 .child(
@@ -6928,30 +6974,8 @@ fn render_tool(
                     theme::text_muted(),
                 )),
         );
-    // The payload region swallows clicks so selecting output text or
-    // opening links does not collapse the card.
-    let mut payload = div()
-        .id(gpui::SharedString::from(format!(
-            "tool-payload-{}",
-            item.id
-        )))
-        .flex()
-        .flex_col()
-        .gap_1()
-        .on_click(
-            |_event: &gpui::ClickEvent, _window: &mut Window, cx: &mut gpui::App| {
-                cx.stop_propagation();
-            },
-        );
-    if let Some(summary) = summary {
-        payload = payload.child(
-            div()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .line_clamp(2)
-                .child(summary),
-        );
-    }
+    // A click anywhere on the card, payload included, toggles it.
+    let mut payload = div().flex().flex_col().gap_1();
     if !details {
         // Compact: the model summary when present, otherwise a one-line
         // raw output preview.
@@ -6974,15 +6998,14 @@ fn render_tool(
         }
         return div().child(card.child(payload));
     }
-    // Input stays monospace JSON; the model summary replaces the raw
-    // output once it arrives.
+    // Expanded: the call arguments and, until a summary exists, the raw
+    // output.
     if let Some(input) = &derived.input_line {
         payload = payload.child(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
                 .font_family("monospace")
-                .line_clamp(2)
                 .overflow_x_hidden()
                 .child(input.clone()),
         );
@@ -7005,11 +7028,38 @@ fn render_tool(
     div().child(card.child(payload))
 }
 
+/// Readable form of the call arguments: one `key: value` line per
+/// field, strings shown as-is, nested values as pretty JSON.
 fn tool_input_line(item: &AgentTimelineItem) -> Option<String> {
-    item.input
-        .as_ref()
-        .filter(|value| !value.is_null())
-        .map(|value| format!("input: {value}"))
+    let value = item.input.as_ref().filter(|value| !value.is_null())?;
+    Some(format_tool_input(value))
+}
+
+fn format_tool_input(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    let scalar = |value: &Value| match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "null".to_string(),
+        Value::Bool(_) | Value::Number(_) => value.to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+    };
+    match value {
+        Value::Object(map) if !map.is_empty() => map
+            .iter()
+            .map(|(key, value)| {
+                let text = scalar(value);
+                if text.contains('\n') {
+                    format!("{key}:\n{text}")
+                } else {
+                    format!("{key}: {text}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => scalar(value),
+    }
 }
 
 /// Extract readable text from a tool output for markdown rendering.

@@ -65,6 +65,9 @@ pub struct AgentBackend {
     /// Open handle to the usage ledger DB; the context ring polls it every
     /// second during a run, so it is not reopened per query.
     usage_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
+    /// Open handle to the app-owned tool summary store; keyed by account
+    /// scope path so a user switch reopens it.
+    summary_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
 }
 
 fn configured_client_id() -> Uuid {
@@ -159,6 +162,38 @@ pub fn open_session_db_read_only(path: &std::path::Path) -> Option<rusqlite::Con
     Some(conn)
 }
 
+/// Path to the app-owned store of model-written tool call summaries for
+/// one account scope. Lives next to the agent data so it is removed with
+/// the account.
+pub fn account_summary_db(account_scope: &str) -> PathBuf {
+    local_data_root()
+        .join("agent")
+        .join("accounts")
+        .join(account_scope)
+        .join("tool_summaries.db")
+}
+
+/// Open (and create) the tool summary store.
+fn open_summary_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+    }
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; \
+         CREATE TABLE IF NOT EXISTS tool_summaries ( \
+             session_id TEXT NOT NULL, \
+             item_id TEXT NOT NULL, \
+             summary TEXT NOT NULL, \
+             PRIMARY KEY (session_id, item_id) \
+         );",
+    )
+    .map_err(|error| format!("Cannot init {}: {error}", path.display()))?;
+    Ok(conn)
+}
+
 /// Root for configuration that may roam between machines. Mirrors Tauri's
 /// `app_config_dir`: `~/.config` on Linux, `~/Library/Application Support`
 /// on macOS, `%APPDATA%` on Windows. `XDG_CONFIG_HOME` overrides it on
@@ -245,6 +280,7 @@ impl AgentBackend {
             billing,
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
             usage_db: std::sync::Mutex::new(None),
+            summary_db: std::sync::Mutex::new(None),
         })
     }
 
@@ -1095,6 +1131,62 @@ impl AgentBackend {
             .summarize_tool_call(session_id, &tool_name, input.as_ref(), &output_text)
             .await
     }
+    /// Run `f` against the summary store of `user_id`. Blocking: call from
+    /// `spawn_blocking`.
+    fn with_summary_db<T>(
+        &self,
+        user_id: &str,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let scope = self
+            .account_scope(user_id)
+            .ok_or_else(|| "No account scope".to_string())?;
+        let db = account_summary_db(&scope);
+        let mut guard = self.summary_db.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
+            *guard = Some((db.clone(), open_summary_db(&db)?));
+        }
+        f(&guard.as_ref().expect("summary db opened above").1)
+    }
+
+    /// Stored summaries for one session, keyed by timeline item id.
+    /// Blocking.
+    pub fn load_tool_summaries_blocking(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<HashMap<String, String>, String> {
+        self.with_summary_db(user_id, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT item_id, summary FROM tool_summaries WHERE session_id = ?1")
+                .map_err(|error| error.to_string())?;
+            let rows = stmt
+                .query_map([session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|error| error.to_string())?;
+            rows.collect::<Result<HashMap<_, _>, _>>()
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Persist one summary. Blocking.
+    pub fn store_tool_summary_blocking(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        item_id: &str,
+        summary: &str,
+    ) -> Result<(), String> {
+        self.with_summary_db(user_id, |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO tool_summaries (session_id, item_id, summary) \
+                 VALUES (?1, ?2, ?3)",
+                [session_id, item_id, summary],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+    }
+
     /// Latest context usage for a session from the goose usage ledger:
     /// (context tokens, context limit). The limit comes from the model
     /// catalog for the selected model; MAPLE_CONTEXT_LIMIT is a manual
