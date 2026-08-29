@@ -896,14 +896,6 @@ impl AgentBackend {
             .await
     }
 
-    pub async fn delete_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .delete_session(session_id.to_string())
-            .await
-    }
-
     pub async fn send_message(
         &self,
         user_id: &str,

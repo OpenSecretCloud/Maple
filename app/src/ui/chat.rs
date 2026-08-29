@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnimationExt, AnyElement, AppContext, Div, Entity, EntityInputHandler, EventEmitter, Focusable,
-    Render, SharedString, Window, div, prelude::*, px,
+    AnimationExt, AppContext, Div, Entity, EntityInputHandler, EventEmitter, Focusable, Render,
+    SharedString, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
     AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
@@ -1537,39 +1537,6 @@ impl ChatScreen {
             .rev()
             .find_map(plan_entries)
             .unwrap_or_default();
-    }
-
-    #[allow(dead_code)] // No delete affordance in the UI yet.
-    fn delete_session(&self, session_id: &str, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let session_id = session_id.to_string();
-        let deleted_id = session_id.clone();
-        self.call(
-            async move { backend.delete_session(&user_id, &session_id).await },
-            cx,
-            move |this, result, cx| {
-                if result.is_ok() {
-                    this.sessions.retain(|session| session.id != deleted_id);
-                    if this.selected_session.as_deref() == Some(&*deleted_id) {
-                        this.selected_session = None;
-                        this.replace_timeline(Vec::new());
-                        // Stay in the runtime's root: a task from another
-                        // project would run its tools in the wrong folder.
-                        let root = this.project_root.clone();
-                        let next = this
-                            .sessions
-                            .iter()
-                            .find(|s| !s.archived && Some(&s.project_root) == root.as_ref())
-                            .map(|s| s.id.clone());
-                        if let Some(id) = next {
-                            this.select_session(&id, cx);
-                        }
-                    }
-                }
-                cx.notify();
-            },
-        );
     }
 
     /// Apply settings-default changes when returning from the settings
@@ -8375,43 +8342,6 @@ fn render_permission_card(
         );
     }
     card.child(buttons)
-}
-
-#[cfg(test)]
-fn relative_time_at(when_ms: i64, now_ms: i64) -> String {
-    // Session timestamps are epoch milliseconds; compare in seconds.
-    let seconds = ((now_ms - when_ms).max(0)) / 1000;
-    match seconds {
-        seconds if seconds < 60 => "just now".to_string(),
-        seconds if seconds < 3600 => format!("{}m ago", seconds / 60),
-        seconds if seconds < 86_400 => format!("{}h ago", seconds / 3600),
-        seconds => format!("{}d ago", seconds / 86_400),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::relative_time_at;
-
-    #[test]
-    fn relative_time_interprets_epoch_milliseconds() {
-        let now_ms = 1_787_713_997_000_i64;
-        assert_eq!(relative_time_at(now_ms - 30_000, now_ms), "just now");
-        assert_eq!(relative_time_at(now_ms - 14 * 60 * 1000, now_ms), "14m ago");
-        assert_eq!(
-            relative_time_at(now_ms - 2 * 3_600 * 1000, now_ms),
-            "2h ago"
-        );
-        assert_eq!(
-            relative_time_at(now_ms - 3 * 86_400 * 1000, now_ms),
-            "3d ago"
-        );
-    }
-}
-
-#[allow(dead_code)]
-fn _unused_any_element(assertion: AnyElement) -> AnyElement {
-    assertion
 }
 
 #[cfg(test)]

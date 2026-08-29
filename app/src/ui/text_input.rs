@@ -9,10 +9,10 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, ContentMask, Context, CursorStyle, Element,
     ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
-    GlobalElementId, InteractiveElement, KeyBinding, Keystroke, LayoutId, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px,
-    relative, rgb, rgba, size,
+    GlobalElementId, InteractiveElement, KeyBinding, LayoutId, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun, UTF16Selection,
+    UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px, relative, rgb,
+    rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -1482,6 +1482,3 @@ impl Focusable for TextInput {
         self.focus_handle.clone()
     }
 }
-
-#[allow(dead_code)]
-fn _unused_keystroke_assert(_: &Keystroke) {}
