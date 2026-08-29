@@ -22,7 +22,9 @@ use maple_agent::agent::{
     AgentSlashCommand, AgentStartRequest, MapleAgentHostResources, MapleAgentService,
     RecentProjectRoot,
 };
-use maple_agent::maple_api::{MapleApiAuthRequest, MapleApiAuthState, NoopAuthEventSink};
+use maple_agent::maple_api::{
+    MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
+};
 use maple_agent::open_secret_config::configured_pcr0_environment;
 use opensecret::OpenSecretClient;
 use tokio::runtime::Runtime;
@@ -249,6 +251,59 @@ fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> 
         .or_else(fallback_project_root)
 }
 
+fn persist_auth_record(
+    api_url: &str,
+    user_id: &str,
+    access_token: &str,
+    refresh_token: Option<&str>,
+) {
+    let path = AgentBackend::auth_file();
+    let record = serde_json::json!({
+        "user_id": user_id,
+        "api_url": api_url,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    });
+    if let Err(error) = maple_agent::private_file::write_private_json(&path, &record) {
+        log::error!(
+            "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
+            path.display()
+        );
+    }
+}
+
+struct PersistAuthSink {
+    api_url: String,
+}
+
+impl MapleApiAuthEventSink for PersistAuthSink {
+    fn auth_changed(&self, snapshot: &MapleApiAuthSnapshot) {
+        // Tokens never reach the log; only the revision does.
+        log::debug!(
+            "persisting rotated credentials (revision {})",
+            snapshot.revision
+        );
+        let api_url = self.api_url.clone();
+        let snapshot = snapshot.clone();
+        let write = move || {
+            persist_auth_record(
+                &api_url,
+                &snapshot.user_id,
+                &snapshot.access_token,
+                snapshot.refresh_token.as_deref(),
+            );
+        };
+        // Called from a runtime worker mid-request; keep the file write off
+        // the async thread.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(write);
+            }
+            Err(_) => write(),
+        }
+    }
+}
+
 impl AgentBackend {
     pub fn new(api_url: String, harness_instructions: String) -> Result<Self, String> {
         // Enforce the credential-bearing URL policy before any client is
@@ -339,7 +394,7 @@ impl AgentBackend {
         let snapshot = self
             .auth
             .set_auth(
-                Arc::new(NoopAuthEventSink),
+                self.auth_sink(),
                 MapleApiAuthRequest {
                     user_id: user_id.clone(),
                     api_url: self.api_url.clone(),
@@ -370,19 +425,16 @@ impl AgentBackend {
     }
 
     fn persist_auth(&self, user_id: &str, access_token: &str, refresh_token: Option<&str>) {
-        let path = Self::auth_file();
-        let record = serde_json::json!({
-            "user_id": user_id,
-            "api_url": self.api_url,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-        });
-        if let Err(error) = maple_agent::private_file::write_private_json(&path, &record) {
-            log::error!(
-                "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
-                path.display()
-            );
-        }
+        persist_auth_record(&self.api_url, user_id, access_token, refresh_token);
+    }
+
+    /// The sink the runtime calls when the SDK rotates the token pair
+    /// during an API call. It writes the new pair to `auth.json` so the
+    /// next launch does not restore stale tokens.
+    fn auth_sink(&self) -> Arc<dyn MapleApiAuthEventSink> {
+        Arc::new(PersistAuthSink {
+            api_url: self.api_url.clone(),
+        })
     }
 
     fn load_persisted_auth(&self) -> Option<(String, String, Option<String>)> {
@@ -427,7 +479,7 @@ impl AgentBackend {
             };
             match tokio::time::timeout(
                 std::time::Duration::from_secs(30),
-                auth.set_auth(Arc::new(NoopAuthEventSink), request),
+                auth.set_auth(self.auth_sink(), request),
             )
             .await
             {
@@ -473,7 +525,7 @@ impl AgentBackend {
     ) -> Result<AuthSession, String> {
         self.auth
             .set_auth(
-                Arc::new(NoopAuthEventSink),
+                self.auth_sink(),
                 MapleApiAuthRequest {
                     user_id,
                     api_url: self.api_url.clone(),

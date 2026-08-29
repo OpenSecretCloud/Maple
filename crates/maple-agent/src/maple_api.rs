@@ -32,14 +32,19 @@ pub struct MapleApiAuthSnapshot {
     pub revision: u64,
 }
 
+/// Observes credential rotations performed by the SDK during API calls.
+///
+/// The snapshot carries the tokens that are now live, so the host can
+/// persist them; a session restored from stale tokens fails validation.
+/// Implementations must not log the snapshot.
 pub trait MapleApiAuthEventSink: Send + Sync {
-    fn auth_changed(&self, user_id: &str, revision: u64);
+    fn auth_changed(&self, snapshot: &MapleApiAuthSnapshot);
 }
 
 pub struct NoopAuthEventSink;
 
 impl MapleApiAuthEventSink for NoopAuthEventSink {
-    fn auth_changed(&self, _user_id: &str, _revision: u64) {}
+    fn auth_changed(&self, _snapshot: &MapleApiAuthSnapshot) {}
 }
 
 struct CredentialedClient {
@@ -191,7 +196,7 @@ impl MapleApiSession {
             return Ok(());
         }
 
-        let revision = {
+        let published = {
             let mut inner = self.inner.write().await;
             if !inner.active
                 || inner.credentials.generation != snapshot.generation
@@ -203,10 +208,10 @@ impl MapleApiSession {
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| "Maple API authentication revision exhausted".to_string())?;
-            inner.revision
+            snapshot_from_inner(&self.user_id, &self.native_instance_id, &inner)?
         };
 
-        self.event_sink.auth_changed(&self.user_id, revision);
+        self.event_sink.auth_changed(&published);
         Ok(())
     }
 
@@ -395,7 +400,7 @@ struct TestMapleApiAuthEventSink;
 
 #[cfg(test)]
 impl MapleApiAuthEventSink for TestMapleApiAuthEventSink {
-    fn auth_changed(&self, _user_id: &str, _revision: u64) {}
+    fn auth_changed(&self, _snapshot: &MapleApiAuthSnapshot) {}
 }
 
 #[cfg(test)]
@@ -796,14 +801,19 @@ mod tests {
     #[derive(Default)]
     struct RecordingEventSink {
         events: StdMutex<Vec<(String, u64)>>,
+        tokens: StdMutex<Vec<(String, Option<String>)>>,
     }
 
     impl MapleApiAuthEventSink for RecordingEventSink {
-        fn auth_changed(&self, user_id: &str, revision: u64) {
+        fn auth_changed(&self, snapshot: &MapleApiAuthSnapshot) {
             self.events
                 .lock()
                 .expect("event lock")
-                .push((user_id.to_string(), revision));
+                .push((snapshot.user_id.clone(), snapshot.revision));
+            self.tokens.lock().expect("token lock").push((
+                snapshot.access_token.clone(),
+                snapshot.refresh_token.clone(),
+            ));
         }
     }
 
@@ -1008,6 +1018,14 @@ mod tests {
         assert_eq!(
             fixture.sink.events.lock().expect("event lock").as_slice(),
             &[("user-a".to_string(), 2)]
+        );
+        // The event carries the rotated pair so the host can persist it.
+        assert_eq!(
+            fixture.sink.tokens.lock().expect("token lock").as_slice(),
+            &[(
+                "fresh_access".to_string(),
+                Some("fresh_refresh".to_string())
+            )]
         );
     }
 
