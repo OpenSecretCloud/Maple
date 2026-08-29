@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnimationExt, AnyElement, AppContext, Div, Entity, EventEmitter, Focusable, Render,
-    SharedString, Window, div, prelude::*, px,
+    AnimationExt, AnyElement, AppContext, Div, Entity, EntityInputHandler, EventEmitter, Focusable,
+    Render, SharedString, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
     AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
@@ -2136,6 +2136,56 @@ impl ChatScreen {
         self.select_all_text(cx);
     }
 
+    /// Plain typing with no text input focused routes to the composer:
+    /// focus it and insert the character so the first keystroke lands
+    /// instead of being lost waiting for the next frame's input handler.
+    fn type_into_composer(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(composer) = self.composer.clone() else {
+            return;
+        };
+        // The platforms deliver a keystroke to a text input only when it
+        // is unmodified text (shift alone allowed); apply the same rule
+        // here so chords like ctrl-c keep their meaning. Enter and tab are
+        // excluded: macOS reports a key_char for them, but they must keep
+        // their focus-navigation and send meaning.
+        let Some(text) = event.keystroke.key_char.clone() else {
+            return;
+        };
+        if matches!(event.keystroke.key.as_str(), "enter" | "tab")
+            || !event
+                .keystroke
+                .modifiers
+                .is_subset_of(&gpui::Modifiers::shift())
+        {
+            return;
+        }
+        // A focused text input already receives typing.
+        let focused = window.focused(cx);
+        let typing_here = [
+            self.composer.as_ref(),
+            self.search_input.as_ref(),
+            self.rename_input.as_ref(),
+            self.pending_question_input.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|input| Some(input.read(cx).focus_handle(cx)) == focused);
+        if typing_here {
+            return;
+        }
+        let handle = composer.read(cx).focus_handle(cx);
+        window.focus(&handle);
+        composer.update(cx, |input, cx| {
+            input.replace_text_in_range(None, &text, window, cx)
+        });
+        cx.stop_propagation();
+    }
+
     /// Select every message in the transcript. Paragraphs that are not on
     /// screen have never registered their text, so register them here;
     /// the ordinals mirror the ones `render_message` assigns.
@@ -3855,6 +3905,7 @@ impl Render for ChatScreen {
             .on_action(cx.listener(Self::chat_escape))
             .on_action(cx.listener(Self::copy_selection))
             .on_action(cx.listener(Self::select_all_transcript))
+            .on_key_down(cx.listener(Self::type_into_composer))
             .flex_1()
             .min_h_0()
             .flex()
@@ -8710,6 +8761,93 @@ mod state_tests {
             (after.item_ix, after.offset_in_item),
             (pinned.item_ix, pinned.offset_in_item),
             "a wheel between a streamed chunk and the next paint must move the viewport up, got {after:?}"
+        );
+    }
+
+    /// Plain typing while the transcript holds focus must land in the
+    /// composer, including the first character, without a click first.
+    /// Chords and enter/tab keep their meaning instead of stealing focus.
+    #[gpui::test]
+    fn test_typing_with_transcript_focused_lands_in_composer(cx: &mut TestAppContext) {
+        // Hosts the whole screen so the chat root's key listener is on the
+        // dispatch path, exactly like the real window.
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            ChatScreen::new(backend, "user".to_string(), cx)
+        });
+        chat.update(cx, |this, _cx| {
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(vec![user_item("u1", "hello")]);
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        let transcript_focus =
+            cx.update(|_window, app| chat.read(app).transcript_focus.clone().unwrap());
+        let composer_handle =
+            cx.update(|_window, app| chat.read(app).composer.clone().unwrap().focus_handle(app));
+
+        // Focus the transcript the way a text-selection press does.
+        cx.update(|window, _| window.focus(&transcript_focus));
+
+        // Typing routes straight into the composer, first character
+        // included; the second arrives through the normal input path.
+        cx.simulate_input("hi");
+        cx.update(|_window, app| {
+            chat.update(app, |this, cx| {
+                assert_eq!(this.composer.as_ref().unwrap().read(cx).text(), "hi");
+            })
+        });
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(composer_handle.clone()),
+            "typing must move focus to the composer"
+        );
+
+        // A modifier chord keeps focus where it is.
+        cx.update(|window, _| window.focus(&transcript_focus));
+        cx.simulate_keystrokes("alt-h");
+        cx.update(|_window, app| {
+            chat.update(app, |this, cx| {
+                assert_eq!(this.composer.as_ref().unwrap().read(cx).text(), "hi");
+            })
+        });
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(transcript_focus.clone()),
+            "a chord must not steal focus from the transcript"
+        );
+
+        // Enter and tab never route to the composer, even where the
+        // platform reports a key_char for them.
+        cx.simulate_keystrokes("enter tab");
+        cx.update(|_window, app| {
+            chat.update(app, |this, cx| {
+                assert_eq!(this.composer.as_ref().unwrap().read(cx).text(), "hi");
+            })
+        });
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(transcript_focus),
+            "enter and tab must not steal focus from the transcript"
         );
     }
 }
