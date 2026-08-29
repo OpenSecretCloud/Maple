@@ -1,21 +1,24 @@
+// The side-model plumbing shared with `web_permission` and `developer_tools`
+// lives in `agent/classifier.rs`, next to the modules that use it.
+#[path = "classifier.rs"]
+pub(crate) mod classifier;
+
+use classifier::{Classifier, ClassifierOutcome, READ_ONLY_MODE};
 use goose::agents::Agent;
-use goose::conversation::message::{ActionRequired, ActionRequiredData, Message, MessageContent};
-use rmcp::model::Tool;
-use rmcp::object;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use goose::conversation::message::{ActionRequired, ActionRequiredData};
+use serde::Serialize;
 use std::path::Path;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-const READ_ONLY_MODE: &str = "smart_approve";
-const CLASSIFIER_MODEL: &str = "llama3-3-70b";
-const CLASSIFIER_TEMPERATURE: f32 = 0.0;
-const CLASSIFIER_MAX_TOKENS: i32 = 256;
-const CLASSIFIER_TOOL_NAME: &str = "maple__classify_shell_permission";
-const CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_COMMAND_CHARS: usize = 32_000;
-const MAX_REASON_CHARS: usize = 300;
+
+const CLASSIFIER: Classifier = Classifier {
+    label: "Read-only shell",
+    tool_name: "maple__classify_shell_permission",
+    tool_description: "Return the permission classification for the supplied shell command.",
+    approve_decision: "read_only",
+    system_prompt: CLASSIFIER_SYSTEM_PROMPT,
+};
 
 const CLASSIFIER_SYSTEM_PROMPT: &str = r#"You are a shell-command permission classifier for a coding agent's Read only mode.
 
@@ -251,20 +254,6 @@ pub(crate) enum ShellPermissionOutcome {
     Cancelled,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ClassifierDecision {
-    ReadOnly,
-    RequiresApproval,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ClassifierResponse {
-    decision: ClassifierDecision,
-    reason: String,
-}
-
 #[derive(Default)]
 pub(crate) struct ShellPermissionClassifier;
 
@@ -276,150 +265,23 @@ impl ShellPermissionClassifier {
         request: &ShellPermissionRequest,
         cancel_token: &CancellationToken,
     ) -> ShellPermissionOutcome {
-        if cancel_token.is_cancelled() {
-            return ShellPermissionOutcome::Cancelled;
+        match CLASSIFIER
+            .classify(agent, session_id, request, cancel_token)
+            .await
+        {
+            ClassifierOutcome::Approve => ShellPermissionOutcome::ReadOnly,
+            ClassifierOutcome::RequiresApproval => ShellPermissionOutcome::RequiresApproval,
+            ClassifierOutcome::Cancelled => ShellPermissionOutcome::Cancelled,
         }
-
-        let provider = match agent.provider().await {
-            Ok(provider) => provider,
-            Err(error) => {
-                log::warn!("Read-only shell classifier could not resolve provider: {error}");
-                return ShellPermissionOutcome::RequiresApproval;
-            }
-        };
-        let mut model_config =
-            match goose::model_config::model_config_from_user_config_with_session_settings(
-                provider.get_name(),
-                CLASSIFIER_MODEL,
-                None,
-                None,
-                None,
-            ) {
-                Ok(model_config) => model_config,
-                Err(error) => {
-                    log::warn!(
-                        "Read-only shell classifier could not configure {CLASSIFIER_MODEL}: {error}"
-                    );
-                    return ShellPermissionOutcome::RequiresApproval;
-                }
-            };
-        // The classifier is intentionally isolated from session-level reasoning
-        // and request settings. In particular, Goose may otherwise inherit a
-        // global thinking effort while materializing this isolated request.
-        model_config.request_params = None;
-        model_config.reasoning = Some(false);
-        let model_config = model_config
-            .with_temperature(Some(CLASSIFIER_TEMPERATURE))
-            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
-        let input = match serde_json::to_string(request) {
-            Ok(input) => input,
-            Err(error) => {
-                log::warn!("Read-only shell classifier could not serialize request: {error}");
-                return ShellPermissionOutcome::RequiresApproval;
-            }
-        };
-        let messages = [Message::user().with_text(input)];
-        let tools = [classifier_tool()];
-        let completion = goose::session_context::with_session_id(
-            Some(session_id.to_string()),
-            provider.complete(&model_config, CLASSIFIER_SYSTEM_PROMPT, &messages, &tools),
-        );
-
-        let result = tokio::select! {
-            biased;
-            _ = cancel_token.cancelled() => return ShellPermissionOutcome::Cancelled,
-            result = tokio::time::timeout(CLASSIFIER_TIMEOUT, completion) => result,
-        };
-        let (message, _usage) = match result {
-            Ok(Ok(completion)) => completion,
-            Ok(Err(error)) => {
-                log::warn!("Read-only shell classifier request failed: {error}");
-                return ShellPermissionOutcome::RequiresApproval;
-            }
-            Err(_) => {
-                log::warn!("Read-only shell classifier timed out");
-                return ShellPermissionOutcome::RequiresApproval;
-            }
-        };
-
-        parse_classifier_response(&message).unwrap_or_else(|| {
-            log::warn!("Read-only shell classifier returned an invalid structured response");
-            ShellPermissionOutcome::RequiresApproval
-        })
     }
-}
-
-pub(crate) fn thinking_disabled_request_params() -> HashMap<String, serde_json::Value> {
-    HashMap::from([
-        ("include_reasoning".to_string(), serde_json::json!(false)),
-        (
-            "chat_template_kwargs".to_string(),
-            serde_json::json!({ "enable_thinking": false }),
-        ),
-    ])
-}
-
-fn classifier_tool() -> Tool {
-    Tool::new(
-        CLASSIFIER_TOOL_NAME.to_string(),
-        "Return the permission classification for the supplied shell command.".to_string(),
-        object!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "decision": {
-                    "type": "string",
-                    "enum": ["read_only", "requires_approval"]
-                },
-                "reason": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": MAX_REASON_CHARS,
-                    "description": "A short explanation of the decision"
-                }
-            },
-            "required": ["decision", "reason"]
-        }),
-    )
-}
-
-fn parse_classifier_response(message: &Message) -> Option<ShellPermissionOutcome> {
-    let requests = message
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            MessageContent::ToolRequest(request) => Some(request),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let [request] = requests.as_slice() else {
-        return None;
-    };
-    let tool_call = request.tool_call.as_ref().ok()?;
-    if tool_call.name != CLASSIFIER_TOOL_NAME {
-        return None;
-    }
-    let arguments = tool_call.arguments.clone()?;
-    let response =
-        serde_json::from_value::<ClassifierResponse>(serde_json::Value::Object(arguments)).ok()?;
-    let reason = response.reason.trim();
-    if reason.is_empty() || reason.chars().count() > MAX_REASON_CHARS {
-        return None;
-    }
-
-    Some(match response.decision {
-        ClassifierDecision::ReadOnly => ShellPermissionOutcome::ReadOnly,
-        ClassifierDecision::RequiresApproval => ShellPermissionOutcome::RequiresApproval,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goose::conversation::message::MessageContent;
-    use goose::providers::base::Provider;
+    use goose::conversation::message::{Message, MessageContent};
     use rmcp::model::CallToolRequestParams;
-    use std::sync::{Arc, Mutex as StdMutex};
+    use rmcp::object;
 
     fn action(
         tool_name: &str,
@@ -592,67 +454,67 @@ mod tests {
     #[test]
     fn parses_exact_structured_decisions() {
         let read_only = response(
-            CLASSIFIER_TOOL_NAME,
+            CLASSIFIER.tool_name,
             object!({ "decision": "read_only", "reason": "Only reads tracked files" }),
         );
         assert_eq!(
-            parse_classifier_response(&read_only),
-            Some(ShellPermissionOutcome::ReadOnly)
+            CLASSIFIER.parse_response(&read_only),
+            Some(ClassifierOutcome::Approve)
         );
 
         let requires_approval = response(
-            CLASSIFIER_TOOL_NAME,
+            CLASSIFIER.tool_name,
             object!({ "decision": "requires_approval", "reason": "Writes a file" }),
         );
         assert_eq!(
-            parse_classifier_response(&requires_approval),
-            Some(ShellPermissionOutcome::RequiresApproval)
+            CLASSIFIER.parse_response(&requires_approval),
+            Some(ClassifierOutcome::RequiresApproval)
         );
     }
 
     #[test]
     fn malformed_or_ambiguous_responses_do_not_auto_approve() {
         assert_eq!(
-            parse_classifier_response(&Message::assistant().with_text("read_only")),
+            CLASSIFIER.parse_response(&Message::assistant().with_text("read_only")),
             None
         );
         assert_eq!(
-            parse_classifier_response(&response(
+            CLASSIFIER.parse_response(&response(
                 "wrong_tool",
                 object!({ "decision": "read_only", "reason": "safe" }),
             )),
             None
         );
         assert_eq!(
-            parse_classifier_response(&response(
-                CLASSIFIER_TOOL_NAME,
+            CLASSIFIER.parse_response(&response(
+                CLASSIFIER.tool_name,
                 object!({ "decision": "allow", "reason": "safe" }),
             )),
             None
         );
         assert_eq!(
-            parse_classifier_response(&response(
-                CLASSIFIER_TOOL_NAME,
+            CLASSIFIER.parse_response(&response(
+                CLASSIFIER.tool_name,
                 object!({ "decision": "read_only", "reason": "safe", "confidence": 1 }),
             )),
             None
         );
 
         let multiple = response(
-            CLASSIFIER_TOOL_NAME,
+            CLASSIFIER.tool_name,
             object!({ "decision": "read_only", "reason": "safe" }),
         )
         .with_tool_request(
             "classifier-2",
-            Ok(CallToolRequestParams::new(CLASSIFIER_TOOL_NAME.to_string())
+            Ok(CallToolRequestParams::new(CLASSIFIER.tool_name.to_string())
                 .with_arguments(object!({ "decision": "read_only", "reason": "also safe" }))),
         );
-        assert_eq!(parse_classifier_response(&multiple), None);
+        assert_eq!(CLASSIFIER.parse_response(&multiple), None);
     }
 
     #[test]
     fn classifier_schema_is_closed_and_bounded() {
-        let tool = classifier_tool();
+        let tool = CLASSIFIER.tool();
         assert_eq!(tool.input_schema["additionalProperties"], false);
         assert_eq!(
             tool.input_schema["properties"]["decision"]["enum"],
@@ -660,108 +522,7 @@ mod tests {
         );
         assert_eq!(
             tool.input_schema["properties"]["reason"]["maxLength"],
-            MAX_REASON_CHARS
+            classifier::MAX_REASON_CHARS
         );
-    }
-
-    #[test]
-    fn classifier_uses_llama_without_gemma_thinking_controls() {
-        assert_eq!(CLASSIFIER_MODEL, "llama3-3-70b");
-
-        let mut model_config =
-            goose::model_config::model_config_from_user_config_with_session_settings(
-                "openai",
-                CLASSIFIER_MODEL,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-        model_config.request_params = None;
-        model_config.reasoning = Some(false);
-        let model_config = model_config
-            .with_temperature(Some(CLASSIFIER_TEMPERATURE))
-            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
-        assert_eq!(model_config.model_name, CLASSIFIER_MODEL);
-        assert_eq!(model_config.temperature, Some(CLASSIFIER_TEMPERATURE));
-        assert_eq!(model_config.max_tokens, Some(CLASSIFIER_MAX_TOKENS));
-        assert_eq!(model_config.reasoning, Some(false));
-        assert!(model_config.request_params.is_none());
-    }
-
-    #[tokio::test]
-    async fn goose_serializes_classifier_model_without_gemma_thinking_controls() {
-        let captured = Arc::new(StdMutex::new(None));
-        let handler_capture = Arc::clone(&captured);
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post(move |axum::Json(payload): axum::Json<serde_json::Value>| {
-                let handler_capture = Arc::clone(&handler_capture);
-                async move {
-                    *handler_capture.lock().unwrap() = Some(payload);
-                    (
-                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
-                        concat!(
-                            "data: {\"id\":\"chatcmpl-classifier\",",
-                            "\"object\":\"chat.completion.chunk\",\"created\":1,",
-                            "\"model\":\"test\",\"choices\":[{\"index\":0,",
-                            "\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},",
-                            "\"finish_reason\":\"stop\"}]}\n\n",
-                            "data: [DONE]\n\n"
-                        ),
-                    )
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-        let api_client = goose::providers::api_client::ApiClient::new_with_tls(
-            format!("http://{address}"),
-            goose::providers::api_client::AuthMethod::NoAuth,
-            None,
-        )
-        .unwrap();
-        let provider = goose::providers::openai::OpenAiProvider::new(api_client);
-        let mut model_config =
-            goose::model_config::model_config_from_user_config_with_session_settings(
-                provider.get_name(),
-                CLASSIFIER_MODEL,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-        model_config.request_params = None;
-        model_config.reasoning = Some(false);
-        let model_config = model_config
-            .with_temperature(Some(CLASSIFIER_TEMPERATURE))
-            .with_max_tokens(Some(CLASSIFIER_MAX_TOKENS));
-
-        provider
-            .complete(
-                &model_config,
-                CLASSIFIER_SYSTEM_PROMPT,
-                &[Message::user().with_text("request")],
-                &[classifier_tool()],
-            )
-            .await
-            .unwrap();
-        server.abort();
-
-        let payload = captured.lock().unwrap().take().unwrap();
-        assert_eq!(payload["model"], CLASSIFIER_MODEL);
-        assert_eq!(payload["temperature"], CLASSIFIER_TEMPERATURE);
-        assert_eq!(payload["max_tokens"], CLASSIFIER_MAX_TOKENS);
-        assert_eq!(payload["stream"], true);
-        assert_eq!(payload["stream_options"]["include_usage"], true);
-        assert!(payload.get("include_reasoning").is_none());
-        assert!(payload.get("chat_template_kwargs").is_none());
-        assert_eq!(
-            payload["tools"][0]["function"]["name"],
-            CLASSIFIER_TOOL_NAME
-        );
-        assert!(payload.get("thinking_effort").is_none());
     }
 }

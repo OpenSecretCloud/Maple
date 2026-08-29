@@ -47,7 +47,8 @@ use tokio_util::sync::CancellationToken;
 #[cfg(windows)]
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use super::shell_permission::{is_remote_file_source, thinking_disabled_request_params};
+use super::shell_permission::classifier::{side_model_config, thinking_disabled_request_params};
+use super::shell_permission::is_remote_file_source;
 use super::tool_context::{AgentToolContextSnapshot, SharedAgentToolContext};
 
 const MAX_READ_LINES: usize = 2_000;
@@ -887,27 +888,18 @@ async fn describe_image_for_text_model(
     }
 
     let provider = contextual_image_provider(context).await?;
-    let request_params = thinking_disabled_request_params();
-    let mut model_config =
-        goose::model_config::model_config_from_user_config_with_session_settings(
-            provider.get_name(),
-            IMAGE_DESCRIPTION_MODEL,
-            None,
-            Some(request_params.clone()),
-            None,
-        )
-        .map_err(|error| {
-            format!(
-                "could not configure image description model {IMAGE_DESCRIPTION_MODEL}: {error}"
-            )
-        })?;
-    // Keep this helper isolated from global or session-level thinking settings.
-    // Gemma's OpenAI-compatible endpoint requires both request knobs below.
-    model_config.request_params = Some(request_params);
-    model_config.reasoning = Some(false);
-    let model_config = model_config
-        .with_temperature(Some(IMAGE_DESCRIPTION_TEMPERATURE))
-        .with_max_tokens(Some(IMAGE_DESCRIPTION_MAX_TOKENS));
+    // Gemma's OpenAI-compatible endpoint needs the thinking knobs spelled out
+    // in the request body, so they survive into the materialized config.
+    let model_config = side_model_config(
+        provider.get_name(),
+        IMAGE_DESCRIPTION_MODEL,
+        Some(thinking_disabled_request_params()),
+        IMAGE_DESCRIPTION_TEMPERATURE,
+        IMAGE_DESCRIPTION_MAX_TOKENS,
+    )
+    .map_err(|error| {
+        format!("could not configure image description model {IMAGE_DESCRIPTION_MODEL}: {error}")
+    })?;
 
     let prompt = contextual_image_prompt(source, image_context);
     let messages = [Message::user()
@@ -3488,21 +3480,14 @@ mod tests {
         )
         .unwrap();
         let provider = goose::providers::openai::OpenAiProvider::new(api_client);
-        let request_params = thinking_disabled_request_params();
-        let mut model_config =
-            goose::model_config::model_config_from_user_config_with_session_settings(
-                provider.get_name(),
-                IMAGE_DESCRIPTION_MODEL,
-                None,
-                Some(request_params.clone()),
-                None,
-            )
-            .unwrap();
-        model_config.request_params = Some(request_params);
-        model_config.reasoning = Some(false);
-        let model_config = model_config
-            .with_temperature(Some(IMAGE_DESCRIPTION_TEMPERATURE))
-            .with_max_tokens(Some(IMAGE_DESCRIPTION_MAX_TOKENS));
+        let model_config = side_model_config(
+            provider.get_name(),
+            IMAGE_DESCRIPTION_MODEL,
+            Some(thinking_disabled_request_params()),
+            IMAGE_DESCRIPTION_TEMPERATURE,
+            IMAGE_DESCRIPTION_MAX_TOKENS,
+        )
+        .unwrap();
         let messages = [Message::user()
             .with_text(contextual_image_prompt(
                 "icon.png",
