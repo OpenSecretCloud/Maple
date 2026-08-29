@@ -4151,7 +4151,9 @@ impl ChatScreen {
                     return false;
                 }
                 self.queue = snapshot.items;
-                self.apply_timeline_item(session_id, item);
+                // The promoted message is a user turn like any other: its
+                // attachments load and the plan and summaries follow it.
+                self.apply_incoming_item(session_id, item, cx);
             }
         }
         true
@@ -9628,6 +9630,32 @@ mod state_tests {
                 cx,
             );
             assert!(!this.awaiting_first_token);
+        });
+    }
+
+    #[gpui::test]
+    fn test_promoted_queue_item_requests_its_attachments(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut promoted = user_item("u1", "queued text");
+            promoted.input = Some(serde_json::json!({
+                "imageAttachments": [{ "id": "att-9", "name": "shot.png" }]
+            }));
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::QueuePromoted {
+                    queue_id: "q1".to_string(),
+                    snapshot: maple_agent::agent::AgentDesktopQueueSnapshot {
+                        revision: 1,
+                        items: Vec::new(),
+                    },
+                    item: promoted,
+                },
+                cx,
+            );
+            assert_eq!(this.timeline.len(), 1);
+            assert!(this.attachment_requests.contains("att-9"));
         });
     }
 
