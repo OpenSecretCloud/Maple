@@ -9144,14 +9144,17 @@ fn remove_maple_owned_goose_file(path: &Path, description: &str) -> Result<(), S
 }
 
 fn reset_maple_owned_permission_file(path: &Path) -> Result<(), String> {
-    fs::write(path, MAPLE_GOOSE_PERMISSION_CONFIG).map_err(|error| {
-        format!(
-            "Failed to reset Maple-owned Goose permission file {}: {error}",
-            path.display()
-        )
-    })?;
-    set_owner_only_permissions(path);
-    Ok(())
+    // Atomic temp-and-rename with owner-only mode: a crash mid-write must
+    // not leave a truncated permission file that Goose would read as empty
+    // and treat as "nothing requires approval".
+    crate::private_file::write_private_file(path, MAPLE_GOOSE_PERMISSION_CONFIG.as_bytes()).map_err(
+        |error| {
+            format!(
+                "Failed to reset Maple-owned Goose permission file {}: {error}",
+                path.display()
+            )
+        },
+    )
 }
 
 fn parse_goose_mode(mode: &str) -> GooseMode {
@@ -14402,6 +14405,23 @@ mod tests {
         .unwrap();
 
         reset_maple_owned_permission_file(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "the reset file must be owner-only"
+            );
+        }
+        assert!(
+            !fs::read_dir(&root).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "the atomic write must leave no temporary file behind"
+        );
         let manager = PermissionManager::new(root.clone());
         for tool in MAPLE_DEVELOPER_TOOLS {
             // todo_write only records plan state for the UI; it has no
