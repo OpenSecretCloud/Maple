@@ -8998,23 +8998,40 @@ fn link_global_agents_md(goose_path_root: &Path) {
         return;
     }
     let source = home.join(".agents").join("AGENTS.md");
+    let target_dir = goose_path_root.join(".agents");
+    link_agents_md_into(&source, &target_dir);
+}
+
+fn link_agents_md_into(source: &Path, target_dir: &Path) {
     if !source.is_file() {
         return;
     }
-    let target_dir = goose_path_root.join(".agents");
     let target = target_dir.join("AGENTS.md");
-    if target.exists() {
-        return;
+    // `Path::exists` follows symlinks, so a dangling link from an earlier
+    // home layout reads as absent. The symlink call would then fail with
+    // EEXIST and the copy would write through the stale link. Inspect the
+    // link itself and clear it when its destination is gone.
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            if target.exists() {
+                return;
+            }
+            if fs::remove_file(&target).is_err() {
+                return;
+            }
+        }
+        Ok(_) => return,
+        Err(_) => {}
     }
-    let _ = fs::create_dir_all(&target_dir);
+    let _ = fs::create_dir_all(target_dir);
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
-        if symlink(&source, &target).is_ok() {
+        if symlink(source, &target).is_ok() {
             return;
         }
     }
-    let _ = fs::copy(&source, &target);
+    let _ = fs::copy(source, &target);
 }
 
 fn configure_embedded_goose(
@@ -17716,6 +17733,38 @@ mod tests {
             normalize_generated_session_title(&"word ".repeat(100))
                 .is_some_and(|title| title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_agents_md_link_is_replaced_instead_of_written_through() {
+        use std::os::unix::fs::symlink;
+        let root =
+            std::env::temp_dir().join(format!("maple-agent-agents-md-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("home/.agents/AGENTS.md");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "global hints").unwrap();
+        let target_dir = root.join("goose/.agents");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target = target_dir.join("AGENTS.md");
+        let stale = root.join("old-home/.agents/AGENTS.md");
+        symlink(&stale, &target).unwrap();
+        assert!(!target.exists(), "fixture link must dangle");
+
+        link_agents_md_into(&source, &target_dir);
+
+        assert_eq!(fs::read_link(&target).unwrap(), source);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "global hints");
+        assert!(
+            !stale.exists(),
+            "nothing may be written through the stale link"
+        );
+
+        // A link that already resolves is left alone.
+        link_agents_md_into(&source, &target_dir);
+        assert_eq!(fs::read_link(&target).unwrap(), source);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
