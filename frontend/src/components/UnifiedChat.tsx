@@ -179,6 +179,7 @@ import {
   type ChatStreamTerminalState
 } from "@/services/chatStreamDeltaCoalescer";
 import { recoverFailedSendAfterDestinationAdoption } from "@/services/chatSendFailureRecovery";
+import { isImageDescriptionUnavailableError } from "@/services/chatResponseErrors";
 import {
   getRegisteredChatOptimisticMessage,
   markOptimisticMessageIncomplete,
@@ -4826,6 +4827,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         const causeMessage = (error as Error & { cause?: { message?: string } })?.cause?.message;
         if (causeMessage && causeMessage.includes("Request failed with status")) {
           errorMessage = causeMessage;
+        }
+
+        if (isImageDescriptionUnavailableError(error)) {
+          restoreOriginComposer(
+            "Image description is temporarily unavailable. Your message and images were restored; please try again."
+          );
+          return;
         }
 
         const parseStatusError = (status: number) => {
