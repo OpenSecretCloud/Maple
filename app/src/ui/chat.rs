@@ -5104,30 +5104,44 @@ impl ChatScreen {
                     .child(wordmark(px(16.), theme::text_primary()))
                     .child(self.render_sidebar_toggle(cx)),
             )
-            .child(
+            .children(self.search_input.clone().map(|input| {
+                let active = !self.sidebar_filter.is_empty();
                 div()
-                    .id("new-task")
-                    .mx_2()
-                    .mt_3()
-                    .px_2()
-                    .py_1p5()
-                    .rounded_md()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::accent()))
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.new_session(cx);
+                    .mx_4()
+                    .mt_3()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                    .border_1()
+                    .border_color(gpui::rgb(if active {
+                        theme::accent()
+                    } else {
+                        theme::border_subtle()
                     }))
-                    .child(icon("square-pen", px(16.), theme::accent()))
-                    .child("New Task"),
-            )
+                    .text_sm()
+                    .child(icon("search", px(14.), theme::text_muted()))
+                    .child(div().flex_1().min_w_0().child(input))
+                    .when(active, |row| {
+                        row.child(
+                            div()
+                                .id("search-clear")
+                                .size_5()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .hover(|style| style.cursor_pointer())
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.clear_search(cx);
+                                }))
+                                .child(icon("x", px(12.), theme::text_secondary())),
+                        )
+                    })
+            }))
             .child(
                 div()
                     .id("session-list")
@@ -5138,43 +5152,29 @@ impl ChatScreen {
                     .track_scroll(&self.sidebar_scroll)
                     .px_4()
                     .pt_6()
-                    .children(self.search_input.clone().map(|input| {
-                        let active = !self.sidebar_filter.is_empty();
+                    .child(
                         div()
+                            .id("new-task")
+                            .mb_3()
+                            .px_2()
+                            .py_1p5()
+                            .rounded_md()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .mb_3()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(gpui::rgb(theme::bg_sidebar_pill()))
-                            .border_1()
-                            .border_color(gpui::rgb(if active {
-                                theme::accent()
-                            } else {
-                                theme::border_subtle()
-                            }))
                             .text_sm()
-                            .child(icon("search", px(14.), theme::text_muted()))
-                            .child(div().flex_1().min_w_0().child(input))
-                            .when(active, |row| {
-                                row.child(
-                                    div()
-                                        .id("search-clear")
-                                        .size_5()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded_md()
-                                        .hover(|style| style.cursor_pointer())
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
-                                            this.clear_search(cx);
-                                        }))
-                                        .child(icon("x", px(12.), theme::text_secondary())),
-                                )
+                            .text_color(gpui::rgb(theme::accent()))
+                            .hover(|style| {
+                                style
+                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                    .cursor_pointer()
                             })
-                    }))
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.new_session(cx);
+                            }))
+                            .child(icon("square-pen", px(16.), theme::accent()))
+                            .child("New Task"),
+                    )
                     .child(
                         div()
                             .flex()
