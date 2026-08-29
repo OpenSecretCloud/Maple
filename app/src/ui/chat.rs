@@ -1428,8 +1428,7 @@ impl ChatScreen {
                     // callback; upsert so the sidebar never shows the task
                     // twice.
                     this.upsert_session(session.clone());
-                    let timeline = Vec::new();
-                    this.set_active_session(session, timeline, cx);
+                    this.set_active_session(session, Vec::new(), HashMap::new(), cx);
                     if !this.default_web_enabled {
                         this.set_web_enabled(false, cx);
                     }
@@ -1550,18 +1549,18 @@ impl ChatScreen {
                 }
                 // Stored summaries stand in for the model calls the
                 // timeline would otherwise request again.
-                this.tool_summaries.extend(
-                    summaries
-                        .into_iter()
-                        .map(|(id, summary)| (id, SharedString::from(summary))),
-                );
+                let summaries: HashMap<String, SharedString> = summaries
+                    .into_iter()
+                    .map(|(id, summary)| (id, SharedString::from(summary)))
+                    .collect();
                 match mode {
                     LoadMode::Select => {
                         this.upsert_session(detail.session.clone());
-                        this.set_active_session(detail.session, detail.timeline, cx);
+                        this.set_active_session(detail.session, detail.timeline, summaries, cx);
                         this.queue = detail.queue.items;
                     }
                     LoadMode::Reload => {
+                        this.tool_summaries.extend(summaries);
                         this.replace_timeline(detail.timeline);
                         this.load_attachment_images(cx);
                         this.summarize_loaded_tools(cx);
@@ -1761,17 +1760,31 @@ impl ChatScreen {
         );
     }
 
+    /// Make `session` the one on screen. `stored_summaries` are the tool
+    /// summaries loaded with its snapshot; they land after the per-task
+    /// caches of the previous task are dropped.
     fn set_active_session(
         &mut self,
         session: AgentSessionSummary,
         timeline: Vec<AgentTimelineItem>,
+        stored_summaries: HashMap<String, SharedString>,
         cx: &mut Context<Self>,
     ) {
+        let changed = self.selected_session.as_deref() != Some(session.id.as_str());
         // The side thread belongs to the task it forked; every path that
         // lands on another task (new task, archive, root switch) ends it.
-        if self.btw.is_some() && self.selected_session.as_deref() != Some(session.id.as_str()) {
+        if changed && self.btw.is_some() {
             self.close_side_thread(cx);
         }
+        if changed {
+            // Item-keyed caches of the previous task would only grow for
+            // the life of the window.
+            self.tool_summaries.clear();
+            self.attachment_images.clear();
+            self.attachment_requests.clear();
+            self.toggled_tools.clear();
+        }
+        self.tool_summaries.extend(stored_summaries);
         // Release the edit hold against the session that owns it, before
         // the selection moves to the new one.
         self.abandon_queue_edit(cx);
@@ -9239,9 +9252,9 @@ mod state_tests {
             // Landing on another task by any route ends the thread.
             this.ask_side_question("s1", "again?", cx);
             assert!(this.btw.is_some());
-            this.set_active_session(summary("s1", "Same"), Vec::new(), cx);
+            this.set_active_session(summary("s1", "Same"), Vec::new(), HashMap::new(), cx);
             assert!(this.btw.is_some(), "same task keeps the thread");
-            this.set_active_session(summary("s2", "Other"), Vec::new(), cx);
+            this.set_active_session(summary("s2", "Other"), Vec::new(), HashMap::new(), cx);
             assert!(this.btw.is_none(), "another task ends the thread");
         });
     }
@@ -9339,7 +9352,7 @@ mod state_tests {
             assert_eq!(this.summary_requests.len(), 5);
             // A session switch restarts the slots and drops the queue.
             let before = this.summary_generation;
-            this.set_active_session(summary("s2", "B"), Vec::new(), cx);
+            this.set_active_session(summary("s2", "B"), Vec::new(), HashMap::new(), cx);
             assert_eq!(this.summary_generation, before + 1);
             assert_eq!(this.pending_summaries, 0);
             assert!(this.summary_queue.is_empty());
@@ -9415,7 +9428,7 @@ mod state_tests {
             this.handle_service_event(one_question("b", "Second?"), cx);
             assert_eq!(this.question_selected.get(&0), Some(&0));
             // Switching to the other task shows its card.
-            this.set_active_session(summary("s2", "B"), Vec::new(), cx);
+            this.set_active_session(summary("s2", "B"), Vec::new(), HashMap::new(), cx);
             assert_eq!(
                 this.current_question().map(|q| q.request_id.as_str()),
                 Some("req-other")
@@ -9423,7 +9436,7 @@ mod state_tests {
             assert!(this.pending_question_input.is_some());
             assert!(this.question_selected.is_empty());
             // Switching back still shows the first task's card.
-            this.set_active_session(summary("s1", "A"), Vec::new(), cx);
+            this.set_active_session(summary("s1", "A"), Vec::new(), HashMap::new(), cx);
             assert_eq!(
                 this.current_question().map(|q| q.request_id.as_str()),
                 Some("req-a")
@@ -9859,6 +9872,30 @@ mod state_tests {
             this.root_switching = true;
             this.archive_root("/tmp/proj", cx);
             assert!(this.notice.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn test_switching_tasks_drops_item_caches(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.tool_summaries.insert("t1".to_string(), "old".into());
+            this.attachment_requests.insert("att-1".to_string());
+            this.toggled_tools.insert("t1".to_string());
+            let stored = HashMap::from([("t9".to_string(), SharedString::from("stored"))]);
+            this.set_active_session(summary("s2", "B"), Vec::new(), stored, cx);
+            assert!(!this.tool_summaries.contains_key("t1"));
+            assert_eq!(
+                this.tool_summaries.get("t9").map(|s| s.as_ref()),
+                Some("stored")
+            );
+            assert!(this.attachment_requests.is_empty());
+            assert!(this.toggled_tools.is_empty());
+            // Re-selecting the same task keeps them.
+            this.toggled_tools.insert("t2".to_string());
+            this.set_active_session(summary("s2", "B"), Vec::new(), HashMap::new(), cx);
+            assert!(this.toggled_tools.contains("t2"));
+            assert!(this.tool_summaries.contains_key("t9"));
         });
     }
 
