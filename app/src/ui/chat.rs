@@ -1680,19 +1680,27 @@ impl ChatScreen {
         };
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let compacted = session_id.clone();
         self.notice = Some("Compacting…".into());
         cx.notify();
         self.call(
             async move { backend.compact_session(&user_id, &session_id).await },
             cx,
-            |this, result, cx| match result {
+            move |this, result, cx| match result {
                 Ok(()) => {
                     this.notice = Some("Conversation compacted".into());
-                    let sid = this.selected_session.clone().unwrap_or_default();
-                    this.select_session(&sid, cx);
-                    this.refresh_context_usage(cx);
+                    // Reload the task that was compacted, not whatever is
+                    // selected by the time the call returns.
+                    if this.is_selected(&compacted) {
+                        this.reload_timeline(&compacted, cx);
+                        this.refresh_context_usage(cx);
+                    }
+                    cx.notify();
                 }
-                Err(message) => this.notice = Some(format!("Compaction failed: {message}").into()),
+                Err(message) => {
+                    this.notice = Some(format!("Compaction failed: {message}").into());
+                    cx.notify();
+                }
             },
         );
     }
