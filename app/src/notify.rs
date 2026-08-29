@@ -44,9 +44,16 @@ fn send(title: &str, body: &str) -> Result<(), String> {
     let mut command = Command::new("notify-send");
     command
         .args(["-a", "Maple", "-t", "8000", "-u", "normal"])
-        .arg(title)
-        .arg(body);
+        .args(linux_positional_args(title, body));
     run(command)
+}
+
+/// `notify-send` parses a title or body that starts with `-` as an option
+/// ("- item" is common in summaries), so the positional pair is always
+/// preceded by `--`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_positional_args<'a>(title: &'a str, body: &'a str) -> [&'a str; 3] {
+    ["--", title, body]
 }
 
 #[cfg(target_os = "macos")]
@@ -111,6 +118,14 @@ mod tests {
     #[test]
     fn escapes_applescript_quotes() {
         assert_eq!(escape_applescript(r#"a "b" \c"#), r#"a \"b\" \\c"#);
+    }
+
+    #[test]
+    fn linux_arguments_end_option_parsing() {
+        assert_eq!(
+            linux_positional_args("-Title", "--body"),
+            ["--", "-Title", "--body"]
+        );
     }
 
     #[test]
