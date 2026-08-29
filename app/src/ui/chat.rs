@@ -7322,7 +7322,7 @@ fn section_label(text: &'static str) -> Div {
 fn row_action(
     id: SharedString,
     group: &SharedString,
-    icon_name: &str,
+    icon_name: &'static str,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
     div()

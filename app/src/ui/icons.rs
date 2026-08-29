@@ -2,12 +2,33 @@
 //! as a mask, so the color comes from `text_color` and the geometry from
 //! the file.
 
-use gpui::{AnimationExt, AnyElement, Pixels, Svg, prelude::*, svg};
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+
+use gpui::{AnimationExt, AnyElement, Pixels, SharedString, Svg, prelude::*, svg};
+
+/// Asset paths built once per icon name. Render functions ask for icons
+/// by name on every frame; without this each call formatted and
+/// allocated a new path string.
+fn icon_path(name: &'static str) -> SharedString {
+    static PATHS: OnceLock<RwLock<HashMap<&'static str, SharedString>>> = OnceLock::new();
+    let paths = PATHS.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Ok(cache) = paths.read()
+        && let Some(path) = cache.get(name)
+    {
+        return path.clone();
+    }
+    let path = SharedString::from(format!("icons/{name}.svg"));
+    if let Ok(mut cache) = paths.write() {
+        cache.insert(name, path.clone());
+    }
+    path
+}
 
 /// An icon element sized to a square of `size` and filled with `color`.
-pub fn icon(name: &str, size: Pixels, color: u32) -> Svg {
+pub fn icon(name: &'static str, size: Pixels, color: u32) -> Svg {
     svg()
-        .path(format!("icons/{name}.svg"))
+        .path(icon_path(name))
         .size(size)
         .flex_none()
         .text_color(gpui::rgb(color))
