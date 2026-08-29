@@ -10894,7 +10894,11 @@ async fn update_desktop_queue_item(
     };
     item.text = text.to_string();
     replace_queued_message_text(&mut item.message, text);
-    queue.editing_queue_id = None;
+    // Only the chip being updated leaves edit mode; an edit in progress on
+    // another chip must keep holding promotion off.
+    if queue.editing_queue_id.as_deref() == Some(queue_id) {
+        queue.editing_queue_id = None;
+    }
     queue.revision = queue.revision.saturating_add(1);
     Ok((item.clone(), queue.snapshot()))
 }
@@ -12198,6 +12202,24 @@ mod tests {
             .is_none(),
             "an open edit must hold the leftover queue"
         );
+        let second_id = snapshot_desktop_queue(&state, &account_scope, session_id)
+            .await
+            .items[1]
+            .queue_id
+            .clone();
+        update_desktop_queue_item(&state, &account_scope, session_id, &second_id, "second v2")
+            .await
+            .unwrap();
+        assert!(
+            take_all_desktop_queue_items_from_map(
+                &state.desktop_queues,
+                &account_scope,
+                session_id,
+            )
+            .await
+            .is_none(),
+            "updating another chip must not end the open edit"
+        );
         end_desktop_queue_edit(&state, &account_scope, session_id, &first_id)
             .await
             .unwrap();
@@ -12213,7 +12235,7 @@ mod tests {
                 .iter()
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["first", "second"]
+            vec!["first", "second v2"]
         );
 
         enqueue_desktop_queue_item(&state, &account_scope, session_id, "kept")
