@@ -53,10 +53,6 @@ impl BillingClient {
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .unwrap_or_default();
-        Self::with_http(base_url, http)
-    }
-
-    pub fn with_http(base_url: impl Into<String>, http: reqwest::Client) -> Self {
         let base_url = base_url.into().trim().trim_end_matches('/').to_string();
         Self { base_url, http }
     }

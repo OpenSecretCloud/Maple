@@ -122,24 +122,10 @@ impl AgentAttachmentStore {
         Ok(bytes)
     }
 
-    pub(super) fn data_url(&self, session_id: &str, attachment_id: &str) -> Result<String, String> {
-        let bytes = self.read(session_id, attachment_id)?;
-        let mime_type = supported_image_mime(&bytes)?;
-        Ok(format!(
-            "data:{mime_type};base64,{}",
-            BASE64_STANDARD.encode(bytes)
-        ))
-    }
-
     pub(super) fn delete_session(&self, session_id: &str) -> Result<(), String> {
         let path = self.session_dir(session_id)?;
         remove_exact_path(&path)
             .map_err(|error| format!("Failed to remove Agent image attachments: {error}"))
-    }
-
-    pub(super) fn clear(&self) -> Result<(), String> {
-        remove_exact_path(&self.root)
-            .map_err(|error| format!("Failed to clear Agent image attachments: {error}"))
     }
 
     fn store_upload(

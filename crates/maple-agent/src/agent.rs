@@ -674,15 +674,6 @@ pub struct AgentSetSessionWebRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentRunResponse {
-    pub run_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub queued: Option<AgentQueuedMessage>,
-    pub queue: AgentDesktopQueueSnapshot,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQueuedMessage {
@@ -708,14 +699,6 @@ pub struct AgentDesktopQueueSnapshot {
 pub struct AgentQueueControlRequest {
     pub session_id: String,
     pub queue_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentQueueUpdateRequest {
-    pub session_id: String,
-    pub queue_id: String,
-    pub text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2205,6 +2188,7 @@ async fn ensure_account_generation(
     }
 }
 
+#[cfg(test)]
 async fn advance_account_generation(state: &MapleAgentService, account_scope: &str) -> u64 {
     let mut generations = state.account_generations.lock().await;
     let generation = generations.entry(account_scope.to_string()).or_default();
@@ -2889,11 +2873,6 @@ impl MapleAgentService {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = harness_instructions;
     }
-
-    pub async fn shutdown_all(&self) -> Result<(), String> {
-        let _runtime_lifecycle_guard = self.runtime_lifecycle.lock().await;
-        stop_runtime_inner(self, None).await
-    }
 }
 
 impl AgentRuntimeHandle {
@@ -3091,68 +3070,6 @@ impl AgentRuntimeHandle {
         self.ensure_accepting_new_work()?;
         stop_runtime_for_user(state, &self.user_id).await?;
         start_runtime_for_user(state, maple_api_session, &self.user_id, request).await
-    }
-
-    pub async fn clear_data(&self) -> Result<(), String> {
-        let state = &self.service;
-        let requested_scope = self.account_scope.as_ref();
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-        self.verify_generation().await?;
-        self.ensure_accepting_new_work()?;
-        advance_account_generation(state, requested_scope).await;
-        let is_running_account = {
-            let runtime = state.inner.lock().await;
-            runtime
-                .as_ref()
-                .is_some_and(|current| current.account_scope == requested_scope)
-        };
-        if is_running_account {
-            stop_runtime_for_user(state, &self.user_id).await?;
-        }
-
-        let account_dir = account_config_dir_path(&state.host.paths, &self.user_id)
-            .map_err(|error| error.to_string())?;
-        match fs::remove_dir_all(account_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("Failed to clear Agent Mode data: {error}")),
-        }
-        let local_account_dir = account_local_data_dir_path(&state.host.paths, &self.user_id)
-            .map_err(|error| error.to_string())?;
-        match fs::remove_dir_all(local_account_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Failed to clear device-local Agent Mode data: {error}"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn clear_history(&self) -> Result<(), String> {
-        let state = &self.service;
-        let requested_scope = self.account_scope.as_ref();
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-        self.verify_generation().await?;
-        self.ensure_accepting_new_work()?;
-        advance_account_generation(state, requested_scope).await;
-        let is_running_account = {
-            let runtime = state.inner.lock().await;
-            runtime
-                .as_ref()
-                .is_some_and(|current| current.account_scope == requested_scope)
-        };
-        if is_running_account {
-            stop_runtime_for_user(state, &self.user_id).await?;
-        }
-
-        let local_account_dir = account_local_data_dir_path(&state.host.paths, &self.user_id)
-            .map_err(|error| error.to_string())?;
-        clear_agent_history(&local_account_dir)
-            .map_err(|error| format!("Failed to clear Agent Mode history: {error}"))?;
-        account_attachment_store(&state.host.paths, &self.user_id)?.clear()
     }
 }
 
@@ -4666,26 +4583,6 @@ impl AgentRuntimeHandle {
         Ok(summary)
     }
 
-    pub async fn load_image_attachment(
-        &self,
-        session_id: String,
-        attachment_id: String,
-    ) -> Result<String, String> {
-        let state = &self.service;
-        let user_id = self.user_id.as_ref();
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-        self.verify_generation().await?;
-        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        account_session_manager(&state.host.paths, user_id)?
-            .get_session(&session_id, false)
-            .await
-            .map_err(|error| format!("Failed to find Agent task {session_id}: {error}"))?;
-        let store = account_attachment_store(&state.host.paths, user_id)?;
-        tokio::task::spawn_blocking(move || store.data_url(&session_id, &attachment_id))
-            .await
-            .map_err(|error| format!("Agent image attachment task failed: {error}"))?
-    }
-
     /// Raw bytes of a stored image attachment, for display in the app.
     pub async fn read_image_attachment(
         &self,
@@ -6151,6 +6048,7 @@ impl AgentRuntimeHandle {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     pub async fn unqueue_message_for_edit(
         &self,
         request: AgentQueueControlRequest,
@@ -6165,28 +6063,6 @@ impl AgentRuntimeHandle {
                 .await?;
         publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot).await;
         Ok(removed)
-    }
-
-    pub async fn update_queued_message(
-        &self,
-        request: AgentQueueUpdateRequest,
-    ) -> Result<AgentDesktopQueueSnapshot, String> {
-        let state = &self.service;
-        let account_scope = self.account_scope.as_ref();
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
-        self.verify_generation().await?;
-        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (_, snapshot) = update_desktop_queue_item(
-            state,
-            account_scope,
-            &request.session_id,
-            &request.queue_id,
-            &request.text,
-        )
-        .await?;
-        publish_desktop_queue_changed(state, account_scope, &request.session_id, snapshot.clone())
-            .await;
-        Ok(snapshot)
     }
 
     pub async fn begin_queued_message_edit(
@@ -9877,10 +9753,12 @@ fn session_manager_for_account_dir(account_dir: &Path) -> Result<Arc<SessionMana
     )?)))
 }
 
+#[cfg(test)]
 fn clear_agent_history(account_dir: &Path) -> Result<(), anyhow::Error> {
     remove_agent_history_path(&account_dir.join(AGENT_HISTORY_SUBDIR))
 }
 
+#[cfg(test)]
 fn remove_agent_history_path(path: &Path) -> Result<(), anyhow::Error> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
