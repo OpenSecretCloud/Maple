@@ -1738,6 +1738,7 @@ impl ChatScreen {
         if mode == "auto" || mode == "smart_approve" {
             self.permission_mode = mode;
         }
+        self.web_enabled = session.web_enabled;
         self.replace_timeline(timeline);
         // Ordinals restart for the new session; drop any stale selection.
         if let Some(selection) = &self.selection {
@@ -3772,6 +3773,9 @@ impl ChatScreen {
         {
             if session_summary_eq(existing, &session) {
                 return false;
+            }
+            if self.selected_session.as_deref() == Some(session.id.as_str()) {
+                self.web_enabled = session.web_enabled;
             }
             *existing = session;
         } else {
