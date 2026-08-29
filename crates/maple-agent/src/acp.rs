@@ -2443,13 +2443,10 @@ fn save_config_for_scope(
     #[cfg(unix)]
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("Failed to secure Maple ACP configuration directory: {error}"))?;
-    let bytes = serde_json::to_vec_pretty(config)
-        .map_err(|error| format!("Failed to encode Maple ACP configuration: {error}"))?;
-    std::fs::write(&path, bytes)
+    // Atomic replace: a crash mid-write must not leave a truncated file
+    // that `load_config` rejects, which would block `maple-gpui acp`.
+    crate::private_file::write_private_json(&path, config)
         .map_err(|error| format!("Failed to save Maple ACP configuration: {error}"))?;
-    #[cfg(unix)]
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("Failed to secure Maple ACP configuration: {error}"))?;
     Ok(())
 }
 
@@ -3737,6 +3734,44 @@ mod tests {
     #[test]
     fn allowed_project_root_rejects_relative_paths() {
         assert!(ensure_allowed_project_root(Path::new("relative/project"), &[]).is_err());
+    }
+
+    #[test]
+    fn save_config_writes_atomically_and_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let user_id = "acp-config-user";
+        let config = AgentAcpConfig {
+            enabled: true,
+            allowed_project_roots: vec!["/tmp/project".to_string()],
+            ..AgentAcpConfig::default()
+        };
+
+        save_config(root.path(), user_id, &config).unwrap();
+        // Overwrite once more: the replacement must not leave a temp file.
+        save_config(root.path(), user_id, &config).unwrap();
+
+        let path = config_path(root.path(), user_id).unwrap();
+        let leftovers = path
+            .parent()
+            .unwrap()
+            .read_dir()
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        assert_eq!(load_config(root.path(), user_id).unwrap(), config);
     }
 
     #[test]
