@@ -205,6 +205,13 @@ impl TextSelection {
         });
     }
 
+    /// Drop a press nobody consumed: the release landed on no paragraph,
+    /// so no click can follow. Without this a stale press would let a
+    /// later release over a link open it without a click.
+    fn forget_press(&mut self) {
+        self.down = None;
+    }
+
     /// End a drag from a paragraph that is not under the pointer. Leaves
     /// `down` in place so the hovered paragraph can still detect a click.
     fn end_drag(&mut self) {
@@ -634,6 +641,13 @@ impl Element for RichText {
                             state.end_drag();
                             cx.notify();
                         });
+                        // The hovered paragraph, if any, consumes the press
+                        // later in this same dispatch; once every listener
+                        // ran, a press still there belongs to nobody.
+                        let entity = entity.clone();
+                        cx.defer(move |cx| {
+                            entity.update(cx, |state, _| state.forget_press());
+                        });
                         return;
                     }
                     let index = layout.index_for_position(event.position).ok();
@@ -846,6 +860,19 @@ mod tests {
         assert_eq!(selection.range_for(10), Some(0..1));
         let merged = merged_highlights(&[], Some(0..3), "h€llo");
         assert_eq!(merged.map(|runs| runs[0].0.clone()), Some(0..1));
+    }
+
+    #[test]
+    fn a_release_over_no_paragraph_forgets_the_press() {
+        let mut selection = TextSelection::default();
+        selection.begin(pos(10, 4));
+        selection.end_drag();
+        assert!(!selection.is_idle());
+        selection.forget_press();
+        assert!(selection.is_idle());
+        // A later release over a link is not a click.
+        let links = vec![(3..7, "https://example.test".to_string())];
+        assert_eq!(selection.end_with_click(10, 4, &links), None);
     }
 
     #[test]
