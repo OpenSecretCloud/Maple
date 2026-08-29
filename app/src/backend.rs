@@ -76,9 +76,26 @@ pub struct AgentBackend {
 }
 
 fn configured_client_id() -> Uuid {
-    crate::env::env_string("MAPLE_CLIENT_ID")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or_else(|| DEFAULT_CLIENT_ID.parse().expect("valid uuid"))
+    client_id_from(crate::env::env_string("MAPLE_CLIENT_ID").as_deref())
+}
+
+/// The client id to send: `MAPLE_CLIENT_ID` when it is a UUID, else the
+/// production id. A malformed override is logged instead of silently
+/// pointing a test build at production.
+fn client_id_from(configured: Option<&str>) -> Uuid {
+    let default = || DEFAULT_CLIENT_ID.parse().expect("valid uuid");
+    let Some(value) = configured else {
+        return default();
+    };
+    match value.parse() {
+        Ok(id) => id,
+        Err(error) => {
+            log::warn!(
+                "MAPLE_CLIENT_ID {value:?} is not a UUID ({error}); using the default client id"
+            );
+            default()
+        }
+    }
 }
 
 struct ChannelEventSink(mpsc::UnboundedSender<AgentServiceEvent>);
@@ -1391,4 +1408,21 @@ fn parse_oauth_callback(url: &str) -> Option<(String, String)> {
         }
     }
     Some((code?, state?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_client_id_falls_back_to_default() {
+        let default: Uuid = DEFAULT_CLIENT_ID.parse().unwrap();
+        assert_eq!(client_id_from(None), default);
+        assert_eq!(client_id_from(Some("not-a-uuid")), default);
+        let custom = "123e4567-e89b-12d3-a456-426614174000";
+        assert_eq!(
+            client_id_from(Some(custom)),
+            custom.parse::<Uuid>().unwrap()
+        );
+    }
 }
