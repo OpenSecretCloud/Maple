@@ -465,6 +465,9 @@ pub struct ChatScreen {
     audio_caps: maple_agent::agent::AudioCapabilities,
     /// The microphone is open.
     recording: bool,
+    /// The microphone is being opened; set before the async start so a
+    /// second click cannot start a second recording.
+    recording_starting: bool,
     /// A recording is at Whisper.
     transcribing: bool,
     /// Text-to-speech in progress.
@@ -784,6 +787,7 @@ impl ChatScreen {
             audio: Arc::new(crate::audio::AudioEngine::new()),
             audio_caps: maple_agent::agent::AudioCapabilities::default(),
             recording: false,
+            recording_starting: false,
             transcribing: false,
             speech: None,
             speech_generation: 0,
@@ -867,7 +871,7 @@ impl ChatScreen {
 
     /// Mic button: start a recording, or stop it and transcribe.
     fn toggle_recording(&mut self, cx: &mut Context<Self>) {
-        if self.transcribing {
+        if self.transcribing || self.recording_starting {
             return;
         }
         if self.recording {
@@ -880,10 +884,12 @@ impl ChatScreen {
     fn begin_recording(&mut self, cx: &mut Context<Self>) {
         self.stop_speech(cx);
         self.notice = None;
+        self.recording_starting = true;
         let audio = Arc::clone(&self.audio);
         cx.spawn(async move |this, cx| {
             let result = audio.start_recording().await;
             this.update(cx, |this, cx| {
+                this.recording_starting = false;
                 match result {
                     Ok(()) => this.recording = true,
                     Err(message) => this.notice = Some(message.into()),
@@ -9729,6 +9735,21 @@ mod state_tests {
             this.start_usage_poller("s2".to_string(), cx);
             assert_eq!(this.usage_poller_session.as_deref(), Some("s2"));
             assert_ne!(this.usage_poller_generation, first);
+        });
+    }
+
+    #[gpui::test]
+    fn test_second_mic_click_while_opening_is_ignored(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.toggle_recording(cx);
+            assert!(this.recording_starting);
+            // The first start has not landed: the second click must not
+            // open the microphone again or stop a recording that is not
+            // there yet.
+            this.toggle_recording(cx);
+            assert!(this.recording_starting);
+            assert!(!this.recording);
         });
     }
 
