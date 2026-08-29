@@ -5641,13 +5641,42 @@ impl AgentRuntimeHandle {
             let mut result = Ok(AgentPromptOutcome::default());
             if should_run {
                 loop {
-                    if let Err(error) = persist_leading_user_messages(
+                    if let Err((persisted, error)) = persist_leading_user_messages(
                         task_session_manager.as_ref(),
                         &session_id,
                         &pending_user_messages,
                     )
                     .await
                     {
+                        // Same terminal path as a failed reply: the queue was
+                        // already drained and the chips emitted as promoted, so
+                        // give the unpersisted ones back as chips and tell the
+                        // surface why the run stopped.
+                        let _promote_guard = session_lifecycle.lock().await;
+                        if permission_routing == AgentPermissionRouting::Desktop {
+                            let snapshot = restore_unpersisted_desktop_queue_messages(
+                                &task_desktop_queues,
+                                &task_account_scope,
+                                &session_id,
+                                &pending_user_messages[persisted..],
+                            )
+                            .await;
+                            task_events
+                                .publish(AgentRunEvent::QueueChanged(snapshot))
+                                .await;
+                        }
+                        let item = error_item(error.clone());
+                        {
+                            let mut timelines = live_timelines.lock().await;
+                            apply_failed_prompt_outcome(
+                                &mut timelines,
+                                &session_id,
+                                permission_routing,
+                                item.clone(),
+                            );
+                        }
+                        task_events.publish(AgentRunEvent::Error(item)).await;
+                        task_accepting_queue.store(false, Ordering::Release);
                         result = Err(error);
                         break;
                     }
@@ -10723,21 +10752,64 @@ fn queued_user_message(queued: &AgentQueuedMessage) -> Message {
     message
 }
 
+/// Persist every message of a promoted batch except the last, which
+/// `run_agent_prompt` persists itself. On failure the error carries how many
+/// leading messages were written so the caller can restore the rest.
 async fn persist_leading_user_messages(
     session_manager: &SessionManager,
     session_id: &str,
     messages: &[Message],
-) -> Result<(), String> {
+) -> Result<(), (usize, String)> {
     if messages.len() < 2 {
         return Ok(());
     }
-    for message in &messages[..messages.len() - 1] {
+    for (persisted, message) in messages[..messages.len() - 1].iter().enumerate() {
         session_manager
             .add_message(session_id, message)
             .await
-            .map_err(|error| format!("Failed to persist queued Agent message: {error}"))?;
+            .map_err(|error| {
+                (
+                    persisted,
+                    format!("Failed to persist queued Agent message: {error}"),
+                )
+            })?;
     }
     Ok(())
+}
+
+/// Put messages that were drained for a run but never persisted back at the
+/// head of the desktop queue, in their original order, so the chips reappear
+/// ahead of anything the user staged in the meantime.
+async fn restore_unpersisted_desktop_queue_messages(
+    queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
+    account_scope: &str,
+    session_id: &str,
+    messages: &[Message],
+) -> AgentDesktopQueueSnapshot {
+    let mut queues = queues.lock().await;
+    let queue = queues
+        .entry(desktop_queue_key(account_scope, session_id))
+        .or_insert_with(|| DesktopSessionQueue {
+            revision: 0,
+            items: VecDeque::new(),
+            editing_queue_id: None,
+        });
+    for message in messages.iter().rev() {
+        let Some(message_id) = message.id.clone() else {
+            continue;
+        };
+        queue.items.push_front(AgentQueuedMessage {
+            queue_id: next_queue_id(),
+            message_id,
+            session_id: session_id.to_string(),
+            text: message_original_user_text(message).unwrap_or_else(|| message.as_concat_text()),
+            attachments: message_image_attachments(message),
+            created_ms: unix_ms(),
+            message: message.clone(),
+        });
+    }
+    queue.revision = queue.revision.saturating_add(1);
+    queue.snapshot()
 }
 
 async fn emit_promoted_queue_items(
@@ -12205,6 +12277,44 @@ mod tests {
             .is_none()
         );
 
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn unpersisted_promoted_messages_return_to_the_queue_head() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-queue-restore-unpersisted", sink);
+        let account_scope = account_scope("desktop-queue-restore-user").unwrap();
+        let session_id = "session-restore-unpersisted";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "staged later")
+            .await
+            .unwrap();
+        let promoted = vec![
+            user_message_from_prompt("first promoted"),
+            user_message_from_prompt("second promoted"),
+        ];
+        let snapshot = restore_unpersisted_desktop_queue_messages(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+            &promoted,
+        )
+        .await;
+
+        assert_eq!(
+            snapshot
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first promoted", "second promoted", "staged later"]
+        );
+        assert_eq!(
+            snapshot.items[0].message_id.as_str(),
+            promoted[0].id.as_deref().unwrap()
+        );
         let _ = fs::remove_dir_all(test_root);
     }
 
