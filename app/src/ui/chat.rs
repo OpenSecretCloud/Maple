@@ -170,8 +170,14 @@ enum MarkdownKind {
 /// callback only has shared access to the screen. Entries are keyed by
 /// item id and kind and validated by the item's revision and text length,
 /// so no frame hashes message content.
-/// Cached document with the item revision and text length it was parsed at.
-type MarkdownEntry = (u64, usize, Rc<markdown::Document>);
+/// Cached document with the item revision and text length it was parsed
+/// at, and when.
+type MarkdownEntry = (u64, usize, Rc<markdown::Document>, std::time::Instant);
+
+/// Shortest gap between two parses of a streaming message. Chunks land
+/// faster than this; the previous parse stays on screen in between and a
+/// deferred repaint shows the last chunk.
+const STREAM_PARSE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Gap between selection ordinal bases of two items.
 const ORDINAL_SPACING: u64 = 4096;
@@ -184,23 +190,32 @@ struct MarkdownCache {
     /// The base the next unseen key gets; bases only grow, so this is
     /// the maximum without scanning the map on every miss.
     next_base: std::cell::Cell<u64>,
+    /// A throttled parse was skipped since the last `take_stale`; the
+    /// caller owes a repaint once the interval has passed.
+    stale: std::cell::Cell<bool>,
 }
 
 impl MarkdownCache {
     /// Parsed document for `source`, parsed now if the cache is stale.
+    /// With `throttle` (a message still streaming), a parse younger than
+    /// `STREAM_PARSE_INTERVAL` is served as is and the stale flag is set.
     fn get(
         &self,
         id: &str,
         kind: MarkdownKind,
         revision: u64,
         source: &str,
+        throttle: bool,
     ) -> Rc<markdown::Document> {
         let mut entries = self.entries[kind as usize].borrow_mut();
-        if let Some((cached_revision, cached_len, document)) = entries.get(id)
-            && *cached_revision == revision
-            && *cached_len == source.len()
-        {
-            return Rc::clone(document);
+        if let Some((cached_revision, cached_len, document, parsed_at)) = entries.get(id) {
+            if *cached_revision == revision && *cached_len == source.len() {
+                return Rc::clone(document);
+            }
+            if throttle && parsed_at.elapsed() < STREAM_PARSE_INTERVAL {
+                self.stale.set(true);
+                return Rc::clone(document);
+            }
         }
         if entries.len() > 4096 {
             entries.clear();
@@ -208,9 +223,19 @@ impl MarkdownCache {
         let document = Rc::new(markdown::parse(source));
         entries.insert(
             id.to_string(),
-            (revision, source.len(), Rc::clone(&document)),
+            (
+                revision,
+                source.len(),
+                Rc::clone(&document),
+                std::time::Instant::now(),
+            ),
         );
         document
+    }
+
+    /// Whether a throttled parse was skipped since the last call.
+    fn take_stale(&self) -> bool {
+        self.stale.replace(false)
     }
 
     /// Selection ordinal base for an item key. Bases are spaced far apart
@@ -314,6 +339,9 @@ struct TranscriptCtx<'a> {
     speech: Option<&'a SpeechState>,
     /// The account can use text-to-speech.
     speech_available: bool,
+    /// The item is the newest one of a running turn: its body parse is
+    /// rate-limited while chunks stream in.
+    streaming: bool,
 }
 
 /// Text-to-speech progress for one message.
@@ -457,6 +485,9 @@ pub struct ChatScreen {
     /// Parsed markdown per timeline item (keyed by item id and revision),
     /// so visible messages are parsed once, not every frame.
     markdown_cache: MarkdownCache,
+    /// A deferred repaint for a throttled stream parse is already on its
+    /// way; one at a time is enough.
+    stream_repaint_pending: std::cell::Cell<bool>,
     /// Per-item display strings, rebuilt when the item's revision moves.
     derived: DerivedCache,
     /// Item id to `(index in timeline, revision)`; the revision counts
@@ -825,6 +856,7 @@ impl ChatScreen {
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
             markdown_cache: MarkdownCache::default(),
+            stream_repaint_pending: std::cell::Cell::new(false),
             derived: DerivedCache::default(),
             timeline_index: HashMap::new(),
             sidebar_rows: Vec::new(),
@@ -2437,6 +2469,25 @@ impl ChatScreen {
         );
     }
 
+    /// A throttled parse left the newest message one chunk behind: paint
+    /// again once the interval has passed so the last chunk shows even
+    /// when no further event arrives.
+    fn schedule_stream_repaint(&self, cx: &mut Context<Self>) {
+        if self.stream_repaint_pending.replace(true) {
+            return;
+        }
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor().timer(STREAM_PARSE_INTERVAL).await;
+            entity
+                .update(cx, |this, cx| {
+                    this.stream_repaint_pending.set(false);
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
     fn is_run_active(&self) -> bool {
         self.selected_session
             .as_ref()
@@ -2607,7 +2658,7 @@ impl ChatScreen {
                 }
                 let document =
                     self.markdown_cache
-                        .get(&item.id, MarkdownKind::Body, revision, text);
+                        .get(&item.id, MarkdownKind::Body, revision, text, false);
                 for (index, block) in document.blocks.iter().enumerate() {
                     if let markdown::Block::Text { text, .. } = block {
                         selection.register(base + index as u64, text);
@@ -6407,11 +6458,11 @@ impl ChatScreen {
         // frame; the list measures and caches the rest. Everything else is
         // read through the entity so nothing is cloned per frame.
         let list = gpui::list(self.list_state.clone(), move |ix, _window, cx| {
-            let Some(chat) = entity.upgrade() else {
+            let Some(chat_entity) = entity.upgrade() else {
                 return div().into_any_element();
             };
-            let chat = chat.read(cx);
-            match chat.timeline.get(ix) {
+            let chat = chat_entity.read(cx);
+            let element = match chat.timeline.get(ix) {
                 Some(item) => {
                     let render_ctx = RenderCtx {
                         selection: selection.clone(),
@@ -6429,6 +6480,7 @@ impl ChatScreen {
                         render: &render_ctx,
                         speech: chat.speech.as_ref(),
                         speech_available: chat.audio_caps.speech,
+                        streaming: ix + 1 == chat.timeline.len() && chat.is_run_active(),
                     };
                     let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                     let revision = chat
@@ -6438,7 +6490,11 @@ impl ChatScreen {
                     render_timeline_item(item, revision, expanded, &transcript).into_any_element()
                 }
                 None => div().into_any_element(),
+            };
+            if chat.markdown_cache.take_stale() {
+                chat_entity.update(cx, |chat, cx| chat.schedule_stream_repaint(cx));
             }
+            element
         })
         .size_full();
         div()
@@ -6692,9 +6748,17 @@ impl ChatScreen {
             // Finished turns never change; only the last one is re-parsed.
             let revision = if index == last { btw.revision } else { 0 };
             let key = format!("btw-answer-{index}");
-            let document =
-                self.markdown_cache
-                    .get(&key, MarkdownKind::Body, revision, &turn.answer);
+            let streaming = index == last && btw.pending;
+            let document = self.markdown_cache.get(
+                &key,
+                MarkdownKind::Body,
+                revision,
+                &turn.answer,
+                streaming,
+            );
+            if self.markdown_cache.take_stale() {
+                self.schedule_stream_repaint(cx);
+            }
             // Same shape as the transcript: the question is a right-aligned
             // bubble, the answer is plain text on the left.
             body = body.child(
@@ -7595,9 +7659,13 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .gap_0p5()
             .text_color(gpui::rgb(theme::text_primary()))
             .child(markdown::render_with(
-                &transcript
-                    .markdown_cache
-                    .get(&item.id, MarkdownKind::Body, revision, text),
+                &transcript.markdown_cache.get(
+                    &item.id,
+                    MarkdownKind::Body,
+                    revision,
+                    text,
+                    transcript.streaming,
+                ),
                 ctx,
             ))
             .children(copy.map(|button| {
@@ -8293,6 +8361,7 @@ fn render_tool(
                     MarkdownKind::ToolOutput,
                     revision,
                     output,
+                    false,
                 ))),
         );
     }
@@ -9821,21 +9890,43 @@ mod state_tests {
     #[test]
     fn test_markdown_cache_keys_on_revision() {
         let cache = MarkdownCache::default();
-        let first = cache.get("m", MarkdownKind::Body, 0, "hello");
+        let first = cache.get("m", MarkdownKind::Body, 0, "hello", false);
         assert!(Rc::ptr_eq(
             &first,
-            &cache.get("m", MarkdownKind::Body, 0, "hello")
+            &cache.get("m", MarkdownKind::Body, 0, "hello", false)
         ));
         // Same length, new revision: parsed again.
         assert!(!Rc::ptr_eq(
             &first,
-            &cache.get("m", MarkdownKind::Body, 1, "jello")
+            &cache.get("m", MarkdownKind::Body, 1, "jello", false)
         ));
         // Kinds do not share entries.
         assert!(!Rc::ptr_eq(
             &first,
-            &cache.get("m", MarkdownKind::ToolOutput, 0, "hello")
+            &cache.get("m", MarkdownKind::ToolOutput, 0, "hello", false)
         ));
+    }
+
+    #[test]
+    fn test_markdown_cache_throttles_a_streaming_parse() {
+        let cache = MarkdownCache::default();
+        let first = cache.get("m", MarkdownKind::Body, 0, "hel", true);
+        assert!(!cache.take_stale());
+        // A chunk right behind the parse is served the old document and
+        // flags the repaint the caller owes.
+        let again = cache.get("m", MarkdownKind::Body, 1, "hello", true);
+        assert!(Rc::ptr_eq(&first, &again));
+        assert!(cache.take_stale());
+        assert!(!cache.take_stale());
+        // Without the throttle (the run ended) it parses at once.
+        let fresh = cache.get("m", MarkdownKind::Body, 1, "hello", false);
+        assert!(!Rc::ptr_eq(&first, &fresh));
+        assert!(!cache.take_stale());
+        // Once the interval passed, a streaming parse goes through.
+        std::thread::sleep(STREAM_PARSE_INTERVAL);
+        let later = cache.get("m", MarkdownKind::Body, 2, "hello!", true);
+        assert!(!Rc::ptr_eq(&fresh, &later));
+        assert!(!cache.take_stale());
     }
 
     #[test]
