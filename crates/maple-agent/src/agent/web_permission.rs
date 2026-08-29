@@ -1,6 +1,4 @@
-use super::web_tools::{
-    OPEN_URL_TOOL_NAME, WEB_SEARCH_TOOL_NAME, normalize_public_https_url, validate_purpose,
-};
+use super::web_tools::{OPEN_URL_TOOL_NAME, normalize_public_https_url, validate_purpose};
 use goose::agents::Agent;
 use goose::conversation::message::{ActionRequired, ActionRequiredData, Message, MessageContent};
 use rmcp::model::Tool;
@@ -50,22 +48,6 @@ impl WebPermissionContext {
             ),
         }
     }
-}
-
-pub(crate) fn web_search_request_id<'a>(mode: &str, action: &'a ActionRequired) -> Option<&'a str> {
-    if mode != READ_ONLY_MODE {
-        return None;
-    }
-    let ActionRequiredData::ToolConfirmation {
-        id,
-        tool_name,
-        prompt,
-        ..
-    } = &action.data
-    else {
-        return None;
-    };
-    (tool_name == WEB_SEARCH_TOOL_NAME && prompt.is_none()).then_some(id.as_str())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -365,12 +347,14 @@ mod tests {
     #[test]
     fn only_plain_read_only_web_actions_are_eligible() {
         let context = WebPermissionContext::from_user_prompt("task");
-        let search = action(WEB_SEARCH_TOOL_NAME, object!({ "query": "maple" }), None);
-        assert_eq!(
-            web_search_request_id(READ_ONLY_MODE, &search),
-            Some("request-1")
+        // Web search sends the query off-machine. Read only mode has no
+        // auto-approval for it; the caller falls through to the prompt.
+        let search = action(
+            super::super::web_tools::WEB_SEARCH_TOOL_NAME,
+            object!({ "query": "maple" }),
+            None,
         );
-        assert!(web_search_request_id("auto", &search).is_none());
+        assert!(OpenUrlPermissionRequest::from_action(READ_ONLY_MODE, &search, &context).is_none());
 
         let open = action(
             OPEN_URL_TOOL_NAME,

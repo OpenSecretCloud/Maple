@@ -146,10 +146,76 @@ pub(crate) fn local_read_request_id<'a>(mode: &str, action: &'a ActionRequired) 
         return None;
     }
     let path = arguments.get("path")?.as_str()?;
-    if path.trim().is_empty() || is_remote_file_source(path) {
+    if path.trim().is_empty() || is_remote_file_source(path) || is_likely_secret_path(path) {
         return None;
     }
     Some(id)
+}
+
+/// Paths that usually hold credentials. Read only mode never auto-approves
+/// reads of these; the request falls through to the normal approval prompt.
+/// This mirrors the shell classifier, which refuses `cat ~/.ssh/id_rsa`.
+///
+/// This is a conservative deny-list, not a classifier: a miss or a false
+/// positive only changes whether the user is asked.
+pub(crate) fn is_likely_secret_path(path: &str) -> bool {
+    let normalized = path.trim().replace('\\', "/");
+    let normalized = normalized
+        .strip_prefix("file://")
+        .unwrap_or(&normalized)
+        .to_ascii_lowercase();
+    let components: Vec<&str> = normalized
+        .split('/')
+        .filter(|component| !component.is_empty() && *component != ".")
+        .collect();
+    let Some(file_name) = components.last().copied() else {
+        return false;
+    };
+
+    // Directories whose whole content is credential material.
+    if components
+        .iter()
+        .any(|component| matches!(*component, ".ssh" | ".aws" | ".gnupg" | ".password-store"))
+    {
+        return true;
+    }
+    // Credential files at a known place inside a wider config directory.
+    let has_pair = |directory: &str, file: &str| {
+        components
+            .windows(2)
+            .any(|pair| pair[0] == directory && pair[1] == file)
+    };
+    if has_pair(".config", "gh")
+        || has_pair(".docker", "config.json")
+        || has_pair(".kube", "config")
+    {
+        return true;
+    }
+
+    // Environment files, except obvious templates.
+    if file_name == ".env"
+        || (file_name.starts_with(".env.")
+            && !matches!(file_name, ".env.example" | ".env.sample" | ".env.template"))
+    {
+        return true;
+    }
+    // Key and credential files by name.
+    let (stem, extension) = match file_name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, extension),
+        _ => (file_name, ""),
+    };
+    matches!(
+        extension,
+        "pem" | "key" | "p12" | "pfx" | "keychain" | "keychain-db"
+    ) || file_name.starts_with("id_rsa")
+        || file_name.starts_with("id_ed25519")
+        || file_name.starts_with("id_ecdsa")
+        || file_name.starts_with("id_dsa")
+        || matches!(
+            file_name,
+            ".netrc" | "_netrc" | ".pgpass" | ".git-credentials" | ".npmrc" | ".pypirc"
+        )
+        || (stem == "credentials" && matches!(extension, "" | "json"))
 }
 
 pub(crate) fn local_read_image_request_id<'a>(
@@ -172,7 +238,7 @@ pub(crate) fn local_read_image_request_id<'a>(
         return None;
     }
     let source = arguments.get("source")?.as_str()?;
-    if source.trim().is_empty() || is_remote_file_source(source) {
+    if source.trim().is_empty() || is_remote_file_source(source) || is_likely_secret_path(source) {
         return None;
     }
     Some(id)
@@ -468,6 +534,59 @@ mod tests {
             Some("Security warning".to_string()),
         );
         assert!(local_read_image_request_id(READ_ONLY_MODE, &warned).is_none());
+    }
+
+    #[test]
+    fn reads_of_likely_secret_paths_are_not_automatically_eligible() {
+        for path in [
+            "~/.ssh/id_rsa",
+            "/home/ben/.ssh/config",
+            r"C:\Users\ben\.ssh\id_ed25519.pub",
+            "~/.aws/credentials",
+            "~/.gnupg/pubring.kbx",
+            ".env",
+            ".env.local",
+            "deploy/.env.production",
+            "certs/server.pem",
+            "certs/server.key",
+            "id_rsa",
+            "id_ed25519",
+            "~/.config/gh/hosts.yml",
+            "~/.netrc",
+            "~/.docker/config.json",
+            "~/.kube/config",
+            "~/Library/Keychains/login.keychain-db",
+            "credentials.json",
+            "file:///home/ben/.aws/credentials",
+        ] {
+            assert!(is_likely_secret_path(path), "{path} should be secret");
+            let read = action("read", object!({ "path": path }), None);
+            assert!(
+                local_read_request_id(READ_ONLY_MODE, &read).is_none(),
+                "{path} must prompt"
+            );
+            let image = action("read_image", object!({ "source": path }), None);
+            assert!(local_read_image_request_id(READ_ONLY_MODE, &image).is_none());
+        }
+        for path in [
+            "README.md",
+            ".env.example",
+            ".env.sample",
+            "src/environment.rs",
+            "docs/keys.md",
+            "monkey.pem.md",
+            "~/.config/ghostty/config",
+            "~/.kube/cache/notes.txt",
+            "credentials.md",
+            "/tmp/pixel.png",
+        ] {
+            assert!(!is_likely_secret_path(path), "{path} should not be secret");
+            let read = action("read", object!({ "path": path }), None);
+            assert_eq!(
+                local_read_request_id(READ_ONLY_MODE, &read),
+                Some("request-1")
+            );
+        }
     }
 
     #[test]
