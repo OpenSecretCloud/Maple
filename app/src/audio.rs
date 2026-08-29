@@ -205,13 +205,23 @@ impl AudioThread {
     }
 
     fn play(&mut self, generation: u64, wav: Vec<u8>) -> Result<(), String> {
-        let source = rodio::Decoder::new_wav(Cursor::new(wav))
-            .map_err(|error| format!("The speech audio could not be decoded: {error}"))?;
+        let source = rodio::Decoder::new_wav(Cursor::new(wav)).map_err(|error| {
+            log::warn!("audio: speech clip could not be decoded: {error}");
+            format!("The speech audio could not be decoded: {error}")
+        })?;
         let playback = match self.playback.as_mut() {
             Some(playback) => playback,
             None => {
-                let mut sink = rodio::DeviceSinkBuilder::open_default_sink()
-                    .map_err(|error| format!("No audio output is available: {error}"))?;
+                log::info!("audio: opening the default output device");
+                let started = std::time::Instant::now();
+                let mut sink = rodio::DeviceSinkBuilder::open_default_sink().map_err(|error| {
+                    log::warn!(
+                        "audio: output device failed after {:?}: {error}",
+                        started.elapsed()
+                    );
+                    format!("No audio output is available: {error}")
+                })?;
+                log::info!("audio: output device ready after {:?}", started.elapsed());
                 sink.log_on_drop(false);
                 self.playback.insert(Playback {
                     sink,

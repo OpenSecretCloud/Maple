@@ -423,6 +423,82 @@ fn audio_error_message(response: &crate::maple_api::AudioResponse) -> Option<Str
     })
 }
 
+/// The WAV bytes of a 2xx text-to-speech body. The SDK reports the
+/// encrypted envelope's `application/json` content type even after it
+/// decrypts the body, so the bytes decide: a WAV header is audio, JSON is
+/// a provider error (or a JSON-wrapped base64 clip).
+fn speech_audio_from_body(body: Vec<u8>) -> Result<Vec<u8>, String> {
+    if body.is_empty() {
+        return Err("Text-to-speech returned an empty audio file".to_string());
+    }
+    if body.starts_with(b"RIFF") {
+        return Ok(body);
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        // Not WAV and not JSON: some other audio container. Let the
+        // decoder decide.
+        return Ok(body);
+    };
+    if let Some(detail) = audio_error_detail(&body) {
+        return Err(format!(
+            "Text-to-speech provider returned an error: {detail}"
+        ));
+    }
+    if let Some(audio) = find_base64_audio(&value) {
+        return Ok(audio);
+    }
+    let keys = match &value {
+        serde_json::Value::Object(map) => map.keys().cloned().collect::<Vec<_>>().join(", "),
+        other => format!("{} value", json_type_name(other)),
+    };
+    log::warn!("text-to-speech JSON body carried no audio; top-level: {keys}");
+    Err("Text-to-speech provider returned an error response".to_string())
+}
+
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// The first string anywhere in `value` that base64-decodes to audio.
+/// Strings shorter than a WAV header cannot be a clip.
+fn find_base64_audio(value: &serde_json::Value) -> Option<Vec<u8>> {
+    use base64::Engine;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+
+    match value {
+        serde_json::Value::String(text) if text.len() >= 64 => {
+            let text = text.trim();
+            [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD]
+                .iter()
+                .find_map(|engine| engine.decode(text).ok())
+                .filter(|decoded| looks_like_audio(decoded))
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_base64_audio),
+        serde_json::Value::Object(map) => map.values().find_map(find_base64_audio),
+        _ => None,
+    }
+}
+
+/// WAV, or another container `rodio` may decode; anything but obvious
+/// text.
+fn looks_like_audio(bytes: &[u8]) -> bool {
+    bytes.len() >= 64
+        && (bytes.starts_with(b"RIFF")
+            || bytes.starts_with(b"fLaC")
+            || bytes.starts_with(b"OggS")
+            || bytes.starts_with(b"ID3")
+            || bytes.starts_with(&[0xFF, 0xFB])
+            || bytes.starts_with(&[0xFF, 0xF3])
+            || (bytes.len() > 12 && &bytes[4..8] == b"ftyp"))
+}
+
 /// The `message`, `detail`, or `error` text of a JSON error body.
 fn audio_error_detail(body: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
@@ -4115,34 +4191,25 @@ impl AgentRuntimeHandle {
             "speed": speed,
         }))
         .map_err(|error| error.to_string())?;
+        let started = std::time::Instant::now();
         let response = self
             .maple_api_session()
             .await?
             .audio_request("/v1/audio/speech", "audio/wav", body)
             .await?;
+        log::info!(
+            "text-to-speech: HTTP {} ({}, {} bytes) after {:?} for {} chars",
+            response.status,
+            response.content_type,
+            response.body.len(),
+            started.elapsed(),
+            text.chars().count()
+        );
         if let Some(message) = audio_error_message(&response) {
+            log::warn!("text-to-speech failed: {message}");
             return Err(message);
         }
-        if response.content_type.contains("json") {
-            // The provider reports its own failures as a JSON body on 200.
-            return Err(match audio_error_detail(&response.body) {
-                Some(detail) => format!("Text-to-speech provider returned an error: {detail}"),
-                None => "Text-to-speech provider returned an error response".to_string(),
-            });
-        }
-        let is_audio = response.content_type.starts_with("audio/")
-            || response.content_type == "application/octet-stream"
-            || response.content_type.is_empty();
-        if !is_audio {
-            return Err(format!(
-                "Text-to-speech returned unexpected content: {}",
-                response.content_type
-            ));
-        }
-        if response.body.is_empty() {
-            return Err("Text-to-speech returned an empty audio file".to_string());
-        }
-        Ok(response.body)
+        speech_audio_from_body(response.body)
     }
 
     /// Transcribe WAV audio with Maple's Whisper model.
@@ -4156,12 +4223,20 @@ impl AgentRuntimeHandle {
             "model": TRANSCRIPTION_MODEL,
         }))
         .map_err(|error| error.to_string())?;
+        let started = std::time::Instant::now();
         let response = self
             .maple_api_session()
             .await?
             .audio_request("/v1/audio/transcriptions", "application/json", body)
             .await?;
+        log::info!(
+            "transcription: HTTP {} ({} bytes) after {:?}",
+            response.status,
+            response.body.len(),
+            started.elapsed()
+        );
         if let Some(message) = audio_error_message(&response) {
+            log::warn!("transcription failed: {message}");
             return Err(message);
         }
         let parsed: serde_json::Value = serde_json::from_slice(&response.body)
@@ -10887,6 +10962,52 @@ fn unix_ms() -> u128 {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod speech_body_tests {
+    use super::speech_audio_from_body;
+
+    #[test]
+    fn wav_bytes_pass_through() {
+        let wav = b"RIFF\x00\x00\x00\x00WAVE".to_vec();
+        assert_eq!(speech_audio_from_body(wav.clone()).unwrap(), wav);
+    }
+
+    #[test]
+    fn json_error_is_reported() {
+        let body = br#"{"error":{"message":"voice not found"}}"#.to_vec();
+        assert_eq!(
+            speech_audio_from_body(body).unwrap_err(),
+            "Text-to-speech provider returned an error: voice not found"
+        );
+    }
+
+    #[test]
+    fn json_wrapped_base64_is_decoded_wherever_it_sits() {
+        use base64::Engine;
+        let mut wav = b"RIFF\x00\x00\x00\x00WAVE".to_vec();
+        wav.resize(128, 0);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&wav);
+        for body in [
+            format!(r#"{{"audio":"{encoded}"}}"#),
+            format!(r#"{{"result":{{"clip":{{"b64":"{encoded}"}}}},"id":"x"}}"#),
+            format!(r#"[{{"data":"{encoded}"}}]"#),
+        ] {
+            assert_eq!(speech_audio_from_body(body.into_bytes()).unwrap(), wav);
+        }
+    }
+
+    #[test]
+    fn json_without_audio_is_an_error() {
+        let body = br#"{"status":"ok","note":"short"}"#.to_vec();
+        assert!(speech_audio_from_body(body).is_err());
+    }
+
+    #[test]
+    fn empty_body_is_an_error() {
+        assert!(speech_audio_from_body(Vec::new()).is_err());
+    }
 }
 
 #[cfg(test)]

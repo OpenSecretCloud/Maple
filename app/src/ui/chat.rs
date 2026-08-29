@@ -18,7 +18,7 @@ use maple_agent::agent::{
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
-use crate::ui::icons::{icon, wordmark};
+use crate::ui::icons::{icon, spinner, wordmark};
 use crate::ui::markdown;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
@@ -963,6 +963,7 @@ impl ChatScreen {
                     Err(message) => Err(message),
                 };
                 if let Err(message) = played {
+                    log::warn!("speech chunk {} failed: {message}", ix + 1);
                     this.update(cx, |this, cx| {
                         if this.speech_generation == generation {
                             this.speech = None;
@@ -5824,11 +5825,11 @@ impl ChatScreen {
                                     this.toggle_recording(cx);
                                 }))
                                 .child(if transcribing {
-                                    icon("loader-circle", px(16.), theme::text_secondary())
+                                    spinner("transcribing", px(16.), theme::text_secondary())
                                 } else if recording {
-                                    icon("square", px(14.), theme::bg_app())
+                                    icon("square", px(14.), theme::bg_app()).into_any_element()
                                 } else {
-                                    icon("mic", px(16.), theme::text_secondary())
+                                    icon("mic", px(16.), theme::text_secondary()).into_any_element()
                                 }),
                         )
                     })
@@ -5899,9 +5900,9 @@ impl ChatScreen {
                                     }))
                             })
                             .child(if disabled {
-                                icon("loader-circle", px(16.), theme::bg_app())
+                                spinner("send-booting", px(16.), theme::bg_app())
                             } else {
-                                icon("arrow-up", px(16.), theme::bg_app())
+                                icon("arrow-up", px(16.), theme::bg_app()).into_any_element()
                             }),
                     ),
             )
@@ -6362,10 +6363,23 @@ fn speak_message_button(
 ) -> gpui::Stateful<Div> {
     let text = text.to_string();
     let item_id = item_id.to_string();
-    let (icon_name, label) = match speech {
-        None => ("volume-2", "Speak"),
-        Some(SpeechState { playing: false, .. }) => ("loader-circle", "Preparing…"),
-        Some(SpeechState { playing: true, .. }) => ("square", "Stop"),
+    let (glyph, label) = match speech {
+        None => (
+            icon("volume-2", px(12.), theme::text_secondary()).into_any_element(),
+            "Speak",
+        ),
+        Some(SpeechState { playing: false, .. }) => (
+            spinner(
+                &format!("speak-{item_id}"),
+                px(12.),
+                theme::text_secondary(),
+            ),
+            "Preparing…",
+        ),
+        Some(SpeechState { playing: true, .. }) => (
+            icon("square", px(12.), theme::text_secondary()).into_any_element(),
+            "Stop",
+        ),
     };
     let active = speech.is_some();
     div()
@@ -6393,7 +6407,7 @@ fn speak_message_button(
             chat.update(cx, |chat, cx| chat.toggle_speech(item_id, text, cx))
                 .ok();
         })
-        .child(icon(icon_name, px(12.), theme::text_secondary()))
+        .child(glyph)
         .child(label)
 }
 
@@ -6484,6 +6498,36 @@ pub(crate) fn speech_chunks(text: &str) -> Vec<String> {
     if !chunk.is_empty() {
         chunks.push(chunk);
     }
+    split_first_chunk(chunks)
+}
+
+/// Words in the opening chunk before the first sentence end that closes
+/// it. Synthesis takes seconds per chunk, so a short opener starts
+/// playback sooner while the rest is still on the way.
+const SPEECH_FIRST_CHUNK_WORDS: usize = 40;
+
+fn split_first_chunk(mut chunks: Vec<String>) -> Vec<String> {
+    let Some(first) = chunks.first() else {
+        return chunks;
+    };
+    let words: Vec<&str> = first.split_whitespace().collect();
+    if words.len() <= SPEECH_FIRST_CHUNK_WORDS * 2 {
+        return chunks;
+    }
+    let Some(split_at) = words
+        .iter()
+        .enumerate()
+        .skip(SPEECH_FIRST_CHUNK_WORDS)
+        .take(SPEECH_FIRST_CHUNK_WORDS)
+        .find(|(_, word)| word.ends_with(['.', '!', '?', ';', ':']))
+        .map(|(ix, _)| ix + 1)
+    else {
+        return chunks;
+    };
+    let opener = words[..split_at].join(" ");
+    let rest = words[split_at..].join(" ");
+    chunks[0] = rest;
+    chunks.insert(0, opener);
     chunks
 }
 
@@ -6569,12 +6613,22 @@ mod speech_tests {
         let paragraph = "word ".repeat(200).trim().to_string();
         let text = format!("{paragraph}\n\n{paragraph}\n\n{paragraph}");
         let chunks = speech_chunks(&text);
+        // No sentence end in the opener, so it is not split off.
         assert_eq!(chunks.len(), 3);
         assert!(
             chunks
                 .iter()
                 .all(|chunk| chunk.split_whitespace().count() == 200)
         );
+    }
+
+    #[test]
+    fn a_short_opener_is_split_off_at_a_sentence() {
+        let sentence = "one two three four five six seven eight nine ten. ";
+        let chunks = speech_chunks(&sentence.repeat(12));
+        assert_eq!(chunks[0].split_whitespace().count(), 50);
+        assert!(chunks[0].ends_with("ten."));
+        assert_eq!(chunks[1].split_whitespace().count(), 70);
     }
 
     #[test]
