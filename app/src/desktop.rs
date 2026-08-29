@@ -228,10 +228,13 @@ fn persist_window_state() {
 pub fn run() {
     crate::init_logging(crate::LogOutput::FileAndStderr);
 
+    // One read of settings.json for the whole startup: the backend, the
+    // theme, the window geometry, and the root view all take it from here.
+    let startup_settings = crate::settings::load_settings();
     let backend = Arc::new(
         AgentBackend::new(
             crate::configured_api_url(),
-            crate::settings::load_settings().effective_harness_instructions(),
+            startup_settings.effective_harness_instructions(),
         )
         .expect("failed to initialize agent backend"),
     );
@@ -263,7 +266,6 @@ pub fn run() {
                 KeyBinding::new("ctrl-a", ui::chat::SelectAllTranscript, Some("Transcript")),
                 KeyBinding::new("cmd-a", ui::chat::SelectAllTranscript, Some("Transcript")),
             ]);
-            let startup_settings = crate::settings::load_settings();
             ui::theme::set_preference(ui::theme::Preference::parse(&startup_settings.theme));
             let saved = startup_settings
                 .window
@@ -304,7 +306,7 @@ pub fn run() {
                                     screen: Screen::Chat(chat.clone()),
                                     user_id: Some(user_id),
                                     parked_chat: None,
-                                    settings: crate::settings::load_settings(),
+                                    settings: startup_settings.clone(),
                                     titlebar: cx.new(|_| TitleBar::new("Maple - Private AI Chat")),
                                 };
                                 app.subscribe_chat(&chat, cx);
@@ -317,7 +319,7 @@ pub fn run() {
                                 screen: Screen::Login(login.clone()),
                                 user_id: None,
                                 parked_chat: None,
-                                settings: crate::settings::load_settings(),
+                                settings: startup_settings.clone(),
                                 titlebar: cx.new(|_| TitleBar::new("Maple - Private AI Chat")),
                             })
                         }
