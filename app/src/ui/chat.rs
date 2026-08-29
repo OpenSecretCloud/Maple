@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnimationExt, AppContext, Div, Entity, EntityInputHandler, EventEmitter, Focusable, Render,
-    SharedString, Window, div, prelude::*, px,
+    AnimationExt, AnyElement, AppContext, Div, Entity, EntityInputHandler, EventEmitter, Focusable,
+    Render, SharedString, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
     AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
@@ -5139,6 +5139,31 @@ impl ChatScreen {
         cx.notify();
     }
 
+    /// Drop the selection and everything the composer shows for it: the
+    /// transcript, the side thread, the queue, and a permission card that
+    /// belongs to the task. Questions stay queued per session.
+    fn leave_selected_session(&mut self, cx: &mut Context<Self>) {
+        let left = self.selected_session.take();
+        self.replace_timeline(Vec::new());
+        if self.btw.is_some() {
+            self.close_side_thread(cx);
+        }
+        self.abandon_queue_edit(cx);
+        self.queue.clear();
+        if let Some(left) = left.as_deref() {
+            let showing = self
+                .pending_permissions
+                .iter()
+                .any(|permission| permission.session_id == left);
+            self.pending_permissions
+                .retain(|permission| permission.session_id != left);
+            if showing {
+                self.permission_responding = false;
+            }
+        }
+        self.awaiting_first_token = false;
+    }
+
     /// Archive or restore one task. The service event updates the row;
     /// an archived selection moves to the newest task in the same root.
     fn set_session_archived(&mut self, session_id: &str, archived: bool, cx: &mut Context<Self>) {
@@ -5159,8 +5184,7 @@ impl ChatScreen {
                         let root = session.project_root.clone();
                         this.upsert_session(session);
                         if archived && this.selected_session.as_deref() == Some(&*changed_id) {
-                            this.selected_session = None;
-                            this.replace_timeline(Vec::new());
+                            this.leave_selected_session(cx);
                             let next = this
                                 .sessions
                                 .iter()
@@ -5242,8 +5266,7 @@ impl ChatScreen {
                         }
                         let was_current = this.project_root.as_deref() == Some(&*removed);
                         if was_current {
-                            this.selected_session = None;
-                            this.replace_timeline(Vec::new());
+                            this.leave_selected_session(cx);
                             this.project_root = next_root.clone();
                             this.project_root_changed(cx);
                         }
@@ -9750,6 +9773,33 @@ mod state_tests {
             this.toggle_recording(cx);
             assert!(this.recording_starting);
             assert!(!this.recording);
+        });
+    }
+
+    #[gpui::test]
+    fn test_leaving_the_selected_task_clears_its_composer_state(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.ask_side_question("s1", "why?", cx);
+            this.queue_edit = Some(QueueEdit {
+                queue_id: "q1".to_string(),
+                draft: String::new(),
+            });
+            this.pending_permissions.push(PendingPermission {
+                session_id: "s1".to_string(),
+                run_id: "run-1".to_string(),
+                request_id: "req-1".to_string(),
+                tool_name: "bash".to_string(),
+                prompt: None,
+                arguments: "".into(),
+            });
+            this.leave_selected_session(cx);
+            assert_eq!(this.selected_session, None);
+            assert!(this.btw.is_none());
+            assert!(this.queue.is_empty());
+            assert!(this.queue_edit.is_none());
+            assert!(this.pending_permissions.is_empty());
         });
     }
 
