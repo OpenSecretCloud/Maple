@@ -54,6 +54,8 @@ pub struct SettingsScreen {
     backend: Arc<AgentBackend>,
     user_id: String,
     settings: AppSettings,
+    /// `settings.theme` parsed once; render only reads the label.
+    theme: theme::Preference,
     section: Section,
     usage: Option<UsageSummary>,
     /// Plan usage meter, same source as the sidebar card.
@@ -110,6 +112,7 @@ impl SettingsScreen {
         let this = Self {
             backend,
             user_id,
+            theme: theme::Preference::parse(&settings.theme),
             settings,
             section,
             usage: None,
@@ -321,6 +324,21 @@ impl SettingsScreen {
         self.save_mcp_servers(servers, cx);
     }
 
+    /// Open the editor for the server called `name`, looked up on click so
+    /// the list rows do not clone a server per frame.
+    fn edit_mcp_server(&mut self, name: &str, cx: &mut Context<Self>) {
+        let server = self
+            .mcp_servers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|server| server.name == name)
+            .cloned();
+        if server.is_some() {
+            self.open_mcp_editor(server, cx);
+        }
+    }
+
     fn toggle_mcp_server(&mut self, name: &str, cx: &mut Context<Self>) {
         let mut servers = self.mcp_servers.clone().unwrap_or_default();
         if let Some(server) = servers.iter_mut().find(|s| s.name == name) {
@@ -372,7 +390,8 @@ impl SettingsScreen {
     }
 
     fn cycle_theme(&mut self, cx: &mut Context<Self>) {
-        let next = crate::ui::theme::Preference::parse(&self.settings.theme).next();
+        let next = self.theme.next();
+        self.theme = next;
         self.settings.theme = next.as_str().to_string();
         settings::update_settings_in_background(move |s| s.theme = next.as_str().to_string());
         // The root view resolves the palette on its next render and
@@ -628,7 +647,7 @@ impl SettingsScreen {
                     .child(setting_row(
                         "Appearance",
                         "Follow the system theme, or force dark or light.",
-                        crate::ui::theme::Preference::parse(&self.settings.theme).label(),
+                        self.theme.label(),
                         cx.listener(|this, _event, _window, cx| {
                             this.cycle_theme(cx);
                         }),
@@ -971,10 +990,8 @@ impl SettingsScreen {
                                         .cursor_pointer()
                                 })
                                 .on_click(cx.listener({
-                                    let server = server.clone();
-                                    move |this, _event, _window, cx| {
-                                        this.open_mcp_editor(Some(server.clone()), cx)
-                                    }
+                                    let name = name.clone();
+                                    move |this, _event, _window, cx| this.edit_mcp_server(&name, cx)
                                 }))
                                 .child(icon("pencil", px(14.), theme::text_secondary())),
                         )
