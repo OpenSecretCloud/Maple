@@ -193,19 +193,28 @@ static WINDOW_STATE: std::sync::Mutex<Option<crate::settings::WindowState>> =
 
 /// Runs on every root render, which includes every resize and maximize.
 fn remember_window_state(window: &Window) {
-    let (bounds, maximized) = match window.window_bounds() {
-        WindowBounds::Windowed(bounds) => (bounds, false),
-        WindowBounds::Maximized(bounds) => (bounds, true),
-        WindowBounds::Fullscreen(bounds) => (bounds, true),
-    };
-    let state = crate::settings::WindowState {
-        width: f32::from(bounds.size.width),
-        height: f32::from(bounds.size.height),
-        maximized,
+    let Some(state) = window_state_for(window.window_bounds()) else {
+        return;
     };
     if let Ok(mut slot) = WINDOW_STATE.lock() {
         *slot = Some(state);
     }
+}
+
+/// The state worth saving for `bounds`. Fullscreen yields `None`: its
+/// bounds are the monitor, and saving them as "maximized" made the next
+/// launch open maximized instead of at the last windowed size.
+fn window_state_for(bounds: WindowBounds) -> Option<crate::settings::WindowState> {
+    let (bounds, maximized) = match bounds {
+        WindowBounds::Windowed(bounds) => (bounds, false),
+        WindowBounds::Maximized(bounds) => (bounds, true),
+        WindowBounds::Fullscreen(_) => return None,
+    };
+    Some(crate::settings::WindowState {
+        width: f32::from(bounds.size.width),
+        height: f32::from(bounds.size.height),
+        maximized,
+    })
 }
 
 /// Write the last seen window state to settings.json.
@@ -387,4 +396,25 @@ pub fn run() {
 
             cx.activate(true);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bounds(width: f32, height: f32) -> Bounds<Pixels> {
+        Bounds::new(gpui::point(px(0.), px(0.)), size(px(width), px(height)))
+    }
+
+    #[test]
+    fn fullscreen_does_not_replace_the_windowed_state() {
+        let windowed = window_state_for(WindowBounds::Windowed(bounds(1280., 860.))).unwrap();
+        assert_eq!((windowed.width, windowed.height), (1280., 860.));
+        assert!(!windowed.maximized);
+
+        let maximized = window_state_for(WindowBounds::Maximized(bounds(1280., 860.))).unwrap();
+        assert!(maximized.maximized);
+
+        assert!(window_state_for(WindowBounds::Fullscreen(bounds(3840., 2160.))).is_none());
+    }
 }
