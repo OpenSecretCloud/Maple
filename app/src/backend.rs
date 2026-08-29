@@ -68,8 +68,9 @@ pub struct AgentBackend {
     /// Cached billing JWT per user id. Replaced after a 401.
     billing_tokens: tokio::sync::Mutex<HashMap<String, String>>,
     /// Open handle to the usage ledger DB; the context ring polls it every
-    /// second during a run, so it is not reopened per query.
-    usage_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
+    /// second during a run, so it is not reopened per query. Shared with
+    /// the blocking task that runs each query.
+    usage_db: Arc<std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>>,
     /// Open handle to the app-owned tool summary store; keyed by account
     /// scope path so a user switch reopens it.
     summary_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
@@ -353,7 +354,7 @@ impl AgentBackend {
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
             billing,
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
-            usage_db: std::sync::Mutex::new(None),
+            usage_db: Arc::new(std::sync::Mutex::new(None)),
             summary_db: std::sync::Mutex::new(None),
         })
     }
@@ -1301,17 +1302,18 @@ impl AgentBackend {
                 None => 200_000,
             },
         };
+        // SQLite is synchronous; keep it off the async workers.
         let db = crate::backend::account_session_db(&scope);
-        let mut guard = self.usage_db.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
-            let Some(conn) = crate::backend::open_session_db_read_only(&db) else {
-                return Ok(None);
-            };
-            *guard = Some((db, conn));
-        }
-        let conn = &guard.as_ref().expect("usage db opened above").1;
-        let row = conn
-            .query_row(
+        let usage_db = self.usage_db.clone();
+        let session_id = session_id.to_string();
+        let tokens = tokio::task::spawn_blocking(move || {
+            let mut guard = usage_db.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
+                let conn = crate::backend::open_session_db_read_only(&db)?;
+                *guard = Some((db, conn));
+            }
+            let conn = &guard.as_ref().expect("usage db opened above").1;
+            conn.query_row(
                 "SELECT COALESCE(input_tokens,0) + COALESCE(cache_read_tokens,0) \
                  + COALESCE(cache_write_tokens,0) FROM usage_ledger \
                  WHERE session_id = ?1 AND is_compaction = 0 \
@@ -1319,8 +1321,11 @@ impl AgentBackend {
                 [session_id],
                 |row| row.get::<_, i64>(0),
             )
-            .ok();
-        Ok(row.map(|tokens| (tokens, limit)))
+            .ok()
+        })
+        .await
+        .map_err(|error| format!("Context usage query failed: {error}"))?;
+        Ok(tokens.map(|tokens| (tokens, limit)))
     }
 
     /// Deliver the user's answer to an ask_user question. Returns false
