@@ -3586,7 +3586,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       if (selectedFiles.length === 0 || !ownerSnapshot || ownerSnapshot.isGenerating) return;
 
       const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-      const maxSizeInBytes = 10 * 1024 * 1024;
+      const maxSizeInBytes = 20 * 1024 * 1024;
       let validationError: string | null = null;
 
       const validFiles = selectedFiles.filter((file) => {
@@ -3595,7 +3595,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           return false;
         }
         if (file.size > maxSizeInBytes) {
-          validationError = "Image too large (max 10MB)";
+          validationError = "Image too large (max 20MB)";
           return false;
         }
         return true;
@@ -3630,7 +3630,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
 
       const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-      const maxSizeInBytes = 10 * 1024 * 1024;
+      const maxSizeInBytes = 20 * 1024 * 1024;
       let validationError: string | null = null;
 
       const validFiles = imageFiles.filter((file) => {
@@ -3639,7 +3639,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           return false;
         }
         if (file.size > maxSizeInBytes) {
-          validationError = "Image too large (max 10MB)";
+          validationError = "Image too large (max 20MB)";
           return false;
         }
         return true;
@@ -5245,18 +5245,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
                       <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
-                          <ModelSelector
-                            hasImages={
-                              draftImages.length > 0 ||
-                              messages.some(
-                                (msg) =>
-                                  msg.type === "message" &&
-                                  (msg as ExtendedMessage).content?.some(
-                                    (part: ConversationContent) => part.type === "input_image"
-                                  )
-                              )
-                            }
-                          />
+                          <ModelSelector />
 
                           <ConversationProjectPicker
                             selectedProjectId={draftProjectId}
@@ -5487,18 +5476,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 landscape-short:pb-1.5 pt-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
-                        <ModelSelector
-                          hasImages={
-                            draftImages.length > 0 ||
-                            messages.some(
-                              (msg) =>
-                                msg.type === "message" &&
-                                (msg as ExtendedMessage).content?.some(
-                                  (part: ConversationContent) => part.type === "input_image"
-                                )
-                            )
-                          }
-                        />
+                        <ModelSelector />
 
                         <Button
                           type="button"

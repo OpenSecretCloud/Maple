@@ -1,4 +1,4 @@
-import { ChevronDown, Check, Lock, Camera, ChevronLeft, Zap, Brain } from "lucide-react";
+import { ChevronDown, Check, Lock, ChevronLeft, Zap, Brain } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -74,7 +74,7 @@ function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAl
   });
 }
 
-export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
+export function ModelSelector() {
   const {
     model,
     setModel,
@@ -96,9 +96,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
   useEffect(() => {
     currentModelRef.current = model;
   }, [model]);
-
-  // Use the passed hasImages prop directly
-  const chatHasImages = hasImages;
 
   const modelById = useMemo(() => {
     return new Map(availableModels.map((availableModel) => [availableModel.id, availableModel]));
@@ -221,17 +218,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     [getAlias, getTargetModel, modelById]
   );
 
-  const supportsVision = useCallback(
-    (modelId: string): boolean => {
-      const alias = getAlias(modelId);
-      if (alias) {
-        return Boolean(getTargetModel(alias)?.capabilities?.vision ?? alias.capabilities?.vision);
-      }
-      return Boolean(modelById.get(modelId)?.capabilities?.vision);
-    },
-    [getAlias, getTargetModel, modelById]
-  );
-
   const hasAccessToModel = useCallback(
     (modelId: string) => {
       const access = getAccess(modelId);
@@ -259,50 +245,8 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
     return selectedModel?.display_name || selectedModel?.short_name || modelId;
   };
 
-  // Auto-switch to a vision-capable model when images are uploaded
-  useEffect(() => {
-    if (!chatHasImages) return;
-    if (supportsVision(model)) return;
-
-    const planName = billingStatus?.product_name?.toLowerCase() || "";
-    const isProMaxOrTeam =
-      planName.includes("pro") || planName.includes("max") || planName.includes("team");
-
-    if (
-      isProMaxOrTeam &&
-      hasAccessToModel(POWERFUL_MODEL_ALIAS) &&
-      supportsVision(POWERFUL_MODEL_ALIAS)
-    ) {
-      setModel(POWERFUL_MODEL_ALIAS);
-      return;
-    }
-
-    const visionModel = availableModels.find(
-      (availableModel) =>
-        isSelectableChatModel(availableModel) &&
-        availableModel.capabilities?.vision &&
-        hasAccessToModel(availableModel.id)
-    );
-
-    if (visionModel) {
-      setModel(visionModel.id, visionModel);
-    }
-  }, [
-    availableModels,
-    billingStatus?.product_name,
-    chatHasImages,
-    hasAccessToModel,
-    model,
-    setModel,
-    supportsVision
-  ]);
-
   // Handle primary option selection
   const handlePrimarySelect = (targetModel: string) => {
-    if (chatHasImages && !supportsVision(targetModel)) {
-      return;
-    }
-
     if (!hasAccessToModel(targetModel)) {
       setSelectedModelName(getDisplayNameText(targetModel));
       setUpgradeDialogOpen(true);
@@ -361,10 +305,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
       if (showLock && !hasAccessToModel(modelId)) {
         elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
       }
-
-      if (selectedModel.capabilities?.vision) {
-        elements.push(<Camera key="cam" className="h-3 w-3 opacity-50" />);
-      }
     } else {
       elements.push(getDisplayNameText(modelId));
     }
@@ -408,21 +348,15 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                 const hasAccess = hasAccessToModel(targetModel);
                 const requiresUpgrade = !hasAccess;
 
-                // Disable non-vision options if chat has images
-                const isDisabled = chatHasImages && !supportsVision(targetModel);
-
                 return (
                   <DropdownMenuItem
                     key={targetModel}
                     onClick={() => handlePrimarySelect(targetModel)}
                     className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer ${
-                      isDisabled ? "opacity-50 cursor-not-allowed" : ""
-                    } ${
                       requiresUpgrade
                         ? "hover:bg-[hsl(var(--maple-primary-container))] dark:hover:bg-[hsl(var(--maple-primary))]/10"
                         : ""
                     }`}
-                    disabled={isDisabled}
                   >
                     <Icon className="h-4 w-4 opacity-70" />
                     <div className="flex-1">
@@ -489,14 +423,6 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                       (m, index, self) => self.findIndex((model) => model.id === m.id) === index
                     )
                     .sort((a, b) => {
-                      // If chat has images, prioritize vision models
-                      if (chatHasImages) {
-                        const aHasVision = Boolean(a.capabilities?.vision);
-                        const bHasVision = Boolean(b.capabilities?.vision);
-                        if (aHasVision && !bHasVision) return -1;
-                        if (!aHasVision && bHasVision) return 1;
-                      }
-
                       const aDisabled = a.enabled === false;
                       const bDisabled = b.enabled === false;
                       const aRestricted = !hasAccessToModel(a.id);
@@ -517,10 +443,7 @@ export function ModelSelector({ hasImages = false }: { hasImages?: boolean }) {
                       const hasAccess = hasAccessToModel(availableModel.id);
                       const isRestricted = !hasAccess;
 
-                      // Disable non-vision models if chat has images
-                      const isDisabledDueToImages =
-                        chatHasImages && !availableModel.capabilities?.vision;
-                      const effectivelyDisabled = isDisabled || isDisabledDueToImages;
+                      const effectivelyDisabled = isDisabled;
                       const selectedAliasTarget = getAlias(model)?.target_model;
                       const isActive =
                         model === availableModel.id || selectedAliasTarget === availableModel.id;
