@@ -271,7 +271,7 @@ impl AgentBackend {
         // built outside never completes a request.
         let billing = {
             let _guard = runtime.enter();
-            crate::billing::BillingClient::new(crate::billing::configured_billing_api_url())
+            crate::billing::BillingClient::new(crate::billing::configured_billing_api_url())?
         };
         Ok(Self {
             runtime,

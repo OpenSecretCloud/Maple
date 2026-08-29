@@ -48,13 +48,17 @@ pub struct BillingClient {
 
 impl BillingClient {
     /// Build a client. A trailing slash on `base_url` is removed.
-    pub fn new(base_url: impl Into<String>) -> Self {
+    ///
+    /// Fails when the HTTP client cannot be built (for example when the TLS
+    /// backend is unavailable). `reqwest::Client::default()` panics in the
+    /// same conditions, so there is no silent fallback.
+    pub fn new(base_url: impl Into<String>) -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .unwrap_or_default();
+            .map_err(|error| format!("failed to build the billing HTTP client: {error}"))?;
         let base_url = base_url.into().trim().trim_end_matches('/').to_string();
-        Self { base_url, http }
+        Ok(Self { base_url, http })
     }
 
     /// The base URL, also the audience for the third-party token.
@@ -95,7 +99,9 @@ mod tests {
     #[test]
     fn trims_trailing_slash() {
         assert_eq!(
-            BillingClient::new("https://billing.example/ ").base_url(),
+            BillingClient::new("https://billing.example/ ")
+                .unwrap()
+                .base_url(),
             "https://billing.example"
         );
     }
@@ -116,7 +122,7 @@ mod live_tests {
     #[tokio::test]
     #[ignore = "hits the live billing API"]
     async fn dummy_token_is_rejected_quickly() {
-        let client = BillingClient::new(DEFAULT_BILLING_API_URL);
+        let client = BillingClient::new(DEFAULT_BILLING_API_URL).unwrap();
         let started = std::time::Instant::now();
         let result = client.subscription_status("dummy").await;
         eprintln!("result after {:?}: {result:?}", started.elapsed());
