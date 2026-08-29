@@ -371,47 +371,57 @@ impl SettingsScreen {
         .detach();
     }
 
+    /// Change one setting: apply it to the local copy, queue the write
+    /// off the UI thread, and re-render. Every toggle goes through here.
+    ///
+    /// `apply` must set a value, not toggle one: it runs on the local copy
+    /// now and again on the file on disk from the writer thread, so both
+    /// end in the same state whatever the file held.
+    fn edit_setting(
+        &mut self,
+        apply: impl FnOnce(&mut AppSettings) + Clone + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        apply.clone()(&mut self.settings);
+        settings::update_settings_in_background(apply);
+        cx.notify();
+    }
+
     fn toggle_permission_default(&mut self, cx: &mut Context<Self>) {
-        self.settings.default_permission_mode = if self.settings.default_permission_mode == "auto" {
+        let next = if self.settings.default_permission_mode == "auto" {
             "smart_approve".to_string()
         } else {
             "auto".to_string()
         };
-        let mode = self.settings.default_permission_mode.clone();
-        settings::update_settings_in_background(move |s| s.default_permission_mode = mode);
-        cx.notify();
+        self.edit_setting(move |settings| settings.default_permission_mode = next, cx);
     }
 
     fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
-        self.settings.default_web_enabled = !self.settings.default_web_enabled;
-        let enabled = self.settings.default_web_enabled;
-        settings::update_settings_in_background(move |s| s.default_web_enabled = enabled);
-        cx.notify();
+        let next = !self.settings.default_web_enabled;
+        self.edit_setting(move |settings| settings.default_web_enabled = next, cx);
     }
 
     fn cycle_theme(&mut self, cx: &mut Context<Self>) {
         let next = self.theme.next();
         self.theme = next;
-        self.settings.theme = next.as_str().to_string();
-        settings::update_settings_in_background(move |s| s.theme = next.as_str().to_string());
+        self.edit_setting(
+            move |settings| settings.theme = next.as_str().to_string(),
+            cx,
+        );
         // The root view resolves the palette on its next render and
         // refreshes every view when it changed.
         crate::ui::theme::set_preference(next);
         cx.refresh_windows();
-        cx.notify();
     }
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
-        self.settings.tool_details = !self.settings.tool_details;
-        let enabled = self.settings.tool_details;
-        settings::update_settings_in_background(move |s| s.tool_details = enabled);
-        cx.notify();
+        let next = !self.settings.tool_details;
+        self.edit_setting(move |settings| settings.tool_details = next, cx);
     }
 
     fn toggle_desktop_notifications(&mut self, cx: &mut Context<Self>) {
-        self.settings.desktop_notifications = !self.settings.desktop_notifications;
-        let enabled = self.settings.desktop_notifications;
-        settings::update_settings_in_background(move |s| s.desktop_notifications = enabled);
+        let next = !self.settings.desktop_notifications;
+        self.edit_setting(move |settings| settings.desktop_notifications = next, cx);
         if self.settings.desktop_notifications {
             // Fire a test notification so enabling gives immediate feedback
             // and delivery problems surface right away.
@@ -421,38 +431,27 @@ impl SettingsScreen {
                 &format!("You will see alerts like this at {enabled_at}."),
             );
         }
-        cx.notify();
     }
 
     fn cycle_tts_voice(&mut self, cx: &mut Context<Self>) {
-        let voices = settings::TTS_VOICES;
-        let current = voices
-            .iter()
-            .position(|(id, _)| *id == self.settings.tts_voice)
-            .unwrap_or(0);
-        self.settings.tts_voice = voices[(current + 1) % voices.len()].0.to_string();
-        let voice = self.settings.tts_voice.clone();
-        settings::update_settings_in_background(move |s| s.tts_voice = voice);
-        cx.notify();
+        let next = next_cyclic(&settings::TTS_VOICES, |(id, _)| {
+            *id == self.settings.tts_voice
+        })
+        .0
+        .to_string();
+        self.edit_setting(move |settings| settings.tts_voice = next, cx);
     }
 
     fn cycle_tts_speed(&mut self, cx: &mut Context<Self>) {
-        let speeds = settings::TTS_SPEEDS;
-        let current = speeds
-            .iter()
-            .position(|speed| (*speed - self.settings.tts_speed).abs() < 0.01)
-            .unwrap_or(0);
-        self.settings.tts_speed = speeds[(current + 1) % speeds.len()];
-        let speed = self.settings.tts_speed;
-        settings::update_settings_in_background(move |s| s.tts_speed = speed);
-        cx.notify();
+        let next = *next_cyclic(&settings::TTS_SPEEDS, |speed| {
+            (*speed - self.settings.tts_speed).abs() < 0.01
+        });
+        self.edit_setting(move |settings| settings.tts_speed = next, cx);
     }
 
     fn toggle_tool_summaries(&mut self, cx: &mut Context<Self>) {
-        self.settings.tool_summaries = !self.settings.tool_summaries;
-        let enabled = self.settings.tool_summaries;
-        settings::update_settings_in_background(move |s| s.tool_summaries = enabled);
-        cx.notify();
+        let next = !self.settings.tool_summaries;
+        self.edit_setting(move |settings| settings.tool_summaries = next, cx);
     }
 
     /// Persist the editor text as the harness instructions and hand it to
@@ -1290,6 +1289,14 @@ fn pill_button(
         .child(label)
 }
 
+/// The item after the one `is_current` matches, wrapping at the end. An
+/// unknown current value restarts from the second item, as the settings
+/// rows always did.
+fn next_cyclic<T>(items: &[T], is_current: impl Fn(&T) -> bool) -> &T {
+    let current = items.iter().position(is_current).unwrap_or(0);
+    &items[(current + 1) % items.len()]
+}
+
 /// Whether saving a server as `name` would clash with another server.
 /// Servers are matched by name, so a rename onto an existing name would
 /// have added a second entry instead of replacing the original.
@@ -1510,6 +1517,14 @@ mod tests {
                 environment: Vec::new(),
             },
         }
+    }
+
+    #[test]
+    fn next_cyclic_wraps_and_restarts_on_unknown() {
+        let items = ["a", "b", "c"];
+        assert_eq!(*next_cyclic(&items, |item| *item == "a"), "b");
+        assert_eq!(*next_cyclic(&items, |item| *item == "c"), "a");
+        assert_eq!(*next_cyclic(&items, |item| *item == "zzz"), "b");
     }
 
     #[test]
