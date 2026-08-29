@@ -5912,6 +5912,11 @@ impl AgentRuntimeHandle {
                     Err(restore_error) => log::warn!("{restore_error}"),
                 }
             }
+            // Mirror the setup-error path: a mode this send seeded must not
+            // outlive the run that never started.
+            if seeded_permission_mode {
+                permission_modes.lock().await.remove(&request.session_id);
+            }
             agent_manager
                 .unregister_cancel_token(&request.session_id)
                 .await;
