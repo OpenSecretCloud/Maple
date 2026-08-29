@@ -3061,7 +3061,11 @@ async fn start_runtime_for_user(
     // here would incorrectly move that visible project to the top of the manual order.
     agent_config.default_project_root = Some(path_string(&project_root));
     agent_config.default_model = model;
-    let _ = save_agent_config_inner(&state.host.paths, user_id, &agent_config);
+    // The runtime is already up; a failed save must not abort the start, but
+    // a silent failure hides why the next launch forgets this project.
+    if let Err(error) = save_agent_config_inner(&state.host.paths, user_id, &agent_config) {
+        log::warn!("Failed to save Agent config after runtime start: {error}");
+    }
 
     emit_agent_event(
         &state.host.events,
