@@ -368,6 +368,9 @@ pub struct ChatScreen {
     archived_expanded: bool,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
+    /// Same guard for mid-run history reloads. Separate from the selection
+    /// generation so a reload never cancels a task switch in flight.
+    reload_generation: u64,
     /// Per-session count of applied timeline events; a load whose snapshot
     /// predates newer events is discarded instead of clobbering them.
     timeline_revisions: HashMap<String, u64>,
@@ -721,6 +724,7 @@ impl ChatScreen {
             watched_git_dir: None,
             root_picker_open: false,
             selection_generation: 0,
+            reload_generation: 0,
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
             timeline_revisions: HashMap::new(),
@@ -1453,8 +1457,16 @@ impl ChatScreen {
         retries: u8,
         cx: &mut Context<Self>,
     ) {
-        self.selection_generation += 1;
-        let generation = self.selection_generation;
+        // A selection supersedes any reload; a reload only supersedes
+        // earlier reloads.
+        self.reload_generation += 1;
+        let generation = match mode {
+            LoadMode::Select => {
+                self.selection_generation += 1;
+                self.selection_generation
+            }
+            LoadMode::Reload => self.reload_generation,
+        };
         let revision = *self.timeline_revisions.get(session_id).unwrap_or(&0);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -1483,7 +1495,15 @@ impl ChatScreen {
             cx,
             move |this, result, cx| {
                 // A newer selection (or reload) superseded this load.
-                if this.selection_generation != generation {
+                let current_generation = match mode {
+                    LoadMode::Select => this.selection_generation,
+                    LoadMode::Reload => this.reload_generation,
+                };
+                if current_generation != generation {
+                    return;
+                }
+                // A reload swaps the transcript of the task on screen only.
+                if matches!(mode, LoadMode::Reload) && !this.is_selected(&session_id) {
                     return;
                 }
                 let (detail, summaries) = match result {
@@ -9293,6 +9313,23 @@ mod state_tests {
             this.switch_root("relative".to_string(), cx);
             assert_eq!(this.pending_session_select, None);
             assert!(!this.root_switching);
+        });
+    }
+
+    #[gpui::test]
+    fn test_history_reload_keeps_a_task_switch_alive(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.select_session("s2", cx);
+            let switching = this.selection_generation;
+            // Compaction on the task still on screen must not cancel the
+            // load of the task the user just clicked.
+            this.reload_timeline("s1", cx);
+            assert_eq!(this.selection_generation, switching);
+            let reload = this.reload_generation;
+            this.select_session("s3", cx);
+            assert_ne!(this.selection_generation, switching);
+            assert_ne!(this.reload_generation, reload, "a select drops reloads");
         });
     }
 
