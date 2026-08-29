@@ -1884,21 +1884,43 @@ impl AgentRuntimeHandle {
         let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
-        let agent_manager = {
+        let (agent_manager, session_manager, maple_api_session) = {
             let runtime = state.inner.lock().await;
             let current = runtime
                 .as_ref()
                 .ok_or_else(|| "Agent runtime is not running".to_string())?;
             ensure_runtime_account(current, &self.account_scope)?;
-            Arc::clone(&current.agent_manager)
+            // Compaction rewrites the session history; running it under an
+            // active turn would race the turn's own history writes.
+            if has_active_session_run(&current.active_runs, &session_id) {
+                return Err("This Agent task is already running".to_string());
+            }
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&current.maple_api_session),
+            )
         };
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        // A cold agent must be created through the session-aware path so it
+        // gets the Maple system prompt and the session's locked model instead
+        // of goose's default-provider fallback, which would persist the
+        // runtime-global model into the session.
+        let agent = get_or_create_session_agent(
+            &agent_manager,
+            &maple_api_session,
+            &session,
+            &state.host.harness_instructions(),
+            RuntimeContext::default(),
+        )
+        .await?
+        .agent;
         // Compaction is a full model round-trip. Holding the lifecycle fence
         // for its duration would block every other runtime operation.
         drop(runtime_lifecycle_guard);
-        let agent = agent_manager
-            .get_or_create_agent(session_id.clone())
-            .await
-            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
         agent
             .execute_command("/compact", &session_id)
             .await
