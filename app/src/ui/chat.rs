@@ -1706,6 +1706,11 @@ impl ChatScreen {
         timeline: Vec<AgentTimelineItem>,
         cx: &mut Context<Self>,
     ) {
+        // The side thread belongs to the task it forked; every path that
+        // lands on another task (new task, archive, root switch) ends it.
+        if self.btw.is_some() && self.selected_session.as_deref() != Some(session.id.as_str()) {
+            self.close_side_thread(cx);
+        }
         // Release the edit hold against the session that owns it, before
         // the selection moves to the new one.
         self.abandon_queue_edit(cx);
@@ -9080,6 +9085,13 @@ mod state_tests {
             // Esc closes the panel.
             this.btw = None;
             assert!(this.render_btw_card(cx).is_none());
+            // Landing on another task by any route ends the thread.
+            this.ask_side_question("s1", "again?", cx);
+            assert!(this.btw.is_some());
+            this.set_active_session(summary("s1", "Same"), Vec::new(), cx);
+            assert!(this.btw.is_some(), "same task keeps the thread");
+            this.set_active_session(summary("s2", "Other"), Vec::new(), cx);
+            assert!(this.btw.is_none(), "another task ends the thread");
         });
     }
 
