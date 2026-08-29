@@ -125,11 +125,11 @@ tells the user to sign in from the desktop app first.
 
 ```
 --host HOST     bind address (default 127.0.0.1, env MAPLE_PROXY_HOST)
---port PORT     bind port (default 8080, env MAPLE_PROXY_PORT)
+--port PORT     bind port (default 8080, env MAPLE_PORT)
 --api-key KEY   Maple API key for requests without an Authorization header
                 (env MAPLE_API_KEY); not allowed together with --cors
 --cors          allow browser origins; every request must then carry its
-                own key
+                own key (env MAPLE_ENABLE_CORS=1)
 ```
 
 Without `--cors`, the proxy rejects requests that carry browser-only headers

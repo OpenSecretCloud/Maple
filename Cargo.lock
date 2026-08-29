@@ -5245,6 +5245,7 @@ version = "0.6.3"
 dependencies = [
  "axum",
  "chrono",
+ "clap",
  "cpal",
  "dirs 6.0.0",
  "env_logger",

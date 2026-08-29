@@ -22,6 +22,7 @@ mod update;
 
 #[cfg(feature = "acp")]
 use backend::AgentBackend;
+use clap::{Args, Parser, Subcommand};
 
 /// Shown when a mode was compiled out with `--no-default-features`.
 #[cfg(not(all(feature = "desktop", feature = "acp", feature = "proxy")))]
@@ -30,106 +31,78 @@ fn disabled_mode(mode: &str, feature: &str) -> ! {
     std::process::exit(2);
 }
 
-/// What the process does, decided from the first command-line argument.
-#[derive(Debug, PartialEq, Eq)]
-enum StartupMode {
-    /// `maple-gpui acp`: serve the Agent Client Protocol on stdio.
-    Acp,
-    /// `maple-gpui proxy`: serve an OpenAI-compatible HTTP endpoint.
-    Proxy(Result<ProxyArgs, String>),
-    Version,
-    Desktop,
+/// Command line for the binary. With no subcommand it opens the desktop
+/// window; `acp` and `proxy` run headless services.
+#[derive(Debug, Parser)]
+#[command(name = "maple-gpui", version, about, disable_help_subcommand = true)]
+struct Cli {
+    #[command(subcommand)]
+    mode: Option<Mode>,
+    /// Arguments a desktop launcher may append (file paths, `%u` expansions).
+    /// They are ignored so the window still opens.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+    desktop_args: Vec<String>,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+enum Mode {
+    /// Serve the Agent Client Protocol on stdio.
+    ///
+    /// Trailing arguments belong to the ACP client and are ignored.
+    #[command(disable_version_flag = true, disable_help_flag = true)]
+    Acp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        client_args: Vec<String>,
+    },
+    /// Serve an OpenAI-compatible HTTP endpoint in front of Maple.
+    Proxy(ProxyArgs),
 }
 
 /// Settings for `maple-gpui proxy`, from flags with environment fallbacks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
 struct ProxyArgs {
+    /// Bind address.
+    #[arg(long, env = "MAPLE_PROXY_HOST", default_value = "127.0.0.1")]
     host: String,
+    /// Bind port.
+    #[arg(long, env = "MAPLE_PORT", default_value_t = 8080)]
     port: u16,
-    /// Maple API key used when a request carries no `Authorization` header.
-    /// Never combined with `cors`: browser-reachable endpoints must not
+    /// Maple API key for requests without an Authorization header.
+    ///
+    /// Never combined with --cors: a browser-reachable proxy must not
     /// spend a saved credential.
+    #[arg(long, env = "MAPLE_API_KEY")]
     api_key: Option<String>,
-    /// Accept requests from any browser origin.
+    /// Allow browser origins; every request must then carry its own key.
+    #[arg(
+        long,
+        env = "MAPLE_ENABLE_CORS",
+        value_parser = clap::builder::BoolishValueParser::new(),
+    )]
     cors: bool,
 }
 
-fn startup_mode(args: impl IntoIterator<Item = String>) -> StartupMode {
-    let mut args = args.into_iter();
-    match args.next().as_deref() {
-        Some("acp") => StartupMode::Acp,
-        Some("proxy") => StartupMode::Proxy(parse_proxy_args(args)),
-        Some("--version" | "-V") => StartupMode::Version,
-        _ => StartupMode::Desktop,
-    }
-}
-
-const PROXY_USAGE: &str =
-    "usage: maple-gpui proxy [--host HOST] [--port PORT] [--api-key KEY] [--cors]
-  --host HOST     bind address (default 127.0.0.1, env MAPLE_PROXY_HOST)
-  --port PORT     bind port (default 8080, env MAPLE_PROXY_PORT)
-  --api-key KEY   Maple API key for requests without an Authorization header
-                  (env MAPLE_API_KEY); not allowed together with --cors
-  --cors          allow browser origins; every request must then carry its own key";
-
-fn parse_proxy_args(args: impl Iterator<Item = String>) -> Result<ProxyArgs, String> {
-    let env = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-    };
-    let mut host = env("MAPLE_PROXY_HOST").unwrap_or_else(|| "127.0.0.1".to_string());
-    let mut port = match env("MAPLE_PROXY_PORT") {
-        Some(value) => value
-            .parse::<u16>()
-            .map_err(|_| format!("MAPLE_PROXY_PORT is not a port number: {value}"))?,
-        None => 8080,
-    };
-    let mut api_key = env("MAPLE_API_KEY");
-    let mut cors = false;
-    let mut args = args;
-    while let Some(arg) = args.next() {
-        let mut value = |flag: &str| {
-            args.next()
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| format!("{flag} needs a value\n{PROXY_USAGE}"))
-        };
-        match arg.as_str() {
-            "--host" => host = value("--host")?,
-            "--port" => {
-                let text = value("--port")?;
-                port = text
-                    .parse::<u16>()
-                    .map_err(|_| format!("--port is not a port number: {text}"))?;
-            }
-            "--api-key" => api_key = Some(value("--api-key")?),
-            "--cors" => cors = true,
-            "--help" | "-h" => return Err(PROXY_USAGE.to_string()),
-            other => return Err(format!("unknown argument: {other}\n{PROXY_USAGE}")),
+impl ProxyArgs {
+    /// Rejects `--cors` together with a default key. This is checked here
+    /// and not with clap's `conflicts_with`: an env var counts as present
+    /// to clap even when it holds `0` or `false`.
+    fn validate(&self) -> Result<(), String> {
+        if self.cors && self.api_key.is_some() {
+            return Err(
+                "--cors (MAPLE_ENABLE_CORS) cannot be combined with a default API key \
+                 (--api-key or MAPLE_API_KEY): a browser-reachable proxy must not spend \
+                 a saved credential. Drop --cors or the key."
+                    .to_string(),
+            );
         }
+        Ok(())
     }
-    if cors && api_key.is_some() {
-        return Err(
-            "--cors cannot be combined with a default API key (--api-key or MAPLE_API_KEY): \
-             a browser-reachable proxy must not spend a saved credential. Drop --cors or the key."
-                .to_string(),
-        );
-    }
-    Ok(ProxyArgs {
-        host,
-        port,
-        api_key,
-        cors,
-    })
-}
-
-fn version_text() -> &'static str {
-    concat!("maple-gpui ", env!("CARGO_PKG_VERSION"))
 }
 
 fn main() {
-    match startup_mode(std::env::args().skip(1)) {
-        StartupMode::Acp => {
+    let cli = Cli::parse();
+    match cli.mode {
+        Some(Mode::Acp { .. }) => {
             // stdout is the ACP channel. Logs go to the log file only, so
             // the client's stderr capture stays quiet. The inherited
             // RUST_LOG belongs to the client (Buzz sets `buzz_acp=info`),
@@ -146,14 +119,11 @@ fn main() {
                 }
             }
         }
-        StartupMode::Proxy(args) => {
-            let args = match args {
-                Ok(args) => args,
-                Err(message) => {
-                    eprintln!("{message}");
-                    std::process::exit(if message == PROXY_USAGE { 0 } else { 2 });
-                }
-            };
+        Some(Mode::Proxy(args)) => {
+            if let Err(message) = args.validate() {
+                eprintln!("{message}");
+                std::process::exit(2);
+            }
             #[cfg(not(feature = "proxy"))]
             {
                 let _ = args;
@@ -169,8 +139,7 @@ fn main() {
                 }
             }
         }
-        StartupMode::Version => println!("{}", version_text()),
-        StartupMode::Desktop => {
+        None => {
             #[cfg(feature = "desktop")]
             desktop::run();
             #[cfg(not(feature = "desktop"))]
@@ -354,39 +323,46 @@ impl std::io::Write for TeeWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{StartupMode, startup_mode, version_text};
+    use super::{Cli, Mode};
+    use clap::Parser;
 
-    fn mode(args: &[&str]) -> StartupMode {
-        startup_mode(args.iter().map(|arg| (*arg).to_owned()))
+    fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
+        Cli::try_parse_from(std::iter::once("maple-gpui").chain(args.iter().copied()))
+            .map(|cli| cli.mode)
     }
 
     #[test]
-    fn version_flags_use_the_fast_path() {
-        assert_eq!(mode(&["--version"]), StartupMode::Version);
-        assert_eq!(mode(&["-V"]), StartupMode::Version);
-        assert_eq!(
-            version_text(),
-            format!("maple-gpui {}", env!("CARGO_PKG_VERSION"))
-        );
+    fn version_flags_print_the_package_version() {
+        for flag in ["--version", "-V"] {
+            let error = parse(&[flag]).expect_err("version exits early");
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+            assert_eq!(
+                error.to_string().trim(),
+                format!("maple-gpui {}", env!("CARGO_PKG_VERSION"))
+            );
+        }
     }
 
     #[test]
     fn acp_subcommand_keeps_precedence_over_following_flags() {
-        assert_eq!(mode(&["acp"]), StartupMode::Acp);
-        assert_eq!(mode(&["acp", "--version"]), StartupMode::Acp);
+        assert!(matches!(parse(&["acp"]), Ok(Some(Mode::Acp { .. }))));
+        assert!(matches!(
+            parse(&["acp", "--version"]),
+            Ok(Some(Mode::Acp { .. }))
+        ));
     }
 
     #[test]
     fn proxy_flags_parse_with_defaults() {
-        let StartupMode::Proxy(Ok(args)) = mode(&["proxy"]) else {
+        let Ok(Some(Mode::Proxy(args))) = parse(&["proxy"]) else {
             panic!("proxy without flags must parse");
         };
         assert_eq!(args.host, "127.0.0.1");
         assert_eq!(args.port, 8080);
         assert!(!args.cors);
 
-        let StartupMode::Proxy(Ok(args)) =
-            mode(&["proxy", "--host", "0.0.0.0", "--port", "9999", "--cors"])
+        let Ok(Some(Mode::Proxy(args))) =
+            parse(&["proxy", "--host", "0.0.0.0", "--port", "9999", "--cors"])
         else {
             panic!("proxy flags must parse");
         };
@@ -395,23 +371,22 @@ mod tests {
             ("0.0.0.0", 9999, true)
         );
 
-        assert!(matches!(
-            mode(&["proxy", "--port", "x"]),
-            StartupMode::Proxy(Err(_))
-        ));
-        assert!(matches!(
-            mode(&["proxy", "--bogus"]),
-            StartupMode::Proxy(Err(_))
-        ));
-        assert!(matches!(
-            mode(&["proxy", "--cors", "--api-key", "k"]),
-            StartupMode::Proxy(Err(_))
-        ));
+        assert!(parse(&["proxy", "--port", "x"]).is_err());
+        assert!(parse(&["proxy", "--bogus"]).is_err());
+        let Ok(Some(Mode::Proxy(args))) = parse(&["proxy", "--cors", "--api-key", "k"]) else {
+            panic!("clap accepts the pair; validate rejects it");
+        };
+        assert!(args.validate().is_err());
+        let Ok(Some(Mode::Proxy(args))) = parse(&["proxy", "--api-key", "k"]) else {
+            panic!("key alone must parse");
+        };
+        assert!(args.validate().is_ok());
     }
 
     #[test]
     fn other_arguments_keep_desktop_startup() {
-        assert_eq!(mode(&[]), StartupMode::Desktop);
-        assert_eq!(mode(&["--unknown"]), StartupMode::Desktop);
+        assert!(matches!(parse(&[]), Ok(None)));
+        assert!(matches!(parse(&["--unknown"]), Ok(None)));
+        assert!(matches!(parse(&["some/file.txt"]), Ok(None)));
     }
 }

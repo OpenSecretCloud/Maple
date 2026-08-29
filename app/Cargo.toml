@@ -49,6 +49,7 @@ rodio = { version = "0.22", default-features = false, features = ["playback", "w
 notify = { version = "8", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
 maple-proxy = { version = "0.3.2", optional = true }
 reqwest = { workspace = true, features = ["json"] }
 axum = { version = "0.8", optional = true }
