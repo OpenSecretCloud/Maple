@@ -1277,6 +1277,9 @@ struct AgentRuntime {
     model: String,
     mode: String,
     account_scope: String,
+    /// Cancelled when this runtime stops. Detached helpers such as side
+    /// questions derive their tokens from it so logout and Stop end them.
+    lifetime: CancellationToken,
 }
 
 struct InstalledAgentToolContext {
@@ -2034,7 +2037,7 @@ impl AgentRuntimeHandle {
         let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
-        let (agent_manager, session_manager, maple_api_session) = {
+        let (agent_manager, session_manager, maple_api_session, cancel_token) = {
             let runtime = state.inner.lock().await;
             let current = runtime
                 .as_ref()
@@ -2044,6 +2047,9 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.agent_manager),
                 Arc::clone(&current.session_manager),
                 Arc::clone(&current.maple_api_session),
+                // Stop and logout cancel the runtime lifetime; the detached
+                // streaming task below must end with it.
+                current.lifetime.child_token(),
             )
         };
         let session = session_manager
@@ -2116,7 +2122,6 @@ impl AgentRuntimeHandle {
                     },
                 );
             };
-            let cancel_token = tokio_util::sync::CancellationToken::new();
             let generation = provider::with_run_cancellation(
                 cancel_token.clone(),
                 goose::session_context::with_session_id(Some(session_id.clone()), async {
@@ -2142,6 +2147,10 @@ impl AgentRuntimeHandle {
             );
             tokio::pin!(generation);
             let result = tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => {
+                    Err("Side question cancelled".to_string())
+                }
                 result = &mut generation => result,
                 _ = tokio::time::sleep(SIDE_QUESTION_TIMEOUT) => {
                     cancel_token.cancel();
@@ -2803,6 +2812,8 @@ async fn stop_runtime_inner(
         if let Some(account_scope) = requested_scope {
             ensure_runtime_account(current, account_scope)?;
         }
+        // Ends detached helpers (side questions) that hold no run entry.
+        current.lifetime.cancel();
         (
             std::mem::take(&mut current.active_runs),
             std::mem::take(&mut current.session_title_tasks),
@@ -3048,6 +3059,7 @@ async fn start_runtime_for_user(
         model: model.clone(),
         mode: mode.clone(),
         account_scope,
+        lifetime: CancellationToken::new(),
     };
     let status = runtime.desktop_status();
 
@@ -11564,6 +11576,7 @@ mod tests {
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
             account_scope: account_scope.to_string(),
+            lifetime: CancellationToken::new(),
         };
         *service.inner.lock().await = Some(runtime);
         (
@@ -11727,6 +11740,7 @@ mod tests {
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
             account_scope: account_scope.clone(),
+            lifetime: CancellationToken::new(),
         });
 
         let handle = state.handle_for_user(user_id).await.unwrap();
@@ -12022,6 +12036,7 @@ mod tests {
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
             account_scope,
+            lifetime: CancellationToken::new(),
         });
 
         let handle = state.handle_for_user(user_id).await.unwrap();
@@ -12409,6 +12424,7 @@ mod tests {
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
             account_scope: account_scope.clone(),
+            lifetime: CancellationToken::new(),
         });
 
         let handle = state.handle_for_user(user_id).await.unwrap();
@@ -18122,6 +18138,7 @@ mod tests {
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
             account_scope: account_scope.clone(),
+            lifetime: CancellationToken::new(),
         });
 
         let session_title_lifecycle = resolve_session_title_lifecycle(
