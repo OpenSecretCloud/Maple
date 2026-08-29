@@ -7,6 +7,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
 
@@ -600,6 +601,9 @@ pub fn validate_api_url(api_url: &str) -> Result<String, String> {
 pub struct MapleApiAuthState {
     inner: Mutex<Option<Arc<MapleApiSession>>>,
     mutation: Mutex<()>,
+    /// Bumped by every `clear_auth`. A sign-in that validated its
+    /// credentials before a clear must not publish afterwards.
+    clear_epoch: AtomicU64,
     native_instance_id: String,
     credential_validator: Arc<dyn MapleApiCredentialValidator>,
 }
@@ -653,6 +657,7 @@ impl MapleApiAuthState {
         Self {
             inner: Mutex::new(None),
             mutation: Mutex::new(()),
+            clear_epoch: AtomicU64::new(0),
             native_instance_id: new_native_instance_id(),
             credential_validator,
         }
@@ -671,14 +676,15 @@ impl MapleApiAuthState {
         event_sink: Arc<dyn MapleApiAuthEventSink>,
         request: MapleApiAuthRequest,
     ) -> Result<MapleApiAuthSnapshot, String> {
-        // Keep set/clear ordering intact across the candidate-validation await.
-        // Agent calls can continue using the prior client until validation
-        // succeeds and the replacement is published atomically.
-        let _mutation = self.mutation.lock().await;
         let user_id = normalized_user_id(&request.user_id)?;
         let requested_scope = account_scope(&user_id)?;
         let api_url = normalize_api_url(&request.api_url)?;
         let client = build_client(&api_url, request.access_token, request.refresh_token)?;
+        // Validate without holding `mutation`: validation can take up to
+        // CREDENTIAL_VALIDATION_TIMEOUT and a sign-out must not wait for it.
+        // Agent calls keep using the prior client until the replacement is
+        // published atomically below.
+        let epoch_before = self.clear_epoch.load(Ordering::SeqCst);
         tokio::time::timeout(
             CREDENTIAL_VALIDATION_TIMEOUT,
             self.credential_validator.validate(&client, &user_id),
@@ -686,6 +692,12 @@ impl MapleApiAuthState {
         .await
         .map_err(|_| "Maple API authentication validation timed out".to_string())??;
 
+        let _mutation = self.mutation.lock().await;
+        if self.clear_epoch.load(Ordering::SeqCst) != epoch_before {
+            // A sign-out during validation wins; do not resurrect the
+            // session with credentials the user asked to forget.
+            return Err("Maple API authentication was cleared during sign in".to_string());
+        }
         let mut current = self.inner.lock().await;
         if let Some(session) = current.as_ref() {
             if session.account_scope() != requested_scope {
@@ -725,6 +737,7 @@ impl MapleApiAuthState {
 
     pub async fn clear_auth(&self, user_id: &str) -> Result<(), String> {
         let _mutation = self.mutation.lock().await;
+        self.clear_epoch.fetch_add(1, Ordering::SeqCst);
         let requested_scope = account_scope(user_id)?;
         let session = {
             let mut current = self.inner.lock().await;
@@ -1327,12 +1340,65 @@ mod tests {
         });
 
         entered.notified().await;
-        let clearer_state = Arc::clone(&state);
-        let clearer = tokio::spawn(async move { clearer_state.clear_auth("user-a").await });
+        // The sign-out completes while validation is still blocked.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            state.clear_auth("user-a"),
+        )
+        .await
+        .expect("clear_auth must not wait for credential validation")
+        .unwrap();
         release.notify_one();
 
-        setter.await.unwrap().unwrap();
-        clearer.await.unwrap().unwrap();
+        // The sign-in that validated across the sign-out must not publish.
+        assert!(setter.await.unwrap().is_err());
+        assert!(state.session_for("user-a").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn sign_out_of_existing_session_does_not_wait_for_a_new_sign_in() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let state = Arc::new(MapleApiAuthState::with_validator(Arc::new(
+            BlockingCredentialValidator {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            },
+        )));
+        let first = Arc::clone(&state);
+        let first = tokio::spawn(async move {
+            first
+                .set_auth_with_sink(
+                    Arc::new(RecordingEventSink::default()),
+                    auth_request("user-a", "access-one"),
+                )
+                .await
+        });
+        entered.notified().await;
+        release.notify_one();
+        first.await.unwrap().unwrap();
+        assert!(state.session_for("user-a").await.is_ok());
+
+        let second_state = Arc::clone(&state);
+        let second = tokio::spawn(async move {
+            second_state
+                .set_auth_with_sink(
+                    Arc::new(RecordingEventSink::default()),
+                    auth_request("user-a", "access-two"),
+                )
+                .await
+        });
+        entered.notified().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            state.clear_auth("user-a"),
+        )
+        .await
+        .expect("clear_auth must not wait for credential validation")
+        .unwrap();
+        assert!(state.session_for("user-a").await.is_err());
+        release.notify_one();
+        assert!(second.await.unwrap().is_err());
         assert!(state.session_for("user-a").await.is_err());
     }
 }
