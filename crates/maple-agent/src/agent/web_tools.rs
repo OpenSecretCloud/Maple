@@ -393,7 +393,8 @@ pub(crate) fn normalize_public_https_url(raw_url: &str) -> Result<String, String
     let host = url
         .host_str()
         .ok_or_else(|| "URL must include a public host".to_string())?;
-    validate_public_host(host)?;
+    // `host_str` keeps the brackets around an IPv6 literal.
+    validate_public_host(host.trim_start_matches('[').trim_end_matches(']'))?;
 
     url.set_fragment(None);
     if url.port() == Some(443) {
@@ -665,6 +666,17 @@ mod tests {
             "https://example.com\u{0085}.evil.test/page",
         ] {
             assert!(normalize_public_https_url(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn ipv6_literals_follow_the_public_host_policy() {
+        assert_eq!(
+            normalize_public_https_url("https://[2606:4700::1111]/page").unwrap(),
+            "https://[2606:4700::1111]/page"
+        );
+        for private in ["https://[fc00::1]/page", "https://[fe80::1]/page"] {
+            assert!(normalize_public_https_url(private).is_err(), "{private}");
         }
     }
 

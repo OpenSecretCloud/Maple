@@ -931,6 +931,8 @@ fn validate_loopback_http_url(url: &str) -> Result<(), TransientMcpConnectError>
         .ok_or(TransientMcpConnectError::InvalidConfiguration(
             "MCP HTTP URL has no host",
         ))?;
+    // `host_str` keeps the brackets around an IPv6 literal.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
     let loopback = host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()
@@ -1033,5 +1035,18 @@ mod tests {
         assert!(!valid_public_tool_name(
             &"a".repeat(TRANSIENT_MCP_MAX_PUBLIC_TOOL_NAME_BYTES + 1)
         ));
+    }
+}
+
+#[cfg(test)]
+mod loopback_url_tests {
+    use super::validate_loopback_http_url;
+
+    #[test]
+    fn ipv6_loopback_literal_is_accepted() {
+        assert!(validate_loopback_http_url("http://[::1]:8080/mcp").is_ok());
+        assert!(validate_loopback_http_url("http://127.0.0.1:8080/mcp").is_ok());
+        assert!(validate_loopback_http_url("http://[2606:4700::1111]:8080/mcp").is_err());
+        assert!(validate_loopback_http_url("http://10.0.0.1:8080/mcp").is_err());
     }
 }

@@ -9516,6 +9516,8 @@ fn validate_transient_mcp_url(url: &str, server_name: &str) -> Result<(), String
     let host = parsed
         .host_str()
         .ok_or_else(|| format!("Transient MCP server '{server_name}' URL requires a host"))?;
+    // `host_str` keeps the brackets around an IPv6 literal.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
     let loopback = host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()
@@ -11208,6 +11210,12 @@ mod speech_body_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_mcp_url_accepts_ipv6_loopback() {
+        assert!(validate_transient_mcp_url("http://[::1]:9000/mcp", "s").is_ok());
+        assert!(validate_transient_mcp_url("http://[2606:4700::1111]:9000/mcp", "s").is_err());
+    }
 
     #[test]
     fn context_limit_requires_present_and_agreeing_metadata() {
