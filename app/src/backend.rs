@@ -1131,6 +1131,22 @@ impl AgentBackend {
             .summarize_tool_call(session_id, &tool_name, input.as_ref(), &output_text)
             .await
     }
+    /// Stream the answer to a `/btw` side question; see
+    /// `AgentRuntimeHandle::ask_side_question`.
+    pub async fn ask_side_question(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        request_id: String,
+        prior: Vec<maple_agent::agent::SideQuestionTurn>,
+        question: String,
+    ) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .ask_side_question(session_id, request_id, prior, question)
+            .await
+    }
     /// Run `f` against the summary store of `user_id`. Blocking: call from
     /// `spawn_blocking`.
     fn with_summary_db<T>(

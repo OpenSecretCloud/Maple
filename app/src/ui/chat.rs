@@ -14,7 +14,7 @@ use gpui::{
 use maple_agent::agent::{
     AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
     AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
-    AgentTimelineItem, compaction_notice_text,
+    AgentTimelineItem, SideQuestionEvent, SideQuestionTurn, compaction_notice_text,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -45,6 +45,7 @@ struct QueueEdit {
 }
 
 const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder...";
+const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)...";
 const QUEUE_EDIT_PLACEHOLDER: &str =
     "Edit the queued message, then send to keep its place. Escape discards.";
 
@@ -338,6 +339,10 @@ pub struct ChatScreen {
     composer_expanded: bool,
     /// Latest todo list from the selected task, pinned above the composer.
     plan: Vec<PlanEntry>,
+    /// Open `/btw` side question, if any. Never part of the transcript.
+    btw: Option<SideQuestionPanel>,
+    /// Counter for side question request ids.
+    btw_sequence: u64,
     /// The pinned plan card shows only its header.
     plan_collapsed: bool,
     /// Web tools on for the selected task (mirrors the session record).
@@ -757,6 +762,8 @@ impl ChatScreen {
             summary_generation: 0,
             summaries_enabled: settings.tool_summaries,
             plan: Vec::new(),
+            btw: None,
+            btw_sequence: 0,
             plan_collapsed: false,
             audio: Arc::new(crate::audio::AudioEngine::new()),
             audio_caps: maple_agent::agent::AudioCapabilities::default(),
@@ -1413,6 +1420,10 @@ impl ChatScreen {
     }
 
     fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        // The side thread belongs to the task it forked.
+        if self.btw.is_some() && self.selected_session.as_deref() != Some(session_id) {
+            self.close_side_thread(cx);
+        }
         self.load_session(session_id, LoadMode::Select, LOAD_RETRIES, cx);
     }
 
@@ -2256,6 +2267,10 @@ impl ChatScreen {
             self.discard_queue_edit(cx);
             return;
         }
+        if self.btw.is_some() {
+            self.close_side_thread(cx);
+            return;
+        }
         if !self.sidebar_filter.is_empty() {
             self.clear_search(cx);
             return;
@@ -2543,6 +2558,24 @@ impl ChatScreen {
             cx.notify();
             return;
         }
+        // A side question never touches the run, so it is allowed while the
+        // run waits on a question. While the side thread is open every plain
+        // message goes to it; `/btw` still works and other commands run.
+        let side_question = match text.trim().strip_prefix("/btw") {
+            Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+                Some(rest.trim())
+            }
+            _ if self.btw.is_some() && !text.trim().starts_with('/') => Some(text.trim()),
+            _ => None,
+        };
+        if let Some(question) = side_question {
+            self.slash_selected = None;
+            if let Some(composer) = self.composer.clone() {
+                composer.update(cx, |input, cx| input.clear(cx));
+            }
+            self.ask_side_question(&session_id, question, cx);
+            return;
+        }
         if self.current_question().is_some() {
             // The run is blocked on the question; sending here would queue a
             // message nobody reads and look like a stall.
@@ -2707,9 +2740,13 @@ impl ChatScreen {
                 }
                 true
             }
+            "btw" => {
+                self.ask_side_question(&session_id, args, cx);
+                true
+            }
             "help" => {
                 self.notice =
-                    Some("Type / to list commands. Built-ins: /compact, /new, /pin, /web, /model, /help. Skills appear as /name.".into());
+                    Some("Type / to list commands. Built-ins: /btw, /compact, /new, /pin, /web, /model, /help. Skills appear as /name.".into());
                 cx.notify();
                 true
             }
@@ -3883,6 +3920,30 @@ impl ChatScreen {
                 run_id,
                 event,
             } => return self.handle_run_event(&session_id, &run_id, event, cx),
+            AgentServiceEvent::SideQuestion {
+                request_id, event, ..
+            } => {
+                let Some(btw) = self.btw.as_mut() else {
+                    return false;
+                };
+                if btw.request_id != request_id {
+                    // A closed or replaced question; its stream is ignored.
+                    return false;
+                }
+                match event {
+                    SideQuestionEvent::Chunk(text) => {
+                        if let Some(turn) = btw.turns.last_mut() {
+                            turn.answer.push_str(&text);
+                        }
+                        btw.revision += 1;
+                    }
+                    SideQuestionEvent::Finished => btw.pending = false,
+                    SideQuestionEvent::Error(message) => {
+                        btw.pending = false;
+                        btw.error = Some(message.into());
+                    }
+                }
+            }
         }
         true
     }
@@ -4116,6 +4177,7 @@ impl Render for ChatScreen {
                                 .flex()
                                 .flex_col()
                         })
+                        .children(self.render_btw_card(cx))
                         .children(self.render_plan_card(cx))
                         .child(self.render_composer(cx))
                         .children(self.render_menu_panel(cx))
@@ -6110,6 +6172,202 @@ impl ChatScreen {
     }
 
     /// Pinned checklist of the latest todo list, or `None` without one.
+    /// Ask a `/btw` side question against the selected task. While the card
+    /// is open, the question continues its thread; the earlier turns go with
+    /// the request. The answer streams into the card and is never stored.
+    fn ask_side_question(&mut self, session_id: &str, question: &str, cx: &mut Context<Self>) {
+        let question = question.trim();
+        if question.is_empty() {
+            self.notice = Some("Type /btw followed by a question".into());
+            cx.notify();
+            return;
+        }
+        if self.booting {
+            self.notice = Some("Agent runtime is still starting".into());
+            cx.notify();
+            return;
+        }
+        if self.btw.as_ref().is_some_and(|btw| btw.pending) {
+            self.notice = Some("Wait for the current answer first".into());
+            cx.notify();
+            return;
+        }
+        self.btw_sequence += 1;
+        let request_id = format!("btw-{}", self.btw_sequence);
+        // A turn that failed has no answer to replay; drop it.
+        let mut turns = self.btw.take().map(|btw| btw.turns).unwrap_or_default();
+        turns.retain(|turn| !turn.answer.is_empty());
+        let prior: Vec<SideQuestionTurn> = turns
+            .iter()
+            .map(|turn| SideQuestionTurn {
+                question: turn.question.to_string(),
+                answer: turn.answer.clone(),
+            })
+            .collect();
+        turns.push(SideThreadTurn {
+            question: question.to_string().into(),
+            answer: String::new(),
+        });
+        self.btw = Some(SideQuestionPanel {
+            request_id: request_id.clone(),
+            turns,
+            revision: 0,
+            pending: true,
+            error: None,
+        });
+        if self.queue_edit.is_none()
+            && let Some(composer) = self.composer.clone()
+        {
+            composer.update(cx, |input, cx| {
+                input.set_placeholder(SIDE_THREAD_PLACEHOLDER, cx)
+            });
+        }
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let session_id = session_id.to_string();
+        let question = question.to_string();
+        let callback_id = request_id.clone();
+        self.call(
+            async move {
+                backend
+                    .ask_side_question(&user_id, &session_id, request_id, prior, question)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                if let Err(message) = result
+                    && let Some(btw) = this.btw.as_mut()
+                    && btw.request_id == callback_id
+                {
+                    btw.pending = false;
+                    btw.error = Some(message.into());
+                    cx.notify();
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    /// Close the side thread; later messages go to the task again.
+    fn close_side_thread(&mut self, cx: &mut Context<Self>) {
+        self.btw = None;
+        if self.queue_edit.is_none()
+            && let Some(composer) = self.composer.clone()
+        {
+            composer.update(cx, |input, cx| {
+                input.set_placeholder(COMPOSER_PLACEHOLDER, cx)
+            });
+        }
+        cx.notify();
+    }
+
+    fn render_btw_card(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let btw = self.btw.as_ref()?;
+        let last = btw.turns.len().saturating_sub(1);
+        let header = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child("btw"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child("Side thread; messages stay here until Esc"),
+            )
+            .when(btw.pending, |header| {
+                header.child(icon("loader-circle", px(14.), theme::text_muted()))
+            })
+            .child(
+                div()
+                    .id("btw-close")
+                    .px_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.close_side_thread(cx);
+                    }))
+                    .child("×"),
+            );
+        let mut body = div()
+            .id("btw-body")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_3()
+            .pb_2()
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .text_sm()
+            .text_color(gpui::rgb(theme::text_primary()));
+        for (index, turn) in btw.turns.iter().enumerate() {
+            // Finished turns never change; only the last one is re-parsed.
+            let revision = if index == last { btw.revision } else { 0 };
+            let key = format!("btw-answer-{index}");
+            let document =
+                self.markdown_cache
+                    .get(&key, MarkdownKind::Body, revision, &turn.answer);
+            // Same shape as the transcript: the question is a right-aligned
+            // bubble, the answer is plain text on the left.
+            body = body.child(
+                div().flex().flex_col().items_end().mt_1().child(
+                    div()
+                        .max_w(gpui::relative(0.75))
+                        .px_3()
+                        .py_1p5()
+                        .rounded_lg()
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(turn.question.clone()),
+                ),
+            );
+            if !turn.answer.is_empty() {
+                body = body.child(div().pr_8().child(markdown::render(&document)));
+            } else if btw.pending && index == last {
+                body = body.child(
+                    div()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child("Thinking…"),
+                );
+            }
+        }
+        if let Some(error) = &btw.error {
+            body = body.child(
+                div()
+                    .text_color(gpui::rgb(theme::status_error()))
+                    .child(error.clone()),
+            );
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .mb_2()
+                .rounded_md()
+                .bg(gpui::rgb(theme::bg_tool_card()))
+                .border_1()
+                .border_color(gpui::rgb(theme::border_subtle()))
+                .overflow_hidden()
+                .child(header)
+                .child(body),
+        )
+    }
+
     fn render_plan_card(&self, cx: &mut Context<Self>) -> Option<Div> {
         if self.plan.is_empty() {
             return None;
@@ -6491,6 +6749,26 @@ impl ChatScreen {
     }
 }
 /// One row of the slash command palette.
+/// A `/btw` side thread streamed into the card above the composer. The
+/// newest turn is the one in flight; earlier turns are replayed on a
+/// follow-up.
+struct SideQuestionPanel {
+    /// Id of the request that streams into the last turn.
+    request_id: String,
+    turns: Vec<SideThreadTurn>,
+    /// Bumped per chunk so the markdown cache re-parses the last answer.
+    revision: u64,
+    pending: bool,
+    error: Option<SharedString>,
+}
+
+/// One turn of the side thread as the card shows it. The question is a
+/// `SharedString` so the render clones it by refcount.
+struct SideThreadTurn {
+    question: SharedString,
+    answer: String,
+}
+
 struct SlashEntry {
     name: String,
     description: String,
@@ -6500,6 +6778,7 @@ struct SlashEntry {
 fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Vec<SlashEntry> {
     let query = token.to_lowercase();
     [
+        ("btw", "Ask a side question; the task does not see it"),
         ("compact", "Summarize the conversation to free context"),
         ("new", "Start a new task"),
         ("pin", "Pin or unpin this project"),
@@ -8682,7 +8961,78 @@ mod state_tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "deploy");
         assert!(slash_entries_for("zzz", &skills).is_empty());
-        assert_eq!(slash_entries_for("", &skills).len(), 7);
+        assert_eq!(slash_entries_for("", &skills).len(), 8);
+    }
+
+    #[gpui::test]
+    fn test_side_question_streams_into_panel(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.btw = Some(SideQuestionPanel {
+                request_id: "btw-2".to_string(),
+                turns: vec![SideThreadTurn {
+                    question: "why?".into(),
+                    answer: String::new(),
+                }],
+                revision: 0,
+                pending: true,
+                error: None,
+            });
+            let event =
+                |request_id: &str, event: SideQuestionEvent| AgentServiceEvent::SideQuestion {
+                    session_id: "s1".to_string(),
+                    request_id: request_id.to_string(),
+                    event,
+                };
+            // A stream for a closed question changes nothing.
+            assert!(
+                !this.apply_service_event(
+                    event("btw-1", SideQuestionEvent::Chunk("old".into())),
+                    cx
+                )
+            );
+            assert!(this.apply_service_event(
+                event("btw-2", SideQuestionEvent::Chunk("Because ".into())),
+                cx
+            ));
+            assert!(
+                this.apply_service_event(
+                    event("btw-2", SideQuestionEvent::Chunk("so.".into())),
+                    cx
+                )
+            );
+            assert!(this.apply_service_event(event("btw-2", SideQuestionEvent::Finished), cx));
+            let btw = this.btw.as_ref().expect("panel stays open");
+            assert_eq!(btw.turns[0].answer, "Because so.");
+            assert_eq!(btw.revision, 2);
+            assert!(!btw.pending);
+            assert!(this.render_btw_card(cx).is_some());
+            // A follow-up keeps the finished turn and adds the new one.
+            this.booting = false;
+            this.ask_side_question("s1", "and then?", cx);
+            let btw = this.btw.as_ref().expect("thread continues");
+            assert_eq!(btw.turns.len(), 2);
+            assert_eq!(btw.turns[0].answer, "Because so.");
+            assert_eq!(btw.turns[1].question, "and then?");
+            assert!(btw.pending);
+            assert_eq!(btw.request_id, format!("btw-{}", this.btw_sequence));
+            // While the thread is open, a plain message joins it instead of
+            // going to the task; a command still runs as a command.
+            let live_id = this.btw.as_ref().unwrap().request_id.clone();
+            assert!(this.apply_service_event(event(&live_id, SideQuestionEvent::Finished), cx));
+            this.btw.as_mut().unwrap().turns[1].answer = "Then that.".into();
+            this.send_text("plain follow-up".to_string(), cx);
+            let btw = this.btw.as_ref().expect("thread continues");
+            assert_eq!(btw.turns.len(), 3);
+            assert_eq!(btw.turns[2].question, "plain follow-up");
+            assert!(this.try_command("s1", "/web", cx));
+            assert_eq!(this.btw.as_ref().unwrap().turns.len(), 3);
+            this.close_side_thread(cx);
+            assert!(this.btw.is_none());
+            // Esc closes the panel.
+            this.btw = None;
+            assert!(this.render_btw_card(cx).is_none());
+        });
     }
 
     #[gpui::test]

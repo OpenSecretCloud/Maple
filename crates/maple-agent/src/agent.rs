@@ -136,6 +136,10 @@ const TOOL_SUMMARY_TEMPERATURE: f32 = 0.2;
 const TOOL_SUMMARY_MAX_TOKENS: i32 = 48;
 const TOOL_SUMMARY_MAX_INPUT_CHARS: usize = 4000;
 const TOOL_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const SIDE_QUESTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Framing for a `/btw` question. It lives in the user message, not the
+/// system prompt, so the request keeps the session's cached prefix.
+const SIDE_QUESTION_PREFIX: &str = "The user asks a quick side question about the task so far. Answer it directly and briefly in plain prose. Do not call tools and do not continue the task; the task carries on separately and this exchange is not part of it.";
 const TOOL_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a coding agent's activity feed. Reply with ONE short line of at most 12 words that says what the call did. No prefix, no quotes, no explanations.";
 const SESSION_TITLE_SYSTEM_PROMPT: &str = "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations.";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
@@ -1147,6 +1151,28 @@ pub enum AgentServiceEvent {
         run_id: String,
         event: AgentRunEvent,
     },
+    /// Streamed answer to a `/btw` side question. The question and the
+    /// answer are never stored in the session.
+    SideQuestion {
+        session_id: String,
+        request_id: String,
+        event: SideQuestionEvent,
+    },
+}
+
+/// One finished exchange of a `/btw` thread, replayed on a follow-up so
+/// the model sees the earlier side questions and answers.
+#[derive(Debug, Clone)]
+pub struct SideQuestionTurn {
+    pub question: String,
+    pub answer: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum SideQuestionEvent {
+    Chunk(String),
+    Finished,
+    Error(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1980,6 +2006,151 @@ impl AgentRuntimeHandle {
         }
         .map_err(|error| format!("Failed to summarize tool call: {error}"))?;
         Ok(normalize_tool_summary(&completion.0.as_concat_text()))
+    }
+
+    /// Answer a `/btw` side question against a fork of the session. The
+    /// request repeats the session's system prompt, tool list, and message
+    /// history so the provider reuses its prompt cache, then the earlier
+    /// turns of the side thread (`prior`) and the new question. The tools
+    /// are sent but the model may not call them (`tool_choice: none`).
+    /// Nothing is written to the session; the answer streams out as
+    /// `AgentServiceEvent::SideQuestion` events tagged with `request_id`.
+    pub async fn ask_side_question(
+        &self,
+        session_id: &str,
+        request_id: String,
+        prior: Vec<SideQuestionTurn>,
+        question: String,
+    ) -> Result<(), String> {
+        let question = question.trim().to_string();
+        if question.is_empty() {
+            return Err("Question cannot be empty".to_string());
+        }
+        let state = &self.service;
+        let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let (agent_manager, session_manager, maple_api_session) = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, &self.account_scope)?;
+            (
+                Arc::clone(&current.agent_manager),
+                Arc::clone(&current.session_manager),
+                Arc::clone(&current.maple_api_session),
+            )
+        };
+        let session = session_manager
+            .get_session(session_id, true)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        // A session that already ran in this process keeps its Agent, so the
+        // tools and prompt below are the ones its runs send.
+        let harness_instructions = state.host.harness_instructions();
+        let agent = get_or_create_session_agent(
+            &agent_manager,
+            &maple_api_session,
+            &session,
+            &harness_instructions,
+            RuntimeContext::default(),
+        )
+        .await?
+        .agent;
+        // Release the lifecycle fence before the model round-trip so sends,
+        // cancels, and shutdown do not wait on a side question.
+        drop(runtime_lifecycle_guard);
+
+        let (tools, _toolshim_tools, mut system_prompt, model_config) = agent
+            .prepare_tools_and_prompt(session_id, &session.working_dir)
+            .await
+            .map_err(|error| format!("Failed to prepare the side question: {error}"))?;
+        if let Some(addendum) = project_instructions_addendum(&session) {
+            system_prompt = format!("{system_prompt}\n\n{addendum}");
+        }
+        let provider: Arc<dyn goose::providers::base::Provider> = match agent.provider().await {
+            Ok(provider) => provider,
+            Err(_) => Arc::new(MapleProvider::new(maple_api_session)),
+        };
+        let model_config = model_config
+            .with_default_thinking_effort(
+                goose::config::Config::global().get_goose_thinking_effort(),
+            )
+            .with_merged_request_params(HashMap::from([(
+                "tool_choice".to_string(),
+                json!("none"),
+            )]));
+        let mut messages = session
+            .conversation
+            .map(|conversation| conversation.messages().clone())
+            .unwrap_or_default();
+        // The framing goes on the first side question only, so a follow-up
+        // keeps the earlier side turns as a stable prefix too.
+        let mut side_questions = prior
+            .iter()
+            .map(|turn| turn.question.as_str())
+            .chain(std::iter::once(question.as_str()));
+        let first = side_questions.next().unwrap_or_default();
+        messages.push(Message::user().with_text(format!("{SIDE_QUESTION_PREFIX}\n\n{first}")));
+        for (turn, next_question) in prior.iter().zip(side_questions) {
+            messages.push(Message::assistant().with_text(turn.answer.clone()));
+            messages.push(Message::user().with_text(next_question));
+        }
+        let messages = messages_for_provider(messages);
+
+        let events = state.host.events.clone();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            let emit = |event: SideQuestionEvent| {
+                emit_agent_event(
+                    &events,
+                    AgentServiceEvent::SideQuestion {
+                        session_id: session_id.clone(),
+                        request_id: request_id.clone(),
+                        event,
+                    },
+                );
+            };
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            let generation = provider::with_run_cancellation(
+                cancel_token.clone(),
+                goose::session_context::with_session_id(Some(session_id.clone()), async {
+                    let mut stream = provider
+                        .stream(&model_config, &system_prompt, &messages, &tools)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    while let Some(item) = stream.next().await {
+                        let (message, _usage) = item.map_err(|error| error.to_string())?;
+                        let Some(message) = message else {
+                            continue;
+                        };
+                        for content in &message.content {
+                            if let MessageContent::Text(text) = content
+                                && !text.text.is_empty()
+                            {
+                                emit(SideQuestionEvent::Chunk(text.text.clone()));
+                            }
+                        }
+                    }
+                    Ok::<(), String>(())
+                }),
+            );
+            tokio::pin!(generation);
+            let result = tokio::select! {
+                result = &mut generation => result,
+                _ = tokio::time::sleep(SIDE_QUESTION_TIMEOUT) => {
+                    cancel_token.cancel();
+                    let _ = generation.await;
+                    Err("Side question timed out".to_string())
+                }
+            };
+            match result {
+                Ok(()) => emit(SideQuestionEvent::Finished),
+                Err(error) => emit(SideQuestionEvent::Error(error)),
+            }
+        });
+        Ok(())
     }
 
     /// Deliver the user's answer to an ask_user question from this
@@ -8842,6 +9013,30 @@ async fn update_live_permission_status(
     item.status = Some(decision.to_string());
     item.merge = "replace".to_string();
     Some(item.clone())
+}
+
+/// The project addendum goose appends to the system prompt of a run
+/// (`Agent::load_project_instructions`, which is private). A side question
+/// must repeat it or its request prefix differs from the run's.
+fn project_instructions_addendum(session: &Session) -> Option<String> {
+    let project_id = session.project_id.as_deref()?;
+    let entry = goose::sources::read_project(project_id).ok()?;
+    let mut parts = vec![format!("# Project: {}", entry.name)];
+    if !entry.description.is_empty() {
+        parts.push(entry.description.clone());
+    }
+    if !entry.content.is_empty() {
+        parts.push(entry.content.clone());
+    }
+    Some(parts.join("\n\n"))
+}
+
+/// The message projection goose applies before every provider call
+/// (`reply_parts::stream_response_from_provider`, which is crate-private).
+fn messages_for_provider(messages: Vec<Message>) -> Vec<Message> {
+    let visible = Conversation::new_unvalidated(messages).agent_visible_messages();
+    let (fixed, _) = fix_conversation(Conversation::new_unvalidated(visible));
+    goose::conversation::merge_consecutive_messages_for_request(fixed.messages().clone())
 }
 
 pub(crate) fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServiceEvent) {
