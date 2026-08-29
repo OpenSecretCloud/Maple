@@ -54,6 +54,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 maple-proxy = { version = "0.3.2", optional = true }
 reqwest = { workspace = true, features = ["json"] }
+percent-encoding = "2"
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 

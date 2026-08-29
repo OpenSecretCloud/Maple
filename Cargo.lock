@@ -5258,6 +5258,7 @@ dependencies = [
  "notify",
  "opensecret",
  "parking_lot",
+ "percent-encoding",
  "pulldown-cmark",
  "reqwest 0.13.4",
  "rodio",

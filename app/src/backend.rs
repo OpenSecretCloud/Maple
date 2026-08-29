@@ -1394,6 +1394,8 @@ impl AgentBackend {
 }
 
 /// Extract `code` and `state` query parameters from an OAuth redirect URL.
+/// Values are form-decoded: Google codes carry `%2F`, and a browser may
+/// encode a space in `state` as `+`.
 fn parse_oauth_callback(url: &str) -> Option<(String, String)> {
     let query = url.split_once('?')?.1;
     let mut code = None;
@@ -1401,8 +1403,8 @@ fn parse_oauth_callback(url: &str) -> Option<(String, String)> {
     for pair in query.split(['&', '#']) {
         if let Some((key, value)) = pair.split_once('=') {
             match key {
-                "code" => code = Some(value.to_string()),
-                "state" => state = Some(value.to_string()),
+                "code" => code = Some(decode_query_value(value)),
+                "state" => state = Some(decode_query_value(value)),
                 _ => {}
             }
         }
@@ -1410,9 +1412,32 @@ fn parse_oauth_callback(url: &str) -> Option<(String, String)> {
     Some((code?, state?))
 }
 
+/// `application/x-www-form-urlencoded` decoding of one query value.
+fn decode_query_value(value: &str) -> String {
+    let spaced = value.replace('+', " ");
+    percent_encoding::percent_decode_str(&spaced)
+        .decode_utf8_lossy()
+        .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_callback_values_are_form_decoded() {
+        let url = "http://localhost/cb?state=ab%20cd+ef&code=4%2F0AX4XfWh%3Dz&x=1#frag";
+        assert_eq!(
+            parse_oauth_callback(url),
+            Some(("4/0AX4XfWh=z".to_string(), "ab cd ef".to_string()))
+        );
+        assert_eq!(
+            parse_oauth_callback("http://localhost/cb?code=plain&state=s"),
+            Some(("plain".to_string(), "s".to_string()))
+        );
+        assert_eq!(parse_oauth_callback("http://localhost/cb?code=only"), None);
+        assert_eq!(parse_oauth_callback("http://localhost/cb"), None);
+    }
 
     #[test]
     fn malformed_client_id_falls_back_to_default() {
