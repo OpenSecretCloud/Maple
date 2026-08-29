@@ -46,6 +46,14 @@ struct QueueEdit {
 
 /// Width of the task sidebar.
 const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
+/// Left inset that keeps the header and its menus clear of the floating
+/// sidebar toggle while the sidebar is collapsed.
+const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = px(220.);
+/// Reading width shared by the transcript and the composer; they must
+/// stay in one column.
+const CONTENT_WIDTH: gpui::Pixels = px(900.);
+/// Header title when no task is selected.
+const DEFAULT_TASK_TITLE: &str = "New Task";
 
 const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder...";
 const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)...";
@@ -467,11 +475,15 @@ pub struct ChatScreen {
     model_vision: HashMap<String, bool>,
     /// MCP servers with their enabled state for the selected task.
     session_mcp: Vec<AgentSessionMcpServer>,
+    /// Count of enabled servers in `session_mcp`, for the composer chip.
+    mcp_enabled_count: usize,
     mcp_menu_open: bool,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
     /// Latest todo list from the selected task, pinned above the composer.
     plan: Vec<PlanEntry>,
+    /// Count of completed entries in `plan`, for the card header.
+    plan_done: usize,
     /// Open `/btw` side question, if any. Never part of the transcript.
     btw: Option<SideQuestionPanel>,
     /// Counter for side question request ids.
@@ -495,6 +507,8 @@ pub struct ChatScreen {
     timeline_index: HashMap<String, (usize, u64)>,
     /// Per-session sidebar strings, parallel to `sessions`.
     sidebar_rows: Vec<SidebarRow>,
+    /// Title of the selected task, shown in the header.
+    selected_title: SharedString,
     /// Sidebar groups with their tasks, rebuilt when sessions, roots,
     /// names, or the filter change instead of on every render.
     project_groups: Vec<ProjectGroup>,
@@ -563,6 +577,8 @@ pub struct ChatScreen {
     menu_trust: Option<AgentProjectTrustStatus>,
     /// Messages waiting behind the selected session's active run.
     queue: Vec<AgentQueuedMessage>,
+    /// First line of each queued message, for the chips.
+    queue_previews: Vec<SharedString>,
     /// A newer release, until the banner is dismissed.
     update: Option<crate::update::UpdateInfo>,
     queue_busy: bool,
@@ -851,6 +867,7 @@ impl ChatScreen {
             image_picking: false,
             model_vision: HashMap::new(),
             session_mcp: Vec::new(),
+            mcp_enabled_count: 0,
             mcp_menu_open: false,
             composer_expanded: false,
             web_enabled: true,
@@ -860,6 +877,7 @@ impl ChatScreen {
             derived: DerivedCache::default(),
             timeline_index: HashMap::new(),
             sidebar_rows: Vec::new(),
+            selected_title: DEFAULT_TASK_TITLE.into(),
             project_groups: Vec::new(),
             archived_indices: Vec::new(),
             collapsed_roots: HashSet::new(),
@@ -899,6 +917,7 @@ impl ChatScreen {
             trust_saving: false,
             menu_trust: None,
             queue: Vec::new(),
+            queue_previews: Vec::new(),
             queue_busy: false,
             queue_edit: None,
             sidebar_filter: String::new(),
@@ -914,6 +933,7 @@ impl ChatScreen {
             summary_generation: 0,
             summaries_enabled: settings.tool_summaries,
             plan: Vec::new(),
+            plan_done: 0,
             btw: None,
             btw_sequence: 0,
             plan_collapsed: false,
@@ -1709,12 +1729,13 @@ impl ChatScreen {
         self.markdown_cache.clear();
         self.derived.clear();
         self.list_state.reset(self.timeline.len());
-        self.plan = self
+        let plan = self
             .timeline
             .iter()
             .rev()
             .find_map(plan_entries)
             .unwrap_or_default();
+        self.set_plan(plan);
     }
 
     /// Apply settings-default changes when returning from the settings
@@ -1914,7 +1935,8 @@ impl ChatScreen {
         // the selection moves to the new one.
         self.abandon_queue_edit(cx);
         self.selected_session = Some(session.id);
-        self.queue.clear();
+        self.refresh_selected_title();
+        self.set_queue(Vec::new());
         // Adopt the session's stored policy; it persists per session in the
         // runtime.
         let mode = session.mode;
@@ -2031,7 +2053,7 @@ impl ChatScreen {
     /// Reload the MCP server list for the selected task.
     pub fn refresh_session_mcp(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
-            self.session_mcp.clear();
+            self.set_session_mcp(Vec::new());
             return;
         };
         let backend = self.backend.clone();
@@ -2045,7 +2067,7 @@ impl ChatScreen {
                     return;
                 }
                 match result {
-                    Ok(servers) => this.session_mcp = servers,
+                    Ok(servers) => this.set_session_mcp(servers),
                     Err(message) => log::debug!("mcp list failed: {message}"),
                 }
                 cx.notify();
@@ -2072,7 +2094,7 @@ impl ChatScreen {
                     return;
                 }
                 match result {
-                    Ok(servers) => this.session_mcp = servers,
+                    Ok(servers) => this.set_session_mcp(servers),
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
@@ -3352,7 +3374,7 @@ impl ChatScreen {
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child(format!("{} queued for after this turn", self.queue.len())),
                 )
-                .children(self.queue.iter().map(|item| {
+                .children(self.queue.iter().enumerate().map(|(index, item)| {
                     let steer_id = item.queue_id.clone();
                     let edit_id = item.queue_id.clone();
                     let remove_id = item.queue_id.clone();
@@ -3360,10 +3382,10 @@ impl ChatScreen {
                         .queue_edit
                         .as_ref()
                         .is_some_and(|edit| edit.queue_id == item.queue_id);
-                    let preview: String = if editing {
-                        "Editing in the composer…".to_string()
+                    let preview: SharedString = if editing {
+                        "Editing in the composer…".into()
                     } else {
-                        item.text.lines().next().unwrap_or("").to_string()
+                        self.queue_previews.get(index).cloned().unwrap_or_default()
                     };
                     div()
                         .flex()
@@ -4079,7 +4101,7 @@ impl ChatScreen {
         self.retire_decided_permission(&item);
         self.load_attachment_images_for(&item, cx);
         if let Some(plan) = plan_entries(&item) {
-            self.plan = plan;
+            self.set_plan(plan);
         }
         let index = self.apply_timeline_item(session_id, item);
         if completed {
@@ -4397,13 +4419,13 @@ impl ChatScreen {
                 if !self.is_selected(session_id) {
                     return false;
                 }
-                self.queue = snapshot.items;
+                self.set_queue(snapshot.items);
             }
             AgentRunEvent::QueuePromoted { snapshot, item, .. } => {
                 if !self.is_selected(session_id) {
                     return false;
                 }
-                self.queue = snapshot.items;
+                self.set_queue(snapshot.items);
                 // The promoted message is a user turn like any other: its
                 // attachments load and the plan and summaries follow it.
                 self.apply_incoming_item(session_id, item, cx);
@@ -4465,7 +4487,7 @@ impl Render for ChatScreen {
                     main.child(
                         div()
                             .w_full()
-                            .max_w(px(900.))
+                            .max_w(CONTENT_WIDTH)
                             .mx_auto()
                             .px_6()
                             .child(render_waiting_indicator()),
@@ -4492,7 +4514,7 @@ impl Render for ChatScreen {
                 .child(
                     div()
                         .w_full()
-                        .max_w(px(900.))
+                        .max_w(CONTENT_WIDTH)
                         .mx_auto()
                         .px_4()
                         .pb_4()
@@ -4702,6 +4724,46 @@ impl ChatScreen {
             .child(body)
     }
 
+    /// Replace the plan and the completed count the card header shows.
+    fn set_plan(&mut self, plan: Vec<PlanEntry>) {
+        self.plan_done = plan
+            .iter()
+            .filter(|entry| entry.status == PlanStatus::Completed)
+            .count();
+        self.plan = plan;
+    }
+
+    /// Replace the session's MCP servers and the enabled count the
+    /// composer chip shows.
+    fn set_session_mcp(&mut self, servers: Vec<AgentSessionMcpServer>) {
+        self.mcp_enabled_count = servers.iter().filter(|server| server.enabled).count();
+        self.session_mcp = servers;
+    }
+
+    /// Replace the queue and the one-line preview each chip shows.
+    fn set_queue(&mut self, items: Vec<AgentQueuedMessage>) {
+        self.queue_previews = items
+            .iter()
+            .map(|item| SharedString::from(item.text.lines().next().unwrap_or("").to_string()))
+            .collect();
+        self.queue = items;
+    }
+
+    /// Cache the header title for the selected task.
+    fn refresh_selected_title(&mut self) {
+        self.selected_title = self
+            .selected_session
+            .as_deref()
+            .and_then(|selected| {
+                self.sessions
+                    .iter()
+                    .position(|session| session.id == selected)
+            })
+            .and_then(|index| self.sidebar_rows.get(index))
+            .map(|row| row.title.clone())
+            .unwrap_or_else(|| DEFAULT_TASK_TITLE.into());
+    }
+
     /// Rebuild the sidebar sections: pinned roots first (when known),
     /// then the current root, then the other recent roots, then any root
     /// that only appears on a stored task. Called when sessions, roots,
@@ -4842,6 +4904,8 @@ impl ChatScreen {
             .iter()
             .map(|session| SidebarRow::build(session, &self.root_name(&session.project_root)))
             .collect();
+        // A rename or a reordered list moves the selected task's title.
+        self.refresh_selected_title();
     }
 
     fn search_changed(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
@@ -5422,12 +5486,13 @@ impl ChatScreen {
     /// belongs to the task. Questions stay queued per session.
     fn leave_selected_session(&mut self, cx: &mut Context<Self>) {
         let left = self.selected_session.take();
+        self.refresh_selected_title();
         self.replace_timeline(Vec::new());
         if self.btw.is_some() {
             self.close_side_thread(cx);
         }
         self.abandon_queue_edit(cx);
-        self.queue.clear();
+        self.set_queue(Vec::new());
         if let Some(left) = left.as_deref() {
             let showing = self
                 .pending_permissions
@@ -6013,12 +6078,7 @@ impl ChatScreen {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
-        let title = self
-            .sessions
-            .iter()
-            .find(|session| Some(session.id.as_str()) == self.selected_session.as_deref())
-            .map(|session| SharedString::from(session.title.clone()))
-            .unwrap_or_else(|| SharedString::from("New Task"));
+        let title = self.selected_title.clone();
         div()
             .flex()
             .items_center()
@@ -6028,7 +6088,9 @@ impl ChatScreen {
             .flex_none()
             .pl_4()
             .pr_3()
-            .when(self.sidebar_collapsed, |row| row.pl(px(220.)))
+            .when(self.sidebar_collapsed, |row| {
+                row.pl(SIDEBAR_COLLAPSED_INSET)
+            })
             .child(
                 div()
                     // Sized by its text, like the chips: nowrap gives it a
@@ -6175,7 +6237,9 @@ impl ChatScreen {
                 .absolute()
                 .top(px(40.))
                 .left_4()
-                .when(self.sidebar_collapsed, |menu| menu.left(px(220.)))
+                .when(self.sidebar_collapsed, |menu| {
+                    menu.left(SIDEBAR_COLLAPSED_INSET)
+                })
                 .child(menu),
         )
     }
@@ -6526,7 +6590,7 @@ impl ChatScreen {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .max_w(px(900.))
+                    .max_w(CONTENT_WIDTH)
                     .mx_auto()
                     .px_6()
                     .pb_4()
@@ -6812,11 +6876,7 @@ impl ChatScreen {
             return None;
         }
         let collapsed = self.plan_collapsed;
-        let done = self
-            .plan
-            .iter()
-            .filter(|entry| entry.status == PlanStatus::Completed)
-            .count();
+        let done = self.plan_done;
         let header = div()
             .id("plan-card-header")
             .flex()
@@ -6888,7 +6948,7 @@ impl ChatScreen {
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();
-        let mcp_enabled = self.session_mcp.iter().filter(|s| s.enabled).count();
+        let mcp_enabled = self.mcp_enabled_count;
         let drafts = &self.draft_images;
         let model_label = self
             .selected_model
@@ -8773,16 +8833,18 @@ fn render_permission_card(
         );
     }
     let mut buttons = div().flex().gap_2();
-    for (label, allow, color) in [
-        ("Allow once", true, theme::status_success()),
-        ("Deny", false, theme::status_error()),
+    for (id, label, allow, color) in [
+        (
+            "permission-allow-once",
+            "Allow once",
+            true,
+            theme::status_success(),
+        ),
+        ("permission-deny", "Deny", false, theme::status_error()),
     ] {
         buttons = buttons.child(
             div()
-                .id(gpui::SharedString::from(format!(
-                    "permission-{}",
-                    label.to_lowercase().replace(' ', "-")
-                )))
+                .id(id)
                 .px_4()
                 .py_1()
                 .rounded_md()
