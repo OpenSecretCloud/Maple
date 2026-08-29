@@ -2593,10 +2593,13 @@ async fn run_agent_session_title_task(job: AgentSessionTitleJob) {
         started = &mut start => started.is_ok(),
     };
     if !should_start {
+        // A dropped sender (run task aborted or panicked before settling)
+        // means the run is over just as much as an explicit send. Only an
+        // actual cancellation skips the fallback-title repair below.
         let settled = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => false,
-            settled = &mut settled => settled.is_ok(),
+            _ = &mut settled => !cancel_token.is_cancelled(),
         };
         if !settled {
             return;
@@ -18482,6 +18485,98 @@ mod tests {
         }));
         drop(start);
         settled.send(()).unwrap();
+        title_task.await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap()
+                .name,
+            DEFAULT_AGENT_SESSION_TITLE
+        );
+        assert!(
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    AgentServiceEvent::SessionUpdated { session, .. }
+                        if session.title == DEFAULT_AGENT_SESSION_TITLE
+                ))
+        );
+
+        drop(agent);
+        drop(session_manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn aborted_first_send_restores_new_task_without_settling() {
+        let test_root = recent_roots_test_dir("aborted-session-title");
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(SessionManager::new(test_root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root,
+                DEFAULT_AGENT_SESSION_TITLE.to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .system_generated_name("hey how are you?".to_string())
+            .apply()
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        agent
+            .update_provider(
+                Arc::new(SessionTitleTestProvider {
+                    calls: Arc::clone(&calls),
+                    response: "Friendly Check-In",
+                }),
+                ModelConfig::new(DEFAULT_AGENT_MODEL),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (start, start_rx) = oneshot::channel();
+        let (settled, settled_rx) = oneshot::channel();
+        let title_task = tokio::spawn(run_agent_session_title_task(AgentSessionTitleJob {
+            start: start_rx,
+            settled: settled_rx,
+            session_manager: Arc::clone(&session_manager),
+            agent: Arc::clone(&agent),
+            session_lifecycle: Arc::new(Mutex::new(())),
+            session_title_lifecycle: Arc::new(Mutex::new(())),
+            session_id: session.id.clone(),
+            first_prompt: "hey how are you?".to_string(),
+            expected_fallback_title: "hey how are you?".to_string(),
+            cancel_token: CancellationToken::new(),
+            dispatcher: AgentEventDispatcher::new(sink.clone()),
+            host_events: AgentHostEventPolicy::Publish,
+        }));
+        drop(start);
+        // The run task was aborted before it could settle: the sender is
+        // dropped, never sent. The fallback title must still be restored.
+        drop(settled);
         title_task.await.unwrap();
 
         assert_eq!(calls.load(Ordering::SeqCst), 0);
