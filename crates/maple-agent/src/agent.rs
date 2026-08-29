@@ -6050,7 +6050,6 @@ impl AgentRuntimeHandle {
             state,
             account_scope,
             &request.session_id,
-            text,
             draft_message,
         )
         .await?;
@@ -10432,7 +10431,6 @@ async fn take_desktop_steer_plan(
         state,
         account_scope,
         &request.session_id,
-        text,
         draft_message.cloned(),
     )
     .await?;
@@ -10707,15 +10705,13 @@ async fn prepare_desktop_launch(
     draft_text: &str,
 ) -> Result<DesktopLaunchPlan, String> {
     let draft_message = (!draft_text.is_empty()).then(|| user_message_from_prompt(draft_text));
-    prepare_desktop_launch_message(state, account_scope, session_id, draft_text, draft_message)
-        .await
+    prepare_desktop_launch_message(state, account_scope, session_id, draft_message).await
 }
 
 async fn prepare_desktop_launch_message(
     state: &MapleAgentService,
     account_scope: &str,
     session_id: &str,
-    draft_text: &str,
     draft_message: Option<Message>,
 ) -> Result<DesktopLaunchPlan, String> {
     let leftover = snapshot_desktop_queue(state, account_scope, session_id).await;
@@ -10729,22 +10725,23 @@ async fn prepare_desktop_launch_message(
             queue: leftover,
         });
     }
-    if let Some(draft_message) = draft_message {
-        enqueue_desktop_queue_message(state, account_scope, session_id, draft_text, draft_message)
-            .await?;
-    }
-    let snapshot = snapshot_desktop_queue(state, account_scope, session_id).await;
-    if snapshot.items.is_empty() {
-        return Err("Prompt cannot be empty".to_string());
-    }
+    // The draft rides along after the leftover chips without entering the
+    // queue. Enqueuing it here would leave it staged if setup fails before
+    // the queue is consumed, and a retry would then send it twice.
+    let launch_messages = leftover
+        .items
+        .iter()
+        .map(queued_user_message)
+        .chain(draft_message)
+        .collect();
     Ok(DesktopLaunchPlan {
-        launch_messages: snapshot.items.iter().map(queued_user_message).collect(),
-        consume_queue_ids: snapshot
+        launch_messages,
+        consume_queue_ids: leftover
             .items
             .iter()
             .map(|item| item.queue_id.clone())
             .collect(),
-        queue: snapshot,
+        queue: leftover,
     })
 }
 
@@ -11919,7 +11916,8 @@ mod tests {
                 .iter()
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["keep me queued", "draft after stop"]
+            vec!["keep me queued"],
+            "the draft rides along with the launch instead of being staged"
         );
         assert_eq!(
             launch.consume_queue_ids,
