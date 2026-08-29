@@ -133,16 +133,38 @@ struct AudioThread {
     idle_waiters: Vec<(u64, oneshot::Sender<()>)>,
 }
 
+/// How often the thread checks whether playback has drained while a
+/// caller waits for it. Nothing else needs a timer.
+const IDLE_POLL: Duration = Duration::from_millis(50);
+
 impl AudioThread {
     fn run(mut self, rx: std::sync::mpsc::Receiver<Command>) {
         loop {
-            match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(command) => self.handle(command),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
+            let command = match self.poll_interval() {
+                // Nobody is waiting on playback: sleep until a command
+                // arrives instead of waking twenty times a second.
+                None => match rx.recv() {
+                    Ok(command) => Some(command),
+                    Err(_) => return,
+                },
+                Some(interval) => match rx.recv_timeout(interval) {
+                    Ok(command) => Some(command),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+            };
+            if let Some(command) = command {
+                self.handle(command);
             }
             self.notify_idle();
         }
+    }
+
+    /// The wake-up interval the loop needs: only while a caller waits for
+    /// a generation to finish playing does the player's state have to be
+    /// re-checked without a command.
+    fn poll_interval(&self) -> Option<Duration> {
+        (!self.idle_waiters.is_empty()).then_some(IDLE_POLL)
     }
 
     fn handle(&mut self, command: Command) {
@@ -409,6 +431,18 @@ fn encode_wav(samples: &[f32], sample_rate: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_thread_only_polls_while_a_waiter_is_pending() {
+        let mut thread = AudioThread::default();
+        assert_eq!(thread.poll_interval(), None);
+        let (reply, _rx) = oneshot::channel();
+        thread.idle_waiters.push((1, reply));
+        assert_eq!(thread.poll_interval(), Some(IDLE_POLL));
+        // No playback: the waiter resolves at once and polling stops.
+        thread.notify_idle();
+        assert_eq!(thread.poll_interval(), None);
+    }
 
     #[test]
     fn downmix_averages_channels() {
