@@ -2956,7 +2956,11 @@ async fn start_runtime_for_user(
     // Trust the root the desktop user explicitly launched under so its
     // project-local skills load without a separate prompt. Maple's Tauri app
     // asks first; this app treats launching in a directory as the choice.
-    if project_trust_status(&agent_config, &project_root, true).decision != Some(true) {
+    // A saved "do not trust" answer stays as it is.
+    if project_trust_status(&agent_config, &project_root, true)
+        .decision
+        .is_none()
+    {
         apply_project_trust(&mut agent_config, &project_root, true);
         save_agent_config_inner(&state.host.paths, user_id, &agent_config)
             .map_err(|error| error.to_string())?;
