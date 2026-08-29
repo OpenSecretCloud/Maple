@@ -336,6 +336,10 @@ pub struct ChatScreen {
     mcp_menu_open: bool,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
+    /// Latest todo list from the selected task, pinned above the composer.
+    plan: Vec<PlanEntry>,
+    /// The pinned plan card shows only its header.
+    plan_collapsed: bool,
     /// Web tools on for the selected task (mirrors the session record).
     web_enabled: bool,
     /// Settings default applied to newly created tasks.
@@ -751,6 +755,8 @@ impl ChatScreen {
             summary_queue: std::collections::VecDeque::new(),
             summary_generation: 0,
             summaries_enabled: settings.tool_summaries,
+            plan: Vec::new(),
+            plan_collapsed: false,
             audio: Arc::new(crate::audio::AudioEngine::new()),
             audio_caps: maple_agent::agent::AudioCapabilities::default(),
             recording: false,
@@ -1511,6 +1517,12 @@ impl ChatScreen {
         self.markdown_cache.clear();
         self.derived.clear();
         self.list_state.reset(self.timeline.len());
+        self.plan = self
+            .timeline
+            .iter()
+            .rev()
+            .find_map(plan_entries)
+            .unwrap_or_default();
     }
 
     #[allow(dead_code)] // No delete affordance in the UI yet.
@@ -3749,6 +3761,9 @@ impl ChatScreen {
         let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
         self.retire_decided_permission(&item);
         self.load_attachment_images_for(&item, cx);
+        if let Some(plan) = plan_entries(&item) {
+            self.plan = plan;
+        }
         let index = self.apply_timeline_item(session_id, item);
         if completed {
             if is_tool && self.summaries_enabled {
@@ -4100,6 +4115,7 @@ impl Render for ChatScreen {
                                 .flex()
                                 .flex_col()
                         })
+                        .children(self.render_plan_card(cx))
                         .child(self.render_composer(cx))
                         .children(self.render_menu_panel(cx))
                         .children(self.render_slash_palette(cx)),
@@ -6087,6 +6103,83 @@ impl ChatScreen {
             )
     }
 
+    fn toggle_plan_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.plan_collapsed = !self.plan_collapsed;
+        cx.notify();
+    }
+
+    /// Pinned checklist of the latest todo list, or `None` without one.
+    fn render_plan_card(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.plan.is_empty() {
+            return None;
+        }
+        let collapsed = self.plan_collapsed;
+        let done = self
+            .plan
+            .iter()
+            .filter(|entry| entry.status == PlanStatus::Completed)
+            .count();
+        let header = div()
+            .id("plan-card-header")
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .cursor_pointer()
+            .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())))
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.toggle_plan_collapsed(cx);
+            }))
+            .child(icon(
+                if collapsed {
+                    "chevron-right"
+                } else {
+                    "chevron-down"
+                },
+                px(14.),
+                theme::text_secondary(),
+            ))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child("Plan"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(format!("{done}/{}", self.plan.len())),
+            );
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .mb_2()
+            .rounded_md()
+            .bg(gpui::rgb(theme::bg_tool_card()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .overflow_hidden()
+            .child(header);
+        if !collapsed {
+            card = card.child(
+                div()
+                    .id("plan-card-body")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_3()
+                    .pb_2()
+                    .max_h(px(200.))
+                    .overflow_y_scroll()
+                    .children(self.plan.iter().map(render_plan_row)),
+            );
+        }
+        Some(card)
+    }
+
     fn render_composer(&mut self, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         let disabled = self.booting;
@@ -6665,7 +6758,8 @@ fn render_timeline_item(
             // Dispatch on payload shape; runtime titles are humanized
             // ("todo write", "ask user") and vary by detail suffix.
             if has_tool_input(item, "todos") {
-                render_todo(item)
+                // The pinned plan card above the composer shows the list.
+                return div();
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
@@ -7221,68 +7315,88 @@ fn has_tool_input(item: &AgentTimelineItem, key: &str) -> bool {
         .is_some_and(|map| map.contains_key(key))
 }
 
-/// Checklist card for todo_write tool calls.
-fn render_todo(item: &AgentTimelineItem) -> Div {
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(gpui::rgb(theme::bg_tool_card()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
-        .child(
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child("Plan"),
-        );
-    if let Some(serde_json::Value::Object(map)) = item.input.as_ref()
-        && let Some(serde_json::Value::Array(todos)) = map.get("todos")
-    {
-        for todo in todos {
-            let content = todo
-                .get("content")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let status = todo
-                .get("status")
-                .and_then(|value| value.as_str())
-                .unwrap_or("pending");
-            let (marker, color) = match status {
-                "completed" => ("[x]", theme::status_success()),
-                "in_progress" => ("[~]", theme::status_running()),
-                _ => ("[ ]", theme::text_muted()),
-            };
-            card = card.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_family("monospace")
-                            .text_color(gpui::rgb(color))
-                            .child(marker.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(gpui::rgb(if status == "completed" {
-                                theme::text_muted()
-                            } else {
-                                theme::text_primary()
-                            }))
-                            .line_clamp(1)
-                            .child(content.to_string()),
-                    ),
-            );
-        }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// One row of a todo_write list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlanEntry {
+    content: SharedString,
+    status: PlanStatus,
+}
+
+/// The todo list carried by a todo_write tool item, or `None` for any
+/// other item.
+fn plan_entries(item: &AgentTimelineItem) -> Option<Vec<PlanEntry>> {
+    if !matches!(item.item_type.as_str(), "tool" | "toolCall") {
+        return None;
     }
-    card
+    let todos = item.input.as_ref()?.get("todos")?.as_array()?;
+    Some(
+        todos
+            .iter()
+            .map(|todo| PlanEntry {
+                content: todo
+                    .get("content")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string()
+                    .into(),
+                status: match todo.get("status").and_then(|value| value.as_str()) {
+                    Some("completed") => PlanStatus::Completed,
+                    Some("in_progress") => PlanStatus::InProgress,
+                    _ => PlanStatus::Pending,
+                },
+            })
+            .collect(),
+    )
+}
+
+fn render_plan_row(entry: &PlanEntry) -> Div {
+    let completed = entry.status == PlanStatus::Completed;
+    let checkbox = div()
+        .flex_none()
+        .size(px(14.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.))
+        .border_1()
+        .map(|checkbox| match entry.status {
+            PlanStatus::Completed => checkbox
+                .border_color(gpui::rgb(theme::status_success()))
+                .bg(gpui::rgb(theme::status_success()))
+                .child(icon("check", px(11.), theme::bg_app())),
+            PlanStatus::InProgress => checkbox
+                .border_color(gpui::rgb(theme::status_running()))
+                .child(
+                    div()
+                        .size(px(6.))
+                        .rounded(px(1.))
+                        .bg(gpui::rgb(theme::status_running())),
+                ),
+            PlanStatus::Pending => checkbox.border_color(gpui::rgb(theme::text_muted())),
+        });
+    div().flex().items_center().gap_2().child(checkbox).child(
+        div()
+            .text_sm()
+            .text_color(gpui::rgb(if completed {
+                theme::text_muted()
+            } else {
+                theme::text_primary()
+            }))
+            .when(completed, |text| text.line_through())
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(entry.content.clone()),
+    )
 }
 
 /// +/- lines of an edit or write tool input, stopping at the display cap.
@@ -8050,6 +8164,65 @@ mod state_tests {
             screen.selected_session = Some("s1".to_string());
             screen
         })
+    }
+
+    fn todo_item(id: &str, todos: serde_json::Value) -> AgentTimelineItem {
+        AgentTimelineItem {
+            status: Some("completed".to_string()),
+            input: Some(serde_json::json!({ "todos": todos })),
+            ..item(id, "tool", None)
+        }
+    }
+
+    /// The pinned plan tracks the newest todo_write list: it follows
+    /// incoming items in order, and a loaded history uses its last list.
+    #[gpui::test]
+    fn test_plan_follows_latest_todo_list(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            assert!(this.plan.is_empty());
+            assert!(this.render_plan_card(cx).is_none());
+            this.apply_incoming_item(
+                "s1",
+                todo_item(
+                    "t1",
+                    serde_json::json!([{ "content": "one", "status": "in_progress" }]),
+                ),
+                cx,
+            );
+            assert_eq!(this.plan.len(), 1);
+            assert_eq!(this.plan[0].status, PlanStatus::InProgress);
+            // A plain tool call leaves the plan alone.
+            this.apply_incoming_item("s1", item("x", "tool", None), cx);
+            assert_eq!(this.plan.len(), 1);
+            this.apply_incoming_item(
+                "s1",
+                todo_item(
+                    "t2",
+                    serde_json::json!([
+                        { "content": "one", "status": "completed" },
+                        { "content": "two", "status": "pending" }
+                    ]),
+                ),
+                cx,
+            );
+            assert_eq!(this.plan.len(), 2);
+            assert_eq!(this.plan[0].status, PlanStatus::Completed);
+            assert!(this.render_plan_card(cx).is_some());
+
+            this.replace_timeline(vec![
+                todo_item("a", serde_json::json!([{ "content": "old" }])),
+                item("b", "message", Some("hi")),
+                todo_item(
+                    "c",
+                    serde_json::json!([{ "content": "new" }, { "content": "newer" }]),
+                ),
+            ]);
+            assert_eq!(this.plan.len(), 2);
+            assert_eq!(this.plan[0].content.as_ref(), "new");
+            this.replace_timeline(Vec::new());
+            assert!(this.plan.is_empty());
+        });
     }
 
     /// A persisted settings file must shape a freshly built chat screen:
