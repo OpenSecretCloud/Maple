@@ -7576,8 +7576,11 @@ fn image_format_from_bytes(bytes: &[u8]) -> Option<gpui::ImageFormat> {
     }
 }
 /// Hover-revealed button that copies one message's text.
-fn copy_message_button(item_id: &str, group: &SharedString, text: &str) -> gpui::Stateful<Div> {
-    let text = text.to_string();
+fn copy_message_button(
+    item_id: &str,
+    group: &SharedString,
+    text: SharedString,
+) -> gpui::Stateful<Div> {
     div()
         .id(SharedString::from(format!("copy-message-{item_id}")))
         .flex()
@@ -7598,7 +7601,7 @@ fn copy_message_button(item_id: &str, group: &SharedString, text: &str) -> gpui:
         })
         .on_click(move |_event, _window, cx: &mut gpui::App| {
             cx.stop_propagation();
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
         })
         .child(icon("copy", px(12.), theme::text_secondary()))
         .child("Copy")
@@ -7616,7 +7619,11 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
         return div();
     }
     let group = SharedString::from(format!("message-{}", item.id));
-    let copy = (!text.trim().is_empty()).then(|| copy_message_button(&item.id, &group, text));
+    // The display text is already shaped and cached for this revision;
+    // the buttons share it instead of copying the message per frame.
+    let display = transcript.derived.get(item, revision).text.clone();
+    let copy =
+        (!text.trim().is_empty()).then(|| copy_message_button(&item.id, &group, display.clone()));
     if is_user {
         let user_ctx = RenderCtx {
             selection: ctx.selection.clone(),
@@ -7738,7 +7745,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                         row.child(speak_message_button(
                             &item.id,
                             &group,
-                            text,
+                            display.clone(),
                             speech,
                             chat.clone(),
                         ))
@@ -7752,11 +7759,10 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
 fn speak_message_button(
     item_id: &str,
     group: &SharedString,
-    text: &str,
+    text: SharedString,
     speech: Option<&SpeechState>,
     chat: gpui::WeakEntity<ChatScreen>,
 ) -> gpui::Stateful<Div> {
-    let text = text.to_string();
     let item_id = item_id.to_string();
     let (glyph, label) = match speech {
         None => (
@@ -7799,8 +7805,10 @@ fn speak_message_button(
             cx.stop_propagation();
             let item_id = item_id.clone();
             let text = text.clone();
-            chat.update(cx, |chat, cx| chat.toggle_speech(item_id, text, cx))
-                .ok();
+            chat.update(cx, |chat, cx| {
+                chat.toggle_speech(item_id, text.to_string(), cx)
+            })
+            .ok();
         })
         .child(glyph)
         .child(label)
