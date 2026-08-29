@@ -51,6 +51,8 @@ impl MapleApp {
     }
 
     /// A newer release exists: tell the chat screen so it shows the banner.
+    /// Without a chat screen (login in progress) nothing is done here; the
+    /// result stays in `update::available()` and seeds the next chat.
     fn set_update(&mut self, info: crate::update::UpdateInfo, cx: &mut Context<Self>) {
         let chat = match &self.screen {
             Screen::Chat(chat) => Some(chat.clone()),
@@ -84,16 +86,26 @@ impl MapleApp {
         cx.subscribe(
             login,
             |app: &mut MapleApp, _emitter, event: &LoginSucceeded, cx| {
-                let user_id = event.0.clone();
-                let backend = app.backend.clone();
-                let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
-                app.user_id = Some(user_id);
-                app.screen = Screen::Chat(chat.clone());
-                app.subscribe_chat(&chat, cx);
-                cx.notify();
+                app.open_chat(event.0.clone(), cx);
             },
         )
         .detach();
+    }
+
+    /// Show the chat screen for a signed-in account and wire its events.
+    fn open_chat(&mut self, user_id: String, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
+        // The release check may have finished while the login screen was
+        // up; the banner must not be lost with it.
+        if let Some(info) = crate::update::available() {
+            chat.update(cx, |chat, cx| chat.set_update(info.clone(), cx));
+        }
+        self.user_id = Some(user_id);
+        self.parked_chat = None;
+        self.screen = Screen::Chat(chat.clone());
+        self.subscribe_chat(&chat, cx);
+        cx.notify();
     }
 
     /// Park the chat screen and show settings.
