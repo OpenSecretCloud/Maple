@@ -4,7 +4,7 @@ members = ["crates/maple-agent", "crates/maple-billing", "app"]
 
 [workspace.package]
 edition = "2024"
-version = "0.6.3"
+version = "0.1.0"
 license = "MIT"
 
 [workspace.dependencies]
