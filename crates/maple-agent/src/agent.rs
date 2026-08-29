@@ -8328,7 +8328,14 @@ fn tool_request_item(
             created_ms,
             merge: "replace".to_string(),
         },
-        Err(error) => error_item(format!("Tool call parse failed: {error}")),
+        Err(error) => {
+            // Derive the id from the request so a reload produces the same
+            // row and two failures in one millisecond cannot collide.
+            let mut item = error_item(format!("Tool call parse failed: {error}"));
+            item.id = format!("{}-parse-error", request.id);
+            item.created_ms = created_ms;
+            item
+        }
     }
 }
 
@@ -17785,6 +17792,22 @@ mod tests {
         link_agents_md_into(&source, &target_dir);
         assert_eq!(fs::read_link(&target).unwrap(), source);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn malformed_tool_request_rows_keep_a_stable_request_derived_id() {
+        let request = goose::conversation::message::ToolRequest {
+            id: "call-7".to_string(),
+            tool_call: Err(rmcp::model::ErrorData::invalid_params("bad json", None)),
+            metadata: None,
+            tool_meta: None,
+        };
+        let first = tool_request_item(&request, 42);
+        let second = tool_request_item(&request, 42);
+        assert_eq!(first.id, "call-7-parse-error");
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.created_ms, 42);
+        assert_eq!(first.item_type, "error");
     }
 
     #[test]
