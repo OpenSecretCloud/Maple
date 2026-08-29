@@ -96,6 +96,9 @@ pub struct TextInput {
     /// Last (text, wrap width) -> row count, so layout does not re-shape
     /// unchanged text every frame.
     measure_cache: Option<(SharedString, Pixels, usize)>,
+    /// Shaped lines from the last prepaint with the inputs they came
+    /// from; reused while nothing that affects shaping has changed.
+    shape_cache: Option<ShapeCache>,
     is_selecting: bool,
     /// Window position of the right-click menu while it is open.
     context_menu: Option<gpui::Point<Pixels>>,
@@ -157,6 +160,7 @@ impl TextInput {
             fill_height: false,
             max_lines: 8,
             measure_cache: None,
+            shape_cache: None,
             is_selecting: false,
             context_menu: None,
             mask: false,
@@ -960,6 +964,34 @@ fn snap_to_char_boundary(text: &str, offset: usize) -> usize {
     offset
 }
 
+/// Everything `shape_text` was given last time, and what it returned.
+/// A cursor move or a blink must not re-shape the text: prepaint runs
+/// on every notify, and shaping is the expensive part of it.
+struct ShapeCache {
+    text: SharedString,
+    wrap_width: Option<Pixels>,
+    font_size: Pixels,
+    /// Runs carry the font, color, and underline ranges, so a theme
+    /// switch or a new misspelling misses the cache as it should.
+    runs: Vec<TextRun>,
+    lines: Vec<WrappedLine>,
+}
+
+impl ShapeCache {
+    fn matches(
+        &self,
+        text: &SharedString,
+        wrap_width: Option<Pixels>,
+        font_size: Pixels,
+        runs: &[TextRun],
+    ) -> bool {
+        self.wrap_width == wrap_width
+            && self.font_size == font_size
+            && self.text == *text
+            && self.runs == runs
+    }
+}
+
 /// Shaped paragraphs of one input plus the offsets needed to map between
 /// byte indices and pixel positions across newlines and wrap rows.
 struct TextLayout {
@@ -1229,12 +1261,36 @@ impl Element for TextElement {
 
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
-        let wrap_width = input.multiline.then_some(bounds.size.width);
-        let lines = window
-            .text_system()
-            .shape_text(display_text.clone(), font_size, &runs, wrap_width, None)
-            .map(|lines| lines.into_vec())
-            .unwrap_or_default();
+        let multiline = input.multiline;
+        let last_scroll_x = input.scroll_x;
+        let wrap_width = multiline.then_some(bounds.size.width);
+        // Reuse last frame's shaping when its inputs are unchanged. Lines
+        // are Arc-backed, so the clone is a refcount per line.
+        let cached = input
+            .shape_cache
+            .as_ref()
+            .filter(|cache| cache.matches(&display_text, wrap_width, font_size, &runs))
+            .map(|cache| cache.lines.clone());
+        let lines = match cached {
+            Some(lines) => lines,
+            None => {
+                let lines = window
+                    .text_system()
+                    .shape_text(display_text.clone(), font_size, &runs, wrap_width, None)
+                    .map(|lines| lines.into_vec())
+                    .unwrap_or_default();
+                self.input.update(cx, |input, _| {
+                    input.shape_cache = Some(ShapeCache {
+                        text: display_text.clone(),
+                        wrap_width,
+                        font_size,
+                        runs,
+                        lines: lines.clone(),
+                    });
+                });
+                lines
+            }
+        };
         let layout = TextLayout {
             lines,
             line_height,
@@ -1248,7 +1304,7 @@ impl Element for TextElement {
         };
         // Single-line inputs do not wrap. Scroll so the cursor stays in
         // view and clip the paint to the box.
-        let scroll_x = if input.multiline {
+        let scroll_x = if multiline {
             px(0.)
         } else {
             let cursor_x = layout
@@ -1261,7 +1317,7 @@ impl Element for TextElement {
                 .map(|line| line.size(line_height).width)
                 .fold(px(0.), |acc, w| acc.max(w));
             let width = bounds.size.width;
-            let mut sx = input.scroll_x;
+            let mut sx = last_scroll_x;
             if cursor_x - sx > width - px(2.) {
                 sx = cursor_x - width + px(2.);
             }
@@ -1362,7 +1418,7 @@ impl Element for TextElement {
             }
             (quads, None)
         };
-        if !input.multiline && input.scroll_x != scroll_x {
+        if !multiline && last_scroll_x != scroll_x {
             self.input.update(cx, |input, _| input.scroll_x = scroll_x);
         }
         PrepaintState {
@@ -1517,6 +1573,42 @@ mod tests {
         assert_eq!(snap_to_char_boundary("é", 1), 0);
         assert_eq!(snap_to_char_boundary("aé", 2), 1);
         assert_eq!(snap_to_char_boundary("", 5), 0);
+    }
+
+    #[test]
+    fn shape_cache_hits_only_on_identical_inputs() {
+        let run = |len: usize, underline: Option<UnderlineStyle>| TextRun {
+            len,
+            font: gpui::font("Sans"),
+            color: gpui::black(),
+            background_color: None,
+            underline,
+            strikethrough: None,
+        };
+        let text = SharedString::from("hello");
+        let cache = ShapeCache {
+            text: text.clone(),
+            wrap_width: Some(px(200.)),
+            font_size: px(14.),
+            runs: vec![run(5, None)],
+            lines: Vec::new(),
+        };
+        assert!(cache.matches(&text, Some(px(200.)), px(14.), &[run(5, None)]));
+        assert!(!cache.matches(&"hellp".into(), Some(px(200.)), px(14.), &[run(5, None)]));
+        assert!(!cache.matches(&text, Some(px(100.)), px(14.), &[run(5, None)]));
+        assert!(!cache.matches(&text, None, px(14.), &[run(5, None)]));
+        assert!(!cache.matches(&text, Some(px(200.)), px(16.), &[run(5, None)]));
+        let wavy = UnderlineStyle {
+            color: None,
+            thickness: px(1.),
+            wavy: true,
+        };
+        assert!(!cache.matches(
+            &text,
+            Some(px(200.)),
+            px(14.),
+            &[run(2, None), run(3, Some(wavy))]
+        ));
     }
 
     #[gpui::test]
