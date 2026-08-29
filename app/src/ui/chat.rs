@@ -304,6 +304,8 @@ pub struct ChatScreen {
     /// Manual path entry for the root switcher.
     root_input: Option<Entity<TextInput>>,
     root_switching: bool,
+    /// A native folder picker is open; more clicks must not open another.
+    root_picker_open: bool,
     /// Session to open once a root switch triggered by the sidebar lands.
     pending_session_select: Option<String>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
@@ -690,6 +692,7 @@ impl ChatScreen {
             archived_expanded: false,
             root_input: None,
             root_switching: false,
+            root_picker_open: false,
             selection_generation: 0,
             attachment_images: HashMap::new(),
             attachment_requests: HashSet::new(),
@@ -1068,35 +1071,58 @@ impl ChatScreen {
     }
 
     fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
-        // Best-effort native directory picker on a blocking thread so the
-        // window keeps painting; falls back to manual entry.
+        // Best-effort native directory picker as an async child on the
+        // backend runtime, so the window keeps painting. Not
+        // `spawn_blocking`: the runtime waits for blocking tasks on
+        // shutdown, so an open picker blocked quit until it was closed.
+        // `kill_on_drop` closes it with the app instead. Manual entry only
+        // when the picker cannot launch; a cancel just closes.
+        if !self.begin_root_picker(cx) {
+            return;
+        }
         let current = self.project_root.clone().unwrap_or_default();
         self.call(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let output = std::process::Command::new("zenity")
-                        .arg("--file-selection")
-                        .arg("--directory")
-                        .arg("--filename")
-                        .arg(&current)
-                        .output();
-                    match output {
-                        Ok(output) if output.status.success() => Ok(Some(
-                            String::from_utf8_lossy(&output.stdout).trim().to_string(),
-                        )),
-                        _ => Ok(None),
-                    }
-                })
-                .await
-                .map_err(|error| format!("Folder picker failed: {error}"))?
+                let output = tokio::process::Command::new("zenity")
+                    .arg("--file-selection")
+                    .arg("--directory")
+                    .arg("--filename")
+                    .arg(&current)
+                    .kill_on_drop(true)
+                    .output()
+                    .await;
+                match output {
+                    Ok(output) if output.status.success() => Ok(Some(
+                        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                    )),
+                    // Non-zero exit: the user cancelled the dialog.
+                    Ok(_) => Ok(None),
+                    Err(error) => Err(format!("Folder picker failed: {error}")),
+                }
             },
             cx,
-            |this, result, cx| match result {
-                Ok(Some(path)) if !path.is_empty() => this.switch_root(path, cx),
-                Ok(Some(_)) => {}
-                _ => this.show_root_input(cx),
+            |this, result, cx| {
+                this.root_picker_open = false;
+                match result {
+                    Ok(Some(path)) if !path.is_empty() => this.switch_root(path, cx),
+                    Ok(_) => {}
+                    Err(_) => this.show_root_input(cx),
+                }
             },
         );
+    }
+
+    /// Claim the folder picker. One at a time: several at once each
+    /// applied their own result and stalled the app. Returns `false` when
+    /// a picker or a root switch is already in progress.
+    fn begin_root_picker(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.root_picker_open || self.root_switching {
+            return false;
+        }
+        self.root_picker_open = true;
+        self.root_menu_open = false;
+        cx.notify();
+        true
     }
 
     /// Manual path entry when the native picker is unavailable.
@@ -1107,7 +1133,25 @@ impl ChatScreen {
                 cx.new(|cx| TextInput::new("/absolute/path/to/project", cx).with_tab_index(0));
             self.root_input = Some(input);
         }
+        self.root_menu_open = true;
         cx.notify();
+    }
+
+    /// Open or close the project menu from the header chip.
+    pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
+        self.models_menu_open = false;
+        self.mode_menu_open = false;
+        self.mcp_menu_open = false;
+        self.root_menu_open = !self.root_menu_open;
+        cx.notify();
+    }
+
+    /// Text for the header project chip.
+    pub fn project_label(&self) -> String {
+        self.project_root
+            .as_deref()
+            .map(root_display_name)
+            .unwrap_or_else(|| "Choose folder".to_string())
     }
 
     fn refresh_models(&self, cx: &mut Context<Self>) {
@@ -3849,7 +3893,7 @@ impl Render for ChatScreen {
                 .flex_1()
                 .h_full()
                 .min_w_0()
-                .child(self.render_header())
+                .child(self.render_header(cx))
                 .child(self.render_transcript(cx))
                 .when(self.awaiting_first_token && self.is_run_active(), |main| {
                     // Same gutter as transcript text so the dots line up
@@ -3939,7 +3983,8 @@ impl Render for ChatScreen {
                                         .child(wordmark(px(14.), theme::text_primary())),
                                 )
                             })
-                            .child(main),
+                            .child(main)
+                            .children(self.render_root_menu(cx)),
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
@@ -4001,11 +4046,11 @@ impl ChatScreen {
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
     fn render_empty_state(&mut self, cx: &mut Context<Self>) -> Div {
         let expanded = self.composer_expanded;
-        div()
+        let body = div()
             .flex()
             .flex_col()
             .flex_1()
-            .h_full()
+            .min_h_0()
             .min_w_0()
             .items_center()
             .justify_center()
@@ -4080,7 +4125,15 @@ impl ChatScreen {
                                 .child(notice),
                         )
                     }),
-            )
+            );
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .child(self.render_header(cx))
+            .child(body)
     }
 
     /// Group sessions by project root: pinned roots first (in pin order),
@@ -5291,7 +5344,7 @@ impl ChatScreen {
         );
     }
 
-    fn render_header(&self) -> Div {
+    fn render_header(&self, cx: &mut Context<Self>) -> Div {
         let title = self
             .sessions
             .iter()
@@ -5310,7 +5363,7 @@ impl ChatScreen {
             .when(self.sidebar_collapsed, |row| row.pl(px(220.)))
             .child(
                 div()
-                    .flex_1()
+                    .flex_none()
                     .min_w_0()
                     .text_lg()
                     .line_height(px(24.))
@@ -5319,12 +5372,24 @@ impl ChatScreen {
                     .line_clamp(1)
                     .child(title),
             )
+            .child(
+                chip(
+                    "root-picker",
+                    Some("folder-open"),
+                    self.project_label(),
+                    true,
+                    self.root_menu_open,
+                )
+                .flex_none()
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.toggle_root_menu(cx);
+                })),
+            )
+            .child(div().flex_1())
     }
 
-    /// The open header menu as an inline panel. Rendered in normal flow
-    /// below the header; deferred/absolute anchoring proved unreliable.
-    fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let mut menu = div()
+    fn menu_panel() -> Div {
+        div()
             .flex()
             .flex_col()
             .mt_1()
@@ -5332,8 +5397,17 @@ impl ChatScreen {
             .rounded_lg()
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
-            .border_color(gpui::rgb(theme::border()));
-        if self.root_menu_open {
+            .border_color(gpui::rgb(theme::border()))
+    }
+
+    /// The project menu, opened from the header chip. Rendered as an
+    /// overlay in the chat pane, right under the header.
+    fn render_root_menu(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.root_menu_open {
+            return None;
+        }
+        let mut menu = Self::menu_panel().w(px(480.)).max_w_full();
+        {
             for path in self.recent_roots.iter().take(6) {
                 let is_current = self.project_root.as_deref() == Some(path.as_str());
                 menu = menu.child(
@@ -5412,8 +5486,21 @@ impl ChatScreen {
                             ),
                     );
             }
-            return Some(menu);
         }
+        Some(
+            div()
+                .absolute()
+                .top(px(40.))
+                .left_4()
+                .when(self.sidebar_collapsed, |menu| menu.left(px(220.)))
+                .child(menu),
+        )
+    }
+
+    /// The open composer menu as an inline panel. Rendered in normal flow
+    /// below the composer; deferred/absolute anchoring proved unreliable.
+    fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let mut menu = Self::menu_panel();
         if self.mode_menu_open {
             for (mode, label, note) in [
                 (
@@ -5839,11 +5926,6 @@ impl ChatScreen {
             .clone()
             .unwrap_or_else(|| "Model".to_string());
         let bypass = self.permission_mode == "auto";
-        let root_label = self
-            .project_root
-            .as_deref()
-            .map(root_display_name)
-            .unwrap_or_else(|| "Choose folder".to_string());
         div()
             .w_full()
             .flex()
@@ -6080,24 +6162,6 @@ impl ChatScreen {
                                 }),
                         )
                     })
-                    .child(
-                        chip(
-                            "root-picker",
-                            Some("folder-open"),
-                            root_label,
-                            true,
-                            self.root_menu_open,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, _window, cx| {
-                                this.models_menu_open = false;
-                                this.mode_menu_open = false;
-                                this.mcp_menu_open = false;
-                                this.root_menu_open = !this.root_menu_open;
-                                cx.notify();
-                            },
-                        )),
-                    )
                     .child(div().flex_1())
                     .child(
                         div()
@@ -8407,6 +8471,21 @@ mod state_tests {
                 this.current_question().map(|q| q.request_id.as_str()),
                 Some("req-a")
             );
+        });
+    }
+
+    #[gpui::test]
+    fn test_second_picker_click_is_ignored(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.root_menu_open = true;
+            assert!(this.begin_root_picker(cx));
+            assert!(this.root_picker_open);
+            assert!(!this.root_menu_open);
+            // A second click while the picker is open must not start another.
+            this.root_menu_open = true;
+            assert!(!this.begin_root_picker(cx));
+            assert!(this.root_menu_open);
         });
     }
 
