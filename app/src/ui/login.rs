@@ -92,29 +92,42 @@ impl LoginScreen {
             cx.notify();
             return;
         }
+        let backend = self.begin(cx);
+        self.call(
+            async move { backend.login(email, password).await },
+            cx,
+            |this, result, cx| match result {
+                Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
+                // The backend already sanitizes its own error strings.
+                Err(message) => this.error = Some(message),
+            },
+        );
+    }
+
+    /// Enter the busy state for a backend call and hand back the backend
+    /// for the future to own.
+    fn begin(&mut self, cx: &mut Context<Self>) -> Arc<AgentBackend> {
         self.busy = true;
         self.error = None;
         cx.notify();
-        let (spawn_backend, login_backend) = (self.backend.clone(), self.backend.clone());
-        let task = spawn_backend.spawn(async move { login_backend.login(email, password).await });
-        cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|error| {
-                log::debug!("login task failed: {error:?}");
-                Err("Sign in failed. Try again.".to_string())
-            });
-            this.update(cx, |this, cx| {
-                this.busy = false;
-                match result {
-                    Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
-                    // The backend already sanitizes its own error strings;
-                    // anything unexpected still gets a fixed message.
-                    Err(message) => this.error = Some(message),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.backend.clone()
+    }
+
+    /// Run a backend call; `then` runs after the busy state is cleared.
+    fn call<T, F>(
+        &self,
+        future: F,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+    ) where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    {
+        crate::ui::task::call(&self.backend, future, cx, |this, result, cx| {
+            this.busy = false;
+            then(this, result, cx);
+            cx.notify();
+        });
     }
 
     fn submit_clicked(
@@ -132,29 +145,15 @@ impl LoginScreen {
         if self.busy {
             return;
         }
-        self.busy = true;
-        self.error = None;
-        cx.notify();
-        let (spawn_backend, oauth_backend) = (self.backend.clone(), self.backend.clone());
-        let task = spawn_backend.spawn(async move { oauth_backend.oauth_start(provider).await });
-        cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|error| {
-                log::debug!("oauth start failed: {error:?}");
-                Err("Could not start sign in".to_string())
-            });
-            this.update(cx, |this, cx| {
-                this.busy = false;
-                match result {
-                    Ok(auth_url) => {
-                        this.oauth = OAuthFlow::Pending { provider, auth_url };
-                    }
-                    Err(message) => this.error = Some(message),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        let backend = self.begin(cx);
+        self.call(
+            async move { backend.oauth_start(provider).await },
+            cx,
+            move |this, result, _cx| match result {
+                Ok(auth_url) => this.oauth = OAuthFlow::Pending { provider, auth_url },
+                Err(message) => this.error = Some(message),
+            },
+        );
     }
 
     fn confirm_oauth(&mut self, cx: &mut Context<Self>) {
@@ -170,28 +169,15 @@ impl LoginScreen {
             cx.notify();
             return;
         }
-        self.busy = true;
-        self.error = None;
-        cx.notify();
-        let (spawn_backend, oauth_backend) = (self.backend.clone(), self.backend.clone());
-        let task = spawn_backend
-            .spawn(async move { oauth_backend.oauth_complete(provider, redirected).await });
-        cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|error| {
-                log::debug!("oauth completion failed: {error:?}");
-                Err("Sign in failed. Try again.".to_string())
-            });
-            this.update(cx, |this, cx| {
-                this.busy = false;
-                match result {
-                    Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
-                    Err(message) => this.error = Some(message),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        let backend = self.begin(cx);
+        self.call(
+            async move { backend.oauth_complete(provider, redirected).await },
+            cx,
+            |this, result, cx| match result {
+                Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
+                Err(message) => this.error = Some(message),
+            },
+        );
     }
 
     fn cancel_oauth(&mut self, cx: &mut Context<Self>) {
@@ -332,7 +318,7 @@ impl Render for LoginScreen {
                             .text_color(gpui::rgb(theme::text_primary()))
                             .child(format!(
                                 "Finish signing in with {}",
-                                provider_label(*provider)
+                                provider.label()
                             )),
                     )
                     .child(
@@ -417,10 +403,6 @@ impl Render for LoginScreen {
     }
 }
 
-fn provider_label(provider: OAuthProvider) -> &'static str {
-    provider.label()
-}
-
 fn oauth_button(
     provider: OAuthProvider,
     busy: bool,
@@ -429,7 +411,7 @@ fn oauth_button(
     div()
         .id(gpui::SharedString::from(format!(
             "oauth-{}",
-            provider_label(provider).to_lowercase()
+            provider.label().to_lowercase()
         )))
         .flex_1()
         .flex()
@@ -450,7 +432,7 @@ fn oauth_button(
                 })
             })
         })
-        .child(provider_label(provider).to_string())
+        .child(provider.label().to_string())
 }
 
 fn field(label: &str, input: Entity<TextInput>) -> Div {

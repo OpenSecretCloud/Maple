@@ -8,6 +8,7 @@ pub mod markdown;
 pub mod rich_text;
 pub mod settings;
 pub mod spell;
+pub mod task;
 pub mod text_input;
 pub mod theme;
 pub mod titlebar;

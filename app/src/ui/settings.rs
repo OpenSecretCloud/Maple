@@ -154,14 +154,7 @@ impl SettingsScreen {
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
-        let task = self.backend.spawn(future);
-        cx.spawn(async move |this, cx| {
-            let result = task
-                .await
-                .unwrap_or_else(|_| Err("The settings task was cancelled".to_string()));
-            this.update(cx, |this, cx| then(this, result, cx)).ok();
-        })
-        .detach();
+        crate::ui::task::call(&self.backend, future, cx, then);
     }
 
     fn load_mcp_servers(&self, cx: &mut Context<Self>) {
