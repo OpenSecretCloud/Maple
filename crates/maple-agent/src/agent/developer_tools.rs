@@ -1928,13 +1928,30 @@ async fn read_bounded_local_image(
     .map_err(|error| format!("Image read task failed: {error}"))?
 }
 
+/// The approval prompt showed the caller this exact URL. Only a public
+/// host may be contacted, and the response must come from that host: a
+/// redirect could otherwise route an approved fetch to a loopback or
+/// cloud-metadata address.
+fn validate_image_url(url: &reqwest::Url) -> Result<(), String> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("image URL must not contain credentials".to_string());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "image URL must include a public host".to_string())?;
+    super::web_tools::validate_public_host(host)
+        .map_err(|_| "image URL must include a public host".to_string())
+}
+
 async fn download_bounded_image(
     url: reqwest::Url,
     cancel_token: CancellationToken,
 ) -> Result<Vec<u8>, String> {
+    validate_image_url(&url)?;
     let client = reqwest::Client::builder()
         .user_agent(concat!("maple/", env!("CARGO_PKG_VERSION")))
         .timeout(IMAGE_DOWNLOAD_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("failed to create image client: {error}"))?;
     let response = tokio::select! {
@@ -3837,6 +3854,31 @@ mod tests {
                 .and_then(|value| value.get("source"))
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|value| value == source)
+        );
+    }
+
+    #[tokio::test]
+    async fn read_image_only_downloads_from_public_hosts() {
+        for source in [
+            "http://127.0.0.1/pixel.png",
+            "https://localhost/pixel.png",
+            "http://169.254.169.254/latest/meta-data/",
+            "https://metadata.google.internal/pixel.png",
+            "https://[::1]/pixel.png",
+            "https://10.0.0.8/pixel.png",
+            "https://user:secret@example.com/pixel.png",
+        ] {
+            let error = load_bounded_image_bytes(source, None, CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("public host") || error.contains("credentials"),
+                "{source}: {error}"
+            );
+        }
+        assert!(
+            validate_image_url(&reqwest::Url::parse("https://example.com/pixel.png").unwrap())
+                .is_ok()
         );
     }
 

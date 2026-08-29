@@ -404,7 +404,9 @@ pub(crate) fn normalize_public_https_url(raw_url: &str) -> Result<String, String
     Ok(url.into())
 }
 
-fn validate_public_host(host: &str) -> Result<(), String> {
+/// Reject loopback, private, link-local, and internal hosts. Shared by every
+/// tool that fetches a caller-supplied URL.
+pub(crate) fn validate_public_host(host: &str) -> Result<(), String> {
     if let Ok(address) = host.parse::<IpAddr>() {
         let non_public = match address {
             IpAddr::V4(address) => is_non_public_ipv4(address),
