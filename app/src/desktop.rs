@@ -20,6 +20,8 @@ use crate::ui::text_input;
 use crate::ui::titlebar::TitleBar;
 
 enum Screen {
+    /// Startup: the saved session is being validated off the UI thread.
+    Restoring,
     Login(Entity<LoginScreen>),
     Chat(Entity<ChatScreen>),
     Settings(Entity<SettingsScreen>),
@@ -192,11 +194,30 @@ impl Render for MapleApp {
             .font_family(crate::assets::FONT_BODY)
             .child(titlebar)
             .child(match &self.screen {
+                Screen::Restoring => restoring_view().into_any_element(),
                 Screen::Login(login) => login.clone().into_any_element(),
                 Screen::Chat(chat) => chat.clone().into_any_element(),
                 Screen::Settings(screen) => screen.clone().into_any_element(),
             })
     }
+}
+
+/// Shown while the saved session is validated. Offline that can take up
+/// to the backend's 30 s timeout, so it must not delay the window.
+fn restoring_view() -> gpui::Div {
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .justify_center()
+        .items_center()
+        .bg(gpui::rgb(ui::theme::bg_app()))
+        .child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(ui::theme::text_secondary()))
+                .child("Signing in…"),
+        )
 }
 
 /// Last seen window geometry, read back when the app quits.
@@ -251,10 +272,6 @@ pub fn run() {
         .expect("failed to initialize agent backend"),
     );
 
-    // Restore a persisted session before the UI starts so sign-in can be
-    // skipped entirely when the credentials are still valid.
-    let restored_user = backend.restore_now();
-
     Application::new()
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
@@ -308,36 +325,41 @@ pub fn run() {
                         ..Default::default()
                     },
                     |_, cx| {
-                        if let Some(user_id) = restored_user.clone() {
-                            let chat =
-                                cx.new(|cx| ChatScreen::new(backend.clone(), user_id.clone(), cx));
-
-                            cx.new(|cx| {
-                                let mut app = MapleApp {
-                                    backend: backend.clone(),
-                                    screen: Screen::Chat(chat.clone()),
-                                    user_id: Some(user_id),
-                                    parked_chat: None,
-                                    settings: startup_settings.clone(),
-                                    titlebar: cx.new(|_| TitleBar::new("Maple - Private AI Chat")),
-                                };
-                                app.subscribe_chat(&chat, cx);
-                                app
-                            })
-                        } else {
-                            let login = cx.new(|cx| LoginScreen::new(backend.clone(), cx));
-                            cx.new(|cx| MapleApp {
-                                backend: backend.clone(),
-                                screen: Screen::Login(login.clone()),
-                                user_id: None,
-                                parked_chat: None,
-                                settings: startup_settings.clone(),
-                                titlebar: cx.new(|_| TitleBar::new("Maple - Private AI Chat")),
-                            })
-                        }
+                        cx.new(|cx| MapleApp {
+                            backend: backend.clone(),
+                            screen: Screen::Restoring,
+                            user_id: None,
+                            parked_chat: None,
+                            settings: startup_settings.clone(),
+                            titlebar: cx.new(|_| TitleBar::new("Maple - Private AI Chat")),
+                        })
                     },
                 )
                 .expect("failed to open main window");
+            // Validate the saved session on the backend runtime. The
+            // window is already up, so a slow or offline backend shows
+            // "Signing in…" instead of nothing. restore_now blocks on the
+            // runtime, which is allowed from a blocking-pool thread.
+            {
+                let restore_backend = backend.clone();
+                let restore = backend.spawn(async move {
+                    tokio::task::spawn_blocking(move || restore_backend.restore_now())
+                        .await
+                        .ok()
+                        .flatten()
+                });
+                let root_window = window;
+                cx.spawn(async move |cx| {
+                    let restored = restore.await.ok().flatten();
+                    root_window
+                        .update(cx, |app: &mut MapleApp, _window, cx| match restored {
+                            Some(user_id) => app.open_chat(user_id, cx),
+                            None => app.show_login(cx),
+                        })
+                        .ok();
+                })
+                .detach();
+            }
             // Ask for a newer release off the UI thread; the banner shows
             // in the chat when one exists.
             if crate::update::enabled() {
@@ -370,15 +392,6 @@ pub fn run() {
                     cx.entity()
                 })
                 .expect("root entity");
-
-            window
-                .update(cx, |app: &mut MapleApp, _window, cx| {
-                    if let Screen::Login(login) = &app.screen {
-                        let login = login.clone();
-                        app.subscribe_login(&login, cx);
-                    }
-                })
-                .expect("subscribe login");
 
             // The event pump runs once for the whole process and routes events to
             // whichever screen is active. It exits when the root entity is gone.
