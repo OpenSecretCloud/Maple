@@ -8371,21 +8371,38 @@ fn descriptive_tool_title<T: Serialize>(tool_name: &str, arguments: &T) -> Optio
         return Some(skill);
     }
     let arguments = serde_json::to_value(arguments).ok()?;
-    // Most-descriptive argument per tool, in priority order.
-    let detail = [
-        "command",
-        "path",
-        "file_path",
-        "file",
-        "pattern",
-        "query",
-        "url",
-        "uri",
-    ]
-    .iter()
-    .find_map(|key| arguments.get(*key).and_then(|value| value.as_str()))
-    .map(str::trim)
-    .filter(|value| !value.is_empty())?;
+    // Most-descriptive argument per tool, in priority order. Only the shell
+    // is described by its command; an editor call such as
+    // `{command: "view", path: "src/main.rs"}` is about the file.
+    let bare_name = tool_name.rsplit("__").next().unwrap_or(tool_name);
+    let keys: &[&str] = if bare_name == "shell" {
+        &[
+            "command",
+            "path",
+            "file_path",
+            "file",
+            "pattern",
+            "query",
+            "url",
+            "uri",
+        ]
+    } else {
+        &[
+            "path",
+            "file_path",
+            "file",
+            "command",
+            "pattern",
+            "query",
+            "url",
+            "uri",
+        ]
+    };
+    let detail = keys
+        .iter()
+        .find_map(|key| arguments.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
 
     // Keep it to one readable line.
     let first_line = detail.lines().next().unwrap_or(detail).trim();
@@ -17669,6 +17686,31 @@ mod tests {
             normalize_generated_session_title(&"word ".repeat(100))
                 .is_some_and(|title| title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS)
         );
+    }
+
+    #[test]
+    fn descriptive_tool_title_prefers_the_file_over_editor_subcommands() {
+        assert_eq!(
+            descriptive_tool_title(
+                "developer__text_editor",
+                &json!({"command": "view", "path": "src/main.rs"})
+            )
+            .as_deref(),
+            Some("Editor: src/main.rs")
+        );
+        assert_eq!(
+            descriptive_tool_title(
+                "developer__shell",
+                &json!({"command": "ls -la", "path": "/tmp"})
+            )
+            .as_deref(),
+            Some("Terminal: ls -la")
+        );
+        assert_eq!(
+            descriptive_tool_title("developer__shell", &json!({"path": "/tmp"})).as_deref(),
+            Some("Terminal: /tmp")
+        );
+        assert_eq!(descriptive_tool_title("developer__shell", &json!({})), None);
     }
 
     #[test]
