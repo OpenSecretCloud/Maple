@@ -226,6 +226,8 @@ pub fn run() {
                 KeyBinding::new("escape", ui::chat::ChatEscape, Some("Chat")),
                 KeyBinding::new("ctrl-c", ui::chat::CopySelection, Some("Transcript")),
                 KeyBinding::new("cmd-c", ui::chat::CopySelection, Some("Transcript")),
+                KeyBinding::new("ctrl-a", ui::chat::SelectAllTranscript, Some("Transcript")),
+                KeyBinding::new("cmd-a", ui::chat::SelectAllTranscript, Some("Transcript")),
             ]);
             let startup_settings = crate::settings::load_settings();
             ui::theme::set_preference(ui::theme::Preference::parse(&startup_settings.theme));

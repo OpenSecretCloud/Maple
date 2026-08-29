@@ -97,6 +97,8 @@ pub struct TextInput {
     /// unchanged text every frame.
     measure_cache: Option<(SharedString, Pixels, usize)>,
     is_selecting: bool,
+    /// Window position of the right-click menu while it is open.
+    context_menu: Option<gpui::Point<Pixels>>,
     /// Render '*' in place of content characters (password fields).
     mask: bool,
     /// Clear the content once the Enter hook has consumed it (composer behavior).
@@ -145,6 +147,7 @@ impl TextInput {
             max_lines: 8,
             measure_cache: None,
             is_selecting: false,
+            context_menu: None,
             mask: false,
             tab_index: None,
             on_enter: None,
@@ -328,12 +331,142 @@ impl TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.is_selecting = true;
-        if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
-        } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx)
+        self.context_menu = None;
+        let index = self.index_for_mouse_position(event.position);
+        match event.click_count {
+            // A drag only follows a single click; jitter after a double
+            // click must not collapse the word selection.
+            2 => {
+                self.is_selecting = false;
+                self.select_word_at(index, cx);
+            }
+            count if count >= 3 => {
+                self.is_selecting = false;
+                self.move_to(0, cx);
+                self.select_to(self.content.len(), cx);
+            }
+            _ => {
+                self.is_selecting = true;
+                if event.modifiers.shift {
+                    self.select_to(index, cx);
+                } else {
+                    self.move_to(index, cx)
+                }
+            }
         }
+    }
+
+    /// Select the word (or run of spaces) that contains byte `index`.
+    fn select_word_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        let index = index.min(self.content.len());
+        let range = self
+            .content
+            .split_word_bound_indices()
+            .map(|(start, word)| start..start + word.len())
+            .find(|range| index < range.end)
+            .or_else(|| {
+                self.content
+                    .split_word_bound_indices()
+                    .next_back()
+                    .map(|(start, word)| start..start + word.len())
+            })
+            .unwrap_or(0..0);
+        self.move_to(range.start, cx);
+        self.select_to(range.end, cx);
+    }
+
+    fn on_right_click(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.is_selecting = false;
+        window.focus(&self.focus_handle);
+        self.context_menu = Some(event.position);
+        cx.notify();
+    }
+
+    /// Right-click menu: cut, copy, paste, select all.
+    fn render_context_menu(&self, cx: &mut Context<Self>) -> Option<gpui::Deferred> {
+        let position = self.context_menu?;
+        let has_selection = !self.selected_range.is_empty();
+        let item = |id: &'static str,
+                    label: &'static str,
+                    enabled: bool,
+                    action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
+            div()
+                .id(id)
+                .px_3()
+                .py_1p5()
+                .text_sm()
+                .text_color(gpui::rgb(if enabled {
+                    theme::text_primary()
+                } else {
+                    theme::text_muted()
+                }))
+                .when(enabled, |item| {
+                    item.hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                            .cursor_pointer()
+                    })
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        cx.stop_propagation();
+                        this.context_menu = None;
+                        action(this, window, cx);
+                        cx.notify();
+                    }))
+                })
+                .child(label)
+        };
+        Some(gpui::deferred(
+            gpui::anchored()
+                .position(position)
+                .snap_to_window_with_margin(px(8.))
+                .child(
+                    div()
+                        .id("text-input-menu")
+                        .occlude()
+                        .w(px(140.))
+                        .py_1()
+                        .rounded_md()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .shadow_md()
+                        .flex()
+                        .flex_col()
+                        .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                            this.context_menu = None;
+                            cx.notify();
+                        }))
+                        .child(item(
+                            "text-input-cut",
+                            "Cut",
+                            has_selection,
+                            |this, window, cx| this.cut(&Cut, window, cx),
+                        ))
+                        .child(item(
+                            "text-input-copy",
+                            "Copy",
+                            has_selection,
+                            |this, window, cx| this.copy(&Copy, window, cx),
+                        ))
+                        .child(item(
+                            "text-input-paste",
+                            "Paste",
+                            true,
+                            |this, window, cx| this.paste(&Paste, window, cx),
+                        ))
+                        .child(item(
+                            "text-input-select-all",
+                            "Select all",
+                            !self.content.is_empty(),
+                            |this, window, cx| this.select_all(&SelectAll, window, cx),
+                        )),
+                ),
+        ))
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -1128,12 +1261,14 @@ impl Render for TextInput {
             }))
             .when_some(self.tab_index, |el, index| el.tab_index(index))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(gpui::MouseButton::Right, cx.listener(Self::on_right_click))
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
             .when(self.multiline && self.fill_height, |el| el.h_full())
             .child(TextElement { input: cx.entity() })
+            .children(self.render_context_menu(cx))
     }
 }
 

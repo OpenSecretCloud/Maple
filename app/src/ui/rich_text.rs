@@ -18,6 +18,7 @@ use gpui::{
     HitboxBehavior, InspectorElementId, LayoutId, MouseButton, Pixels, SharedString, StyledText,
     Window, div, prelude::*,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::icons::icon;
 use super::theme;
@@ -47,6 +48,22 @@ fn snap_to_boundary(text: &str, index: usize) -> usize {
     index
 }
 
+/// The word that contains byte `index` of `text`, as a byte range. A run
+/// of whitespace or punctuation counts as a word, like other editors.
+pub fn word_range_at(text: &str, index: usize) -> Range<usize> {
+    let index = snap_to_boundary(text, index);
+    for (start, word) in text.split_word_bound_indices() {
+        let end = start + word.len();
+        if index < end {
+            return start..end;
+        }
+    }
+    // Past the end: the last word, or an empty range in empty text.
+    text.split_word_bound_indices()
+        .next_back()
+        .map_or(0..0, |(start, word)| start..start + word.len())
+}
+
 /// A position inside the transcript's paragraph space.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SelectionPos {
@@ -56,6 +73,25 @@ pub struct SelectionPos {
     pub index: usize,
 }
 
+/// Unit a drag snaps to, from the click count that started it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Granularity {
+    #[default]
+    Char,
+    Word,
+    Paragraph,
+}
+
+impl Granularity {
+    fn from_click_count(count: usize) -> Self {
+        match count {
+            0 | 1 => Self::Char,
+            2 => Self::Word,
+            _ => Self::Paragraph,
+        }
+    }
+}
+
 /// Shared drag-selection state, owned by the chat screen.
 #[derive(Default)]
 pub struct TextSelection {
@@ -63,6 +99,10 @@ pub struct TextSelection {
     head: Option<SelectionPos>,
     down: Option<SelectionPos>,
     selecting: bool,
+    granularity: Granularity,
+    /// The unit under the press (a word or paragraph), kept so a drag in
+    /// either direction extends from it.
+    origin: Option<(SelectionPos, SelectionPos)>,
     /// Text of the paragraphs rendered recently, keyed by ordinal, so the
     /// copied string can be rebuilt without touching chat state.
     registry: HashMap<u64, String>,
@@ -94,19 +134,75 @@ impl TextSelection {
         self.head = None;
         self.down = None;
         self.selecting = false;
+        self.granularity = Granularity::Char;
+        self.origin = None;
     }
 
+    /// The selection unit that contains `pos` at the current granularity.
+    fn unit_at(&self, pos: SelectionPos) -> (SelectionPos, SelectionPos) {
+        let Some(text) = self.registry.get(&pos.ordinal) else {
+            return (pos, pos);
+        };
+        let range = match self.granularity {
+            Granularity::Char => return (pos, pos),
+            Granularity::Word => word_range_at(text, pos.index),
+            Granularity::Paragraph => 0..text.len(),
+        };
+        let at = |index| SelectionPos {
+            ordinal: pos.ordinal,
+            index,
+        };
+        (at(range.start), at(range.end))
+    }
+
+    #[cfg(test)]
     fn begin(&mut self, pos: SelectionPos) {
-        self.anchor = Some(pos);
-        self.head = Some(pos);
+        self.begin_with_clicks(pos, 1);
+    }
+
+    /// Start a selection: one click anchors at a character, a double click
+    /// selects the word, a triple click the paragraph.
+    fn begin_with_clicks(&mut self, pos: SelectionPos, click_count: usize) {
+        self.granularity = Granularity::from_click_count(click_count);
+        let (lo, hi) = self.unit_at(pos);
+        self.anchor = Some(lo);
+        self.head = Some(hi);
         self.down = Some(pos);
+        self.origin = Some((lo, hi));
         self.selecting = true;
     }
 
     fn extend(&mut self, pos: SelectionPos) {
-        if self.selecting {
-            self.head = Some(pos);
+        if !self.selecting {
+            return;
         }
+        let (unit_lo, unit_hi) = self.unit_at(pos);
+        match self.origin {
+            Some((origin_lo, origin_hi)) if self.granularity != Granularity::Char => {
+                if (pos.ordinal, pos.index) >= (origin_lo.ordinal, origin_lo.index) {
+                    self.anchor = Some(origin_lo);
+                    self.head = Some(unit_hi);
+                } else {
+                    self.anchor = Some(origin_hi);
+                    self.head = Some(unit_lo);
+                }
+            }
+            _ => self.head = Some(pos),
+        }
+    }
+
+    /// Select every registered paragraph. The caller registers the
+    /// paragraphs that are not on screen first (see `register`).
+    pub fn select_all(&mut self) {
+        self.reset_selection();
+        self.anchor = Some(SelectionPos {
+            ordinal: 0,
+            index: 0,
+        });
+        self.head = Some(SelectionPos {
+            ordinal: u64::MAX,
+            index: usize::MAX,
+        });
     }
 
     /// End a drag from a paragraph that is not under the pointer. Leaves
@@ -175,11 +271,16 @@ impl TextSelection {
         let Some((lo, hi)) = self.bounds() else {
             return String::new();
         };
+        let mut ordinals: Vec<u64> = self
+            .registry
+            .keys()
+            .copied()
+            .filter(|ordinal| (lo.ordinal..=hi.ordinal).contains(ordinal))
+            .collect();
+        ordinals.sort_unstable();
         let mut parts: Vec<&str> = Vec::new();
-        for ordinal in lo.ordinal..=hi.ordinal {
-            let Some(text) = self.registry.get(&ordinal) else {
-                continue;
-            };
+        for ordinal in ordinals {
+            let text = &self.registry[&ordinal];
             let start = if ordinal == lo.ordinal { lo.index } else { 0 };
             let end = if ordinal == hi.ordinal {
                 hi.index
@@ -200,7 +301,9 @@ impl TextSelection {
             .is_none_or(|registered| registered != text)
     }
 
-    fn register(&mut self, ordinal: u64, text: &str) {
+    /// Keep a paragraph's text so it can be copied. Rendered paragraphs
+    /// register themselves; `select_all` callers register the rest.
+    pub fn register(&mut self, ordinal: u64, text: &str) {
         // A paragraph inside the selection changed (streaming): its byte
         // indices no longer mean the same characters, so drop the selection.
         let changed = self
@@ -469,8 +572,9 @@ impl Element for RichText {
                         let index = layout
                             .index_for_position(event.position)
                             .unwrap_or_else(|ix| ix);
+                        let click_count = event.click_count;
                         entity.update(cx, |state, cx| {
-                            state.begin(SelectionPos { ordinal, index });
+                            state.begin_with_clicks(SelectionPos { ordinal, index }, click_count);
                             cx.notify();
                         });
                     }
@@ -742,6 +846,52 @@ mod tests {
         assert_eq!(selection.range_for(10), Some(0..1));
         let merged = merged_highlights(&[], Some(0..3), "h€llo");
         assert_eq!(merged.map(|runs| runs[0].0.clone()), Some(0..1));
+    }
+
+    #[test]
+    fn double_click_selects_the_word_and_drags_by_words() {
+        let mut selection = TextSelection::default();
+        selection.register(10, "hello big world");
+        selection.begin_with_clicks(pos(10, 7), 2);
+        assert_eq!(selection.selected_text(), "big");
+        selection.extend(pos(10, 13));
+        assert_eq!(selection.selected_text(), "big world");
+        selection.extend(pos(10, 1));
+        assert_eq!(selection.selected_text(), "hello big");
+        selection.end_drag();
+        assert!(selection.has_selection());
+    }
+
+    #[test]
+    fn triple_click_selects_the_paragraph() {
+        let mut selection = TextSelection::default();
+        selection.register(10, "first line");
+        selection.register(11, "second");
+        selection.begin_with_clicks(pos(10, 3), 3);
+        assert_eq!(selection.selected_text(), "first line");
+        selection.extend(pos(11, 2));
+        assert_eq!(selection.selected_text(), "first line\nsecond");
+    }
+
+    #[test]
+    fn word_range_at_handles_edges() {
+        assert_eq!(word_range_at("ab cd", 0), 0..2);
+        assert_eq!(word_range_at("ab cd", 2), 2..3);
+        assert_eq!(word_range_at("ab cd", 4), 3..5);
+        assert_eq!(word_range_at("ab cd", 9), 3..5);
+        assert_eq!(word_range_at("", 0), 0..0);
+    }
+
+    #[test]
+    fn select_all_covers_every_registered_paragraph_in_order() {
+        let mut selection = TextSelection::default();
+        selection.register(4096, "one");
+        selection.register(8192, "two");
+        selection.register(4097, "one b");
+        selection.select_all();
+        assert!(selection.has_selection());
+        assert_eq!(selection.selected_text(), "one\none b\ntwo");
+        assert_eq!(selection.range_for(8192), Some(0..3));
     }
 
     #[test]

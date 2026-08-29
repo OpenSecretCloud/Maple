@@ -25,7 +25,7 @@ use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
-gpui::actions!(chat, [ChatEscape, CopySelection]);
+gpui::actions!(chat, [ChatEscape, CopySelection, SelectAllTranscript]);
 
 pub struct LoggedOut;
 
@@ -355,6 +355,8 @@ pub struct ChatScreen {
     attachment_requests: HashSet<String>,
     /// Shared drag-selection state for transcript text.
     selection: Option<Entity<rich_text::TextSelection>>,
+    /// Window position of the transcript's right-click menu while open.
+    transcript_menu: Option<gpui::Point<gpui::Pixels>>,
     /// Focus handle of the transcript; a selection press moves focus here
     /// so the copy keybinding applies.
     transcript_focus: Option<gpui::FocusHandle>,
@@ -693,6 +695,7 @@ impl ChatScreen {
             attachment_requests: HashSet::new(),
             timeline_revisions: HashMap::new(),
             selection: None,
+            transcript_menu: None,
             transcript_focus: None,
             awaiting_first_token: false,
             toggled_tools: HashSet::new(),
@@ -2077,6 +2080,11 @@ impl ChatScreen {
             cx.notify();
             return;
         }
+        if self.transcript_menu.is_some() {
+            self.transcript_menu = None;
+            cx.notify();
+            return;
+        }
         if self.current_question().is_some() {
             self.skip_question(cx);
             return;
@@ -2106,6 +2114,10 @@ impl ChatScreen {
 
     /// Copy the transcript drag selection, when there is one.
     fn copy_selection(&mut self, _: &CopySelection, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_selected_text(cx);
+    }
+
+    fn copy_selected_text(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.selection.clone() else {
             return;
         };
@@ -2113,6 +2125,129 @@ impl ChatScreen {
         if !text.is_empty() {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         }
+    }
+
+    fn select_all_transcript(
+        &mut self,
+        _: &SelectAllTranscript,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_all_text(cx);
+    }
+
+    /// Select every message in the transcript. Paragraphs that are not on
+    /// screen have never registered their text, so register them here;
+    /// the ordinals mirror the ones `render_message` assigns.
+    fn select_all_text(&mut self, cx: &mut Context<Self>) {
+        let Some(selection) = self.selection.clone() else {
+            return;
+        };
+        selection.update(cx, |selection, cx| {
+            for item in &self.timeline {
+                if item.item_type != "message" {
+                    continue;
+                }
+                let text = item.text.as_deref().unwrap_or("");
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let base = self.markdown_cache.ordinal_for(&item.id);
+                let revision = self
+                    .timeline_index
+                    .get(&item.id)
+                    .map_or(0, |(_, revision)| *revision);
+                if item.role.as_deref() == Some("user") {
+                    let derived = self.derived.get(item, revision);
+                    selection.register(base + 2048, &derived.text);
+                    continue;
+                }
+                let document =
+                    self.markdown_cache
+                        .get(&item.id, MarkdownKind::Body, revision, text);
+                for (index, block) in document.blocks.iter().enumerate() {
+                    if let markdown::Block::Text { text, .. } = block {
+                        selection.register(base + index as u64, text);
+                    }
+                }
+            }
+            selection.select_all();
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// Right-click menu over the transcript: copy the selection, select all.
+    fn render_transcript_menu(&self, cx: &mut Context<Self>) -> Option<gpui::Deferred> {
+        let position = self.transcript_menu?;
+        let has_selection = self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.read(cx).has_selection());
+        let item = |id: &'static str,
+                    icon_name: &'static str,
+                    label: &'static str,
+                    on_click: MenuAction| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1p5()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_primary()))
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.transcript_menu = None;
+                    on_click(this, cx);
+                    cx.notify();
+                }))
+                .child(icon(icon_name, px(14.), theme::text_secondary()))
+                .child(label)
+        };
+        Some(gpui::deferred(
+            gpui::anchored()
+                .position(position)
+                .snap_to_window_with_margin(px(8.))
+                .child(
+                    div()
+                        .id("transcript-menu")
+                        .occlude()
+                        .w(px(160.))
+                        .py_1()
+                        .rounded_md()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .shadow_md()
+                        .flex()
+                        .flex_col()
+                        .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                            this.transcript_menu = None;
+                            cx.notify();
+                        }))
+                        .when(has_selection, |menu| {
+                            menu.child(item(
+                                "transcript-menu-copy",
+                                "copy",
+                                "Copy",
+                                Box::new(|this, cx| this.copy_selected_text(cx)),
+                            ))
+                        })
+                        .child(item(
+                            "transcript-menu-select-all",
+                            "text-select",
+                            "Select all",
+                            Box::new(|this, cx| this.select_all_text(cx)),
+                        )),
+                ),
+        ))
     }
 
     /// Toggle one tool card's expansion and re-measure its row.
@@ -3708,6 +3843,7 @@ impl Render for ChatScreen {
             .key_context("Chat")
             .on_action(cx.listener(Self::chat_escape))
             .on_action(cx.listener(Self::copy_selection))
+            .on_action(cx.listener(Self::select_all_transcript))
             .flex_1()
             .min_h_0()
             .flex()
@@ -5540,6 +5676,17 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .min_h_0()
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    if let Some(focus) = &this.transcript_focus {
+                        window.focus(focus);
+                    }
+                    this.transcript_menu = Some(event.position);
+                    cx.notify();
+                }),
+            )
+            .children(self.render_transcript_menu(cx))
             .child(
                 // The list element does not apply padding itself, so the
                 // gutter lives here. Same column width as the composer.
