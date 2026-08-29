@@ -79,6 +79,66 @@ impl DraftImage {
         self.data_url.is_some()
     }
 }
+/// Strings and element ids one sidebar task row shows, built when the
+/// session list changes instead of on every frame.
+struct SidebarRow {
+    id: Arc<str>,
+    element_id: SharedString,
+    /// Hover group that reveals the row's action buttons.
+    group: SharedString,
+    rename_id: SharedString,
+    archive_id: SharedString,
+    title: SharedString,
+    /// Display name of the task's project, for archived rows.
+    project_name: SharedString,
+    /// Lower-cased title, matched against the sidebar filter.
+    search: String,
+}
+
+impl SidebarRow {
+    fn build(session: &AgentSessionSummary, project_name: &str) -> Self {
+        let id = &session.id;
+        Self {
+            id: Arc::from(id.as_str()),
+            element_id: SharedString::from(format!("session-{id}")),
+            group: SharedString::from(format!("task-row-{id}")),
+            rename_id: SharedString::from(format!("rename-session-{id}")),
+            archive_id: SharedString::from(format!("archive-session-{id}")),
+            title: SharedString::from(session.title.clone()),
+            project_name: SharedString::from(project_name.to_string()),
+            search: session.title.to_lowercase(),
+        }
+    }
+}
+
+/// One project section of the sidebar with its live tasks, rebuilt with
+/// the groups instead of formatted per frame.
+struct ProjectGroup {
+    root: Arc<str>,
+    name: SharedString,
+    element_id: SharedString,
+    /// Hover group that reveals the header's action buttons.
+    group: SharedString,
+    pin_id: SharedString,
+    menu_id: SharedString,
+    /// Indices into `sessions` of the live tasks that pass the filter.
+    tasks: Vec<usize>,
+}
+
+impl ProjectGroup {
+    fn build(root: &str, name: String, tasks: Vec<usize>) -> Self {
+        Self {
+            root: Arc::from(root),
+            name: SharedString::from(name),
+            element_id: SharedString::from(format!("project-{root}")),
+            group: SharedString::from(format!("project-row-{root}")),
+            pin_id: SharedString::from(format!("pin-project-{root}")),
+            menu_id: SharedString::from(format!("menu-project-{root}")),
+            tasks,
+        }
+    }
+}
+
 /// Which text of a timeline item a parsed document belongs to.
 #[derive(Clone, Copy)]
 enum MarkdownKind {
@@ -381,9 +441,11 @@ pub struct ChatScreen {
     /// Item id to `(index in timeline, revision)`; the revision counts
     /// applied updates so caches can tell a changed item from a stable one.
     timeline_index: HashMap<String, (usize, u64)>,
-    /// Sidebar groups: (project root, indices into `sessions`), rebuilt
-    /// when sessions or roots change instead of on every render.
-    project_groups: Vec<(String, Vec<usize>)>,
+    /// Per-session sidebar strings, parallel to `sessions`.
+    sidebar_rows: Vec<SidebarRow>,
+    /// Sidebar groups with their tasks, rebuilt when sessions, roots,
+    /// names, or the filter change instead of on every render.
+    project_groups: Vec<ProjectGroup>,
     /// Indices into `sessions` of archived tasks, newest first.
     archived_indices: Vec<usize>,
     /// Roots whose task list is folded in the sidebar.
@@ -743,6 +805,7 @@ impl ChatScreen {
             markdown_cache: MarkdownCache::default(),
             derived: DerivedCache::default(),
             timeline_index: HashMap::new(),
+            sidebar_rows: Vec::new(),
             project_groups: Vec::new(),
             archived_indices: Vec::new(),
             collapsed_roots: HashSet::new(),
@@ -4566,69 +4629,104 @@ impl ChatScreen {
             .child(body)
     }
 
-    /// Group sessions by project root: pinned roots first (in pin order),
+    /// Rebuild the sidebar sections: pinned roots first (when known),
     /// then the current root, then the other recent roots, then any root
-    /// that only appears on a stored task. Called when sessions, roots, or
-    /// pins change, not per render.
+    /// that only appears on a stored task. Called when sessions, roots,
+    /// names, pins, or the filter change, not per render.
     fn rebuild_project_groups(&mut self) {
-        let known = |root: &str, this: &Self| {
-            this.recent_roots.iter().any(|candidate| candidate == root)
-                || this.project_root.as_deref() == Some(root)
-                || this
-                    .sessions
-                    .iter()
-                    .any(|session| !session.archived && session.project_root == root)
-        };
-        let mut roots: Vec<String> = Vec::new();
-        for root in self
-            .pinned_roots
-            .iter()
-            .filter(|root| known(root, self))
-            .cloned()
-        {
-            roots.push(root);
-        }
-        if let Some(root) = self.project_root.clone()
-            && !roots.contains(&root)
-        {
-            roots.push(root);
-        }
-        for root in self.recent_roots.iter().chain(
-            self.sessions
-                .iter()
-                .filter(|s| !s.archived)
-                .map(|s| &s.project_root),
-        ) {
-            if !roots.contains(root) {
-                roots.push(root.clone());
+        self.sync_sidebar_rows();
+        let filter = self.sidebar_filter.as_str();
+        let filtering = !filter.is_empty();
+        // One pass over the sessions: live tasks per root (in session
+        // order), the archived ones, and the roots seen on any task.
+        let mut tasks_by_root: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut live_roots: Vec<String> = Vec::new();
+        let mut session_roots: HashSet<&str> = HashSet::new();
+        let mut root_search: HashMap<&str, String> = HashMap::new();
+        let mut archived_indices = Vec::new();
+        for (index, session) in self.sessions.iter().enumerate() {
+            let root = session.project_root.as_str();
+            let matches = !filtering
+                || self.sidebar_rows[index].search.contains(filter)
+                || root_search
+                    .entry(root)
+                    .or_insert_with(|| self.root_name(root).to_lowercase())
+                    .contains(filter);
+            if session.archived {
+                if matches {
+                    archived_indices.push(index);
+                }
+                continue;
+            }
+            // Only a live task keeps its project in the sidebar.
+            session_roots.insert(root);
+            match tasks_by_root.get_mut(root) {
+                Some(tasks) => {
+                    if matches {
+                        tasks.push(index);
+                    }
+                }
+                None => {
+                    live_roots.push(root.to_string());
+                    tasks_by_root.insert(
+                        root.to_string(),
+                        if matches { vec![index] } else { Vec::new() },
+                    );
+                }
             }
         }
-        let filtering = !self.sidebar_filter.is_empty();
-        self.project_groups = roots
+        let known = |root: &str| {
+            self.recent_roots.iter().any(|candidate| candidate == root)
+                || self.project_root.as_deref() == Some(root)
+                || session_roots.contains(root)
+        };
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut roots: Vec<&str> = Vec::new();
+        let ordered = self
+            .pinned_roots
+            .iter()
+            .filter(|root| known(root))
+            .chain(self.project_root.iter())
+            .chain(self.recent_roots.iter())
+            .chain(live_roots.iter());
+        for root in ordered {
+            if seen.insert(root.as_str()) {
+                roots.push(root.as_str());
+            }
+        }
+        let groups: Vec<ProjectGroup> = roots
             .into_iter()
             .map(|root| {
-                let indices: Vec<usize> = self
-                    .sessions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, session)| {
-                        !session.archived
-                            && session.project_root == root
-                            && self.matches_filter(session)
-                    })
-                    .map(|(index, _)| index)
-                    .collect();
-                (root, indices)
+                let tasks = tasks_by_root.remove(root).unwrap_or_default();
+                ProjectGroup::build(root, self.root_name(root), tasks)
             })
             // While searching, a project with no matching task is noise.
-            .filter(|(_, indices)| !filtering || !indices.is_empty())
+            .filter(|group| !filtering || !group.tasks.is_empty())
             .collect();
-        self.archived_indices = self
+        self.project_groups = groups;
+        self.archived_indices = archived_indices;
+    }
+
+    /// Rebuild the per-session sidebar strings when the session list
+    /// moved under them; a plain filter change reuses them.
+    fn sync_sidebar_rows(&mut self) {
+        let fresh = self.sidebar_rows.len() == self.sessions.len()
+            && self
+                .sidebar_rows
+                .iter()
+                .zip(&self.sessions)
+                .all(|(row, session)| {
+                    *row.id == *session.id
+                        && row.title.as_ref() == session.title
+                        && row.project_name.as_ref() == self.root_name(&session.project_root)
+                });
+        if fresh {
+            return;
+        }
+        self.sidebar_rows = self
             .sessions
             .iter()
-            .enumerate()
-            .filter(|(_, session)| session.archived && self.matches_filter(session))
-            .map(|(index, _)| index)
+            .map(|session| SidebarRow::build(session, &self.root_name(&session.project_root)))
             .collect();
     }
 
@@ -4648,16 +4746,6 @@ impl ChatScreen {
         self.sidebar_filter.clear();
         self.rebuild_project_groups();
         cx.notify();
-    }
-
-    /// Whether a task row passes the sidebar filter.
-    fn matches_filter(&self, session: &AgentSessionSummary) -> bool {
-        self.sidebar_filter.is_empty()
-            || session.title.to_lowercase().contains(&self.sidebar_filter)
-            || self
-                .root_name(&session.project_root)
-                .to_lowercase()
-                .contains(&self.sidebar_filter)
     }
 
     /// Pin or unpin a project root. Pinned roots sort to the top of the
@@ -4769,6 +4857,7 @@ impl ChatScreen {
                 } else {
                     self.project_names.insert(root.clone(), name);
                 }
+                self.rebuild_project_groups();
                 let names = self.project_names.clone();
                 self.persist_settings(move |settings| settings.project_names = names, cx);
             }
@@ -5482,15 +5571,17 @@ impl ChatScreen {
                                     .child(icon("folder-plus", px(16.), theme::text_secondary())),
                             ),
                     )
-                    .children(self.project_groups.iter().map(|(root, indices)| {
-                        let is_current = current_root == Some(root.as_str());
-                        let is_collapsed = self.collapsed_roots.contains(root);
-                        let is_pinned = self.pinned_roots.iter().any(|pinned| pinned == root);
-                        let name = self.root_name(root);
-                        let tasks = indices.iter().filter_map(|index| self.sessions.get(*index));
-                        let group_name = SharedString::from(format!("project-row-{root}"));
-                        let rename_field = self.rename_field(&RenameTarget::Project(root.clone()));
-                        let menu = (self.project_menu.as_deref() == Some(root.as_str()))
+                    .children(self.project_groups.iter().map(|group| {
+                        let root = &group.root;
+                        let is_current = current_root == Some(&**root);
+                        let is_collapsed = self.collapsed_roots.contains(&**root);
+                        let is_pinned = self.pinned_roots.iter().any(|pinned| **pinned == **root);
+                        let name = group.name.clone();
+                        let tasks = group.tasks.iter().copied();
+                        let group_name = group.group.clone();
+                        let rename_field =
+                            self.rename_field(&RenameTarget::Project(root.to_string()));
+                        let menu = (self.project_menu.as_deref() == Some(&**root))
                             .then(|| self.render_project_menu(root, cx));
                         div()
                             .relative()
@@ -5499,7 +5590,7 @@ impl ChatScreen {
                             .mb_2()
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("project-{root}")))
+                                    .id(group.element_id.clone())
                                     .group(group_name.clone())
                                     .flex()
                                     .items_center()
@@ -5516,7 +5607,7 @@ impl ChatScreen {
                                             .cursor_pointer()
                                     })
                                     .on_click({
-                                        let root = root.clone();
+                                        let root = Arc::clone(root);
                                         cx.listener(move |this, _event, _window, cx| {
                                             this.toggle_root_collapsed(&root, cx);
                                         })
@@ -5537,8 +5628,7 @@ impl ChatScreen {
                                     ))
                                     .when_some(rename_field, |row, field| row.child(field))
                                     .when(
-                                        self.rename.as_ref()
-                                            != Some(&RenameTarget::Project(root.clone())),
+                                        !matches!(&self.rename, Some(RenameTarget::Project(renaming)) if **renaming == **root),
                                         |row| {
                                             row.child(
                                                 div().flex_1().min_w_0().line_clamp(1).child(name),
@@ -5550,16 +5640,14 @@ impl ChatScreen {
                                         // the unpin button itself.
                                         row.child(
                                             div()
-                                                .id(SharedString::from(format!(
-                                                    "pin-project-{root}"
-                                                )))
+                                                .id(group.pin_id.clone())
                                                 .size_5()
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
                                                 .hover(|style| style.cursor_pointer())
                                                 .on_click({
-                                                    let root = root.clone();
+                                                    let root = Arc::clone(root);
                                                     cx.listener(move |this, _event, _window, cx| {
                                                         cx.stop_propagation();
                                                         this.toggle_pin(&root, cx);
@@ -5570,11 +5658,11 @@ impl ChatScreen {
                                     })
                                     .when(!is_pinned, |row| {
                                         row.child(row_action(
-                                            SharedString::from(format!("pin-project-{root}")),
+                                            group.pin_id.clone(),
                                             &group_name,
                                             "pin",
                                             {
-                                                let root = root.clone();
+                                                let root = Arc::clone(root);
                                                 cx.listener(move |this, _event, _window, cx| {
                                                     cx.stop_propagation();
                                                     this.toggle_pin(&root, cx);
@@ -5583,11 +5671,11 @@ impl ChatScreen {
                                         ))
                                     })
                                     .child(row_action(
-                                        SharedString::from(format!("menu-project-{root}")),
+                                        group.menu_id.clone(),
                                         &group_name,
                                         "ellipsis",
                                         {
-                                            let root = root.clone();
+                                            let root = Arc::clone(root);
                                             cx.listener(move |this, _event, _window, cx| {
                                                 cx.stop_propagation();
                                                 this.toggle_project_menu(&root, cx);
@@ -5596,9 +5684,9 @@ impl ChatScreen {
                                     )),
                             )
                             .when(!is_collapsed, |column| {
-                                column.children(tasks.map(|session| {
-                                    self.render_task_row(session, selected, false, cx)
-                                }))
+                                column.children(
+                                    tasks.map(|index| self.render_task_row(index, selected, false, cx)),
+                                )
                             })
                             .children(menu)
                     }))
@@ -5647,12 +5735,11 @@ impl ChatScreen {
                                         ),
                                 )
                                 .when(expanded, |column| {
-                                    column.children(self.archived_indices.iter().filter_map(
-                                        |index| {
-                                            let session = self.sessions.get(*index)?;
-                                            Some(self.render_task_row(session, selected, true, cx))
-                                        },
-                                    ))
+                                    column.children(
+                                        self.archived_indices
+                                            .iter()
+                                            .map(|index| self.render_task_row(*index, selected, true, cx)),
+                                    )
                                 }),
                         )
                     }),
@@ -5664,22 +5751,21 @@ impl ChatScreen {
     /// and a restore button; live rows show an archive button on hover.
     fn render_task_row(
         &self,
-        session: &AgentSessionSummary,
+        index: usize,
         selected: Option<&str>,
         archived: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let is_selected = selected == Some(session.id.as_str());
-        let session_id = session.id.clone();
-        let action_id = session.id.clone();
-        let rename_id = session.id.clone();
-        let rename_target = RenameTarget::Task(session.id.clone());
-        let rename_field = self.rename_field(&rename_target);
+        let row = &self.sidebar_rows[index];
+        let is_selected = selected == Some(&*row.id);
+        let session_id = Arc::clone(&row.id);
+        let action_id = Arc::clone(&row.id);
+        let rename_id = Arc::clone(&row.id);
+        let rename_field = self.rename_field(&RenameTarget::Task(row.id.to_string()));
         let renaming = rename_field.is_some();
-        let group_name = SharedString::from(format!("task-row-{}", session.id));
         div()
-            .id(SharedString::from(format!("session-{}", session.id)))
-            .group(group_name.clone())
+            .id(row.element_id.clone())
+            .group(row.group.clone())
             .flex()
             .items_center()
             .gap_1p5()
@@ -5703,37 +5789,37 @@ impl ChatScreen {
                 this.open_session(&session_id, cx);
             }))
             .when_some(rename_field, |row, field| row.child(field))
-            .when(!renaming, |row| {
-                row.child(
+            .when(!renaming, |el| {
+                el.child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(div().line_clamp(1).child(session.title.clone()))
+                        .child(div().line_clamp(1).child(row.title.clone()))
                         .when(archived, |column| {
                             column.child(
                                 div()
                                     .text_xs()
                                     .text_color(gpui::rgb(theme::text_muted()))
                                     .line_clamp(1)
-                                    .child(self.root_name(&session.project_root)),
+                                    .child(row.project_name.clone()),
                             )
                         }),
                 )
             })
             .child(row_action(
-                SharedString::from(format!("rename-session-{}", session.id)),
-                &group_name,
+                row.rename_id.clone(),
+                &row.group,
                 "pencil",
                 cx.listener(move |this, _event, _window, cx| {
                     cx.stop_propagation();
-                    this.begin_rename(RenameTarget::Task(rename_id.clone()), cx);
+                    this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
                 }),
             ))
             .child(row_action(
-                SharedString::from(format!("archive-session-{}", session.id)),
-                &group_name,
+                row.archive_id.clone(),
+                &row.group,
                 if archived {
                     "archive-restore"
                 } else {
@@ -8742,7 +8828,7 @@ mod state_tests {
             this.sessions[1].archived = true;
             this.rebuild_project_groups();
             assert_eq!(this.project_groups.len(), 1);
-            assert_eq!(this.project_groups[0].1, vec![0]);
+            assert_eq!(this.project_groups[0].tasks, vec![0]);
             assert_eq!(this.archived_indices, vec![1]);
 
             // A root with only archived tasks does not appear as a project.
@@ -9004,8 +9090,8 @@ mod state_tests {
             this.rebuild_project_groups();
             // Only alpha has a live match; beta drops out while searching.
             assert_eq!(this.project_groups.len(), 1);
-            assert_eq!(this.project_groups[0].0, "/work/alpha");
-            assert_eq!(this.project_groups[0].1, vec![0]);
+            assert_eq!(&*this.project_groups[0].root, "/work/alpha");
+            assert_eq!(this.project_groups[0].tasks, vec![0]);
             // Archived rows are searched too.
             assert_eq!(this.archived_indices, vec![2]);
 
@@ -9013,7 +9099,7 @@ mod state_tests {
             this.sidebar_filter = "beta".to_string();
             this.rebuild_project_groups();
             assert_eq!(this.project_groups.len(), 1);
-            assert_eq!(this.project_groups[0].1, vec![1]);
+            assert_eq!(this.project_groups[0].tasks, vec![1]);
 
             this.sidebar_filter.clear();
             this.rebuild_project_groups();
@@ -9728,7 +9814,11 @@ mod state_tests {
         this.recent_roots = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
         this.pinned_roots = vec!["/c".to_string(), "/a".to_string()];
         this.rebuild_project_groups();
-        let roots: Vec<&String> = this.project_groups.iter().map(|(root, _)| root).collect();
+        let roots: Vec<&str> = this
+            .project_groups
+            .iter()
+            .map(|group| &*group.root)
+            .collect();
         assert_eq!(roots, vec!["/c", "/a", "/b"]);
     }
 
@@ -9930,6 +10020,32 @@ mod state_tests {
             this.set_active_session(summary("s2", "B"), Vec::new(), HashMap::new(), cx);
             assert!(this.toggled_tools.contains("t2"));
             assert!(this.tool_summaries.contains_key("t9"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_sidebar_rows_follow_titles_and_project_names(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            this.sessions = vec![summary("s1", "Fix Login")];
+            this.rebuild_project_groups();
+            assert_eq!(this.sidebar_rows.len(), 1);
+            assert_eq!(this.sidebar_rows[0].search, "fix login");
+            assert_eq!(this.sidebar_rows[0].project_name.as_ref(), "proj");
+            assert_eq!(this.project_groups[0].name.as_ref(), "proj");
+            // The filter matches the project name case-insensitively.
+            this.sidebar_filter = "PROJ".to_lowercase();
+            this.rebuild_project_groups();
+            assert_eq!(this.project_groups[0].tasks, vec![0]);
+            this.sidebar_filter.clear();
+            // A rename moves the row strings.
+            this.upsert_session(summary("s1", "Renamed"));
+            assert_eq!(this.sidebar_rows[0].title.as_ref(), "Renamed");
+            this.project_names
+                .insert("/tmp/proj".to_string(), "Nice".to_string());
+            this.rebuild_project_groups();
+            assert_eq!(this.sidebar_rows[0].project_name.as_ref(), "Nice");
+            assert_eq!(this.project_groups[0].name.as_ref(), "Nice");
         });
     }
 
