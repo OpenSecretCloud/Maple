@@ -189,6 +189,8 @@ fn session_system_prompt(session_id: &str) -> Option<String> {
         .cloned()
 }
 const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
+const QUEUED_MESSAGE_ATTACHMENTS_ERROR: &str =
+    "New images cannot be added while sending a queued message";
 const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 const MAPLE_IMAGE_ATTACHMENTS_OPERATION: &str = "mapleImageAttachments";
 
@@ -5210,6 +5212,12 @@ impl AgentRuntimeHandle {
             && desktop_send == DesktopSendDisposition::StartOnly
         {
             return Err("Prompt cannot be empty".to_string());
+        }
+        // Reject this combination before the uploads reach the attachment
+        // store; take_desktop_steer_plan repeats the check after the files
+        // would already be on disk.
+        if request.queue_id.is_some() && !request.attachments.is_empty() {
+            return Err(QUEUED_MESSAGE_ATTACHMENTS_ERROR.to_string());
         }
 
         let session_lifecycle_guard = state.session_lifecycle.lock().await;
@@ -10355,7 +10363,7 @@ async fn take_desktop_steer_plan(
 ) -> Result<DesktopSendPlan, String> {
     reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
     if request.queue_id.is_some() && !request.attachments.is_empty() {
-        return Err("New images cannot be added while sending a queued message".to_string());
+        return Err(QUEUED_MESSAGE_ATTACHMENTS_ERROR.to_string());
     }
     if let Some(run_id) =
         desktop_run_id_for_session(state, account_scope, &request.session_id).await?
