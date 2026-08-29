@@ -668,6 +668,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = snap_to_char_boundary(&self.content, offset);
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -720,18 +721,31 @@ impl TextInput {
         else {
             return 0;
         };
+        if position.y < bounds.top() {
+            return 0;
+        }
+        if position.y > bounds.bottom() || !self.layout_is_current(layout) {
+            // Below the box, or the layout is from a frame before the text
+            // changed: its offsets no longer describe `content`.
+            return self.content.len();
+        }
         let local = point(position.x - bounds.left(), position.y - bounds.top());
-        let display = if position.y < bounds.top() {
-            0
-        } else if position.y > bounds.bottom() {
-            layout.len()
-        } else {
-            layout.closest_index_for_position(local)
-        };
+        let display = layout.closest_index_for_position(local);
         self.content_offset_for_display(display)
     }
 
+    /// Whether `layout` was shaped from the current content. A masked
+    /// input shapes one `*` per char, so only the lengths can be compared.
+    fn layout_is_current(&self, layout: &TextLayout) -> bool {
+        if self.mask {
+            layout.text.len() == self.content.chars().count()
+        } else {
+            layout.text == self.content
+        }
+    }
+
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = snap_to_char_boundary(&self.content, offset);
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -924,7 +938,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let bounds = self.last_bounds?;
         let layout = self.last_layout.as_ref()?;
-        if !self.mask && layout.text != self.content {
+        if !self.layout_is_current(layout) {
             // Layout is from a previous frame; report no hit instead of
             // slicing with stale offsets.
             return None;
@@ -933,6 +947,17 @@ impl EntityInputHandler for TextInput {
         let display = layout.closest_index_for_position(local);
         Some(self.offset_to_utf16(self.content_offset_for_display(display)))
     }
+}
+
+/// `offset` clamped to `text` and moved back to the nearest char boundary,
+/// so a cursor from a stale layout or a mouse hit can never split a
+/// multi-byte character.
+fn snap_to_char_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
 }
 
 /// Shaped paragraphs of one input plus the offsets needed to map between
@@ -944,10 +969,6 @@ struct TextLayout {
 }
 
 impl TextLayout {
-    fn len(&self) -> usize {
-        self.text.len()
-    }
-
     fn height(&self) -> Pixels {
         self.lines
             .iter()
@@ -1480,5 +1501,36 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[test]
+    fn snapping_clamps_and_respects_char_boundaries() {
+        assert_eq!(snap_to_char_boundary("abc", 10), 3);
+        assert_eq!(snap_to_char_boundary("abc", 1), 1);
+        // "é" is two bytes; offset 1 is inside it.
+        assert_eq!(snap_to_char_boundary("é", 1), 0);
+        assert_eq!(snap_to_char_boundary("aé", 2), 1);
+        assert_eq!(snap_to_char_boundary("", 5), 0);
+    }
+
+    #[gpui::test]
+    fn test_cursor_moves_never_leave_the_content(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("", cx));
+        input.update(cx, |input, cx| {
+            input.set_text("héllo", cx);
+            input.move_to(100, cx);
+            assert_eq!(input.selected_range, 6..6);
+            input.move_to(0, cx);
+            input.select_to(2, cx);
+            assert_eq!(input.selected_range, 0..1);
+            input.select_to(99, cx);
+            assert_eq!(input.selected_range, 0..6);
+        });
     }
 }
