@@ -7607,24 +7607,24 @@ fn strip_inline_markdown(line: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '!' if chars.peek() == Some(&'[') => {
-                let tail: String = chars.clone().collect();
-                if let Some(skip) = link_end(&tail) {
-                    for _ in 0..skip {
+                let tail: String = chars.clone().skip(1).collect();
+                if let Some((_, skip)) = link_span(&tail) {
+                    // The `[` and the span behind it.
+                    for _ in 0..=skip {
                         chars.next();
                     }
                 }
             }
             '[' => {
                 let tail: String = chars.clone().collect();
-                if let Some(close) = tail.find("](")
-                    && let Some(end) = tail[close..].find(')')
-                {
-                    out.push_str(&tail[..close]);
-                    for _ in 0..close + end + 1 {
-                        chars.next();
+                match link_span(&tail) {
+                    Some((label, skip)) => {
+                        out.push_str(label);
+                        for _ in 0..skip {
+                            chars.next();
+                        }
                     }
-                } else {
-                    out.push(c);
+                    None => out.push(c),
                 }
             }
             '*' | '_' | '`' | '~' => {}
@@ -7634,11 +7634,19 @@ fn strip_inline_markdown(line: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Characters to skip after `!` for an image `[alt](src)`.
-fn link_end(tail: &str) -> Option<usize> {
-    let close = tail.find("](")?;
-    let end = tail[close..].find(')')?;
-    Some(close + end + 1)
+/// A link `label](target)` at the start of `tail` (the text after `[`):
+/// the label and the number of characters through the closing `)`. The
+/// count is in characters, since the caller advances a char iterator.
+/// `None` when the first `]` is not followed by `(`, so an unrelated
+/// bracket pair earlier in the line is left alone.
+fn link_span(tail: &str) -> Option<(&str, usize)> {
+    let close = tail.find(']')?;
+    let rest = &tail[close..];
+    if !rest.starts_with("](") {
+        return None;
+    }
+    let end = rest.find(')')?;
+    Some((&tail[..close], tail[..close + end + 1].chars().count()))
 }
 
 #[cfg(test)]
@@ -7652,6 +7660,26 @@ mod speech_tests {
             speech_chunks(text),
             vec!["Title See the docs for bold code. item one item two".to_string()]
         );
+    }
+
+    #[test]
+    fn links_strip_by_character_not_byte() {
+        assert_eq!(strip_inline_markdown("[café](x) rest"), "café rest");
+        assert_eq!(strip_inline_markdown("![ünï](p.png) after"), "after");
+        assert_eq!(
+            strip_inline_markdown("see [naïve](https://x.y/ü)!"),
+            "see naïve!"
+        );
+    }
+
+    #[test]
+    fn unrelated_brackets_are_not_links() {
+        assert_eq!(strip_inline_markdown("a [b] c [d](e) f"), "a [b] c d f");
+        assert_eq!(
+            strip_inline_markdown("see [x] then (y)"),
+            "see [x] then (y)"
+        );
+        assert_eq!(strip_inline_markdown("![alt] no link"), "[alt] no link");
     }
 
     #[test]
