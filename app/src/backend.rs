@@ -435,9 +435,15 @@ impl AgentBackend {
         });
         match result {
             Ok(user_id) => Some(user_id),
-            Err(error) => {
+            Err(error) if maple_agent::maple_api::is_auth_rejection(&error) => {
                 log::debug!("persisted auth rejected: {error:?}");
                 Self::clear_persisted_auth();
+                None
+            }
+            Err(error) => {
+                // Offline, timeout, or a server fault: the credentials may
+                // still be good, so keep them for the next launch.
+                log::warn!("persisted auth could not be validated: {error}");
                 None
             }
         }

@@ -223,7 +223,7 @@ impl MapleApiSession {
         self.record_refresh(&snapshot).await?;
         let response = response.map_err(map_sdk_error)?;
         if response.user.id.to_string() != self.user_id {
-            return Err("Maple API authentication belongs to a different account".to_string());
+            return Err(AUTH_WRONG_ACCOUNT_MESSAGE.to_string());
         }
         Ok(())
     }
@@ -497,12 +497,31 @@ fn capture_tokens(client: &OpenSecretClient) -> Result<TokenPair, String> {
     })
 }
 
+/// Error text for credentials the backend refused.
+pub const AUTH_REJECTED_MESSAGE: &str = "Maple API authentication was rejected";
+/// Error text for credentials that belong to another account than expected.
+pub const AUTH_WRONG_ACCOUNT_MESSAGE: &str =
+    "Maple API authentication belongs to a different account";
+
+/// True when `message` (from [`MapleApiAuthState::set_auth`]) means the
+/// backend positively refused the credentials, as opposed to a transport
+/// error or timeout where the credentials may still be valid.
+pub fn is_auth_rejection(message: &str) -> bool {
+    message == AUTH_REJECTED_MESSAGE || message == AUTH_WRONG_ACCOUNT_MESSAGE
+}
+
 fn map_sdk_error(error: opensecret::Error) -> String {
     log::warn!(
         "OpenSecret SDK authentication operation failed ({})",
         crate::agent::provider::opensecret_error_category(&error)
     );
-    "Maple API authentication failed".to_string()
+    match error {
+        opensecret::Error::Authentication(_)
+        | opensecret::Error::Api {
+            status: 401 | 403, ..
+        } => AUTH_REJECTED_MESSAGE.to_string(),
+        _ => "Maple API authentication failed".to_string(),
+    }
 }
 
 /// A buffered response from a Maple audio endpoint.
@@ -606,7 +625,7 @@ impl MapleApiCredentialValidator for BackendCredentialValidator {
         let response = client.get_user().await.map_err(map_sdk_error)?;
         let actual_user_id = normalized_user_id(&response.user.id.to_string())?;
         if actual_user_id != expected_user_id {
-            return Err("Maple API authentication belongs to a different account".to_string());
+            return Err(AUTH_WRONG_ACCOUNT_MESSAGE.to_string());
         }
         Ok(())
     }
@@ -727,6 +746,26 @@ impl MapleApiAuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_refused_credentials_count_as_rejection() {
+        let rejected = map_sdk_error(opensecret::Error::Authentication("bad token".into()));
+        assert!(is_auth_rejection(&rejected));
+        let forbidden = map_sdk_error(opensecret::Error::Api {
+            status: 401,
+            message: "expired".into(),
+        });
+        assert!(is_auth_rejection(&forbidden));
+        assert!(is_auth_rejection(AUTH_WRONG_ACCOUNT_MESSAGE));
+        let outage = map_sdk_error(opensecret::Error::Api {
+            status: 503,
+            message: "down".into(),
+        });
+        assert!(!is_auth_rejection(&outage));
+        assert!(!is_auth_rejection(
+            "Maple API authentication validation timed out"
+        ));
+    }
     use axum::{
         Json, Router,
         extract::{Path, State},
@@ -771,7 +810,7 @@ mod tests {
                 .map(|(user_id, _)| user_id)
                 .ok_or_else(|| "test credential is missing its account prefix".to_string())?;
             if actual_user_id != expected_user_id {
-                return Err("Maple API authentication belongs to a different account".to_string());
+                return Err(AUTH_WRONG_ACCOUNT_MESSAGE.to_string());
             }
             if tokens.access_token.ends_with("refresh-during-validation") {
                 client
