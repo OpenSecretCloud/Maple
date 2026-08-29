@@ -62,14 +62,38 @@ impl MapleApp {
         cx.notify();
     }
 
-    /// Tear down the chat screen and return to a fresh login form.
+    /// Tear down the chat screen and return to a fresh login form. A
+    /// no-op when the login form is already showing, so a sign-out that
+    /// is reported twice (Settings button, then the backend) keeps the
+    /// form the user may already be typing in.
     fn show_login(&mut self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let login = cx.new(|cx| LoginScreen::new(backend, cx));
-        self.screen = Screen::Login(login);
         self.user_id = None;
         self.parked_chat = None;
+        if matches!(self.screen, Screen::Login(_)) {
+            return;
+        }
+        let backend = self.backend.clone();
+        let login = cx.new(|cx| LoginScreen::new(backend, cx));
+        self.subscribe_login(&login, cx);
+        self.screen = Screen::Login(login);
         cx.notify();
+    }
+
+    /// Wire the login form: a successful sign-in opens the chat screen.
+    fn subscribe_login(&mut self, login: &Entity<LoginScreen>, cx: &mut Context<Self>) {
+        cx.subscribe(
+            login,
+            |app: &mut MapleApp, _emitter, event: &LoginSucceeded, cx| {
+                let user_id = event.0.clone();
+                let backend = app.backend.clone();
+                let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
+                app.user_id = Some(user_id);
+                app.screen = Screen::Chat(chat.clone());
+                app.subscribe_chat(&chat, cx);
+                cx.notify();
+            },
+        )
+        .detach();
     }
 
     /// Park the chat screen and show settings.
@@ -326,34 +350,10 @@ pub fn run() {
 
             window
                 .update(cx, |app: &mut MapleApp, _window, cx| {
-                    let Screen::Login(login) = &app.screen else {
-                        return;
-                    };
-                    // A restored session starts on the chat screen and needs
-                    // the same sign-out routing.
-                    if let Screen::Chat(chat) = &app.screen {
-                        cx.subscribe(
-                            chat,
-                            |app: &mut MapleApp, _emitter, _event: &LoggedOut, cx| {
-                                app.show_login(cx);
-                            },
-                        )
-                        .detach();
-                        return;
+                    if let Screen::Login(login) = &app.screen {
+                        let login = login.clone();
+                        app.subscribe_login(&login, cx);
                     }
-                    cx.subscribe(login, {
-                        let backend = backend.clone();
-                        move |app: &mut MapleApp, _emitter, event: &LoginSucceeded, cx| {
-                            let user_id = event.0.clone();
-                            let chat =
-                                cx.new(|cx| ChatScreen::new(backend.clone(), user_id.clone(), cx));
-                            app.user_id = Some(user_id);
-                            app.screen = Screen::Chat(chat.clone());
-                            app.subscribe_chat(&chat, cx);
-                            cx.notify();
-                        }
-                    })
-                    .detach();
                 })
                 .expect("subscribe login");
 
