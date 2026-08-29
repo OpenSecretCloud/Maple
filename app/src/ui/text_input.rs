@@ -188,7 +188,7 @@ impl TextInput {
 
     /// Replace the word under the right-click menu with `replacement`.
     fn apply_suggestion(&mut self, range: Range<usize>, replacement: &str, cx: &mut Context<Self>) {
-        if range.end > self.content.len() {
+        if self.content.get(range.clone()).is_none() {
             return;
         }
         self.content =
@@ -270,6 +270,7 @@ impl TextInput {
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
+        self.forget_text_positions();
         self.refresh_spelling();
         cx.notify();
     }
@@ -277,9 +278,19 @@ impl TextInput {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.content = "".into();
         self.selected_range = 0..0;
-        self.selection_reversed = false;
+        self.forget_text_positions();
         self.misspelled.clear();
         cx.notify();
+    }
+
+    /// Drop every state that holds a byte range into the old content: an
+    /// IME composition, a reversed selection, and the menus whose items
+    /// point at a word.
+    fn forget_text_positions(&mut self) {
+        self.marked_range = None;
+        self.selection_reversed = false;
+        self.spell_menu = None;
+        self.context_menu = None;
     }
 
     fn enter_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -501,8 +512,8 @@ impl TextInput {
                     cx.stop_propagation();
                     this.context_menu = None;
                     this.spell_menu = None;
-                    if range.end <= this.content.len() {
-                        spell::add_word(&this.content[range.clone()]);
+                    if let Some(word) = this.content.get(range.clone()) {
+                        spell::add_word(word);
                     }
                     this.refresh_spelling();
                     cx.notify();
@@ -840,6 +851,9 @@ impl EntityInputHandler for TextInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        // Menu items hold ranges into the old text.
+        self.spell_menu = None;
+        self.context_menu = None;
         self.refresh_spelling();
         cx.notify();
     }
@@ -866,11 +880,17 @@ impl EntityInputHandler for TextInput {
         } else {
             self.marked_range = None;
         }
+        // The IME reports the selection relative to the marked text.
+        let len = self.content.len();
         self.selected_range = new_selected_range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+            .map(|new_range| {
+                (new_range.start + range.start).min(len)..(new_range.end + range.start).min(len)
+            })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.spell_menu = None;
+        self.context_menu = None;
 
         self.refresh_spelling();
         cx.notify();
