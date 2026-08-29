@@ -6400,14 +6400,8 @@ impl AgentRuntimeHandle {
                 .await
                 .insert(session_id.clone(), goose_mode);
         }
-        {
-            let mut runtime = state.inner.lock().await;
-            let current = runtime
-                .as_mut()
-                .ok_or_else(|| "Agent runtime is not running".to_string())?;
-            ensure_runtime_account(current, account_scope)?;
-            current.mode = request.mode.clone();
-        }
+        // The runtime-wide mode is the default for sends that omit one. It is
+        // fixed at start; one task's choice must not leak into other tasks.
 
         if goose_mode == GooseMode::Auto {
             let request_ids = {
