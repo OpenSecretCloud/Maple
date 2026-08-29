@@ -17,13 +17,17 @@ use super::rich_text::{self, Highlights, Links, RenderCtx};
 use super::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-struct InlineStyle {
+pub struct InlineStyle {
     bold: bool,
     italic: bool,
     strikethrough: bool,
     code: bool,
     link: bool,
 }
+
+/// Inline style spans of a text block. Stored as flags, not resolved
+/// colors, so a cached document re-renders when the theme changes.
+pub type InlineStyles = Rc<[(std::ops::Range<usize>, InlineStyle)]>;
 
 impl InlineStyle {
     fn is_plain(self) -> bool {
@@ -115,12 +119,13 @@ impl Paragraph {
     }
 }
 
-/// One parsed block with its inline highlights already resolved.
+/// One parsed block. Text blocks keep inline styles as flags; colors are
+/// resolved at render time so cached documents follow theme changes.
 #[derive(Clone)]
 pub enum Block {
     Text {
         text: SharedString,
-        highlights: Highlights,
+        styles: InlineStyles,
         /// Clickable link ranges with destinations, byte ranges into `text`.
         links: Links,
         text_size: Option<gpui::Pixels>,
@@ -153,20 +158,21 @@ fn text_block(
     list_depth: usize,
 ) -> Block {
     // Only styled spans become highlights; unstyled ranges inherit the
-    // ambient text style resolved at paint time.
-    let mut highlights: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> = Vec::new();
+    // ambient text style resolved at paint time. Spans keep style flags,
+    // not colors: the theme is read when the block is rendered.
+    let mut styles: Vec<(std::ops::Range<usize>, InlineStyle)> = Vec::new();
     for (range, style) in paragraph.spans {
         if style.is_plain() {
             continue;
         }
-        if let Some((last_range, last_style)) = highlights.last_mut()
+        if let Some((last_range, last_style)) = styles.last_mut()
             && last_range.end == range.start
-            && *last_style == style.highlight()
+            && *last_style == style
         {
             last_range.end = range.end;
             continue;
         }
-        highlights.push((range, style.highlight()));
+        styles.push((range, style));
     }
     let links: Links = paragraph
         .links
@@ -175,7 +181,7 @@ fn text_block(
         .collect();
     Block::Text {
         text: SharedString::new(paragraph.text),
-        highlights: Rc::from(highlights),
+        styles: Rc::from(styles),
         links,
         text_size,
         weight,
@@ -209,25 +215,33 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
         container = match block {
             Block::Text {
                 text,
-                highlights,
+                styles,
                 links,
                 text_size,
                 weight,
                 in_quote,
                 list_depth,
-            } => container.child(wrap_inline(
-                rich_text::paragraph(
-                    text.clone(),
-                    highlights.clone(),
-                    links.clone(),
-                    *text_size,
-                    *weight,
-                    ctx.for_block(index),
-                    ctx,
-                ),
-                *in_quote,
-                *list_depth,
-            )),
+            } => {
+                // Resolve the palette now; documents are cached across
+                // theme switches and must not keep stale colors.
+                let highlights: Highlights = styles
+                    .iter()
+                    .map(|(range, style)| (range.clone(), style.highlight()))
+                    .collect();
+                container.child(wrap_inline(
+                    rich_text::paragraph(
+                        text.clone(),
+                        highlights,
+                        links.clone(),
+                        *text_size,
+                        *weight,
+                        ctx.for_block(index),
+                        ctx,
+                    ),
+                    *in_quote,
+                    *list_depth,
+                ))
+            }
             Block::Code {
                 code,
                 label,
@@ -582,5 +596,42 @@ mod tests {
                 |block| matches!(block, Block::Code { label, .. } if label.as_ref() == "CODE")
             )
         );
+    }
+
+    #[test]
+    fn code_span_color_follows_theme_switch() {
+        // A document parsed under one palette must re-resolve its inline
+        // colors under the other: parse caches blocks across theme flips.
+        let document = parse("token at `~/.mutiny/token` end");
+        let Block::Text { styles, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert!(
+            styles.iter().any(|(_, style)| style.code),
+            "expected a code span in the parsed styles"
+        );
+
+        let code_color = || {
+            styles
+                .iter()
+                .filter(|(_, style)| style.code)
+                .map(|(_, style)| style.highlight().color)
+                .next()
+                .flatten()
+        };
+
+        theme::set_preference(theme::Preference::Light);
+        theme::resolve(gpui::WindowAppearance::Dark);
+        let light = code_color();
+        let expected_light = Some(gpui::rgb(theme::code_text()).into());
+
+        theme::set_preference(theme::Preference::System);
+        theme::resolve(gpui::WindowAppearance::Dark);
+        let dark = code_color();
+        let expected_dark = Some(gpui::rgb(theme::code_text()).into());
+
+        assert_eq!(light, expected_light);
+        assert_eq!(dark, expected_dark);
+        assert_ne!(light, dark, "inline code color must change with the theme");
     }
 }
