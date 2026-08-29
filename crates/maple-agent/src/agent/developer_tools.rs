@@ -2124,11 +2124,20 @@ fn read_file_blocking(
         let text = String::from_utf8_lossy(&line.bytes).into_owned();
         if line.exceeded_limit || text.len() > remaining_bytes {
             if output_lines.is_empty() {
-                return success_result(format!(
-                    "[Line {} exceeds the {}KB read limit. Use shell with a byte-limiting command to inspect it.]",
+                let mut notice = format!(
+                    "[Line {} exceeds the {}KB read limit. Use shell with a byte-limiting command to inspect it.",
                     start + 1,
                     MAX_READ_BYTES / 1024
-                ));
+                );
+                // The model would otherwise have no way to move past the
+                // long line; tell it the next offset when one exists.
+                match line_follows(&mut reader, line.exceeded_limit, &cancel_token) {
+                    Ok(true) => notice.push_str(&format!(" Use offset={} to continue.", start + 2)),
+                    Ok(false) => {}
+                    Err(error) => return stream_read_error(&params.path, error),
+                }
+                notice.push(']');
+                return success_result(notice);
             }
             has_more = true;
             break;
@@ -2161,6 +2170,37 @@ fn read_file_blocking(
 struct StreamedLine {
     bytes: Vec<u8>,
     exceeded_limit: bool,
+}
+
+/// Whether any data follows the current line. With `skip_current_line`
+/// the rest of a partially consumed line is discarded first.
+fn line_follows<R: BufRead>(
+    reader: &mut R,
+    skip_current_line: bool,
+    cancel_token: &CancellationToken,
+) -> Result<bool, StreamReadError> {
+    if skip_current_line {
+        loop {
+            if cancel_token.is_cancelled() {
+                return Err(StreamReadError::Cancelled);
+            }
+            let (consumed, ended) = {
+                let available = reader.fill_buf().map_err(StreamReadError::Io)?;
+                if available.is_empty() {
+                    return Ok(false);
+                }
+                match available.iter().position(|byte| *byte == b'\n') {
+                    Some(newline) => (newline + 1, true),
+                    None => (available.len(), false),
+                }
+            };
+            reader.consume(consumed);
+            if ended {
+                break;
+            }
+        }
+    }
+    Ok(!reader.fill_buf().map_err(StreamReadError::Io)?.is_empty())
 }
 
 enum StreamReadError {
@@ -3642,6 +3682,35 @@ mod tests {
         .await;
         assert_eq!(bounded.is_error, Some(false));
         assert!(text(&bounded).contains("exceeds the 50KB read limit"));
+        assert!(!text(&bounded).contains("offset="));
+
+        let mut two_lines = vec![b'a'; MAX_READ_BYTES + 1];
+        two_lines.extend_from_slice(b"\nshort\n");
+        fs::write(temp.path().join("two-lines.txt"), two_lines).unwrap();
+        let bounded = read_file(
+            ReadParams {
+                path: "two-lines.txt".to_string(),
+                offset: None,
+                limit: None,
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(bounded.is_error, Some(false));
+        assert!(text(&bounded).contains("Line 1 exceeds the 50KB read limit"));
+        assert!(text(&bounded).contains("Use offset=2 to continue."));
+        let rest = read_file(
+            ReadParams {
+                path: "two-lines.txt".to_string(),
+                offset: Some(2),
+                limit: None,
+            },
+            Some(temp.path()),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(text(&rest), "short");
 
         let directory = read_file(
             ReadParams {
