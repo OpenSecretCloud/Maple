@@ -3,7 +3,7 @@
 //! form submit and composer send, and an optional multi-line mode that wraps
 //! text and grows with its content (Shift+Enter inserts a newline).
 
-use super::theme;
+use super::{spell, theme};
 use std::ops::Range;
 
 use gpui::{
@@ -111,6 +111,14 @@ pub struct TextInput {
     on_paste_image: Option<PasteImageHandler>,
     /// First look at every key press; returning true consumes the key.
     on_key: Option<KeyHandler>,
+    /// Underline words the dictionary rejects (composer only).
+    spell_check: bool,
+    /// Byte ranges of misspelled words, refreshed on every content change
+    /// so prepaint only reads it.
+    misspelled: Vec<Range<usize>>,
+    /// The misspelled word under the open right-click menu, with its
+    /// replacement candidates.
+    spell_menu: Option<(Range<usize>, Vec<String>)>,
 }
 
 impl TextInput {
@@ -153,7 +161,39 @@ impl TextInput {
             on_enter: None,
             on_paste_image: None,
             on_key: None,
+            spell_check: false,
+            misspelled: Vec::new(),
+            spell_menu: None,
         }
+    }
+
+    /// Underline misspelled words and offer replacements in the
+    /// right-click menu.
+    pub fn spell_check(mut self) -> Self {
+        self.spell_check = true;
+        self
+    }
+
+    /// Recompute the misspelled ranges. Call after every content change.
+    fn refresh_spelling(&mut self) {
+        if self.spell_check && !self.mask {
+            self.misspelled = spell::misspelled_ranges(&self.content);
+        }
+    }
+
+    /// Replace the word under the right-click menu with `replacement`.
+    fn apply_suggestion(&mut self, range: Range<usize>, replacement: &str, cx: &mut Context<Self>) {
+        if range.end > self.content.len() {
+            return;
+        }
+        self.content =
+            (self.content[..range.start].to_owned() + replacement + &self.content[range.end..])
+                .into();
+        let end = range.start + replacement.len();
+        self.selected_range = end..end;
+        self.selection_reversed = false;
+        self.refresh_spelling();
+        cx.notify();
     }
 
     /// Give this input an explicit position in the tab order.
@@ -225,6 +265,7 @@ impl TextInput {
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
+        self.refresh_spelling();
         cx.notify();
     }
 
@@ -232,6 +273,7 @@ impl TextInput {
         self.content = "".into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
+        self.misspelled.clear();
         cx.notify();
     }
 
@@ -384,6 +426,16 @@ impl TextInput {
         self.is_selecting = false;
         window.focus(&self.focus_handle);
         self.context_menu = Some(event.position);
+        let index = self.index_for_mouse_position(event.position);
+        self.spell_menu = self
+            .misspelled
+            .iter()
+            .find(|range| range.start <= index && index <= range.end)
+            .cloned()
+            .map(|range| {
+                let suggestions = spell::suggestions(&self.content[range.clone()], 4);
+                (range, suggestions)
+            });
         cx.notify();
     }
 
@@ -391,6 +443,43 @@ impl TextInput {
     fn render_context_menu(&self, cx: &mut Context<Self>) -> Option<gpui::Deferred> {
         let position = self.context_menu?;
         let has_selection = !self.selected_range.is_empty();
+        let suggestions: Vec<_> = self
+            .spell_menu
+            .as_ref()
+            .map(|(range, suggestions)| {
+                suggestions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, suggestion)| {
+                        let range = range.clone();
+                        let replacement = suggestion.clone();
+                        let label = SharedString::from(suggestion.clone());
+                        div()
+                            .id(ElementId::NamedInteger(
+                                "text-input-suggest".into(),
+                                i as u64,
+                            ))
+                            .px_3()
+                            .py_1p5()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .hover(|style| {
+                                style
+                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                    .cursor_pointer()
+                            })
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.context_menu = None;
+                                this.spell_menu = None;
+                                this.apply_suggestion(range.clone(), &replacement, cx);
+                            }))
+                            .child(label)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let has_suggestions = !suggestions.is_empty();
         let item = |id: &'static str,
                     label: &'static str,
                     enabled: bool,
@@ -439,8 +528,13 @@ impl TextInput {
                         .flex_col()
                         .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
                             this.context_menu = None;
+                            this.spell_menu = None;
                             cx.notify();
                         }))
+                        .children(suggestions)
+                        .when(has_suggestions, |menu| {
+                            menu.child(div().my_1().h(px(1.)).bg(gpui::rgb(theme::border())))
+                        })
                         .child(item(
                             "text-input-cut",
                             "Cut",
@@ -715,6 +809,7 @@ impl EntityInputHandler for TextInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        self.refresh_spelling();
         cx.notify();
     }
 
@@ -746,6 +841,7 @@ impl EntityInputHandler for TextInput {
             .map(|new_range| new_range.start + range.start..new_range.end + range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
+        self.refresh_spelling();
         cx.notify();
     }
 
@@ -842,6 +938,47 @@ impl TextLayout {
         }
         self.text.len()
     }
+}
+
+/// Split one base run into pieces so each underlined range gets its own
+/// run. Ranges must not overlap; they are sorted here.
+fn split_runs(
+    base: &TextRun,
+    len: usize,
+    mut underlined: Vec<(Range<usize>, UnderlineStyle)>,
+) -> Vec<TextRun> {
+    if underlined.is_empty() {
+        return vec![base.clone()];
+    }
+    underlined.sort_by_key(|(range, _)| range.start);
+    let mut runs = Vec::with_capacity(underlined.len() * 2 + 1);
+    let mut at = 0;
+    for (range, underline) in underlined {
+        let start = range.start.max(at).min(len);
+        let end = range.end.min(len);
+        if end <= start {
+            continue;
+        }
+        if start > at {
+            runs.push(TextRun {
+                len: start - at,
+                ..base.clone()
+            });
+        }
+        runs.push(TextRun {
+            len: end - start,
+            underline: Some(underline),
+            ..base.clone()
+        });
+        at = end;
+    }
+    if at < len {
+        runs.push(TextRun {
+            len: len - at,
+            ..base.clone()
+        });
+    }
+    runs
 }
 
 struct TextElement {
@@ -974,32 +1111,41 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-            vec![
-                TextRun {
-                    len: marked_range.start,
-                    ..run.clone()
+        // Underlines: the IME marked range (plain) and misspelled words
+        // (wavy red), except the word the cursor is still inside.
+        let mut underlined: Vec<(Range<usize>, UnderlineStyle)> = Vec::new();
+        if let Some(marked_range) = input.marked_range.as_ref() {
+            underlined.push((
+                marked_range.clone(),
+                UnderlineStyle {
+                    color: Some(run.color),
+                    thickness: px(1.0),
+                    wavy: false,
                 },
-                TextRun {
-                    len: marked_range.end - marked_range.start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
+            ));
+        }
+        if !content.is_empty() && !mask {
+            let cursor_in = |range: &Range<usize>| {
+                selected_range.is_empty() && range.start <= cursor && cursor <= range.end
+            };
+            underlined.extend(
+                input
+                    .misspelled
+                    .iter()
+                    .filter(|range| range.end <= content.len() && !cursor_in(range))
+                    .map(|range| {
+                        (
+                            range.clone(),
+                            UnderlineStyle {
+                                color: Some(rgb(theme::spell_error()).into()),
+                                thickness: px(1.0),
+                                wavy: true,
+                            },
+                        )
                     }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len() - marked_range.end,
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect()
-        } else {
-            vec![run]
-        };
+            );
+        }
+        let runs = split_runs(&run, display_text.len(), underlined);
 
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();

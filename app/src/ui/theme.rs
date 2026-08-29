@@ -139,6 +139,8 @@ tokens! {
     status_running: 0xa3a3a3, 0x737373;
     status_success: 0x87a253, 0x6d8a3a;
     status_error: 0xd05e41, 0xc4503a;
+    /// Wavy underline under a misspelled word in the composer.
+    spell_error: 0xe0553f, 0xd0402a;
     status_warning: 0xce994b, 0xb8832f;
 
     code_text: 0xe8e8e8, 0x262626;

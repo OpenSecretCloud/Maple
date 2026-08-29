@@ -219,6 +219,7 @@ pub fn run() {
                 log::warn!("failed to register bundled fonts: {error}");
             }
             text_input::register_key_bindings(cx);
+            ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| cx.quit());
             cx.bind_keys([
                 KeyBinding::new("ctrl-q", QuitApp, None),

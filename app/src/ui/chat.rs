@@ -491,6 +491,7 @@ impl ChatScreen {
         let composer = cx.new(|cx| {
             TextInput::new(COMPOSER_PLACEHOLDER, cx)
                 .multiline(8)
+                .spell_check()
                 .on_key({
                     let weak = weak.clone();
                     // This hook runs while the composer entity is being

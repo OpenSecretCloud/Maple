@@ -22,6 +22,7 @@ desktop = [
     "dep:cpal",
     "dep:rodio",
     "dep:notify",
+    "dep:spellbook",
 ]
 # `maple-gpui acp`: the Agent Client Protocol server on stdio.
 acp = ["maple-agent/acp"]
@@ -47,6 +48,7 @@ pulldown-cmark = { version = "0.13", default-features = false, optional = true }
 cpal = { version = "0.17", optional = true }
 rodio = { version = "0.22", default-features = false, features = ["playback", "wav"], optional = true }
 notify = { version = "8", optional = true }
+spellbook = { version = "0.4", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
