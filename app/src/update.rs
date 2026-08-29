@@ -85,14 +85,49 @@ fn newer_release(body: &serde_json::Value, current: &str) -> Option<UpdateInfo> 
     Some(UpdateInfo { version, url })
 }
 
-/// `major.minor.patch` as a comparable tuple; anything after the patch
-/// (a pre-release suffix) is ignored.
-fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = text.trim().split(['.', '-', '+']);
+/// Comparable form of `major.minor.patch[-pre][+build]`. A pre-release
+/// sorts below its numeric triple, as in semver, so `1.2.0-beta.1` is
+/// older than `1.2.0` and a beta user is told about the final release.
+/// Build metadata is ignored. Pre-release identifiers are compared as
+/// plain strings, which is enough for the tags this app publishes.
+fn parse_version(text: &str) -> Option<Version> {
+    let text = text.trim();
+    let text = text.split_once('+').map_or(text, |(core, _)| core);
+    let (core, pre) = match text.split_once('-') {
+        Some((core, pre)) => (core, Some(pre.to_string())),
+        None => (text, None),
+    };
+    let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next().unwrap_or("0").parse().ok()?;
     let patch = parts.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor, patch))
+    Some(Version {
+        triple: (major, minor, patch),
+        // `Release` (None) must sort after `Pre` (Some), so the suffix is
+        // wrapped in a type whose ordering puts "no suffix" last.
+        release: Release::from(pre),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Version {
+    triple: (u64, u64, u64),
+    release: Release,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Release {
+    Pre(String),
+    Final,
+}
+
+impl From<Option<String>> for Release {
+    fn from(pre: Option<String>) -> Self {
+        match pre {
+            Some(pre) => Self::Pre(pre),
+            None => Self::Final,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -119,7 +154,17 @@ mod tests {
     fn same_or_older_tag_is_ignored() {
         assert!(newer_release(&release("v1.2.0"), "1.2.0").is_none());
         assert!(newer_release(&release("v1.1.9"), "1.2.0").is_none());
-        assert!(newer_release(&release("1.2.0"), "1.2.0-beta.1").is_none());
+        assert!(newer_release(&release("v1.2.0-beta.1"), "1.2.0").is_none());
+        assert!(newer_release(&release("v1.2.0-beta.1"), "1.2.0-beta.1").is_none());
+    }
+
+    #[test]
+    fn final_release_is_newer_than_its_prerelease() {
+        let info = newer_release(&release("1.2.0"), "1.2.0-beta.1").expect("newer");
+        assert_eq!(info.version, "1.2.0");
+        assert!(newer_release(&release("v1.2.0-beta.2"), "1.2.0-beta.1").is_some());
+        assert!(newer_release(&release("v1.2.1-beta.1"), "1.2.0").is_some());
+        assert!(newer_release(&release("v1.2.0+build.5"), "1.2.0").is_none());
     }
 
     #[test]
