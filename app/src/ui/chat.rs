@@ -2524,13 +2524,17 @@ impl ChatScreen {
     }
 
     /// Toggle one tool card's expansion and re-measure its row.
-    fn toggle_tool(&mut self, item_id: &str, ix: usize, cx: &mut Context<Self>) {
+    fn toggle_tool(&mut self, item_id: &str, cx: &mut Context<Self>) {
         if self.toggled_tools.contains(item_id) {
             self.toggled_tools.remove(item_id);
         } else {
             self.toggled_tools.insert(item_id.to_string());
         }
-        self.list_state.splice(ix..ix + 1, 1);
+        // Resolve the row now: an index baked into the card at render
+        // time goes stale once history reloads or items are inserted.
+        if let Some(&(index, _)) = self.timeline_index.get(item_id) {
+            self.list_state.splice(index..index + 1, 1);
+        }
         cx.notify();
     }
 
@@ -6152,8 +6156,7 @@ impl ChatScreen {
                         .timeline_index
                         .get(&item.id)
                         .map_or(0, |(_, revision)| *revision);
-                    render_timeline_item(item, revision, expanded, ix, &transcript)
-                        .into_any_element()
+                    render_timeline_item(item, revision, expanded, &transcript).into_any_element()
                 }
                 None => div().into_any_element(),
             }
@@ -7121,7 +7124,6 @@ fn render_timeline_item(
     item: &AgentTimelineItem,
     revision: u64,
     expanded: bool,
-    ix: usize,
     transcript: &TranscriptCtx,
 ) -> Div {
     let item = match item.item_type.as_str() {
@@ -7136,9 +7138,9 @@ fn render_timeline_item(
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
-                render_tool_with_diff(item, revision, expanded, ix, transcript)
+                render_tool_with_diff(item, revision, expanded, transcript)
             } else {
-                render_tool(item, revision, expanded, ix, transcript)
+                render_tool(item, revision, expanded, transcript)
             }
         }
         "error" => render_error(item),
@@ -7816,10 +7818,9 @@ fn render_tool_with_diff(
     item: &AgentTimelineItem,
     revision: u64,
     details: bool,
-    ix: usize,
     transcript: &TranscriptCtx,
 ) -> Div {
-    let card = render_tool(item, revision, details, ix, transcript);
+    let card = render_tool(item, revision, details, transcript);
     if !details {
         return card;
     }
@@ -7882,7 +7883,6 @@ fn render_tool(
     item: &AgentTimelineItem,
     revision: u64,
     details: bool,
-    ix: usize,
     transcript: &TranscriptCtx,
 ) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
@@ -7911,7 +7911,7 @@ fn render_tool(
         .on_click(move |_event, _window, cx: &mut gpui::App| {
             chat_header
                 .update(cx, |chat, cx| {
-                    chat.toggle_tool(&item_id, ix, cx);
+                    chat.toggle_tool(&item_id, cx);
                 })
                 .ok();
         })
@@ -9672,6 +9672,22 @@ mod state_tests {
             );
             assert_eq!(this.timeline.len(), 1);
             assert!(this.attachment_requests.contains("att-9"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_toggle_tool_finds_its_row_by_id(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.replace_timeline(vec![item("t1", "tool", None), item("t2", "tool", None)]);
+            this.toggle_tool("t2", cx);
+            assert!(this.toggled_tools.contains("t2"));
+            // An id that left the timeline toggles nothing and does not
+            // touch the list.
+            this.toggle_tool("gone", cx);
+            assert!(this.toggled_tools.contains("gone"));
+            this.toggle_tool("t2", cx);
+            assert!(!this.toggled_tools.contains("t2"));
         });
     }
 
