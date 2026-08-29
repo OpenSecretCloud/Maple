@@ -276,6 +276,12 @@ impl SettingsScreen {
             cx.notify();
             return;
         }
+        let existing = self.mcp_servers.as_deref().unwrap_or_default();
+        if name_collides(existing, editor.original_name.as_deref(), &name) {
+            self.mcp_notice = Some(format!("A server named {name:?} already exists"));
+            cx.notify();
+            return;
+        }
         let target = editor.target.read(cx).text().trim().to_string();
         if target.is_empty() {
             self.mcp_notice = Some(if editor.http {
@@ -1267,6 +1273,15 @@ fn pill_button(
         .child(label)
 }
 
+/// Whether saving a server as `name` would clash with another server.
+/// Servers are matched by name, so a rename onto an existing name would
+/// have added a second entry instead of replacing the original.
+fn name_collides(servers: &[AgentMcpServer], original: Option<&str>, name: &str) -> bool {
+    servers
+        .iter()
+        .any(|server| server.name == name && Some(server.name.as_str()) != original)
+}
+
 /// `KEY=value; KEY2=value` for the editor field.
 fn pairs_to_text(pairs: &[AgentMcpKeyValue]) -> String {
     pairs
@@ -1460,5 +1475,36 @@ fn format_tokens(tokens: i64) -> String {
         format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
         tokens.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(name: &str) -> AgentMcpServer {
+        AgentMcpServer {
+            name: name.to_string(),
+            description: String::new(),
+            enabled: true,
+            timeout_seconds: 300,
+            transport: AgentMcpTransport::Stdio {
+                command: "cmd".to_string(),
+                environment: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn renaming_onto_another_server_is_a_collision() {
+        let servers = [server("alpha"), server("beta")];
+        // Adding a new server with a taken name.
+        assert!(name_collides(&servers, None, "alpha"));
+        assert!(!name_collides(&servers, None, "gamma"));
+        // Editing keeps its own name.
+        assert!(!name_collides(&servers, Some("alpha"), "alpha"));
+        // Renaming onto a sibling.
+        assert!(name_collides(&servers, Some("alpha"), "beta"));
+        assert!(!name_collides(&servers, Some("alpha"), "gamma"));
     }
 }
