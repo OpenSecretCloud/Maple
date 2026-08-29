@@ -1456,6 +1456,17 @@ fn is_unprompted_acp_session(session: &Session) -> bool {
             .is_none_or(|conversation| conversation.messages().is_empty())
 }
 
+/// How long a zero-message ACP task may sit before the desktop runtime
+/// treats it as stranded. A live `maple-gpui acp` process creates its
+/// provisional row moments before the first prompt; only rows well past
+/// that window are crash leftovers.
+const UNPROMPTED_ACP_SESSION_SWEEP_AGE: chrono::Duration = chrono::Duration::minutes(10);
+
+fn is_stale_unprompted_acp_session(session: &Session, now: chrono::DateTime<chrono::Utc>) -> bool {
+    is_unprompted_acp_session(session)
+        && now.signed_duration_since(session.updated_at) >= UNPROMPTED_ACP_SESSION_SWEEP_AGE
+}
+
 async fn sweep_unprompted_acp_sessions(session_manager: &SessionManager) {
     let sessions = match session_manager.list_all_sessions().await {
         Ok(sessions) => sessions,
@@ -1464,8 +1475,9 @@ async fn sweep_unprompted_acp_sessions(session_manager: &SessionManager) {
             return;
         }
     };
+    let now = chrono::Utc::now();
     for session in sessions {
-        if is_unprompted_acp_session(&session)
+        if is_stale_unprompted_acp_session(&session, now)
             && let Err(error) = session_manager.delete_session(&session.id).await
         {
             log::warn!(
@@ -17657,6 +17669,33 @@ mod tests {
             normalize_generated_session_title(&"word ".repeat(100))
                 .is_some_and(|title| title.chars().count() <= MAX_AGENT_SESSION_TITLE_CHARS)
         );
+    }
+
+    #[test]
+    fn startup_sweep_only_removes_aged_unprompted_acp_tasks() {
+        let now = chrono::Utc::now();
+        let fresh = Session {
+            session_type: SessionType::Acp,
+            updated_at: now - chrono::Duration::seconds(30),
+            ..Session::default()
+        };
+        assert!(is_unprompted_acp_session(&fresh));
+        assert!(
+            !is_stale_unprompted_acp_session(&fresh, now),
+            "a concurrent ACP process may still be about to prompt this row"
+        );
+
+        let aged = Session {
+            updated_at: now - UNPROMPTED_ACP_SESSION_SWEEP_AGE - chrono::Duration::seconds(1),
+            ..fresh.clone()
+        };
+        assert!(is_stale_unprompted_acp_session(&aged, now));
+
+        let prompted = Session {
+            message_count: 1,
+            ..aged.clone()
+        };
+        assert!(!is_stale_unprompted_acp_session(&prompted, now));
     }
 
     #[test]
