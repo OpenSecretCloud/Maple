@@ -3607,7 +3607,7 @@ impl ChatScreen {
                 match result {
                     Ok(Some(summary)) => {
                         if let Some(&(index, _)) = this.timeline_index.get(&item_id) {
-                            this.list_state.splice(index..index + 1, 1);
+                            this.remeasure_item(index);
                         }
                         this.tool_summaries
                             .insert(item_id, SharedString::from(summary));
@@ -3699,12 +3699,28 @@ impl ChatScreen {
             Arc::new(gpui::Image::from_bytes(format, bytes)),
         );
         // Rows that show this image change height; tell the list.
-        for (index, item) in self.timeline.iter().enumerate() {
-            if attachment_refs(item).any(|(candidate, _)| candidate == id) {
-                self.list_state.splice(index..index + 1, 1);
-            }
+        let rows: Vec<usize> = self
+            .timeline
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| attachment_refs(item).any(|(candidate, _)| candidate == id))
+            .map(|(index, _)| index)
+            .collect();
+        for index in rows {
+            self.remeasure_item(index);
         }
         cx.notify();
+    }
+
+    /// Re-measure one row after it changed in place. The newest row is
+    /// exempt: a splice zeroes its cached height until the next paint,
+    /// and a wheel event in that window re-pins the list to the bottom,
+    /// which blocks scrolling up during a stream. The newest row is
+    /// measured on every layout anyway.
+    fn remeasure_item(&mut self, index: usize) {
+        if index + 1 < self.timeline.len() {
+            self.list_state.splice(index..index + 1, 1);
+        }
     }
 
     /// Apply a timeline item using Maple's merge contract: `append` extends
