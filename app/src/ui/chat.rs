@@ -3425,29 +3425,37 @@ impl ChatScreen {
     }
 
     /// Ask the title model for a one-line summary of the completed tool
-    /// call at `index` when its output is too long to skim. At most a few
+    /// call at `index`. At most a few
     /// requests ride at once; the rest wait in `summary_queue`. Each item
     /// is only ever asked once per session visit.
     fn maybe_summarize_tool(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(item) = self.timeline.get(index) else {
             return;
         };
-        if !self.summaries_enabled
-            || !matches!(item.item_type.as_str(), "tool" | "toolCall")
+        if !matches!(item.item_type.as_str(), "tool" | "toolCall")
             || item.status.as_deref() != Some("completed")
-            || has_tool_input(item, "todos")
-            || item.input.as_ref().is_none_or(serde_json::Value::is_null)
             || self.tool_summaries.contains_key(&item.id)
             || self.summary_requests.contains(&item.id)
         {
             return;
         }
-        let Some(output) = tool_output_markdown(item) else {
-            return;
+        let skip = if !self.summaries_enabled {
+            Some("summaries are off in settings")
+        } else if has_tool_input(item, "todos") {
+            Some("todo list")
+        } else if item.input.as_ref().is_none_or(serde_json::Value::is_null) {
+            Some("no input")
+        } else {
+            None
         };
-        if output.chars().count() < 400 {
+        if let Some(reason) = skip {
+            log::debug!("Skipping tool summary for {}: {reason}", item.id);
             return;
         }
+        let Some(output) = tool_output_markdown(item) else {
+            log::debug!("Skipping tool summary for {}: no text output", item.id);
+            return;
+        };
         let item_id = item.id.clone();
         self.summary_requests.insert(item_id.clone());
         if self.pending_summaries >= 3 {
@@ -3475,16 +3483,20 @@ impl ChatScreen {
 
     fn start_summary(&mut self, item_id: String, output: String, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
+            self.summary_requests.remove(&item_id);
             return;
         };
         let Some(&(index, _)) = self.timeline_index.get(&item_id) else {
+            self.summary_requests.remove(&item_id);
             return;
         };
         let item = &self.timeline[index];
         let Some(input) = item.input.clone() else {
+            self.summary_requests.remove(&item_id);
             return;
         };
         let tool_name = item.title.clone().unwrap_or_else(|| item.item_type.clone());
+        log::debug!("Requesting tool summary for {item_id} ({tool_name})");
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let generation = self.summary_generation;
@@ -3519,13 +3531,25 @@ impl ChatScreen {
                     return;
                 }
                 this.pending_summaries = this.pending_summaries.saturating_sub(1);
-                if let Ok(Some(summary)) = result {
-                    if let Some(&(index, _)) = this.timeline_index.get(&item_id) {
-                        this.list_state.splice(index..index + 1, 1);
+                match result {
+                    Ok(Some(summary)) => {
+                        if let Some(&(index, _)) = this.timeline_index.get(&item_id) {
+                            this.list_state.splice(index..index + 1, 1);
+                        }
+                        this.tool_summaries
+                            .insert(item_id, SharedString::from(summary));
+                        cx.notify();
                     }
-                    this.tool_summaries
-                        .insert(item_id, SharedString::from(summary));
-                    cx.notify();
+                    Ok(None) => {
+                        log::debug!("Tool summary for {item_id} came back empty");
+                    }
+                    Err(error) => {
+                        // A failed request must not pin the raw title for
+                        // the rest of the visit: forget it so the next
+                        // reload or session switch asks again.
+                        log::warn!("Tool summary for {item_id} failed: {error}");
+                        this.summary_requests.remove(&item_id);
+                    }
                 }
                 this.drain_summary_queue(cx);
             },
@@ -8546,14 +8570,21 @@ mod state_tests {
             assert_eq!(this.pending_summaries, 1);
             this.maybe_summarize_tool(index, cx);
             assert_eq!(this.pending_summaries, 1);
-            // Short outputs never queue.
+            // Short outputs queue too; only empty output is skipped.
             let mut short = item("tool-2", "tool", None);
             short.status = Some("completed".to_string());
             short.input = Some(serde_json::json!({"q": 1}));
             short.output = Some(serde_json::json!({"stdout": "ok"}));
             let index = this.apply_timeline_item("s1", short);
             this.maybe_summarize_tool(index, cx);
-            assert!(!this.summary_requests.contains("tool-2"));
+            assert!(this.summary_requests.contains("tool-2"));
+            let mut empty = item("tool-3", "tool", None);
+            empty.status = Some("completed".to_string());
+            empty.input = Some(serde_json::json!({"q": 1}));
+            empty.output = Some(serde_json::json!({"stdout": "  "}));
+            let index = this.apply_timeline_item("s1", empty);
+            this.maybe_summarize_tool(index, cx);
+            assert!(!this.summary_requests.contains("tool-3"));
         });
     }
 
