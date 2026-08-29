@@ -3610,7 +3610,7 @@ impl Render for ChatScreen {
                 .flex_1()
                 .h_full()
                 .min_w_0()
-                .child(self.render_header(cx))
+                .child(self.render_header())
                 .child(self.render_transcript(window, cx))
                 .when(self.awaiting_first_token && self.is_run_active(), |main| {
                     // Same gutter as transcript text so the dots line up
@@ -5050,7 +5050,7 @@ impl ChatScreen {
         );
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> Div {
+    fn render_header(&self) -> Div {
         let title = self
             .sessions
             .iter()
@@ -5062,43 +5062,21 @@ impl ChatScreen {
             .items_center()
             .justify_between()
             .gap_3()
+            .h(px(40.))
+            .flex_none()
             .pl_4()
             .pr_3()
-            .py_2()
             .when(self.sidebar_collapsed, |row| row.pl(px(220.)))
             .child(
                 div()
+                    .flex_1()
                     .min_w_0()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_lg()
+                    .line_height(px(24.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
                     .line_clamp(1)
                     .child(title),
-            )
-            .child(
-                div().flex().items_center().gap_1().child(
-                    div()
-                        .id("header-new-task")
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_elevated()))
-                                .text_color(gpui::rgb(theme::text_primary()))
-                                .cursor_pointer()
-                        })
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.new_session(cx);
-                        }))
-                        .child(icon("square-pen", px(14.), theme::text_secondary()))
-                        .child("New Task"),
-                ),
             )
     }
 
@@ -5529,7 +5507,7 @@ impl ChatScreen {
                     .max_w(px(900.))
                     .mx_auto()
                     .px_6()
-                    .py_4()
+                    .pb_4()
                     .child(list),
             )
             .child(self.render_scrollbar())
