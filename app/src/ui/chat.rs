@@ -304,6 +304,19 @@ pub struct ChatScreen {
     /// Manual path entry for the root switcher.
     root_input: Option<Entity<TextInput>>,
     root_switching: bool,
+    /// Header label for the project root; set when the root changes so
+    /// render does not format it.
+    project_label: SharedString,
+    /// Git branch of the project root, read off the UI thread. `None`
+    /// when the root is not a git checkout.
+    project_branch: Option<String>,
+    /// `project_branch` in parentheses, ready for the header.
+    branch_label: Option<SharedString>,
+    /// Watches the git dir of the current root so a checkout by the agent
+    /// or from a terminal updates the branch. Replaced when the git dir
+    /// changes, dropped with the root.
+    branch_watcher: Option<notify::RecommendedWatcher>,
+    watched_git_dir: Option<std::path::PathBuf>,
     /// A native folder picker is open; more clicks must not open another.
     root_picker_open: bool,
     /// Session to open once a root switch triggered by the sidebar lands.
@@ -692,6 +705,11 @@ impl ChatScreen {
             archived_expanded: false,
             root_input: None,
             root_switching: false,
+            project_label: SharedString::from("Choose folder"),
+            project_branch: None,
+            branch_label: None,
+            branch_watcher: None,
+            watched_git_dir: None,
             root_picker_open: false,
             selection_generation: 0,
             attachment_images: HashMap::new(),
@@ -777,6 +795,7 @@ impl ChatScreen {
                     Ok(status) => {
                         this.runtime_error = None;
                         this.project_root = status.project_root;
+                        this.project_root_changed(cx);
                         this.check_project_trust(cx);
                     }
                     Err(message) => {
@@ -1044,6 +1063,7 @@ impl ChatScreen {
                 match result {
                     Ok(status) => {
                         this.project_root = status.project_root;
+                        this.project_root_changed(cx);
                         this.check_project_trust(cx);
                         this.rebuild_project_groups();
                         this.replace_timeline(Vec::new());
@@ -1108,6 +1128,120 @@ impl ChatScreen {
                     Ok(_) => {}
                     Err(_) => this.show_root_input(cx),
                 }
+            },
+        );
+    }
+
+    /// The root changed: update the header label, then read its branch
+    /// and watch its git dir.
+    fn project_root_changed(&mut self, cx: &mut Context<Self>) {
+        self.project_label = SharedString::from(self.project_label());
+        self.refresh_branch(cx);
+    }
+
+    /// Read the branch for the current root, or clear it when there is
+    /// no root. The read also resolves the git dir, and the watcher is
+    /// replaced when that dir changed.
+    fn refresh_branch(&mut self, cx: &mut Context<Self>) {
+        if self.project_root.is_some() {
+            self.read_branch(cx);
+            return;
+        }
+        self.branch_watcher = None;
+        self.watched_git_dir = None;
+        self.set_branch(None, cx);
+    }
+
+    fn set_branch(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
+        if self.project_branch == branch {
+            return;
+        }
+        self.branch_label = branch
+            .as_deref()
+            .map(|branch| SharedString::from(format!("({branch})")));
+        self.project_branch = branch;
+        cx.notify();
+    }
+
+    /// Watch `git_dir` and re-read the branch when `HEAD` changes. The
+    /// watch is on the directory, not the file: git replaces `HEAD` by
+    /// rename, so a watch on the file itself is lost after the first
+    /// checkout. Non-recursive, so a busy `objects/` tree costs nothing.
+    /// Events arrive on the watcher's own thread and cross to the UI
+    /// through a channel, like backend events. Dropping the watcher
+    /// closes the channel, which ends the receiver task.
+    fn watch_branch(&mut self, git_dir: &std::path::Path, cx: &mut Context<Self>) {
+        use notify::Watcher as _;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut watcher =
+            match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                let Ok(event) = event else { return };
+                let touches_head = event
+                    .paths
+                    .iter()
+                    .any(|path| path.file_name().is_some_and(|name| name == "HEAD"));
+                if touches_head || event.need_rescan() {
+                    tx.send(()).ok();
+                }
+            }) {
+                Ok(watcher) => watcher,
+                Err(error) => {
+                    log::debug!("branch watcher unavailable: {error}");
+                    return;
+                }
+            };
+        if let Err(error) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
+            log::debug!("cannot watch {}: {error}", git_dir.display());
+            return;
+        }
+        self.branch_watcher = Some(watcher);
+        cx.spawn(async move |this, cx| {
+            while rx.recv().await.is_some() {
+                // A rebase or a checkout touches HEAD several times in a
+                // row; one read per burst is enough.
+                while rx.try_recv().is_ok() {}
+                if this.update(cx, |this, cx| this.read_branch(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Read the branch for the current root off the UI thread. The git
+    /// dir comes back with it so the watcher follows a root change without
+    /// a file stat on the UI thread.
+    fn read_branch(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project_root.clone() else {
+            return;
+        };
+        self.call(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let git_dir = git_dir(std::path::Path::new(&root));
+                    let branch = git_dir.as_deref().and_then(git_branch);
+                    Ok((root, git_dir, branch))
+                })
+                .await
+                .map_err(|error| format!("Branch lookup failed: {error}"))?
+            },
+            cx,
+            |this, result, cx| {
+                // Drop a late answer for a root that is no longer current.
+                let Ok((root, git_dir, branch)) = result else {
+                    return;
+                };
+                if this.project_root.as_deref() != Some(root.as_str()) {
+                    return;
+                }
+                if this.watched_git_dir != git_dir {
+                    this.branch_watcher = None;
+                    if let Some(dir) = &git_dir {
+                        this.watch_branch(dir, cx);
+                    }
+                    this.watched_git_dir = git_dir;
+                }
+                this.set_branch(branch, cx);
             },
         );
     }
@@ -3807,6 +3941,9 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
+                    // The watcher covers checkouts; this catches a
+                    // change that landed between two events.
+                    self.read_branch(cx);
                     // The run that asked is gone (stopped or failed): its
                     // questions would block the composer forever.
                     self.clear_session_questions(session_id, cx);
@@ -4882,6 +5019,7 @@ impl ChatScreen {
                             this.selected_session = None;
                             this.replace_timeline(Vec::new());
                             this.project_root = next_root.clone();
+                            this.project_root_changed(cx);
                         }
                         this.rebuild_project_groups();
                         if was_current && let Some(next) = next_root {
@@ -5363,20 +5501,24 @@ impl ChatScreen {
             .when(self.sidebar_collapsed, |row| row.pl(px(220.)))
             .child(
                 div()
+                    // Sized by its text, like the chips: nowrap gives it a
+                    // real intrinsic width (a clamped, shrinkable title
+                    // measured as 0 px and vanished). The cap keeps a long
+                    // title from pushing the chips out of the pane.
                     .flex_none()
-                    .min_w_0()
+                    .max_w(gpui::relative(0.6))
+                    .truncate()
                     .text_lg()
                     .line_height(px(24.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .line_clamp(1)
                     .child(title),
             )
             .child(
                 chip(
                     "root-picker",
                     Some("folder-open"),
-                    self.project_label(),
+                    self.project_label.clone(),
                     true,
                     self.root_menu_open,
                 )
@@ -5385,6 +5527,17 @@ impl ChatScreen {
                     this.toggle_root_menu(cx);
                 })),
             )
+            .when_some(self.branch_label.clone(), |row, branch| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(gpui::rgb(theme::status_error()))
+                        .whitespace_nowrap()
+                        .child(branch),
+                )
+            })
             .child(div().flex_1())
     }
 
@@ -6253,7 +6406,7 @@ fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Vec<SlashEntr
 fn chip(
     id: &'static str,
     leading: Option<&'static str>,
-    label: String,
+    label: impl Into<SharedString>,
     chevron: bool,
     active: bool,
 ) -> gpui::Stateful<Div> {
@@ -6276,8 +6429,46 @@ fn chip(
         .when(active, |el| el.bg(gpui::rgb(theme::bg_elevated())))
         .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
         .children(leading.map(|name| icon(name, px(16.), color)))
-        .child(div().whitespace_nowrap().child(label))
+        .child(div().whitespace_nowrap().child(label.into()))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+}
+
+/// The directory that holds `HEAD` for a checkout, or `None` when `root`
+/// is not one. Supports worktrees, whose `.git` is a file that points at
+/// the real git dir.
+fn git_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let pointer = std::fs::read_to_string(&dot_git).ok()?;
+    let target = pointer.trim().strip_prefix("gitdir:")?.trim();
+    let target = std::path::Path::new(target);
+    Some(if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        root.join(target)
+    })
+}
+
+/// Current git branch from a git dir, or the short commit id when HEAD
+/// is detached. `None` when there is no readable `HEAD`.
+fn git_branch(git_dir: &std::path::Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: ") {
+        Some(reference) => Some(
+            reference
+                .strip_prefix("refs/heads/")
+                .unwrap_or(reference)
+                .to_string(),
+        ),
+        // Detached: a hex id. Anything else is a corrupt HEAD.
+        None => head
+            .get(..7)
+            .filter(|id| id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .map(str::to_string),
+    }
 }
 
 /// Last path component of a project root, for chips and the sidebar.
@@ -8487,6 +8678,44 @@ mod state_tests {
             assert!(!this.begin_root_picker(cx));
             assert!(this.root_menu_open);
         });
+    }
+
+    #[test]
+    fn test_git_branch_reads_head_and_worktree_pointer() {
+        struct TempDir(std::path::PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let branch = |root: &std::path::Path| git_dir(root).as_deref().and_then(git_branch);
+        let guard =
+            TempDir(std::env::temp_dir().join(format!("maple-branch-{}", std::process::id())));
+        let dir = &guard.0;
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+        assert_eq!(branch(&repo).as_deref(), Some("feature/x"));
+
+        std::fs::write(repo.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
+        assert_eq!(branch(&repo).as_deref(), Some("0123456"));
+
+        std::fs::write(repo.join(".git/HEAD"), "garbage-héad\n").unwrap();
+        assert_eq!(branch(&repo), None);
+        std::fs::write(repo.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
+
+        let worktree = dir.join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", repo.join(".git").display()),
+        )
+        .unwrap();
+        assert_eq!(branch(&worktree).as_deref(), Some("0123456"));
+
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(branch(&plain), None);
     }
 
     #[gpui::test]
