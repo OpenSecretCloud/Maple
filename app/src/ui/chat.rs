@@ -4125,8 +4125,10 @@ impl ChatScreen {
                 if showing {
                     self.permission_responding = false;
                 }
-                self.awaiting_first_token = false;
                 if self.is_selected(session_id) {
+                    // Another task finishing must not hide the dots for
+                    // the send that is still waiting here.
+                    self.awaiting_first_token = false;
                     self.refresh_context_usage(cx);
                 }
                 let title = self
@@ -9600,6 +9602,32 @@ mod state_tests {
             }
             assert_eq!(this.finished_runs.len(), FINISHED_RUNS_KEPT);
             assert!(!this.finished_runs.contains(&"run-1".to_string()));
+        });
+    }
+
+    #[gpui::test]
+    fn test_another_task_finishing_keeps_the_waiting_dots(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.awaiting_first_token = true;
+            this.handle_run_event(
+                "s2",
+                "run-2",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert!(this.awaiting_first_token);
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert!(!this.awaiting_first_token);
         });
     }
 
