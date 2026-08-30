@@ -3,9 +3,9 @@
 #[path = "classifier.rs"]
 pub(crate) mod classifier;
 
-use classifier::{Classifier, ClassifierOutcome, READ_ONLY_MODE};
+use classifier::{Classifier, ClassifierOutcome, read_only_confirmation};
 use goose::agents::Agent;
-use goose::conversation::message::{ActionRequired, ActionRequiredData};
+use goose::conversation::message::ActionRequired;
 use serde::Serialize;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
@@ -63,21 +63,7 @@ impl ShellPermissionRequest {
         working_dir: &Path,
         action: &ActionRequired,
     ) -> Option<Self> {
-        if mode != READ_ONLY_MODE {
-            return None;
-        }
-        let ActionRequiredData::ToolConfirmation {
-            id,
-            tool_name,
-            arguments,
-            prompt,
-        } = &action.data
-        else {
-            return None;
-        };
-        if tool_name != "shell" || prompt.is_some() {
-            return None;
-        }
+        let (id, arguments) = read_only_confirmation(mode, action, "shell")?;
         let command = arguments.get("command")?.as_str()?;
         if command.is_empty() || command.chars().count() > MAX_COMMAND_CHARS {
             return None;
@@ -85,7 +71,7 @@ impl ShellPermissionRequest {
 
         Some(Self {
             schema_version: 1,
-            request_id: id.clone(),
+            request_id: id.to_string(),
             os: std::env::consts::OS,
             shell: goose::agents::platform_extensions::developer::shell::shell_display_name(),
             cwd: working_dir.to_string_lossy().into_owned(),
@@ -133,21 +119,7 @@ pub(crate) fn is_remote_file_source(source: &str) -> bool {
 }
 
 pub(crate) fn local_read_request_id<'a>(mode: &str, action: &'a ActionRequired) -> Option<&'a str> {
-    if mode != READ_ONLY_MODE {
-        return None;
-    }
-    let ActionRequiredData::ToolConfirmation {
-        id,
-        tool_name,
-        arguments,
-        prompt,
-    } = &action.data
-    else {
-        return None;
-    };
-    if tool_name != "read" || prompt.is_some() {
-        return None;
-    }
+    let (id, arguments) = read_only_confirmation(mode, action, "read")?;
     let path = arguments.get("path")?.as_str()?;
     if path.trim().is_empty() || is_remote_file_source(path) || is_likely_secret_path(path) {
         return None;
@@ -225,21 +197,7 @@ pub(crate) fn local_read_image_request_id<'a>(
     mode: &str,
     action: &'a ActionRequired,
 ) -> Option<&'a str> {
-    if mode != READ_ONLY_MODE {
-        return None;
-    }
-    let ActionRequiredData::ToolConfirmation {
-        id,
-        tool_name,
-        arguments,
-        prompt,
-    } = &action.data
-    else {
-        return None;
-    };
-    if tool_name != "read_image" || prompt.is_some() {
-        return None;
-    }
+    let (id, arguments) = read_only_confirmation(mode, action, "read_image")?;
     let source = arguments.get("source")?.as_str()?;
     if source.trim().is_empty() || is_remote_file_source(source) || is_likely_secret_path(source) {
         return None;
@@ -279,6 +237,7 @@ impl ShellPermissionClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use classifier::READ_ONLY_MODE;
     use goose::conversation::message::{Message, MessageContent};
     use rmcp::model::CallToolRequestParams;
     use rmcp::object;

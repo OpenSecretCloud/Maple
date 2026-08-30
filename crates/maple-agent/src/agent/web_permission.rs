@@ -1,7 +1,7 @@
-use super::shell_permission::classifier::{Classifier, ClassifierOutcome, READ_ONLY_MODE};
+use super::shell_permission::classifier::{Classifier, ClassifierOutcome, read_only_confirmation};
 use super::web_tools::{OPEN_URL_TOOL_NAME, normalize_public_https_url, validate_purpose};
 use goose::agents::Agent;
-use goose::conversation::message::{ActionRequired, ActionRequiredData};
+use goose::conversation::message::ActionRequired;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
@@ -65,28 +65,14 @@ impl OpenUrlPermissionRequest {
         action: &ActionRequired,
         context: &WebPermissionContext,
     ) -> Option<Self> {
-        if mode != READ_ONLY_MODE {
-            return None;
-        }
-        let ActionRequiredData::ToolConfirmation {
-            id,
-            tool_name,
-            arguments,
-            prompt,
-        } = &action.data
-        else {
-            return None;
-        };
-        if tool_name != OPEN_URL_TOOL_NAME || prompt.is_some() {
-            return None;
-        }
+        let (id, arguments) = read_only_confirmation(mode, action, OPEN_URL_TOOL_NAME)?;
         let url = normalize_public_https_url(arguments.get("url")?.as_str()?).ok()?;
         let purpose = arguments.get("purpose")?.as_str()?.trim();
         validate_purpose(purpose).ok()?;
 
         Some(Self {
             schema_version: 1,
-            request_id: id.clone(),
+            request_id: id.to_string(),
             url,
             purpose: purpose.to_string(),
             current_user_prompt: context.current_user_prompt.clone(),
@@ -154,7 +140,7 @@ fn bounded_head_tail(value: &str, max_chars: usize, marker: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::shell_permission::classifier::MAX_REASON_CHARS;
+    use crate::agent::shell_permission::classifier::{MAX_REASON_CHARS, READ_ONLY_MODE};
     use goose::conversation::message::{Message, MessageContent};
     use rmcp::model::CallToolRequestParams;
     use rmcp::object;

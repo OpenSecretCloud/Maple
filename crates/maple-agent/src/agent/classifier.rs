@@ -6,9 +6,9 @@
 //! the callers only describe what they are classifying.
 
 use goose::agents::Agent;
-use goose::conversation::message::{Message, MessageContent};
+use goose::conversation::message::{ActionRequired, ActionRequiredData, Message, MessageContent};
 use goose_providers::model::ModelConfig;
-use rmcp::model::Tool;
+use rmcp::model::{JsonObject, Tool};
 use rmcp::object;
 use serde::Deserialize;
 use serde::Serialize;
@@ -27,6 +27,34 @@ const REQUIRES_APPROVAL_DECISION: &str = "requires_approval";
 
 /// Upper bound on the free-text reason a classifier may return.
 pub(crate) const MAX_REASON_CHARS: usize = 300;
+
+/// Match a plain read-only-mode tool confirmation for `tool_name`, yielding
+/// its request id and arguments.
+///
+/// A confirmation that carries a prompt is a security warning Goose wants a
+/// human to read, so it is never eligible for automatic handling.
+pub(crate) fn read_only_confirmation<'a>(
+    mode: &str,
+    action: &'a ActionRequired,
+    tool_name: &str,
+) -> Option<(&'a str, &'a JsonObject)> {
+    if mode != READ_ONLY_MODE {
+        return None;
+    }
+    let ActionRequiredData::ToolConfirmation {
+        id,
+        tool_name: requested_tool,
+        arguments,
+        prompt,
+    } = &action.data
+    else {
+        return None;
+    };
+    if requested_tool != tool_name || prompt.is_some() {
+        return None;
+    }
+    Some((id.as_str(), arguments))
+}
 
 /// Request knobs that disable thinking on OpenAI-compatible endpoints that
 /// need it spelled out in the request body rather than the model config.
