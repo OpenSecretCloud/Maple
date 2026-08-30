@@ -2,7 +2,7 @@ mod config;
 mod proxy;
 
 pub use config::Config;
-pub use opensecret::Pcr0Environment;
+pub use opensecret::{Pcr0Environment, TransportV2CacheNamespaceRoot};
 use proxy::{health_check, proxy_openai_request, ProxyState};
 
 use axum::{

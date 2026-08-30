@@ -4,6 +4,10 @@ A lightweight proxy for Maple/OpenSecret's OpenAI-compatible inference
 endpoints, with the security and privacy benefits of Trusted Execution
 Environment (TEE) processing.
 
+Version 0.4.0 and later use OpenSecret transport v2 exclusively for the
+proxy-to-enclave connection. The local OpenAI-compatible `/v1/*` paths remain
+unchanged; they are application routes, not the encrypted transport version.
+
 ## 🚀 Features
 
 - **OpenAI-Compatible Surface** - Models, chat completions, and embeddings endpoints
@@ -65,6 +69,7 @@ export MAPLE_PORT=8080                         # Server port (default: 8080)
 export MAPLE_BACKEND_URL=http://localhost:3000         # Maple backend URL (prod: https://enclave.trymaple.ai)
 export MAPLE_PCR0_ENVIRONMENT=production       # PCR0 trust roots: production (default) or development
 export MAPLE_API_KEY=your-maple-api-key        # Optional for trusted, non-browser clients only
+# export MAPLE_CACHE_NAMESPACE_ROOT=<secret>    # Optional stable random 32-byte root in padded base64
 export MAPLE_DEBUG=true                        # Enable debug logging
 export MAPLE_ENABLE_CORS=false                 # Default; see browser warning below
 export MAPLE_REQUEST_TIMEOUT_SECS=300          # Backend request timeout
@@ -272,6 +277,27 @@ Override the default key or provide one if not set:
 curl -H "Authorization: Bearer different-api-key" ...
 ```
 
+### Provider-cache continuity
+
+Transport v2 keeps provider cache namespaces private from infrastructure
+between a client-owned proxy and the enclave. The proxy generates one random
+namespace root for all of its API-key clients and the enclave separates the
+resulting namespaces by verified account owner. That default remains stable
+across cached-client and session renewal, but not across a proxy restart.
+
+For restart-stable cache hits, generate 32 random bytes once, store them as a
+secret, and supply their canonical padded-base64 encoding through
+`MAPLE_CACHE_NAMESPACE_ROOT` or `--cache-namespace-root`. Prefer managed
+environment injection because command-line arguments can be visible in process
+listings. Do not derive the root from an API key or user identifier, log it, or
+send it as a downstream HTTP header. A shared deployment still uses one
+installation root, which the enclave binds to each verified account before
+deriving the provider value.
+
+Such a deployment trusts the proxy operator with both that root and the API
+keys clients submit; run the proxy on the client device when operator privacy is
+part of the threat model.
+
 ## 🌐 CORS Support
 
 The standalone proxy does not inherit Maple's Tauri wrapper protections. If a
@@ -406,6 +432,7 @@ environment:
   - MAPLE_STREAM_IDLE_TIMEOUT_SECS=300             # Streaming idle timeout
   - RUST_LOG=info                                  # Logging level
   # - MAPLE_API_KEY=xxx                            # Only for private deployments!
+  # - MAPLE_CACHE_NAMESPACE_ROOT=xxx               # Stable secret; never bake into an image
 ```
 
 ## 🔧 Development
