@@ -5688,7 +5688,6 @@ dependencies = [
  "p256",
  "percent-encoding",
  "pin-project",
- "regex",
  "reqwest 0.12.28",
  "ring",
  "serde",

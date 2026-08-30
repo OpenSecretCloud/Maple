@@ -34,7 +34,6 @@ sha2 = "0.10"
 base64 = "0.22"
 ring = "0.17"  # For certificate validation
 hex = "0.4"  # For debug output
-regex = "1.11"
 sigstore-tuf = { version = "=0.11.0", default-features = false }
 sigstore-verify = { version = "=0.11.0", default-features = false }
 

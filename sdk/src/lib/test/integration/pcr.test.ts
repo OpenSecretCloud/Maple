@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   assertOfficialEmbeddedBootstrapForTesting,
-  AttestationTrustError,
-  createAttestationTufClientForTesting
+  AttestationTufClient,
+  type AttestationTufClientOptions,
+  AttestationTrustError
 } from "../../attestationTuf";
 import {
   normalizeApiBaseUrl,
@@ -19,6 +20,22 @@ import {
   PCR1,
   PCR2
 } from "../tufFixtures";
+
+mock.module("../../attestationSigstore", () => ({
+  verifyTufAuthorizedSigstoreBundle: async () => ({
+    logIndex: "0",
+    logId: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    observerTimestamp: "2030-01-01T00:00:00.000Z"
+  })
+}));
+
+function createAttestationTufClientForTesting(
+  options: Required<Pick<AttestationTufClientOptions, "fetch" | "now" | "bootstrap">> & {
+    storage?: Storage | null;
+  }
+): AttestationTufClient {
+  return new AttestationTufClient(options);
+}
 
 function client(fixture: Awaited<ReturnType<typeof buildTufFixture>>) {
   return createAttestationTufClientForTesting({
@@ -202,10 +219,8 @@ describe("browser TUF attestation policy", () => {
     expect(policy.environment).toBe("prod");
     expect(policy.releases).toHaveLength(1);
     expect(policy.releases[0].sigstore).toMatchObject({
-      builder: {
-        id: "github-opensecret-v1",
-        certificateOidcIssuer: "https://token.actions.githubusercontent.com"
-      }
+      transparencyLog: { logIndex: "0" },
+      observerTimestamp: "2030-01-01T00:00:00.000Z"
     });
     expect(
       fixture.requests.every(({ url }) => url.startsWith("https://attestations.trymaple.ai/tuf/"))
@@ -229,11 +244,12 @@ describe("browser TUF attestation policy", () => {
     };
     expect(Object.keys(persisted.targetBytes).sort()).toEqual([
       "channels/prod.json",
-      "policy/builders.json",
-      "releases/1.0.0/prod/manifest.json"
+      "releases/1.0.0/prod/manifest.json",
+      "releases/1.0.0/prod/manifest.sigstore.json",
+      "sigstore/trusted_root.json"
     ]);
-    expect(persisted.targetBytes["sigstore/trusted_root.json"]).toBeUndefined();
-    expect(persisted.targetBytes["releases/1.0.0/prod/manifest.sigstore.json"]).toBeUndefined();
+    expect(persisted.targetBytes["sigstore/trusted_root.json"]).toBeString();
+    expect(persisted.targetBytes["releases/1.0.0/prod/manifest.sigstore.json"]).toBeString();
   });
 
   test("authorizes only one complete PCR tuple and never mixes active releases", async () => {
@@ -326,14 +342,19 @@ describe("browser TUF attestation policy", () => {
   });
 
   test.each([
-    ["source repository mismatch", { sourceUri: "https://code.example/opensecret" }],
     ["unsafe source path", { sourcePath: "../backend" }],
     ["unsafe artifact name", { artifactName: "../backend.eif" }],
-    ["query-bearing build URI", { runUri: "https://ci.example/runs/1?token=secret" }],
-    ["invalid identity regexp", { certificateIdentityRegexp: "^(unclosed$" }]
+    ["query-bearing build URI", { runUri: "https://ci.example/runs/1?token=secret" }]
   ])("rejects a manifest with %s", async (_description, fixtureOptions) => {
     const fixture = await buildTufFixture(fixtureOptions);
     await expect(client(fixture).refresh("prod")).rejects.toBeInstanceOf(AttestationTrustError);
+  });
+
+  test("does not turn source repository provenance into client authorization", async () => {
+    const fixture = await buildTufFixture({ sourceUri: "https://code.example/opensecret" });
+    await expect(client(fixture).refresh("prod")).resolves.toMatchObject({
+      releases: [{ manifest: { source: { uri: "https://code.example/opensecret" } } }]
+    });
   });
 
   test("rejects invalid signatures and non-sequential root rotation", async () => {

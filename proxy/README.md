@@ -549,11 +549,15 @@ Runtime policy requests go only to `attestations.trymaple.ai`; the SDK does not
 contact GitHub, Fulcio, Rekor, or Sigstore's TUF service during a handshake.
 It starts from its embedded Maple TUF root, verifies current expiring policy and
 the exact immutable manifest/bundle bytes, and performs the Sigstore verification
-offline with TUF-authenticated trust roots and builder policy.
+offline with the TUF-authenticated Sigstore trusted root. Builder admission is a
+publisher/promotion policy, not a proxy or SDK runtime allowlist.
 
 Sigstore makes a release statement and its signing identity tamper-evident in
-an append-only transparency log. It does **not** prove that an artifact was
-reproducibly built or decide whether a historical release is still current.
+an append-only transparency log. That identity remains useful audit evidence;
+TUF authorizes the exact current manifest and bundle instead of clients pinning
+a repository, workflow, CI provider, issuer, or signer identity. Sigstore does
+**not** prove that an artifact was reproducibly built or decide whether a
+historical release is still current.
 Reproducibility remains a separate Nix rebuild/compare property; TUF supplies
 current authorization, bounded freshness, explicit rollback, and revocation.
 

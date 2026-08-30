@@ -588,9 +588,9 @@ function ProofFAQ() {
             root. The SDK then fetches current policy from attestations.trymaple.ai, verifies its
             TUF chain from the embedded root, and checks the full PCR0/PCR1/PCR2 tuple against one
             active manifest. The protected promotion verifies that manifest&apos;s Cosign and Rekor
-            evidence; Rust clients also verify the portable bundle locally. You can rebuild the
-            source to compare its measurements. Sigstore does not by itself prove reproducibility or
-            that an authorized release is current.
+            evidence; browser and Rust SDK clients then reverify the portable bundle locally. You
+            can rebuild the source to compare its measurements. Sigstore does not by itself prove
+            reproducibility or that an authorized release is current.
           </p>
         </details>
       </div>
@@ -803,7 +803,7 @@ function Verify() {
               />
               <SecurityFact
                 title="Release Provenance"
-                description="Protected promotion verifies the tagged manifest's Cosign identity, signature, and Rekor evidence, then TUF authorizes it with freshness and rollback protection. Rust clients also reverify the portable Sigstore bundle locally."
+                description="Protected promotion verifies the tagged manifest's Cosign identity, signature, and Rekor evidence, then TUF authorizes its exact evidence with freshness and rollback protection. Browser and Rust SDK clients reverify the portable Sigstore bundle locally."
               />
               <SecurityFact
                 title="Breach Resilience"

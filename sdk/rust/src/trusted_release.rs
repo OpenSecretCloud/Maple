@@ -13,7 +13,6 @@ use crate::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use fs2::FileExt;
 use futures::StreamExt;
-use regex::Regex;
 use reqwest::{redirect::Policy as RedirectPolicy, Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,10 +22,11 @@ use sigstore_tuf::{
 };
 use sigstore_verify::{
     trust_root::TrustedRoot as SigstoreTrustedRoot,
-    types::{Bundle, SignatureContent},
+    types::{Bundle, HashAlgorithm, SignatureContent},
     VerificationPolicy, Verifier,
 };
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashSet},
     fmt,
     fs::{File, OpenOptions},
@@ -40,8 +40,6 @@ use tokio::sync::{watch, Mutex};
 
 const REPOSITORY_URL: &str = "https://attestations.trymaple.ai/tuf/";
 const CHANNEL_SCHEMA: &str = "https://attestations.trymaple.ai/schemas/channel/v1";
-const BUILDER_POLICY_SCHEMA: &str =
-    "https://attestations.trymaple.ai/schemas/sigstore-builder-policy/v1";
 const MANIFEST_SCHEMA: &str = "https://attestations.trymaple.ai/schemas/nitro-eif-release/v1";
 const COMPONENT: &str = "opensecret-backend";
 const EIF_MEDIA_TYPE: &str = "application/vnd.aws.nitro.eif";
@@ -52,14 +50,11 @@ const SHA256_HEX_LEN: usize = 64;
 const SHA384_HEX_LEN: usize = 96;
 const SHA384_BYTES_LEN: usize = 48;
 const MAX_ACTIVE_RELEASES: usize = 2;
-const MAX_BUILDERS: usize = 32;
-const MAX_IDENTITY_REGEXP_BYTES: usize = 2_048;
 const MAX_ROOT_BYTES: u64 = 64 * 1024;
 const MAX_TIMESTAMP_BYTES: u64 = 32 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 128 * 1024;
 const MAX_TARGETS_METADATA_BYTES: u64 = 256 * 1024;
 const MAX_CHANNEL_BYTES: usize = 128 * 1024;
-const MAX_BUILDER_POLICY_BYTES: usize = 128 * 1024;
 const MAX_SIGSTORE_ROOT_BYTES: usize = 512 * 1024;
 const MAX_MANIFEST_BYTES: usize = 128 * 1024;
 const MAX_BUNDLE_BYTES: u64 = 2 * 1024 * 1024;
@@ -1374,7 +1369,6 @@ struct Channel {
     schema: String,
     environment: AttestationEnvironment,
     sequence: u64,
-    builder_policy_target: TargetReference,
     sigstore_trusted_root_target: TargetReference,
     active: Vec<ActiveRelease>,
 }
@@ -1393,23 +1387,6 @@ struct ActiveRelease {
     manifest_sha256: String,
     bundle_target: String,
     bundle_sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BuilderPolicy {
-    schema: String,
-    builders: BTreeMap<String, Builder>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Builder {
-    certificate_identity_regexp: String,
-    certificate_oidc_issuer: String,
-    workflow_repository: String,
-    workflow_name: String,
-    workflow_trigger: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1497,7 +1474,6 @@ trait BundleVerifier: Send + Sync {
         manifest_bytes: &[u8],
         bundle_bytes: &[u8],
         trusted_root_bytes: &[u8],
-        builder: &Builder,
     ) -> Result<()>;
 }
 
@@ -1554,13 +1530,161 @@ fn prevent_fallback_after_channel(error: RefreshFailure) -> RefreshFailure {
 
 struct PortableBundleVerifier;
 
+fn parse_portable_bundle(bundle_json: &str) -> Result<Bundle> {
+    let mut value: Value = serde_json::from_str(bundle_json)
+        .map_err(|error| policy_error(format!("invalid Sigstore bundle: {error}")))?;
+    if value
+        .pointer("/messageSignature/messageDigest/algorithm")
+        .is_some_and(|algorithm| algorithm.as_str() != Some("SHA2_256"))
+    {
+        return Err(policy_error(
+            "Sigstore messageDigest algorithm must be exactly SHA2_256",
+        ));
+    }
+    let entries = value
+        .pointer_mut("/verificationMaterial/tlogEntries")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            policy_error("Sigstore bundle v0.3 must contain exactly one transparency-log entry")
+        })?;
+    if entries.len() != 1 {
+        return Err(policy_error(
+            "Sigstore bundle v0.3 must contain exactly one transparency-log entry",
+        ));
+    }
+    // ProtoJSON parsers accept an int64 encoded as either a decimal string or
+    // JSON number, and `null` is equivalent to an unset scalar. Canonical Rekor
+    // v2 output omits its zero-valued integratedTime, while the pinned Sigstore
+    // type rejects the two equivalent explicit forms. Normalize only v2 null
+    // and numeric zero before parsing. TUF has already authenticated the exact
+    // original bundle bytes.
+    let entry = entries[0]
+        .as_object_mut()
+        .ok_or_else(|| policy_error("Sigstore transparency-log entry must be a JSON object"))?;
+    let kind_version = entry.get("kindVersion");
+    let is_hashedrekord_v2 = kind_version
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        == Some("hashedrekord")
+        && kind_version
+            .and_then(|value| value.get("version"))
+            .and_then(Value::as_str)
+            == Some("0.0.2");
+    let normalize_integrated_time = match entry.get("integratedTime") {
+        Some(Value::Null) if is_hashedrekord_v2 => true,
+        Some(Value::Number(number)) if is_hashedrekord_v2 => {
+            if number.as_i64() != Some(0) {
+                return Err(policy_error(
+                    "Rekor v2 transparency-log entry integratedTime must be absent, null, or zero",
+                ));
+            }
+            true
+        }
+        _ => false,
+    };
+    let normalized = if normalize_integrated_time {
+        entry.remove("integratedTime");
+        Cow::Owned(
+            serde_json::to_string(&value)
+                .map_err(|error| policy_error(format!("invalid Sigstore bundle: {error}")))?,
+        )
+    } else {
+        Cow::Borrowed(bundle_json)
+    };
+
+    Bundle::from_json(&normalized)
+        .map_err(|error| policy_error(format!("invalid Sigstore bundle: {error}")))
+}
+
+fn validate_portable_bundle_profile(bundle: &Bundle) -> Result<()> {
+    if bundle.media_type != "application/vnd.dev.sigstore.bundle.v0.3+json" {
+        return Err(policy_error(
+            "Sigstore bundle mediaType must be application/vnd.dev.sigstore.bundle.v0.3+json",
+        ));
+    }
+    let SignatureContent::MessageSignature(signature) = &bundle.content else {
+        return Err(policy_error(
+            "Sigstore bundle must contain a messageSignature",
+        ));
+    };
+    let digest = signature
+        .message_digest
+        .as_ref()
+        .ok_or_else(|| policy_error("Sigstore messageSignature must contain a messageDigest"))?;
+    if digest.algorithm != HashAlgorithm::Sha2256 {
+        return Err(policy_error(
+            "Sigstore messageDigest algorithm must be exactly SHA2_256",
+        ));
+    }
+    if digest.digest.as_bytes().len() != 32 {
+        return Err(policy_error(
+            "Sigstore SHA2_256 messageDigest must contain exactly 32 bytes",
+        ));
+    }
+    let [entry] = bundle.verification_material.tlog_entries.as_slice() else {
+        return Err(policy_error(
+            "Sigstore bundle v0.3 must contain exactly one transparency-log entry",
+        ));
+    };
+    if entry.kind_version.kind != "hashedrekord" {
+        return Err(policy_error(
+            "Sigstore bundle transparency-log entry must be hashedrekord",
+        ));
+    }
+    match entry.kind_version.version.as_str() {
+        "0.0.1" => {
+            if entry.integrated_time <= 0 {
+                return Err(policy_error(
+                    "Rekor v1 transparency-log entry integratedTime must be positive",
+                ));
+            }
+            if entry.inclusion_promise.is_none() {
+                return Err(policy_error(
+                    "Rekor v1 transparency-log entry must contain an inclusion promise",
+                ));
+            }
+        }
+        "0.0.2" => {
+            if entry.integrated_time != 0 {
+                return Err(policy_error(
+                    "Rekor v2 transparency-log entry integratedTime must be absent, null, or zero",
+                ));
+            }
+        }
+        version => {
+            return Err(policy_error(format!(
+                "unsupported hashedrekord version '{version}' in Sigstore bundle"
+            )));
+        }
+    }
+    if bundle
+        .verification_material
+        .timestamp_verification_data
+        .rfc3161_timestamps
+        .is_empty()
+    {
+        return Err(policy_error(
+            "Sigstore bundle must contain an RFC3161 timestamp",
+        ));
+    }
+    if entry
+        .inclusion_proof
+        .as_ref()
+        .is_none_or(|proof| proof.checkpoint.is_empty())
+    {
+        return Err(policy_error(
+            "Sigstore transparency-log entry must contain a Merkle inclusion proof and signed checkpoint",
+        ));
+    }
+    Ok(())
+}
+
 impl BundleVerifier for PortableBundleVerifier {
     fn verify(
         &self,
         manifest_bytes: &[u8],
         bundle_bytes: &[u8],
         trusted_root_bytes: &[u8],
-        builder: &Builder,
     ) -> Result<()> {
         let trusted_root_json = std::str::from_utf8(trusted_root_bytes).map_err(|error| {
             policy_error(format!("Sigstore trusted root is not UTF-8: {error}"))
@@ -1569,51 +1693,17 @@ impl BundleVerifier for PortableBundleVerifier {
             .map_err(|error| policy_error(format!("invalid Sigstore trusted root: {error}")))?;
         let bundle_json = std::str::from_utf8(bundle_bytes)
             .map_err(|error| policy_error(format!("Sigstore bundle is not UTF-8: {error}")))?;
-        let bundle = Bundle::from_json(bundle_json)
-            .map_err(|error| policy_error(format!("invalid Sigstore bundle: {error}")))?;
-        if bundle.media_type != "application/vnd.dev.sigstore.bundle.v0.3+json" {
-            return Err(policy_error(
-                "Sigstore bundle mediaType must be application/vnd.dev.sigstore.bundle.v0.3+json",
-            ));
-        }
-        if !matches!(&bundle.content, SignatureContent::MessageSignature(_)) {
-            return Err(policy_error(
-                "Sigstore bundle must contain a messageSignature",
-            ));
-        }
-        if bundle.verification_material.tlog_entries.is_empty()
-            || bundle
-                .verification_material
-                .tlog_entries
-                .iter()
-                .any(|entry| {
-                    entry
-                        .inclusion_proof
-                        .as_ref()
-                        .is_none_or(|proof| proof.checkpoint.is_empty())
-                })
-        {
-            return Err(policy_error(
-                "Sigstore bundle v0.3 must include a Merkle inclusion proof and signed checkpoint for every transparency-log entry",
-            ));
-        }
-        let policy =
-            VerificationPolicy::default().require_issuer(builder.certificate_oidc_issuer.clone());
-        let result = Verifier::new(&trusted_root)
-            .verify(manifest_bytes, &bundle, &policy)
+        let bundle = parse_portable_bundle(bundle_json)?;
+        validate_portable_bundle_profile(&bundle)?;
+        // TUF has already authorized the exact manifest, bundle, and trusted
+        // root bytes. Sigstore therefore supplies cryptographic provenance and
+        // transparency, while builder admission remains a promotion-time
+        // policy. Deliberately leave identity and issuer unconstrained here so
+        // repository, workflow, and CI-provider migrations do not brick
+        // already released clients.
+        Verifier::new(&trusted_root)
+            .verify(manifest_bytes, &bundle, &VerificationPolicy::default())
             .map_err(|error| policy_error(format!("Sigstore verification failed: {error}")))?;
-        let identity = result
-            .identity
-            .ok_or_else(|| policy_error("Sigstore certificate has no identity"))?;
-        let identity_policy = compile_identity_policy(builder)?;
-        if !identity_policy
-            .find(&identity)
-            .is_some_and(|matched| matched.start() == 0 && matched.end() == identity.len())
-        {
-            return Err(policy_error(
-                "Sigstore certificate identity does not satisfy the authenticated builder policy",
-            ));
-        }
         Ok(())
     }
 }
@@ -1702,18 +1792,6 @@ where
         });
     }
 
-    let builders_bytes = get_bound_target(
-        &mut updater,
-        &channel.builder_policy_target.path,
-        &channel.builder_policy_target.sha256,
-        MAX_BUILDER_POLICY_BYTES,
-        now,
-    )
-    .await
-    .map_err(prevent_fallback_after_channel)?;
-    let builders: BuilderPolicy = parse_json("builder policy", &builders_bytes)?;
-    validate_builder_policy(&builders)?;
-
     let sigstore_root_bytes = get_bound_target(
         &mut updater,
         &channel.sigstore_trusted_root_target.path,
@@ -1755,26 +1833,11 @@ where
         .await
         .map_err(prevent_fallback_after_channel)?;
 
-        // Parsing is necessary to select the TUF-authenticated builder entry,
-        // but none of these fields become trusted until verification succeeds
-        // over the exact raw manifest bytes below.
+        // Parse for the release/PCR contract, but verify the Sigstore
+        // signature over the exact raw bytes rather than a reserialization.
         let manifest: ReleaseManifest = parse_json("release manifest", &manifest_bytes)?;
-        let builder = builders
-            .builders
-            .get(&manifest.build.builder_id)
-            .ok_or_else(|| {
-                RefreshFailure::Security(policy_error(format!(
-                    "manifest references unknown builderId '{}'",
-                    manifest.build.builder_id
-                )))
-            })?;
-        validate_manifest(&manifest, &version, environment, builder)?;
-        bundle_verifier.verify(
-            &manifest_bytes,
-            &bundle_bytes,
-            &sigstore_root_bytes,
-            builder,
-        )?;
+        validate_manifest(&manifest, &version, environment)?;
+        bundle_verifier.verify(&manifest_bytes, &bundle_bytes, &sigstore_root_bytes)?;
 
         let pcr0 = decode_pcr("measurements.pcrs.0", &manifest.measurements.pcrs.pcr0)?;
         let pcr1 = decode_pcr("measurements.pcrs.1", &manifest.measurements.pcrs.pcr1)?;
@@ -2444,13 +2507,6 @@ fn retain_complete_channel(
     }
     retain_cached_target(
         updater,
-        &channel.builder_policy_target.path,
-        Some(&channel.builder_policy_target.sha256),
-        MAX_BUILDER_POLICY_BYTES,
-        retained,
-    )?;
-    retain_cached_target(
-        updater,
         &channel.sigstore_trusted_root_target.path,
         Some(&channel.sigstore_trusted_root_target.sha256),
         MAX_SIGSTORE_ROOT_BYTES,
@@ -2597,61 +2653,17 @@ fn validate_channel(channel: &Channel, environment: AttestationEnvironment) -> R
             "channel may contain at most {MAX_ACTIVE_RELEASES} active releases"
         )));
     }
-    if channel.builder_policy_target.path != "policy/builders.json" {
-        return Err(policy_error(
-            "builderPolicyTarget.path must be 'policy/builders.json'",
-        ));
-    }
     if channel.sigstore_trusted_root_target.path != "sigstore/trusted_root.json" {
         return Err(policy_error(
             "sigstoreTrustedRootTarget.path must be 'sigstore/trusted_root.json'",
         ));
     }
     validate_hex(
-        "builderPolicyTarget.sha256",
-        &channel.builder_policy_target.sha256,
-        SHA256_HEX_LEN,
-    )?;
-    validate_hex(
         "sigstoreTrustedRootTarget.sha256",
         &channel.sigstore_trusted_root_target.sha256,
         SHA256_HEX_LEN,
     )?;
     Ok(())
-}
-
-fn validate_builder_policy(policy: &BuilderPolicy) -> Result<()> {
-    if policy.schema != BUILDER_POLICY_SCHEMA {
-        return Err(policy_error(format!(
-            "unsupported builder policy schema '{}'",
-            policy.schema
-        )));
-    }
-    if policy.builders.is_empty() || policy.builders.len() > MAX_BUILDERS {
-        return Err(policy_error(format!(
-            "builder policy must contain between 1 and {MAX_BUILDERS} builders"
-        )));
-    }
-    for (id, builder) in &policy.builders {
-        validate_identifier("builder ID", id)?;
-        validate_https_url("certificateOidcIssuer", &builder.certificate_oidc_issuer)?;
-        validate_workflow_repository(&builder.workflow_repository)?;
-        validate_nonempty("workflowName", &builder.workflow_name)?;
-        validate_nonempty("workflowTrigger", &builder.workflow_trigger)?;
-        compile_identity_policy(builder)?;
-    }
-    Ok(())
-}
-
-fn compile_identity_policy(builder: &Builder) -> Result<Regex> {
-    let value = &builder.certificate_identity_regexp;
-    if value.len() > MAX_IDENTITY_REGEXP_BYTES || !value.starts_with('^') || !value.ends_with('$') {
-        return Err(policy_error(
-            "certificateIdentityRegexp must be an anchored expression of at most 2048 bytes",
-        ));
-    }
-    Regex::new(value)
-        .map_err(|error| policy_error(format!("invalid certificateIdentityRegexp: {error}")))
 }
 
 fn validate_release_targets(
@@ -2697,7 +2709,6 @@ fn validate_manifest(
     manifest: &ReleaseManifest,
     version: &str,
     environment: AttestationEnvironment,
-    builder: &Builder,
 ) -> Result<()> {
     if manifest.schema != MANIFEST_SCHEMA {
         return Err(policy_error(format!(
@@ -2741,17 +2752,7 @@ fn validate_manifest(
         40,
     )?;
     validate_source_path(&manifest.source.path)?;
-    let source_uri = validate_https_url("source.uri", &manifest.source.uri)?;
-    let expected_source_path = format!("/{}", builder.workflow_repository);
-    let source_repository_path = source_uri
-        .path()
-        .strip_suffix(".git")
-        .unwrap_or(source_uri.path());
-    if source_repository_path != expected_source_path {
-        return Err(policy_error(
-            "manifest source.uri does not match the authenticated builder repository",
-        ));
-    }
+    validate_https_url("source.uri", &manifest.source.uri)?;
 
     validate_file_name("artifact.name", &manifest.artifact.name)?;
     if manifest.artifact.media_type != EIF_MEDIA_TYPE {
@@ -2835,25 +2836,6 @@ fn validate_identifier(field: &str, value: &str) -> Result<()> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
         return Err(policy_error(format!("{field} is not a valid identifier")));
-    }
-    Ok(())
-}
-
-fn validate_workflow_repository(value: &str) -> Result<()> {
-    let parts = value.split('/').collect::<Vec<_>>();
-    if parts.len() != 2
-        || parts.iter().any(|part| {
-            part.is_empty()
-                || matches!(*part, "." | "..")
-                || part.len() > 128
-                || !part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        })
-    {
-        return Err(policy_error(
-            "workflowRepository must be an owner/name repository identifier",
-        ));
     }
     Ok(())
 }
@@ -4910,7 +4892,6 @@ mod tests {
             manifest_bytes: &[u8],
             bundle_bytes: &[u8],
             trusted_root_bytes: &[u8],
-            builder: &Builder,
         ) -> Result<()> {
             if self.fail {
                 return Err(policy_error("fixture bundle rejected"));
@@ -4920,10 +4901,6 @@ mod tests {
                 .contains("opensecret-backend"));
             assert_eq!(bundle_bytes, b"fixture-bundle");
             assert_eq!(trusted_root_bytes, b"fixture-trusted-root");
-            assert_eq!(
-                builder.certificate_oidc_issuer,
-                "https://token.actions.githubusercontent.com"
-            );
             Ok(())
         }
     }
@@ -5149,13 +5126,13 @@ mod tests {
 
     fn build_policy_repository(
         timestamp_expires: &str,
-        bad_builder_digest: bool,
+        bad_sigstore_root_digest: bool,
         active_releases: bool,
     ) -> (MemoryRepository, Vec<u8>) {
         let key_pair = KeyPair::generate_ecdsa_p256().unwrap();
         build_policy_repository_generation(
             timestamp_expires,
-            bad_builder_digest,
+            bad_sigstore_root_digest,
             active_releases,
             &key_pair,
             1,
@@ -5166,7 +5143,7 @@ mod tests {
 
     fn build_policy_repository_generation(
         timestamp_expires: &str,
-        bad_builder_digest: bool,
+        bad_sigstore_root_digest: bool,
         active_releases: bool,
         key_pair: &KeyPair,
         metadata_version: u64,
@@ -5175,7 +5152,7 @@ mod tests {
     ) -> (MemoryRepository, Vec<u8>) {
         build_policy_repository_generation_with_channel_padding(
             timestamp_expires,
-            bad_builder_digest,
+            bad_sigstore_root_digest,
             active_releases,
             key_pair,
             metadata_version,
@@ -5188,7 +5165,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn build_policy_repository_generation_with_channel_padding(
         timestamp_expires: &str,
-        bad_builder_digest: bool,
+        bad_sigstore_root_digest: bool,
         active_releases: bool,
         key_pair: &KeyPair,
         metadata_version: u64,
@@ -5201,7 +5178,6 @@ mod tests {
         let (root_key_id, root_key) = tuf_key_entry(&root_key_pair);
         let manifest_path = "releases/1.2.3/prod/manifest.json";
         let bundle_path = "releases/1.2.3/prod/manifest.sigstore.json";
-        let builder_path = "policy/builders.json";
         let trusted_root_path = "sigstore/trusted_root.json";
 
         let manifest = serde_json::to_vec(&json!({
@@ -5210,7 +5186,7 @@ mod tests {
             "environment": "prod",
             "release": { "version": "1.2.3" },
             "source": {
-                "uri": "https://github.com/OpenSecretCloud/opensecret",
+                "uri": "https://source.example/OpenSecretCloud/opensecret",
                 "path": "nix/enclave",
                 "ref": "refs/tags/v1.2.3",
                 "revision": { "algorithm": "git-sha1", "digest": "a".repeat(40) },
@@ -5232,32 +5208,19 @@ mod tests {
             },
             "build": {
                 "system": "nix",
-                "builderId": "opensecret-nitro-eif-github-actions",
+                "builderId": "portable-nix-builder",
                 "derivation": "eif-prod",
                 "flakeLockSha256": "c".repeat(64),
-                "runUri": "https://github.com/OpenSecretCloud/opensecret/actions/runs/1/attempts/1",
+                "runUri": "https://ci.example/runs/1",
             },
         }))
         .unwrap();
         let bundle = b"fixture-bundle".to_vec();
-        let builders = serde_json::to_vec(&json!({
-            "schema": BUILDER_POLICY_SCHEMA,
-            "builders": {
-                "opensecret-nitro-eif-github-actions": {
-                    "certificateIdentityRegexp": "^https://github[.]com/OpenSecretCloud/opensecret/[.]github/workflows/release-nitro-eif[.]yml@refs/tags/v1[.]2[.]3$",
-                    "certificateOidcIssuer": "https://token.actions.githubusercontent.com",
-                    "workflowRepository": "OpenSecretCloud/opensecret",
-                    "workflowName": "Nitro EIF Release",
-                    "workflowTrigger": "workflow_dispatch",
-                },
-            },
-        }))
-        .unwrap();
         let trusted_root = b"fixture-trusted-root".to_vec();
-        let builder_digest = if bad_builder_digest {
+        let trusted_root_digest = if bad_sigstore_root_digest {
             "0".repeat(64)
         } else {
-            sha256_hex(&builders)
+            sha256_hex(&trusted_root)
         };
         let active = if active_releases {
             json!([{
@@ -5273,8 +5236,7 @@ mod tests {
             "schema": CHANNEL_SCHEMA,
             "environment": "prod",
             "sequence": channel_sequence,
-            "builderPolicyTarget": { "path": builder_path, "sha256": builder_digest },
-            "sigstoreTrustedRootTarget": { "path": trusted_root_path, "sha256": sha256_hex(&trusted_root) },
+            "sigstoreTrustedRootTarget": { "path": trusted_root_path, "sha256": trusted_root_digest },
             "active": active,
         });
         if channel_padding_bytes > 0 {
@@ -5284,7 +5246,6 @@ mod tests {
 
         let logical_targets = BTreeMap::from([
             ("channels/prod.json".to_string(), channel),
-            (builder_path.to_string(), builders),
             (trusted_root_path.to_string(), trusted_root),
             (manifest_path.to_string(), manifest),
             (bundle_path.to_string(), bundle),
@@ -5550,26 +5511,30 @@ mod tests {
         let now: jiff::Timestamp = "2026-08-29T00:00:00Z".parse().unwrap();
         let (repository, root) = build_policy_repository("2026-08-30T00:00:00Z", false, true);
         let store = Arc::new(SnapshotStore::default());
-        let policy = resolve_policy(
+        let policy = resolve_policy_with_final_time(
             repository,
             Arc::clone(&store),
             &root,
             AttestationEnvironment::Production,
             now,
             &FixtureBundleVerifier { fail: false },
+            || now,
         )
         .await
         .unwrap();
         assert_eq!(policy.sequence(), 7);
-        assert!(policy.verify_attestation(&document(1, 2, 3)).is_ok());
+        assert!(policy
+            .verify_attestation_at(&document(1, 2, 3), now)
+            .is_ok());
 
-        let offline = resolve_policy(
+        let offline = resolve_policy_with_final_time(
             StoreRepository::new(Arc::clone(&store)),
             Arc::clone(&store),
             &root,
             AttestationEnvironment::Production,
             now,
             &FixtureBundleVerifier { fail: false },
+            || now,
         )
         .await
         .expect("the complete cache must reverify without network access");
@@ -5679,7 +5644,7 @@ mod tests {
         .expect("an authenticated empty channel is a valid deny-all policy");
         assert_eq!(policy.sequence(), 8);
         assert!(matches!(
-            policy.verify_attestation(&document(1, 2, 3)),
+            policy.verify_attestation_at(&document(1, 2, 3), now),
             Err(Error::UnreleasedAttestationPolicy { .. })
         ));
 
@@ -5696,7 +5661,7 @@ mod tests {
         .expect("the cached revoke-all policy must reverify without network access");
         assert_eq!(offline.policy_id(), policy.policy_id());
         assert!(matches!(
-            offline.verify_attestation(&document(1, 2, 3)),
+            offline.verify_attestation_at(&document(1, 2, 3), now),
             Err(Error::UnreleasedAttestationPolicy { .. })
         ));
     }
@@ -6330,13 +6295,14 @@ mod tests {
     async fn authenticated_channel_digest_mismatch_is_security_failure() {
         let now: jiff::Timestamp = "2026-08-29T00:00:00Z".parse().unwrap();
         let (repository, root) = build_policy_repository("2026-08-30T00:00:00Z", true, true);
-        let error = resolve_policy(
+        let error = resolve_policy_with_final_time(
             repository,
             Arc::new(SnapshotStore::default()),
             &root,
             AttestationEnvironment::Production,
             now,
             &FixtureBundleVerifier { fail: false },
+            || now,
         )
         .await
         .unwrap_err();
@@ -6347,13 +6313,14 @@ mod tests {
     async fn expired_tuf_timestamp_is_security_failure() {
         let now: jiff::Timestamp = "2026-08-29T00:00:00Z".parse().unwrap();
         let (repository, root) = build_policy_repository("2026-08-28T00:00:00Z", false, true);
-        let error = resolve_policy(
+        let error = resolve_policy_with_final_time(
             repository,
             Arc::new(SnapshotStore::default()),
             &root,
             AttestationEnvironment::Production,
             now,
             &FixtureBundleVerifier { fail: false },
+            || now,
         )
         .await
         .unwrap_err();
@@ -6364,13 +6331,14 @@ mod tests {
     async fn rejected_sigstore_bundle_is_security_failure() {
         let now: jiff::Timestamp = "2026-08-29T00:00:00Z".parse().unwrap();
         let (repository, root) = build_policy_repository("2026-08-30T00:00:00Z", false, true);
-        let error = resolve_policy(
+        let error = resolve_policy_with_final_time(
             repository,
             Arc::new(SnapshotStore::default()),
             &root,
             AttestationEnvironment::Production,
             now,
             &FixtureBundleVerifier { fail: true },
+            || now,
         )
         .await
         .unwrap_err();
@@ -6529,32 +6497,12 @@ mod tests {
     }
 
     #[test]
-    fn builder_identity_policy_must_be_anchored() {
-        let builder = Builder {
-            certificate_identity_regexp: "github".to_string(),
-            certificate_oidc_issuer: "https://token.actions.githubusercontent.com".to_string(),
-            workflow_repository: "OpenSecretCloud/opensecret".to_string(),
-            workflow_name: "Nitro EIF Release".to_string(),
-            workflow_trigger: "workflow_dispatch".to_string(),
-        };
-        assert!(compile_identity_policy(&builder).is_err());
-    }
-
-    #[test]
-    fn builder_identifiers_and_oidc_issuers_match_the_wire_profile() {
+    fn manifest_audit_fields_and_urls_match_the_wire_profile() {
         assert!(validate_identifier("builder ID", "builder_1.test").is_ok());
         assert!(validate_identifier("builder ID", "_builder").is_err());
         assert!(validate_identifier("builder ID", &format!("a{}", "b".repeat(256))).is_err());
-        assert!(validate_https_url(
-            "certificateOidcIssuer",
-            "https://token.actions.githubusercontent.com"
-        )
-        .is_ok());
-        assert!(validate_https_url(
-            "certificateOidcIssuer",
-            "https://token.actions.githubusercontent.com?tenant=maple"
-        )
-        .is_err());
+        assert!(validate_https_url("source.uri", "https://source.example/project").is_ok());
+        assert!(validate_https_url("build.runUri", "https://ci.example/runs/1?secret=x").is_err());
         assert!(validate_source_path(".").is_ok());
         assert!(validate_source_path("nix/enclave").is_ok());
         assert!(validate_source_path("nix/./enclave").is_err());
@@ -6828,10 +6776,14 @@ mod tests {
 
     #[tokio::test]
     async fn root_ceiling_requires_exact_404_before_cached_policy_fallback() {
-        let now: jiff::Timestamp = "2026-08-29T00:00:00Z".parse().unwrap();
+        // This path exercises the production clock during cached fallback, so
+        // keep its timestamp fixture valid relative to the test run instead of
+        // tying the assertion to the date on which the test was authored.
+        let now = jiff::Timestamp::now();
+        let timestamp_expires = (now + jiff::SignedDuration::from_hours(24)).to_string();
         let online_pair = KeyPair::generate_ecdsa_p256().unwrap();
         let (mut repository, _) = build_policy_repository_generation(
-            "2026-08-30T00:00:00Z",
+            &timestamp_expires,
             false,
             true,
             &online_pair,
@@ -8838,36 +8790,17 @@ mod tests {
         assert_eq!(merged.high_water, accepted);
     }
 
-    fn cosign_fixture_builder(identity: &str) -> Builder {
-        Builder {
-            certificate_identity_regexp: format!("^{identity}$"),
-            certificate_oidc_issuer: "https://github.com/login/oauth".to_string(),
-            workflow_repository: "example/example".to_string(),
-            workflow_name: "fixture".to_string(),
-            workflow_trigger: "fixture".to_string(),
-        }
-    }
-
     #[test]
-    fn portable_bundle_verification_is_fully_local_and_identity_bound() {
+    fn portable_bundle_verification_is_fully_local_without_an_identity_gate() {
         let bundle = include_bytes!("../tests/fixtures/cosign-v3-blob.sigstore.json");
         let trusted_root = sigstore_verify::trust_root::SIGSTORE_PRODUCTION_TRUSTED_ROOT.as_bytes();
         let artifact = b"test content for cosign\n";
-        let builder = cosign_fixture_builder(r"w[.]vollprecht@gmail[.]com");
         PortableBundleVerifier
-            .verify(artifact, bundle, trusted_root, &builder)
+            .verify(artifact, bundle, trusted_root)
             .unwrap();
 
         assert!(PortableBundleVerifier
-            .verify(b"tampered", bundle, trusted_root, &builder)
-            .is_err());
-        assert!(PortableBundleVerifier
-            .verify(
-                artifact,
-                bundle,
-                trusted_root,
-                &cosign_fixture_builder("someone-else@example[.]com"),
-            )
+            .verify(b"tampered", bundle, trusted_root)
             .is_err());
 
         let mut downgraded: Value = serde_json::from_slice(bundle).unwrap();
@@ -8878,9 +8811,196 @@ mod tests {
                 artifact,
                 &serde_json::to_vec(&downgraded).unwrap(),
                 trusted_root,
-                &builder,
             )
             .is_err());
+
+        let mut multiple_entries: Value = serde_json::from_slice(bundle).unwrap();
+        let duplicate = multiple_entries["verificationMaterial"]["tlogEntries"][0].clone();
+        multiple_entries["verificationMaterial"]["tlogEntries"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        let error = PortableBundleVerifier
+            .verify(
+                artifact,
+                &serde_json::to_vec(&multiple_entries).unwrap(),
+                trusted_root,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exactly one transparency-log entry"));
+
+        let mut missing_checkpoint: Value = serde_json::from_slice(bundle).unwrap();
+        missing_checkpoint["verificationMaterial"]["tlogEntries"][0]["inclusionProof"]
+            .as_object_mut()
+            .unwrap()
+            .remove("checkpoint");
+        let error = PortableBundleVerifier
+            .verify(
+                artifact,
+                &serde_json::to_vec(&missing_checkpoint).unwrap(),
+                trusted_root,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("signed checkpoint"));
+    }
+
+    #[test]
+    fn portable_bundle_verifies_official_rekor_v2_with_omitted_integrated_time() {
+        let artifact = include_bytes!("../tests/fixtures/rekor-v2-artifact.txt");
+        let bundle = include_bytes!("../tests/fixtures/rekor-v2-bundle.sigstore.fixture");
+        let trusted_root = include_bytes!("../tests/fixtures/rekor-v2-trusted-root.fixture");
+        let value: Value = serde_json::from_slice(bundle).unwrap();
+        assert!(value["verificationMaterial"]["tlogEntries"][0]
+            .get("integratedTime")
+            .is_none());
+
+        PortableBundleVerifier
+            .verify(artifact, bundle, trusted_root)
+            .unwrap();
+    }
+
+    #[test]
+    fn portable_bundle_profile_requires_an_exact_sha256_message_digest() {
+        let fixture = include_bytes!("../tests/fixtures/cosign-v3-blob.sigstore.json");
+
+        let mut missing: Value = serde_json::from_slice(fixture).unwrap();
+        missing["messageSignature"]
+            .as_object_mut()
+            .unwrap()
+            .remove("messageDigest");
+        let bundle = parse_portable_bundle(&serde_json::to_string(&missing).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error.to_string().contains("must contain a messageDigest"));
+
+        for algorithm in ["sha256", "SHA2_512"] {
+            let mut wrong_algorithm: Value = serde_json::from_slice(fixture).unwrap();
+            wrong_algorithm["messageSignature"]["messageDigest"]["algorithm"] =
+                Value::String(algorithm.to_string());
+            let error = parse_portable_bundle(&serde_json::to_string(&wrong_algorithm).unwrap())
+                .and_then(|bundle| validate_portable_bundle_profile(&bundle))
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("algorithm must be exactly SHA2_256"));
+        }
+
+        let mut short_digest: Value = serde_json::from_slice(fixture).unwrap();
+        short_digest["messageSignature"]["messageDigest"]["digest"] =
+            Value::String(BASE64.encode([0_u8; 31]));
+        let bundle = parse_portable_bundle(&serde_json::to_string(&short_digest).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error.to_string().contains("exactly 32 bytes"));
+    }
+
+    #[test]
+    fn portable_bundle_profile_enforces_hashedrekord_v1_time_and_promise() {
+        let fixture = include_bytes!("../tests/fixtures/cosign-v3-blob.sigstore.json");
+
+        let mut zero_time: Value = serde_json::from_slice(fixture).unwrap();
+        zero_time["verificationMaterial"]["tlogEntries"][0]["integratedTime"] =
+            Value::String("0".to_string());
+        let bundle = parse_portable_bundle(&serde_json::to_string(&zero_time).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("integratedTime must be positive"));
+
+        let mut missing_promise: Value = serde_json::from_slice(fixture).unwrap();
+        missing_promise["verificationMaterial"]["tlogEntries"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("inclusionPromise");
+        let bundle =
+            parse_portable_bundle(&serde_json::to_string(&missing_promise).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error.to_string().contains("inclusion promise"));
+
+        let mut missing_timestamp: Value = serde_json::from_slice(fixture).unwrap();
+        missing_timestamp["verificationMaterial"]["timestampVerificationData"]
+            ["rfc3161Timestamps"] = json!([]);
+        let bundle =
+            parse_portable_bundle(&serde_json::to_string(&missing_timestamp).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must contain an RFC3161 timestamp"));
+
+        let mut wrong_kind: Value = serde_json::from_slice(fixture).unwrap();
+        wrong_kind["verificationMaterial"]["tlogEntries"][0]["kindVersion"]["kind"] =
+            Value::String("intoto".to_string());
+        let bundle = parse_portable_bundle(&serde_json::to_string(&wrong_kind).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error.to_string().contains("must be hashedrekord"));
+
+        let mut unknown_version: Value = serde_json::from_slice(fixture).unwrap();
+        unknown_version["verificationMaterial"]["tlogEntries"][0]["kindVersion"]["version"] =
+            Value::String("0.0.3".to_string());
+        let bundle =
+            parse_portable_bundle(&serde_json::to_string(&unknown_version).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported hashedrekord version '0.0.3'"));
+    }
+
+    #[test]
+    fn portable_bundle_profile_accepts_zero_equivalent_rekor_v2_time_forms() {
+        let fixture = include_bytes!("../tests/fixtures/cosign-v3-blob.sigstore.json");
+        for integrated_time in [None, Some(Value::Null), Some(json!(0)), Some(json!("0"))] {
+            let mut value: Value = serde_json::from_slice(fixture).unwrap();
+            value["verificationMaterial"]["tlogEntries"][0]["kindVersion"]["version"] =
+                Value::String("0.0.2".to_string());
+            let entry = value["verificationMaterial"]["tlogEntries"][0]
+                .as_object_mut()
+                .unwrap();
+            match integrated_time {
+                Some(integrated_time) => {
+                    entry.insert("integratedTime".to_string(), integrated_time);
+                }
+                None => {
+                    entry.remove("integratedTime");
+                }
+            }
+
+            let bundle = parse_portable_bundle(&serde_json::to_string(&value).unwrap()).unwrap();
+            assert_eq!(
+                bundle.verification_material.tlog_entries[0].integrated_time,
+                0
+            );
+            validate_portable_bundle_profile(&bundle).unwrap();
+        }
+    }
+
+    #[test]
+    fn portable_bundle_profile_rejects_rekor_v2_nonzero_time_or_missing_timestamp() {
+        let fixture = include_bytes!("../tests/fixtures/cosign-v3-blob.sigstore.json");
+        let mut v2: Value = serde_json::from_slice(fixture).unwrap();
+        v2["verificationMaterial"]["tlogEntries"][0]["kindVersion"]["version"] =
+            Value::String("0.0.2".to_string());
+
+        for integrated_time in [json!(1), json!("1")] {
+            let mut nonzero = v2.clone();
+            nonzero["verificationMaterial"]["tlogEntries"][0]["integratedTime"] = integrated_time;
+            let error = parse_portable_bundle(&serde_json::to_string(&nonzero).unwrap())
+                .and_then(|bundle| validate_portable_bundle_profile(&bundle))
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("integratedTime must be absent, null, or zero"));
+        }
+
+        v2["verificationMaterial"]["tlogEntries"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("integratedTime");
+        v2["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"] = json!([]);
+        let bundle = parse_portable_bundle(&serde_json::to_string(&v2).unwrap()).unwrap();
+        let error = validate_portable_bundle_profile(&bundle).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must contain an RFC3161 timestamp"));
     }
 
     #[tokio::test]

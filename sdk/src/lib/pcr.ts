@@ -57,16 +57,12 @@ export type Pcr0ValidationResult = {
   bundleSha256?: string;
   snapshotId: string;
   channelSequence?: number;
+  /** Audit-only builder label from the authenticated release manifest. */
   builderId?: string;
-  /** Authenticated policy that the promotion pipeline applies to the Sigstore certificate. */
-  signerIdentityPolicy?: string;
-  /** @deprecated Browser runtime does not observe or verify a Sigstore signer identity. */
-  signerIdentity?: string;
-  oidcIssuer?: string;
   sigstoreTrustedRootSha256?: string;
-  /** Browser runtime does not interpret transparency evidence from the bundle. */
+  /** Locally verified Rekor transparency-log entry. */
   transparencyLog?: { logIndex: string; logId: string };
-  /** @deprecated Sigstore timestamps are verified by the promotion pipeline. */
+  /** Authenticated RFC3161 observer timestamp from the portable bundle. */
   verifiedAt?: string;
 };
 
@@ -169,9 +165,9 @@ function matchedReleaseResult(
     snapshotId: snapshot.policyId,
     channelSequence: snapshot.sequence,
     builderId: manifest.build.builderId,
-    signerIdentityPolicy: sigstore.builder.certificateIdentityRegexp,
-    oidcIssuer: sigstore.builder.certificateOidcIssuer,
-    sigstoreTrustedRootSha256: sigstore.trustedRootSha256
+    sigstoreTrustedRootSha256: sigstore.trustedRootSha256,
+    transparencyLog: sigstore.transparencyLog,
+    verifiedAt: sigstore.observerTimestamp
   };
 }
 

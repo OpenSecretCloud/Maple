@@ -72,7 +72,9 @@ signatures, versions, expiry, lengths, and hashes, then locally verifies each
 active release's portable Sigstore bundle over the exact manifest bytes. The
 Sigstore check includes the Fulcio certificate chain and SCT, Rekor inclusion
 proof and signed checkpoint, integrated signing time, artifact signature, and
-the TUF-authenticated builder issuer and certificate-identity expression.
+the exact manifest bytes. TUF authorizes the exact manifest, bundle, and
+Sigstore trusted-root targets; a signer's certificate identity and issuer are
+provenance evidence, not client-side release-authorization inputs.
 This refresh happens before the SDK requests the backend's ephemeral Nitro
 attestation key, whose five-minute lifetime must not be consumed by a cold TUF
 refresh. Immediately before key exchange the SDK performs a non-network check
@@ -171,12 +173,13 @@ endpoints use mock attestation only when the `mock-attestation` feature is
 enabled; Android also supports the exact emulator alias `10.0.2.2`. Other
 endpoints require HTTPS.
 
-The authenticated builder target also carries `workflowName` and
-`workflowTrigger`. Release promotion validates those and the GitHub certificate
-workflow-ref and workflow-SHA extension claims. The Rust verifier currently
-enforces the cryptographically bound certificate identity, issuer, repository
-linkage, signature, and log proofs; `sigstore-verify` does not expose those
-GitHub-specific extensions for an additional runtime comparison.
+Release promotion may admit only builders configured by the publisher and may
+validate their certificate identity, issuer, and CI-specific claims before it
+updates TUF. The Rust client does not download that promotion configuration or
+bind authorization to a repository, workflow, CI provider, certificate
+identity, or issuer. This keeps existing clients valid across builder and
+repository migrations while retaining local signature, certificate-chain,
+SCT, transparency-log, timestamp, artifact, TUF, and PCR verification.
 
 ## Inference APIs
 

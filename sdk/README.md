@@ -40,28 +40,41 @@ The browser flow is deliberately split at a clear verification boundary:
 
 ```text
 release promotion pipeline
-  verifies the portable Sigstore bundle, exact builder identity, and log proof
+  admits configured builders, verifies locked release inputs and Sigstore evidence
   publishes manifest + bundle, then atomically authorizes them with TUF
 
 browser before each new attested session
   verifies TUF root rotation, signatures, versions, expiry, hashes, and lengths
   loads only the selected prod or dev channel (at most two active manifests)
+  verifies each exact manifest byte sequence against its Fulcio certificate,
+    SCT, Rekor body/inclusion proof/signed checkpoint, and RFC3161 timestamp
   compares PCR0 + PCR1 + PCR2 against one complete authenticated manifest
   performs key exchange only after that tuple matches
 ```
 
-The browser authenticates and exposes the bundle, Sigstore trusted-root, and
-builder-policy target identities and digests as audit evidence. It does **not**
-claim to cryptographically verify the Sigstore bundle: the official Sigstore JS
-verifier and TUF client are Node-only, so full bundle verification remains a
-release-promotion requirement. TUF supplies current authorization and rollback
-protection; the immutable Sigstore record supplies build provenance. Neither is
-a substitute for the other.
+The browser uses the exact-pinned `@freedomofpress/sigstore-browser` dependency
+behind Maple's bounded v0.3 message-signature adapter. The adapter rejects DSSE
+and legacy certificate-chain layouts, requires one Rekor entry with an inclusion
+proof and signed checkpoint, requires CT/Rekor/TSA thresholds of one, and verifies
+the raw manifest bytes rather than parsed or reserialized JSON. It also checks the
+full Fulcio path at the authenticated RFC3161 observer time. For Rekor v2, the
+absent/null/zero legacy integrated-time field is ignored and the required RFC3161
+timestamp is authoritative. TUF supplies current authorization and rollback
+protection; the immutable Sigstore record supplies cryptographic provenance and
+transparency. Neither is a substitute for the other.
+
+Builder admission remains a promotion concern. `build.builderId`, certificate
+SANs, OIDC issuer, repository, workflow, and run URI are authenticated audit
+provenance after TUF and Sigstore verification, but the SDK does not match them
+against a client-side allowlist. This keeps authorized reproducible builders
+fungible and avoids coupling existing SDKs to a repository, CI provider, or
+workflow name during a migration.
 
 The Rust SDK has a different capability boundary: it uses the maintained
 `sigstore-tuf` and `sigstore-verify` crates to verify both layers locally before
-accepting an active PCR tuple. It enforces the TUF-authenticated certificate
-issuer and identity expression as part of portable-bundle verification.
+accepting an active PCR tuple. It follows the same authorization split: TUF
+selects exact evidence, while Sigstore verifies that evidence cryptographically;
+certificate identity is not a second client authorization policy.
 
 Policy targets are isolated per channel, while root, timestamp, snapshot, and
 targets rollback high-water marks are shared for the repository. Browser cache
@@ -118,9 +131,11 @@ then verifies the Nitro document, performs the expiry/currentness and complete
 PCR0/PCR1/PCR2 authorization above, and immediately proceeds to key exchange.
 An already verified cached session does not trigger this refresh.
 
-Bundle and Sigstore trusted-root bodies are downloaded and hash-checked but are
-not copied into local storage. A refresh may fall back only to a fully
-reverified, unexpired last-known-good generation after an explicit retryable
+Manifest, bundle, and Sigstore trusted-root bodies are retained in the immutable
+generation cache. A cached generation is usable only after all three exact bodies
+are hash-checked against TUF and the bundle is cryptographically reverified. A
+refresh may fall back only to such a fully reverified, unexpired last-known-good
+generation after an explicit retryable
 HTTP status (`404`, `408`, `429`, or `5xx`), timeout, or response interruption
 after headers. Ambiguous pre-response Fetch rejection fails closed because
 browsers do not distinguish an offline failure from a redirect blocked by
@@ -132,10 +147,21 @@ The publisher must produce the shared browser/native TUF v1 profile: Ed25519
 top-level roles, threshold signatures, `consistent_snapshot: true`, sequential
 root rotation, and SHA-256 length/hash descriptors. Browser limits are 64 KiB
 root, 32 KiB timestamp, 128 KiB snapshot, 256 KiB targets, 128 KiB channel,
-builder-policy, and manifest targets, 512 KiB Sigstore trusted root, and 2 MiB
+and manifest targets, 512 KiB Sigstore trusted root, and 2 MiB
 portable bundle. Publication must enforce the smallest client limit. The
 checked-in generated root is intentionally an unbootstrapped fail-closed
 placeholder until the production TUF repository is created and reviewed.
+
+`@freedomofpress/sigstore-browser` 0.1.14 filters Fulcio certificate authorities
+against the wall clock while loading a root. Maple first selects the one Rekor
+key whose log ID matches the one required bundle entry, so overlapping Rekor
+rotations do not depend on array order; that key must still be current when the
+library loads it. The library does not expose a safe override for the remaining
+current-time Fulcio filter. A sufficiently old release can therefore become
+locally unverifiable after Sigstore retires trust material even while Maple TUF
+still lists it; the SDK fails closed instead of weakening authenticated validity
+periods. Promotion should replace such an active release before its Sigstore
+trust material ages out.
 
 Mock attestation is limited to exact loopback development endpoints (plus the
 documented Android emulator alias in the Rust SDK). Do not weaken attestation,

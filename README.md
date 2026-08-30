@@ -223,12 +223,15 @@ repository; they do not call GitHub, Fulcio, or Rekor.
 
 The TypeScript and Rust SDKs embed the same TUF bootstrap root, not an ordinary
 release snapshot. Normal enclave releases therefore require no SDK release.
-The SDK changes only when its client contract changes. Normal root rotations
-arrive through the authenticated, sequential TUF root chain; replacing or
-advancing the embedded bootstrap out of band is forbidden until a reviewed
-bridge-history migration exists. Until the production root and initial
-repository are reviewed and published, the checked-in placeholder root keeps
-this draft integration fail-closed for real enclave connections.
+Changing the configured release builder, source repository, or CI provider also
+does not require an SDK release: those identities are checked before promotion,
+while clients authorize the exact TUF-selected evidence. The SDK changes only
+when its client contract changes. Normal root rotations arrive through the
+authenticated, sequential TUF root chain; replacing or advancing the embedded
+bootstrap out of band is forbidden until a reviewed bridge-history migration
+exists. Until the production root and initial repository are reviewed and
+published, the checked-in placeholder root keeps this draft integration
+fail-closed for real enclave connections.
 
 Packaged Maple selects trust policy only for exact official backend origins.
 Supporting an arbitrary hosted backend requires an explicit custom TUF

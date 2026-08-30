@@ -1569,7 +1569,6 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "pretty_assertions",
- "regex",
  "reqwest 0.12.28",
  "ring",
  "serde",

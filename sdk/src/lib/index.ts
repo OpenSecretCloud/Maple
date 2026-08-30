@@ -156,7 +156,6 @@ export {
 export {
   ATTESTATION_TUF_BASE_URL,
   AttestationTrustError,
-  type AttestationBuilderIdentity,
   type NitroReleaseManifest,
   type SigstoreEvidence,
   type VerifiedAttestationPolicy

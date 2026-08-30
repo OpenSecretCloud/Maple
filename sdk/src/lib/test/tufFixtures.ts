@@ -34,7 +34,6 @@ export type FixtureOptions = {
   sourcePath?: string;
   artifactName?: string;
   runUri?: string;
-  certificateIdentityRegexp?: string;
   rootSigningSeed?: number;
   rootRoleKeySeedsByRootVersion?: Partial<Record<number, readonly number[]>>;
   rootRoleThresholdsByRootVersion?: Partial<Record<number, number>>;
@@ -294,25 +293,10 @@ export async function buildTufFixture(options: FixtureOptions = {}): Promise<Tuf
     metadataMaterials("targets")
   ]);
 
-  const builderPolicyPath = "policy/builders.json";
   const trustedRootPath = "sigstore/trusted_root.json";
   const channelPath = `channels/${environment}.json`;
   const manifestPath = `releases/1.0.0/${environment}/manifest.json`;
   const bundlePath = `releases/1.0.0/${environment}/manifest.sigstore.json`;
-  const builderPolicyBytes = jsonBytes({
-    schema: "https://attestations.trymaple.ai/schemas/sigstore-builder-policy/v1",
-    builders: {
-      "github-opensecret-v1": {
-        certificateIdentityRegexp:
-          options.certificateIdentityRegexp ??
-          "^https://github\\.com/OpenSecretCloud/opensecret/\\.github/workflows/release\\.yml@refs/tags/v1\\.0\\.0$",
-        certificateOidcIssuer: "https://token.actions.githubusercontent.com",
-        workflowRepository: "OpenSecretCloud/opensecret",
-        workflowName: "release.yml",
-        workflowTrigger: "workflow_dispatch"
-      }
-    }
-  });
   const trustedRootBytes = jsonBytes({
     mediaType: "application/vnd.dev.sigstore.trustedroot+json;version=0.1"
   });
@@ -355,7 +339,6 @@ export async function buildTufFixture(options: FixtureOptions = {}): Promise<Tuf
   }
 
   const targetPayloads = new Map<string, Uint8Array>([
-    [builderPolicyPath, builderPolicyBytes],
     [trustedRootPath, trustedRootBytes],
     [manifestPath, manifestBytes],
     [bundlePath, bundleBytes]
@@ -414,10 +397,6 @@ export async function buildTufFixture(options: FixtureOptions = {}): Promise<Tuf
     schema: "https://attestations.trymaple.ai/schemas/channel/v1",
     environment,
     sequence: options.sequence ?? 1,
-    builderPolicyTarget: {
-      path: builderPolicyPath,
-      sha256: targetDescriptors[builderPolicyPath].hashes.sha256
-    },
     sigstoreTrustedRootTarget: {
       path: trustedRootPath,
       sha256: targetDescriptors[trustedRootPath].hashes.sha256

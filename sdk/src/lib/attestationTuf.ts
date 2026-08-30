@@ -2,6 +2,7 @@ import { decode as decodeBase64, encode as encodeBase64 } from "@stablelib/base6
 import nacl from "tweetnacl";
 import { z } from "zod";
 import embeddedBootstrapJson from "./attestation-tuf-root.generated.json";
+import { verifyTufAuthorizedSigstoreBundle } from "./attestationSigstore";
 
 export const ATTESTATION_TUF_BASE_URL = "https://attestations.trymaple.ai/tuf";
 const METADATA_BASE_URL = `${ATTESTATION_TUF_BASE_URL}/metadata/`;
@@ -9,7 +10,6 @@ const TARGETS_BASE_URL = `${ATTESTATION_TUF_BASE_URL}/targets/`;
 const UNPUBLISHED_ROOT_SCHEMA = "https://attestations.trymaple.ai/schemas/unpublished-tuf-root/v1";
 const CHANNEL_SCHEMA = "https://attestations.trymaple.ai/schemas/channel/v1";
 const MANIFEST_SCHEMA = "https://attestations.trymaple.ai/schemas/nitro-eif-release/v1";
-const BUILDER_POLICY_SCHEMA = "https://attestations.trymaple.ai/schemas/sigstore-builder-policy/v1";
 const PCR_HEX_PATTERN = /^[0-9a-f]{96}$/;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const ED25519_HEX_PATTERN = /^[0-9a-f]{64}$/;
@@ -245,7 +245,6 @@ const ChannelSchema = z
     schema: z.literal(CHANNEL_SCHEMA),
     environment: EnvironmentSchema,
     sequence: PositiveSequenceSchema,
-    builderPolicyTarget: TargetReferenceSchema,
     sigstoreTrustedRootTarget: TargetReferenceSchema,
     active: z.array(ActiveReleaseSchema).max(2)
   })
@@ -333,58 +332,18 @@ const ManifestSchema = z
   })
   .strict();
 
-const BuilderIdentitySchema = z
-  .object({
-    certificateIdentityRegexp: z.string().min(2).max(2048),
-    certificateOidcIssuer: z
-      .string()
-      .url()
-      .refine(isExactHttpsUrl, "OIDC issuer must be an exact HTTPS URL"),
-    workflowRepository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-    workflowName: z.string().min(1).max(512),
-    workflowTrigger: z.string().min(1).max(128)
-  })
-  .strict()
-  .refine(
-    (builder) =>
-      builder.certificateIdentityRegexp.startsWith("^") &&
-      builder.certificateIdentityRegexp.endsWith("$") &&
-      isValidRegexp(builder.certificateIdentityRegexp),
-    "certificate identity policy must be anchored"
-  );
-
-const BuilderPolicySchema = z
-  .object({
-    schema: z.literal(BUILDER_POLICY_SCHEMA),
-    builders: z.record(
-      z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/),
-      BuilderIdentitySchema
-    )
-  })
-  .strict()
-  .superRefine((policy, context) => {
-    const ids = Object.keys(policy.builders);
-    if (ids.length === 0 || ids.length > 32) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["builders"],
-        message: "builder policy must contain between 1 and 32 builders"
-      });
-    }
-  });
-
 export type NitroReleaseManifest = z.infer<typeof ManifestSchema>;
-export type AttestationBuilderPolicy = z.infer<typeof BuilderPolicySchema>;
-export type AttestationBuilderIdentity = z.infer<typeof BuilderIdentitySchema> & { id: string };
 
 export type SigstoreEvidence = {
   bundleTarget: string;
   bundleSha256: string;
   trustedRootTarget: string;
   trustedRootSha256: string;
-  builderPolicyTarget: string;
-  builderPolicySha256: string;
-  builder: AttestationBuilderIdentity;
+  transparencyLog: {
+    logIndex: string;
+    logId: string;
+  };
+  observerTimestamp: string;
 };
 
 export type TrustedTufRelease = {
@@ -854,15 +813,6 @@ function isSafeArtifactName(name: string): boolean {
     !name.includes("\\") &&
     !name.includes("%")
   );
-}
-
-function isValidRegexp(value: string): boolean {
-  try {
-    new RegExp(value);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function fromHex(value: string): Uint8Array {
@@ -1502,11 +1452,6 @@ function releaseVersionFromTarget(
   return parts[1];
 }
 
-function sourceUriMatchesRepository(sourceUri: string, workflowRepository: string): boolean {
-  const pathname = new URL(sourceUri).pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
-  return pathname === workflowRepository;
-}
-
 async function verifyCachedTarget(
   raw: RawGeneration | LegacyRawGeneration,
   targets: TargetsEnvelope,
@@ -1533,29 +1478,6 @@ async function verifyCachedTarget(
   return bytes;
 }
 
-function assertTargetReference(
-  targets: TargetsEnvelope,
-  path: string,
-  expectedSha256: string,
-  maxBytes: number,
-  description: string
-): TargetFile {
-  const descriptor = targetDescriptor(targets, path);
-  if (descriptor.length > maxBytes) {
-    throw new AttestationTrustError(
-      "TRUST_SIZE_LIMIT",
-      `${description} exceeds the ${maxBytes}-byte limit.`
-    );
-  }
-  if (descriptor.hashes.sha256 !== expectedSha256) {
-    throw new AttestationTrustError(
-      "TUF_TARGET_INTEGRITY",
-      `${description} digest does not match its channel reference.`
-    );
-  }
-  return descriptor;
-}
-
 async function policyFromTargets(
   raw: RawGeneration | LegacyRawGeneration,
   root: RootEnvelope,
@@ -1579,12 +1501,6 @@ async function policyFromTargets(
       `The ${raw.environment} channel contains ${channel.environment} policy.`
     );
   }
-  if (channel.builderPolicyTarget.path !== "policy/builders.json") {
-    throw new AttestationTrustError(
-      "POLICY_INVALID",
-      "builderPolicyTarget.path must be policy/builders.json."
-    );
-  }
   if (channel.sigstoreTrustedRootTarget.path !== "sigstore/trusted_root.json") {
     throw new AttestationTrustError(
       "POLICY_INVALID",
@@ -1592,27 +1508,15 @@ async function policyFromTargets(
     );
   }
 
-  const builderPolicyBytes = await verifyCachedTarget(
+  const trustedRootBytes = await verifyCachedTarget(
     raw,
-    targets,
-    channel.builderPolicyTarget.path,
-    channel.builderPolicyTarget.sha256,
-    MAX_POLICY_TARGET_BYTES,
-    "builder policy"
-  );
-  const builderPolicy = parseJson(builderPolicyBytes, BuilderPolicySchema, "builder policy");
-  const buildersById = new Map(
-    Object.entries(builderPolicy.builders).map(([id, builder]) => [id, { id, ...builder }])
-  );
-  const expectedCachedTargets = new Set([channelPath, channel.builderPolicyTarget.path]);
-
-  assertTargetReference(
     targets,
     channel.sigstoreTrustedRootTarget.path,
     channel.sigstoreTrustedRootTarget.sha256,
     MAX_TRUST_ROOT_BYTES,
     "Sigstore trusted root"
   );
+  const expectedCachedTargets = new Set([channelPath, channel.sigstoreTrustedRootTarget.path]);
 
   const releases: TrustedTufRelease[] = [];
   const releaseVersions = new Set<string>();
@@ -1660,26 +1564,29 @@ async function policyFromTargets(
         "Release manifest version or source ref does not match its target path."
       );
     }
-    const builder = buildersById.get(manifest.build.builderId);
-    if (!builder) {
-      throw new AttestationTrustError(
-        "POLICY_INVALID",
-        `Release manifest references unknown builder ${manifest.build.builderId}.`
-      );
-    }
-    if (!sourceUriMatchesRepository(manifest.source.uri, builder.workflowRepository)) {
-      throw new AttestationTrustError(
-        "POLICY_INVALID",
-        "Release manifest source URI does not match its authenticated builder repository."
-      );
-    }
-    assertTargetReference(
+    expectedCachedTargets.add(active.bundleTarget);
+    const bundleBytes = await verifyCachedTarget(
+      raw,
       targets,
       active.bundleTarget,
       active.bundleSha256,
       MAX_BUNDLE_BYTES,
       "Sigstore bundle"
     );
+    let verifiedSigstore;
+    try {
+      verifiedSigstore = await verifyTufAuthorizedSigstoreBundle(
+        manifestBytes,
+        bundleBytes,
+        trustedRootBytes
+      );
+    } catch (error) {
+      throw new AttestationTrustError(
+        "SIGSTORE_VERIFICATION_FAILED",
+        "The TUF-authorized release manifest failed local Sigstore verification.",
+        { cause: error }
+      );
+    }
     const tuple = [
       manifest.measurements.pcrs["0"],
       manifest.measurements.pcrs["1"],
@@ -1701,9 +1608,11 @@ async function policyFromTargets(
         bundleSha256: active.bundleSha256,
         trustedRootTarget: channel.sigstoreTrustedRootTarget.path,
         trustedRootSha256: channel.sigstoreTrustedRootTarget.sha256,
-        builderPolicyTarget: channel.builderPolicyTarget.path,
-        builderPolicySha256: channel.builderPolicyTarget.sha256,
-        builder
+        transparencyLog: {
+          logIndex: verifiedSigstore.logIndex,
+          logId: verifiedSigstore.logId
+        },
+        observerTimestamp: verifiedSigstore.observerTimestamp
       }
     });
   }
@@ -2593,13 +2502,10 @@ async function downloadPolicyTargets(
       `The ${environment} channel contains ${channel.environment} policy.`
     );
   }
-  if (
-    channel.builderPolicyTarget.path !== "policy/builders.json" ||
-    channel.sigstoreTrustedRootTarget.path !== "sigstore/trusted_root.json"
-  ) {
+  if (channel.sigstoreTrustedRootTarget.path !== "sigstore/trusted_root.json") {
     throw new AttestationTrustError(
       "POLICY_INVALID",
-      "Channel policy or Sigstore trusted-root target path is not the fixed v1 path."
+      "Channel Sigstore trusted-root target path is not the fixed v1 path."
     );
   }
   for (const active of channel.active) {
@@ -2623,18 +2529,11 @@ async function downloadPolicyTargets(
 
   const referenced: Array<[string, string, number, string, boolean]> = [
     [
-      channel.builderPolicyTarget.path,
-      channel.builderPolicyTarget.sha256,
-      MAX_POLICY_TARGET_BYTES,
-      "builder policy",
-      true
-    ],
-    [
       channel.sigstoreTrustedRootTarget.path,
       channel.sigstoreTrustedRootTarget.sha256,
       MAX_TRUST_ROOT_BYTES,
       "Sigstore trusted root",
-      false
+      true
     ]
   ];
   for (const release of channel.active) {
@@ -2646,7 +2545,7 @@ async function downloadPolicyTargets(
         "release manifest",
         true
       ],
-      [release.bundleTarget, release.bundleSha256, MAX_BUNDLE_BYTES, "Sigstore bundle", false]
+      [release.bundleTarget, release.bundleSha256, MAX_BUNDLE_BYTES, "Sigstore bundle", true]
     );
   }
 
@@ -2942,7 +2841,7 @@ export class AttestationTufClient {
     };
 
     await assertCandidateCoversCurrentState();
-    await verifyRawGeneration(candidate.raw, bootstrap, this.currentTime(), true);
+    await verifyRawGeneration(candidate.raw, bootstrap, this.currentTime(), true, false);
     // Verification contains asynchronous digest/signature work. Re-read after
     // it so an observation committed during that work cannot be missed.
     await assertCandidateCoversCurrentState();
@@ -3078,10 +2977,12 @@ export class AttestationTufClient {
     const now = this.currentTime();
     for (const environment of ["prod", "dev"] as const) {
       for (const stored of this.readStorage(environment, true)) {
-        verified.push(await verifyRawGeneration(stored.raw, bootstrap, now, false));
+        verified.push(await verifyRawGeneration(stored.raw, bootstrap, now, false, false));
       }
       const memory = this.memory.get(environment);
-      if (memory) verified.push(await verifyRawGeneration(memory.raw, bootstrap, now, false));
+      if (memory) {
+        verified.push(await verifyRawGeneration(memory.raw, bootstrap, now, false, false));
+      }
     }
     return verified;
   }
@@ -3234,14 +3135,14 @@ export class AttestationTufClient {
             { cause: parsed.error }
           );
         }
-        const verified = await verifyRawGeneration(stored.raw, bootstrap, now, false);
+        const verified = await verifyRawGeneration(stored.raw, bootstrap, now, false, false);
         storedGeneration = storedGeneration
           ? newestGeneration(storedGeneration, verified)
           : verified;
       }
       const memory = this.memory.get(channel);
       const memoryGeneration = memory
-        ? await verifyRawGeneration(memory.raw, bootstrap, now, false)
+        ? await verifyRawGeneration(memory.raw, bootstrap, now, false, false)
         : undefined;
       const verified =
         storedGeneration && memoryGeneration
@@ -3282,7 +3183,7 @@ export class AttestationTufClient {
     now: Date
   ): Promise<boolean> {
     try {
-      await verifyRawGeneration(raw, bootstrap, now, true);
+      await verifyRawGeneration(raw, bootstrap, now, true, false);
       return true;
     } catch (error) {
       if (error instanceof AttestationTrustError && error.code === "TUF_EXPIRED") return false;
@@ -3335,7 +3236,7 @@ export class AttestationTufClient {
       repositoryHighWater: merged.repository,
       channelHighWater: mergedChannel
     };
-    return await verifyRawGeneration(raw, bootstrap, now, true);
+    return await verifyRawGeneration(raw, bootstrap, now, true, false);
   }
 
   private async commit(
@@ -3364,9 +3265,11 @@ export class AttestationTufClient {
       const storedForEnvironment: StoredGeneration[] = [];
       for (const channel of ["prod", "dev"] as const) {
         const memory = this.memory.get(channel);
-        if (memory) existing.push(await verifyRawGeneration(memory.raw, bootstrap, now, false));
+        if (memory) {
+          existing.push(await verifyRawGeneration(memory.raw, bootstrap, now, false, false));
+        }
         for (const stored of this.readStorage(channel, true)) {
-          existing.push(await verifyRawGeneration(stored.raw, bootstrap, now, false));
+          existing.push(await verifyRawGeneration(stored.raw, bootstrap, now, false, false));
           if (channel === generation.raw.environment) storedForEnvironment.push(stored);
         }
       }
@@ -3407,7 +3310,7 @@ export class AttestationTufClient {
       };
       await assertCandidateCoversJournal();
 
-      await verifyRawGeneration(generation.raw, bootstrap, this.currentTime(), true);
+      await verifyRawGeneration(generation.raw, bootstrap, this.currentTime(), true, false);
 
       if (this.storage) {
         const key = this.cacheKey(generation);
@@ -3429,7 +3332,7 @@ export class AttestationTufClient {
         for (const channel of ["prod", "dev"] as const) {
           for (const stored of this.readStorage(channel, true)) {
             assertCandidateIsNewest(
-              await verifyRawGeneration(stored.raw, bootstrap, this.currentTime(), false)
+              await verifyRawGeneration(stored.raw, bootstrap, this.currentTime(), false, false)
             );
           }
         }
@@ -3614,7 +3517,13 @@ export class AttestationTufClient {
       const draftCandidate = await verifyRawGeneration(raw, bootstrap, completionTime, true, true);
       const candidate = await this.finalizeGeneration(draftCandidate, bootstrap, completionTime);
       await this.commit(candidate, bootstrap, completionTime);
-      const current = await verifyRawGeneration(candidate.raw, bootstrap, this.currentTime(), true);
+      const current = await verifyRawGeneration(
+        candidate.raw,
+        bootstrap,
+        this.currentTime(),
+        true,
+        false
+      );
       const completeObservation = await this.persistObservation(onlineRaw, bootstrap);
       await this.compactObservations(completeObservation, bootstrap);
       this.memory.set(environment, current);
@@ -3655,15 +3564,6 @@ export function getCachedAttestationPolicy(
 
 export function assertAttestationPolicyCurrent(policy: VerifiedAttestationPolicy): Promise<void> {
   return defaultClient.assertPolicyCurrent(policy);
-}
-
-/** @internal Test-only client factory; not exported from the package entry point. */
-export function createAttestationTufClientForTesting(
-  options: Required<Pick<AttestationTufClientOptions, "fetch" | "now" | "bootstrap">> & {
-    storage?: Storage | null;
-  }
-): AttestationTufClient {
-  return new AttestationTufClient(options);
 }
 
 /** @internal Exercises the official embedded-root release sentinel in tests. */
