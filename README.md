@@ -47,7 +47,9 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 
 - Sign in with email and password, or with GitHub, Google, or Apple OAuth.
   The session persists in `auth.json` (mode 0600) so the next launch and
-  the `acp` mode skip sign-in.
+  the `acp` mode skip sign-in. The window opens while the saved session is
+  checked, and a check that cannot reach the server keeps the credentials
+  for the next launch; only a refusal from the server signs the user out.
 - Agent chat with streaming Markdown, tool calls, permission prompts,
   agent questions, image attachments (picker, paste, or drag and drop),
   a per-message Copy button, and a context-window indicator.
