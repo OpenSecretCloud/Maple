@@ -11,6 +11,33 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+/// Restrict `path` to its owner: mode 0600 for a file.
+///
+/// A no-op off unix, where the containing profile already carries the
+/// access control.
+pub(crate) fn set_owner_only_file(path: &Path) -> io::Result<()> {
+    set_owner_only_mode(path, 0o600)
+}
+
+/// Restrict directory `path` to its owner: mode 0700.
+///
+/// A no-op off unix, where the containing profile already carries the
+/// access control.
+pub(crate) fn set_owner_only_dir(path: &Path) -> io::Result<()> {
+    set_owner_only_mode(path, 0o700)
+}
+
+#[cfg(unix)]
+fn set_owner_only_mode(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_mode(_path: &Path, _mode: u32) -> io::Result<()> {
+    Ok(())
+}
+
 /// Write `bytes` to `path` atomically with mode 0600 (owner read/write).
 /// The parent directory is created when it is missing.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -33,10 +60,9 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     temporary.write_all(bytes)?;
     temporary.as_file_mut().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
+    set_owner_only_file(path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         // The rename is durable only after the directory entry is synced.
         // The file is already replaced, so a failure here is not an error
         // for the caller; log it and keep the committed value.

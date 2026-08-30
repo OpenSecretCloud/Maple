@@ -2443,8 +2443,7 @@ fn save_config_for_scope(
         .ok_or_else(|| "Invalid Maple ACP configuration path".to_string())?;
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("Failed to create Maple ACP configuration directory: {error}"))?;
-    #[cfg(unix)]
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+    crate::private_file::set_owner_only_dir(parent)
         .map_err(|error| format!("Failed to secure Maple ACP configuration directory: {error}"))?;
     // Atomic replace: a crash mid-write must not leave a truncated file
     // that `load_config` rejects, which would block `maple-gpui acp`.

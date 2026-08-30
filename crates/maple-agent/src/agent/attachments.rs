@@ -267,12 +267,8 @@ fn create_owner_only_dir(path: &Path) -> Result<(), String> {
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err("Agent attachment cache is not a regular directory".to_string());
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("Failed to secure Agent attachment cache: {error}"))?;
-    }
+    crate::private_file::set_owner_only_dir(path)
+        .map_err(|error| format!("Failed to secure Agent attachment cache: {error}"))?;
     Ok(())
 }
 
