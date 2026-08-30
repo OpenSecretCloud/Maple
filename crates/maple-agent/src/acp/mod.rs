@@ -6,7 +6,11 @@ use crate::agent::{
     AgentToolContextLease, AgentToolContextSpec, AgentTransientMcpServer,
     AgentTransientMcpTransport, SENSITIVE_BRIDGE_ENV, compaction_notice_text,
 };
-use crate::maple_api::account_scope;
+mod config;
+
+pub use config::{AgentAcpConfig, AgentAcpPermissionMode, load_acp_config};
+use config::{AgentAcpStats, normalize_config};
+
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, BooleanPropertySchema, CancelNotification, CloseSessionRequest,
     CloseSessionResponse, ConfigOptionUpdate, ContentBlock, ContentChunk, CreateElicitationRequest,
@@ -30,7 +34,6 @@ use agent_client_protocol::{
 };
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,7 +45,6 @@ use tokio_util::sync::CancellationToken;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
-const MAX_ACP_CONNECTIONS: usize = 8;
 const MAX_ACP_ERROR_CHARS: usize = 500;
 const MAX_ACP_TOOL_TEXT_CHARS: usize = 16_000;
 const MAX_ACP_FRAME_BYTES: usize = 10 * 1024 * 1024;
@@ -152,61 +154,6 @@ where
     )
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentAcpPermissionMode {
-    ReadOnly,
-    AllowAll,
-}
-
-impl AgentAcpPermissionMode {
-    fn maple_mode(&self) -> &'static str {
-        // ACP callers own every unresolved interactive decision. Keep the old
-        // allow_all variant readable for configuration compatibility, but do
-        // not let it bypass the caller through Maple's Auto policy.
-        "smart_approve"
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentAcpConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_permission_mode")]
-    pub permission_mode: AgentAcpPermissionMode,
-    #[serde(default)]
-    pub allowed_project_roots: Vec<String>,
-    #[serde(default = "default_max_connections")]
-    pub max_connections: usize,
-}
-
-fn default_permission_mode() -> AgentAcpPermissionMode {
-    AgentAcpPermissionMode::ReadOnly
-}
-
-fn default_max_connections() -> usize {
-    8
-}
-
-impl Default for AgentAcpConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            permission_mode: default_permission_mode(),
-            allowed_project_roots: Vec::new(),
-            max_connections: default_max_connections(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct AgentAcpStats {
-    active_sessions: AtomicUsize,
-    active_runs: AtomicUsize,
-    credential_connections: AtomicUsize,
-}
-
 /// Serve ACP on this process's stdin and stdout for one signed-in account.
 ///
 /// `maple-gpui acp` calls this after it started the agent runtime. The
@@ -248,11 +195,6 @@ pub async fn serve_stdio(agent: AgentRuntimeHandle, config: AgentAcpConfig) -> R
     };
     context.cleanup().await;
     result
-}
-
-/// Per-account ACP configuration saved under `local_data_root`.
-pub fn load_acp_config(local_data_root: &Path, user_id: &str) -> Result<AgentAcpConfig, String> {
-    load_config(local_data_root, user_id)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
@@ -2359,123 +2301,6 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
     }
 }
 
-fn config_path(local_data_root: &Path, user_id: &str) -> Result<PathBuf, String> {
-    let scope = account_scope(user_id)
-        .map_err(|_| "Maple ACP configuration requires an authenticated user".to_string())?;
-    config_path_for_scope(local_data_root, &scope)
-}
-
-fn config_path_for_scope(local_data_root: &Path, scope: &str) -> Result<PathBuf, String> {
-    Ok(acp_accounts_root(local_data_root)?
-        .join(scope)
-        .join("config.json"))
-}
-
-fn acp_accounts_root(local_data_root: &Path) -> Result<PathBuf, String> {
-    Ok(local_data_root.join("acp").join("accounts"))
-}
-
-fn legacy_config_path(local_data_root: &Path, user_id: &str) -> Result<PathBuf, String> {
-    if user_id.trim().is_empty() {
-        return Err("Maple ACP configuration requires an authenticated user".to_string());
-    }
-    let digest = Sha256::digest(user_id.as_bytes());
-    let legacy_scope = digest[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(acp_accounts_root(local_data_root)?
-        .join(legacy_scope)
-        .join("config.json"))
-}
-
-fn load_config(local_data_root: &Path, user_id: &str) -> Result<AgentAcpConfig, String> {
-    let path = config_path(local_data_root, user_id)?;
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|error| format!("Failed to parse Maple ACP configuration: {error}"))
-            .and_then(normalize_config),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let legacy_path = legacy_config_path(local_data_root, user_id)?;
-            match std::fs::read(legacy_path) {
-                Ok(bytes) => {
-                    let config = serde_json::from_slice(&bytes)
-                        .map_err(|error| {
-                            format!("Failed to parse Maple ACP configuration: {error}")
-                        })
-                        .and_then(normalize_config)?;
-                    // Keep the POC file intact so switching back to the original
-                    // branch remains harmless, while future saves use Maple's
-                    // canonical full account scope.
-                    if let Err(error) = save_config(local_data_root, user_id, &config) {
-                        log::warn!("Failed to migrate Maple ACP configuration: {error}");
-                    }
-                    Ok(config)
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(AgentAcpConfig::default())
-                }
-                Err(error) => Err(format!("Failed to read Maple ACP configuration: {error}")),
-            }
-        }
-        Err(error) => Err(format!("Failed to read Maple ACP configuration: {error}")),
-    }
-}
-
-fn save_config(
-    local_data_root: &Path,
-    user_id: &str,
-    config: &AgentAcpConfig,
-) -> Result<(), String> {
-    let scope = account_scope(user_id)
-        .map_err(|_| "Maple ACP configuration requires an authenticated user".to_string())?;
-    save_config_for_scope(local_data_root, &scope, config)
-}
-
-fn save_config_for_scope(
-    local_data_root: &Path,
-    account_scope: &str,
-    config: &AgentAcpConfig,
-) -> Result<(), String> {
-    let path = config_path_for_scope(local_data_root, account_scope)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Invalid Maple ACP configuration path".to_string())?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("Failed to create Maple ACP configuration directory: {error}"))?;
-    crate::private_file::set_owner_only_dir(parent)
-        .map_err(|error| format!("Failed to secure Maple ACP configuration directory: {error}"))?;
-    // Atomic replace: a crash mid-write must not leave a truncated file
-    // that `load_config` rejects, which would block `maple-gpui acp`.
-    crate::private_file::write_private_json(&path, config)
-        .map_err(|error| format!("Failed to save Maple ACP configuration: {error}"))?;
-    Ok(())
-}
-
-fn normalize_config(mut config: AgentAcpConfig) -> Result<AgentAcpConfig, String> {
-    // `allow_all` was the exploratory Desktop-owned bypass. Caller-owned ACP
-    // supersedes it; old files migrate to the guarded policy on their next load.
-    config.permission_mode = AgentAcpPermissionMode::ReadOnly;
-    config.max_connections = config.max_connections.clamp(1, MAX_ACP_CONNECTIONS);
-    let mut roots = Vec::new();
-    for root in config.allowed_project_roots {
-        let root = root.trim();
-        if root.is_empty() {
-            continue;
-        }
-        let path = PathBuf::from(root);
-        if !path.is_absolute() {
-            return Err("ACP allowed project roots must be absolute paths".to_string());
-        }
-        let root = path.to_string_lossy().into_owned();
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-    config.allowed_project_roots = roots;
-    Ok(config)
-}
-
 fn ensure_allowed_project_root(cwd: &Path, allowed_roots: &[String]) -> Result<PathBuf, String> {
     if !cwd.is_absolute() {
         return Err("ACP session cwd must be an absolute path".to_string());
@@ -3166,6 +2991,7 @@ fn bounded_chars(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::config::{MAX_ACP_CONNECTIONS, config_path, load_config, save_config};
     use super::*;
     use agent_client_protocol::schema::v1::{
         ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, McpServerStdio,
