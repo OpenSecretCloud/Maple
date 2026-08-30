@@ -596,11 +596,26 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// The rename field for `target` when it is the one being edited.
-    fn rename_field(&self, target: &RenameTarget) -> Option<gpui::Stateful<Div>> {
-        if self.rename.as_ref() != Some(target) {
-            return None;
+    /// The rename field for the task being edited, if it is this one.
+    /// Renders per visible row per frame, so it compares borrowed ids
+    /// instead of building a `RenameTarget` to match against.
+    fn task_rename_field(&self, session_id: &str) -> Option<gpui::Stateful<Div>> {
+        match self.rename.as_ref() {
+            Some(RenameTarget::Task(target)) if target == session_id => self.rename_field(),
+            _ => None,
         }
+    }
+
+    /// The rename field for the project being edited, if it is this one.
+    fn project_rename_field(&self, root: &str) -> Option<gpui::Stateful<Div>> {
+        match self.rename.as_ref() {
+            Some(RenameTarget::Project(target)) if target == root => self.rename_field(),
+            _ => None,
+        }
+    }
+
+    /// The shared rename input, wrapped for a row.
+    fn rename_field(&self) -> Option<gpui::Stateful<Div>> {
         let input = self.rename_input.clone()?;
         Some(
             div()
@@ -1171,7 +1186,7 @@ impl ChatScreen {
         let is_current = self.project_root.as_deref() == Some(&**root);
         let is_collapsed = self.collapsed_roots.contains(&**root);
         let is_pinned = self.pinned_roots.iter().any(|pinned| **pinned == **root);
-        let rename_field = self.rename_field(&RenameTarget::Project(root.to_string()));
+        let rename_field = self.project_rename_field(root);
         let renaming = rename_field.is_some();
         let menu = (self.project_menu.as_deref() == Some(&**root))
             .then(|| self.render_project_menu(root, cx));
@@ -1287,7 +1302,7 @@ impl ChatScreen {
         let session_id = Arc::clone(&row.id);
         let action_id = Arc::clone(&row.id);
         let rename_id = Arc::clone(&row.id);
-        let rename_field = self.rename_field(&RenameTarget::Task(row.id.to_string()));
+        let rename_field = self.task_rename_field(&row.id);
         let renaming = rename_field.is_some();
         div()
             .id(row.element_id.clone())
