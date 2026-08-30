@@ -2,6 +2,7 @@
 //! calls, permission prompts, and the composer. Pure consumer of the backend
 //! facade + event stream.
 
+use crate::settings::PermissionMode;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -210,9 +211,9 @@ pub struct ChatScreen {
     /// Whether tool cards show their input/output payloads. Toggled from
     /// the header; off gives a one-line card per tool call.
     tool_details: bool,
-    /// Permission policy: "smart_approve" prompts per gated tool, "auto"
-    /// approves everything (bypass). Applies to new runs.
-    permission_mode: String,
+    /// Permission policy for new runs: ask per gated tool, or approve
+    /// every call.
+    permission_mode: PermissionMode,
     /// False once the user picks a mode for this specific session; the
     /// settings default then no longer overrides it.
     uses_default_permission_mode: bool,
@@ -625,14 +626,13 @@ impl ChatScreen {
             sidebar_entries: Vec::new(),
             follow_transcript: true,
             tool_details: settings.tool_details,
+            // An unset or unknown value in either place means "use the
+            // saved default", so only a known mode counts as an override.
             permission_mode: std::env::var("MAPLE_PERMISSION_MODE")
                 .ok()
-                .filter(|mode| mode == "auto" || mode == "smart_approve")
-                .or_else(|| {
-                    Some(settings.default_permission_mode.clone())
-                        .filter(|mode| mode == "auto" || mode == "smart_approve")
-                })
-                .unwrap_or_else(|| "smart_approve".to_string()),
+                .and_then(|mode| PermissionMode::from_str(&mode))
+                .or_else(|| PermissionMode::from_str(&settings.default_permission_mode))
+                .unwrap_or_default(),
             uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
             recent_roots: Vec::new(),
@@ -1339,13 +1339,9 @@ impl ChatScreen {
         self.tts_voice.clone_from(&settings.tts_voice);
         self.tts_speed = settings.tts_speed;
         if self.uses_default_permission_mode
-            && matches!(
-                settings.default_permission_mode.as_str(),
-                "auto" | "smart_approve"
-            )
+            && let Some(mode) = PermissionMode::from_str(&settings.default_permission_mode)
         {
-            self.permission_mode
-                .clone_from(&settings.default_permission_mode);
+            self.permission_mode = mode;
             self.apply_permission_mode(cx);
         }
         // Servers may have been added or removed in settings.
@@ -1475,7 +1471,7 @@ impl ChatScreen {
         };
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        let mode = self.permission_mode.clone();
+        let mode = self.permission_mode.as_str().to_string();
         self.call(
             async move {
                 backend
@@ -1525,8 +1521,7 @@ impl ChatScreen {
         self.set_queue(Vec::new());
         // Adopt the session's stored policy; it persists per session in the
         // runtime.
-        let mode = session.mode;
-        if mode == "auto" || mode == "smart_approve" {
+        if let Some(mode) = PermissionMode::from_str(&session.mode) {
             self.permission_mode = mode;
         }
         self.web_enabled = session.web_enabled;
@@ -2459,7 +2454,7 @@ impl ChatScreen {
             text: text.clone(),
             model,
             context_limit: None,
-            mode: Some(self.permission_mode.clone()),
+            mode: Some(self.permission_mode.as_str().to_string()),
             vision_capable,
             steer: steer && run_active,
             queue_id,
@@ -3706,13 +3701,4 @@ fn section_label(text: &'static str) -> Div {
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(theme::text_secondary()))
         .child(text)
-}
-
-/// Icon name for a permission mode: bolt for allow all, shield for read only.
-fn permission_mode_icon(mode: &str) -> &'static str {
-    if mode == "auto" {
-        "zap"
-    } else {
-        "shield-check"
-    }
 }

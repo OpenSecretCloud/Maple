@@ -1,6 +1,7 @@
 //! The chat pane chrome: the header and its menus, the slash palette,
 //! the plan and side-question cards, and the composer itself.
 
+use crate::settings::PermissionMode;
 use std::sync::Arc;
 
 use gpui::{Context, Div, IntoElement, SharedString, div, prelude::*, px};
@@ -10,7 +11,7 @@ use super::cache::MarkdownKind;
 use super::transcript::render_plan_row;
 use super::{
     COMPOSER_PLACEHOLDER, ChatScreen, DraftImage, OpenSettingsSection, SIDE_THREAD_PLACEHOLDER,
-    SIDEBAR_COLLAPSED_INSET, Section, permission_mode_icon,
+    SIDEBAR_COLLAPSED_INSET, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
@@ -189,20 +190,13 @@ impl ChatScreen {
     pub(super) fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
         let mut menu = Self::menu_panel();
         if self.mode_menu_open {
-            for (mode, label, note) in [
-                (
-                    "auto",
-                    "Allow all",
-                    "Approve every tool call without asking",
-                ),
-                ("smart_approve", "Ask first", "Confirm each gated tool call"),
-            ] {
-                let mode_icon = icon(permission_mode_icon(mode), px(14.), theme::text_secondary());
-                let mode = mode.to_string();
+            for mode in [PermissionMode::Auto, PermissionMode::SmartApprove] {
+                let (label, note) = (mode.label(), mode.note());
+                let mode_icon = icon(mode.icon(), px(14.), theme::text_secondary());
                 let is_current = self.permission_mode == mode;
                 menu = menu.child(
                     div()
-                        .id(gpui::SharedString::from(format!("mode-{mode}")))
+                        .id(gpui::SharedString::from(format!("mode-{}", mode.as_str())))
                         .px_3()
                         .py_1()
                         .text_sm()
@@ -213,7 +207,7 @@ impl ChatScreen {
                         }))
                         .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                         .on_click(cx.listener(move |this, _event, _window, cx| {
-                            this.permission_mode.clone_from(&mode);
+                            this.permission_mode = mode;
                             this.uses_default_permission_mode = false;
                             this.mode_menu_open = false;
                             this.apply_permission_mode(cx);
@@ -732,7 +726,7 @@ impl ChatScreen {
             .selected_model
             .clone()
             .unwrap_or_else(|| "Model".to_string());
-        let bypass = self.permission_mode == "auto";
+        let bypass = self.permission_mode == PermissionMode::Auto;
         div()
             .w_full()
             .flex()
@@ -873,7 +867,7 @@ impl ChatScreen {
                     .child(
                         chip(
                             "permission-mode-toggle",
-                            Some(permission_mode_icon(&self.permission_mode)),
+                            Some(self.permission_mode.icon()),
                             if bypass { "Allow all" } else { "Read only" }.to_string(),
                             true,
                             self.mode_menu_open,

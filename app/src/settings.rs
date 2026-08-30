@@ -119,6 +119,25 @@ impl PermissionMode {
         }
     }
 
+    /// The mode named by `value`, or `None` when it names no mode. Use
+    /// this where an unknown value must fall back to a saved default
+    /// rather than to the safer mode.
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "smart_approve" => Some(Self::SmartApprove),
+            _ => None,
+        }
+    }
+
+    /// Icon name: a bolt for allow all, a shield for ask first.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::SmartApprove => "shield-check",
+            Self::Auto => "zap",
+        }
+    }
+
     /// The value written to disk and handed to the agent runtime.
     pub fn as_str(self) -> &'static str {
         match self {
