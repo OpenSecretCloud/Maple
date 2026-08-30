@@ -183,6 +183,12 @@ pub fn text_selection() -> gpui::Rgba {
     }
 }
 
+/// Dimming layer behind a modal or the image lightbox. One opacity for
+/// every overlay, so a dialog and the lightbox darken the app equally.
+pub fn scrim() -> gpui::Rgba {
+    gpui::rgba(0x000000a0)
+}
+
 /// Translucent fill for hover states and inline code over any surface.
 pub fn overlay_hover() -> gpui::Hsla {
     if is_light() {

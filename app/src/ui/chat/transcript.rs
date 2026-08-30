@@ -19,6 +19,7 @@ use crate::ui::markdown;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::widgets;
 
 impl ChatScreen {
     pub(super) fn render_transcript(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -126,15 +127,9 @@ impl ChatScreen {
             .child(self.render_scrollbar())
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(
-                    div()
+                    widgets::banner(theme::status_error())
                         .mx_6()
                         .mb_2()
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .bg(gpui::rgb(theme::status_error()))
-                        .text_color(gpui::rgb(theme::bg_app()))
-                        .text_sm()
                         .child(error),
                 )
             })
@@ -850,14 +845,7 @@ fn render_error(item: &AgentTimelineItem) -> Div {
     if text.trim().is_empty() {
         return div();
     }
-    div()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(gpui::rgb(theme::status_error()))
-        .text_color(gpui::rgb(theme::bg_app()))
-        .text_sm()
-        .child(text)
+    widgets::banner(theme::status_error()).child(text)
 }
 
 fn render_permission_row(item: &AgentTimelineItem) -> Div {
@@ -1042,30 +1030,10 @@ pub(super) fn render_question_card(
                 .flex()
                 .items_center()
                 .gap_2()
+                .child(widgets::input_frame().flex_1().child(input))
                 .child(
-                    div()
-                        .flex_1()
-                        .px_3()
+                    widgets::primary_button("question-submit")
                         .py_2()
-                        .rounded_md()
-                        .bg(gpui::rgb(theme::bg_input()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        // The input inherits ambient color; without this the
-                        // typed answer renders near-black on the dark field.
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .child(input),
-                )
-                .child(
-                    div()
-                        .id("question-submit")
-                        .px_4()
-                        .py_2()
-                        .rounded_md()
-                        .bg(gpui::rgb(theme::accent()))
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .hover(|style| style.cursor_pointer())
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.submit_question(cx);
                         }))

@@ -22,6 +22,7 @@ use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::widgets;
 
 mod cache;
 mod composer;
@@ -3462,7 +3463,7 @@ impl Render for ChatScreen {
                         .size_full()
                         .top_0()
                         .left_0()
-                        .bg(gpui::rgba(0x000000d9))
+                        .bg(theme::scrim())
                         .flex()
                         .items_center()
                         .justify_center()
@@ -3568,16 +3569,7 @@ impl ChatScreen {
                         )
                     })
                     .when_some(self.runtime_error.clone(), |column, error| {
-                        column.child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .bg(gpui::rgb(theme::status_error()))
-                                .text_color(gpui::rgb(theme::bg_app()))
-                                .text_sm()
-                                .child(error),
-                        )
+                        column.child(widgets::banner(theme::status_error()).child(error))
                     })
                     .children(self.render_update_banner(cx))
                     .when_some(self.notice.clone(), |column, notice| {
