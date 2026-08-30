@@ -1,13 +1,11 @@
 use crate::agent::{
     AGENT_TOOL_CONTEXT_INACTIVE_ERROR, AgentCreateSessionRequest, AgentHostEventPolicy,
-    AgentMcpKeyValue, AgentPermissionDecision, AgentPermissionRequest, AgentRunCancellation,
-    AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal, AgentRuntimeHandle,
-    AgentSendMessageRequest, AgentSessionSummary, AgentTimelineItem, AgentToolContextLease,
-    AgentToolContextSpec, AgentTransientMcpServer, AgentTransientMcpTransport,
-    SENSITIVE_BRIDGE_ENV,
+    AgentPermissionDecision, AgentPermissionRequest, AgentRunEvent, AgentRunPermissionResponder,
+    AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTimelineItem,
 };
 mod config;
 mod convert;
+mod session;
 mod transport;
 
 pub use config::{AgentAcpConfig, AgentAcpPermissionMode, load_acp_config};
@@ -20,6 +18,14 @@ use convert::{
     project_trust_elicitation_request, project_trust_permission_decision,
     project_trust_permission_options, prompt_result_from_terminal, prompt_text, timeline_update,
 };
+use session::{
+    ALLOWED_BRIDGE_ENV, AcpConnectionContext, AcpPermissionResolution, AcpProjectTrustResolution,
+    AcpPromptState, AcpSession, AcpSessionOperation, BridgeHelloNotification,
+    UnpublishedAcpSession, bridge_tool_context_spec, canonical_session_id,
+    canonical_session_id_text, close_registration_may_be_released, ensure_acp_session_is_loadable,
+    ensure_allowed_project_root, filter_bridge_environment, has_buzz_credentials,
+    is_acp_loadable_session_mode, prepare_session_mcp,
+};
 use transport::{
     AcpOutboundReservation, AcpOutboundSendError, AcpOutboundTracker, BoundedLineReader,
     MAX_ACP_FRAME_BYTES, NEXT_ACP_MESSAGE_ID, tracked_outgoing_lines,
@@ -29,22 +35,21 @@ use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
     ConfigOptionUpdate, ContentBlock, ContentChunk, ElicitationAction, ElicitationContentValue,
     Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
+    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities,
     NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
-    RequestPermissionRequest, SessionCapabilities, SessionCloseCapabilities, SessionConfigOption,
-    SessionId, SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
+    RequestPermissionRequest, SessionCapabilities, SessionCloseCapabilities, SessionId,
+    SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
     SetSessionModeResponse, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
     ToolKind,
 };
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
-    Agent as AcpAgent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    JsonRpcNotification, Lines, Responder,
+    Agent as AcpAgent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Lines,
+    Responder,
 };
 use futures_util::StreamExt as _;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,22 +57,9 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
-
 const ACP_CONNECTION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const ACP_SYNTHETIC_STOP_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const ACP_SESSION_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const ACP_TRANSIENT_MCP_TIMEOUT_SECONDS: u64 = 30;
-const ACP_LOADABLE_GOOSE_MODE: &str = "smart_approve";
-const ALLOWED_BRIDGE_ENV: [&str; 6] = [
-    "BUZZ_RELAY_URL",
-    "BUZZ_PRIVATE_KEY",
-    "BUZZ_AUTH_TAG",
-    "BUZZ_API_TOKEN",
-    "BUZZ_ACP_DISPLAY_NAME",
-    "PATH",
-];
 
 /// Serve ACP on this process's stdin and stdout for one signed-in account.
 ///
@@ -110,134 +102,6 @@ pub async fn serve_stdio(agent: AgentRuntimeHandle, config: AgentAcpConfig) -> R
     };
     context.cleanup().await;
     result
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
-#[notification(method = "_maple/bridge/hello")]
-struct BridgeHelloNotification {
-    environment: HashMap<String, String>,
-}
-
-struct AcpConnectionContext {
-    agent: AgentRuntimeHandle,
-    config: Arc<RwLock<AgentAcpConfig>>,
-    stats: Arc<AgentAcpStats>,
-    bridge_environment: Mutex<HashMap<String, String>>,
-    sessions: Mutex<HashMap<String, AcpSession>>,
-    session_operations: Mutex<HashMap<String, Arc<AcpSessionOperation>>>,
-    closing_sessions: Mutex<HashSet<String>>,
-    prompt_states: Mutex<HashMap<String, AcpPromptState>>,
-    background_tasks: Mutex<tokio::task::JoinSet<()>>,
-    finalization: Mutex<()>,
-    lifetime: CancellationToken,
-    closed: AtomicBool,
-    has_credentials: AtomicBool,
-    client_supports_form_elicitation: AtomicBool,
-    outbound: Arc<AcpOutboundTracker>,
-}
-
-struct AcpSession {
-    lease: Option<AgentToolContextLease>,
-    model: String,
-    available_models: Vec<String>,
-    message_count: usize,
-    created_here: bool,
-    prompted: bool,
-    project_root: PathBuf,
-    project_trust_decision: Option<bool>,
-}
-
-struct UnpublishedAcpSession {
-    lease: Option<AgentToolContextLease>,
-    published: bool,
-}
-
-impl UnpublishedAcpSession {
-    fn new(lease: AgentToolContextLease) -> Self {
-        Self {
-            lease: Some(lease),
-            published: false,
-        }
-    }
-
-    fn publish(mut self) -> AgentToolContextLease {
-        self.published = true;
-        self.lease
-            .take()
-            .expect("an unpublished ACP session must still own its lease")
-    }
-}
-
-impl Drop for UnpublishedAcpSession {
-    fn drop(&mut self) {
-        if self.published {
-            return;
-        }
-        let Some(lease) = self.lease.take() else {
-            return;
-        };
-        lease.revoke();
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                lease.discard_created_if_untouched().await;
-            });
-        }
-    }
-}
-
-struct AcpSessionOperation {
-    gate: Arc<Mutex<()>>,
-    cancellation: CancellationToken,
-}
-
-fn close_registration_may_be_released(
-    cancellation_completed: bool,
-    operation_drained: bool,
-    cleanup_completed: bool,
-) -> bool {
-    // A timed-out load may already have passed its final core cancellation
-    // check. Keep both its exact operation registration and the closing
-    // tombstone until connection teardown so it can never publish a lease
-    // after session/close has returned. The same fence stays in place while
-    // run cancellation or exact-match lease cleanup is still settling.
-    cancellation_completed && operation_drained && cleanup_completed
-}
-
-impl AcpSessionOperation {
-    fn new(connection_lifetime: &CancellationToken) -> Arc<Self> {
-        Arc::new(Self {
-            gate: Arc::new(Mutex::new(())),
-            cancellation: connection_lifetime.child_token(),
-        })
-    }
-}
-
-impl AcpSession {
-    fn config_options(&self) -> Vec<SessionConfigOption> {
-        acp_session_config_options(&self.model, &self.available_models, self.message_count)
-    }
-}
-
-enum AcpPromptState {
-    Starting {
-        cancellation: CancellationToken,
-    },
-    Running {
-        cancellation: CancellationToken,
-        run_cancellation: Box<AgentRunCancellation>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcpPermissionResolution {
-    Continue,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcpProjectTrustResolution {
-    Continue,
-    Cancelled,
 }
 
 impl AcpConnectionContext {
@@ -2110,198 +1974,6 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
     }
 }
 
-fn ensure_allowed_project_root(cwd: &Path, allowed_roots: &[String]) -> Result<PathBuf, String> {
-    if !cwd.is_absolute() {
-        return Err("ACP session cwd must be an absolute path".to_string());
-    }
-    let cwd = cwd
-        .canonicalize()
-        .map_err(|error| format!("Failed to resolve ACP session cwd: {error}"))?;
-    if allowed_roots.is_empty() {
-        return Ok(cwd);
-    }
-    for root in allowed_roots {
-        if let Ok(root) = Path::new(root).canonicalize()
-            && cwd.starts_with(root)
-        {
-            return Ok(cwd);
-        }
-    }
-    Err("ACP session cwd is outside the configured project roots".to_string())
-}
-
-fn prepare_session_mcp(
-    bridge_environment: &HashMap<String, String>,
-    servers: &[McpServer],
-) -> Result<(HashMap<String, String>, Vec<AgentTransientMcpServer>), agent_client_protocol::Error> {
-    let mut environment = bridge_environment.clone();
-    let mut transient = Vec::new();
-    for server in servers {
-        match server {
-            McpServer::Stdio(server) => {
-                let command = server.command.as_path();
-                let is_buzz_dev_mcp = server.name == "buzz-dev-mcp"
-                    && command
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name == "buzz-dev-mcp" || name == "buzz-dev-mcp.exe")
-                    && server.args.is_empty();
-                if is_buzz_dev_mcp {
-                    if !command.is_absolute() {
-                        return Err(agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command must be absolute"));
-                    }
-                    let metadata = std::fs::metadata(command).map_err(|_| {
-                        agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command does not exist")
-                    })?;
-                    if !metadata.is_file() {
-                        return Err(agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command is not a file"));
-                    }
-                    #[cfg(unix)]
-                    if metadata.permissions().mode() & 0o111 == 0 {
-                        return Err(agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command is not executable"));
-                    }
-                    // Preserve the historical Buzz adapter: its exact MCP
-                    // definition contributes only the allowlisted shell env.
-                    for variable in &server.env {
-                        if !ALLOWED_BRIDGE_ENV.contains(&variable.name.as_str()) {
-                            continue;
-                        }
-                        if let Some(existing) = environment.get(&variable.name) {
-                            if existing != &variable.value {
-                                return Err(agent_client_protocol::Error::invalid_params().data(
-                                    format!(
-                                        "Conflicting ACP environment value for {}",
-                                        variable.name
-                                    ),
-                                ));
-                            }
-                        } else {
-                            environment.insert(variable.name.clone(), variable.value.clone());
-                        }
-                    }
-                    continue;
-                }
-                return Err(agent_client_protocol::Error::invalid_params().data(format!(
-                    "Transient stdio MCP server '{}' is disabled because it would execute caller-supplied native code without a Maple approval boundary",
-                    server.name
-                )));
-            }
-            McpServer::Http(server) => {
-                let mut headers = Vec::new();
-                let mut header_names = HashSet::new();
-                for header in &server.headers {
-                    if !header_names.insert(header.name.to_ascii_lowercase()) {
-                        return Err(agent_client_protocol::Error::invalid_params().data(format!(
-                            "Duplicate HTTP header in MCP server '{}'",
-                            server.name
-                        )));
-                    }
-                    headers.push(AgentMcpKeyValue {
-                        key: header.name.clone(),
-                        value: header.value.clone(),
-                    });
-                }
-                transient.push(AgentTransientMcpServer {
-                    name: server.name.clone(),
-                    description: "ACP session MCP server".to_string(),
-                    timeout_seconds: ACP_TRANSIENT_MCP_TIMEOUT_SECONDS,
-                    transport: AgentTransientMcpTransport::StreamableHttp {
-                        url: server.url.clone(),
-                        headers,
-                    },
-                });
-            }
-            McpServer::Sse(_) => {
-                return Err(agent_client_protocol::Error::invalid_params()
-                    .data("Maple ACP does not support legacy SSE MCP servers"));
-            }
-            _ => {
-                return Err(agent_client_protocol::Error::invalid_params()
-                    .data("Maple ACP does not support this MCP transport"));
-            }
-        }
-    }
-    Ok((environment, transient))
-}
-
-fn filter_bridge_environment(environment: HashMap<String, String>) -> HashMap<String, String> {
-    environment
-        .into_iter()
-        .filter(|(key, value)| {
-            ALLOWED_BRIDGE_ENV.contains(&key.as_str())
-                && !value.contains('\0')
-                && value.len() <= 16 * 1024
-        })
-        .collect()
-}
-
-fn bridge_tool_context_spec(
-    environment: &HashMap<String, String>,
-) -> Result<AgentToolContextSpec, String> {
-    let values = environment
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let scrub_from_parent = SENSITIVE_BRIDGE_ENV
-        .into_iter()
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>();
-    let ephemeral = SENSITIVE_BRIDGE_ENV
-        .iter()
-        .any(|key| environment.contains_key(*key));
-    AgentToolContextSpec::try_new(values, scrub_from_parent, ephemeral)
-}
-
-fn has_buzz_credentials(environment: &HashMap<String, String>) -> bool {
-    environment
-        .get("BUZZ_RELAY_URL")
-        .is_some_and(|value| !value.is_empty())
-        && environment
-            .get("BUZZ_PRIVATE_KEY")
-            .is_some_and(|value| !value.is_empty())
-}
-
-fn canonical_session_id(session_id: &SessionId) -> Result<String, agent_client_protocol::Error> {
-    canonical_session_id_text(&session_id.0)
-}
-
-fn canonical_session_id_text(session_id: &str) -> Result<String, agent_client_protocol::Error> {
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        return Err(agent_client_protocol::Error::invalid_params()
-            .data("Maple ACP requires a non-empty session ID"));
-    }
-    Ok(session_id.to_string())
-}
-
-fn is_acp_loadable_session_mode(mode: &str) -> bool {
-    mode == ACP_LOADABLE_GOOSE_MODE
-}
-
-fn ensure_acp_session_is_loadable<'a>(
-    sessions: &'a [AgentSessionSummary],
-    session_id: &str,
-) -> Result<&'a AgentSessionSummary, String> {
-    let session = sessions
-        .iter()
-        .find(|session| session.id == session_id)
-        .ok_or_else(|| {
-            "The requested Maple Agent task does not exist in the supplied project directory"
-                .to_string()
-        })?;
-    if !is_acp_loadable_session_mode(&session.mode) {
-        return Err(
-            "Maple ACP can load only Read only Agent tasks; this task remains available in Maple Desktop"
-                .to_string(),
-        );
-    }
-    Ok(session)
-}
-
 async fn cancel_maple_permission(responder: &AgentRunPermissionResponder, request_id: &str) {
     if let Err(error) = responder
         .respond(request_id.to_string(), AgentPermissionDecision::Cancel)
@@ -2344,13 +2016,15 @@ mod tests {
     use super::convert::{acp_tool_update, timeline_tool_text};
     use super::transport::is_session_update_line;
     use super::*;
-    use crate::agent::AgentRunUsage;
-    use agent_client_protocol::schema::v1::RequestPermissionOutcome;
+    use crate::agent::{AgentRunUsage, AgentSessionSummary};
     use agent_client_protocol::schema::v1::{
         ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, McpServerStdio,
         SelectedPermissionOutcome,
     };
+    use agent_client_protocol::schema::v1::{McpServer, RequestPermissionOutcome};
     use serde_json::json;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
     fn caller_session_fields_come_from_the_raw_session_new_params() {
