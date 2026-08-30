@@ -143,6 +143,8 @@ const TOOL_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a codi
 const SESSION_TITLE_SYSTEM_PROMPT: &str = "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations.";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
+/// Reported when Stop wins the race against a task's MCP server startup.
+const MCP_STARTUP_CANCELLED_ERROR: &str = "Agent run was stopped while starting MCP servers";
 const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
 const MAX_AGENT_ERROR_CHARS: usize = 1_200;
 const MAX_MCP_CONNECTION_ERRORS: usize = 3;
@@ -3554,6 +3556,7 @@ impl AgentRuntimeHandle {
             maple_api_session,
             permission_modes,
             web_tool_state,
+            runtime_lifetime,
             runtime_project_root,
             runtime_model,
             runtime_mode,
@@ -3569,6 +3572,9 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.maple_api_session),
                 Arc::clone(&current.permission_modes),
                 Arc::clone(&current.web_tool_state),
+                // Stop and logout cancel this token, which ends a stalled MCP
+                // startup that no run entry covers yet.
+                current.lifetime.clone(),
                 current.project_root.clone(),
                 current.model.clone(),
                 current.mode.clone(),
@@ -3683,7 +3689,9 @@ impl AgentRuntimeHandle {
                         &setup_cancel,
                     )
                     .await?;
-                    let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+                    // The fence is released again around MCP startup below, so
+                    // it is held in a rebindable slot rather than a plain guard.
+                    let mut setup_runtime_guard = Some(state.runtime_lifecycle.lock().await);
                     self.verify_generation().await?;
                     self.ensure_accepting_new_work()?;
                     {
@@ -3726,10 +3734,10 @@ impl AgentRuntimeHandle {
                         &agent_manager,
                         &session_manager,
                         &maple_api_session,
+                        &state.host.harness_instructions(),
                         SessionAgentConfiguration {
                             web_tool_state: &web_tool_state,
                             session: &session,
-                            harness_instructions: state.host.harness_instructions(),
                             model: &model,
                             context_limit: request.context_limit,
                             mode: &mode,
@@ -3747,11 +3755,50 @@ impl AgentRuntimeHandle {
                             &agent,
                             &session,
                         )?;
+                        // Starting the selected MCP servers spawns stdio
+                        // processes and performs remote handshakes, each
+                        // bounded only by a per-server timeout that defaults to
+                        // DEFAULT_MCP_TIMEOUT_SECONDS. Release the runtime
+                        // lifecycle fence across it so Stop, status, and task
+                        // switching stay responsive, and end the wait when the
+                        // runtime is stopped rather than sitting out the timeout.
+                        drop(setup_runtime_guard.take());
                         detach_transient_skills_client(&agent).await;
-                        let extension_result = agent
-                            .add_extensions_bulk(selected_extensions, &session.id)
-                            .await;
+                        let extension_result = tokio::select! {
+                            biased;
+                            _ = runtime_lifetime.cancelled() => None,
+                            result = agent.add_extensions_bulk(selected_extensions, &session.id) => {
+                                Some(result)
+                            }
+                        };
+                        // Maple's Skills client is reattached on every path:
+                        // the caller's cleanup still walks this Agent.
                         attach_prepared_skills_client(&agent, skills_client).await;
+                        setup_runtime_guard = Some(state.runtime_lifecycle.lock().await);
+                        let Some(extension_result) = extension_result else {
+                            return Err(MCP_STARTUP_CANCELLED_ERROR.to_string());
+                        };
+                        // The runtime can be stopped, replaced, or switched to
+                        // another account while the fence is down. Bail before
+                        // this session is published into an Agent whose manager
+                        // a concurrent stop is already tearing down.
+                        self.verify_generation().await?;
+                        self.ensure_accepting_new_work()?;
+                        {
+                            let runtime = state.inner.lock().await;
+                            let current = runtime
+                                .as_ref()
+                                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                            ensure_runtime_account(current, account_scope)?;
+                            if !Arc::ptr_eq(&current.agent_manager, &agent_manager)
+                                || !Arc::ptr_eq(&current.session_manager, &session_manager)
+                                || !Arc::ptr_eq(&current.maple_api_session, &maple_api_session)
+                            {
+                                return Err(
+                                    "Agent runtime changed during session setup".to_string()
+                                );
+                            }
+                        }
                         match extension_result {
                             Ok(results) => mcp_errors
                                 .extend(mcp_connection_errors(results, &selected_extension_keys)),
@@ -3801,6 +3848,8 @@ impl AgentRuntimeHandle {
                         return Err("Agent surface closed during session setup".to_string());
                     }
                     tool_context_installation.commit();
+                    // Publishing the created session is the last fenced step.
+                    drop(setup_runtime_guard);
                     Ok((session, mcp_errors))
                 },
             )
@@ -4058,10 +4107,10 @@ impl AgentRuntimeHandle {
                     &agent_manager,
                     &session_manager,
                     &maple_api_session,
+                    &state.host.harness_instructions(),
                     SessionAgentConfiguration {
                         web_tool_state: &web_tool_state,
                         session: &session,
-                        harness_instructions: state.host.harness_instructions(),
                         model: &model,
                         context_limit: session
                             .model_config
@@ -5203,7 +5252,9 @@ impl AgentRuntimeHandle {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
         let account_scope = self.account_scope.as_ref();
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        // Both fences are released again while this task's MCP servers start,
+        // so they are held in rebindable slots rather than plain guards.
+        let mut runtime_lifecycle_guard = Some(state.runtime_lifecycle.lock().await);
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let text = request.text.trim().to_string();
@@ -5223,7 +5274,7 @@ impl AgentRuntimeHandle {
             return Err(QUEUED_MESSAGE_ATTACHMENTS_ERROR.to_string());
         }
 
-        let session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let mut session_lifecycle_guard = Some(state.session_lifecycle.lock().await);
         let prepared_images = if request.attachments.is_empty() {
             Vec::new()
         } else {
@@ -5308,6 +5359,7 @@ impl AgentRuntimeHandle {
             maple_api_session,
             permission_modes,
             web_tool_state,
+            runtime_lifetime,
             model,
             mode,
         ) = {
@@ -5322,6 +5374,9 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.maple_api_session),
                 Arc::clone(&current.permission_modes),
                 Arc::clone(&current.web_tool_state),
+                // Stop and logout cancel this token, which ends a stalled MCP
+                // startup that no run entry covers yet.
+                current.lifetime.clone(),
                 request
                     .model
                     .clone()
@@ -5437,18 +5492,67 @@ impl AgentRuntimeHandle {
                     .publish(AgentRunEvent::SessionUpdated(session_summary(&session)))
                     .await;
             }
-            let (agent, mcp_errors) = configure_session_agent(
+            // Restoring this task's persisted MCP servers spawns stdio
+            // processes and performs remote handshakes, each bounded only by a
+            // per-server timeout that defaults to DEFAULT_MCP_TIMEOUT_SECONDS.
+            // Holding Maple's global fences across that would block Stop,
+            // status, and task switching for minutes, so release both fences
+            // and make the wait cancellation-selectable.
+            let prepared = {
+                let harness_instructions = state.host.harness_instructions();
+                drop(session_lifecycle_guard.take());
+                drop(runtime_lifecycle_guard.take());
+                let outcome = await_mcp_startup(
+                    &cancel_token,
+                    &runtime_lifetime,
+                    prepare_session_agent(
+                        &agent_manager,
+                        &maple_api_session,
+                        &session,
+                        &harness_instructions,
+                    ),
+                )
+                .await;
+                // Re-fence before touching shared runtime state again,
+                // whatever the outcome, so the cleanup this function performs
+                // on failure keeps the ordering the success path has.
+                runtime_lifecycle_guard = Some(state.runtime_lifecycle.lock().await);
+                session_lifecycle_guard = Some(state.session_lifecycle.lock().await);
+                outcome?
+            };
+            // The runtime can be stopped, replaced, or switched to another
+            // account while the fences are down. Never install Maple's
+            // built-in tools into an Agent whose manager a concurrent stop is
+            // already tearing down.
+            self.verify_generation().await?;
+            self.ensure_accepting_new_work()?;
+            {
+                let runtime = state.inner.lock().await;
+                let current = runtime
+                    .as_ref()
+                    .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                ensure_runtime_account(current, account_scope)?;
+                if !Arc::ptr_eq(&current.agent_manager, &agent_manager)
+                    || !Arc::ptr_eq(&current.session_manager, &session_manager)
+                    || !Arc::ptr_eq(&current.maple_api_session, &maple_api_session)
+                {
+                    return Err("Agent runtime changed while starting MCP servers".to_string());
+                }
+            }
+            if cancel_token.is_cancelled() {
+                return Err(MCP_STARTUP_CANCELLED_ERROR.to_string());
+            }
+            let (agent, mcp_errors) = finish_session_agent(
+                prepared,
                 AgentSkillsScope {
                     paths: &state.host.paths,
                     user_id,
                 },
-                &agent_manager,
                 &session_manager,
                 &maple_api_session,
                 SessionAgentConfiguration {
                     web_tool_state: &web_tool_state,
                     session: &session,
-                    harness_instructions: state.host.harness_instructions(),
                     model: &model,
                     context_limit: request.context_limit,
                     mode: &effective_mode,
@@ -6036,7 +6140,7 @@ impl AgentRuntimeHandle {
         // Keep the session claimed until the optimistic timeline item and start
         // signal are ordered. A cancellation cleanup must not finish and then be
         // followed by this send path re-appending the cancelled prompt.
-        drop(session_lifecycle_guard);
+        drop(session_lifecycle_guard.take());
 
         let permission_responder =
             matches!(permission_routing, AgentPermissionRouting::CallingSurface).then(|| {
@@ -7680,7 +7784,6 @@ struct AgentSkillsScope<'a> {
 struct SessionAgentConfiguration<'a> {
     web_tool_state: &'a Arc<WebToolState>,
     session: &'a Session,
-    harness_instructions: String,
     model: &'a str,
     context_limit: Option<usize>,
     mode: &'a str,
@@ -7820,9 +7923,96 @@ where
     Ok(manager_result)
 }
 
+/// Await an MCP startup that runs with Maple's lifecycle fences released.
+///
+/// `cancel` is the run's own token and `runtime_lifetime` is the token Stop
+/// and logout cancel, so neither has to wait out the per-server MCP timeout
+/// to end a startup that is already doomed.
+async fn await_mcp_startup<T>(
+    cancel: &CancellationToken,
+    runtime_lifetime: &CancellationToken,
+    work: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(MCP_STARTUP_CANCELLED_ERROR.to_string()),
+        _ = runtime_lifetime.cancelled() => Err(MCP_STARTUP_CANCELLED_ERROR.to_string()),
+        result = work => result,
+    }
+}
+
+/// The Goose Agent for a task plus the connection errors its persisted MCP
+/// servers reported while it was built.
+struct PreparedSessionAgent {
+    agent: Arc<Agent>,
+    mcp_errors: Vec<AgentMcpConnectionError>,
+}
+
+/// Create or fetch this task's Goose Agent and restore its persisted MCP
+/// extensions.
+///
+/// This is the unbounded half of session Agent configuration: every persisted
+/// MCP server is spawned or handshaked here, each with a per-server timeout
+/// that defaults to [`DEFAULT_MCP_TIMEOUT_SECONDS`]. Callers must run it
+/// outside Maple's global lifecycle fences, with a cancellation-selectable
+/// await, and re-verify runtime state before calling
+/// [`finish_session_agent`] with the result.
+async fn prepare_session_agent(
+    agent_manager: &Arc<AgentManager>,
+    maple_api_session: &Arc<MapleApiSession>,
+    session: &Session,
+    harness_instructions: &str,
+) -> Result<PreparedSessionAgent, String> {
+    let session_mcp_keys = session_mcp_extension_keys(session);
+    let manager_result = get_or_create_session_agent(
+        agent_manager,
+        maple_api_session,
+        session,
+        harness_instructions,
+        RuntimeContext::default(),
+    )
+    .await?;
+    let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
+    Ok(PreparedSessionAgent {
+        agent: manager_result.agent,
+        mcp_errors,
+    })
+}
+
 async fn configure_session_agent(
     skills_scope: AgentSkillsScope<'_>,
     agent_manager: &Arc<AgentManager>,
+    session_manager: &Arc<SessionManager>,
+    maple_api_session: &Arc<MapleApiSession>,
+    harness_instructions: &str,
+    configuration: SessionAgentConfiguration<'_>,
+) -> Result<(Arc<Agent>, Vec<AgentMcpConnectionError>), String> {
+    let prepared = prepare_session_agent(
+        agent_manager,
+        maple_api_session,
+        configuration.session,
+        harness_instructions,
+    )
+    .await?;
+    finish_session_agent(
+        prepared,
+        skills_scope,
+        session_manager,
+        maple_api_session,
+        configuration,
+    )
+    .await
+}
+
+/// Install Maple's provider, permission routing, and built-in tool clients
+/// into an Agent that [`prepare_session_agent`] already built.
+///
+/// Everything here is bounded local work, so it runs under Maple's lifecycle
+/// fences: an extension must not be installed into an Agent that a concurrent
+/// stop is tearing down.
+async fn finish_session_agent(
+    prepared: PreparedSessionAgent,
+    skills_scope: AgentSkillsScope<'_>,
     session_manager: &Arc<SessionManager>,
     maple_api_session: &Arc<MapleApiSession>,
     configuration: SessionAgentConfiguration<'_>,
@@ -7830,26 +8020,15 @@ async fn configure_session_agent(
     let SessionAgentConfiguration {
         web_tool_state,
         session,
-        harness_instructions,
         model,
         context_limit,
         mode,
         primary_model_supports_vision,
         tool_context,
     } = configuration;
-    let session_mcp_keys = session_mcp_extension_keys(session);
-    let manager_result = get_or_create_session_agent(
-        agent_manager,
-        maple_api_session,
-        session,
-        &harness_instructions,
-        RuntimeContext::default(),
-    )
-    .await?;
-    let agent = manager_result.agent;
+    let PreparedSessionAgent { agent, mcp_errors } = prepared;
     let skills_client =
         prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
-    let mcp_errors = mcp_connection_errors(manager_result.extension_results, &session_mcp_keys);
     install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
     // All transient MCP operations are hidden behind Maple's one static
     // `external_mcp` tool, which is permanently ask-before in Maple's owned
@@ -11799,6 +11978,142 @@ mod tests {
             status,
             HashMap::from([("desktop-session".to_string(), "desktop-run".to_string())])
         );
+    }
+
+    /// A task whose persisted MCP servers stall must not hold Maple's global
+    /// lifecycle fences: Stop, status, and task switching stay responsive, and
+    /// cancelling the run aborts the stalled startup instead of waiting out the
+    /// per-server MCP timeout.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stalled_mcp_startup_releases_the_lifecycle_fences() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) = agent_service_test_context("stalled-mcp-fence", sink);
+        let user_id = "stalled-mcp-fence-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "Stalled MCP task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        // `sleep` never speaks MCP, so the initialize handshake stalls until the
+        // extension's own timeout, exactly like a wedged real server does.
+        let mut extension_data = session.extension_data.clone();
+        goose::session::EnabledExtensionsState::new(vec![ExtensionConfig::Stdio {
+            name: "stalled".to_string(),
+            description: "stalled test server".to_string(),
+            cmd: "sleep".to_string(),
+            args: vec!["120".to_string()],
+            envs: Default::default(),
+            env_keys: Vec::new(),
+            timeout: Some(DEFAULT_MCP_TIMEOUT_SECONDS),
+            cwd: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        }])
+        .to_extension_data(&mut extension_data)
+        .unwrap();
+        session_manager
+            .update(&session.id)
+            .extension_data(extension_data)
+            .apply()
+            .await
+            .unwrap();
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::SmartApprove,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager: Arc::clone(&agent_manager),
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::new(),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root: project_root.clone(),
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope: account_scope.clone(),
+            lifetime: CancellationToken::new(),
+        });
+
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let send_session_id = session.id.clone();
+        let send_handle = handle.clone();
+        let send = tokio::spawn(async move {
+            send_handle
+                .send_message(AgentSendMessageRequest {
+                    session_id: send_session_id,
+                    text: "start the stalled task".to_string(),
+                    model: None,
+                    context_limit: None,
+                    mode: None,
+                    vision_capable: false,
+                    steer: false,
+                    queue_id: None,
+                    attachments: Vec::new(),
+                })
+                .await
+        });
+
+        // The send has claimed the session, yet neither fence is held.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if agent_manager.is_session_busy(&session.id).await
+                    && state.runtime_lifecycle.try_lock().is_ok()
+                    && state.session_lifecycle.try_lock().is_ok()
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("MCP startup must not hold the lifecycle fences");
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), handle.status())
+            .await
+            .expect("status must answer while MCP servers are starting")
+            .unwrap();
+
+        // Stop must both answer and end the stalled startup, rather than
+        // leaving it to run out the MCP timeout.
+        tokio::time::timeout(std::time::Duration::from_secs(10), handle.stop())
+            .await
+            .expect("stop must answer while MCP servers are starting")
+            .unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(30), send)
+            .await
+            .expect("a cancelled MCP startup must not wait out the MCP timeout")
+            .unwrap();
+        let error = match error {
+            Ok(_) => panic!("a cancelled MCP startup must fail the send"),
+            Err(error) => error,
+        };
+        assert_eq!(error, MCP_STARTUP_CANCELLED_ERROR);
+        assert!(!agent_manager.is_session_busy(&session.id).await);
+        assert!(state.inner.lock().await.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
