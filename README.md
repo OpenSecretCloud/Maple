@@ -19,7 +19,9 @@ crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       storage, and the ACP server.
 crates/maple-billing/ HTTP client for the Maple billing API.
 docs/                 Theme spec measured from the Tauri app.
-scripts/              Developer helpers (screenshot on GNOME Wayland).
+scripts/              One maintainer helper: screenshot.py takes a desktop
+                      screenshot through the xdg portal on GNOME Wayland.
+                      Nothing in the build or the app uses it.
 ```
 
 ### Backend / frontend boundary
@@ -49,6 +51,15 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 - Agent chat with streaming Markdown, tool calls, permission prompts,
   agent questions, image attachments (picker, paste, or drag and drop),
   a per-message Copy button, and a context-window indicator.
+- Slash commands in the composer: `/btw` asks a side question the task
+  never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
+  `/help`. The account's skills appear in the same list.
+- The task's latest todo list stays pinned above the composer.
+- Voice: dictate a message with the microphone button, and read any
+  message aloud. Both use Maple's speech models; the voice and speed
+  are settings.
+- The composer spell checks as you type; right-click a word for
+  suggestions or to add it to your dictionary.
 - Message queue: Enter during a run queues the message for the next turn,
   Ctrl+Enter (Cmd+Enter) steers it into the current turn. Queued messages
   can be sent now, edited in the composer (the message keeps its place in
@@ -59,12 +70,14 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
   open in the file manager, and remove. Projects that provide skills ask
   for a trust decision before their guidance loads.
 - Sessions grouped by project, with rename, archive, and restore.
-- Settings: general (permission mode, web tools, tool details,
-  notifications, appearance), system prompt, MCP servers, usage totals
-  from the Goose ledger, and about.
+- Settings: General (default permission mode, web tools, appearance,
+  tool call details, desktop notifications, tool call summaries, and the
+  speech voice and speed), System prompt, MCP servers, Usage (plan meter
+  from the billing API plus totals from the Goose ledger), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
-- Desktop notifications when the agent needs a decision.
+- Desktop notifications when a task finishes, asks a question, or needs
+  permission while the window is not focused.
 - Release check on launch: a banner links to a newer GitHub release.
   Nothing is downloaded or installed by the app.
 - Window size and maximized state persist between launches.
@@ -73,13 +86,13 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 
 - Rust stable (edition 2024; 1.94 or newer)
 - Linux: `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libfontconfig-dev`,
-  `libfreetype-dev`, `libclang-dev`, `cmake`, and a Vulkan loader.
-  Debian/Ubuntu:
+  `libfreetype-dev`, `libclang-dev`, `cmake`, ALSA headers for the
+  microphone and playback, and a Vulkan loader. Debian/Ubuntu:
 
   ```sh
   sudo apt install libxkbcommon-dev libxkbcommon-x11-dev \
        libfontconfig-dev libfreetype-dev libclang-dev cmake \
-       mesa-vulkan-drivers
+       libasound2-dev mesa-vulkan-drivers
   ```
 
 - macOS and Windows: the Rust toolchain only.
@@ -171,7 +184,7 @@ All settings are environment variables. None are required.
 | `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
 | `MAPLE_UPDATE_REPO` | GitHub `owner/repo` whose releases the launch check reads. | `benthecarman/maple-gpui` |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
-| `RUST_LOG` | Log filter. | `info` |
+| `RUST_LOG` | Log filter. | `info,goose=warn` |
 
 ### File locations
 
@@ -192,6 +205,7 @@ The roots follow the platform, the same way the Tauri app's
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/goose/data/sessions/sessions.db` | Goose session history and usage ledger (SQLite, WAL). |
+| `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
 | `<local data>/agent/acp/accounts/<scope>/config.json` | ACP configuration. |
 | `<local data>/logs/maple-gpui.log` | Log file. Panics are logged here too. |
@@ -210,9 +224,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-CI runs the same three commands on Linux, macOS, and Windows, plus a Linux
-release build. `just ci` runs the checks locally. A `v*` tag builds release
-binaries for all three platforms and attaches them to a GitHub release.
+CI runs the same three commands on Linux, macOS, and Windows. It also
+builds and tests the headless feature sets and a Linux release build.
+`just ci` runs the whole set locally. A `v*` tag builds release binaries
+for all three platforms and attaches them to a GitHub release.
 
 ## Before a release
 
