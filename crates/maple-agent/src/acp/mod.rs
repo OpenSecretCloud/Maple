@@ -1,36 +1,41 @@
 use crate::agent::{
     AGENT_TOOL_CONTEXT_INACTIVE_ERROR, AgentCreateSessionRequest, AgentHostEventPolicy,
     AgentMcpKeyValue, AgentPermissionDecision, AgentPermissionRequest, AgentRunCancellation,
-    AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal, AgentRunUsage,
-    AgentRuntimeHandle, AgentSendMessageRequest, AgentSessionSummary, AgentTimelineItem,
-    AgentToolContextLease, AgentToolContextSpec, AgentTransientMcpServer,
-    AgentTransientMcpTransport, SENSITIVE_BRIDGE_ENV, compaction_notice_text,
+    AgentRunEvent, AgentRunPermissionResponder, AgentRunTerminal, AgentRuntimeHandle,
+    AgentSendMessageRequest, AgentSessionSummary, AgentTimelineItem, AgentToolContextLease,
+    AgentToolContextSpec, AgentTransientMcpServer, AgentTransientMcpTransport,
+    SENSITIVE_BRIDGE_ENV,
 };
 mod config;
+mod convert;
 mod transport;
 
 pub use config::{AgentAcpConfig, AgentAcpPermissionMode, load_acp_config};
 use config::{AgentAcpStats, normalize_config};
+use convert::{
+    AcpToolProjection, COMPACTION_COMPLETED_NOTICE, MAX_ACP_ERROR_CHARS, acp_config_options,
+    acp_permission_decision, acp_permission_options, acp_permission_tool_call,
+    acp_session_config_options, acp_session_modes, acp_usage, bounded_chars,
+    client_supports_form_elicitation, event_error_text, internal_acp_error, outbound_error,
+    project_trust_elicitation_request, project_trust_permission_decision,
+    project_trust_permission_options, prompt_result_from_terminal, prompt_text, timeline_update,
+};
 use transport::{
     AcpOutboundReservation, AcpOutboundSendError, AcpOutboundTracker, BoundedLineReader,
     MAX_ACP_FRAME_BYTES, NEXT_ACP_MESSAGE_ID, tracked_outgoing_lines,
 };
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, BooleanPropertySchema, CancelNotification, CloseSessionRequest,
-    CloseSessionResponse, ConfigOptionUpdate, ContentBlock, ContentChunk, CreateElicitationRequest,
-    ElicitationAction, ElicitationContentValue, ElicitationFormMode, ElicitationSchema,
-    ElicitationSessionScope, Implementation, InitializeRequest, InitializeResponse,
-    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
-    McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse, PermissionOption,
-    PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities,
-    SessionCloseCapabilities, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionId, SessionInfo, SessionListCapabilities, SessionMode,
-    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    TextContent, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind, Usage,
+    AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
+    ConfigOptionUpdate, ContentBlock, ContentChunk, ElicitationAction, ElicitationContentValue,
+    Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
+    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
+    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
+    RequestPermissionRequest, SessionCapabilities, SessionCloseCapabilities, SessionConfigOption,
+    SessionId, SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionModeResponse, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolKind,
 };
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
@@ -50,8 +55,6 @@ use tokio_util::sync::CancellationToken;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
-const MAX_ACP_ERROR_CHARS: usize = 500;
-const MAX_ACP_TOOL_TEXT_CHARS: usize = 16_000;
 const ACP_CONNECTION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const ACP_SYNTHETIC_STOP_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const ACP_SESSION_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -213,11 +216,6 @@ impl AcpSession {
     fn config_options(&self) -> Vec<SessionConfigOption> {
         acp_session_config_options(&self.model, &self.available_models, self.message_count)
     }
-}
-
-#[derive(Default)]
-struct AcpToolProjection {
-    seen: HashSet<String>,
 }
 
 enum AcpPromptState {
@@ -2304,228 +2302,6 @@ fn ensure_acp_session_is_loadable<'a>(
     Ok(session)
 }
 
-fn acp_session_modes() -> SessionModeState {
-    SessionModeState::new(
-        "interactive",
-        vec![
-            SessionMode::new("interactive", "Interactive")
-                .description("Maple asks the ACP caller to approve sensitive tools"),
-        ],
-    )
-}
-
-fn acp_config_options(model: &str, available_models: &[String]) -> Vec<SessionConfigOption> {
-    let model_options = available_models
-        .iter()
-        .map(|model| SessionConfigSelectOption::new(model.clone(), model.clone()))
-        .collect::<Vec<_>>();
-    vec![
-        SessionConfigOption::select("model", "Model", model.to_string(), model_options)
-            .category(SessionConfigOptionCategory::Model),
-        SessionConfigOption::select(
-            "mode",
-            "Mode",
-            "interactive",
-            vec![SessionConfigSelectOption::new("interactive", "Interactive")],
-        )
-        .category(SessionConfigOptionCategory::Mode),
-    ]
-}
-
-fn acp_session_config_options(
-    model: &str,
-    available_models: &[String],
-    message_count: usize,
-) -> Vec<SessionConfigOption> {
-    if message_count == 0 {
-        acp_config_options(model, available_models)
-    } else {
-        let locked_models = [model.to_string()];
-        acp_config_options(model, &locked_models)
-    }
-}
-
-fn acp_usage(usage: AgentRunUsage) -> Usage {
-    Usage::new(usage.total_tokens, usage.input_tokens, usage.output_tokens)
-        .cached_read_tokens(usage.cached_read_tokens)
-        .cached_write_tokens(usage.cached_write_tokens)
-}
-
-fn outbound_error(error: AcpOutboundSendError) -> agent_client_protocol::Error {
-    match error {
-        AcpOutboundSendError::Transport(error) => error,
-        AcpOutboundSendError::UpdateTooLarge => agent_client_protocol::Error::internal_error()
-            .data("A Maple ACP history update exceeded the transport limit"),
-        AcpOutboundSendError::Cancelled => agent_client_protocol::Error::internal_error()
-            .data("The Maple ACP connection closed while replaying history"),
-    }
-}
-
-fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol::Error> {
-    let mut parts = Vec::new();
-    for block in blocks {
-        match block {
-            ContentBlock::Text(text) => parts.push(text.text.clone()),
-            ContentBlock::ResourceLink(link) => {
-                parts.push(format!("[Resource: {}]\n{}", link.name, link.uri));
-            }
-            _ => {
-                return Err(agent_client_protocol::Error::invalid_params()
-                    .data("Maple ACP currently accepts text and resource-link prompt blocks"));
-            }
-        }
-    }
-    let text = parts.join("\n\n");
-    if text.trim().is_empty() {
-        return Err(agent_client_protocol::Error::invalid_params()
-            .data("Maple ACP requires at least one text prompt block"));
-    }
-    Ok(text)
-}
-
-fn acp_permission_tool_call(
-    request: &AgentPermissionRequest,
-    item: &AgentTimelineItem,
-) -> ToolCall {
-    let title = item
-        .title
-        .clone()
-        .unwrap_or_else(|| format!("Approve {}", request.tool_name));
-    let mut tool_call = ToolCall::new(request.request_id.clone(), title)
-        .kind(acp_tool_kind(&request.tool_name))
-        .status(ToolCallStatus::Pending)
-        .raw_input(serde_json::Value::Object(request.arguments.clone()));
-    if let Some(prompt) = request.prompt.as_ref().filter(|prompt| !prompt.is_empty()) {
-        tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
-            TextContent::new(prompt.clone()),
-        ))]);
-    }
-    tool_call
-}
-
-fn acp_tool_kind(tool_name: &str) -> ToolKind {
-    match tool_name.rsplit("__").next().unwrap_or(tool_name) {
-        "shell" | "computer" => ToolKind::Execute,
-        "read" | "read_image" => ToolKind::Read,
-        "edit" | "write" | "text_editor" => ToolKind::Edit,
-        "search" | "web_search" => ToolKind::Search,
-        "open_url" => ToolKind::Fetch,
-        _ => ToolKind::Other,
-    }
-}
-
-fn acp_permission_options() -> Vec<PermissionOption> {
-    vec![
-        PermissionOption::new("allow_once", "Allow once", PermissionOptionKind::AllowOnce),
-        PermissionOption::new(
-            "reject_once",
-            "Reject once",
-            PermissionOptionKind::RejectOnce,
-        ),
-    ]
-}
-
-fn client_supports_form_elicitation(request: &InitializeRequest) -> bool {
-    request
-        .client_capabilities
-        .elicitation
-        .as_ref()
-        .is_some_and(|capabilities| capabilities.form.is_some())
-}
-
-fn project_trust_elicitation_request(
-    session_id: SessionId,
-    project_root: &Path,
-) -> CreateElicitationRequest {
-    let schema = ElicitationSchema::new()
-        .title("Trust this project?")
-        .description(
-            "Choose whether Maple may use guidance supplied by this project. The decision is remembered and reversible.",
-        )
-        .property(
-            "trustProject",
-            BooleanPropertySchema::new()
-                .title("Trust this project")
-                .description(
-                    "Allow Maple to use project-provided guidance, including agent skills. These instructions can influence how agents work and use tools.",
-                )
-                .default_value(false),
-            true,
-        );
-    CreateElicitationRequest::new(
-        ElicitationFormMode::new(ElicitationSessionScope::new(session_id), schema),
-        format!(
-            "Trust project '{}'? Normal tool permissions still apply.",
-            project_root.display()
-        ),
-    )
-}
-
-fn project_trust_permission_options() -> Vec<PermissionOption> {
-    vec![
-        // Keep the fail-closed choice first for clients that present a default.
-        // Two AllowOnce options deliberately make this a chooser in Paseo, so
-        // its generic auto-accept feature cannot silently resolve project trust.
-        PermissionOption::new(
-            "keep_untrusted",
-            "Keep project trust disabled",
-            PermissionOptionKind::AllowOnce,
-        ),
-        PermissionOption::new(
-            "trust_project",
-            "Trust this project",
-            PermissionOptionKind::AllowOnce,
-        ),
-        PermissionOption::new("cancel", "Cancel turn", PermissionOptionKind::RejectOnce),
-    ]
-}
-
-fn project_trust_permission_decision(
-    outcome: &RequestPermissionOutcome,
-) -> Result<Option<bool>, String> {
-    match outcome {
-        RequestPermissionOutcome::Selected(selected)
-            if selected.option_id.0.as_ref() == "keep_untrusted" =>
-        {
-            Ok(Some(false))
-        }
-        RequestPermissionOutcome::Selected(selected)
-            if selected.option_id.0.as_ref() == "trust_project" =>
-        {
-            Ok(Some(true))
-        }
-        RequestPermissionOutcome::Cancelled => Ok(None),
-        RequestPermissionOutcome::Selected(selected)
-            if selected.option_id.0.as_ref() == "cancel" =>
-        {
-            Ok(None)
-        }
-        _ => Err("ACP client selected an unknown Maple project trust option".to_string()),
-    }
-}
-
-fn acp_permission_decision(
-    outcome: &RequestPermissionOutcome,
-) -> Result<AgentPermissionDecision, String> {
-    match outcome {
-        RequestPermissionOutcome::Cancelled => Ok(AgentPermissionDecision::Cancel),
-        RequestPermissionOutcome::Selected(selected)
-            if selected.option_id.0.as_ref() == "allow_once" =>
-        {
-            Ok(AgentPermissionDecision::AllowOnce)
-        }
-        RequestPermissionOutcome::Selected(selected)
-            if selected.option_id.0.as_ref() == "reject_once" =>
-        {
-            Ok(AgentPermissionDecision::DenyOnce)
-        }
-        RequestPermissionOutcome::Selected(_) => {
-            Err("ACP client selected an unknown Maple permission option".to_string())
-        }
-        _ => Err("ACP client returned an unsupported Maple permission outcome".to_string()),
-    }
-}
-
 async fn cancel_maple_permission(responder: &AgentRunPermissionResponder, request_id: &str) {
     if let Err(error) = responder
         .respond(request_id.to_string(), AgentPermissionDecision::Cancel)
@@ -2549,220 +2325,6 @@ where
 }
 
 /// Agent-text notice sent when Goose replaced the history after compaction.
-const COMPACTION_COMPLETED_NOTICE: &str = "Compaction completed.\n";
-
-fn timeline_update(
-    item: &AgentTimelineItem,
-    tools: &mut AcpToolProjection,
-    include_user_messages: bool,
-) -> Option<SessionUpdate> {
-    match item.item_type.as_str() {
-        "message" if include_user_messages && item.role.as_deref() == Some("user") => {
-            item.text.as_ref().map(|text| {
-                SessionUpdate::UserMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
-                        .message_id(item.id.as_str()),
-                )
-            })
-        }
-        "message" if item.role.as_deref() == Some("assistant") => item.text.as_ref().map(|text| {
-            SessionUpdate::AgentMessageChunk(
-                ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
-                    .message_id(item.id.as_str()),
-            )
-        }),
-        "thinking" => item.text.as_ref().map(|text| {
-            SessionUpdate::AgentThoughtChunk(
-                ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
-                    .message_id(item.id.as_str()),
-            )
-        }),
-        "tool" => Some(acp_tool_update(item, tools)),
-        // Compaction is a full model round-trip with no other output. The
-        // reference adapters (claude-agent-acp, codex-acp) tell the client
-        // with a short agent-text notice, so clients render it the same way.
-        "system" => item
-            .text
-            .as_deref()
-            .and_then(compaction_notice_text)
-            .map(|notice| {
-                SessionUpdate::AgentMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new(format!("{notice}\n"))))
-                        .message_id(item.id.as_str()),
-                )
-            }),
-        _ => None,
-    }
-}
-
-fn acp_tool_update(item: &AgentTimelineItem, tools: &mut AcpToolProjection) -> SessionUpdate {
-    let status = match item.status.as_deref() {
-        Some("completed") => ToolCallStatus::Completed,
-        Some("failed" | "cancelled") => ToolCallStatus::Failed,
-        Some("pending") => ToolCallStatus::Pending,
-        _ => ToolCallStatus::InProgress,
-    };
-    let kind = timeline_tool_kind(item);
-    let content = timeline_tool_text(item).map(|text| {
-        vec![ToolCallContent::from(ContentBlock::Text(TextContent::new(
-            text,
-        )))]
-    });
-    let locations = timeline_tool_locations(item);
-    let raw_input = item.input.as_ref().map(bounded_raw_json);
-    let raw_output = timeline_tool_raw_output(item);
-    let title = item
-        .title
-        .clone()
-        .unwrap_or_else(|| "Maple tool".to_string());
-    if tools.seen.insert(item.id.clone()) {
-        let mut call = ToolCall::new(item.id.clone(), title)
-            .kind(kind)
-            .status(status);
-        if let Some(content) = content {
-            call = call.content(content);
-        }
-        if !locations.is_empty() {
-            call = call.locations(locations);
-        }
-        if let Some(raw_input) = raw_input {
-            call = call.raw_input(raw_input);
-        }
-        if let Some(raw_output) = raw_output {
-            call = call.raw_output(raw_output);
-        }
-        SessionUpdate::ToolCall(call)
-    } else {
-        let mut fields = ToolCallUpdateFields::new()
-            .title(title)
-            .kind(kind)
-            .status(status);
-        if let Some(content) = content {
-            fields = fields.content(content);
-        }
-        if !locations.is_empty() {
-            fields = fields.locations(locations);
-        }
-        if let Some(raw_input) = raw_input {
-            fields = fields.raw_input(raw_input);
-        }
-        if let Some(raw_output) = raw_output {
-            fields = fields.raw_output(raw_output);
-        }
-        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(item.id.clone(), fields))
-    }
-}
-
-fn timeline_tool_kind(item: &AgentTimelineItem) -> ToolKind {
-    let title = item
-        .title
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let input = item.input.as_ref();
-    if input.and_then(|value| value.get("command")).is_some() || title.contains("terminal") {
-        ToolKind::Execute
-    } else if input.and_then(|value| value.get("url")).is_some()
-        || title.contains("web")
-        || title.contains("url")
-    {
-        ToolKind::Fetch
-    } else if input.and_then(|value| value.get("query")).is_some()
-        || input.and_then(|value| value.get("pattern")).is_some()
-        || title.contains("search")
-        || title.contains("find")
-    {
-        ToolKind::Search
-    } else if title.contains("read") {
-        ToolKind::Read
-    } else if input.and_then(tool_path).is_some()
-        || title.contains("edit")
-        || title.contains("write")
-    {
-        ToolKind::Edit
-    } else {
-        ToolKind::Other
-    }
-}
-
-fn timeline_tool_text(item: &AgentTimelineItem) -> Option<String> {
-    let output_text = || {
-        item.output
-            .as_ref()
-            .and_then(|output| output.get("text"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    };
-    let text = if matches!(
-        item.status.as_deref(),
-        Some("completed" | "failed" | "cancelled")
-    ) {
-        // Coalesced replay items retain the original request summary in
-        // item.text while the terminal tool result lives in output.text.
-        // Paseo renders ACP text content before rawOutput, so preferring the
-        // summary here would hide the actual imported result.
-        output_text().or_else(|| item.text.clone())
-    } else {
-        item.text.clone().or_else(output_text)
-    };
-    text.map(|text| bounded_chars(&text, MAX_ACP_TOOL_TEXT_CHARS))
-}
-
-fn tool_path(value: &serde_json::Value) -> Option<&str> {
-    ["path", "file_path", "file"]
-        .into_iter()
-        .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
-}
-
-fn timeline_tool_locations(item: &AgentTimelineItem) -> Vec<ToolCallLocation> {
-    item.input
-        .as_ref()
-        .and_then(tool_path)
-        .filter(|path| Path::new(path).is_absolute())
-        .map(|path| vec![ToolCallLocation::new(PathBuf::from(path))])
-        .unwrap_or_default()
-}
-
-fn timeline_tool_raw_output(item: &AgentTimelineItem) -> Option<serde_json::Value> {
-    let output = item.output.as_ref()?;
-    let failure_message = matches!(item.status.as_deref(), Some("failed" | "cancelled"))
-        .then(|| {
-            output
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(|text| bounded_chars(text, MAX_ACP_ERROR_CHARS))
-        })
-        .flatten()
-        .filter(|message| !message.trim().is_empty());
-    let mut bounded = bounded_raw_json(output);
-    if let (Some(message), serde_json::Value::Object(fields)) = (failure_message, &mut bounded) {
-        // Paseo derives the failure badge from rawOutput.message/error. Maple's
-        // persisted tool shape uses output.text, so provide a bounded alias
-        // without changing the canonical result or exposing any extra data.
-        if !fields.contains_key("message") && !fields.contains_key("error") {
-            fields.insert("message".to_string(), serde_json::Value::String(message));
-        }
-    }
-    Some(bounded)
-}
-
-fn bounded_raw_json(value: &serde_json::Value) -> serde_json::Value {
-    match serde_json::to_vec(value) {
-        Ok(encoded) if encoded.len() <= 64 * 1024 => value.clone(),
-        Ok(encoded) => serde_json::json!({
-            "truncated": true,
-            "encodedBytes": encoded.len(),
-        }),
-        Err(_) => serde_json::json!({ "unavailable": true }),
-    }
-}
-
-fn event_error_text(item: &AgentTimelineItem) -> Option<String> {
-    item.text
-        .clone()
-        .map(|message| bounded_chars(&message, MAX_ACP_ERROR_CHARS))
-}
-
 async fn wait_for_retained_terminal(
     terminal: &mut tokio::sync::watch::Receiver<Option<AgentRunTerminal>>,
 ) {
@@ -2776,35 +2338,14 @@ async fn wait_for_retained_terminal(
     }
 }
 
-fn prompt_result_from_terminal(
-    terminal: AgentRunTerminal,
-) -> Result<PromptResponse, agent_client_protocol::Error> {
-    match terminal {
-        AgentRunTerminal::Completed => Ok(PromptResponse::new(StopReason::EndTurn)),
-        AgentRunTerminal::Cancelled => Ok(PromptResponse::new(StopReason::Cancelled)),
-        // A failed terminal is emitted only after a run was admitted. Goose may
-        // already have persisted output or executed tools, and Buzz treats a
-        // JSON-RPC AgentError as pre-mutation/retryable. The preceding error
-        // update carries the failure text; settle the turn successfully here so
-        // non-idempotent work is never replayed automatically.
-        AgentRunTerminal::Failed => Ok(PromptResponse::new(StopReason::EndTurn)),
-    }
-}
-
-fn internal_acp_error(error: String) -> agent_client_protocol::Error {
-    agent_client_protocol::Error::internal_error().data(bounded_chars(&error, MAX_ACP_ERROR_CHARS))
-}
-
-/// Bound untrusted text to `max_chars` before it crosses the ACP wire.
-fn bounded_chars(value: &str, max_chars: usize) -> String {
-    value.chars().take(max_chars).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::config::{MAX_ACP_CONNECTIONS, config_path, load_config, save_config};
+    use super::convert::{acp_tool_update, timeline_tool_text};
     use super::transport::is_session_update_line;
     use super::*;
+    use crate::agent::AgentRunUsage;
+    use agent_client_protocol::schema::v1::RequestPermissionOutcome;
     use agent_client_protocol::schema::v1::{
         ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, McpServerStdio,
         SelectedPermissionOutcome,
