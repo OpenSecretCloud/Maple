@@ -3,6 +3,7 @@ export type {
   KVListItem,
   LoginResponse,
   UserResponse,
+  NativeHandoffGrantResponse,
   GithubAuthResponse,
   GoogleAuthResponse,
   DocumentResponse,
@@ -75,6 +76,9 @@ export type {
 // Export API key management functions
 export { createApiKey, listApiKeys, deleteApiKey } from "./api";
 
+// Hosted-browser half of the native OAuth handoff. Redemption remains native.
+export { mintNativeHandoffGrant } from "./api";
+
 export { fetchModels, fetchModelCatalog } from "./api";
 
 // Export conversation and conversation-project API functions
@@ -116,8 +120,8 @@ export {
 // Export AI customization options
 export { createCustomFetch, type CustomFetchOptions } from "./ai";
 
-// Opaque user-auth handoff for trusted native bridges. The bundle is bound to
-// the exact configured API URL and intentionally exposes no session keys.
+// Sensitive portable user-auth state for trusted local native bridges only.
+// The bundle is encoded, not encrypted; never place it in a URL or log.
 export {
   exportTransportV2AuthBundle,
   importTransportV2AuthBundle,

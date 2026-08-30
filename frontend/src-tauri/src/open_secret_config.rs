@@ -1,4 +1,30 @@
-use maple_proxy::Pcr0Environment;
+use opensecret::Pcr0Environment;
+
+pub(crate) fn normalize_api_url(api_url: &str) -> Result<String, String> {
+    let mut url =
+        reqwest::Url::parse(api_url.trim()).map_err(|_| "Maple API URL is invalid".to_string())?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Maple API URL must include a host".to_string())?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return Err("Maple API URL must use HTTPS or a loopback development address".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Maple API URL must not contain credentials".to_string());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("Maple API URL must not contain a query or fragment".to_string());
+    }
+    if url.path() != "/" && !url.path().is_empty() {
+        return Err("Maple API URL must not contain a path".to_string());
+    }
+    url.set_path("");
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
 
 pub(crate) fn parse_pcr0_environment(value: Option<&str>) -> Result<Pcr0Environment, String> {
     match value {
@@ -35,5 +61,24 @@ mod tests {
         for invalid in ["", "dev", "prod", "Development", "staging"] {
             assert!(parse_pcr0_environment(Some(invalid)).is_err());
         }
+    }
+
+    #[test]
+    fn api_url_normalization_requires_https_or_exact_loopback() {
+        assert_eq!(
+            normalize_api_url("https://enclave.trymaple.ai/").unwrap(),
+            "https://enclave.trymaple.ai"
+        );
+        assert_eq!(
+            normalize_api_url("http://127.0.0.1:31745").unwrap(),
+            "http://127.0.0.1:31745"
+        );
+        assert_eq!(
+            normalize_api_url("http://localhost:31745/").unwrap(),
+            "http://localhost:31745"
+        );
+        assert!(normalize_api_url("http://enclave.trymaple.ai").is_err());
+        assert!(normalize_api_url("https://user:pass@example.com").is_err());
+        assert!(normalize_api_url("https://example.com/v1").is_err());
     }
 }

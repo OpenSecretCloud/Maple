@@ -52,6 +52,101 @@ type CredentialUpdateResponse = {
   refresh_token?: string;
 };
 
+export type NativeHandoffGrantResponse = {
+  grant: string;
+  expires_at: number;
+};
+
+type NativeHandoffGrantRequest = {
+  native_session_id: string;
+  native_attempt_id: string;
+};
+
+type NativeHandoffGrantCall = (
+  url: string,
+  method: string,
+  data: NativeHandoffGrantRequest,
+  errorMessage: string
+) => Promise<unknown>;
+
+const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+const COMPACT_BASE64URL_JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const MAX_NATIVE_HANDOFF_GRANT_BYTES = 4096;
+
+function requireCanonicalUuid(value: string, fieldName: string): void {
+  if (!CANONICAL_UUID_PATTERN.test(value) || value === NIL_UUID) {
+    throw new Error(`${fieldName} must be a non-nil canonical lowercase UUID.`);
+  }
+}
+
+function parseNativeHandoffGrantResponse(value: unknown): NativeHandoffGrantResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Native handoff grant response is invalid.");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (keys.length !== 2 || keys[0] !== "expires_at" || keys[1] !== "grant") {
+    throw new Error("Native handoff grant response is invalid.");
+  }
+  if (
+    typeof record.grant !== "string" ||
+    record.grant.length > MAX_NATIVE_HANDOFF_GRANT_BYTES ||
+    !COMPACT_BASE64URL_JWT_PATTERN.test(record.grant)
+  ) {
+    throw new Error("Native handoff grant response contains an invalid grant.");
+  }
+  if (
+    typeof record.expires_at !== "number" ||
+    !Number.isSafeInteger(record.expires_at) ||
+    record.expires_at < 0
+  ) {
+    throw new Error("Native handoff grant response contains an invalid expiry.");
+  }
+  return { grant: record.grant, expires_at: record.expires_at };
+}
+
+/**
+ * Mints a short-lived native handoff grant for an already authenticated user.
+ *
+ * The grant is bound by the backend to the native app's pre-established,
+ * attested transport-v2 session. This hosted-browser helper only mints the
+ * grant; native redemption is intentionally outside the TypeScript SDK.
+ */
+export async function mintNativeHandoffGrant(
+  nativeSessionId: string,
+  nativeAttemptId: string
+): Promise<NativeHandoffGrantResponse> {
+  return mintNativeHandoffGrantWithDependencies(
+    nativeSessionId,
+    nativeAttemptId,
+    apiUrl,
+    (url, method, data, errorMessage) =>
+      authenticatedApiCall<NativeHandoffGrantRequest, unknown>(url, method, data, errorMessage)
+  );
+}
+
+/** @internal Exported for deterministic request/response contract tests. */
+export async function mintNativeHandoffGrantWithDependencies(
+  nativeSessionId: string,
+  nativeAttemptId: string,
+  configuredApiUrl: string,
+  call: NativeHandoffGrantCall
+): Promise<NativeHandoffGrantResponse> {
+  requireCanonicalUuid(nativeSessionId, "nativeSessionId");
+  requireCanonicalUuid(nativeAttemptId, "nativeAttemptId");
+  const response = await call(
+    `${configuredApiUrl}/auth/native-handoff/grant`,
+    "POST",
+    {
+      native_session_id: nativeSessionId,
+      native_attempt_id: nativeAttemptId
+    },
+    "Failed to mint native handoff grant"
+  );
+  return parseNativeHandoffGrantResponse(response);
+}
+
 export type KVListItem = {
   key: string;
   value: string;

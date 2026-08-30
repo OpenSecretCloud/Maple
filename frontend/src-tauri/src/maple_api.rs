@@ -1,4 +1,4 @@
-use crate::open_secret_config::configured_pcr0_environment;
+use crate::open_secret_config::{configured_pcr0_environment, normalize_api_url};
 use opensecret::{
     InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest, WebExtractResponse,
     WebSearchRequest, WebSearchResponse,
@@ -551,32 +551,6 @@ fn normalized_user_id(user_id: &str) -> Result<String, String> {
         return Err("Maple API access requires a signed-in account".to_string());
     }
     Ok(user_id)
-}
-
-fn normalize_api_url(api_url: &str) -> Result<String, String> {
-    let mut url =
-        reqwest::Url::parse(api_url.trim()).map_err(|_| "Maple API URL is invalid".to_string())?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| "Maple API URL must include a host".to_string())?;
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return Err("Maple API URL must use HTTPS or a loopback development address".to_string());
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("Maple API URL must not contain credentials".to_string());
-    }
-    if url.query().is_some() || url.fragment().is_some() {
-        return Err("Maple API URL must not contain a query or fragment".to_string());
-    }
-    if url.path() != "/" && !url.path().is_empty() {
-        return Err("Maple API URL must not contain a path".to_string());
-    }
-    url.set_path("");
-    Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
 fn build_client(api_url: &str, auth_bundle: String) -> Result<Arc<OpenSecretClient>, String> {

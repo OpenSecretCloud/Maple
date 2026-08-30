@@ -5,9 +5,12 @@ import { listen } from "@tauri-apps/api/event";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
   authorizeNativeOAuthCallback,
-  isNativeOAuthAttemptId
+  consumeNativeOAuthAttempt,
+  isNativeOAuthSessionId,
+  readPendingNativeOAuthAttemptId,
+  redeemNativeOAuthGrant
 } from "@/services/nativeOAuthAttempt";
-import { TRANSPORT_V2_NATIVE_ATTEMPT_QUERY } from "@/services/desktopOAuthTransport";
+import { TRANSPORT_V2_NATIVE_SESSION_QUERY } from "@/services/desktopOAuthTransport";
 
 // For direct deep link handling, we'll listen to our custom event
 // If we had the types installed, we would use:
@@ -46,24 +49,18 @@ export function DeepLinkHandler() {
                 // Handle different types of deep links
                 if (firstPathPart === "auth") {
                   // Handle auth deep links
-                  const authBundle = urlObj.searchParams.get("auth_bundle");
-                  const nativeOAuthAttemptId = urlObj.searchParams.get(
-                    TRANSPORT_V2_NATIVE_ATTEMPT_QUERY
+                  const handoffGrant = urlObj.searchParams.get("handoff_grant");
+                  const nativeSessionId = urlObj.searchParams.get(
+                    TRANSPORT_V2_NATIVE_SESSION_QUERY
                   );
                   const next = urlObj.searchParams.get("next");
                   const safeNext = getSafeInternalRedirect(next) ?? "/";
 
-                  if (authBundle && isNativeOAuthAttemptId(nativeOAuthAttemptId)) {
-                    const authorization = authorizeNativeOAuthCallback(
-                      isAuthenticatedRef.current,
-                      nativeOAuthAttemptId
-                    );
+                  if (handoffGrant && isNativeOAuthSessionId(nativeSessionId)) {
+                    const nativeOAuthAttemptId = readPendingNativeOAuthAttemptId();
+                    const authorization = authorizeNativeOAuthCallback(isAuthenticatedRef.current);
                     if (authorization === "already_authenticated") {
                       console.warn("[Deep Link] Ignoring auth callback for an existing session");
-                      return;
-                    }
-                    if (authorization === "attempt_mismatch") {
-                      console.warn("[Deep Link] Ignoring auth callback with mismatched state");
                       return;
                     }
                     if (authorization === "missing_or_expired_attempt") {
@@ -71,11 +68,22 @@ export function DeepLinkHandler() {
                       return;
                     }
 
+                    if (!nativeOAuthAttemptId) return;
+                    const { authBundle } = await redeemNativeOAuthGrant(
+                      handoffGrant,
+                      nativeSessionId
+                    );
+                    if (!authBundle.trim()) {
+                      throw new Error("Native OAuth redemption returned invalid credentials");
+                    }
                     await importTransportV2AuthBundle(
                       authBundle,
                       import.meta.env.VITE_OPEN_SECRET_API_URL
                     );
-                    console.log("[Deep Link] Authentication bundle accepted");
+                    if (!consumeNativeOAuthAttempt(nativeOAuthAttemptId)) {
+                      throw new Error("Native OAuth state changed during redemption");
+                    }
+                    console.log("[Deep Link] Authentication grant accepted");
 
                     // Refresh the app state to reflect the logged-in status
                     window.location.href = safeNext; // Reload the app at the requested internal route

@@ -4759,6 +4759,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower-http 0.6.8",
+ "uuid",
  "webpki-roots",
  "windows 0.62.2",
  "zip 8.6.0",

@@ -157,10 +157,12 @@ function SignupPage() {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
+        const { nativeOAuthAttempt: nativeOAuthAttemptId, sessionId } =
+          await beginNativeOAuthAttempt(import.meta.env.VITE_OPEN_SECRET_API_URL);
         const desktopAuthUrl = buildTransportV2DesktopAuthUrl({
           provider: "github",
           nativeOAuthAttemptId,
+          nativeSessionId: sessionId,
           selectedPlan: selected_plan,
           code,
           next
@@ -170,7 +172,7 @@ function SignupPage() {
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening authentication page in external browser");
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
+          void cancelNativeOAuthAttempt(nativeOAuthAttemptId).catch(() => undefined);
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
@@ -201,10 +203,12 @@ function SignupPage() {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
+        const { nativeOAuthAttempt: nativeOAuthAttemptId, sessionId } =
+          await beginNativeOAuthAttempt(import.meta.env.VITE_OPEN_SECRET_API_URL);
         const desktopAuthUrl = buildTransportV2DesktopAuthUrl({
           provider: "google",
           nativeOAuthAttemptId,
+          nativeSessionId: sessionId,
           selectedPlan: selected_plan,
           code,
           next
@@ -214,7 +218,7 @@ function SignupPage() {
         // This works for both desktop and mobile (iOS/Android)
         console.log("[OAuth] Opening authentication page in external browser");
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
+          void cancelNativeOAuthAttempt(nativeOAuthAttemptId).catch(() => undefined);
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });
@@ -375,10 +379,12 @@ function SignupPage() {
           setError(errorMessage);
         }
       } else if (isTauriEnv) {
-        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
+        const { nativeOAuthAttempt: nativeOAuthAttemptId, sessionId } =
+          await beginNativeOAuthAttempt(import.meta.env.VITE_OPEN_SECRET_API_URL);
         const desktopAuthUrl = buildTransportV2DesktopAuthUrl({
           provider: "apple",
           nativeOAuthAttemptId,
+          nativeSessionId: sessionId,
           selectedPlan: selected_plan,
           code,
           next
@@ -387,7 +393,7 @@ function SignupPage() {
         // Use the opener plugin by directly invoking the command
         console.log("[OAuth] Opening authentication page in external browser");
         invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
+          void cancelNativeOAuthAttempt(nativeOAuthAttemptId).catch(() => undefined);
           console.error("[OAuth] Failed to open external browser:", error);
           setError("Failed to open authentication page in browser");
         });

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { exportTransportV2AuthBundle, useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@opensecret/react";
 import { v4 as uuidv4 } from "uuid";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -11,7 +11,8 @@ import {
   buildTransportV2NativeAuthDeepLink,
   clearDesktopOAuthTransport,
   isNativeOAuthRedirect,
-  readTransportV2DesktopOAuthAttempt
+  readTransportV2DesktopOAuthAttempt,
+  readTransportV2DesktopOAuthSession
 } from "@/services/desktopOAuthTransport";
 
 interface AppleAuthProviderProps {
@@ -141,21 +142,20 @@ export function AppleAuthProvider({
 
     const isTauriAuth = isNativeOAuthRedirect();
     if (isTauriAuth) {
-      const authBundle = await exportTransportV2AuthBundle(
-        import.meta.env.VITE_OPEN_SECRET_API_URL
-      );
       const nativeOAuthAttemptId = readTransportV2DesktopOAuthAttempt();
-      if (!nativeOAuthAttemptId) {
+      const nativeSessionId = readTransportV2DesktopOAuthSession();
+      if (!nativeOAuthAttemptId || !nativeSessionId) {
         throw new Error("Desktop authentication state is missing or expired; please restart login");
       }
+      const { grant } = await os.mintNativeHandoffGrant(nativeSessionId, nativeOAuthAttemptId);
 
       const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
       sessionStorage.removeItem("post_auth_redirect");
       const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
       const deepLinkUrl = buildTransportV2NativeAuthDeepLink(
-        authBundle,
-        nativeOAuthAttemptId,
+        grant,
+        nativeSessionId,
         !selectedPlan ? safePostAuthRedirect : null
       );
       clearDesktopOAuthTransport();

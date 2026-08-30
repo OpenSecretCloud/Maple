@@ -8,6 +8,7 @@ import {
   markTransportV2DesktopOAuth,
   readDesktopOAuthTransport,
   readTransportV2DesktopOAuthAttempt,
+  readTransportV2DesktopOAuthSession,
   shouldLoadLegacyDesktopOAuth
 } from "./desktopOAuthTransport";
 
@@ -58,11 +59,13 @@ beforeEach(() => {
 
 describe("desktop OAuth transport selection", () => {
   const nativeOAuthAttemptId = "00000000-0000-4000-8000-000000000001";
+  const nativeSessionId = "11111111-2222-3333-4444-555555555555";
 
-  test("carries the native attempt state through the HTTPS v2 initiation URL", () => {
+  test("keeps the native attempt out of the HTTPS request and carries it in the fragment", () => {
     const authUrl = buildTransportV2DesktopAuthUrl({
       provider: "github",
       nativeOAuthAttemptId,
+      nativeSessionId,
       selectedPlan: "pro",
       code: "redemption",
       next: "/settings"
@@ -73,49 +76,56 @@ describe("desktop OAuth transport selection", () => {
     expect(parsed.pathname).toBe("/desktop-auth");
     expect(parsed.searchParams.get("provider")).toBe("github");
     expect(parsed.searchParams.get("transport")).toBe("v2");
-    expect(parsed.searchParams.get("native_oauth_attempt")).toBe(nativeOAuthAttemptId);
+    expect(parsed.searchParams.has("native_oauth_attempt")).toBe(false);
+    expect(new URLSearchParams(parsed.hash.slice(1)).get("native_oauth_attempt")).toBe(
+      nativeOAuthAttemptId
+    );
+    expect(parsed.searchParams.get("native_session_id")).toBe(nativeSessionId);
     expect(parsed.searchParams.get("selected_plan")).toBe("pro");
     expect(parsed.searchParams.get("code")).toBe("redemption");
     expect(parsed.searchParams.get("next")).toBe("/settings");
   });
 
   test("stores only validated v2 attempt state across the hosted redirect", () => {
-    markTransportV2DesktopOAuth(nativeOAuthAttemptId);
+    markTransportV2DesktopOAuth(nativeOAuthAttemptId, nativeSessionId);
 
     expect(readDesktopOAuthTransport()).toBe("v2");
     expect(readTransportV2DesktopOAuthAttempt()).toBe(nativeOAuthAttemptId);
-    expect(() => markTransportV2DesktopOAuth("not-state")).toThrow();
+    expect(readTransportV2DesktopOAuthSession()).toBe(nativeSessionId);
+    expect(() => markTransportV2DesktopOAuth("not-state", nativeSessionId)).toThrow();
   });
 
   test("claims GitHub or Google initiation exactly once for one native attempt", () => {
-    markTransportV2DesktopOAuth(nativeOAuthAttemptId);
+    markTransportV2DesktopOAuth(nativeOAuthAttemptId, nativeSessionId);
 
     expect(claimTransportV2DesktopOAuthInitiation(nativeOAuthAttemptId)).toBe(true);
     expect(claimTransportV2DesktopOAuthInitiation(nativeOAuthAttemptId)).toBe(false);
 
     const nextAttemptId = "00000000-0000-4000-8000-000000000002";
-    markTransportV2DesktopOAuth(nextAttemptId);
+    markTransportV2DesktopOAuth(nextAttemptId, nativeSessionId);
     expect(claimTransportV2DesktopOAuthInitiation(nextAttemptId)).toBe(true);
   });
 
   test("cannot claim initiation for state other than the active hosted attempt", () => {
-    markTransportV2DesktopOAuth(nativeOAuthAttemptId);
+    markTransportV2DesktopOAuth(nativeOAuthAttemptId, nativeSessionId);
 
     expect(() =>
       claimTransportV2DesktopOAuthInitiation("00000000-0000-4000-8000-000000000002")
     ).toThrow("state changed");
   });
 
-  test("builds one opaque v2 bundle handoff without exposing legacy token fields", () => {
+  test("builds a v2 handoff with only the grant and public session correlation", () => {
     const deepLink = buildTransportV2NativeAuthDeepLink(
-      "opaque/+bundle=",
-      nativeOAuthAttemptId,
+      "header.payload.signature",
+      nativeSessionId,
       "/settings"
     );
     const parsed = new URL(deepLink);
 
-    expect(parsed.searchParams.get("auth_bundle")).toBe("opaque/+bundle=");
-    expect(parsed.searchParams.get("native_oauth_attempt")).toBe(nativeOAuthAttemptId);
+    expect(parsed.searchParams.get("handoff_grant")).toBe("header.payload.signature");
+    expect(parsed.searchParams.has("auth_bundle")).toBe(false);
+    expect(parsed.searchParams.get("native_session_id")).toBe(nativeSessionId);
+    expect(parsed.searchParams.has("native_oauth_attempt")).toBe(false);
     expect(parsed.searchParams.get("next")).toBe("/settings");
     expect(parsed.searchParams.has("access_token")).toBe(false);
     expect(parsed.searchParams.has("refresh_token")).toBe(false);
@@ -154,6 +164,7 @@ describe("desktop OAuth transport selection", () => {
     clearDesktopOAuthTransport();
     expect(readDesktopOAuthTransport()).toBeNull();
     expect(readTransportV2DesktopOAuthAttempt()).toBeNull();
+    expect(readTransportV2DesktopOAuthSession()).toBeNull();
     expect(localStorage.getItem("redirect-to-native")).toBeNull();
   });
 });

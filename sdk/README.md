@@ -73,6 +73,17 @@ conversations, inference, and account operations. Internal developer tooling
 uses `OpenSecretDeveloper` and `useOpenSecretDeveloper`; preserve that surface
 when changing the public exports.
 
+Hosted OAuth callbacks that return to a native application can call
+`mintNativeHandoffGrant(nativeSessionId, nativeAttemptId)` through the
+OpenSecret context. It creates a short-lived grant bound to the native app's
+already-attested transport-v2 session. The grant is redeemed by the native
+client; the TypeScript SDK deliberately does not expose native redemption.
+
+The auth-bundle export/import helpers are for trusted local IPC and protected
+application storage only. Their output contains reusable credentials and the
+client-held cache namespace root; it is encoded, not encrypted, and must never
+be placed in a URL, log, clipboard, or other untrusted handoff.
+
 ### Development
 
 Use the pinned Nix shell and Bun version:
@@ -116,7 +127,7 @@ Add the crate to a Rust application:
 
 ```toml
 [dependencies]
-opensecret = "3"
+opensecret = "4"
 ```
 
 The primary entry point is `OpenSecretClient`. See `rust/README.md` for native

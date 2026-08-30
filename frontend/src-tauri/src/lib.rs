@@ -13,8 +13,8 @@ mod agent_tauri;
 mod legacy_tts_cleanup;
 #[cfg(desktop)]
 mod maple_api;
+mod native_oauth;
 mod onnxruntime;
-#[cfg(desktop)]
 mod open_secret_config;
 mod pdf_extractor;
 mod pdf_ocr;
@@ -234,8 +234,8 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
-    // Authentication callbacks carry opaque credentials in the query string,
-    // so never log the raw URL.
+    // Authentication callbacks carry a short-lived session-bound grant in the
+    // query string, so never log the raw URL.
     log::info!("[Deep Link] Received callback");
     #[cfg(desktop)]
     reveal_main_window(app);
@@ -251,7 +251,7 @@ pub fn run() {
     #[cfg(desktop)]
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // argv can contain a custom-scheme callback URL with OAuth bearer tokens.
+            // argv can contain a custom-scheme callback URL with an OAuth handoff grant.
             log::info!("Single instance detected for {}", app.package_info().name);
             reveal_main_window(app);
         }))
@@ -264,6 +264,7 @@ pub fn run() {
         .manage(agent_acp::AgentAcpState::new())
         .manage(agent_host::AgentHostLifecycle::new())
         .manage(maple_api::MapleApiAuthState::new())
+        .manage(native_oauth::NativeOAuthState::new())
         .manage(proxy::ProxyState::new())
         .invoke_handler(tauri::generate_handler![
             agent_tauri::agent_get_runtime_status,
@@ -308,6 +309,9 @@ pub fn run() {
             maple_api::maple_api_set_auth,
             maple_api::maple_api_get_auth,
             maple_api::maple_api_clear_auth,
+            native_oauth::native_oauth_begin,
+            native_oauth::native_oauth_redeem,
+            native_oauth::native_oauth_cancel,
             proxy::start_proxy,
             proxy::stop_proxy,
             proxy::stop_and_reset_proxy,
@@ -552,7 +556,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        .manage(native_oauth::NativeOAuthState::new());
 
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
@@ -565,6 +570,9 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             pdf_extractor::extract_document_content,
+            native_oauth::native_oauth_begin,
+            native_oauth::native_oauth_redeem,
+            native_oauth::native_oauth_cancel,
         ])
         .setup(|app| {
             // Set up the deep link handler for mobile
@@ -587,6 +595,9 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             pdf_extractor::extract_document_content,
+            native_oauth::native_oauth_begin,
+            native_oauth::native_oauth_redeem,
+            native_oauth::native_oauth_cancel,
         ])
         .setup(|app| {
             legacy_tts_cleanup::schedule(app.handle());

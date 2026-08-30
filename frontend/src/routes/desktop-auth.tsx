@@ -7,15 +7,18 @@ import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
   claimTransportV2DesktopOAuthInitiation,
-  markTransportV2DesktopOAuth
+  markTransportV2DesktopOAuth,
+  readTransportV2DesktopOAuthAttempt,
+  readTransportV2DesktopOAuthAttemptFromFragment,
+  readTransportV2DesktopOAuthSession
 } from "@/services/desktopOAuthTransport";
-import { isNativeOAuthAttemptId } from "@/services/nativeOAuthAttempt";
+import { isNativeOAuthSessionId } from "@/services/nativeOAuthAttempt";
 
 // Define the search parameters interface
 interface DesktopAuthSearchParams {
   provider: string;
   transport: "v2";
-  native_oauth_attempt: string;
+  native_session_id: string;
   selected_plan?: string;
   next?: string;
 }
@@ -32,13 +35,13 @@ export const Route = createFileRoute("/desktop-auth")({
     if (search.transport !== "v2") {
       throw new Error("Unsupported desktop authentication transport");
     }
-    if (!isNativeOAuthAttemptId(search.native_oauth_attempt)) {
-      throw new Error("Desktop authentication state is missing or invalid");
+    if (!isNativeOAuthSessionId(search.native_session_id)) {
+      throw new Error("Desktop authentication native session is missing or invalid");
     }
     return {
       provider,
       transport: "v2",
-      native_oauth_attempt: search.native_oauth_attempt,
+      native_session_id: search.native_session_id,
       selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
       next: getSafeInternalRedirect(search.next)
     };
@@ -48,16 +51,35 @@ export const Route = createFileRoute("/desktop-auth")({
 function DesktopAuth() {
   // Use the typed search params
   const search = Route.useSearch();
-  const { provider, selected_plan, next, native_oauth_attempt } = search;
+  const { provider, selected_plan, next, native_session_id } = search;
   const navigate = useNavigate();
   const os = useOpenSecret();
 
   useEffect(() => {
     const initiateAuth = async () => {
       try {
+        const fragmentAttempt = readTransportV2DesktopOAuthAttemptFromFragment(
+          window.location.hash
+        );
+        const storedAttempt =
+          readTransportV2DesktopOAuthSession() === native_session_id
+            ? readTransportV2DesktopOAuthAttempt()
+            : null;
+        const nativeOAuthAttempt = fragmentAttempt ?? storedAttempt;
+        if (!nativeOAuthAttempt) {
+          throw new Error("Desktop authentication state is missing or invalid");
+        }
+
         // Preserve the v2 transport marker and native handoff state across the
         // provider's full-page redirect in this browser tab.
-        markTransportV2DesktopOAuth(native_oauth_attempt);
+        markTransportV2DesktopOAuth(nativeOAuthAttempt, native_session_id);
+        if (fragmentAttempt) {
+          window.history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}`
+          );
+        }
 
         // Store selected plan if present
         sessionStorage.removeItem("selected_plan");
@@ -79,7 +101,7 @@ function DesktopAuth() {
         // React context replacement, StrictMode, or a route remount may rerun
         // this effect. The hosted tab may initiate a given native attempt only
         // once; a retry starts from Maple and therefore receives new state.
-        if (!claimTransportV2DesktopOAuthInitiation(native_oauth_attempt)) {
+        if (!claimTransportV2DesktopOAuthInitiation(nativeOAuthAttempt)) {
           return;
         }
 
@@ -105,7 +127,7 @@ function DesktopAuth() {
     };
 
     initiateAuth();
-  }, [os, provider, selected_plan, next, native_oauth_attempt, navigate]);
+  }, [os, provider, selected_plan, next, native_session_id, navigate]);
 
   // Special handling for Apple OAuth - use popup instead of redirect
   if (provider === "apple") {

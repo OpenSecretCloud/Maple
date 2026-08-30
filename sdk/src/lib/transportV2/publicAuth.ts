@@ -9,16 +9,19 @@ import {
 
 /**
  * Exports the current user resumption descriptors and stable cache namespace
- * root as an opaque, origin-bound Transport V2 bundle.
+ * root as a portable, origin-bound Transport V2 bundle for trusted local IPC.
+ * The result is encoded, not encrypted, and must never be placed in a URL,
+ * log, clipboard, or other untrusted transport.
  */
 export async function exportTransportV2AuthBundle(apiUrl: string): Promise<string> {
   return exportStoredBundle(apiUrl);
 }
 
 /**
- * Installs an opaque Transport V2 user auth bundle for the exact configured
- * API URL. The imported resumption credential remains authoritative; no
- * client-provided user identifier is trusted.
+ * Installs a sensitive Transport V2 user auth bundle received through trusted
+ * local IPC for the exact configured API URL. The imported resumption
+ * credential remains authoritative; no client-provided user identifier is
+ * trusted.
  */
 export async function importTransportV2AuthBundle(bundle: string, apiUrl: string): Promise<void> {
   const expected = snapshotTransportV2Auth(apiUrl, "user");

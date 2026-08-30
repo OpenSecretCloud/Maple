@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, useRouter, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, useRef } from "react";
-import { exportTransportV2AuthBundle, useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
@@ -11,7 +11,8 @@ import {
   buildTransportV2NativeAuthDeepLink,
   clearDesktopOAuthTransport,
   isNativeOAuthRedirect,
-  readTransportV2DesktopOAuthAttempt
+  readTransportV2DesktopOAuthAttempt,
+  readTransportV2DesktopOAuthSession
 } from "@/services/desktopOAuthTransport";
 
 export const Route = createFileRoute("/auth/$provider/callback")({
@@ -38,7 +39,12 @@ function OAuthCallback() {
   const [nativeRedirectUrl, setNativeRedirectUrl] = useState<string | null>(null);
   const navigate = useNavigate();
   const router = useRouter();
-  const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
+  const {
+    handleGitHubCallback,
+    handleGoogleCallback,
+    handleAppleCallback,
+    mintNativeHandoffGrant
+  } = useOpenSecret();
   const processedRef = useRef(false);
 
   // Helper functions for the callback process
@@ -47,15 +53,12 @@ function OAuthCallback() {
     const isTauriAuth = isNativeOAuthRedirect();
 
     if (isTauriAuth) {
-      // Export one opaque, origin-bound handoff. Neither the hosted bridge nor
-      // Maple needs to inspect the credential or cache-root fields it contains.
-      const authBundle = await exportTransportV2AuthBundle(
-        import.meta.env.VITE_OPEN_SECRET_API_URL
-      );
       const nativeOAuthAttemptId = readTransportV2DesktopOAuthAttempt();
-      if (!nativeOAuthAttemptId) {
+      const nativeSessionId = readTransportV2DesktopOAuthSession();
+      if (!nativeOAuthAttemptId || !nativeSessionId) {
         throw new Error("Desktop authentication state is missing or expired; please restart login");
       }
+      const { grant } = await mintNativeHandoffGrant(nativeSessionId, nativeOAuthAttemptId);
 
       const selectedPlan = sessionStorage.getItem("selected_plan");
       sessionStorage.removeItem("selected_plan");
@@ -64,8 +67,8 @@ function OAuthCallback() {
       const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
       const deepLinkUrl = buildTransportV2NativeAuthDeepLink(
-        authBundle,
-        nativeOAuthAttemptId,
+        grant,
+        nativeSessionId,
         !selectedPlan ? safePostAuthRedirect : null
       );
       clearDesktopOAuthTransport();
@@ -101,7 +104,7 @@ function OAuthCallback() {
         navigate({ to: "/" });
       }
     }, 2000);
-  }, [navigate, router]);
+  }, [mintNativeHandoffGrant, navigate, router]);
 
   const handleAuthError = (error: unknown) => {
     console.error(`Authentication callback error:`, error);

@@ -1,26 +1,44 @@
-import { v4 as uuidv4 } from "uuid";
+import { invoke } from "@tauri-apps/api/core";
 
-const PENDING_NATIVE_OAUTH_ATTEMPT_KEY = "maple_pending_native_oauth_attempt_v1";
+type InvokeCommand = (command: string, args?: Parameters<typeof invoke>[1]) => Promise<unknown>;
+
+const PENDING_NATIVE_OAUTH_ATTEMPT_KEY = "maple_pending_native_oauth_attempt_v2";
 export const PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS = 15 * 60 * 1000;
 
-// This is native-to-hosted-browser handoff state, distinct from provider OAuth
-// state and not a credential. Keep it out of application logs nonetheless.
+export interface NativeOAuthBeginResponse {
+  nativeOAuthAttempt: string;
+  sessionId: string;
+}
+
+export interface NativeOAuthRedeemResponse {
+  userId: string;
+  authBundle: string;
+}
+
 interface PendingNativeOAuthAttempt {
   attemptId: string;
+  sessionId: string;
   startedAt: number;
 }
 
 export type NativeOAuthCallbackAuthorization =
   | "accepted"
   | "already_authenticated"
-  | "attempt_mismatch"
   | "missing_or_expired_attempt";
 
-const NATIVE_OAUTH_ATTEMPT_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+function isNonNilUuid(value: unknown): value is string {
+  return typeof value === "string" && value !== NIL_UUID && UUID_PATTERN.test(value);
+}
 
 export function isNativeOAuthAttemptId(value: unknown): value is string {
-  return typeof value === "string" && NATIVE_OAUTH_ATTEMPT_ID_PATTERN.test(value);
+  return isNonNilUuid(value);
+}
+
+export function isNativeOAuthSessionId(value: unknown): value is string {
+  return isNonNilUuid(value);
 }
 
 function readPendingNativeOAuthAttempt(): PendingNativeOAuthAttempt | null {
@@ -30,13 +48,13 @@ function readPendingNativeOAuthAttempt(): PendingNativeOAuthAttempt | null {
   } catch {
     return null;
   }
-
   if (!encoded) return null;
 
   try {
     const attempt = JSON.parse(encoded) as Partial<PendingNativeOAuthAttempt>;
     if (
       !isNativeOAuthAttemptId(attempt.attemptId) ||
+      !isNativeOAuthSessionId(attempt.sessionId) ||
       typeof attempt.startedAt !== "number" ||
       !Number.isSafeInteger(attempt.startedAt) ||
       attempt.startedAt < 0
@@ -56,10 +74,7 @@ function readPendingNativeOAuthAttempt(): PendingNativeOAuthAttempt | null {
 
 function removePendingNativeOAuthAttempt(attemptId?: string): boolean {
   try {
-    if (attemptId) {
-      const currentAttempt = readPendingNativeOAuthAttempt();
-      if (currentAttempt?.attemptId !== attemptId) return false;
-    }
+    if (attemptId && readPendingNativeOAuthAttempt()?.attemptId !== attemptId) return false;
     localStorage.removeItem(PENDING_NATIVE_OAUTH_ATTEMPT_KEY);
     return localStorage.getItem(PENDING_NATIVE_OAUTH_ATTEMPT_KEY) === null;
   } catch {
@@ -67,31 +82,70 @@ function removePendingNativeOAuthAttempt(attemptId?: string): boolean {
   }
 }
 
-export function beginNativeOAuthAttempt(now = Date.now()): string {
+export async function beginNativeOAuthAttempt(
+  apiUrl: string,
+  now = Date.now(),
+  invokeCommand: InvokeCommand = invoke
+): Promise<NativeOAuthBeginResponse> {
   if (!Number.isSafeInteger(now) || now < 0) {
     throw new Error("Cannot start native OAuth with an invalid timestamp");
   }
-
-  const attemptId = uuidv4();
-  const attempt: PendingNativeOAuthAttempt = { attemptId, startedAt: now };
-  localStorage.setItem(PENDING_NATIVE_OAUTH_ATTEMPT_KEY, JSON.stringify(attempt));
-  return attemptId;
+  const response = (await invokeCommand("native_oauth_begin", {
+    request: { apiUrl }
+  })) as NativeOAuthBeginResponse;
+  if (
+    !isNativeOAuthAttemptId(response.nativeOAuthAttempt) ||
+    !isNativeOAuthSessionId(response.sessionId)
+  ) {
+    throw new Error("Native OAuth initiation returned invalid state");
+  }
+  try {
+    localStorage.setItem(
+      PENDING_NATIVE_OAUTH_ATTEMPT_KEY,
+      JSON.stringify({
+        attemptId: response.nativeOAuthAttempt,
+        sessionId: response.sessionId,
+        startedAt: now
+      } satisfies PendingNativeOAuthAttempt)
+    );
+  } catch (error) {
+    await invokeCommand("native_oauth_cancel", {
+      request: { nativeOAuthAttempt: response.nativeOAuthAttempt }
+    }).catch(() => undefined);
+    throw error;
+  }
+  return response;
 }
 
-export function cancelNativeOAuthAttempt(attemptId: string): void {
-  removePendingNativeOAuthAttempt(attemptId);
+export async function cancelNativeOAuthAttempt(
+  attemptId: string,
+  invokeCommand: InvokeCommand = invoke
+): Promise<void> {
+  try {
+    await invokeCommand("native_oauth_cancel", { request: { nativeOAuthAttempt: attemptId } });
+  } finally {
+    removePendingNativeOAuthAttempt(attemptId);
+  }
+}
+
+export async function redeemNativeOAuthGrant(
+  handoffGrant: string,
+  nativeSessionId: string,
+  invokeCommand: InvokeCommand = invoke
+): Promise<NativeOAuthRedeemResponse> {
+  return invokeCommand("native_oauth_redeem", {
+    request: { handoffGrant, nativeSessionId }
+  }) as Promise<NativeOAuthRedeemResponse>;
 }
 
 export function authorizeNativeOAuthCallback(
   isAuthenticated: boolean,
-  callbackAttemptId: string,
   now = Date.now()
 ): NativeOAuthCallbackAuthorization {
   if (isAuthenticated) {
     removePendingNativeOAuthAttempt();
     return "already_authenticated";
   }
-
   const attempt = readPendingNativeOAuthAttempt();
   if (!attempt) return "missing_or_expired_attempt";
 
@@ -100,17 +154,13 @@ export function authorizeNativeOAuthCallback(
     removePendingNativeOAuthAttempt(attempt.attemptId);
     return "missing_or_expired_attempt";
   }
-
-  // Native handoff state values are compared exactly. A mismatch rejects this callback
-  // without consuming the genuine pending attempt, so an unrelated deep link
-  // cannot turn account confusion into a denial of the user's real callback.
-  if (!isNativeOAuthAttemptId(callbackAttemptId) || callbackAttemptId !== attempt.attemptId) {
-    return "attempt_mismatch";
-  }
-
-  if (!removePendingNativeOAuthAttempt(attempt.attemptId)) {
-    return "missing_or_expired_attempt";
-  }
-
   return "accepted";
+}
+
+export function readPendingNativeOAuthAttemptId(): string | null {
+  return readPendingNativeOAuthAttempt()?.attemptId ?? null;
+}
+
+export function consumeNativeOAuthAttempt(attemptId: string): boolean {
+  return removePendingNativeOAuthAttempt(attemptId);
 }

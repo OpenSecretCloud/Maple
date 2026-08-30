@@ -43,6 +43,64 @@ pub type InferenceRequest = HttpRequest<Bytes>;
 /// A decrypted HTTP response from an OpenSecret inference endpoint.
 pub type InferenceResponse = HttpResponse<OpenSecretResponseBody>;
 
+/// Public metadata for one anonymous session retained for native OAuth.
+///
+/// The session identifier is public correlation data, not an authentication
+/// credential. A handoff grant can be redeemed only by the client that still
+/// holds this exact attested session's encryption keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeOAuthSessionInfo {
+    pub session_id: Uuid,
+}
+
+/// One short-lived backend-issued native OAuth handoff grant.
+///
+/// Grants are compact signed JWTs. Their debug representation is always
+/// redacted, and their storage is zeroized when dropped.
+pub struct NativeOAuthHandoffGrant(Zeroizing<String>);
+
+impl NativeOAuthHandoffGrant {
+    /// Validate and retain one canonical compact-JWT handoff grant.
+    pub fn new(grant: impl Into<String>) -> Result<Self> {
+        const MAX_GRANT_BYTES: usize = 4_096;
+
+        let grant = Zeroizing::new(grant.into());
+        let mut segments = grant.split('.');
+        let valid_segment = |segment: &str| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        };
+        let valid = !grant.is_empty()
+            && grant.len() <= MAX_GRANT_BYTES
+            && segments.next().is_some_and(valid_segment)
+            && segments.next().is_some_and(valid_segment)
+            && segments.next().is_some_and(valid_segment)
+            && segments.next().is_none();
+        if !valid {
+            return Err(Error::Authentication(
+                "Native OAuth handoff grant must be one canonical compact JWT of at most 4096 bytes"
+                    .to_string(),
+            ));
+        }
+
+        Ok(Self(grant))
+    }
+}
+
+impl fmt::Debug for NativeOAuthHandoffGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeOAuthHandoffGrant([REDACTED])")
+    }
+}
+
+#[derive(Serialize)]
+struct NativeOAuthHandoffRedeemRequest<'a> {
+    grant: &'a str,
+    native_attempt_id: Uuid,
+}
+
 /// Caller-persistable provider-cache namespace root for transport v2.
 ///
 /// Generate this independently from account identifiers and credentials. Its
@@ -510,6 +568,105 @@ impl OpenSecretClient {
         self.transport_v2.active_session_id()
     }
 
+    /// Establish and retain one anonymous attested session for native OAuth.
+    ///
+    /// This operation is accepted only on a credential-free client. The
+    /// returned identifier may be exposed to a hosted browser, but the session
+    /// keys remain inside this client and cannot be reconstructed from it.
+    pub async fn prepare_native_oauth_session(&self) -> Result<NativeOAuthSessionInfo> {
+        let operation_credentials = self.native_oauth_anonymous_credentials()?;
+        let _guard = self.transport_v2.user_gate().lock().await;
+        self.v2_credentials_for_epoch(&operation_credentials.auth_epoch)?;
+        self.ensure_credential_generation(operation_credentials.generation)?;
+        self.native_oauth_anonymous_credentials()?;
+
+        let session = self.transport_v2.perform_attestation_handshake().await?;
+        self.v2_credentials_for_epoch(&operation_credentials.auth_epoch)?;
+        self.ensure_credential_generation(operation_credentials.generation)?;
+        self.native_oauth_anonymous_credentials()?;
+        let current = self.transport_v2.anonymous_session()?.ok_or_else(|| {
+            Error::Session(
+                "Native OAuth session changed while attestation was in flight".to_string(),
+            )
+        })?;
+        if !Arc::ptr_eq(&current, &session) {
+            return Err(Error::Session(
+                "Native OAuth session changed while attestation was in flight".to_string(),
+            ));
+        }
+
+        Ok(NativeOAuthSessionInfo {
+            session_id: session.session_id(),
+        })
+    }
+
+    /// Redeem a backend-issued handoff grant through one exact native session.
+    ///
+    /// The request is sent once. Any ambiguous post-send failure is returned to
+    /// the caller and retires the exact session; callers must restart OAuth
+    /// rather than replaying the grant. On success, this client atomically
+    /// upgrades the retained anonymous session to the returned user authority.
+    pub async fn redeem_native_oauth_handoff(
+        &self,
+        expected_session_id: Uuid,
+        native_attempt_id: Uuid,
+        grant: NativeOAuthHandoffGrant,
+    ) -> Result<LoginResponse> {
+        if native_attempt_id.is_nil() {
+            return Err(Error::Authentication(
+                "Native OAuth attempt identifier must not be nil".to_string(),
+            ));
+        }
+        let operation_credentials = self.native_oauth_anonymous_credentials()?;
+        let _guard = self.transport_v2.user_gate().lock().await;
+        self.v2_credentials_for_epoch(&operation_credentials.auth_epoch)?;
+        self.ensure_credential_generation(operation_credentials.generation)?;
+        self.native_oauth_anonymous_credentials()?;
+
+        let session = self.transport_v2.anonymous_session()?.ok_or_else(|| {
+            Error::Authentication(
+                "Native OAuth attested session is unavailable; restart sign-in".to_string(),
+            )
+        })?;
+        if session.session_id() != expected_session_id {
+            return Err(Error::Authentication(
+                "Native OAuth handoff did not match the retained attested session".to_string(),
+            ));
+        }
+        if session.is_expired()? {
+            self.transport_v2.clear_anonymous_session_if(&session)?;
+            return Err(Error::Authentication(
+                "Native OAuth attested session expired; restart sign-in".to_string(),
+            ));
+        }
+
+        let request = NativeOAuthHandoffRedeemRequest {
+            grant: grant.0.as_str(),
+            native_attempt_id,
+        };
+        let response = self
+            .v2_send_on_session(
+                &session,
+                "/auth/native-handoff/redeem",
+                "POST",
+                Some(serde_json::to_vec(&request)?),
+                Vec::new(),
+                V2SendOptions::transition(
+                    ResponseMode::Unary,
+                    None,
+                    self.v2_cache_namespace_root()?,
+                ),
+            )
+            .await?;
+
+        self.finish_v2_user_binding_transition(
+            &session,
+            &operation_credentials.auth_epoch,
+            response,
+        )
+        .await
+    }
+
     pub async fn test_connection(&self) -> Result<String> {
         let url = format!("{}/health-check", self.transport_v2.base_url());
         let response = self.transport_v2.http_client().get(&url).send().await?;
@@ -592,38 +749,9 @@ impl OpenSecretClient {
                     ),
                 )
                 .await?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err(Self::v2_api_error_from_response(response).await);
-            }
-            // An authenticated success means the enclave committed this exact
-            // anonymous session's authority transition. Remove it from the
-            // anonymous slot before any fallible local response processing.
-            self.transport_v2.clear_anonymous_session_if(&session)?;
-            let transition_result: Result<U> = async {
-                let response_body = collect_response_body(response.into_body()).await?;
-                let (login, value, validated) = decode_v2_user_binding_response(&response_body)?;
-                let _commit_guard = self.auth_commit_guard()?;
-                if self
-                    .session_manager
-                    .replace_user_tokens_and_session_if_epoch(
-                        expected_auth_epoch,
-                        login.access_token,
-                        Some(login.refresh_token),
-                        validated.principal,
-                        Arc::clone(&session),
-                    )?
-                    .is_none()
-                {
-                    return Err(Error::Session(
-                        "Credentials changed while transport v2 authentication was in flight"
-                            .to_string(),
-                    ));
-                }
-                Ok(value)
-            }
-            .await;
-            return transition_result;
+            return self
+                .finish_v2_user_binding_transition(&session, expected_auth_epoch, response)
+                .await;
         } else {
             self.transport_v2.perform_attestation_handshake().await?
         };
@@ -694,6 +822,53 @@ impl OpenSecretClient {
         Ok(CacheNamespaceRoot::from_bytes(
             self.transport_v2.cache_namespace_root()?,
         ))
+    }
+
+    fn native_oauth_anonymous_credentials(&self) -> Result<CredentialSnapshot> {
+        let credentials = self.session_manager.get_credential_snapshot()?;
+        if credentials.tokens.is_some()
+            || credentials.api_key.is_some()
+            || credentials.user_session.is_some()
+        {
+            return Err(Error::Authentication(
+                "Native OAuth requires a dedicated credential-free client".to_string(),
+            ));
+        }
+        Ok(credentials)
+    }
+
+    async fn finish_v2_user_binding_transition<U: DeserializeOwned>(
+        &self,
+        session: &Arc<V2Session>,
+        expected_auth_epoch: &UserAuthEpoch,
+        response: V2HttpResponse,
+    ) -> Result<U> {
+        if !response.status().is_success() {
+            return Err(Self::v2_api_error_from_response(response).await);
+        }
+        // An authenticated success means the enclave committed this exact
+        // anonymous session's authority transition. Remove it from the
+        // anonymous slot before any fallible local response processing.
+        self.transport_v2.clear_anonymous_session_if(session)?;
+        let response_body = collect_response_body(response.into_body()).await?;
+        let (login, value, validated) = decode_v2_user_binding_response(&response_body)?;
+        let _commit_guard = self.auth_commit_guard()?;
+        if self
+            .session_manager
+            .replace_user_tokens_and_session_if_epoch(
+                expected_auth_epoch,
+                login.access_token,
+                Some(login.refresh_token),
+                validated.principal,
+                Arc::clone(session),
+            )?
+            .is_none()
+        {
+            return Err(Error::Session(
+                "Credentials changed while transport v2 authentication was in flight".to_string(),
+            ));
+        }
+        Ok(value)
     }
 
     fn auth_commit_guard(&self) -> Result<StdMutexGuard<'_, ()>> {
@@ -2520,6 +2695,10 @@ fn decode_v2_user_binding_response<U: DeserializeOwned>(
 mod tests {
     use super::*;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     const USER_ACCESS_AUDIENCE: &str =
         "urn:opensecret:internal:transport-v2:user:access-descriptor";
@@ -2539,6 +2718,322 @@ mod tests {
             "e30.{}.signature",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
         )
+    }
+
+    fn v2_session(marker: u8, expires_at_unix_seconds: u64) -> Arc<V2Session> {
+        Arc::new(
+            V2Session::from_master_for_test(
+                Uuid::from_bytes([marker; 16]),
+                [marker; 32],
+                expires_at_unix_seconds,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn install_anonymous(client: &OpenSecretClient, session: Arc<V2Session>) {
+        client
+            .transport_v2
+            .set_anonymous_session_for_test(session)
+            .unwrap();
+    }
+
+    fn logical_response(status: u16, body: impl Into<Vec<u8>>) -> V2HttpResponse {
+        let body = Bytes::from(body.into());
+        let stream: OpenSecretResponseBody =
+            Box::pin(futures::stream::once(async move { Ok(body) }));
+        let mut response = HttpResponse::new(stream);
+        *response.status_mut() = http::StatusCode::from_u16(status).unwrap();
+        response
+    }
+
+    fn login_response_body(user_id: Uuid) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "id": user_id,
+            "email": "native@example.test",
+            "access_token": descriptor(
+                USER_ACCESS_AUDIENCE,
+                "access_descriptor",
+                &user_id.to_string(),
+            ),
+            "refresh_token": descriptor(
+                USER_RESUMPTION_AUDIENCE,
+                "resumption",
+                &user_id.to_string(),
+            ),
+        }))
+        .unwrap()
+    }
+
+    fn handoff_grant() -> NativeOAuthHandoffGrant {
+        NativeOAuthHandoffGrant::new("header.payload.signature").unwrap()
+    }
+
+    #[test]
+    fn native_oauth_handoff_grant_is_canonical_bounded_and_redacted() {
+        let grant = handoff_grant();
+        assert_eq!(format!("{grant:?}"), "NativeOAuthHandoffGrant([REDACTED])");
+
+        let boundary = format!("{}.b.c", "a".repeat(4_092));
+        assert_eq!(boundary.len(), 4_096);
+        assert!(NativeOAuthHandoffGrant::new(boundary).is_ok());
+
+        for invalid in [
+            "",
+            "header.payload",
+            "header.payload.signature.extra",
+            "header..signature",
+            "header.payload.signature=",
+            "header.payload.sign ature",
+        ] {
+            assert!(NativeOAuthHandoffGrant::new(invalid).is_err(), "{invalid}");
+        }
+        let too_large = format!("{}.b.c", "a".repeat(4_093));
+        assert_eq!(too_large.len(), 4_097);
+        assert!(NativeOAuthHandoffGrant::new(too_large).is_err());
+    }
+
+    #[test]
+    fn native_oauth_handoff_body_has_only_the_frozen_fields() {
+        let attempt = Uuid::from_bytes([0x44; 16]);
+        let request = NativeOAuthHandoffRedeemRequest {
+            grant: "header.payload.signature",
+            native_attempt_id: attempt,
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "grant": "header.payload.signature",
+                "native_attempt_id": attempt,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn native_oauth_preparation_reuses_the_exact_anonymous_session() {
+        let client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        let session = v2_session(0x31, u64::MAX);
+        install_anonymous(&client, Arc::clone(&session));
+
+        let prepared = client.prepare_native_oauth_session().await.unwrap();
+        assert_eq!(prepared.session_id, session.session_id());
+        assert!(Arc::ptr_eq(
+            &client.transport_v2.anonymous_session().unwrap().unwrap(),
+            &session,
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_oauth_preparation_rejects_existing_authority_before_network_io() {
+        let api_key_client =
+            OpenSecretClient::new_with_api_key("http://127.0.0.1:9", "test-api-key".to_string())
+                .unwrap();
+        assert!(matches!(
+            api_key_client.prepare_native_oauth_session().await,
+            Err(Error::Authentication(_))
+        ));
+
+        let user_client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        user_client
+            .set_tokens(
+                descriptor(USER_ACCESS_AUDIENCE, "access_descriptor", "user-1"),
+                Some(descriptor(USER_RESUMPTION_AUDIENCE, "resumption", "user-1")),
+            )
+            .unwrap();
+        assert!(matches!(
+            user_client.prepare_native_oauth_session().await,
+            Err(Error::Authentication(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_oauth_redeem_rejects_wrong_session_without_sending() {
+        let client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        let session = v2_session(0x32, u64::MAX);
+        install_anonymous(&client, Arc::clone(&session));
+
+        let result = client
+            .redeem_native_oauth_handoff(
+                Uuid::from_bytes([0x33; 16]),
+                Uuid::new_v4(),
+                handoff_grant(),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Authentication(_))));
+        assert!(Arc::ptr_eq(
+            &client.transport_v2.anonymous_session().unwrap().unwrap(),
+            &session,
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_oauth_redeem_rejects_expired_session_without_sending() {
+        let client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        let session = v2_session(0x33, 0);
+        let session_id = session.session_id();
+        install_anonymous(&client, session);
+
+        let result = client
+            .redeem_native_oauth_handoff(session_id, Uuid::new_v4(), handoff_grant())
+            .await;
+        assert!(matches!(result, Err(Error::Authentication(_))));
+        assert!(client.transport_v2.anonymous_session().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn native_oauth_redeem_sends_once_and_retires_ambiguous_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let session = v2_session(0x34, u64::MAX);
+        let session_id = session.session_id();
+        install_anonymous(&client, session);
+
+        let result = client
+            .redeem_native_oauth_handoff(session_id, Uuid::new_v4(), handoff_grant())
+            .await;
+        assert!(matches!(result, Err(Error::Api { status: 503, .. })));
+        assert!(client.transport_v2.anonymous_session().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn native_oauth_success_moves_the_exact_session_to_user_authority() {
+        let client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        let session = v2_session(0x35, u64::MAX);
+        install_anonymous(&client, Arc::clone(&session));
+        let expected_epoch = client
+            .session_manager
+            .get_credential_snapshot()
+            .unwrap()
+            .auth_epoch;
+        let user_id = Uuid::from_bytes([0x36; 16]);
+
+        let login: LoginResponse = client
+            .finish_v2_user_binding_transition(
+                &session,
+                &expected_epoch,
+                logical_response(200, login_response_body(user_id)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.id, user_id);
+        assert!(client.transport_v2.anonymous_session().unwrap().is_none());
+        assert!(Arc::ptr_eq(
+            &client.session_manager.get_user_session().unwrap().unwrap(),
+            &session,
+        ));
+        assert_eq!(
+            client
+                .session_manager
+                .get_credential_snapshot()
+                .unwrap()
+                .auth_epoch
+                .principal
+                .as_deref(),
+            Some(user_id.to_string().as_str()),
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_native_oauth_success_retires_anonymous_without_installing_auth() {
+        let client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        let session = v2_session(0x37, u64::MAX);
+        install_anonymous(&client, Arc::clone(&session));
+        let expected_epoch = client
+            .session_manager
+            .get_credential_snapshot()
+            .unwrap()
+            .auth_epoch;
+
+        let result: Result<LoginResponse> = client
+            .finish_v2_user_binding_transition(
+                &session,
+                &expected_epoch,
+                logical_response(200, br#"{}"#.to_vec()),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(client.transport_v2.anonymous_session().unwrap().is_none());
+        assert!(client.get_tokens().unwrap().is_none());
+        assert!(client.session_manager.get_user_session().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_native_oauth_handoff_preserves_the_exact_anonymous_session() {
+        let client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        let session = v2_session(0x3b, u64::MAX);
+        install_anonymous(&client, Arc::clone(&session));
+        let expected_epoch = client
+            .session_manager
+            .get_credential_snapshot()
+            .unwrap()
+            .auth_epoch;
+
+        let result: Result<LoginResponse> = client
+            .finish_v2_user_binding_transition(
+                &session,
+                &expected_epoch,
+                logical_response(401, br#"{"error":"invalid grant"}"#.to_vec()),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Api { status: 401, .. })));
+        assert!(Arc::ptr_eq(
+            &client.transport_v2.anonymous_session().unwrap().unwrap(),
+            &session,
+        ));
+        assert!(client.get_tokens().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_native_oauth_success_cannot_overwrite_newer_credentials() {
+        let client = OpenSecretClient::new("http://127.0.0.1:9").unwrap();
+        let session = v2_session(0x38, u64::MAX);
+        install_anonymous(&client, Arc::clone(&session));
+        let expected_epoch = client
+            .session_manager
+            .get_credential_snapshot()
+            .unwrap()
+            .auth_epoch;
+        let newer_user = Uuid::from_bytes([0x39; 16]);
+        client
+            .set_tokens(
+                descriptor(
+                    USER_ACCESS_AUDIENCE,
+                    "access_descriptor",
+                    &newer_user.to_string(),
+                ),
+                Some(descriptor(
+                    USER_RESUMPTION_AUDIENCE,
+                    "resumption",
+                    &newer_user.to_string(),
+                )),
+            )
+            .unwrap();
+        let stale_user = Uuid::from_bytes([0x3a; 16]);
+
+        let result: Result<LoginResponse> = client
+            .finish_v2_user_binding_transition(
+                &session,
+                &expected_epoch,
+                logical_response(200, login_response_body(stale_user)),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Session(_))));
+        assert_eq!(
+            client
+                .session_manager
+                .get_credential_snapshot()
+                .unwrap()
+                .auth_epoch
+                .principal
+                .as_deref(),
+            Some(newer_user.to_string().as_str()),
+        );
     }
 
     #[test]

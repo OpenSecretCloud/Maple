@@ -101,6 +101,11 @@ impl TransportV2Client {
         self.runtime.anonymous().map_err(Into::into)
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_anonymous_session_for_test(&self, session: Arc<V2Session>) -> Result<()> {
+        self.runtime.set_anonymous(session).map_err(Into::into)
+    }
+
     pub(crate) fn clear_anonymous_session_if(&self, session: &Arc<V2Session>) -> Result<()> {
         self.runtime.clear_anonymous_if(session).map_err(Into::into)
     }
