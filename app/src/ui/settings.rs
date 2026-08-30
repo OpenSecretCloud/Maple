@@ -382,10 +382,7 @@ impl SettingsScreen {
     }
 
     fn toggle_permission_default(&mut self, cx: &mut Context<Self>) {
-        let next = settings::PermissionMode::parse(&self.settings.default_permission_mode)
-            .next()
-            .as_str()
-            .to_string();
+        let next = self.settings.default_permission_mode.next();
         self.edit_setting(move |settings| settings.default_permission_mode = next, cx);
     }
 
@@ -600,8 +597,7 @@ impl SettingsScreen {
                 pane = pane
                     .child(section_title("Defaults"))
                     .child({
-                        let mode =
-                            settings::PermissionMode::parse(&self.settings.default_permission_mode);
+                        let mode = self.settings.default_permission_mode;
                         setting_row(
                             "Default permission mode",
                             mode.note(),

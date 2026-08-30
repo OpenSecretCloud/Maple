@@ -631,7 +631,7 @@ impl ChatScreen {
             permission_mode: std::env::var("MAPLE_PERMISSION_MODE")
                 .ok()
                 .and_then(|mode| PermissionMode::from_str(&mode))
-                .or_else(|| PermissionMode::from_str(&settings.default_permission_mode))
+                .or(Some(settings.default_permission_mode))
                 .unwrap_or_default(),
             uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
@@ -1338,10 +1338,8 @@ impl ChatScreen {
         self.summaries_enabled = settings.tool_summaries;
         self.tts_voice.clone_from(&settings.tts_voice);
         self.tts_speed = settings.tts_speed;
-        if self.uses_default_permission_mode
-            && let Some(mode) = PermissionMode::from_str(&settings.default_permission_mode)
-        {
-            self.permission_mode = mode;
+        if self.uses_default_permission_mode {
+            self.permission_mode = settings.default_permission_mode;
             self.apply_permission_mode(cx);
         }
         // Servers may have been added or removed in settings.

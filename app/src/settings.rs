@@ -11,8 +11,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppSettings {
     /// Default permission policy for new sessions; see [`PermissionMode`].
-    #[serde(default = "default_permission_mode")]
-    pub default_permission_mode: String,
+    #[serde(default)]
+    pub default_permission_mode: PermissionMode,
     /// Whether tool cards show input/output payloads by default.
     #[serde(default = "default_tool_details")]
     pub tool_details: bool,
@@ -235,10 +235,6 @@ fn default_web_enabled() -> bool {
     true
 }
 
-fn default_permission_mode() -> String {
-    PermissionMode::default().as_str().to_string()
-}
-
 fn default_tool_details() -> bool {
     true
 }
@@ -254,7 +250,7 @@ fn default_tool_summaries() -> bool {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            default_permission_mode: default_permission_mode(),
+            default_permission_mode: PermissionMode::default(),
             tool_details: default_tool_details(),
             default_web_enabled: default_web_enabled(),
             tool_summaries: default_tool_summaries(),
