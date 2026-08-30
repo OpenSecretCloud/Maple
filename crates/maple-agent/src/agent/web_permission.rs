@@ -1,5 +1,7 @@
 use super::shell_permission::classifier::{Classifier, ClassifierOutcome, read_only_confirmation};
-use super::web_tools::{OPEN_URL_TOOL_NAME, normalize_public_https_url, validate_purpose};
+use super::web_tools::{
+    Keep, OPEN_URL_TOOL_NAME, bounded_chars, normalize_public_https_url, validate_purpose,
+};
 use goose::agents::Agent;
 use goose::conversation::message::ActionRequired;
 use serde::Serialize;
@@ -40,10 +42,11 @@ pub(crate) struct WebPermissionContext {
 impl WebPermissionContext {
     pub(crate) fn from_user_prompt(prompt: &str) -> Self {
         Self {
-            current_user_prompt: bounded_head_tail(
+            current_user_prompt: bounded_chars(
                 prompt,
                 MAX_CURRENT_PROMPT_CHARS,
                 PROMPT_TRUNCATION_MARKER,
+                Keep::Ends,
             ),
         }
     }
@@ -115,26 +118,6 @@ impl WebPermissionClassifier {
             ClassifierOutcome::Cancelled => WebPermissionOutcome::Cancelled,
         }
     }
-}
-
-fn bounded_head_tail(value: &str, max_chars: usize, marker: &str) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let marker_chars = marker.chars().count();
-    let keep_chars = max_chars.saturating_sub(marker_chars);
-    let head_chars = keep_chars / 2;
-    let tail_chars = keep_chars - head_chars;
-    let head = value.chars().take(head_chars).collect::<String>();
-    let tail = value
-        .chars()
-        .rev()
-        .take(tail_chars)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{head}{marker}{tail}")
 }
 
 #[cfg(test)]

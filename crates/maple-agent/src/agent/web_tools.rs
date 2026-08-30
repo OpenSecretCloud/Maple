@@ -255,7 +255,8 @@ pub(crate) async fn execute_web_search(
         trace_id,
         mut results,
     } = response;
-    let trace_id = trace_id.map(|trace_id| truncate_chars(&trace_id, MAX_TRACE_ID_CHARS, "…"));
+    let trace_id =
+        trace_id.map(|trace_id| bounded_chars(&trace_id, MAX_TRACE_ID_CHARS, "…", Keep::Head));
     let mut maple_truncated = false;
     let output = loop {
         let candidate = serde_json::to_string_pretty(&WebSearchToolOutput {
@@ -325,7 +326,8 @@ pub(crate) async fn execute_open_url(
 }
 
 fn format_open_url_tool_output(url: &str, trace_id: Option<&str>, markdown: &str) -> String {
-    let trace_id = trace_id.map(|trace_id| truncate_chars(trace_id, MAX_TRACE_ID_CHARS, "…"));
+    let trace_id =
+        trace_id.map(|trace_id| bounded_chars(trace_id, MAX_TRACE_ID_CHARS, "…", Keep::Head));
     let complete_header = open_url_metadata_header(url, trace_id.as_deref(), false);
     if complete_header.chars().count() + markdown.chars().count() <= MAX_OPEN_URL_TOOL_OUTPUT_CHARS
     {
@@ -491,15 +493,35 @@ fn embedded_well_known_nat64_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
     ))
 }
 
-fn truncate_chars(value: &str, max_chars: usize, marker: &str) -> String {
-    if value.chars().count() <= max_chars {
+/// Which end of a value survives when it is bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Keep {
+    /// Keep the start and drop everything after it.
+    Head,
+    /// Keep both ends and drop the middle.
+    Ends,
+}
+
+/// Bound `value` to `max_chars`, standing `marker` in for what it drops.
+///
+/// Char counts, not byte counts: every caller here bounds text that may hold
+/// multi-byte characters, and a byte cut would split them.
+pub(crate) fn bounded_chars(value: &str, max_chars: usize, marker: &str, keep: Keep) -> String {
+    let total = value.chars().count();
+    if total <= max_chars {
         return value.to_string();
     }
-    let marker_chars = marker.chars().count();
-    let keep = max_chars.saturating_sub(marker_chars);
-    let mut truncated = value.chars().take(keep).collect::<String>();
-    truncated.push_str(marker);
-    truncated
+    let budget = max_chars.saturating_sub(marker.chars().count());
+    let head_chars = match keep {
+        Keep::Head => budget,
+        Keep::Ends => budget / 2,
+    };
+    let head = value.chars().take(head_chars).collect::<String>();
+    let tail = value
+        .chars()
+        .skip(total - (budget - head_chars))
+        .collect::<String>();
+    format!("{head}{marker}{tail}")
 }
 
 /// Truncate Markdown that the backend already sanitized without cutting away
@@ -553,10 +575,11 @@ pub(crate) fn bound_open_url_tool_error(error: String) -> String {
 }
 
 fn bound_web_tool_error(error: String, final_output_limit: usize) -> String {
-    truncate_chars(
+    bounded_chars(
         &error,
         final_output_limit.saturating_sub(TOOL_ERROR_PREFIX_CHARS),
         WEB_TOOL_ERROR_TRUNCATION_MARKER,
+        Keep::Head,
     )
 }
 

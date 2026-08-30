@@ -44,6 +44,7 @@ use std::os::unix::fs::PermissionsExt as _;
 
 const MAX_ACP_CONNECTIONS: usize = 8;
 const MAX_ACP_ERROR_CHARS: usize = 500;
+const MAX_ACP_TOOL_TEXT_CHARS: usize = 16_000;
 const MAX_ACP_FRAME_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ACP_OUTBOUND_EVENTS_IN_FLIGHT: usize = 256;
 const MAX_ACP_OUTBOUND_BYTES_IN_FLIGHT: usize = 4 * 1024 * 1024;
@@ -242,7 +243,7 @@ pub async fn serve_stdio(agent: AgentRuntimeHandle, config: AgentAcpConfig) -> R
         })
         .connect_to(Lines::new(outgoing, incoming));
     let result = tokio::select! {
-        result = serving => result.map_err(|error| bounded_error(&error.to_string())),
+        result = serving => result.map_err(|error| bounded_chars(&error.to_string(), MAX_ACP_ERROR_CHARS)),
         _ = peer_eof.cancelled() => Ok(()),
     };
     context.cleanup().await;
@@ -3069,7 +3070,7 @@ fn timeline_tool_text(item: &AgentTimelineItem) -> Option<String> {
     } else {
         item.text.clone().or_else(output_text)
     };
-    text.map(|text| text.chars().take(16_000).collect())
+    text.map(|text| bounded_chars(&text, MAX_ACP_TOOL_TEXT_CHARS))
 }
 
 fn tool_path(value: &serde_json::Value) -> Option<&str> {
@@ -3094,7 +3095,7 @@ fn timeline_tool_raw_output(item: &AgentTimelineItem) -> Option<serde_json::Valu
             output
                 .get("text")
                 .and_then(serde_json::Value::as_str)
-                .map(|text| text.chars().take(MAX_ACP_ERROR_CHARS).collect::<String>())
+                .map(|text| bounded_chars(text, MAX_ACP_ERROR_CHARS))
         })
         .flatten()
         .filter(|message| !message.trim().is_empty());
@@ -3122,7 +3123,9 @@ fn bounded_raw_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 fn event_error_text(item: &AgentTimelineItem) -> Option<String> {
-    item.text.clone().map(|message| bounded_error(&message))
+    item.text
+        .clone()
+        .map(|message| bounded_chars(&message, MAX_ACP_ERROR_CHARS))
 }
 
 async fn wait_for_retained_terminal(
@@ -3154,11 +3157,12 @@ fn prompt_result_from_terminal(
 }
 
 fn internal_acp_error(error: String) -> agent_client_protocol::Error {
-    agent_client_protocol::Error::internal_error().data(bounded_error(&error))
+    agent_client_protocol::Error::internal_error().data(bounded_chars(&error, MAX_ACP_ERROR_CHARS))
 }
 
-fn bounded_error(error: &str) -> String {
-    error.chars().take(MAX_ACP_ERROR_CHARS).collect()
+/// Bound untrusted text to `max_chars` before it crosses the ACP wire.
+fn bounded_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 #[cfg(test)]
