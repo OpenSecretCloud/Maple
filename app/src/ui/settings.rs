@@ -14,6 +14,7 @@ use crate::ui::text_input::TextInput;
 use crate::backend::AgentBackend;
 use crate::settings::{self, AppSettings, UsageSummary};
 use crate::ui::theme;
+use crate::ui::widgets;
 
 /// Emitted when the user leaves settings.
 pub struct SettingsClosed(pub AppSettings);
@@ -495,18 +496,7 @@ impl Render for SettingsScreen {
                     .border_b_1()
                     .border_color(gpui::rgb(theme::border()))
                     .child(
-                        div()
-                            .id("settings-back")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_secondary()))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::text_primary()))
-                                    .cursor_pointer()
-                            })
+                        widgets::ghost_button("settings-back")
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.close(cx);
                             }))
@@ -849,22 +839,11 @@ impl SettingsScreen {
                 .justify_between()
                 .child(section_title("MCP servers"))
                 .child(
-                    div()
-                        .id("mcp-add")
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .px_3()
-                        .py_1p5()
-                        .rounded_md()
-                        .bg(gpui::rgb(theme::accent()))
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::bg_app()))
-                        .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
+                    widgets::primary_button("mcp-add")
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.open_mcp_editor(None, cx);
                         }))
-                        .child(icon("plus", px(14.), theme::bg_app()))
+                        .child(icon("plus", widgets::ROW_ICON, theme::bg_app()))
                         .child("Add server"),
                 ),
         );
@@ -878,16 +857,7 @@ impl SettingsScreen {
                 ),
         );
         if let Some(notice) = &self.mcp_notice {
-            pane = pane.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(gpui::rgb(theme::status_warning()))
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::bg_app()))
-                    .child(notice.clone()),
-            );
+            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
         }
         if let Some(editor) = &self.mcp_editor {
             pane = pane.child(self.render_mcp_editor(editor, cx));
@@ -915,16 +885,10 @@ impl SettingsScreen {
                         AgentMcpTransport::Stdio { command, .. } => format!("STDIO · {command}"),
                         AgentMcpTransport::StreamableHttp { url, .. } => format!("HTTP · {url}"),
                     };
-                    div()
+                    widgets::card_row()
                         .flex()
                         .items_center()
                         .gap_3()
-                        .px_4()
-                        .py_3()
-                        .rounded_lg()
-                        .bg(gpui::rgb(theme::bg_elevated()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border_subtle()))
                         .child(
                             div()
                                 .flex_1()
@@ -969,43 +933,27 @@ impl SettingsScreen {
                             }),
                         ))
                         .child(
-                            div()
-                                .id(gpui::SharedString::from(format!("mcp-edit-{name}")))
-                                .size_7()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_md()
-                                .hover(|style| {
-                                    style
-                                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                        .cursor_pointer()
-                                })
-                                .on_click(cx.listener({
-                                    let name = name.clone();
-                                    move |this, _event, _window, cx| this.edit_mcp_server(&name, cx)
-                                }))
-                                .child(icon("pencil", px(14.), theme::text_secondary())),
+                            widgets::icon_button(
+                                gpui::SharedString::from(format!("mcp-edit-{name}")),
+                                "pencil",
+                                widgets::ROW_ICON,
+                                theme::text_secondary(),
+                            )
+                            .on_click(cx.listener({
+                                let name = name.clone();
+                                move |this, _event, _window, cx| this.edit_mcp_server(&name, cx)
+                            })),
                         )
                         .child(
-                            div()
-                                .id(gpui::SharedString::from(format!("mcp-remove-{name}")))
-                                .size_7()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_md()
-                                .hover(|style| {
-                                    style
-                                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                        .cursor_pointer()
-                                })
-                                .on_click(cx.listener({
-                                    move |this, _event, _window, cx| {
-                                        this.remove_mcp_server(&name, cx)
-                                    }
-                                }))
-                                .child(icon("trash-2", px(14.), theme::status_error())),
+                            widgets::icon_button(
+                                gpui::SharedString::from(format!("mcp-remove-{name}")),
+                                "trash-2",
+                                widgets::ROW_ICON,
+                                theme::status_error(),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _event, _window, cx| this.remove_mcp_server(&name, cx),
+                            )),
                         )
                 }));
             }
@@ -1026,18 +974,7 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_secondary()))
                         .child(label),
                 )
-                .child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .bg(gpui::rgb(theme::bg_input()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .child(input),
-                )
+                .child(widgets::input_frame().text_sm().child(input))
                 .when(!hint.is_empty(), |col| {
                     col.child(
                         div()
@@ -1161,36 +1098,15 @@ impl SettingsScreen {
                     .gap_2()
                     .pt_1()
                     .child(
-                        div()
-                            .id("mcp-save")
-                            .px_3()
-                            .py_1p5()
-                            .rounded_md()
-                            .bg(gpui::rgb(theme::accent()))
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::bg_app()))
+                        widgets::primary_button("mcp-save")
                             .when(self.mcp_saving, |el| el.opacity(0.5))
-                            .hover(|style| {
-                                style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer()
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.submit_mcp_editor(cx);
                             }))
                             .child("Save"),
                     )
                     .child(
-                        div()
-                            .id("mcp-cancel")
-                            .px_3()
-                            .py_1p5()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_secondary()))
-                            .hover(|style| {
-                                style
-                                    .text_color(gpui::rgb(theme::text_primary()))
-                                    .cursor_pointer()
-                            })
+                        widgets::ghost_button("mcp-cancel")
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.mcp_editor = None;
                                 this.mcp_notice = None;
@@ -1336,7 +1252,7 @@ fn setting_row(
     value: &str,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
-    div()
+    widgets::card_row()
         .id(gpui::SharedString::from(format!(
             "setting-{}",
             title.to_lowercase()
@@ -1345,11 +1261,6 @@ fn setting_row(
         .items_center()
         .justify_between()
         .gap_4()
-        .p_4()
-        .rounded_lg()
-        .bg(gpui::rgb(theme::bg_elevated()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
         .child(
             div()
                 .flex()
@@ -1390,16 +1301,11 @@ fn setting_row(
 }
 
 fn info_row(label: &str, value: String) -> Div {
-    div()
+    widgets::card_row()
         .flex()
         .items_center()
         .justify_between()
         .gap_4()
-        .p_4()
-        .rounded_lg()
-        .bg(gpui::rgb(theme::bg_elevated()))
-        .border_1()
-        .border_color(gpui::rgb(theme::border_subtle()))
         .child(
             div()
                 .text_sm()

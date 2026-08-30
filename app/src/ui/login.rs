@@ -8,6 +8,7 @@ use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, 
 use crate::backend::{AgentBackend, OAuthProvider};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::widgets;
 
 /// Emitted after the backend validated the credentials. Only the account id
 /// crosses the event boundary; the token snapshot stays inside the backend.
@@ -384,12 +385,7 @@ impl Render for LoginScreen {
         }
 
         if let Some(message) = self.error.clone() {
-            card = card.child(
-                div()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::status_error()))
-                    .child(message),
-            );
+            card = card.child(widgets::banner(theme::status_error()).child(message));
         }
 
         div()
@@ -445,15 +441,5 @@ fn field(label: &str, input: Entity<TextInput>) -> Div {
                 .child(label.to_string()),
         );
     }
-    container.child(
-        div()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(gpui::rgb(theme::bg_input()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .text_color(gpui::rgb(theme::text_primary()))
-            .child(input),
-    )
+    container.child(widgets::input_frame().child(input))
 }

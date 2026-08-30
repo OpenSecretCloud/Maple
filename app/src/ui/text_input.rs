@@ -3,7 +3,7 @@
 //! form submit and composer send, and an optional multi-line mode that wraps
 //! text and grows with its content (Shift+Enter inserts a newline).
 
-use super::{spell, theme};
+use super::{spell, theme, widgets};
 use std::ops::Range;
 
 use gpui::{
@@ -474,44 +474,24 @@ impl TextInput {
                         let range = range.clone();
                         let replacement = suggestion.clone();
                         let label = SharedString::from(suggestion.clone());
-                        div()
-                            .id(ElementId::NamedInteger(
-                                "text-input-suggest".into(),
-                                i as u64,
-                            ))
-                            .px_3()
-                            .py_1p5()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                    .cursor_pointer()
-                            })
-                            .on_click(cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                this.context_menu = None;
-                                this.spell_menu = None;
-                                this.apply_suggestion(range.clone(), &replacement, cx);
-                            }))
-                            .child(label)
+                        widgets::menu_row(
+                            ElementId::NamedInteger("text-input-suggest".into(), i as u64),
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            this.context_menu = None;
+                            this.spell_menu = None;
+                            this.apply_suggestion(range.clone(), &replacement, cx);
+                        }))
+                        .child(label)
                     })
                     .collect()
             })
             .unwrap_or_default();
         let add_word = self.spell_menu.as_ref().map(|(range, _)| {
             let range = range.clone();
-            div()
-                .id("text-input-add-word")
-                .px_3()
-                .py_1p5()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_primary()))
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
-                })
+            widgets::menu_row("text-input-add-word", true)
                 .on_click(cx.listener(move |this, _event, _window, cx| {
                     cx.stop_propagation();
                     this.context_menu = None;
@@ -529,23 +509,9 @@ impl TextInput {
                     label: &'static str,
                     enabled: bool,
                     action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
-            div()
-                .id(id)
-                .px_3()
-                .py_1p5()
-                .text_sm()
-                .text_color(gpui::rgb(if enabled {
-                    theme::text_primary()
-                } else {
-                    theme::text_muted()
-                }))
+            widgets::menu_row(id, enabled)
                 .when(enabled, |item| {
-                    item.hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
-                    .on_click(cx.listener(move |this, _event, window, cx| {
+                    item.on_click(cx.listener(move |this, _event, window, cx| {
                         cx.stop_propagation();
                         this.context_menu = None;
                         action(this, window, cx);
@@ -559,18 +525,7 @@ impl TextInput {
                 .position(position)
                 .snap_to_window_with_margin(px(8.))
                 .child(
-                    div()
-                        .id("text-input-menu")
-                        .occlude()
-                        .w(px(140.))
-                        .py_1()
-                        .rounded_md()
-                        .bg(gpui::rgb(theme::bg_elevated()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .shadow_md()
-                        .flex()
-                        .flex_col()
+                    widgets::popup_panel("text-input-menu", px(140.))
                         .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
                             this.context_menu = None;
                             this.spell_menu = None;
