@@ -1,12 +1,18 @@
 import { createFileRoute, useNavigate, useRouter, Link } from "@tanstack/react-router";
-import { useEffect, useState, useRef } from "react";
-import { useOpenSecret } from "@opensecret/react";
+import { useCallback, useEffect, useState, useRef } from "react";
+import { exportTransportV2AuthBundle, useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  buildTransportV2NativeAuthDeepLink,
+  clearDesktopOAuthTransport,
+  isNativeOAuthRedirect,
+  readTransportV2DesktopOAuthAttempt
+} from "@/services/desktopOAuthTransport";
 
 export const Route = createFileRoute("/auth/$provider/callback")({
   component: OAuthCallback
@@ -36,22 +42,19 @@ function OAuthCallback() {
   const processedRef = useRef(false);
 
   // Helper functions for the callback process
-  const handleSuccessfulAuth = () => {
+  const handleSuccessfulAuth = useCallback(async () => {
     // Check if this is a Tauri app auth flow (desktop or mobile)
-    const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
-
-    // Clear the flag
-    localStorage.removeItem("redirect-to-native");
+    const isTauriAuth = isNativeOAuthRedirect();
 
     if (isTauriAuth) {
-      // Handle Tauri redirect
-      const accessToken = localStorage.getItem("access_token") || "";
-      const refreshToken = localStorage.getItem("refresh_token");
-
-      let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
-
-      if (refreshToken) {
-        deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+      // Export one opaque, origin-bound handoff. Neither the hosted bridge nor
+      // Maple needs to inspect the credential or cache-root fields it contains.
+      const authBundle = await exportTransportV2AuthBundle(
+        import.meta.env.VITE_OPEN_SECRET_API_URL
+      );
+      const nativeOAuthAttemptId = readTransportV2DesktopOAuthAttempt();
+      if (!nativeOAuthAttemptId) {
+        throw new Error("Desktop authentication state is missing or expired; please restart login");
       }
 
       const selectedPlan = sessionStorage.getItem("selected_plan");
@@ -60,9 +63,12 @@ function OAuthCallback() {
       sessionStorage.removeItem("post_auth_redirect");
       const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
-      if (!selectedPlan && safePostAuthRedirect) {
-        deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
-      }
+      const deepLinkUrl = buildTransportV2NativeAuthDeepLink(
+        authBundle,
+        nativeOAuthAttemptId,
+        !selectedPlan ? safePostAuthRedirect : null
+      );
+      clearDesktopOAuthTransport();
 
       // Store the URL in state so we can show a manual open button as fallback
       setNativeRedirectUrl(deepLinkUrl);
@@ -95,7 +101,7 @@ function OAuthCallback() {
         navigate({ to: "/" });
       }
     }, 2000);
-  };
+  }, [navigate, router]);
 
   const handleAuthError = (error: unknown) => {
     console.error(`Authentication callback error:`, error);
@@ -159,7 +165,7 @@ function OAuthCallback() {
           }
 
           // Handle the successful authentication (redirect)
-          handleSuccessfulAuth();
+          await handleSuccessfulAuth();
         } catch (error) {
           // Handle authentication error
           handleAuthError(error);
@@ -173,7 +179,13 @@ function OAuthCallback() {
     };
 
     processCallback();
-  }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider, router]);
+  }, [
+    handleAppleCallback,
+    handleGitHubCallback,
+    handleGoogleCallback,
+    handleSuccessfulAuth,
+    provider
+  ]);
 
   // After auth completes for a native app flow, show a button to open the app
   if (nativeRedirectUrl) {
@@ -195,7 +207,7 @@ function OAuthCallback() {
   }
 
   // If this is a Tauri app auth flow (desktop or mobile), show processing UI
-  if (localStorage.getItem("redirect-to-native") === "true") {
+  if (isNativeOAuthRedirect()) {
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>

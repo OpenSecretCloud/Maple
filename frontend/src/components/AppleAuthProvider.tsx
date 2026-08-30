@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { useOpenSecret } from "@opensecret/react";
+import { exportTransportV2AuthBundle, useOpenSecret } from "@opensecret/react";
 import { v4 as uuidv4 } from "uuid";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -7,6 +7,12 @@ import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
 import { getBillingService } from "@/billing/billingService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  buildTransportV2NativeAuthDeepLink,
+  clearDesktopOAuthTransport,
+  isNativeOAuthRedirect,
+  readTransportV2DesktopOAuthAttempt
+} from "@/services/desktopOAuthTransport";
 
 interface AppleAuthProviderProps {
   onSuccess?: () => void;
@@ -133,25 +139,26 @@ export function AppleAuthProvider({
       console.warn("Failed to clear billing token:", billingError);
     }
 
-    const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
+    const isTauriAuth = isNativeOAuthRedirect();
     if (isTauriAuth) {
-      localStorage.removeItem("redirect-to-native");
-
-      const accessToken = localStorage.getItem("access_token") || "";
-      const refreshToken = localStorage.getItem("refresh_token");
-      let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
-
-      if (refreshToken) {
-        deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+      const authBundle = await exportTransportV2AuthBundle(
+        import.meta.env.VITE_OPEN_SECRET_API_URL
+      );
+      const nativeOAuthAttemptId = readTransportV2DesktopOAuthAttempt();
+      if (!nativeOAuthAttemptId) {
+        throw new Error("Desktop authentication state is missing or expired; please restart login");
       }
 
       const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
       sessionStorage.removeItem("post_auth_redirect");
       const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
-      if (!selectedPlan && safePostAuthRedirect) {
-        deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
-      }
+      const deepLinkUrl = buildTransportV2NativeAuthDeepLink(
+        authBundle,
+        nativeOAuthAttemptId,
+        !selectedPlan ? safePostAuthRedirect : null
+      );
+      clearDesktopOAuthTransport();
 
       setTimeout(() => {
         window.location.href = deepLinkUrl;

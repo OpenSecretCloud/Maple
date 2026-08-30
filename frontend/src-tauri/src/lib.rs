@@ -234,7 +234,8 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
-    // OAuth callbacks carry bearer tokens in the query string, so never log the raw URL.
+    // Authentication callbacks carry opaque credentials in the query string,
+    // so never log the raw URL.
     log::info!("[Deep Link] Received callback");
     #[cfg(desktop)]
     reveal_main_window(app);

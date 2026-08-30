@@ -66,8 +66,10 @@ describe("native OAuth attempt authorization", () => {
 
     expect(secondAttemptId).not.toBe(firstAttemptId);
     cancelNativeOAuthAttempt(firstAttemptId);
-    expect(authorizeNativeOAuthCallback(false, 2_001)).toBe("accepted");
-    expect(authorizeNativeOAuthCallback(false, 2_001)).toBe("missing_or_expired_attempt");
+    expect(authorizeNativeOAuthCallback(false, secondAttemptId, 2_001)).toBe("accepted");
+    expect(authorizeNativeOAuthCallback(false, secondAttemptId, 2_001)).toBe(
+      "missing_or_expired_attempt"
+    );
   });
 
   test("canceling the current browser-open attempt removes its marker", () => {
@@ -75,38 +77,66 @@ describe("native OAuth attempt authorization", () => {
 
     cancelNativeOAuthAttempt(attemptId);
 
-    expect(authorizeNativeOAuthCallback(false, 1_001)).toBe("missing_or_expired_attempt");
+    expect(authorizeNativeOAuthCallback(false, attemptId, 1_001)).toBe(
+      "missing_or_expired_attempt"
+    );
   });
 
   test("rejects and clears an expired or future-dated marker", () => {
-    beginNativeOAuthAttempt(1_000);
+    const expiredAttemptId = beginNativeOAuthAttempt(1_000);
     expect(
-      authorizeNativeOAuthCallback(false, 1_000 + PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS + 1)
+      authorizeNativeOAuthCallback(
+        false,
+        expiredAttemptId,
+        1_000 + PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS + 1
+      )
     ).toBe("missing_or_expired_attempt");
 
-    beginNativeOAuthAttempt(2_000);
-    expect(authorizeNativeOAuthCallback(false, 1_999)).toBe("missing_or_expired_attempt");
-    expect(authorizeNativeOAuthCallback(false, 2_001)).toBe("missing_or_expired_attempt");
+    const futureAttemptId = beginNativeOAuthAttempt(2_000);
+    expect(authorizeNativeOAuthCallback(false, futureAttemptId, 1_999)).toBe(
+      "missing_or_expired_attempt"
+    );
+    expect(authorizeNativeOAuthCallback(false, futureAttemptId, 2_001)).toBe(
+      "missing_or_expired_attempt"
+    );
   });
 
   test("rejects a callback for an authenticated user and clears the marker", () => {
-    beginNativeOAuthAttempt(1_000);
+    const attemptId = beginNativeOAuthAttempt(1_000);
 
-    expect(authorizeNativeOAuthCallback(true, 1_001)).toBe("already_authenticated");
-    expect(authorizeNativeOAuthCallback(false, 1_001)).toBe("missing_or_expired_attempt");
+    expect(authorizeNativeOAuthCallback(true, attemptId, 1_001)).toBe("already_authenticated");
+    expect(authorizeNativeOAuthCallback(false, attemptId, 1_001)).toBe(
+      "missing_or_expired_attempt"
+    );
   });
 
   test("rejects an unsolicited callback without a marker", () => {
-    expect(authorizeNativeOAuthCallback(false, 1_000)).toBe("missing_or_expired_attempt");
+    expect(authorizeNativeOAuthCallback(false, "00000000-0000-4000-8000-000000000000", 1_000)).toBe(
+      "missing_or_expired_attempt"
+    );
+  });
+
+  test("requires an exact state match without consuming the genuine attempt", () => {
+    const attemptId = beginNativeOAuthAttempt(1_000);
+
+    expect(authorizeNativeOAuthCallback(false, "00000000-0000-4000-8000-000000000000", 1_001)).toBe(
+      "attempt_mismatch"
+    );
+    expect(authorizeNativeOAuthCallback(false, attemptId.toUpperCase(), 1_001)).toBe(
+      "attempt_mismatch"
+    );
+    expect(authorizeNativeOAuthCallback(false, attemptId, 1_001)).toBe("accepted");
   });
 
   test("rejects and removes malformed marker data", () => {
-    beginNativeOAuthAttempt(1_000);
+    const attemptId = beginNativeOAuthAttempt(1_000);
     const markerKey = storage.key(0);
     if (!markerKey) throw new Error("Expected the pending marker to be stored");
     storage.setItem(markerKey, "not-json");
 
-    expect(authorizeNativeOAuthCallback(false, 1_001)).toBe("missing_or_expired_attempt");
+    expect(authorizeNativeOAuthCallback(false, attemptId, 1_001)).toBe(
+      "missing_or_expired_attempt"
+    );
     expect(storage.getItem(markerKey)).toBeNull();
   });
 });

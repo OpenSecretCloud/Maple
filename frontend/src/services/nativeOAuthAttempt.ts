@@ -3,7 +3,8 @@ import { v4 as uuidv4 } from "uuid";
 const PENDING_NATIVE_OAUTH_ATTEMPT_KEY = "maple_pending_native_oauth_attempt_v1";
 export const PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS = 15 * 60 * 1000;
 
-// This is a local freshness marker, not provider OAuth state and not a secret.
+// This is native-to-hosted-browser handoff state, distinct from provider OAuth
+// state and not a credential. Keep it out of application logs nonetheless.
 interface PendingNativeOAuthAttempt {
   attemptId: string;
   startedAt: number;
@@ -12,7 +13,15 @@ interface PendingNativeOAuthAttempt {
 export type NativeOAuthCallbackAuthorization =
   | "accepted"
   | "already_authenticated"
+  | "attempt_mismatch"
   | "missing_or_expired_attempt";
+
+const NATIVE_OAUTH_ATTEMPT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function isNativeOAuthAttemptId(value: unknown): value is string {
+  return typeof value === "string" && NATIVE_OAUTH_ATTEMPT_ID_PATTERN.test(value);
+}
 
 function readPendingNativeOAuthAttempt(): PendingNativeOAuthAttempt | null {
   let encoded: string | null;
@@ -27,8 +36,7 @@ function readPendingNativeOAuthAttempt(): PendingNativeOAuthAttempt | null {
   try {
     const attempt = JSON.parse(encoded) as Partial<PendingNativeOAuthAttempt>;
     if (
-      typeof attempt.attemptId !== "string" ||
-      !attempt.attemptId ||
+      !isNativeOAuthAttemptId(attempt.attemptId) ||
       typeof attempt.startedAt !== "number" ||
       !Number.isSafeInteger(attempt.startedAt) ||
       attempt.startedAt < 0
@@ -76,6 +84,7 @@ export function cancelNativeOAuthAttempt(attemptId: string): void {
 
 export function authorizeNativeOAuthCallback(
   isAuthenticated: boolean,
+  callbackAttemptId: string,
   now = Date.now()
 ): NativeOAuthCallbackAuthorization {
   if (isAuthenticated) {
@@ -90,6 +99,13 @@ export function authorizeNativeOAuthCallback(
   if (!Number.isSafeInteger(now) || age < 0 || age > PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS) {
     removePendingNativeOAuthAttempt(attempt.attemptId);
     return "missing_or_expired_attempt";
+  }
+
+  // Native handoff state values are compared exactly. A mismatch rejects this callback
+  // without consuming the genuine pending attempt, so an unrelated deep link
+  // cannot turn account confusion into a denial of the user's real callback.
+  if (!isNativeOAuthAttemptId(callbackAttemptId) || callbackAttemptId !== attempt.attemptId) {
+    return "attempt_mismatch";
   }
 
   if (!removePendingNativeOAuthAttempt(attempt.attemptId)) {

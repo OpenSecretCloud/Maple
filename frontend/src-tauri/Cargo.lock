@@ -4766,7 +4766,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5583,7 +5583,7 @@ dependencies = [
 
 [[package]]
 name = "opensecret"
-version = "3.6.2"
+version = "4.0.0"
 dependencies = [
  "aes-gcm",
  "anyhow",

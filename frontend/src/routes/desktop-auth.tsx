@@ -5,10 +5,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  claimTransportV2DesktopOAuthInitiation,
+  markTransportV2DesktopOAuth
+} from "@/services/desktopOAuthTransport";
+import { isNativeOAuthAttemptId } from "@/services/nativeOAuthAttempt";
 
 // Define the search parameters interface
 interface DesktopAuthSearchParams {
   provider: string;
+  transport: "v2";
+  native_oauth_attempt: string;
   selected_plan?: string;
   next?: string;
 }
@@ -22,8 +29,16 @@ export const Route = createFileRoute("/desktop-auth")({
     if (provider !== "github" && provider !== "google" && provider !== "apple") {
       throw new Error(`Unsupported provider: ${provider}`);
     }
+    if (search.transport !== "v2") {
+      throw new Error("Unsupported desktop authentication transport");
+    }
+    if (!isNativeOAuthAttemptId(search.native_oauth_attempt)) {
+      throw new Error("Desktop authentication state is missing or invalid");
+    }
     return {
       provider,
+      transport: "v2",
+      native_oauth_attempt: search.native_oauth_attempt,
       selected_plan: typeof search.selected_plan === "string" ? search.selected_plan : undefined,
       next: getSafeInternalRedirect(search.next)
     };
@@ -33,15 +48,16 @@ export const Route = createFileRoute("/desktop-auth")({
 function DesktopAuth() {
   // Use the typed search params
   const search = Route.useSearch();
-  const { provider, selected_plan, next } = search;
+  const { provider, selected_plan, next, native_oauth_attempt } = search;
   const navigate = useNavigate();
   const os = useOpenSecret();
 
   useEffect(() => {
     const initiateAuth = async () => {
       try {
-        // Store the flag to indicate this is a Tauri app auth flow (desktop or mobile)
-        localStorage.setItem("redirect-to-native", "true");
+        // Preserve the v2 transport marker and native handoff state across the
+        // provider's full-page redirect in this browser tab.
+        markTransportV2DesktopOAuth(native_oauth_attempt);
 
         // Store selected plan if present
         sessionStorage.removeItem("selected_plan");
@@ -57,6 +73,13 @@ function DesktopAuth() {
         // For Apple, we don't need to do anything here - the AppleAuthProvider
         // component will handle the authentication flow with popup
         if (provider === "apple") {
+          return;
+        }
+
+        // React context replacement, StrictMode, or a route remount may rerun
+        // this effect. The hosted tab may initiate a given native attempt only
+        // once; a retry starts from Maple and therefore receives new state.
+        if (!claimTransportV2DesktopOAuthInitiation(native_oauth_attempt)) {
           return;
         }
 
@@ -82,7 +105,7 @@ function DesktopAuth() {
     };
 
     initiateAuth();
-  }, [os, provider, selected_plan, next, navigate]);
+  }, [os, provider, selected_plan, next, native_oauth_attempt, navigate]);
 
   // Special handling for Apple OAuth - use popup instead of redirect
   if (provider === "apple") {
