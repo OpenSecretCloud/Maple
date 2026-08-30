@@ -382,11 +382,10 @@ impl SettingsScreen {
     }
 
     fn toggle_permission_default(&mut self, cx: &mut Context<Self>) {
-        let next = if self.settings.default_permission_mode == "auto" {
-            "smart_approve".to_string()
-        } else {
-            "auto".to_string()
-        };
+        let next = settings::PermissionMode::parse(&self.settings.default_permission_mode)
+            .next()
+            .as_str()
+            .to_string();
         self.edit_setting(move |settings| settings.default_permission_mode = next, cx);
     }
 
@@ -600,19 +599,18 @@ impl SettingsScreen {
             Section::General => {
                 pane = pane
                     .child(section_title("Defaults"))
-                    .child(setting_row(
-                        "Bypass permission prompts by default",
-                        "New sessions approve every tool call without asking. \
-                         Each session can still switch modes from its composer.",
-                        if self.settings.default_permission_mode == "auto" {
-                            "On"
-                        } else {
-                            "Off"
-                        },
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_permission_default(cx);
-                        }),
-                    ))
+                    .child({
+                        let mode =
+                            settings::PermissionMode::parse(&self.settings.default_permission_mode);
+                        setting_row(
+                            "Default permission mode",
+                            mode.note(),
+                            mode.label(),
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_permission_default(cx);
+                            }),
+                        )
+                    })
                     .child(setting_row(
                         "New tasks can use the web",
                         "Offers web_search and open_url to the model. Each task can \

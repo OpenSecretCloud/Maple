@@ -10,8 +10,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppSettings {
-    /// Default permission policy for new sessions: "smart_approve" or
-    /// "auto" (bypass).
+    /// Default permission policy for new sessions; see [`PermissionMode`].
     #[serde(default = "default_permission_mode")]
     pub default_permission_mode: String,
     /// Whether tool cards show input/output payloads by default.
@@ -98,6 +97,75 @@ fn default_tts_speed() -> f32 {
     DEFAULT_TTS_SPEED
 }
 
+/// Permission policy for a session: whether a gated tool call needs a
+/// decision from the user. Modelled on [`crate::ui::theme::Preference`],
+/// including the same infallible `parse` so an unknown value on disk
+/// degrades to the safer mode instead of failing the whole settings load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    /// Confirm each gated tool call.
+    #[default]
+    SmartApprove,
+    /// Approve every tool call without asking.
+    Auto,
+}
+
+impl PermissionMode {
+    /// Anything unknown reads as the safer mode.
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "auto" => Self::Auto,
+            _ => Self::SmartApprove,
+        }
+    }
+
+    /// The value written to disk and handed to the agent runtime.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SmartApprove => "smart_approve",
+            Self::Auto => "auto",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SmartApprove => "Ask first",
+            Self::Auto => "Allow all",
+        }
+    }
+
+    /// One line of explanation under the label.
+    pub fn note(self) -> &'static str {
+        match self {
+            Self::SmartApprove => "Confirm each gated tool call",
+            Self::Auto => "Approve every tool call without asking",
+        }
+    }
+
+    /// The next choice in the settings cycle.
+    pub fn next(self) -> Self {
+        match self {
+            Self::SmartApprove => Self::Auto,
+            Self::Auto => Self::SmartApprove,
+        }
+    }
+}
+
+// Serialized as the bare string it has always been, so settings.json and
+// the runtime's mode field keep their format.
+impl serde::Serialize for PermissionMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PermissionMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self::parse(&value))
+    }
+}
+
 /// Persisted window geometry. Position is left to the window manager:
 /// Wayland does not expose it, and a stale position can open the window
 /// off-screen after a monitor change.
@@ -149,7 +217,7 @@ fn default_web_enabled() -> bool {
 }
 
 fn default_permission_mode() -> String {
-    "smart_approve".to_string()
+    PermissionMode::default().as_str().to_string()
 }
 
 fn default_tool_details() -> bool {
@@ -377,4 +445,39 @@ pub fn load_usage(account_scope: &str) -> UsageSummary {
     }
 
     summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_mode_round_trips_as_a_string() {
+        for mode in [PermissionMode::SmartApprove, PermissionMode::Auto] {
+            let json = serde_json::to_string(&mode).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", mode.as_str()));
+            let back: PermissionMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, mode);
+        }
+    }
+
+    #[test]
+    fn unknown_permission_mode_reads_as_the_safer_one() {
+        assert_eq!(PermissionMode::parse("chat"), PermissionMode::SmartApprove);
+        assert_eq!(PermissionMode::parse(""), PermissionMode::SmartApprove);
+        assert_eq!(PermissionMode::default(), PermissionMode::SmartApprove);
+    }
+
+    #[test]
+    fn permission_mode_cycles_between_both_choices() {
+        let start = PermissionMode::default();
+        assert_eq!(start.next(), PermissionMode::Auto);
+        assert_eq!(start.next().next(), start);
+    }
+
+    #[test]
+    fn default_settings_keep_the_on_disk_permission_string() {
+        let json = serde_json::to_value(AppSettings::default()).expect("serialize");
+        assert_eq!(json["default_permission_mode"], "smart_approve");
+    }
 }
