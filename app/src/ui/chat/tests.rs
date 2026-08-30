@@ -1,6 +1,7 @@
 //! Tests for the chat screen.
 
 mod state_tests {
+    use crate::ui::chat::cache::ORDINAL_SPACING;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
