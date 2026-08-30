@@ -116,6 +116,14 @@ export {
 // Export AI customization options
 export { createCustomFetch, type CustomFetchOptions } from "./ai";
 
+// Opaque user-auth handoff for trusted native bridges. The bundle is bound to
+// the exact configured API URL and intentionally exposes no session keys.
+export {
+  exportTransportV2AuthBundle,
+  importTransportV2AuthBundle,
+  type TransportV2SessionInfo
+} from "./transportV2/publicAuth";
+
 // Re-export Model type from OpenAI for convenience
 export type { Model } from "openai/resources/models.js";
 

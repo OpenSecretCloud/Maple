@@ -268,6 +268,20 @@ async function fakeAuthenticate(
   return zodParsed;
 }
 
+/** @internal Verifies one already-fetched attestation document for its exact endpoint mode. */
+export async function verifyAttestationDocument(
+  attestationDocumentBase64: string,
+  nonce: string,
+  apiUrl: string
+): Promise<AttestationDocument> {
+  if (isLocalDevelopmentApiUrl(apiUrl)) {
+    console.log("DEV MODE: Using fake attestation document");
+    const fakeDocument = await fakeAuthenticate(attestationDocumentBase64);
+    return fakeDocument as AttestationDocument;
+  }
+  return authenticate(attestationDocumentBase64, awsRootCertDer, nonce);
+}
+
 export async function verifyAttestation(
   nonce: string,
   explicitApiUrl?: string
@@ -279,16 +293,8 @@ export async function verifyAttestation(
     // First check explicit URL, then check both possible APIs
     const apiUrl = explicitApiUrl || getApiUrl();
 
-    // With a local backend we get a fake attestation document, so we'll just pretend to authenticate it
-    if (apiUrl && isLocalDevelopmentApiUrl(apiUrl)) {
-      console.log("DEV MODE: Using fake attestation document");
-      const fakeDocument = await fakeAuthenticate(attestationDocumentBase64);
-      return fakeDocument as AttestationDocument;
-    }
-
-    // The real thing!
-    const verifiedDocument = await authenticate(attestationDocumentBase64, awsRootCertDer, nonce);
-    return verifiedDocument;
+    if (!apiUrl) throw new Error("Attestation requires a configured API URL.");
+    return verifyAttestationDocument(attestationDocumentBase64, nonce, apiUrl);
   } catch (error) {
     if (error instanceof Error) {
       console.error("Error verifying attestation document:", error);

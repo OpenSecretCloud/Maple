@@ -2,6 +2,7 @@ use std::fmt;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+#[cfg(test)]
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
@@ -12,7 +13,10 @@ use super::{Result, TransportV2Error};
 const KIB: usize = 1024;
 const MIB: usize = 1024 * 1024;
 
-pub(super) const MAX_OUTER_REQUEST_BYTES: usize = 50 * MIB;
+// The raw AEAD carrier is one ChaCha20-Poly1305 record: the encrypted JSON
+// envelope plus a 12-byte nonce and 16-byte authentication tag.
+pub(super) const MAX_OUTER_REQUEST_BYTES: usize = 67 * MIB + 28;
+pub(super) const MAX_OUTER_RESPONSE_BYTES: usize = 50 * MIB + 28;
 pub(super) const MAX_KEY_EXCHANGE_BYTES: usize = 4 * KIB;
 pub(super) const MAX_STREAM_CHUNK_BYTES: usize = 64 * KIB;
 pub(super) const MAX_STREAM_ERROR_BYTES: usize = 16 * KIB;
@@ -44,6 +48,18 @@ pub(super) struct EnvelopeLimits {
 
 impl EnvelopeLimits {
     pub(super) const DEFAULT: Self = Self {
+        envelope_bytes: 67 * MIB,
+        logical_body_bytes: 50 * MIB,
+        path_bytes: 4096,
+        query_bytes: 8192,
+        header_count: 64,
+        header_name_bytes: 128,
+        header_value_bytes: 16 * KIB,
+        aggregate_header_bytes: 64 * KIB,
+        credential_bytes: 16 * KIB,
+    };
+
+    pub(super) const RESPONSE: Self = Self {
         envelope_bytes: 50 * MIB,
         logical_body_bytes: 28 * MIB,
         path_bytes: 4096,
@@ -105,6 +121,7 @@ impl RequestId {
         Ok(Self(bytes))
     }
 
+    #[cfg(test)]
     pub(super) const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
@@ -188,7 +205,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 
 /// Exact bytes represented on the wire as padded standard base64.
 #[derive(Clone, Eq, PartialEq, Zeroize, ZeroizeOnDrop)]
-pub(super) struct EncodedBytes(Vec<u8>);
+pub(crate) struct EncodedBytes(Vec<u8>);
 
 impl EncodedBytes {
     pub(super) fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
@@ -207,6 +224,7 @@ impl EncodedBytes {
         self.0.len()
     }
 
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -268,23 +286,11 @@ impl<'de> Deserialize<'de> for EncodedBytes {
 
 /// Stable client-generated provider-cache namespace root.
 #[derive(Eq, PartialEq, Zeroize, ZeroizeOnDrop)]
-pub(super) struct CacheNamespaceRoot([u8; 32]);
+pub(crate) struct CacheNamespaceRoot([u8; 32]);
 
 impl CacheNamespaceRoot {
-    pub(super) fn random() -> Result<Self> {
-        let mut root = Self([0_u8; 32]);
-        OsRng
-            .try_fill_bytes(&mut root.0)
-            .map_err(|_| TransportV2Error::RandomnessUnavailable)?;
-        Ok(root)
-    }
-
-    pub(super) const fn from_bytes(bytes: [u8; 32]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
-    }
-
-    pub(super) const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
     }
 }
 
@@ -324,19 +330,19 @@ impl<'de> Deserialize<'de> for CacheNamespaceRoot {
 /// Authentication material permitted only during an anonymous transition.
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Credential {
+pub(crate) enum Credential {
     ApiKey { value_base64: EncodedBytes },
     Resumption { value_base64: EncodedBytes },
 }
 
 impl Credential {
-    pub(super) fn api_key(bytes: impl Into<Vec<u8>>) -> Self {
+    pub(crate) fn api_key(bytes: impl Into<Vec<u8>>) -> Self {
         Self::ApiKey {
             value_base64: EncodedBytes::from_bytes(bytes),
         }
     }
 
-    pub(super) fn resumption(bytes: impl Into<Vec<u8>>) -> Self {
+    pub(crate) fn resumption(bytes: impl Into<Vec<u8>>) -> Self {
         Self::Resumption {
             value_base64: EncodedBytes::from_bytes(bytes),
         }
@@ -351,14 +357,14 @@ impl Credential {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum ResponseMode {
+pub(crate) enum ResponseMode {
     Unary,
     Stream,
     Auto,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(super) enum LogicalMethod {
+pub(crate) enum LogicalMethod {
     #[serde(rename = "GET")]
     Get,
     #[serde(rename = "POST")]
@@ -371,27 +377,15 @@ pub(super) enum LogicalMethod {
     Delete,
 }
 
-impl LogicalMethod {
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Get => "GET",
-            Self::Post => "POST",
-            Self::Put => "PUT",
-            Self::Patch => "PATCH",
-            Self::Delete => "DELETE",
-        }
-    }
-}
-
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct HeaderField {
+pub(crate) struct HeaderField {
     pub(super) name: String,
     pub(super) value_base64: EncodedBytes,
 }
 
 impl HeaderField {
-    pub(super) fn new(name: impl Into<String>, value: impl Into<Vec<u8>>) -> Self {
+    pub(crate) fn new(name: impl Into<String>, value: impl Into<Vec<u8>>) -> Self {
         Self {
             name: name.into(),
             value_base64: EncodedBytes::from_bytes(value),
@@ -405,7 +399,7 @@ impl HeaderField {
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LogicalRequest {
+pub(crate) struct LogicalRequest {
     pub(super) method: LogicalMethod,
     pub(super) path: String,
     #[serde(deserialize_with = "deserialize_required_nullable")]
@@ -416,7 +410,7 @@ pub(super) struct LogicalRequest {
 }
 
 impl LogicalRequest {
-    pub(super) fn new(
+    pub(crate) fn new(
         method: LogicalMethod,
         path: impl Into<String>,
         query: Option<String>,
@@ -459,6 +453,7 @@ pub(super) struct RequestEnvelope {
 }
 
 impl RequestEnvelope {
+    #[cfg(test)]
     pub(super) fn from_json_slice(input: &[u8], limits: &EnvelopeLimits) -> Result<Self> {
         check_limit(input.len(), limits.envelope_bytes, "envelope")?;
         let envelope: Self =
@@ -610,25 +605,6 @@ impl StreamRecord {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct EncryptedOuterRecord {
-    pub(super) encrypted: EncodedBytes,
-}
-
-impl EncryptedOuterRecord {
-    pub(super) fn from_json_slice(input: &[u8], limit: usize) -> Result<Self> {
-        check_limit(input.len(), limit, "outer record")?;
-        serde_json::from_slice(input).map_err(|_| TransportV2Error::InvalidJson)
-    }
-
-    pub(super) fn to_json_vec(&self, limit: usize) -> Result<Vec<u8>> {
-        let encoded = serde_json::to_vec(self).map_err(|_| TransportV2Error::InvalidJson)?;
-        check_limit(encoded.len(), limit, "outer record")?;
-        Ok(encoded)
-    }
-}
-
 fn deserialize_required_nullable<'de, D, T>(
     deserializer: D,
 ) -> std::result::Result<Option<T>, D::Error>
@@ -721,6 +697,7 @@ fn validate_path(method: LogicalMethod, path: &str, limits: &EnvelopeLimits) -> 
 /// Encode one opaque UTF-8 final path segment exactly as the released Rust SDK
 /// does: ASCII alphanumeric bytes remain literal and every other byte becomes
 /// one uppercase `%HH` triplet.
+#[cfg(test)]
 pub(super) fn encode_canonical_opaque_path_segment(value: &str) -> String {
     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
 }
@@ -1118,9 +1095,4 @@ fn is_lowercase_http_token(byte: u8) -> bool {
                 | b'|'
                 | b'~'
         )
-}
-
-#[cfg(test)]
-pub(super) fn encode_canonical_base64(bytes: &[u8]) -> String {
-    STANDARD.encode(bytes)
 }

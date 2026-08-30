@@ -1,5 +1,7 @@
 import { encryptedApiCall, authenticatedApiCall } from "./encryptedApi";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
+import { readTransportV2Credentials } from "./transportV2/auth";
+import { transportV2Client } from "./transportV2/client";
 
 // Platform Auth Types
 export type PlatformLoginResponse = {
@@ -200,9 +202,9 @@ export async function platformLogout(refresh_token: string): Promise<void> {
  * Refreshes platform access and refresh tokens
  *
  * This function:
- * 1. Gets the refresh token from localStorage
- * 2. Calls the platform-specific refresh endpoint (/platform/refresh)
- * 3. Updates localStorage with the new tokens
+ * 1. Reads the origin-scoped transport v2 resumption descriptor
+ * 2. Establishes a fresh attested anonymous session
+ * 3. Presents the descriptor only inside the encrypted platform refresh request
  *
  * The platform refresh endpoint expects:
  * - A refresh token with audience "platform_refresh" in the request body
@@ -211,23 +213,26 @@ export async function platformLogout(refresh_token: string): Promise<void> {
  * It returns new access and refresh tokens if validation succeeds.
  */
 export async function platformRefreshToken(): Promise<PlatformRefreshResponse> {
-  const refresh_token = window.localStorage.getItem("refresh_token");
-  if (!refresh_token) throw new Error("No refresh token available");
-
-  const refreshData = { refresh_token };
+  if (!readTransportV2Credentials(platformApiUrl, "platform")) {
+    throw new Error("A fresh transport v2 platform sign-in is required.");
+  }
 
   try {
-    const response = await encryptedApiCall<typeof refreshData, PlatformRefreshResponse>(
-      `${platformApiUrl}/platform/refresh`,
-      "POST",
-      refreshData,
-      undefined,
-      "Failed to refresh platform token"
-    );
-
-    window.localStorage.setItem("access_token", response.access_token);
-    window.localStorage.setItem("refresh_token", response.refresh_token);
-    return response;
+    const response = await transportV2Client.refresh(platformApiUrl, "platform", platformPcrConfig);
+    const value = (await response.json()) as Partial<PlatformRefreshResponse> & {
+      message?: unknown;
+    };
+    if (!response.ok) {
+      throw new Error(
+        typeof value.message === "string"
+          ? value.message
+          : `Failed to refresh platform token: ${response.status}`
+      );
+    }
+    if (typeof value.access_token !== "string" || typeof value.refresh_token !== "string") {
+      throw new Error("Transport v2 platform refresh returned invalid credentials.");
+    }
+    return { access_token: value.access_token, refresh_token: value.refresh_token };
   } catch (error) {
     console.error("Error refreshing platform token:", error);
     throw error;

@@ -1,7 +1,4 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { decryptMessage, encryptMessage } from "../../encryption";
-import { cacheAttestationSessionForTesting } from "../../getAttestation";
-import type { PcrConfig } from "../../pcr";
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import {
   getPlatformApiUrl,
   getPlatformPcrConfig,
@@ -10,37 +7,62 @@ import {
   updatePushSettings,
   type PushSettings
 } from "../../platformApi";
+import type { PcrConfig } from "../../pcr";
+import { clearTransportV2Credentials, installTransportV2Credentials } from "../../transportV2/auth";
+import { transportV2Client, type TransportV2FetchInput } from "../../transportV2/client";
 
-const sessionKey = new Uint8Array(32).fill(7);
-const sessionId = "push-settings-session-id";
-const accessToken = "push-settings-access-token";
 const platformApiUrl = "https://platform.example.com";
-const verifiedPcr0 =
-  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
-const pcrConfig: PcrConfig = { pcr0Values: [verifiedPcr0], remoteAttestation: false };
-
-const originalFetch = globalThis.fetch;
+const pcrConfig: PcrConfig = { environment: "production", remoteAttestation: false };
 const originalPlatformApiUrl = getPlatformApiUrl();
 const originalPlatformPcrConfig = getPlatformPcrConfig();
 
-beforeEach(async () => {
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-  window.localStorage.setItem("access_token", accessToken);
+function platformToken(kind: "access_descriptor" | "resumption"): string {
+  const audience =
+    kind === "access_descriptor"
+      ? "urn:opensecret:internal:transport-v2:platform:access-descriptor"
+      : "urn:opensecret:internal:transport-v2:platform:resumption";
+  const payload = Buffer.from(
+    JSON.stringify({
+      iss: "urn:opensecret:transport-v2",
+      aud: audience,
+      tv: 2,
+      tk: kind,
+      pk: "platform",
+      sub: "platform-user-123",
+      exp: 2_000_000_000
+    })
+  ).toString("base64url");
+  return `e30.${payload}.c2ln`;
+}
+
+function expectPlatformRequest(input: TransportV2FetchInput, method: "GET" | "PUT"): void {
+  expect(input.url).toBe(
+    `${platformApiUrl}/platform/orgs/org-123/projects/project-456/settings/push`
+  );
+  expect(input.method).toBe(method);
+  expect(input.authority).toMatchObject({ kind: "platform", principalId: "platform-user-123" });
+  expect(input.authority).toHaveProperty("generation");
+  expect(new Headers(input.headers).has("authorization")).toBe(false);
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  sessionStorage.clear();
   setPlatformApiUrl(platformApiUrl, pcrConfig);
-  await cacheAttestationSessionForTesting(
+  installTransportV2Credentials(
     platformApiUrl,
-    pcrConfig,
-    { sessionKey, sessionId },
-    verifiedPcr0
+    "platform",
+    platformToken("access_descriptor"),
+    platformToken("resumption")
   );
 });
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
+  mock.restore();
+  clearTransportV2Credentials(platformApiUrl);
   setPlatformApiUrl(originalPlatformApiUrl, originalPlatformPcrConfig);
-  window.localStorage.clear();
-  window.sessionStorage.clear();
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
 test("getPushSettings calls the project push settings endpoint", async () => {
@@ -59,31 +81,14 @@ test("getPushSettings calls the project push settings endpoint", async () => {
       package_name: "ai.trymaple.android"
     }
   };
+  const fetch = spyOn(transportV2Client, "fetch").mockImplementation(async (input) => {
+    expectPlatformRequest(input, "GET");
+    expect(input.body).toBeNull();
+    return Response.json(responseSettings);
+  });
 
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(
-      `${platformApiUrl}/platform/orgs/org-123/projects/project-456/settings/push`
-    );
-    expect(init?.method).toBe("GET");
-    expect(init?.headers).toMatchObject({
-      Authorization: `Bearer ${accessToken}`,
-      "x-session-id": sessionId
-    });
-
-    return new Response(
-      JSON.stringify({
-        encrypted: encryptMessage(sessionKey, JSON.stringify(responseSettings))
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      }
-    );
-  }) as typeof fetch;
-
-  const settings = await getPushSettings("org-123", "project-456");
-
-  expect(settings).toEqual(responseSettings);
+  await expect(getPushSettings("org-123", "project-456")).resolves.toEqual(responseSettings);
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
 test("updatePushSettings sends encrypted push settings to the project endpoint", async () => {
@@ -102,35 +107,14 @@ test("updatePushSettings sends encrypted push settings to the project endpoint",
       package_name: "ai.trymaple.android"
     }
   };
+  const fetch = spyOn(transportV2Client, "fetch").mockImplementation(async (input) => {
+    expectPlatformRequest(input, "PUT");
+    expect(JSON.parse(new TextDecoder().decode(input.body!))).toEqual(requestSettings);
+    return Response.json(requestSettings);
+  });
 
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(
-      `${platformApiUrl}/platform/orgs/org-123/projects/project-456/settings/push`
-    );
-    expect(init?.method).toBe("PUT");
-    expect(init?.headers).toMatchObject({
-      Authorization: `Bearer ${accessToken}`,
-      "x-session-id": sessionId
-    });
-
-    const requestBody = JSON.parse(String(init?.body)) as { encrypted: string };
-    const decryptedRequest = JSON.parse(
-      decryptMessage(sessionKey, requestBody.encrypted)
-    ) as PushSettings;
-    expect(decryptedRequest).toEqual(requestSettings);
-
-    return new Response(
-      JSON.stringify({
-        encrypted: encryptMessage(sessionKey, JSON.stringify(requestSettings))
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      }
-    );
-  }) as typeof fetch;
-
-  const settings = await updatePushSettings("org-123", "project-456", requestSettings);
-
-  expect(settings).toEqual(requestSettings);
+  await expect(updatePushSettings("org-123", "project-456", requestSettings)).resolves.toEqual(
+    requestSettings
+  );
+  expect(fetch).toHaveBeenCalledTimes(1);
 });

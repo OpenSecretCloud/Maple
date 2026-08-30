@@ -1,132 +1,101 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { encryptMessage } from "../encryption";
-import { cacheAttestationSessionForTesting } from "../getAttestation";
-import type { PcrConfig } from "../pcr";
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
+import type { TransportV2FetchInput } from "../transportV2/client";
+import { transportV2Client } from "../transportV2/client";
+import { installTransportV2Credentials } from "../transportV2/auth";
 import { fetchModelCatalog, fetchModels, getApiPcrConfig, getApiUrl, setApiUrl } from "../api";
 
 const apiUrl = "https://models.example.com";
-const sessionId = "models-session-id";
-const sessionKey = new Uint8Array(32).fill(23);
-const verifiedPcr0 =
-  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
-const pcrConfig: PcrConfig = { pcr0Values: [verifiedPcr0], remoteAttestation: false };
 const modelsResponse = {
   object: "list" as const,
-  data: [
-    {
-      id: "test-model",
-      object: "model" as const,
-      created: 0,
-      owned_by: "opensecret"
-    }
-  ]
+  data: [{ id: "test-model", object: "model" as const, created: 0, owned_by: "opensecret" }]
 };
-
-const originalFetch = globalThis.fetch;
 const originalApiUrl = getApiUrl();
 const originalApiPcrConfig = getApiPcrConfig();
 
-beforeEach(async () => {
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-  setApiUrl(apiUrl, pcrConfig);
-  await cacheAttestationSessionForTesting(
-    apiUrl,
-    pcrConfig,
-    { sessionKey, sessionId },
-    verifiedPcr0
-  );
+function token(kind: "access_descriptor" | "resumption"): string {
+  const audience =
+    kind === "access_descriptor"
+      ? "urn:opensecret:internal:transport-v2:user:access-descriptor"
+      : "urn:opensecret:internal:transport-v2:user:resumption";
+  const payload = Buffer.from(
+    JSON.stringify({
+      iss: "urn:opensecret:transport-v2",
+      aud: audience,
+      tv: 2,
+      tk: kind,
+      pk: "user",
+      sub: "user-123",
+      exp: 2_000_000_000
+    })
+  ).toString("base64url");
+  return `e30.${payload}.c2ln`;
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+  setApiUrl(apiUrl, { environment: "development" });
 });
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
+  mock.restore();
   setApiUrl(originalApiUrl, originalApiPcrConfig);
-  window.localStorage.clear();
-  window.sessionStorage.clear();
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
-function encryptedModelsResponse() {
-  return new Response(
-    JSON.stringify({
-      encrypted: encryptMessage(sessionKey, JSON.stringify(modelsResponse))
-    }),
-    { status: 200, headers: { "Content-Type": "application/json" } }
-  );
+function successfulModels(input: TransportV2FetchInput): Promise<Response> {
+  expect(input.url).toBe(`${apiUrl}/v1/models`);
+  expect(input.method).toBe("GET");
+  expect(input.body).toBeNull();
+  return Promise.resolve(Response.json(modelsResponse));
 }
 
-test("fetchModels uses the encrypted session before sign-in", async () => {
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(`${apiUrl}/v1/models`);
-    expect(init?.method).toBe("GET");
-    expect(init?.body).toBeUndefined();
-
-    const headers = new Headers(init?.headers);
-    expect(headers.get("x-session-id")).toBe(sessionId);
-    expect(headers.has("Authorization")).toBe(false);
-
-    return encryptedModelsResponse();
-  }) as typeof fetch;
+test("fetchModels uses an anonymous v2 authority before sign-in", async () => {
+  const fetch = spyOn(transportV2Client, "fetch").mockImplementation(async (input) => {
+    expect(input.authority).toEqual({ kind: "anonymous", purpose: "public" });
+    return successfulModels(input);
+  });
 
   await expect(fetchModels()).resolves.toEqual(modelsResponse.data);
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test("fetchModels preserves stored JWT authentication", async () => {
-  window.localStorage.setItem("access_token", "models-access-token");
-
-  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-    const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer models-access-token");
-    expect(headers.get("x-session-id")).toBe(sessionId);
-    return encryptedModelsResponse();
-  }) as typeof fetch;
+test("fetchModels preserves a stored user authority without an outer token", async () => {
+  installTransportV2Credentials(apiUrl, "user", token("access_descriptor"), token("resumption"));
+  const fetch = spyOn(transportV2Client, "fetch").mockImplementation(async (input) => {
+    expect(input.authority).toMatchObject({ kind: "user", principalId: "user-123" });
+    expect(input.authority).toHaveProperty("generation");
+    expect(new Headers(input.headers).has("authorization")).toBe(false);
+    return successfulModels(input);
+  });
 
   await expect(fetchModels()).resolves.toEqual(modelsResponse.data);
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test("fetchModels never downgrades a rejected stored JWT to anonymous access", async () => {
-  let requestCount = 0;
-  window.localStorage.setItem("access_token", "rejected-access-token");
-
-  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-    requestCount += 1;
-    const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer rejected-access-token");
-
-    return Response.json({ message: "Invalid JWT" }, { status: 401 });
-  }) as typeof fetch;
-
-  await expect(fetchModels()).rejects.toThrow("No refresh token available");
-  expect(requestCount).toBe(1);
-});
-
-test("fetchModels never downgrades a rejected API key to anonymous access", async () => {
-  let requestCount = 0;
-  window.localStorage.setItem("access_token", "stored-jwt");
-
-  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-    requestCount += 1;
-    const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer invalid-api-key");
-
+test("fetchModels binds an explicit API key and never retries anonymously", async () => {
+  const fetch = spyOn(transportV2Client, "fetch").mockImplementation(async (input) => {
+    expect(input.authority).toEqual({ kind: "api_key", value: "invalid-api-key" });
     return Response.json({ message: "Invalid API key" }, { status: 401 });
-  }) as typeof fetch;
+  });
 
   await expect(fetchModels("invalid-api-key")).rejects.toThrow("Invalid API key");
-  expect(requestCount).toBe(1);
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test("fetchModels does not interpret an explicitly empty API key as anonymous", async () => {
-  const fetchMock = mock(async () => encryptedModelsResponse());
-  globalThis.fetch = fetchMock as typeof fetch;
+test("fetchModelCatalog remains user-authenticated", async () => {
+  const catalog = {
+    ...modelsResponse,
+    aliases: [],
+    defaults: { quick: "auto:quick" as const, powerful: "auto:powerful" as const }
+  };
+  const fetch = spyOn(transportV2Client, "fetch").mockImplementation(async (input) => {
+    expect(input.authority).toMatchObject({ kind: "user", principalId: "user-123" });
+    expect(input.authority).toHaveProperty("generation");
+    return Response.json(catalog);
+  });
 
-  await expect(fetchModels("")).rejects.toThrow("No access token available");
-  expect(fetchMock).toHaveBeenCalledTimes(0);
-});
-
-test("fetchModelCatalog remains authentication-required", async () => {
-  const fetchMock = mock(async () => encryptedModelsResponse());
-  globalThis.fetch = fetchMock as typeof fetch;
-
-  await expect(fetchModelCatalog()).rejects.toThrow("No access token available");
-  expect(fetchMock).toHaveBeenCalledTimes(0);
+  await expect(fetchModelCatalog()).resolves.toEqual(catalog);
+  expect(fetch).toHaveBeenCalledTimes(1);
 });

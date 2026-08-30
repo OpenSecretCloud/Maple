@@ -3,10 +3,7 @@ import {
   TransportV2ProtocolError,
   decodeCanonicalBase64,
   encodeCanonicalBase64,
-  encodeUtf8,
   generateRequestId,
-  parseStrictJson,
-  requireExactObject,
   uuidToBytes
 } from "./encoding";
 import {
@@ -29,11 +26,17 @@ import { TransportV2StreamDecoder } from "./stream";
 
 const MAX_REQUEST_RECORDS = 65_536;
 const MAX_RESPONSE_RECORDS = 65_536;
-const OUTER_RESPONSE_OVERHEAD_BYTES = 32;
 const MAX_OUTER_RESPONSE_BODY_BYTES =
-  Math.ceil((TRANSPORT_V2_LIMITS.envelopeBytes + MIN_ENCRYPTED_RECORD_BYTES) / 3) * 4 +
-  OUTER_RESPONSE_OVERHEAD_BYTES;
-const MAX_OUTER_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
+  TRANSPORT_V2_LIMITS.responseEnvelopeBytes + MIN_ENCRYPTED_RECORD_BYTES;
+const MAX_OUTER_REQUEST_BODY_BYTES =
+  TRANSPORT_V2_LIMITS.requestEnvelopeBytes + MIN_ENCRYPTED_RECORD_BYTES;
+
+export class TransportV2SessionUnavailableError extends TransportV2ProtocolError {
+  constructor(message: string) {
+    super(message);
+    this.name = "TransportV2SessionUnavailableError";
+  }
+}
 
 export interface PrepareTransportV2Request extends Omit<TransportV2RequestEnvelope, "requestId"> {}
 
@@ -41,7 +44,22 @@ export interface TransportV2HttpRequest {
   path: "/v2/request";
   method: "POST";
   headers: Readonly<Record<"content-type" | "x-session-id", string>>;
-  body: string;
+  body: Uint8Array;
+}
+
+/**
+ * Versioned client-side state used only to continue the exact anonymous
+ * session across an OAuth redirect. Bound sessions are resumed with their
+ * encrypted resumption credential instead of persisting directional keys.
+ */
+export interface SerializedTransportV2SessionState {
+  version: 2;
+  sessionId: string;
+  expiresAtUnixSeconds: number;
+  requestKeyBase64: string;
+  responseKeyBase64: string;
+  requestRecords: number;
+  responseRecords: number;
 }
 
 export class PreparedTransportV2Request {
@@ -77,7 +95,7 @@ export class PreparedTransportV2Request {
     return request;
   }
 
-  decryptUnaryResponse(outerBody: string): TransportV2UnaryResponse {
+  decryptUnaryResponse(outerBody: Uint8Array): TransportV2UnaryResponse {
     if (this.responseMode !== "unary") {
       throw new TransportV2ProtocolError("Transport v2 request did not select a unary response.");
     }
@@ -85,7 +103,7 @@ export class PreparedTransportV2Request {
     return this.#responseContext.decryptUnaryResponse(outerBody);
   }
 
-  decryptPreStartUnaryError(outerBody: string): TransportV2UnaryResponse {
+  decryptPreStartUnaryError(outerBody: Uint8Array): TransportV2UnaryResponse {
     if (this.responseMode !== "stream") {
       throw new TransportV2ProtocolError("Transport v2 request did not select streaming.");
     }
@@ -136,11 +154,11 @@ class TransportV2ResponseContext {
     this.#releasePreStartTerminalRecord = releasePreStartTerminalRecord;
   }
 
-  decryptUnaryResponse(outerBody: string): TransportV2UnaryResponse {
+  decryptUnaryResponse(outerBody: Uint8Array): TransportV2UnaryResponse {
     return this.#decryptUnaryOuter(outerBody, false);
   }
 
-  decryptPreStartUnaryError(outerBody: string): TransportV2UnaryResponse {
+  decryptPreStartUnaryError(outerBody: Uint8Array): TransportV2UnaryResponse {
     return this.#decryptUnaryOuter(outerBody, true);
   }
 
@@ -154,7 +172,7 @@ class TransportV2ResponseContext {
             responseKey,
             encrypted,
             streamResponseRecordAad(this.#sessionId, this.#requestId, sequence),
-            TRANSPORT_V2_LIMITS.envelopeBytes
+            TRANSPORT_V2_LIMITS.responseEnvelopeBytes
           );
         },
         undefined,
@@ -172,28 +190,18 @@ class TransportV2ResponseContext {
     this.#responseKey = null;
   }
 
-  #decryptUnaryOuter(outerBody: string, requireError: boolean): TransportV2UnaryResponse {
+  #decryptUnaryOuter(outerBody: Uint8Array, requireError: boolean): TransportV2UnaryResponse {
     const responseKey = this.#takeResponseKey();
-    let encrypted: Uint8Array | undefined;
     let plaintext: Uint8Array | undefined;
     try {
-      if (encodeUtf8(outerBody).length > MAX_OUTER_RESPONSE_BODY_BYTES) {
+      if (outerBody.length > MAX_OUTER_RESPONSE_BODY_BYTES) {
         throw new TransportV2ProtocolError("Transport v2 outer response exceeds its size limit.");
       }
-      const outer = requireExactObject(
-        parseStrictJson(outerBody),
-        ["encrypted"],
-        "Transport v2 outer response"
-      );
-      encrypted = decodeCanonicalBase64(
-        typeof outer.encrypted === "string" ? outer.encrypted : "",
-        TRANSPORT_V2_LIMITS.envelopeBytes + MIN_ENCRYPTED_RECORD_BYTES
-      );
       plaintext = decryptTransportV2Record(
         responseKey,
-        encrypted,
+        outerBody,
         unaryResponseRecordAad(this.#sessionId, this.#requestId),
-        TRANSPORT_V2_LIMITS.envelopeBytes
+        TRANSPORT_V2_LIMITS.responseEnvelopeBytes
       );
       const response = parseUnaryResponseEnvelope(plaintext);
       if (response.requestId !== this.#requestId) {
@@ -209,7 +217,7 @@ class TransportV2ResponseContext {
       if (requireError) this.#releasePreStartTerminalRecord();
       return response;
     } finally {
-      encrypted?.fill(0);
+      outerBody.fill(0);
       plaintext?.fill(0);
       responseKey.fill(0);
     }
@@ -257,6 +265,59 @@ export class TransportV2Session {
     this.#responseRecordLimit = responseRecordLimit;
   }
 
+  static restore(
+    state: SerializedTransportV2SessionState,
+    responseRecordLimit = MAX_RESPONSE_RECORDS
+  ): TransportV2Session {
+    if (
+      state.version !== 2 ||
+      !Number.isSafeInteger(state.requestRecords) ||
+      state.requestRecords < 0 ||
+      state.requestRecords > MAX_REQUEST_RECORDS ||
+      !Number.isSafeInteger(state.responseRecords) ||
+      state.responseRecords < 0 ||
+      state.responseRecords > responseRecordLimit
+    ) {
+      throw new TransportV2ProtocolError("Persisted transport v2 session state is invalid.");
+    }
+
+    const requestKey = decodeCanonicalBase64(state.requestKeyBase64, 32);
+    const responseKey = decodeCanonicalBase64(state.responseKeyBase64, 32);
+    try {
+      if (requestKey.length !== 32 || responseKey.length !== 32) {
+        throw new TransportV2ProtocolError("Persisted transport v2 session key is invalid.");
+      }
+      const session = new TransportV2Session(
+        {
+          sessionId: state.sessionId,
+          expiresAtUnixSeconds: state.expiresAtUnixSeconds,
+          requestKey,
+          responseKey
+        },
+        responseRecordLimit
+      );
+      session.#requestRecords = state.requestRecords;
+      session.#responseRecords = state.responseRecords;
+      return session;
+    } finally {
+      requestKey.fill(0);
+      responseKey.fill(0);
+    }
+  }
+
+  serialize(): SerializedTransportV2SessionState {
+    this.#requireActive();
+    return {
+      version: 2,
+      sessionId: this.sessionId,
+      expiresAtUnixSeconds: this.expiresAtUnixSeconds,
+      requestKeyBase64: encodeCanonicalBase64(this.#requestKey),
+      responseKeyBase64: encodeCanonicalBase64(this.#responseKey),
+      requestRecords: this.#requestRecords,
+      responseRecords: this.#responseRecords
+    };
+  }
+
   prepareRequest(
     input: PrepareTransportV2Request,
     random: Crypto = globalThis.crypto,
@@ -264,10 +325,12 @@ export class TransportV2Session {
   ): PreparedTransportV2Request {
     this.#requireActive();
     if (nowUnixSeconds >= this.expiresAtUnixSeconds) {
-      throw new TransportV2ProtocolError("Transport v2 session has expired.");
+      throw new TransportV2SessionUnavailableError("Transport v2 session has expired.");
     }
     if (this.#requestRecords >= MAX_REQUEST_RECORDS) {
-      throw new TransportV2ProtocolError("Transport v2 request record budget is exhausted.");
+      throw new TransportV2SessionUnavailableError(
+        "Transport v2 request record budget is exhausted."
+      );
     }
 
     const expectedResponseRecords = input.responseMode === "stream" ? 2 : 1;
@@ -298,10 +361,11 @@ export class TransportV2Session {
           undefined,
           random
         );
-        const outerBody = JSON.stringify({ encrypted: encodeCanonicalBase64(encrypted) });
-        if (encodeUtf8(outerBody).length > MAX_OUTER_REQUEST_BODY_BYTES) {
+        if (encrypted.length > MAX_OUTER_REQUEST_BODY_BYTES) {
           throw new TransportV2ProtocolError("Transport v2 outer request exceeds its size limit.");
         }
+        const outerBody = encrypted;
+        encrypted = undefined;
         this.#requestRecords += 1;
         return new PreparedTransportV2Request(
           new TransportV2ResponseContext(
@@ -316,7 +380,10 @@ export class TransportV2Session {
           {
             path: "/v2/request",
             method: "POST",
-            headers: { "content-type": "application/json", "x-session-id": this.sessionId },
+            headers: {
+              "content-type": "application/octet-stream",
+              "x-session-id": this.sessionId
+            },
             body: outerBody
           }
         );
@@ -353,7 +420,9 @@ export class TransportV2Session {
       !Number.isSafeInteger(nextResponseRecords) ||
       nextResponseRecords > this.#responseRecordLimit
     ) {
-      throw new TransportV2ProtocolError("Transport v2 response record budget is exhausted.");
+      throw new TransportV2SessionUnavailableError(
+        "Transport v2 response record budget is exhausted."
+      );
     }
     // This method contains no asynchronous boundary. The check and increment
     // therefore form one atomic reservation for all requests sharing this
@@ -370,7 +439,7 @@ export class TransportV2Session {
 
   #requireActive(): void {
     if (this.#disposed) {
-      throw new TransportV2ProtocolError("Transport v2 session is disposed.");
+      throw new TransportV2SessionUnavailableError("Transport v2 session is disposed.");
     }
   }
 }

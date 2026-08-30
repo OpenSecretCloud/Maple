@@ -1,7 +1,7 @@
-import React, { createContext, useState, useEffect } from "react";
+import React, { createContext, useState, useEffect, useRef } from "react";
 import * as platformApi from "./platformApi";
 import { setPlatformApiUrl } from "./platformApi";
-import { clearAttestationSessions, getAttestation } from "./getAttestation";
+import { clearAttestationSessions } from "./getAttestation";
 import { authenticate } from "./attestation";
 import {
   parseAttestationForView,
@@ -11,6 +11,13 @@ import {
 } from "./attestationForView";
 import type { AttestationDocument } from "./attestation";
 import { PcrConfig } from "./pcr";
+import {
+  clearLegacyTransportV1Credentials,
+  readTransportV2Credentials,
+  snapshotTransportV2Auth,
+  subscribeTransportV2AuthInvalidation
+} from "./transportV2/auth";
+import { transportV2Client, type TransportV2SessionInfo } from "./transportV2/client";
 
 const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
 import type {
@@ -53,7 +60,7 @@ export type OpenSecretDeveloperContextType = {
    *
    *
    * - Calls the login API endpoint
-   * - Stores access_token and refresh_token in localStorage
+   * - Installs origin-scoped transport v2 platform resumption descriptors
    * - Updates the developer state with user information
    * - Throws an error if authentication fails
    */
@@ -145,7 +152,7 @@ export type OpenSecretDeveloperContextType = {
    *
    *
    * - Calls the registration API endpoint
-   * - Stores access_token and refresh_token in localStorage
+   * - Installs origin-scoped transport v2 platform resumption descriptors
    * - Updates the developer state with new user information
    * - Throws an error if account creation fails
    */
@@ -160,8 +167,8 @@ export type OpenSecretDeveloperContextType = {
    * Signs out the current developer by removing authentication tokens
    *
    *
-   * - Calls the logout API endpoint with the current refresh_token
-   * - Removes access_token, refresh_token from localStorage
+   * - Presents the resumption credential inside the encrypted logout request
+   * - Clears origin-scoped transport v2 platform credentials
    * - Resets the developer state to show no user is authenticated
    */
   signOut: () => Promise<void>;
@@ -187,7 +194,11 @@ export type OpenSecretDeveloperContextType = {
   /**
    * Gets an attested session after enforcing the effective PCR0 trust policy
    */
-  getAttestation: typeof getAttestation;
+  getAttestation: (
+    forceRefresh?: boolean,
+    explicitApiUrl?: string,
+    explicitPcrConfig?: PcrConfig
+  ) => Promise<TransportV2SessionInfo>;
 
   /**
    * Authenticates an attestation document
@@ -469,7 +480,9 @@ export const OpenSecretDeveloperContext = createContext<OpenSecretDeveloperConte
   confirmPasswordReset: platformApi.confirmPlatformPasswordReset,
   changePassword: platformApi.changePlatformPassword,
   pcrConfig: DEFAULT_PCR_CONFIG,
-  getAttestation,
+  getAttestation: async () => {
+    throw new Error("getAttestation called outside of OpenSecretDeveloper");
+  },
   authenticate,
   parseAttestationForView,
   awsRootCertDer: AWS_ROOT_CERT_DER,
@@ -536,6 +549,7 @@ export function OpenSecretDeveloper({
     loading: true,
     developer: undefined
   });
+  const authViewGeneration = useRef(0);
 
   useEffect(() => {
     if (!apiUrl || apiUrl.trim() === "") {
@@ -544,6 +558,7 @@ export function OpenSecretDeveloper({
       );
     }
     setPlatformApiUrl(apiUrl, pcrConfig);
+    clearAttestationSessions();
 
     // Configure the apiConfig service with the platform URL
     // Using dynamic import to avoid circular dependencies
@@ -561,9 +576,10 @@ export function OpenSecretDeveloper({
   }, [apiUrl, pcrConfig]);
 
   async function fetchDeveloper() {
-    const access_token = window.localStorage.getItem("access_token");
-    const refresh_token = window.localStorage.getItem("refresh_token");
-    if (!access_token || !refresh_token) {
+    const viewGeneration = ++authViewGeneration.current;
+    const expected = snapshotTransportV2Auth(apiUrl, "platform");
+    if (expected.principalId === null) {
+      clearLegacyTransportV1Credentials();
       setAuth({
         loading: false,
         developer: undefined
@@ -573,6 +589,14 @@ export function OpenSecretDeveloper({
 
     try {
       const response = await platformApi.platformMe();
+      const current = snapshotTransportV2Auth(apiUrl, "platform");
+      if (
+        authViewGeneration.current !== viewGeneration ||
+        current.principalId !== expected.principalId ||
+        response.user.id !== current.principalId
+      ) {
+        return;
+      }
       setAuth({
         loading: false,
         developer: {
@@ -582,6 +606,15 @@ export function OpenSecretDeveloper({
       });
     } catch (error) {
       console.error("Failed to fetch developer:", error);
+      const current = snapshotTransportV2Auth(apiUrl, "platform");
+      if (
+        authViewGeneration.current !== viewGeneration ||
+        (current.principalId !== null &&
+          (current.principalId !== expected.principalId ||
+            current.generation !== expected.generation))
+      ) {
+        return;
+      }
       setAuth({
         loading: false,
         developer: undefined
@@ -591,7 +624,7 @@ export function OpenSecretDeveloper({
 
   const getAttestationDocument = async () => {
     const nonce = window.crypto.randomUUID();
-    const response = await fetch(`${apiUrl}/attestation/${nonce}`);
+    const response = await fetch(`${apiUrl}/v2/attestation/${nonce}`);
     if (!response.ok) {
       throw new Error("Failed to fetch attestation document");
     }
@@ -607,13 +640,20 @@ export function OpenSecretDeveloper({
 
   useEffect(() => {
     fetchDeveloper();
-  }, []);
+  }, [apiUrl, pcrConfig]);
+
+  useEffect(
+    () =>
+      subscribeTransportV2AuthInvalidation(apiUrl, "platform", () => {
+        authViewGeneration.current += 1;
+        setAuth({ loading: false, developer: undefined });
+      }),
+    [apiUrl]
+  );
 
   async function signIn(email: string, password: string) {
     try {
       const { access_token, refresh_token } = await platformApi.platformLogin(email, password);
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
       await fetchDeveloper();
       return { access_token, refresh_token, id: "", email };
     } catch (error) {
@@ -630,8 +670,6 @@ export function OpenSecretDeveloper({
         invite_code,
         name
       );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
       await fetchDeveloper();
       return { access_token, refresh_token, id: "", email, name };
     } catch (error) {
@@ -646,21 +684,20 @@ export function OpenSecretDeveloper({
     signUp,
     refetchDeveloper: fetchDeveloper,
     signOut: async () => {
-      const refresh_token = window.localStorage.getItem("refresh_token");
-      if (refresh_token) {
-        try {
-          await platformApi.platformLogout(refresh_token);
-        } catch (error) {
-          console.error("Error during logout:", error);
+      const credentials = readTransportV2Credentials(apiUrl, "platform");
+      const expected = snapshotTransportV2Auth(apiUrl, "platform");
+      authViewGeneration.current += 1;
+      setAuth({ loading: false, developer: undefined });
+      try {
+        if (credentials) {
+          await platformApi.platformLogout(credentials.refreshToken);
         }
+      } catch (error) {
+        console.error("Error during logout:", error);
+      } finally {
+        transportV2Client.clear(apiUrl, "platform", false, expected);
+        clearAttestationSessions();
       }
-      localStorage.removeItem("access_token");
-      localStorage.removeItem("refresh_token");
-      clearAttestationSessions();
-      setAuth({
-        loading: false,
-        developer: undefined
-      });
     },
     verifyEmail: platformApi.verifyPlatformEmail,
     requestNewVerificationCode: platformApi.requestNewPlatformVerificationCode,
@@ -669,8 +706,21 @@ export function OpenSecretDeveloper({
     confirmPasswordReset: platformApi.confirmPlatformPasswordReset,
     changePassword: platformApi.changePlatformPassword,
     pcrConfig,
-    getAttestation: (forceRefresh, explicitApiUrl, explicitPcrConfig) =>
-      getAttestation(forceRefresh, explicitApiUrl || apiUrl, explicitPcrConfig || pcrConfig),
+    getAttestation: (_forceRefresh, explicitApiUrl, explicitPcrConfig) =>
+      transportV2Client.sessionInfo(
+        explicitApiUrl || apiUrl,
+        explicitPcrConfig || pcrConfig,
+        (() => {
+          const credentials = readTransportV2Credentials(explicitApiUrl || apiUrl, "platform");
+          return credentials
+            ? {
+                kind: "platform" as const,
+                principalId: credentials.principalId,
+                generation: credentials.generation
+              }
+            : ({ kind: "anonymous", purpose: "platform" } as const);
+        })()
+      ),
     authenticate,
     parseAttestationForView,
     awsRootCertDer: AWS_ROOT_CERT_DER,

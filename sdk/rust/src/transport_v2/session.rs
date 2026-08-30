@@ -19,9 +19,9 @@ use super::{
         decrypt_key_exchange_record, DirectionalKeys, SessionMaster, KEY_LEN, MIN_RECORD_LEN,
     },
     envelope::{
-        CacheNamespaceRoot, Credential, EncodedBytes, EncryptedOuterRecord, EnvelopeLimits,
-        LogicalRequest, RequestEnvelope, RequestId, ResponseMode, UnaryResponseEnvelope, Version2,
-        MAX_KEY_EXCHANGE_BYTES, MAX_OUTER_REQUEST_BYTES,
+        check_limit, CacheNamespaceRoot, Credential, EncodedBytes, EnvelopeLimits, LogicalRequest,
+        RequestEnvelope, RequestId, ResponseMode, UnaryResponseEnvelope, Version2,
+        MAX_KEY_EXCHANGE_BYTES, MAX_OUTER_REQUEST_BYTES, MAX_OUTER_RESPONSE_BYTES,
     },
     stream::StreamDecoder,
     Result, TransportV2Error,
@@ -169,7 +169,7 @@ fn parse_canonical_session_id(encoded: &str) -> Result<Uuid> {
 }
 
 /// Exact crypto context for one attested transport-v2 session.
-pub(super) struct V2Session {
+pub(crate) struct V2Session {
     session_id: Uuid,
     expires_at_unix_seconds: u64,
     keys: Arc<DirectionalKeys>,
@@ -314,7 +314,7 @@ impl V2Session {
     }
 
     #[cfg(test)]
-    pub(super) fn from_master_for_test(
+    pub(crate) fn from_master_for_test(
         session_id: Uuid,
         session_master: [u8; KEY_LEN],
         expires_at_unix_seconds: u64,
@@ -343,12 +343,21 @@ impl V2Session {
         )
     }
 
-    pub(super) const fn session_id(&self) -> Uuid {
+    pub(crate) const fn session_id(&self) -> Uuid {
         self.session_id
     }
 
+    #[cfg(test)]
     pub(super) const fn expires_at_unix_seconds(&self) -> u64 {
         self.expires_at_unix_seconds
+    }
+
+    pub(crate) fn is_expired(&self) -> Result<bool> {
+        let now_unix_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| TransportV2Error::SessionExpired)?
+            .as_secs();
+        Ok(now_unix_seconds >= self.expires_at_unix_seconds)
     }
 
     pub(super) fn prepare_request(
@@ -420,10 +429,12 @@ impl V2Session {
         let encrypted = self
             .keys
             .encrypt_request_record(&self.session_id, &plaintext)?;
-        let outer_body = EncryptedOuterRecord {
-            encrypted: EncodedBytes::from_bytes(encrypted),
-        }
-        .to_json_vec(MAX_OUTER_REQUEST_BYTES)?;
+        check_limit(
+            encrypted.len(),
+            MAX_OUTER_REQUEST_BYTES,
+            "encrypted request",
+        )?;
+        let outer_body = encrypted;
 
         Ok(PreparedRequest {
             session_id: self.session_id,
@@ -504,6 +515,7 @@ impl PreparedRequest {
         self.session_id
     }
 
+    #[cfg(test)]
     pub(super) const fn request_id(&self) -> RequestId {
         self.request_id
     }
@@ -571,12 +583,16 @@ impl ResponseContext {
     }
 
     fn decrypt_unary_envelope(&self, outer_body: &[u8]) -> Result<UnaryResponse> {
-        let outer = EncryptedOuterRecord::from_json_slice(outer_body, MAX_OUTER_REQUEST_BYTES)?;
-        let encrypted_limit = EnvelopeLimits::DEFAULT
+        check_limit(
+            outer_body.len(),
+            MAX_OUTER_RESPONSE_BYTES,
+            "encrypted response",
+        )?;
+        let encrypted_limit = EnvelopeLimits::RESPONSE
             .envelope_bytes
             .checked_add(MIN_RECORD_LEN)
             .ok_or(TransportV2Error::InvalidResponse)?;
-        if outer.encrypted.len() > encrypted_limit {
+        if outer_body.len() > encrypted_limit {
             return Err(TransportV2Error::LimitExceeded {
                 field: "encrypted response",
                 limit: encrypted_limit,
@@ -585,10 +601,10 @@ impl ResponseContext {
         let plaintext = Zeroizing::new(self.keys.decrypt_unary_response_record(
             &self.session_id,
             &self.request_id,
-            outer.encrypted.as_slice(),
+            outer_body,
         )?);
         let response =
-            UnaryResponseEnvelope::from_json_slice(&plaintext, &EnvelopeLimits::DEFAULT)?;
+            UnaryResponseEnvelope::from_json_slice(&plaintext, &EnvelopeLimits::RESPONSE)?;
         if response.request_id != self.request_id {
             return Err(TransportV2Error::BindingMismatch);
         }

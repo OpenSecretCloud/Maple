@@ -69,7 +69,8 @@ export class TransportV2Handshake {
   async complete(
     attestedServerPublicKey: Uint8Array,
     keyExchangeResponseBody: string,
-    subtle: SubtleCrypto = globalThis.crypto.subtle
+    subtle: SubtleCrypto = globalThis.crypto.subtle,
+    responseRecordLimit?: number
   ): Promise<TransportV2Session> {
     if (this.#used) {
       throw new TransportV2ProtocolError("Transport v2 handshake is already consumed.");
@@ -114,7 +115,7 @@ export class TransportV2Handshake {
           subtle
         );
         try {
-          return new TransportV2Session(handshake);
+          return new TransportV2Session(handshake, responseRecordLimit);
         } finally {
           handshake.requestKey.fill(0);
           handshake.responseKey.fill(0);

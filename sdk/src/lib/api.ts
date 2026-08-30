@@ -2,6 +2,9 @@ import { encode } from "@stablelib/base64";
 import { authenticatedApiCall, encryptedApiCall, openAiAuthenticatedApiCall } from "./encryptedApi";
 import type { Model } from "openai/resources/models.js";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
+import { readTransportV2Credentials } from "./transportV2/auth";
+import { transportV2Client } from "./transportV2/client";
+import { encodeCanonicalOpaquePathSegment } from "./transportV2/encoding";
 
 let apiUrl = "";
 let apiPcrConfig: PcrConfig = snapshotPcrConfig();
@@ -48,15 +51,6 @@ type CredentialUpdateResponse = {
   access_token?: string;
   refresh_token?: string;
 };
-
-function storeAuthTokens(response: CredentialUpdateResponse) {
-  if (response.access_token) {
-    window.localStorage.setItem("access_token", response.access_token);
-  }
-  if (response.refresh_token) {
-    window.localStorage.setItem("refresh_token", response.refresh_token);
-  }
-}
 
 export type KVListItem = {
   key: string;
@@ -130,23 +124,24 @@ export async function fetchGuestSignUp(
 }
 
 export async function refreshToken(): Promise<RefreshResponse> {
-  const refresh_token = window.localStorage.getItem("refresh_token");
-  if (!refresh_token) throw new Error("No refresh token available");
-
-  const refreshData = { refresh_token };
+  if (!readTransportV2Credentials(apiUrl, "user")) {
+    throw new Error("A fresh transport v2 sign-in is required.");
+  }
 
   try {
-    const response = await encryptedApiCall<typeof refreshData, RefreshResponse>(
-      `${apiUrl}/refresh`,
-      "POST",
-      refreshData,
-      undefined,
-      "Failed to refresh token"
-    );
-
-    window.localStorage.setItem("access_token", response.access_token);
-    window.localStorage.setItem("refresh_token", response.refresh_token);
-    return response;
+    const response = await transportV2Client.refresh(apiUrl, "user", apiPcrConfig);
+    const value = (await response.json()) as Partial<RefreshResponse> & { message?: unknown };
+    if (!response.ok) {
+      throw new Error(
+        typeof value.message === "string"
+          ? value.message
+          : `Failed to refresh token: ${response.status}`
+      );
+    }
+    if (typeof value.access_token !== "string" || typeof value.refresh_token !== "string") {
+      throw new Error("Transport v2 refresh returned invalid credentials.");
+    }
+    return { access_token: value.access_token, refresh_token: value.refresh_token };
   } catch (error) {
     console.error("Error refreshing token:", error);
     throw error;
@@ -164,7 +159,7 @@ export async function fetchUser(): Promise<UserResponse> {
 
 export async function fetchPut(key: string, value: string): Promise<string> {
   return authenticatedApiCall<string, string>(
-    `${apiUrl}/protected/kv/${key}`,
+    `${apiUrl}/protected/kv/${encodeCanonicalOpaquePathSegment(key)}`,
     "PUT",
     value,
     "Failed to put key-value pair"
@@ -173,7 +168,7 @@ export async function fetchPut(key: string, value: string): Promise<string> {
 
 export async function fetchDelete(key: string): Promise<void> {
   return authenticatedApiCall<void, void>(
-    `${apiUrl}/protected/kv/${key}`,
+    `${apiUrl}/protected/kv/${encodeCanonicalOpaquePathSegment(key)}`,
     "DELETE",
     undefined,
     "Failed to delete key-value pair"
@@ -192,7 +187,7 @@ export async function fetchDeleteAllKV(): Promise<void> {
 export async function fetchGet(key: string): Promise<string | undefined> {
   try {
     const data = await authenticatedApiCall<void, string>(
-      `${apiUrl}/protected/kv/${key}`,
+      `${apiUrl}/protected/kv/${encodeCanonicalOpaquePathSegment(key)}`,
       "GET",
       undefined,
       "Failed to get key-value pair"
@@ -318,13 +313,12 @@ export async function changePassword(currentPassword: string, newPassword: strin
     current_password: currentPassword,
     new_password: newPassword
   };
-  const response = await authenticatedApiCall<typeof changePasswordData, CredentialUpdateResponse>(
+  await authenticatedApiCall<typeof changePasswordData, CredentialUpdateResponse>(
     `${apiUrl}/protected/change_password`,
     "POST",
     changePasswordData,
     "Failed to change password"
   );
-  storeAuthTokens(response);
 }
 
 export async function initiateGitHubAuth(
@@ -1203,7 +1197,7 @@ export type ModelCatalogResponse = {
 export async function fetchModels(apiKey?: string): Promise<Model[]> {
   try {
     const hasIdentityCredential =
-      apiKey !== undefined || window.localStorage.getItem("access_token") !== null;
+      apiKey !== undefined || readTransportV2Credentials(apiUrl, "user") !== null;
     const response = hasIdentityCredential
       ? await openAiAuthenticatedApiCall<void, ModelsListResponse>(
           `${apiUrl}/v1/models`,
@@ -1414,8 +1408,7 @@ export async function listApiKeys(): Promise<{ keys: ApiKeyListResponse }> {
  * ```
  */
 export async function deleteApiKey(name: string): Promise<void> {
-  // URL-encode the name to handle special characters
-  const encodedName = encodeURIComponent(name);
+  const encodedName = encodeCanonicalOpaquePathSegment(name);
   return authenticatedApiCall<void, void>(
     `${apiUrl}/protected/api-keys/${encodedName}`,
     "DELETE",
@@ -2045,7 +2038,7 @@ export type ResponsesCreateRequest = {
  *
  * NOTE: Prefer using the OpenAI client directly for conversation operations:
  * ```typescript
- * const openai = new OpenAI({ fetch: customFetch });
+ * const openai = new OpenAI({ fetch: customFetch, maxRetries: 0 });
  * const conversation = await openai.conversations.create({
  *   metadata: { title: "Product Support", category: "technical" }
  * });
