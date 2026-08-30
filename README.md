@@ -106,6 +106,30 @@ cargo run -p maple-gpui              # desktop app, dev profile
 cargo build --release -p maple-gpui  # release binary in target/release
 ```
 
+### Nix
+
+The flake provides a release package and a development shell with the latest
+stable Rust toolchain pinned by `flake.lock`:
+
+```sh
+nix build
+nix develop
+```
+
+On Apple Silicon macOS, the pure `nix build` package enables GPUI's runtime
+Metal shader compilation because Apple does not redistribute the `metal`
+compiler with the macOS SDK. To precompile the shaders with the Metal toolchain
+from the standard Xcode installation instead, install the optional Xcode
+component and build in the development shell:
+
+```sh
+xcodebuild -downloadComponent MetalToolchain
+nix develop --command cargo build --release -p maple-gpui --locked
+```
+
+The development shell uses `/Applications/Xcode.app`. Linux builds use the
+Nix-provided ALSA, font, keyboard, Wayland, and Vulkan dependencies.
+
 Release builds use fat LTO and one codegen unit. Use a release build for any
 performance check; the dev profile is `opt-level = 1`.
 
