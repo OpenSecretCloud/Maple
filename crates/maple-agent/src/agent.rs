@@ -10005,6 +10005,41 @@ fn account_local_data_dir_path(
     Ok(paths.local_data_root.join("accounts").join(scope))
 }
 
+/// The device-local data directory this crate owns for one account:
+/// Goose session history, image attachments, and anything else keyed to
+/// the signed-in user. Removing it removes the account's local state.
+///
+/// Pure path arithmetic; it creates nothing and touches no disk. Callers
+/// outside this crate should use it instead of rebuilding the layout by
+/// hand, because the on-disk shape is this crate's private business.
+pub fn account_local_data_dir(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
+    account_local_data_dir_path(paths, user_id).map_err(|error| error.to_string())
+}
+
+/// The Goose session database for one account.
+///
+/// The agent runtime owns and writes this file. Other processes and other
+/// parts of the app must open it read-only, and must tolerate it not
+/// existing yet: it appears the first time the runtime starts.
+pub fn account_sessions_db_path(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
+    Ok(account_local_data_dir(paths, user_id)?
+        .join(AGENT_HISTORY_SUBDIR)
+        .join(goose::session::session_manager::SESSIONS_FOLDER)
+        .join(goose::session::session_manager::DB_NAME))
+}
+
+/// The store of model-written tool call summaries for one account.
+///
+/// The app owns this file; the agent runtime never opens it. It lives
+/// beside the runtime's own account data so that deleting the account
+/// removes the summaries with it.
+pub fn account_tool_summaries_db_path(
+    paths: &AgentPathLayout,
+    user_id: &str,
+) -> Result<PathBuf, String> {
+    Ok(account_local_data_dir(paths, user_id)?.join(AGENT_TOOL_SUMMARIES_DB_NAME))
+}
+
 fn account_attachment_store(
     paths: &AgentPathLayout,
     user_id: &str,
@@ -10033,6 +10068,10 @@ fn account_session_manager(
 /// Path of the Goose session store (`sessions/sessions.db` and friends)
 /// below an account directory.
 const AGENT_HISTORY_SUBDIR: &str = "goose/data";
+
+/// File name of the app-owned tool call summary store below an account
+/// directory. See [`account_tool_summaries_db_path`].
+const AGENT_TOOL_SUMMARIES_DB_NAME: &str = "tool_summaries.db";
 
 /// The Goose data directory for one account, ready to open. Session history
 /// is device-local, so it lives in the local data root, next to the
@@ -17601,6 +17640,50 @@ mod tests {
         drop(service);
         drop(session_manager);
         let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn exported_account_paths_match_the_on_disk_layout() {
+        let paths =
+            AgentPathLayout::from_app_roots(PathBuf::from("/config"), PathBuf::from("/data"));
+        let user_id = "exported-account-paths-user";
+        let scope = account_scope(user_id).unwrap();
+        let account_dir = PathBuf::from("/data")
+            .join("agent")
+            .join("accounts")
+            .join(&scope);
+
+        assert_eq!(
+            account_local_data_dir(&paths, user_id).unwrap(),
+            account_dir
+        );
+        assert_eq!(
+            account_sessions_db_path(&paths, user_id).unwrap(),
+            account_dir
+                .join("goose")
+                .join("data")
+                .join("sessions")
+                .join("sessions.db")
+        );
+        assert_eq!(
+            account_tool_summaries_db_path(&paths, user_id).unwrap(),
+            account_dir.join("tool_summaries.db")
+        );
+    }
+
+    #[test]
+    fn exported_sessions_db_path_is_the_one_the_runtime_writes() {
+        let test_root = recent_roots_test_dir("exported-sessions-db-path");
+        let paths = AgentPathLayout::from_app_roots(
+            test_root.join("app-config"),
+            test_root.join("app-local-data"),
+        );
+        let user_id = "exported-sessions-db-path-user";
+
+        let history_dir = account_history_dir(&paths, user_id).unwrap();
+        let db_path = account_sessions_db_path(&paths, user_id).unwrap();
+
+        assert_eq!(db_path.parent().unwrap().parent().unwrap(), history_dir);
     }
 
     #[test]
