@@ -258,6 +258,131 @@ fn persist_window_state() {
     }
 }
 
+/// Every key binding the window uses. Tests register the same set, so
+/// what they exercise is what ships.
+pub(crate) fn register_key_bindings(cx: &mut App) {
+    text_input::register_key_bindings(cx);
+    cx.bind_keys([
+        KeyBinding::new("ctrl-q", QuitApp, None),
+        KeyBinding::new("cmd-q", QuitApp, None),
+        KeyBinding::new("escape", ui::chat::ChatEscape, Some("Chat")),
+        KeyBinding::new("ctrl-n", ui::chat::NewTask, Some("Chat")),
+        KeyBinding::new("cmd-n", ui::chat::NewTask, Some("Chat")),
+        KeyBinding::new("ctrl-k", ui::chat::FocusSearch, Some("Chat")),
+        KeyBinding::new("cmd-k", ui::chat::FocusSearch, Some("Chat")),
+        KeyBinding::new("ctrl-b", ui::chat::ToggleSidebar, Some("Chat")),
+        KeyBinding::new("cmd-b", ui::chat::ToggleSidebar, Some("Chat")),
+        KeyBinding::new("ctrl-shift-a", ui::chat::ToggleArchived, Some("Chat")),
+        KeyBinding::new("cmd-shift-a", ui::chat::ToggleArchived, Some("Chat")),
+        KeyBinding::new("ctrl-,", ui::chat::OpenAppSettings, Some("Chat")),
+        KeyBinding::new("cmd-,", ui::chat::OpenAppSettings, Some("Chat")),
+        KeyBinding::new("ctrl-p", ui::chat::ChooseProject, Some("Chat")),
+        KeyBinding::new("cmd-p", ui::chat::ChooseProject, Some("Chat")),
+        KeyBinding::new("alt-up", ui::chat::PreviousTask, Some("Chat")),
+        KeyBinding::new("alt-down", ui::chat::NextTask, Some("Chat")),
+        KeyBinding::new("ctrl-y", ui::chat::AllowPermission, Some("Chat")),
+        KeyBinding::new("cmd-y", ui::chat::AllowPermission, Some("Chat")),
+        KeyBinding::new(
+            "ctrl-1",
+            ui::chat::PickQuestionOption { index: 0 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-1",
+            ui::chat::PickQuestionOption { index: 0 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-2",
+            ui::chat::PickQuestionOption { index: 1 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-2",
+            ui::chat::PickQuestionOption { index: 1 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-3",
+            ui::chat::PickQuestionOption { index: 2 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-3",
+            ui::chat::PickQuestionOption { index: 2 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-4",
+            ui::chat::PickQuestionOption { index: 3 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-4",
+            ui::chat::PickQuestionOption { index: 3 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-5",
+            ui::chat::PickQuestionOption { index: 4 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-5",
+            ui::chat::PickQuestionOption { index: 4 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-6",
+            ui::chat::PickQuestionOption { index: 5 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-6",
+            ui::chat::PickQuestionOption { index: 5 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-7",
+            ui::chat::PickQuestionOption { index: 6 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-7",
+            ui::chat::PickQuestionOption { index: 6 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-8",
+            ui::chat::PickQuestionOption { index: 7 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-8",
+            ui::chat::PickQuestionOption { index: 7 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "ctrl-9",
+            ui::chat::PickQuestionOption { index: 8 },
+            Some("Chat"),
+        ),
+        KeyBinding::new(
+            "cmd-9",
+            ui::chat::PickQuestionOption { index: 8 },
+            Some("Chat"),
+        ),
+        KeyBinding::new("ctrl-c", ui::chat::CopySelection, Some("Transcript")),
+        KeyBinding::new("cmd-c", ui::chat::CopySelection, Some("Transcript")),
+        KeyBinding::new("ctrl-a", ui::chat::SelectAllTranscript, Some("Transcript")),
+        KeyBinding::new("cmd-a", ui::chat::SelectAllTranscript, Some("Transcript")),
+        // The open project menu holds the focus, so plain keys are free.
+        KeyBinding::new("up", ui::chat::RootMenuPrevious, Some("RootMenu")),
+        KeyBinding::new("down", ui::chat::RootMenuNext, Some("RootMenu")),
+        KeyBinding::new("enter", ui::chat::RootMenuConfirm, Some("RootMenu")),
+    ]);
+}
+
 pub fn run() {
     crate::init_logging(crate::LogOutput::FileAndStderr);
 
@@ -283,18 +408,9 @@ pub fn run() {
             ) {
                 log::warn!("failed to register bundled fonts: {error}");
             }
-            text_input::register_key_bindings(cx);
             ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| cx.quit());
-            cx.bind_keys([
-                KeyBinding::new("ctrl-q", QuitApp, None),
-                KeyBinding::new("cmd-q", QuitApp, None),
-                KeyBinding::new("escape", ui::chat::ChatEscape, Some("Chat")),
-                KeyBinding::new("ctrl-c", ui::chat::CopySelection, Some("Transcript")),
-                KeyBinding::new("cmd-c", ui::chat::CopySelection, Some("Transcript")),
-                KeyBinding::new("ctrl-a", ui::chat::SelectAllTranscript, Some("Transcript")),
-                KeyBinding::new("cmd-a", ui::chat::SelectAllTranscript, Some("Transcript")),
-            ]);
+            register_key_bindings(cx);
             ui::theme::set_preference(ui::theme::Preference::parse(&startup_settings.theme));
             let saved = startup_settings
                 .window

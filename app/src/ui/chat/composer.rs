@@ -10,8 +10,8 @@ use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
 use super::cache::MarkdownKind;
 use super::transcript::render_plan_row;
 use super::{
-    COMPOSER_PLACEHOLDER, ChatScreen, DraftImage, OpenSettingsSection, SIDE_THREAD_PLACEHOLDER,
-    SIDEBAR_COLLAPSED_INSET, Section,
+    COMPOSER_PLACEHOLDER, ChatScreen, DraftImage, OpenSettingsSection, ROOT_MENU_RECENTS,
+    SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
@@ -94,7 +94,7 @@ impl ChatScreen {
         }
         let mut menu = Self::menu_panel().w(px(480.)).max_w_full();
         {
-            for path in self.recent_roots.iter().take(6) {
+            for (index, path) in self.recent_roots.iter().take(ROOT_MENU_RECENTS).enumerate() {
                 let is_current = self.project_root.as_deref() == Some(path.as_str());
                 menu = menu.child(
                     div()
@@ -108,6 +108,9 @@ impl ChatScreen {
                             theme::text_primary()
                         }))
                         .line_clamp(1)
+                        .when(self.root_menu_selected == Some(index), |row| {
+                            row.bg(gpui::rgb(theme::bg_input()))
+                        })
                         .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                         .on_click({
                             let path = path.clone();
@@ -118,6 +121,7 @@ impl ChatScreen {
                         .child(path.clone()),
                 );
             }
+            let choose_row = self.recent_roots.len().min(ROOT_MENU_RECENTS);
             menu = menu.child(
                 div()
                     .id("root-choose")
@@ -125,6 +129,9 @@ impl ChatScreen {
                     .py_1()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
+                    .when(self.root_menu_selected == Some(choose_row), |row| {
+                        row.bg(gpui::rgb(theme::bg_input()))
+                    })
                     .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.choose_root_dialog(cx);
@@ -181,7 +188,12 @@ impl ChatScreen {
                 .when(self.sidebar_collapsed, |menu| {
                     menu.left(SIDEBAR_COLLAPSED_INSET)
                 })
-                .child(menu),
+                .child(
+                    menu.key_context("RootMenu")
+                        .when_some(self.root_menu_focus.clone(), |menu, focus| {
+                            menu.track_focus(&focus)
+                        }),
+                ),
         )
     }
 

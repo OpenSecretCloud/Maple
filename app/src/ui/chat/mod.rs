@@ -46,7 +46,34 @@ use self::transcript::{
     render_waiting_indicator,
 };
 
-gpui::actions!(chat, [ChatEscape, CopySelection, SelectAllTranscript]);
+gpui::actions!(
+    chat,
+    [
+        AllowPermission,
+        ChatEscape,
+        ChooseProject,
+        CopySelection,
+        FocusSearch,
+        NewTask,
+        NextTask,
+        OpenAppSettings,
+        PreviousTask,
+        RootMenuConfirm,
+        RootMenuNext,
+        RootMenuPrevious,
+        SelectAllTranscript,
+        ToggleArchived,
+        ToggleSidebar,
+    ]
+);
+
+/// Answer the question card with one of its numbered options.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = chat, no_json)]
+pub struct PickQuestionOption {
+    /// Zero-based position in the option list.
+    pub index: usize,
+}
 
 pub struct LoggedOut;
 
@@ -75,6 +102,9 @@ const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = px(220.);
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
 /// Header title when no task is selected.
 const DEFAULT_TASK_TITLE: &str = "New Task";
+
+/// Recent projects the project menu lists above "New project…".
+pub(super) const ROOT_MENU_RECENTS: usize = 6;
 
 const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder...";
 const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)...";
@@ -221,6 +251,13 @@ pub struct ChatScreen {
     project_root: Option<String>,
     recent_roots: Vec<String>,
     root_menu_open: bool,
+    /// Row the project menu highlights for the keyboard, if any.
+    root_menu_selected: Option<usize>,
+    /// Focus for the open project menu, so plain arrow keys reach it
+    /// instead of the composer's text handling.
+    root_menu_focus: Option<gpui::FocusHandle>,
+    /// The menu was just opened and still needs the focus.
+    root_menu_focus_pending: bool,
     /// Manual path entry for the root switcher.
     root_input: Option<Entity<TextInput>>,
     root_switching: bool,
@@ -424,6 +461,7 @@ impl ChatScreen {
         this.attach_composer(weak, cx);
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
         this.transcript_focus = Some(cx.focus_handle());
+        this.root_menu_focus = Some(cx.focus_handle());
         let search = cx.new(|cx| TextInput::new("Search tasks", cx).with_tab_index(2));
         cx.observe(&search, |this, input, cx| this.search_changed(&input, cx))
             .detach();
@@ -637,6 +675,9 @@ impl ChatScreen {
             project_root: None,
             recent_roots: Vec::new(),
             root_menu_open: false,
+            root_menu_selected: None,
+            root_menu_focus: None,
+            root_menu_focus_pending: false,
             pending_session_select: None,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
@@ -1059,6 +1100,10 @@ impl ChatScreen {
         self.mode_menu_open = false;
         self.mcp_menu_open = false;
         self.root_menu_open = !self.root_menu_open;
+        self.root_menu_selected = None;
+        // The next frame moves the focus; from there the arrow keys and
+        // Enter reach the menu instead of the composer.
+        self.root_menu_focus_pending = self.root_menu_open;
         cx.notify();
     }
 
@@ -1875,9 +1920,237 @@ impl ChatScreen {
             .is_some_and(|session| self.active_runs.contains_key(session))
     }
 
-    /// Escape, in priority order: close the photo viewer, skip a pending
-    /// question, clear a text selection, close the chip menus.
+    /// Ctrl-N / Cmd-N: the keyboard path to the sidebar's New Task row.
+    fn new_task_action(&mut self, _: &NewTask, _window: &mut Window, cx: &mut Context<Self>) {
+        self.new_session(cx);
+    }
+
+    /// Ctrl-K / Cmd-K: type straight into the sidebar search field. A
+    /// hidden sidebar comes back first; a search box nobody can see is
+    /// no use.
+    fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = false;
+        if let Some(input) = self.search_input.clone() {
+            input.read(cx).focus_handle(cx).focus(window);
+        }
+        cx.notify();
+    }
+
+    /// Ctrl-B / Cmd-B: the keyboard path to the sidebar toggle.
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, _window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+        cx.notify();
+    }
+
+    /// Ctrl-Shift-A / Cmd-Shift-A: fold or unfold the archived section.
+    fn toggle_archived(
+        &mut self,
+        _: &ToggleArchived,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.archived_expanded = !self.archived_expanded;
+        self.rebuild_sidebar_entries();
+        cx.notify();
+    }
+
+    /// Ctrl-, / Cmd-,: open app settings.
+    fn open_app_settings(
+        &mut self,
+        _: &OpenAppSettings,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(OpenSettings);
+    }
+
+    /// Ctrl-P / Cmd-P: open the project menu, where a folder is picked.
+    fn choose_project(&mut self, _: &ChooseProject, _window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_root_menu(cx);
+    }
+
+    /// Up / Down in the open project menu.
+    fn root_menu_previous(
+        &mut self,
+        _: &RootMenuPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.step_root_menu(-1, cx);
+    }
+
+    fn root_menu_next(&mut self, _: &RootMenuNext, _window: &mut Window, cx: &mut Context<Self>) {
+        self.step_root_menu(1, cx);
+    }
+
+    fn root_menu_confirm(
+        &mut self,
+        _: &RootMenuConfirm,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_root_menu(cx);
+    }
+
+    /// Rows the project menu offers: the recent roots it lists, then
+    /// "New project…".
+    fn root_menu_rows(&self) -> usize {
+        self.recent_roots.len().min(ROOT_MENU_RECENTS) + 1
+    }
+
+    /// Move the menu highlight. A menu is short, so it wraps at both
+    /// ends instead of stopping.
+    fn step_root_menu(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self.root_menu_open {
+            return;
+        }
+        let rows = self.root_menu_rows() as isize;
+        let next = match self.root_menu_selected {
+            Some(current) => (current as isize + delta).rem_euclid(rows),
+            // Nothing highlighted: enter the menu from the end the key
+            // comes from.
+            None if delta < 0 => rows - 1,
+            None => 0,
+        };
+        self.root_menu_selected = Some(next as usize);
+        cx.notify();
+    }
+
+    /// Enter on the highlighted menu row: switch to that project, or
+    /// open the folder picker on the last row.
+    fn confirm_root_menu(&mut self, cx: &mut Context<Self>) {
+        if !self.root_menu_open {
+            return;
+        }
+        let Some(index) = self.root_menu_selected else {
+            return;
+        };
+        let recent = self
+            .recent_roots
+            .iter()
+            .take(ROOT_MENU_RECENTS)
+            .nth(index)
+            .cloned();
+        match recent {
+            Some(path) => self.switch_root(path, cx),
+            None => self.choose_root_dialog(cx),
+        }
+    }
+
+    fn previous_task(&mut self, _: &PreviousTask, _window: &mut Window, cx: &mut Context<Self>) {
+        self.step_task(-1, cx);
+    }
+
+    fn next_task(&mut self, _: &NextTask, _window: &mut Window, cx: &mut Context<Self>) {
+        self.step_task(1, cx);
+    }
+
+    /// Alt-Up / Alt-Down: open the task before or after the selected one
+    /// in the current project, in the order the sidebar shows them.
+    fn step_task(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some((row, id)) = self.task_step_target(delta) else {
+            return;
+        };
+        self.sidebar_list.scroll_to_reveal_item(row);
+        self.open_session(&id, cx);
+    }
+
+    /// The task `delta` rows away from the selected one, as the sidebar
+    /// row it sits on and its id. Stepping stays inside the current
+    /// project and stops at its ends: opening a task under another root
+    /// switches the runtime, which re-sorts the sidebar under the keys.
+    fn task_step_target(&self, delta: isize) -> Option<(usize, String)> {
+        let root = self.project_root.as_deref()?;
+        let rows: Vec<(usize, usize)> = self
+            .sidebar_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(row, entry)| match entry {
+                SidebarEntry::Task {
+                    session,
+                    archived: false,
+                } => Some((row, *session)),
+                _ => None,
+            })
+            .filter(|(_, session)| {
+                self.sessions
+                    .get(*session)
+                    .is_some_and(|summary| summary.project_root == root)
+            })
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        let selected = self.selected_session.as_deref();
+        let current = selected.and_then(|id| {
+            rows.iter().position(|(_, session)| {
+                self.sessions
+                    .get(*session)
+                    .is_some_and(|summary| summary.id == id)
+            })
+        });
+        let target = match current {
+            Some(position) => {
+                let next = position as isize + delta;
+                if next < 0 || next as usize >= rows.len() {
+                    return None;
+                }
+                next as usize
+            }
+            // Nothing selected: enter the list from the end it comes from.
+            None if delta > 0 => 0,
+            None => rows.len() - 1,
+        };
+        let (row, session) = rows[target];
+        let id = self.sessions.get(session)?.id.clone();
+        Some((row, id))
+    }
+
+    /// Ctrl-Y / Cmd-Y: allow what the permission card is asking about.
+    /// Escape denies it.
+    fn allow_permission(
+        &mut self,
+        _: &AllowPermission,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.respond_permission(true, cx);
+    }
+
+    /// Ctrl-1 to Ctrl-9: answer the question card with the numbered
+    /// option, the same as picking it and pressing Answer.
+    fn pick_question_option(
+        &mut self,
+        action: &PickQuestionOption,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(question) = self.current_question() else {
+            return;
+        };
+        let step = self
+            .question_step
+            .min(question.questions.len().saturating_sub(1));
+        let options = question
+            .questions
+            .get(step)
+            .map(|entry| entry.options.len())
+            .unwrap_or(0);
+        if action.index >= options {
+            return;
+        }
+        self.select_question_option(step, action.index, cx);
+        self.submit_question(cx);
+    }
+
+    /// Escape, in priority order: close the photo viewer, answer a
+    /// pending prompt, clear a text selection, close the chip menus.
+    /// With nothing left to dismiss it stops the running task.
     fn chat_escape(&mut self, _: &ChatEscape, _window: &mut Window, cx: &mut Context<Self>) {
+        self.escape(cx);
+    }
+
+    fn escape(&mut self, cx: &mut Context<Self>) {
         if self.rename.is_some() {
             self.cancel_rename(cx);
             return;
@@ -1914,6 +2187,10 @@ impl ChatScreen {
             self.skip_question(cx);
             return;
         }
+        if self.current_permission().is_some() {
+            self.respond_permission(false, cx);
+            return;
+        }
         if let Some(selection) = self.selection.clone()
             && selection.read(cx).has_selection()
         {
@@ -1921,12 +2198,15 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        self.close_menus_on_escape(cx);
+        if self.close_menus_on_escape(cx) {
+            return;
+        }
+        self.stop(cx);
     }
 
     /// Escape with nothing else to dismiss: close whichever chip menu is
-    /// open (including the folder picker).
-    fn close_menus_on_escape(&mut self, cx: &mut Context<Self>) {
+    /// open (including the folder picker). Reports whether one was open.
+    fn close_menus_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
         if self.models_menu_open || self.mode_menu_open || self.mcp_menu_open || self.root_menu_open
         {
             self.models_menu_open = false;
@@ -1934,7 +2214,9 @@ impl ChatScreen {
             self.mcp_menu_open = false;
             self.root_menu_open = false;
             cx.notify();
+            return true;
         }
+        false
     }
 
     /// Copy the transcript drag selection, when there is one.
@@ -3318,6 +3600,21 @@ impl Render for ChatScreen {
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
         self.window_active = window.is_window_active();
+        if self.root_menu_focus_pending {
+            self.root_menu_focus_pending = false;
+            if let Some(handle) = self.root_menu_focus.clone() {
+                window.focus(&handle);
+            }
+        } else if !self.root_menu_open
+            && let Some(handle) = self.root_menu_focus.clone()
+            && handle.is_focused(window)
+            && let Some(composer) = self.composer.clone()
+        {
+            // The menu closed while it held the focus; typing belongs to
+            // the composer again.
+            let handle = composer.read(cx).focus_handle(cx);
+            window.focus(&handle);
+        }
         if self.question_focus_pending {
             self.question_focus_pending = false;
             if self.current_question().is_some()
@@ -3409,6 +3706,19 @@ impl Render for ChatScreen {
             .key_context("Chat")
             .on_action(cx.listener(Self::chat_escape))
             .on_action(cx.listener(Self::copy_selection))
+            .on_action(cx.listener(Self::new_task_action))
+            .on_action(cx.listener(Self::focus_search))
+            .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::toggle_archived))
+            .on_action(cx.listener(Self::open_app_settings))
+            .on_action(cx.listener(Self::choose_project))
+            .on_action(cx.listener(Self::root_menu_previous))
+            .on_action(cx.listener(Self::root_menu_next))
+            .on_action(cx.listener(Self::root_menu_confirm))
+            .on_action(cx.listener(Self::previous_task))
+            .on_action(cx.listener(Self::next_task))
+            .on_action(cx.listener(Self::allow_permission))
+            .on_action(cx.listener(Self::pick_question_option))
             .on_action(cx.listener(Self::select_all_transcript))
             .on_key_down(cx.listener(Self::type_into_composer))
             .flex_1()

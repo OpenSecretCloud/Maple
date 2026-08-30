@@ -485,6 +485,25 @@ mod state_tests {
         });
     }
 
+    /// Escape answers a showing prompt before it reaches the running
+    /// task: a permission card is denied, not left behind by a stop.
+    #[gpui::test]
+    fn test_escape_denies_a_showing_permission(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.pending_permissions.push(PendingPermission {
+                session_id: "s1".to_string(),
+                run_id: "r1".to_string(),
+                request_id: "req-1".to_string(),
+                tool_name: "shell".to_string(),
+                prompt: None,
+                arguments: "".into(),
+            });
+            this.escape(cx);
+            assert!(this.permission_responding);
+        });
+    }
+
     #[gpui::test]
     fn test_first_agent_item_clears_waiting_state(cx: &mut TestAppContext) {
         let screen = screen(cx);
@@ -1416,6 +1435,35 @@ mod state_tests {
         });
     }
 
+    /// Alt-Up and Alt-Down walk the current project's task rows in the
+    /// order the sidebar shows them, and stop at both ends. A task under
+    /// another project is not a step away: opening it switches the
+    /// runtime root, which re-sorts the sidebar under the keys.
+    #[gpui::test]
+    fn test_task_stepping_stays_in_the_current_project(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            let mut other = summary("s3", "C");
+            other.project_root = "/work/beta".to_string();
+            this.sessions = vec![summary("s1", "A"), summary("s2", "B"), other];
+            this.project_root = Some("/tmp/proj".to_string());
+            this.rebuild_project_groups();
+            assert_eq!(this.task_step_target(1), Some((4, "s2".to_string())));
+            assert_eq!(this.task_step_target(-1), None, "the first task is the top");
+            this.selected_session = Some("s2".to_string());
+            assert_eq!(this.task_step_target(-1), Some((3, "s1".to_string())));
+            assert_eq!(
+                this.task_step_target(1),
+                None,
+                "the next project's task is not a step away"
+            );
+            // With nothing selected, each direction enters from its end.
+            this.selected_session = None;
+            assert_eq!(this.task_step_target(1), Some((3, "s1".to_string())));
+            assert_eq!(this.task_step_target(-1), Some((4, "s2".to_string())));
+        });
+    }
+
     #[gpui::test]
     fn test_sidebar_entries_follow_folds(cx: &mut TestAppContext) {
         let screen = screen(cx);
@@ -1805,6 +1853,97 @@ mod state_tests {
             cx.update(|window, app| window.focused(app)),
             Some(transcript_focus),
             "enter and tab must not steal focus from the transcript"
+        );
+    }
+
+    /// Ctrl-P opens the project menu, takes the focus off the composer,
+    /// and walks its rows with plain arrow keys. Closing the menu gives
+    /// the composer its focus back.
+    #[gpui::test]
+    fn test_project_menu_walks_with_the_arrow_keys(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            ChatScreen::new(backend, "user".to_string(), cx)
+        });
+        chat.update(cx, |this, _cx| {
+            this.selected_session = Some("s1".to_string());
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        let composer_handle =
+            cx.update(|_window, app| chat.read(app).composer.clone().unwrap().focus_handle(app));
+        cx.update(|window, _| window.focus(&composer_handle));
+        // Set after the window exists: the startup refresh replaces the
+        // recent roots as soon as the screen runs.
+        cx.update(|_window, app| {
+            chat.update(app, |this, _cx| {
+                this.recent_roots = vec!["/one".to_string(), "/two".to_string()];
+            })
+        });
+
+        cx.simulate_keystrokes("ctrl-p");
+        assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
+        assert_ne!(
+            cx.update(|window, app| window.focused(app)),
+            Some(composer_handle.clone()),
+            "the open menu must hold the focus, or the arrows type instead"
+        );
+
+        // Two recent roots and the "New project…" row: down, down, down
+        // wraps back to the first.
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            Some(0)
+        );
+        cx.simulate_keystrokes("down down");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            Some(2)
+        );
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            Some(0)
+        );
+        cx.simulate_keystrokes("up");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            Some(2)
+        );
+
+        // Enter on a recent root asks for the switch and closes the menu;
+        // the composer takes the typing back.
+        cx.simulate_keystrokes("up up");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            Some(0)
+        );
+        cx.simulate_keystrokes("enter");
+        assert!(!cx.update(|_window, app| chat.read(app).root_menu_open));
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(composer_handle),
+            "closing the menu must hand the focus back"
         );
     }
 }
