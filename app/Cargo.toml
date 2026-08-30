@@ -23,6 +23,7 @@ desktop = [
     "dep:rodio",
     "dep:notify",
     "dep:spellbook",
+    "dep:wayland-client",
 ]
 # `maple-gpui acp`: the Agent Client Protocol server on stdio.
 acp = ["maple-agent/acp"]
@@ -58,6 +59,11 @@ reqwest = { workspace = true, features = ["json"] }
 percent-encoding = "2"
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
+
+# Used only to ask the compositor whether it draws window decorations; see
+# `ui::decorations`. gpui cannot answer that question.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", optional = true }
 
 [dev-dependencies]
 parking_lot = "0.12"

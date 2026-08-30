@@ -433,9 +433,7 @@ pub fn run() {
                     WindowOptions {
                         window_bounds: Some(window_bounds),
                         titlebar: Some(gpui::TitlebarOptions {
-                            title: Some(
-                                format!("Maple v{}", ui::titlebar::TitleBar::version()).into(),
-                            ),
+                            title: Some(ui::titlebar::WINDOW_TITLE.into()),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -447,7 +445,7 @@ pub fn run() {
                             user_id: None,
                             parked_chat: None,
                             settings: startup_settings.clone(),
-                            titlebar: cx.new(|_| TitleBar::new("Maple - Private AI Chat")),
+                            titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                         })
                     },
                 )

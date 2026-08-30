@@ -1,13 +1,19 @@
-//! Custom window title bar. Wayland compositors draw no server-side
-//! decorations, so the app renders its own: a drag region with a centered
-//! title plus round minimize, maximize, and close controls.
+//! Custom window title bar, drawn only when the system draws none (see
+//! `super::decorations`). That is the case on GNOME, whose compositor
+//! leaves every window undecorated: a drag region with a centered title
+//! plus round minimize, maximize, and close controls.
 
-use gpui::{Context, SharedString, Window, div, prelude::*, px};
+use gpui::{Context, Pixels, SharedString, Window, div, prelude::*, px};
 
+use super::decorations::system_draws_titlebar;
 use super::theme;
 
-const BAR_HEIGHT: gpui::Pixels = px(40.);
-const CONTROL_SIZE: gpui::Pixels = px(24.);
+/// Window title. The system bar and the app's own bar show the same text,
+/// and only one of them is ever on screen (see `super::decorations`).
+pub const WINDOW_TITLE: &str = "Maple - Private AI Chat";
+
+const BAR_HEIGHT: Pixels = px(40.);
+const CONTROL_SIZE: Pixels = px(24.);
 
 pub struct TitleBar {
     title: SharedString,
@@ -28,6 +34,12 @@ impl TitleBar {
 
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if system_draws_titlebar(window) {
+            // The window already has a title bar. A second one is the bug
+            // this check exists to prevent.
+            return div().into_any_element();
+        }
+
         let controls = window.window_controls();
         div()
             .id("title-bar")
@@ -81,6 +93,7 @@ impl Render for TitleBar {
                         cx.quit();
                     })),
             )
+            .into_any_element()
     }
 }
 

@@ -2,6 +2,7 @@
 
 pub mod chat;
 pub mod context_ring;
+pub mod decorations;
 pub mod icons;
 pub mod login;
 pub mod markdown;

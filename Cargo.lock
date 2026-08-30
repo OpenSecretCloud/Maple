@@ -5271,6 +5271,7 @@ dependencies = [
  "tower-http 0.6.11",
  "unicode-segmentation",
  "uuid",
+ "wayland-client",
  "webbrowser",
 ]
 
