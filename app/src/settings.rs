@@ -77,8 +77,8 @@ pub const TTS_VOICES: [(&str, &str); 20] = [
 /// Speech speeds the settings row cycles through.
 pub const TTS_SPEEDS: [f32; 6] = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0];
 
-pub const DEFAULT_TTS_VOICE: &str = "casual_female";
-pub const DEFAULT_TTS_SPEED: f32 = 1.0;
+const DEFAULT_TTS_VOICE: &str = "casual_female";
+const DEFAULT_TTS_SPEED: f32 = 1.0;
 
 /// Label for a voice id; the id itself when it is unknown.
 pub fn tts_voice_label(voice: &str) -> &str {

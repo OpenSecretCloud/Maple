@@ -8,7 +8,7 @@
 use std::sync::OnceLock;
 
 /// GitHub repository that publishes releases, as `owner/repo`.
-pub const DEFAULT_REPO: &str = "benthecarman/maple-gpui";
+const DEFAULT_REPO: &str = "benthecarman/maple-gpui";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateInfo {

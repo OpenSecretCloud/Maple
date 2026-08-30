@@ -187,7 +187,7 @@ pub fn open_session_db_read_only(path: &std::path::Path) -> Option<rusqlite::Con
 /// Path to the app-owned store of model-written tool call summaries for
 /// one account scope. Lives next to the agent data so it is removed with
 /// the account.
-pub fn account_summary_db(account_scope: &str) -> PathBuf {
+fn account_summary_db(account_scope: &str) -> PathBuf {
     local_data_root()
         .join("agent")
         .join("accounts")

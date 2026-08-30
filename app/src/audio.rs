@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// Sample rate of the WAV handed to transcription.
-pub const RECORDING_SAMPLE_RATE: u32 = 16_000;
+const RECORDING_SAMPLE_RATE: u32 = 16_000;
 
 /// Longest recording kept, so a forgotten microphone cannot grow without
 /// bound. Whisper requests carry the whole file in one body.
