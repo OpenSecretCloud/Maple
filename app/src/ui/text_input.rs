@@ -4,6 +4,7 @@
 //! text and grows with its content (Shift+Enter inserts a newline).
 
 use super::{spell, theme, widgets};
+use std::collections::VecDeque;
 use std::ops::Range;
 
 use gpui::{
@@ -34,6 +35,8 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Undo,
+        Redo,
     ]
 );
 
@@ -60,6 +63,10 @@ pub fn register_key_bindings(cx: &mut App) {
         KeyBinding::new("end", End, context),
         KeyBinding::new("up", Up, context),
         KeyBinding::new("down", Down, context),
+        KeyBinding::new("ctrl-z", Undo, context),
+        KeyBinding::new("cmd-z", Undo, context),
+        KeyBinding::new("ctrl-shift-z", Redo, context),
+        KeyBinding::new("cmd-shift-z", Redo, context),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, context),
     ]);
 }
@@ -125,6 +132,41 @@ pub struct TextInput {
     /// The misspelled word under the open right-click menu, with its
     /// replacement candidates.
     spell_menu: Option<(Range<usize>, Vec<String>)>,
+    /// Text states before each edit, oldest first. Capped at
+    /// [`UNDO_DEPTH`]; the oldest goes when the cap is reached.
+    undo_stack: VecDeque<EditSnapshot>,
+    /// States undone so far, newest last. An edit clears them.
+    redo_stack: Vec<EditSnapshot>,
+    /// Where the last edit left the cursor, so a run of typing or
+    /// deleting at that point folds into one undo step.
+    last_edit: Option<EditAnchor>,
+}
+
+/// How many text states one input remembers for undo.
+const UNDO_DEPTH: usize = 128;
+
+/// The content and selection before an edit.
+#[derive(Clone)]
+struct EditSnapshot {
+    content: SharedString,
+    selected_range: Range<usize>,
+    selection_reversed: bool,
+}
+
+/// The kinds of edit that fold into one undo step. Everything else
+/// (a paste, an edit over a selection, an IME composition, new text
+/// set from code) starts its own step.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    Insert,
+    Delete,
+}
+
+/// The last edit and the cursor it left behind.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct EditAnchor {
+    kind: EditKind,
+    offset: usize,
 }
 
 impl TextInput {
@@ -172,6 +214,9 @@ impl TextInput {
             misspelled: Vec::new(),
             spell_generation: 0,
             spell_menu: None,
+            undo_stack: VecDeque::new(),
+            redo_stack: Vec::new(),
+            last_edit: None,
         }
     }
 
@@ -195,6 +240,8 @@ impl TextInput {
         if self.content.get(range.clone()).is_none() {
             return;
         }
+        self.record_edit(false);
+        self.last_edit = None;
         self.content =
             (self.content[..range.start].to_owned() + replacement + &self.content[range.end..])
                 .into();
@@ -272,6 +319,8 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.record_edit(false);
+        self.last_edit = None;
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
         self.forget_text_positions();
@@ -280,6 +329,7 @@ impl TextInput {
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.forget_edits();
         self.content = "".into();
         self.selected_range = 0..0;
         self.forget_text_positions();
@@ -295,6 +345,115 @@ impl TextInput {
         self.selection_reversed = false;
         self.spell_menu = None;
         self.context_menu = None;
+    }
+
+    /// The core of an edit: swap `range` for `new_text`, record the undo
+    /// step, and refresh what the old byte ranges pointed at.
+    fn replace_range(&mut self, range: Range<usize>, new_text: &str, cx: &mut Context<Self>) {
+        // An IME composition was already recorded when it started; a
+        // single typed or deleted character continues the run the last
+        // one started; anything else is its own undo step.
+        let composing = self.marked_range.is_some();
+        let kind = if composing {
+            None
+        } else if new_text.is_empty() && !range.is_empty() {
+            Some(EditKind::Delete)
+        } else if range.is_empty() && new_text.chars().count() == 1 && new_text != "\n" {
+            Some(EditKind::Insert)
+        } else {
+            None
+        };
+        if !composing {
+            let continues = match (kind, self.last_edit) {
+                (Some(EditKind::Insert), Some(last)) => {
+                    last.kind == EditKind::Insert && last.offset == range.start
+                }
+                (Some(EditKind::Delete), Some(last)) => {
+                    last.kind == EditKind::Delete
+                        && (last.offset == range.start || last.offset == range.end)
+                }
+                _ => false,
+            };
+            self.record_edit(continues);
+        }
+
+        self.content =
+            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
+                .into();
+        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+        self.last_edit = kind.map(|kind| EditAnchor {
+            kind,
+            offset: self.selected_range.start,
+        });
+        self.marked_range.take();
+        // Menu items hold ranges into the old text.
+        self.spell_menu = None;
+        self.context_menu = None;
+        self.refresh_spelling();
+        cx.notify();
+    }
+
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            content: self.content.clone(),
+            selected_range: self.selected_range.clone(),
+            selection_reversed: self.selection_reversed,
+        }
+    }
+
+    /// Keep the text as it is now, so undo can come back to it. A step
+    /// that continues the run the last edit started is folded into it;
+    /// every recorded step drops the redo history.
+    fn record_edit(&mut self, continues_run: bool) {
+        if !continues_run {
+            if self.undo_stack.len() == UNDO_DEPTH {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(self.snapshot());
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Forget the edit history. For content that is replaced wholesale
+    /// and must not come back, such as a sent composer message.
+    fn forget_edits(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_edit = None;
+    }
+
+    fn restore(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.content;
+        self.forget_text_positions();
+        self.selected_range = snapshot.selected_range;
+        self.selection_reversed = snapshot.selection_reversed;
+        self.last_edit = None;
+        self.refresh_spelling();
+        cx.notify();
+    }
+
+    fn undo_last(&mut self, cx: &mut Context<Self>) {
+        let Some(previous) = self.undo_stack.pop_back() else {
+            return;
+        };
+        self.redo_stack.push(self.snapshot());
+        self.restore(previous, cx);
+    }
+
+    fn redo_last(&mut self, cx: &mut Context<Self>) {
+        let Some(next) = self.redo_stack.pop() else {
+            return;
+        };
+        self.undo_stack.push_back(self.snapshot());
+        self.restore(next, cx);
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        self.undo_last(cx);
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        self.redo_last(cx);
     }
 
     fn enter_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -818,17 +977,7 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
-
-        self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
-                .into();
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
-        self.marked_range.take();
-        // Menu items hold ranges into the old text.
-        self.spell_menu = None;
-        self.context_menu = None;
-        self.refresh_spelling();
-        cx.notify();
+        self.replace_range(range, new_text, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -844,6 +993,13 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+
+        // The whole composition is one undo step: record the text as it
+        // was before the first marked update.
+        if self.marked_range.is_none() {
+            self.record_edit(false);
+        }
+        self.last_edit = None;
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -1459,6 +1615,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if let Some(on_key) = this.on_key.take() {
                     let consumed = on_key(event, &this.content.clone(), window, cx);
@@ -1564,6 +1722,78 @@ mod tests {
             px(14.),
             &[run(2, None), run(3, Some(wavy))]
         ));
+    }
+
+    #[gpui::test]
+    fn test_typing_undoes_as_one_step(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("", cx));
+        input.update(cx, |input, cx| {
+            for (offset, letter) in ["h", "i"].iter().enumerate() {
+                input.replace_range(offset..offset, letter, cx);
+            }
+            assert_eq!(input.text(), "hi");
+            input.undo_last(cx);
+            assert_eq!(input.text(), "");
+            input.redo_last(cx);
+            assert_eq!(input.text(), "hi");
+            assert_eq!(input.selected_range, 2..2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_a_new_run_starts_its_own_undo_step(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("", cx));
+        input.update(cx, |input, cx| {
+            input.replace_range(0..0, "a", cx);
+            // Typing away from the last cursor is a second step.
+            input.replace_range(0..0, "b", cx);
+            assert_eq!(input.text(), "ba");
+            input.undo_last(cx);
+            assert_eq!(input.text(), "a");
+            input.undo_last(cx);
+            assert_eq!(input.text(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn test_delete_and_paste_are_their_own_steps(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("", cx));
+        input.update(cx, |input, cx| {
+            input.set_text("word", cx);
+            // A pasted run of characters never folds into typing.
+            input.replace_range(4..4, " and more", cx);
+            input.replace_range(3..13, "", cx);
+            assert_eq!(input.text(), "wor");
+            input.undo_last(cx);
+            assert_eq!(input.text(), "word and more");
+            input.undo_last(cx);
+            assert_eq!(input.text(), "word");
+            input.undo_last(cx);
+            assert_eq!(input.text(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn test_an_edit_drops_the_redo_history(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("", cx));
+        input.update(cx, |input, cx| {
+            input.set_text("one", cx);
+            input.undo_last(cx);
+            input.set_text("two", cx);
+            input.redo_last(cx);
+            assert_eq!(input.text(), "two");
+        });
+    }
+
+    #[gpui::test]
+    fn test_clear_forgets_the_history(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("", cx));
+        input.update(cx, |input, cx| {
+            input.set_text("sent message", cx);
+            input.clear(cx);
+            input.undo_last(cx);
+            assert_eq!(input.text(), "");
+        });
     }
 
     #[gpui::test]
