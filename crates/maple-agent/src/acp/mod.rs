@@ -1802,9 +1802,8 @@ mod tests {
     }
 
     #[test]
-    fn default_config_is_disabled_and_caller_mediated() {
+    fn default_config_is_caller_mediated() {
         let config = AgentAcpConfig::default();
-        assert!(!config.enabled);
         assert_eq!(config.permission_mode, AgentAcpPermissionMode::ReadOnly);
         assert_eq!(config.max_connections, 8);
     }
@@ -2348,11 +2347,27 @@ mod tests {
     }
 
     #[test]
+    fn a_config_written_before_the_enabled_flag_was_dropped_still_loads() {
+        let root = tempfile::tempdir().unwrap();
+        let user_id = "acp-legacy-user";
+        let path = config_path(root.path(), user_id).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"enabled":true,"permissionMode":"read_only","allowedProjectRoots":[],"maxConnections":4}"#,
+        )
+        .unwrap();
+
+        let config = load_config(root.path(), user_id).unwrap();
+        assert_eq!(config.max_connections, 4);
+        assert_eq!(config.permission_mode, AgentAcpPermissionMode::ReadOnly);
+    }
+
+    #[test]
     fn save_config_writes_atomically_and_round_trips() {
         let root = tempfile::tempdir().unwrap();
         let user_id = "acp-config-user";
         let config = AgentAcpConfig {
-            enabled: true,
             allowed_project_roots: vec!["/tmp/project".to_string()],
             ..AgentAcpConfig::default()
         };

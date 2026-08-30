@@ -29,8 +29,6 @@ impl AgentAcpPermissionMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAcpConfig {
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(default = "default_permission_mode")]
     pub permission_mode: AgentAcpPermissionMode,
     #[serde(default)]
@@ -50,7 +48,6 @@ fn default_max_connections() -> usize {
 impl Default for AgentAcpConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             permission_mode: default_permission_mode(),
             allowed_project_roots: Vec::new(),
             max_connections: default_max_connections(),
