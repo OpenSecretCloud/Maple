@@ -4,3 +4,5 @@
 .papercuts.jsonl
 __pycache__/
 /dist
+/result
+/result-*
