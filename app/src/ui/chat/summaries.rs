@@ -7,7 +7,8 @@ use std::sync::Arc;
 use gpui::{Context, SharedString};
 use maple_agent::agent::AgentTimelineItem;
 
-use super::{ChatScreen, attachment_refs, has_tool_input, tool_output_markdown};
+use super::ChatScreen;
+use super::transcript::{attachment_refs, has_tool_input, tool_output_markdown};
 use crate::ui::chat::images::image_format_from_bytes;
 
 impl ChatScreen {

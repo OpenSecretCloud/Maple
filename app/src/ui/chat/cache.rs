@@ -9,7 +9,9 @@ use std::rc::Rc;
 use gpui::SharedString;
 use maple_agent::agent::AgentTimelineItem;
 
-use super::{diff_lines_for, maple_display_text, tool_input_line, tool_output_markdown};
+use super::transcript::{
+    diff_lines_for, maple_display_text, tool_input_line, tool_output_markdown,
+};
 use crate::ui::markdown;
 
 /// Which text of a timeline item a parsed document belongs to.
