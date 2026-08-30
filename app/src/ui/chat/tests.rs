@@ -4,6 +4,7 @@ mod state_tests {
     use std::rc::Rc;
 
     use crate::ui::chat::cache::{MAX_DIFF_LINES, ORDINAL_SPACING};
+    use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text};
     use crate::ui::chat::*;
