@@ -66,6 +66,16 @@ pub const FONT_BODY: &str = "Manrope";
 /// Pixel display font for the empty-state heading.
 pub const FONT_DISPLAY: &str = "Array Wide";
 
+/// Code font: the platform's system monospace face, mirroring the web
+/// app's Tailwind `font-mono` stack. Linux resolves the fontconfig
+/// generic name; macOS and Windows need a concrete family.
+#[cfg(target_os = "macos")]
+pub const FONT_MONO: &str = "Menlo";
+#[cfg(target_os = "windows")]
+pub const FONT_MONO: &str = "Consolas";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const FONT_MONO: &str = "monospace";
+
 pub struct Assets;
 
 impl AssetSource for Assets {

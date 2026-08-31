@@ -612,7 +612,7 @@ fn render_tool_with_diff(
                 .gap_1()
                 .px_2()
                 .text_xs()
-                .font_family("monospace")
+                .font_family(crate::assets::FONT_MONO)
                 .child(
                     div()
                         .w(gpui::px(10.))
@@ -739,7 +739,7 @@ fn render_tool(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .font_family("monospace")
+                .font_family(crate::assets::FONT_MONO)
                 .overflow_x_hidden()
                 .child(input.clone()),
         );
@@ -1134,7 +1134,7 @@ pub(super) fn render_permission_card(
             div()
                 .text_xs()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .font_family("monospace")
+                .font_family(crate::assets::FONT_MONO)
                 .max_h(gpui::px(120.))
                 .overflow_hidden()
                 .child(arguments),

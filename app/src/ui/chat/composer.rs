@@ -422,7 +422,7 @@ impl ChatScreen {
                     })
                     .child(
                         div()
-                            .font_family("monospace")
+                            .font_family(crate::assets::FONT_MONO)
                             .text_color(gpui::rgb(theme::accent()))
                             .child(format!("/{}", entry.name)),
                     )

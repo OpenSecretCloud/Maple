@@ -772,7 +772,7 @@ pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -
                 .px_3()
                 .py_2()
                 .w_full()
-                .font_family("monospace")
+                .font_family(crate::assets::FONT_MONO)
                 .text_size(gpui::px(13.))
                 .text_color(gpui::rgb(theme::code_text()))
                 .child(code),

@@ -559,7 +559,7 @@ impl ChatScreen {
                     .child(
                         div()
                             .text_xs()
-                            .font_family("monospace")
+                            .font_family(crate::assets::FONT_MONO)
                             .text_color(gpui::rgb(theme::text_muted()))
                             .child(status.path.clone()),
                     )
@@ -790,7 +790,7 @@ impl ChatScreen {
                     .child(
                         div()
                             .text_xs()
-                            .font_family("monospace")
+                            .font_family(crate::assets::FONT_MONO)
                             .text_color(gpui::rgb(theme::text_muted()))
                             .child(root.to_string()),
                     )
