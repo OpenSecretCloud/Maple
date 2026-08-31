@@ -320,7 +320,11 @@ pub(crate) fn register_key_bindings(cx: &mut App) {
             Some("Chat"),
         ),
         KeyBinding::new("secondary-c", ui::chat::CopySelection, Some("Transcript")),
-        KeyBinding::new("secondary-a", ui::chat::SelectAllTranscript, Some("Transcript")),
+        KeyBinding::new(
+            "secondary-a",
+            ui::chat::SelectAllTranscript,
+            Some("Transcript"),
+        ),
         // The open project menu holds the focus, so plain keys are free.
         KeyBinding::new("up", ui::chat::RootMenuPrevious, Some("RootMenu")),
         KeyBinding::new("down", ui::chat::RootMenuNext, Some("RootMenu")),
