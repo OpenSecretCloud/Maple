@@ -914,45 +914,39 @@ impl ChatScreen {
     }
 
     fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
-        // Best-effort native directory picker as an async child on the
-        // backend runtime, so the window keeps painting. Not
-        // `spawn_blocking`: the runtime waits for blocking tasks on
-        // shutdown, so an open picker blocked quit until it was closed.
-        // `kill_on_drop` closes it with the app instead. Manual entry only
-        // when the picker cannot launch; a cancel just closes.
+        // The platform folder picker through gpui: NSOpenPanel on macOS,
+        // the common file dialog on Windows, the XDG portal on Linux.
+        // The panel closes with the app, so quit is never blocked on it.
+        // Manual entry only when the picker cannot open (e.g. a Linux
+        // desktop with no portal); a cancel just closes.
         if !self.begin_root_picker(cx) {
             return;
         }
-        let current = self.project_root.clone().unwrap_or_default();
-        self.call(
-            async move {
-                let output = tokio::process::Command::new("zenity")
-                    .arg("--file-selection")
-                    .arg("--directory")
-                    .arg("--filename")
-                    .arg(&current)
-                    .kill_on_drop(true)
-                    .output()
-                    .await;
-                match output {
-                    Ok(output) if output.status.success() => Ok(Some(
-                        String::from_utf8_lossy(&output.stdout).trim().to_string(),
-                    )),
-                    // Non-zero exit: the user cancelled the dialog.
-                    Ok(_) => Ok(None),
-                    Err(error) => Err(format!("Folder picker failed: {error}")),
-                }
-            },
-            cx,
-            |this, result, cx| {
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let picked = receiver.await;
+            this.update(cx, |this, cx| {
                 this.root_picker_open = false;
-                match result {
-                    Ok(Some(path)) if !path.is_empty() => this.switch_root(path, cx),
-                    Ok(_) => {}
-                    Err(_) => this.show_root_input(cx),
+                match picked {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            this.switch_root(path.to_string_lossy().into_owned(), cx);
+                        }
+                    }
+                    // Cancelled, or the picker dropped its channel.
+                    Ok(Ok(None)) | Err(_) => {}
+                    Ok(Err(_)) => this.show_root_input(cx),
                 }
-            },
-        );
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The root changed: update the header label, then read its branch
@@ -1084,7 +1078,7 @@ impl ChatScreen {
 
     /// Manual path entry when the native picker is unavailable.
     fn show_root_input(&mut self, cx: &mut Context<Self>) {
-        // zenity missing or cancelled: offer manual entry.
+        // The native picker could not open: offer manual entry.
         if self.root_input.is_none() {
             let input =
                 cx.new(|cx| TextInput::new("/absolute/path/to/project", cx).with_tab_index(0));

@@ -115,60 +115,39 @@ impl ChatScreen {
         if self.image_picking {
             return;
         }
-        let Some(remaining) = self.remaining_image_slots(cx) else {
+        if self.remaining_image_slots(cx).is_none() {
             return;
-        };
+        }
         self.image_picking = true;
         self.notice = None;
         cx.notify();
-        self.call(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let output = std::process::Command::new("zenity")
-                        .args([
-                            "--file-selection",
-                            "--multiple",
-                            "--separator=\n",
-                            "--title=Add images",
-                            "--file-filter=Images | *.png *.jpg *.jpeg *.webp *.PNG *.JPG *.JPEG *.WEBP",
-                        ])
-                        .output()
-                        .map_err(|error| format!("Could not open the file dialog: {error}"))?;
-                    if !output.status.success() {
-                        // Cancelled.
-                        return Ok(Vec::new());
-                    }
-                    let mut images = Vec::new();
-                    for line in String::from_utf8_lossy(&output.stdout).lines() {
-                        let path = std::path::PathBuf::from(line.trim());
-                        if path.as_os_str().is_empty() {
-                            continue;
-                        }
-                        images.push(load_draft_image(&path)?);
-                        if images.len() >= remaining {
-                            break;
-                        }
-                    }
-                    Ok(images)
-                })
-                .await
-                .map_err(|error| format!("Image picker failed: {error}"))?
-            },
-            cx,
-            |this, result, cx| {
+        // The platform file picker through gpui, native on every OS. It
+        // has no file-type filter; `add_image_paths` re-checks the limit
+        // and skips non-image files with a notice.
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let picked = receiver.await;
+            this.update(cx, |this, cx| {
                 this.image_picking = false;
-                match result {
-                    Ok(images) => {
-                        for mut image in images {
-                            image.id = this.next_draft_id();
-                            this.draft_images.push(image);
-                        }
+                match picked {
+                    Ok(Ok(Some(paths))) => this.add_image_paths(paths, cx),
+                    // Cancelled, or the picker dropped its channel.
+                    Ok(Ok(None)) | Err(_) => {}
+                    Ok(Err(error)) => {
+                        this.notice =
+                            Some(format!("Could not open the file dialog: {error}").into());
                     }
-                    Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
-            },
-        );
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Stage images dropped onto the composer. Files that are not PNG,
