@@ -2114,7 +2114,7 @@ mod tests {
         .unwrap();
         let encoded = serde_json::to_value(update).unwrap();
         assert_eq!(encoded["sessionUpdate"], "agent_message_chunk");
-        assert_eq!(encoded["content"]["text"], "Compacting the conversation…\n");
+        assert_eq!(encoded["content"]["text"], "Compacting…\n");
         assert_eq!(encoded["messageId"], "system-1");
         // Other runtime notices stay out of the ACP stream.
         assert!(timeline_update(&system_item("Thinking hard"), &mut projection, false).is_none());

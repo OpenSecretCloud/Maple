@@ -1425,7 +1425,7 @@ mod state_tests {
     fn test_maple_display_text_rebrands_compaction() {
         assert_eq!(
             maple_display_text("goose is compacting the conversation..."),
-            "Compacting the conversation…"
+            "Compacting…"
         );
         assert_eq!(
             maple_display_text("Context limit reached. Compacting to continue conversation..."),

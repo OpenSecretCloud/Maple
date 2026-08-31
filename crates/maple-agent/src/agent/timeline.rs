@@ -393,7 +393,7 @@ pub(super) fn message_to_timeline_items_with_thinking(
 /// the same wording.
 pub fn compaction_notice_text(text: &str) -> Option<&'static str> {
     match text.trim() {
-        "goose is compacting the conversation..." => Some("Compacting the conversation…"),
+        "goose is compacting the conversation..." => Some("Compacting…"),
         "Context limit reached. Compacting to continue conversation..." => {
             Some("Context limit reached — compacting to continue…")
         }

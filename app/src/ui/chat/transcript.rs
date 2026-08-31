@@ -967,6 +967,7 @@ fn render_system(item: &AgentTimelineItem) -> Div {
     if text.trim().is_empty() {
         return div();
     }
+    let text = maple_display_text(&text).into_owned();
     div()
         .text_sm()
         .text_color(gpui::rgb(theme::text_muted()))
