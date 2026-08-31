@@ -40,8 +40,8 @@ actions!(
     ]
 );
 
-/// Register the default key bindings for every TextInput. Safe to call once
-/// at startup; covers both platform modifier conventions.
+/// Register the default key bindings for every TextInput. Safe to call
+/// once at startup; `secondary-` is cmd on macOS and ctrl elsewhere.
 pub fn register_key_bindings(cx: &mut App) {
     let context = Some("TextInput");
     cx.bind_keys([
@@ -51,22 +51,16 @@ pub fn register_key_bindings(cx: &mut App) {
         KeyBinding::new("right", Right, context),
         KeyBinding::new("shift-left", SelectLeft, context),
         KeyBinding::new("shift-right", SelectRight, context),
-        KeyBinding::new("ctrl-a", SelectAll, context),
-        KeyBinding::new("cmd-a", SelectAll, context),
-        KeyBinding::new("ctrl-v", Paste, context),
-        KeyBinding::new("cmd-v", Paste, context),
-        KeyBinding::new("ctrl-c", Copy, context),
-        KeyBinding::new("cmd-c", Copy, context),
-        KeyBinding::new("ctrl-x", Cut, context),
-        KeyBinding::new("cmd-x", Cut, context),
+        KeyBinding::new("secondary-a", SelectAll, context),
+        KeyBinding::new("secondary-v", Paste, context),
+        KeyBinding::new("secondary-c", Copy, context),
+        KeyBinding::new("secondary-x", Cut, context),
         KeyBinding::new("home", Home, context),
         KeyBinding::new("end", End, context),
         KeyBinding::new("up", Up, context),
         KeyBinding::new("down", Down, context),
-        KeyBinding::new("ctrl-z", Undo, context),
-        KeyBinding::new("cmd-z", Undo, context),
-        KeyBinding::new("ctrl-shift-z", Redo, context),
-        KeyBinding::new("cmd-shift-z", Redo, context),
+        KeyBinding::new("secondary-z", Undo, context),
+        KeyBinding::new("secondary-shift-z", Redo, context),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, context),
     ]);
 }

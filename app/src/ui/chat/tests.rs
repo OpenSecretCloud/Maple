@@ -1900,7 +1900,7 @@ mod state_tests {
             })
         });
 
-        cx.simulate_keystrokes("ctrl-p");
+        cx.simulate_keystrokes("secondary-p");
         assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
         assert_ne!(
             cx.update(|window, app| window.focused(app)),
