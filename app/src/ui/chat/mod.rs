@@ -18,7 +18,6 @@ use maple_agent::agent::{
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
 use crate::ui::icons::{icon, wordmark};
-use crate::ui::markdown;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
@@ -2460,11 +2459,9 @@ impl ChatScreen {
                 let document =
                     self.markdown_cache
                         .get(&item.id, MarkdownKind::Body, revision, text, false);
-                for (index, block) in document.blocks.iter().enumerate() {
-                    if let markdown::Block::Text { text, .. } = block {
-                        selection.register(base + index as u64, text);
-                    }
-                }
+                document.for_each_selectable(|offset, text| {
+                    selection.register(base + offset, text);
+                });
             }
             selection.select_all();
             cx.notify();

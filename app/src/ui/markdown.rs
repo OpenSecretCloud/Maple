@@ -11,7 +11,7 @@
 use std::rc::Rc;
 
 use gpui::{Div, ElementId, SharedString, div, prelude::*, px};
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::rich_text::{self, Highlights, Links, RenderCtx};
 use super::theme;
@@ -119,6 +119,23 @@ impl Paragraph {
     }
 }
 
+/// Horizontal alignment of one table column, from the delimiter row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ColumnAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// One table cell: resolved text with inline styles and links, like a
+/// text block but without block-level chrome.
+#[derive(Clone)]
+pub struct TableCell {
+    pub text: SharedString,
+    pub styles: InlineStyles,
+    pub links: Links,
+}
+
 /// One parsed block. Text blocks keep inline styles as flags; colors are
 /// resolved at render time so cached documents follow theme changes.
 #[derive(Clone)]
@@ -141,7 +158,29 @@ pub enum Block {
         in_quote: bool,
         list_depth: usize,
     },
+    Table {
+        /// Rows of cells; the first row is the header.
+        rows: Rc<[Rc<[TableCell]>]>,
+        /// Per-column alignment from the delimiter row.
+        alignments: Rc<[ColumnAlign]>,
+        in_quote: bool,
+        list_depth: usize,
+    },
     Rule,
+}
+
+impl Block {
+    /// Selection ordinals this block consumes. Every block takes one
+    /// slot, except a table, whose cells are each their own selectable
+    /// paragraph.
+    pub fn ordinal_count(&self) -> u64 {
+        match self {
+            Block::Table { rows, .. } => {
+                rows.iter().map(|row| row.len() as u64).sum::<u64>().max(1)
+            }
+            _ => 1,
+        }
+    }
 }
 
 /// A parsed markdown message, ready to render any number of times.
@@ -150,16 +189,33 @@ pub struct Document {
     pub blocks: Vec<Block>,
 }
 
-fn text_block(
-    paragraph: Paragraph,
-    text_size: Option<gpui::Pixels>,
-    weight: Option<gpui::FontWeight>,
-    in_quote: bool,
-    list_depth: usize,
-) -> Block {
-    // Only styled spans become highlights; unstyled ranges inherit the
-    // ambient text style resolved at paint time. Spans keep style flags,
-    // not colors: the theme is read when the block is rendered.
+impl Document {
+    /// Visit every selectable paragraph with the ordinal offset that
+    /// [`render_with`] assigns it, so select-all can register the text
+    /// of paragraphs that never rendered.
+    pub fn for_each_selectable(&self, mut visit: impl FnMut(u64, &SharedString)) {
+        let mut offset = 0u64;
+        for block in &self.blocks {
+            match block {
+                Block::Text { text, .. } => visit(offset, text),
+                Block::Table { rows, .. } => {
+                    for (cell_ix, cell) in rows.iter().flat_map(|row| row.iter()).enumerate() {
+                        visit(offset + cell_ix as u64, &cell.text);
+                    }
+                }
+                _ => {}
+            }
+            offset += block.ordinal_count();
+        }
+    }
+}
+
+/// Merge a paragraph's styled spans and links into the shared form text
+/// blocks and table cells store. Only styled spans become highlights;
+/// unstyled ranges inherit the ambient text style resolved at paint
+/// time. Spans keep style flags, not colors: the theme is read when the
+/// block is rendered.
+fn resolve_inline(paragraph: Paragraph) -> (SharedString, InlineStyles, Links) {
     let mut styles: Vec<(std::ops::Range<usize>, InlineStyle)> = Vec::new();
     for (range, style) in paragraph.spans {
         if style.is_plain() {
@@ -179,9 +235,20 @@ fn text_block(
         .into_iter()
         .filter(|(range, _)| !range.is_empty())
         .collect();
+    (SharedString::new(paragraph.text), Rc::from(styles), links)
+}
+
+fn text_block(
+    paragraph: Paragraph,
+    text_size: Option<gpui::Pixels>,
+    weight: Option<gpui::FontWeight>,
+    in_quote: bool,
+    list_depth: usize,
+) -> Block {
+    let (text, styles, links) = resolve_inline(paragraph);
     Block::Text {
-        text: SharedString::new(paragraph.text),
-        styles: Rc::from(styles),
+        text,
+        styles,
         links,
         text_size,
         weight,
@@ -211,7 +278,12 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
     let mut container = div().flex().flex_col().gap_2().w_full().pr_6();
     // One shared name per message; each code block adds its index.
     let id_name = ctx.id_name();
+    // Blocks consume ordinal slots (see `Block::ordinal_count`); the
+    // running offset keeps table cells from colliding with later blocks.
+    let mut ordinal_offset: usize = 0;
     for (index, block) in document.blocks.iter().enumerate() {
+        let block_offset = ordinal_offset;
+        ordinal_offset += block.ordinal_count() as usize;
         container = match block {
             Block::Text {
                 text,
@@ -235,7 +307,7 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                         links.clone(),
                         *text_size,
                         *weight,
-                        ctx.for_block(index),
+                        ctx.for_block(block_offset),
                         ctx,
                     ),
                     *in_quote,
@@ -253,6 +325,16 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                     label.clone(),
                     ElementId::NamedInteger(id_name.clone(), index as u64),
                 ),
+                *in_quote,
+                *list_depth,
+            )),
+            Block::Table {
+                rows,
+                alignments,
+                in_quote,
+                list_depth,
+            } => container.child(wrap_inline(
+                table_element(rows, alignments, block_offset, ctx),
                 *in_quote,
                 *list_depth,
             )),
@@ -274,6 +356,7 @@ pub fn parse(source: &str) -> Document {
     // Open link destinations, parallel to the `link` entries pushed onto
     // `inline_flags`.
     options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
     let parser = Parser::new_ext(source, options);
 
     let mut blocks: Vec<Block> = Vec::new();
@@ -284,6 +367,14 @@ pub fn parse(source: &str) -> Document {
     let mut code_block_text: Option<String> = None;
     let mut code_block_language: Option<String> = None;
     let mut in_quote = false;
+    // The table being parsed, if any. Cells collect into `paragraph`
+    // like ordinary inline text and are taken at each cell end.
+    struct TableBuilder {
+        rows: Vec<Rc<[TableCell]>>,
+        row: Vec<TableCell>,
+        alignments: Vec<ColumnAlign>,
+    }
+    let mut table: Option<TableBuilder> = None;
 
     let current_style = |flags: &[InlineStyle]| -> InlineStyle {
         let mut style = InlineStyle::default();
@@ -367,6 +458,22 @@ pub fn parse(source: &str) -> Document {
                     });
                     link_stack.push(dest_url.to_string());
                 }
+                Tag::Table(column_alignments) => {
+                    flush_paragraph!();
+                    let alignments = column_alignments
+                        .iter()
+                        .map(|alignment| match alignment {
+                            Alignment::Center => ColumnAlign::Center,
+                            Alignment::Right => ColumnAlign::Right,
+                            Alignment::None | Alignment::Left => ColumnAlign::Left,
+                        })
+                        .collect();
+                    table = Some(TableBuilder {
+                        rows: Vec::new(),
+                        row: Vec::new(),
+                        alignments,
+                    });
+                }
                 _ => {}
             },
             Event::End(tag) => match tag {
@@ -412,6 +519,36 @@ pub fn parse(source: &str) -> Document {
                 TagEnd::Link => {
                     inline_flags.pop();
                     link_stack.pop();
+                }
+                TagEnd::TableCell => {
+                    if let Some(builder) = table.as_mut() {
+                        // Keep empty cells: they hold their column open.
+                        let (text, styles, links) = resolve_inline(paragraph.take());
+                        builder.row.push(TableCell {
+                            text,
+                            styles,
+                            links,
+                        });
+                    }
+                }
+                TagEnd::TableHead | TagEnd::TableRow => {
+                    if let Some(builder) = table.as_mut() {
+                        builder
+                            .rows
+                            .push(Rc::from(std::mem::take(&mut builder.row)));
+                    }
+                }
+                TagEnd::Table => {
+                    if let Some(builder) = table.take()
+                        && !builder.rows.is_empty()
+                    {
+                        blocks.push(Block::Table {
+                            rows: Rc::from(builder.rows),
+                            alignments: Rc::from(builder.alignments),
+                            in_quote,
+                            list_depth: list_counters.len(),
+                        });
+                    }
                 }
                 _ => {}
             },
@@ -472,6 +609,92 @@ pub fn parse(source: &str) -> Document {
         blocks.push(text_block(taken, None, None, false, 0));
     }
     Document { blocks }
+}
+
+/// Longest cell text a column's width weight counts; keeps one huge
+/// cell from starving the other columns.
+const TABLE_WEIGHT_CAP: usize = 60;
+
+/// Build a table: bordered rows of flex cells. Column widths follow the
+/// longest cell text of each column, so a short column does not take
+/// the same space as a prose column. Each cell is its own selectable
+/// paragraph at `base_offset` plus its cell index.
+fn table_element(
+    rows: &Rc<[Rc<[TableCell]>]>,
+    alignments: &[ColumnAlign],
+    base_offset: usize,
+    ctx: &RenderCtx,
+) -> Div {
+    let mut weights: Vec<usize> = Vec::new();
+    for row in rows.iter() {
+        for (col_ix, cell) in row.iter().enumerate() {
+            if weights.len() <= col_ix {
+                weights.push(1);
+            }
+            let len = cell.text.chars().count().clamp(1, TABLE_WEIGHT_CAP);
+            weights[col_ix] = weights[col_ix].max(len);
+        }
+    }
+    let total: usize = weights.iter().sum::<usize>().max(1);
+
+    let border = gpui::rgb(theme::border_subtle());
+    let mut table = div()
+        .w_full()
+        .my_1()
+        .rounded_md()
+        .border_1()
+        .border_color(border)
+        .overflow_hidden()
+        .flex()
+        .flex_col();
+    let mut ordinal = base_offset;
+    for (row_ix, row) in rows.iter().enumerate() {
+        let header = row_ix == 0;
+        let mut line = div().flex().w_full();
+        if header {
+            line = line.bg(gpui::rgb(theme::bg_code_block()));
+        }
+        if row_ix + 1 < rows.len() {
+            line = line.border_b_1().border_color(border);
+        }
+        for (col_ix, cell) in row.iter().enumerate() {
+            // Resolve the palette now, like text blocks: cached
+            // documents must not keep stale colors.
+            let highlights: Highlights = cell
+                .styles
+                .iter()
+                .map(|(range, style)| (range.clone(), style.highlight()))
+                .collect();
+            let weight = weights.get(col_ix).copied().unwrap_or(1);
+            let mut cell_div = div()
+                .flex_grow()
+                .flex_basis(gpui::relative(weight as f32 / total as f32))
+                .min_w(px(0.))
+                .px_2()
+                .py_1()
+                .overflow_hidden();
+            match alignments.get(col_ix) {
+                Some(ColumnAlign::Center) => cell_div = cell_div.text_center(),
+                Some(ColumnAlign::Right) => cell_div = cell_div.text_right(),
+                _ => {}
+            }
+            if col_ix > 0 {
+                cell_div = cell_div.border_l_1().border_color(border);
+            }
+            line = line.child(cell_div.child(rich_text::paragraph(
+                cell.text.clone(),
+                highlights,
+                cell.links.clone(),
+                None,
+                header.then_some(gpui::FontWeight::SEMIBOLD),
+                ctx.for_block(ordinal),
+                ctx,
+            )));
+            ordinal += 1;
+        }
+        table = table.child(line);
+    }
+    table
 }
 
 /// Apply list indentation and blockquote chrome to an inner block.
@@ -577,6 +800,58 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, Block::Text { text, .. } if text.trim() == "•"))
         );
+    }
+
+    #[test]
+    fn table_parses_rows_alignments_and_cell_styles() {
+        let document = parse(
+            "| Name | Age |\n\
+             | :--- | ---: |\n\
+             | **Alice** | 30 |\n\
+             | [Bob](https://b.test) | 25 |",
+        );
+        let Block::Table {
+            rows, alignments, ..
+        } = &document.blocks[0]
+        else {
+            panic!("expected a table block");
+        };
+        assert_eq!(rows.len(), 3, "header plus two body rows");
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(rows[0][0].text.as_ref(), "Name");
+        assert_eq!(rows[2][1].text.as_ref(), "25");
+        assert_eq!(
+            alignments.as_ref(),
+            &[ColumnAlign::Left, ColumnAlign::Right]
+        );
+        assert!(
+            rows[1][0].styles.iter().any(|(_, style)| style.bold),
+            "bold survives into the cell styles"
+        );
+        assert_eq!(rows[2][0].links.len(), 1);
+        assert_eq!(rows[2][0].links[0].1, "https://b.test");
+    }
+
+    #[test]
+    fn empty_table_cells_keep_their_column() {
+        let document = parse("| a | b |\n| --- | --- |\n| 1 | |");
+        let Block::Table { rows, .. } = &document.blocks[0] else {
+            panic!("expected a table block");
+        };
+        assert_eq!(rows[1].len(), 2);
+        assert_eq!(rows[1][1].text.as_ref(), "");
+    }
+
+    #[test]
+    fn table_cells_take_selection_ordinals_before_later_blocks() {
+        let document = parse("| a | b |\n| --- | --- |\n| c | d |\n\nafter");
+        let mut seen: Vec<(u64, String)> = Vec::new();
+        document.for_each_selectable(|offset, text| seen.push((offset, text.to_string())));
+        let expected: Vec<(u64, String)> = [(0, "a"), (1, "b"), (2, "c"), (3, "d"), (4, "after")]
+            .into_iter()
+            .map(|(offset, text)| (offset, text.to_string()))
+            .collect();
+        assert_eq!(seen, expected);
     }
 
     #[test]
