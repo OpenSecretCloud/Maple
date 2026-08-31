@@ -87,6 +87,12 @@ pub struct TextInput {
     /// Horizontal scroll of a single-line input so the cursor stays in
     /// view when the text is wider than the box.
     scroll_x: Pixels,
+    /// Vertical scroll of a multi-line input so text taller than the box
+    /// stays reachable. Positive values scroll down.
+    scroll_y: Pixels,
+    /// Scroll the cursor into view on the next prepaint. Set by edits and
+    /// cursor moves; a wheel scroll leaves it unset so the view stays put.
+    keep_cursor_visible: bool,
     /// Wrap long text and accept Shift+Enter newlines; the element grows
     /// with the content up to `max_lines`.
     multiline: bool,
@@ -192,6 +198,8 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             scroll_x: px(0.),
+            scroll_y: px(0.),
+            keep_cursor_visible: false,
             multiline: false,
             fill_height: false,
             max_lines: 8,
@@ -317,6 +325,7 @@ impl TextInput {
         self.last_edit = None;
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
+        self.keep_cursor_visible = true;
         self.forget_text_positions();
         self.refresh_spelling();
         cx.notify();
@@ -326,6 +335,7 @@ impl TextInput {
         self.forget_edits();
         self.content = "".into();
         self.selected_range = 0..0;
+        self.scroll_y = px(0.);
         self.forget_text_positions();
         self.misspelled.clear();
         cx.notify();
@@ -383,6 +393,7 @@ impl TextInput {
         // Menu items hold ranges into the old text.
         self.spell_menu = None;
         self.context_menu = None;
+        self.keep_cursor_visible = true;
         self.refresh_spelling();
         cx.notify();
     }
@@ -422,6 +433,7 @@ impl TextInput {
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
         self.last_edit = None;
+        self.keep_cursor_visible = true;
         self.refresh_spelling();
         cx.notify();
     }
@@ -727,6 +739,32 @@ impl TextInput {
         }
     }
 
+    /// Wheel-scroll a multi-line input whose text is taller than its box.
+    /// The event is consumed only when there is something to scroll, so a
+    /// wheel over a short input still reaches the surface behind it.
+    fn on_scroll_wheel(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(layout), Some(bounds)) = (self.last_layout.as_ref(), self.last_bounds.as_ref())
+        else {
+            return;
+        };
+        let max_scroll = layout.height() - bounds.size.height;
+        if max_scroll <= px(0.) {
+            return;
+        }
+        cx.stop_propagation();
+        let delta = event.delta.pixel_delta(layout.line_height).y;
+        let next = (self.scroll_y - delta).min(max_scroll).max(px(0.));
+        if next != self.scroll_y {
+            self.scroll_y = next;
+            cx.notify();
+        }
+    }
+
     fn show_character_palette(
         &mut self,
         _: &ShowCharacterPalette,
@@ -782,6 +820,7 @@ impl TextInput {
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         let offset = snap_to_char_boundary(&self.content, offset);
         self.selected_range = offset..offset;
+        self.keep_cursor_visible = true;
         cx.notify()
     }
 
@@ -867,6 +906,7 @@ impl TextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
+        self.keep_cursor_visible = true;
         cx.notify()
     }
 
@@ -1014,6 +1054,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.spell_menu = None;
         self.context_menu = None;
+        self.keep_cursor_visible = true;
 
         self.refresh_spelling();
         cx.notify();
@@ -1197,6 +1238,7 @@ struct TextElement {
 struct PrepaintState {
     layout: Option<TextLayout>,
     scroll_x: Pixels,
+    scroll_y: Pixels,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
 }
@@ -1368,6 +1410,8 @@ impl Element for TextElement {
         let line_height = window.line_height();
         let multiline = input.multiline;
         let last_scroll_x = input.scroll_x;
+        let last_scroll_y = input.scroll_y;
+        let keep_cursor_visible = input.keep_cursor_visible;
         let wrap_width = multiline.then_some(bounds.size.width);
         // Reuse last frame's shaping when its inputs are unchanged. Lines
         // are Arc-backed, so the clone is a refcount per line.
@@ -1432,7 +1476,34 @@ impl Element for TextElement {
             sx.min((text_width - width + px(2.)).max(px(0.)))
                 .max(px(0.))
         };
-        let text_bounds = Bounds::new(point(bounds.left() - scroll_x, bounds.top()), bounds.size);
+        // Multi-line inputs wrap instead. Scroll vertically: follow the
+        // cursor after an edit or a cursor move, keep a wheel scroll put,
+        // and clamp when the content shrinks.
+        let scroll_y = if multiline {
+            let viewport = bounds.size.height;
+            let max_scroll = (layout.height() - viewport).max(px(0.));
+            let mut sy = last_scroll_y.min(max_scroll).max(px(0.));
+            if keep_cursor_visible {
+                let cursor_y = layout
+                    .position_for_index(display_cursor)
+                    .map(|p| p.y)
+                    .unwrap_or_default();
+                if cursor_y + line_height - sy > viewport {
+                    sy = cursor_y + line_height - viewport;
+                }
+                if cursor_y < sy {
+                    sy = cursor_y;
+                }
+                sy = sy.min(max_scroll).max(px(0.));
+            }
+            sy
+        } else {
+            px(0.)
+        };
+        let text_bounds = Bounds::new(
+            point(bounds.left() - scroll_x, bounds.top() - scroll_y),
+            bounds.size,
+        );
         let (selection, cursor) = if selected_range.is_empty() {
             let cursor_pos = layout
                 .position_for_index(display_cursor)
@@ -1499,16 +1570,17 @@ impl Element for TextElement {
                     ),
                     color,
                 ));
-                let mut y = start_pos.y + line_height;
-                while y < end_pos.y {
+                if start_pos.y + line_height < end_pos.y {
                     quads.push(fill(
                         Bounds::from_corners(
-                            point(text_bounds.left(), text_bounds.top() + y),
-                            point(text_bounds.right(), text_bounds.top() + y + line_height),
+                            point(
+                                text_bounds.left(),
+                                text_bounds.top() + start_pos.y + line_height,
+                            ),
+                            point(text_bounds.right(), text_bounds.top() + end_pos.y),
                         ),
                         color,
                     ));
-                    y += line_height;
                 }
                 quads.push(fill(
                     Bounds::from_corners(
@@ -1526,9 +1598,16 @@ impl Element for TextElement {
         if !multiline && last_scroll_x != scroll_x {
             self.input.update(cx, |input, _| input.scroll_x = scroll_x);
         }
+        if multiline && (last_scroll_y != scroll_y || keep_cursor_visible) {
+            self.input.update(cx, |input, _| {
+                input.scroll_y = scroll_y;
+                input.keep_cursor_visible = false;
+            });
+        }
         PrepaintState {
             layout: Some(layout),
             scroll_x,
+            scroll_y,
             cursor,
             selection,
         }
@@ -1552,7 +1631,10 @@ impl Element for TextElement {
         );
         let layout = prepaint.layout.take().unwrap();
         let text_bounds = Bounds::new(
-            point(bounds.left() - prepaint.scroll_x, bounds.top()),
+            point(
+                bounds.left() - prepaint.scroll_x,
+                bounds.top() - prepaint.scroll_y,
+            ),
             bounds.size,
         );
         let focused = focus_handle.is_focused(window);
@@ -1564,16 +1646,21 @@ impl Element for TextElement {
             }
             let mut origin = text_bounds.origin;
             for line in &layout.lines {
-                line.paint(
-                    origin,
-                    layout.line_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                )
-                .ok();
-                origin.y += line.size(layout.line_height).height;
+                let height = line.size(layout.line_height).height;
+                // A scrolled input shapes every line but paints only the
+                // rows inside the box.
+                if origin.y + height >= bounds.top() && origin.y <= bounds.bottom() {
+                    line.paint(
+                        origin,
+                        layout.line_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .ok();
+                }
+                origin.y += height;
             }
             if focused && let Some(cursor) = cursor {
                 window.paint_quad(cursor);
@@ -1654,6 +1741,9 @@ impl Render for TextInput {
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .when(self.multiline, |el| {
+                el.on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            })
             .w_full()
             .when(self.multiline && self.fill_height, |el| el.h_full())
             .child(TextElement { input: cx.entity() })
@@ -1788,6 +1878,71 @@ mod tests {
             input.undo_last(cx);
             assert_eq!(input.text(), "");
         });
+    }
+
+    #[gpui::test]
+    fn test_multiline_text_taller_than_the_box_scrolls(cx: &mut TestAppContext) {
+        struct Host {
+            input: Entity<TextInput>,
+        }
+        impl Render for Host {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                // Fixed size: the harness does not apply the window bounds
+                // to the root view.
+                div()
+                    .w(px(300.))
+                    .h(px(400.))
+                    .flex()
+                    .flex_col()
+                    .child(self.input.clone())
+            }
+        }
+
+        let input = cx.new(|cx| TextInput::new("", cx).multiline(8));
+        // Enough text to wrap far past eight rows in a 300 px box.
+        input.update(cx, |input, cx| input.set_text(&"word ".repeat(400), cx));
+        let (_host, cx) = cx.add_window_view(|_window, _cx| Host {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(300.), px(400.)));
+
+        // The cursor sits at the end of the text, so the first draw must
+        // scroll the view down to keep it visible.
+        let scrolled = cx.update(|_window, app| input.read(app).scroll_y);
+        assert!(
+            scrolled > px(0.),
+            "the view must follow the cursor to the bottom, got {scrolled:?}"
+        );
+
+        // A wheel over the input moves the view up and stays put: prepaint
+        // must not snap back to the cursor without a new edit.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(px(150.), px(10.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(50.))),
+            ..Default::default()
+        });
+        let wheeled = cx.update(|_window, app| input.read(app).scroll_y);
+        assert!(
+            wheeled < scrolled,
+            "the wheel must scroll the text up, got {wheeled:?} from {scrolled:?}"
+        );
+
+        // Typing pulls the cursor back into view; in test mode the dirty
+        // window redraws at the end of the update.
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.replace_text_in_range(None, "!", window, cx)
+            })
+        });
+        let followed = cx.update(|_window, app| input.read(app).scroll_y);
+        assert!(
+            followed > wheeled,
+            "an edit must scroll the cursor back into view, got {followed:?}"
+        );
     }
 
     #[gpui::test]
