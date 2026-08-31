@@ -99,10 +99,10 @@ impl ArmedLoginShellChild {
 
 impl Drop for ArmedLoginShellChild {
     fn drop(&mut self) {
-        if self.armed {
-            if let Err(error) = self.child.start_kill() {
-                log::debug!("Failed to terminate dropped macOS login-shell PATH probe: {error}");
-            }
+        if self.armed
+            && let Err(error) = self.child.start_kill()
+        {
+            log::debug!("Failed to terminate dropped macOS login-shell PATH probe: {error}");
         }
     }
 }
