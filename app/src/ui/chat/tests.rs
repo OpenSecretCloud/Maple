@@ -601,6 +601,68 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_question_typed_text_rides_along_with_picked_option(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let event = AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: "q3".to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                id: "pick".to_string(),
+                header: "Pick".to_string(),
+                question: "Pick one".to_string(),
+                options: vec![maple_agent::agent::AgentQuestionOption {
+                    label: "A".to_string(),
+                    description: "First".to_string(),
+                }],
+            }],
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(event, cx);
+            this.select_question_option(0, 0, cx);
+            let input = this.pending_question_input.clone().expect("input exists");
+            input.update(cx, |input, cx| input.set_text("  but only on Linux  ", cx));
+            let answer = this.composed_question_answer(cx);
+            let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            let answers = parsed["answers"]["pick"]["answers"].as_array().unwrap();
+            assert_eq!(answers.len(), 2);
+            assert_eq!(answers[0], "A");
+            assert_eq!(answers[1], "Additional note: but only on Linux");
+        });
+    }
+
+    #[gpui::test]
+    fn test_question_option_click_toggles_off(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        let event = AgentServiceEvent::Question {
+            session_id: "s1".to_string(),
+            request_id: "q4".to_string(),
+            questions: vec![maple_agent::agent::AgentQuestion {
+                id: "pick".to_string(),
+                header: "Pick".to_string(),
+                question: "Pick one".to_string(),
+                options: vec![maple_agent::agent::AgentQuestionOption {
+                    label: "A".to_string(),
+                    description: "First".to_string(),
+                }],
+            }],
+        };
+        screen.update(cx, |this, cx| {
+            this.handle_service_event(event, cx);
+            // Clicking the picked option again clears it; the typed text
+            // then stands alone.
+            this.toggle_question_option(0, 0, cx);
+            assert_eq!(this.question_selected.get(&0), Some(&0));
+            this.toggle_question_option(0, 0, cx);
+            assert!(this.question_selected.is_empty());
+            let input = this.pending_question_input.clone().expect("input exists");
+            input.update(cx, |input, cx| input.set_text("something else", cx));
+            let answer = this.composed_question_answer(cx);
+            let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            assert_eq!(parsed["answers"]["pick"]["answers"][0], "something else");
+        });
+    }
+
+    #[gpui::test]
     fn test_sidebar_filter_hides_non_matching_tasks_and_empty_projects(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, _| {

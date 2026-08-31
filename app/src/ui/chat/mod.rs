@@ -3041,8 +3041,9 @@ impl ChatScreen {
         self.answer_question(composed, cx);
     }
 
-    /// The answer for one step: picked option label, else typed text,
-    /// else an explicit placeholder so the model sees it was skipped.
+    /// The answer for one step: picked option label plus any typed text
+    /// as a note, else typed text alone, else an explicit placeholder so
+    /// the model sees it was skipped.
     fn step_answer(
         &self,
         question: &crate::backend::PendingQuestion,
@@ -3052,18 +3053,25 @@ impl ChatScreen {
         let Some(entry) = question.questions.get(step) else {
             return vec!["(no answer provided)".to_string()];
         };
-        if let Some(option_index) = self.question_selected.get(&step)
-            && let Some(option) = entry.options.get(*option_index)
-        {
-            return vec![option.label.clone()];
-        }
         let typed = self
             .pending_question_input
             .as_ref()
             .map(|input| input.read(cx).text())
             .unwrap_or_default();
-        if !typed.trim().is_empty() {
-            return vec![typed.trim().to_string()];
+        let typed = typed.trim();
+        if let Some(option_index) = self.question_selected.get(&step)
+            && let Some(option) = entry.options.get(*option_index)
+        {
+            let mut answer = vec![option.label.clone()];
+            if !typed.is_empty() {
+                // The prefix keeps the note from reading as a second
+                // picked option in the echoed answers array.
+                answer.push(format!("Additional note: {typed}"));
+            }
+            return answer;
+        }
+        if !typed.is_empty() {
+            return vec![typed.to_string()];
         }
         vec!["(no answer provided)".to_string()]
     }
@@ -3160,6 +3168,23 @@ impl ChatScreen {
     ) {
         self.question_selected.insert(question_index, option_index);
         cx.notify();
+    }
+
+    /// Click handler for an option row: clicking the picked option again
+    /// clears it so a typed answer can stand alone. Ctrl-N keeps plain
+    /// select semantics because it submits immediately.
+    fn toggle_question_option(
+        &mut self,
+        question_index: usize,
+        option_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.question_selected.get(&question_index) == Some(&option_index) {
+            self.question_selected.remove(&question_index);
+            cx.notify();
+        } else {
+            self.select_question_option(question_index, option_index, cx);
+        }
     }
 
     /// Codex response JSON assembled from the recorded step answers.

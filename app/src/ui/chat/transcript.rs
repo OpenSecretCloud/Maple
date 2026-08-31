@@ -1089,7 +1089,7 @@ pub(super) fn render_question_card(
                     })
                     .on_click({
                         cx.listener(move |this, _event, _window, cx| {
-                            this.select_question_option(question_index, option_index, cx);
+                            this.toggle_question_option(question_index, option_index, cx);
                         })
                     })
                     .child(marker)
@@ -1099,7 +1099,8 @@ pub(super) fn render_question_card(
         card = card.child(block);
     }
     // "Other (type your own)": one shared free-form answer per card; it
-    // stands in for any question left without a picked option.
+    // stands in for a question without a picked option and rides along
+    // as a note when an option is picked too.
     if let Some(input) = input {
         card = card.child(
             div()
