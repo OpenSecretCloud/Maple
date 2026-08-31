@@ -20,7 +20,8 @@ use crate::ui::text_input;
 use crate::ui::titlebar::TitleBar;
 
 enum Screen {
-    /// Startup: the saved session is being validated off the UI thread.
+    /// Construction placeholder. `run` replaces it before the first paint
+    /// with the chat screen (saved sign-in) or the login form.
     Restoring,
     Login(Entity<LoginScreen>),
     Chat(Entity<ChatScreen>),
@@ -96,6 +97,10 @@ impl MapleApp {
 
     /// Show the chat screen for a signed-in account and wire its events.
     fn open_chat(&mut self, user_id: String, cx: &mut Context<Self>) {
+        log::debug!(
+            "startup: chat screen open at {} ms",
+            crate::startup_elapsed()
+        );
         let backend = self.backend.clone();
         let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
         // The release check may have finished while the login screen was
@@ -181,6 +186,10 @@ impl MapleApp {
 
 impl Render for MapleApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        static FIRST_RENDER: std::sync::Once = std::sync::Once::new();
+        FIRST_RENDER.call_once(|| {
+            log::debug!("startup: first render at {} ms", crate::startup_elapsed());
+        });
         remember_window_state(window);
         if ui::theme::resolve(window.appearance()) {
             // Every view reads the palette in render; make them all redo it.
@@ -202,8 +211,8 @@ impl Render for MapleApp {
     }
 }
 
-/// Shown while the saved session is validated. Offline that can take up
-/// to the backend's 30 s timeout, so it must not delay the window.
+/// Shown only if a paint happens before `run` picks the first screen,
+/// which places it in the same event-loop turn as the window open.
 fn restoring_view() -> gpui::Div {
     div()
         .flex_1()
@@ -334,10 +343,15 @@ pub(crate) fn register_key_bindings(cx: &mut App) {
 
 pub fn run() {
     crate::init_logging(crate::LogOutput::FileAndStderr);
+    log::debug!("startup: logging ready at {} ms", crate::startup_elapsed());
 
     // One read of settings.json for the whole startup: the backend, the
     // theme, the window geometry, and the root view all take it from here.
     let startup_settings = crate::settings::load_settings();
+    log::debug!(
+        "startup: settings loaded at {} ms",
+        crate::startup_elapsed()
+    );
     let backend = Arc::new(
         AgentBackend::new(
             crate::configured_api_url(),
@@ -345,10 +359,12 @@ pub fn run() {
         )
         .expect("failed to initialize agent backend"),
     );
+    log::debug!("startup: backend ready at {} ms", crate::startup_elapsed());
 
     Application::new()
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
+            log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
             if let Err(error) = cx.text_system().add_fonts(
                 crate::assets::FONTS
                     .iter()
@@ -399,29 +415,44 @@ pub fn run() {
                     },
                 )
                 .expect("failed to open main window");
-            // Validate the saved session on the backend runtime. The
-            // window is already up, so a slow or offline backend shows
-            // "Signing in…" instead of nothing. restore_now blocks on the
-            // runtime, which is allowed from a blocking-pool thread.
+            log::debug!("startup: window open at {} ms", crate::startup_elapsed());
+            // Saved credentials are trusted at once: the chat screen opens
+            // with the account's local task list while the server validates
+            // the credentials in the background. Only a definitive rejection
+            // returns to the login form; offline the local history stays
+            // readable and the runtime start reports the connection error.
             {
-                let restore_backend = backend.clone();
-                let restore = backend.spawn(async move {
-                    tokio::task::spawn_blocking(move || restore_backend.restore_now())
-                        .await
-                        .ok()
-                        .flatten()
-                });
                 let root_window = window;
-                cx.spawn(async move |cx| {
-                    let restored = restore.await.ok().flatten();
-                    root_window
-                        .update(cx, |app: &mut MapleApp, _window, cx| match restored {
-                            Some(user_id) => app.open_chat(user_id, cx),
-                            None => app.show_login(cx),
+                match backend.saved_user_id() {
+                    Some(user_id) => {
+                        let restore = backend.restore_in_background();
+                        root_window
+                            .update(cx, |app: &mut MapleApp, _window, cx| {
+                                app.open_chat(user_id, cx);
+                            })
+                            .ok();
+                        cx.spawn(async move |cx| {
+                            let outcome = restore.await.ok();
+                            log::debug!(
+                                "startup: credential validation done at {} ms ({outcome:?})",
+                                crate::startup_elapsed()
+                            );
+                            if outcome == Some(crate::backend::RestoreOutcome::Rejected) {
+                                root_window
+                                    .update(cx, |app: &mut MapleApp, _window, cx| {
+                                        app.show_login(cx);
+                                    })
+                                    .ok();
+                            }
                         })
-                        .ok();
-                })
-                .detach();
+                        .detach();
+                    }
+                    None => {
+                        root_window
+                            .update(cx, |app: &mut MapleApp, _window, cx| app.show_login(cx))
+                            .ok();
+                    }
+                }
             }
             // Ask for a newer release off the UI thread; the banner shows
             // in the chat when one exists.

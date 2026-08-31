@@ -100,7 +100,23 @@ impl ProxyArgs {
     }
 }
 
+/// Process start time, for the startup milestone logs. Set once at the
+/// top of `main`; `startup_elapsed` reads it from anywhere.
+#[cfg(feature = "desktop")]
+static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Milliseconds since `main` began.
+#[cfg(feature = "desktop")]
+pub(crate) fn startup_elapsed() -> u128 {
+    PROCESS_START
+        .get()
+        .map(|start| start.elapsed().as_millis())
+        .unwrap_or(0)
+}
+
 fn main() {
+    #[cfg(feature = "desktop")]
+    let _ = PROCESS_START.set(std::time::Instant::now());
     let cli = Cli::parse();
     match cli.mode {
         Some(Mode::Acp { .. }) => {

@@ -57,6 +57,30 @@ pub struct AuthSession {
     pub user_id: String,
 }
 
+/// Result of the background credential validation started by
+/// [`AgentBackend::restore_in_background`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    /// The server accepted the saved credentials; the session is installed.
+    Valid(String),
+    /// The server rejected the saved credentials; they were cleared.
+    Rejected,
+    /// Offline, timeout, or a server fault. The credentials may still be
+    /// good, so they are kept for the next launch.
+    Unavailable,
+}
+
+/// Everything the chat screen can show before any network call: the saved
+/// project root, the task list, the recent roots, and the newest task's
+/// transcript. Read in one backend call so it all lands before a runtime
+/// start takes the lifecycle lock for its network round trips.
+pub struct LocalBootstrap {
+    pub project_root: Option<String>,
+    pub sessions: Vec<AgentSessionSummary>,
+    pub recent_roots: Vec<String>,
+    pub latest: Option<AgentSessionDetail>,
+}
+
 pub struct AgentBackend {
     runtime: Runtime,
     service: MapleAgentService,
@@ -74,6 +98,12 @@ pub struct AgentBackend {
     /// Open handle to the app-owned tool summary store; keyed by account
     /// scope path so a user switch reopens it.
     summary_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
+    /// True while a background credential restore runs. Calls that need a
+    /// validated session wait on it (see `session_for`); local reads do not.
+    restore_pending: (
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Receiver<bool>,
+    ),
 }
 
 fn configured_client_id() -> Uuid {
@@ -356,6 +386,7 @@ impl AgentBackend {
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
             usage_db: Arc::new(std::sync::Mutex::new(None)),
             summary_db: std::sync::Mutex::new(None),
+            restore_pending: tokio::sync::watch::channel(false),
         })
     }
 
@@ -481,44 +512,87 @@ impl AgentBackend {
         }
     }
 
+    /// The account id saved by a previous sign-in, without validating it.
+    /// A local file read, so the UI may show the account's data at once
+    /// while [`Self::restore_in_background`] validates the credentials.
+    pub fn saved_user_id(&self) -> Option<String> {
+        self.load_persisted_auth().map(|(user_id, _, _)| user_id)
+    }
+
     /// Restore a persisted session before the UI starts. Validates the
     /// credentials against the backend; returns the account id on success.
     pub fn restore_now(&self) -> Option<String> {
-        let (user_id, access_token, refresh_token) = self.load_persisted_auth()?;
-        let api_url = self.api_url.clone();
-        let auth = &self.auth;
-        let result = self.runtime.block_on(async move {
-            let request = MapleApiAuthRequest {
-                user_id,
-                api_url,
-                access_token,
-                refresh_token,
-            };
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                auth.set_auth(self.auth_sink(), request),
-            )
-            .await
-            {
-                Ok(Ok(snapshot)) => Ok(snapshot.user_id),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Err("timeout".to_string()),
-            }
-        });
+        match self.runtime.block_on(self.validate_persisted_auth()) {
+            RestoreOutcome::Valid(user_id) => Some(user_id),
+            RestoreOutcome::Rejected | RestoreOutcome::Unavailable => None,
+        }
+    }
+
+    /// Validate the persisted credentials on the backend runtime while the
+    /// UI already shows the account's local data. Calls that need the
+    /// session wait for this to finish (see `session_for`).
+    pub fn restore_in_background(self: &Arc<Self>) -> tokio::task::JoinHandle<RestoreOutcome> {
+        let _ = self.restore_pending.0.send(true);
+        let this = self.clone();
+        self.runtime.spawn(async move {
+            let outcome = this.validate_persisted_auth().await;
+            let _ = this.restore_pending.0.send(false);
+            outcome
+        })
+    }
+
+    /// Validate the saved credentials with the server and install the
+    /// session on success. Definitive rejections clear the saved file.
+    async fn validate_persisted_auth(&self) -> RestoreOutcome {
+        let Some((user_id, access_token, refresh_token)) = self.load_persisted_auth() else {
+            return RestoreOutcome::Rejected;
+        };
+        let request = MapleApiAuthRequest {
+            user_id,
+            api_url: self.api_url.clone(),
+            access_token,
+            refresh_token,
+        };
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.auth.set_auth(self.auth_sink(), request),
+        )
+        .await
+        {
+            Ok(Ok(snapshot)) => Ok(snapshot.user_id),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err("timeout".to_string()),
+        };
         match result {
-            Ok(user_id) => Some(user_id),
+            Ok(user_id) => RestoreOutcome::Valid(user_id),
             Err(error) if maple_agent::maple_api::is_auth_rejection(&error) => {
                 log::debug!("persisted auth rejected: {error:?}");
                 Self::clear_persisted_auth();
-                None
+                RestoreOutcome::Rejected
             }
             Err(error) => {
                 // Offline, timeout, or a server fault: the credentials may
                 // still be good, so keep them for the next launch.
                 log::warn!("persisted auth could not be validated: {error}");
-                None
+                RestoreOutcome::Unavailable
             }
         }
+    }
+
+    /// The validated session for `user_id`, waiting first for a background
+    /// credential restore that is still in flight. Local reads never call
+    /// this; only backend requests that spend the credentials do.
+    async fn session_for(
+        &self,
+        user_id: &str,
+    ) -> Result<Arc<maple_agent::maple_api::MapleApiSession>, String> {
+        let mut pending = self.restore_pending.1.clone();
+        while *pending.borrow() {
+            if pending.changed().await.is_err() {
+                break;
+            }
+        }
+        self.auth.session_for(user_id).await
     }
 
     /// Sign out completely: forget persisted credentials, then clear the
@@ -649,7 +723,7 @@ impl AgentBackend {
         user_id: &str,
     ) -> Result<Option<crate::billing::PlanUsage>, String> {
         use crate::billing::BillingError;
-        let session = self.auth.session_for(user_id).await?;
+        let session = self.session_for(user_id).await?;
         let cached = self.billing_tokens.lock().await.get(user_id).cloned();
         let mut token = match cached {
             Some(token) => token,
@@ -711,7 +785,7 @@ impl AgentBackend {
         request: Option<AgentStartRequest>,
     ) -> Result<AgentRuntimeStatus, String> {
         let handle = self.service.handle_for_user(user_id).await?;
-        let session = self.auth.session_for(user_id).await?;
+        let session = self.session_for(user_id).await?;
         // The agent falls back to the process working directory when no root
         // is given. That is right for `maple acp`, not for the GUI: pick the
         // saved root or the home directory instead.
@@ -751,7 +825,7 @@ impl AgentBackend {
     pub fn run_acp_stdio(&self, user_id: &str) -> Result<(), String> {
         self.runtime.block_on(async {
             let handle = self.service.handle_for_user(user_id).await?;
-            let session = self.auth.session_for(user_id).await?;
+            let session = self.session_for(user_id).await?;
             handle.start(session, None).await?;
             let config = maple_agent::acp::load_acp_config(&local_data_root(), user_id)?;
             let result = maple_agent::acp::serve_stdio(handle.clone(), config).await;
@@ -783,7 +857,7 @@ impl AgentBackend {
     ) -> Result<AgentRuntimeStatus, String> {
         let handle = self.service.handle_for_user(user_id).await?;
         handle.save_recent_project_root(path.clone()).await?;
-        let session = self.auth.session_for(user_id).await?;
+        let session = self.session_for(user_id).await?;
         handle
             .restart(
                 session,
@@ -811,6 +885,45 @@ impl AgentBackend {
         // to the desktop task list.
         sessions.retain(|session| !session.acp);
         Ok(sessions)
+    }
+
+    /// Read everything the chat screen can show without the network: the
+    /// saved project root, the task list, the recent roots, and the newest
+    /// task's transcript. Call it before `start_runtime`: the runtime start
+    /// holds the lifecycle lock across its network round trips, and these
+    /// reads would queue behind it.
+    pub async fn local_bootstrap(&self, user_id: &str) -> Result<LocalBootstrap, String> {
+        let handle = self.service.handle_for_user(user_id).await?;
+        let config = handle.load_config().await?;
+        let project_root = gui_project_root(&config);
+        let mut sessions = handle.list_sessions(None).await?;
+        // Tasks that an ACP client created belong to that client's UI, not
+        // to the desktop task list.
+        sessions.retain(|session| !session.acp);
+        let recent_roots = handle
+            .list_recent_project_roots()
+            .await?
+            .into_iter()
+            .map(|root| root.path)
+            .collect();
+        // Same choice refresh_sessions makes: the newest unarchived task
+        // under the root that the runtime will start in.
+        let latest_id = sessions
+            .iter()
+            .find(|session| {
+                !session.archived && Some(&session.project_root) == project_root.as_ref()
+            })
+            .map(|session| session.id.clone());
+        let latest = match latest_id {
+            Some(id) => handle.load_session(id).await.ok(),
+            None => None,
+        };
+        Ok(LocalBootstrap {
+            project_root,
+            sessions,
+            recent_roots,
+            latest,
+        })
     }
 
     pub async fn create_session(
@@ -873,7 +986,7 @@ impl AgentBackend {
         title: String,
     ) -> Result<AgentSessionSummary, String> {
         let handle = self.service.handle_for_user(user_id).await?;
-        let session = self.auth.session_for(user_id).await?;
+        let session = self.session_for(user_id).await?;
         handle
             .rename_session(
                 session,

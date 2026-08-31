@@ -804,7 +804,76 @@ impl ChatScreen {
     }
 
     /// Sign-in finished: boot the runtime, then load the workspace state.
+    /// Boot in two phases. Phase one reads everything local in one backend
+    /// call — task list, roots, and the newest transcript — so the screen
+    /// fills from disk at once. Phase two starts the runtime, which holds
+    /// the lifecycle lock across network round trips; issuing any local
+    /// read after it would queue behind that lock.
     fn start(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move {
+                let boot = backend.local_bootstrap(&user_id).await?;
+                let summaries = match &boot.latest {
+                    Some(detail) => {
+                        let store = backend.clone();
+                        let target = detail.session.id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            store.load_tool_summaries_blocking(&user_id, &target)
+                        })
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .unwrap_or_else(|error| {
+                            log::warn!("Cannot load tool summaries: {error}");
+                            HashMap::new()
+                        })
+                    }
+                    None => HashMap::new(),
+                };
+                Ok::<_, String>((boot, summaries))
+            },
+            cx,
+            |this, result, cx| {
+                match result {
+                    Ok((boot, summaries)) => {
+                        log::debug!(
+                            "startup: local bootstrap applied at {} ms ({} tasks)",
+                            crate::startup_elapsed(),
+                            boot.sessions.len()
+                        );
+                        this.project_root = boot.project_root;
+                        this.project_root_changed(cx);
+                        this.check_project_trust(cx);
+                        this.recent_roots = boot.recent_roots;
+                        this.sessions = boot.sessions;
+                        this.rebuild_project_groups();
+                        // A click that landed before this callback wins.
+                        if let Some(detail) =
+                            boot.latest.filter(|_| this.selected_session.is_none())
+                        {
+                            let summaries = summaries
+                                .into_iter()
+                                .map(|(id, summary)| (id, SharedString::from(summary)))
+                                .collect();
+                            this.upsert_session(detail.session.clone());
+                            this.set_active_session(detail.session, detail.timeline, summaries, cx);
+                            this.queue = detail.queue.items;
+                        }
+                        cx.notify();
+                    }
+                    // Not fatal: the runtime start below retreads all of it.
+                    Err(message) => log::debug!("local bootstrap unavailable: {message}"),
+                }
+                this.refresh_slash_commands(cx);
+                this.start_runtime(cx);
+            },
+        );
+    }
+
+    /// Phase two of `start`: bring the agent runtime up and fill in what
+    /// needs the network (models, plan, audio, trust of a changed root).
+    fn start_runtime(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let request = backend.default_start_request();
@@ -814,10 +883,17 @@ impl ChatScreen {
             |this, result, cx| {
                 match result {
                     Ok(status) => {
+                        log::debug!(
+                            "startup: runtime started at {} ms",
+                            crate::startup_elapsed()
+                        );
                         this.runtime_error = None;
-                        this.project_root = status.project_root;
-                        this.project_root_changed(cx);
-                        this.check_project_trust(cx);
+                        if this.project_root != status.project_root {
+                            this.project_root = status.project_root;
+                            this.project_root_changed(cx);
+                            this.check_project_trust(cx);
+                            this.refresh_slash_commands(cx);
+                        }
                     }
                     Err(message) => {
                         this.runtime_error =
@@ -828,10 +904,13 @@ impl ChatScreen {
                 cx.notify();
                 this.refresh_models(cx);
                 this.refresh_roots(cx);
-                this.refresh_slash_commands(cx);
                 this.refresh_sessions(cx);
                 this.refresh_sidebar_plan(cx);
                 this.refresh_audio_capabilities(cx);
+                // Summary requests issued before the runtime was up failed
+                // and unregistered themselves; ask again for what is still
+                // missing.
+                this.summarize_loaded_tools(cx);
             },
         );
     }
