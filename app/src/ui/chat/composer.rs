@@ -8,7 +8,7 @@ use gpui::{Context, Div, IntoElement, SharedString, div, prelude::*, px};
 use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
-use super::transcript::render_plan_row;
+use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatScreen, DraftImage, OpenSettingsSection, ROOT_MENU_RECENTS,
     SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
@@ -652,6 +652,54 @@ impl ChatScreen {
                 .overflow_hidden()
                 .child(header)
                 .child(body),
+        )
+    }
+
+    /// The subagents working for this task, pinned above the composer.
+    /// `None` when none are working, which is the common case.
+    pub(super) fn render_subagents_card(&self) -> Option<Div> {
+        if self.subagents.is_empty() {
+            return None;
+        }
+        let now = std::time::Instant::now();
+        let header = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .child(icon("users", px(14.), theme::text_secondary()))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child("Subagents"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(format!("{} running", self.subagents.len())),
+            );
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .mb_2()
+                .rounded_md()
+                .bg(gpui::rgb(theme::bg_tool_card()))
+                .border_1()
+                .border_color(gpui::rgb(theme::border_subtle()))
+                .overflow_hidden()
+                .child(header)
+                .child(
+                    div().flex().flex_col().gap_1().px_3().pb_2().children(
+                        self.subagents
+                            .iter()
+                            .map(|subagent| render_subagent_row(subagent, now)),
+                    ),
+                ),
         )
     }
 

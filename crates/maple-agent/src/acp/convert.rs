@@ -315,14 +315,14 @@ pub(super) fn acp_tool_update(
     let locations = timeline_tool_locations(item);
     let raw_input = item.input.as_ref().map(bounded_raw_json);
     let raw_output = timeline_tool_raw_output(item);
-    let title = item
-        .title
-        .clone()
-        .unwrap_or_else(|| "Maple tool".to_string());
+    let title = item.title.clone();
     if tools.seen.insert(item.id.clone()) {
-        let mut call = ToolCall::new(item.id.clone(), title)
-            .kind(kind)
-            .status(status);
+        let mut call = ToolCall::new(
+            item.id.clone(),
+            title.unwrap_or_else(|| "Maple tool".to_string()),
+        )
+        .kind(kind)
+        .status(status);
         if let Some(content) = content {
             call = call.content(content);
         }
@@ -337,10 +337,13 @@ pub(super) fn acp_tool_update(
         }
         SessionUpdate::ToolCall(call)
     } else {
-        let mut fields = ToolCallUpdateFields::new()
-            .title(title)
-            .kind(kind)
-            .status(status);
+        // A response carries no title of its own for a provider-made
+        // call ID. Leaving the field out keeps the request's title, which
+        // says what ran; a placeholder would overwrite it.
+        let mut fields = ToolCallUpdateFields::new().kind(kind).status(status);
+        if let Some(title) = title {
+            fields = fields.title(title);
+        }
         if let Some(content) = content {
             fields = fields.content(content);
         }
@@ -355,6 +358,24 @@ pub(super) fn acp_tool_update(
         }
         SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(item.id.clone(), fields))
     }
+}
+
+/// Live subagent progress as an update to the `delegate` tool call that
+/// owns it.
+///
+/// ACP has no concept of a subagent, so the tool call is where its work
+/// belongs. The content of a tool call is replaced, not appended, so this
+/// carries the latest line only, like the desktop card. The final content
+/// is the tool's own result, which arrives with the call's completion.
+pub(super) fn subagent_tool_update(delegate_id: &str, line: String) -> SessionUpdate {
+    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        delegate_id.to_string(),
+        ToolCallUpdateFields::new()
+            .status(ToolCallStatus::InProgress)
+            .content(vec![ToolCallContent::from(ContentBlock::Text(
+                TextContent::new(line),
+            ))]),
+    ))
 }
 
 pub(super) fn timeline_tool_kind(item: &AgentTimelineItem) -> ToolKind {

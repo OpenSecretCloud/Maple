@@ -13,7 +13,7 @@ use gpui::{
 use maple_agent::agent::{
     AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
     AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
-    AgentTimelineItem, SideQuestionEvent,
+    AgentSubagent, AgentTimelineItem, SideQuestionEvent,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -42,8 +42,8 @@ use self::sidebar::{
     ProjectGroup, SidebarEntry, SidebarRow, root_display_name, session_summary_eq,
 };
 use self::transcript::{
-    PlanEntry, PlanStatus, plan_entries, render_permission_card, render_question_card,
-    render_waiting_indicator,
+    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_permission_card,
+    render_question_card, render_waiting_indicator,
 };
 
 gpui::actions!(
@@ -120,6 +120,9 @@ enum RenameTarget {
 
 /// Sent prompts kept for Up/Down recall.
 const PROMPT_HISTORY_LIMIT: usize = 50;
+/// Gap between two repaints of the subagent card, which shows a live
+/// elapsed time. It runs only while a subagent works.
+const SUBAGENT_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// An image staged in the composer: the data URL the runtime stores with
 /// the message and a square thumbnail, both built off the UI thread.
@@ -305,6 +308,17 @@ pub struct ChatScreen {
     btw_sequence: u64,
     /// The pinned plan card shows only its header.
     plan_collapsed: bool,
+    /// Subagents working for the selected task, pinned above the
+    /// composer. Empty unless a `delegate` call is in flight.
+    subagents: Vec<ActiveSubagent>,
+    /// A repaint that keeps the subagent elapsed times moving is already
+    /// on its way; one at a time is enough.
+    subagent_tick_pending: std::cell::Cell<bool>,
+    /// Bumped whenever an event adds or removes a subagent row. A
+    /// snapshot from `refresh_subagents` is applied only if no event
+    /// landed while it was in flight; a stale one would wipe a row the
+    /// events already know about (or revive one they removed).
+    subagent_epoch: u64,
     /// Web tools on for the selected task (mirrors the session record).
     web_enabled: bool,
     /// Settings default applied to newly created tasks.
@@ -755,6 +769,9 @@ impl ChatScreen {
             btw: None,
             btw_sequence: 0,
             plan_collapsed: false,
+            subagents: Vec::new(),
+            subagent_tick_pending: std::cell::Cell::new(false),
+            subagent_epoch: 0,
             audio: Arc::new(crate::audio::AudioEngine::new()),
             audio_caps: maple_agent::agent::AudioCapabilities::default(),
             recording: false,
@@ -1408,6 +1425,83 @@ impl ChatScreen {
         );
     }
 
+    /// Rebuild the subagent card for the task on screen. A background
+    /// subagent outlives the turn that started it, so opening the task
+    /// later must still show it.
+    fn refresh_subagents(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let requested = session_id.clone();
+        let epoch = self.subagent_epoch;
+        self.call(
+            async move { backend.session_subagents(&user_id, &requested).await },
+            cx,
+            move |this, result, cx| {
+                let Ok(subagents) = result else {
+                    return;
+                };
+                // The answer describes the task that was on screen when it
+                // was asked for; a switch since then owns the card now.
+                if this.selected_session.as_deref() != Some(session_id.as_str()) {
+                    return;
+                }
+                this.apply_subagent_snapshot(epoch, subagents, cx);
+            },
+        );
+    }
+
+    /// Apply a runtime snapshot that was requested at `epoch`. An event
+    /// that added or removed a row while the snapshot was in flight makes
+    /// it stale: applying it would wipe the added row (later events do
+    /// not re-create it) or revive the removed one. Ask again instead;
+    /// the events already keep the card right in the meantime.
+    fn apply_subagent_snapshot(
+        &mut self,
+        epoch: u64,
+        subagents: Vec<AgentSubagent>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.subagent_epoch != epoch {
+            self.refresh_subagents(cx);
+            return;
+        }
+        self.set_subagents(subagents, cx);
+    }
+
+    /// Replace the card's rows with a runtime snapshot, keeping the rows
+    /// that are already on screen so their elapsed time does not jump.
+    fn set_subagents(&mut self, subagents: Vec<AgentSubagent>, cx: &mut Context<Self>) {
+        if subagents.is_empty() && self.subagents.is_empty() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        self.subagents = subagents
+            .into_iter()
+            .map(|subagent| {
+                let known = self
+                    .subagents
+                    .iter()
+                    .find(|known| known.id == subagent.id)
+                    .map(|known| known.started);
+                ActiveSubagent {
+                    started: known.unwrap_or_else(|| {
+                        now.checked_sub(std::time::Duration::from_millis(subagent.elapsed_ms))
+                            .unwrap_or(now)
+                    }),
+                    id: subagent.id,
+                    task: subagent.task.into(),
+                    background: subagent.background,
+                    activity: subagent.activity.map(SharedString::from),
+                }
+            })
+            .collect();
+        self.schedule_subagent_tick(cx);
+        cx.notify();
+    }
+
     fn apply_context_usage(&mut self, tokens: i64, limit: i64, cx: &mut Context<Self>) {
         self.ledger_context_tokens = tokens;
         self.context_limit = limit;
@@ -1542,6 +1636,11 @@ impl ChatScreen {
             self.close_side_thread(cx);
         }
         if changed {
+            // Subagents are shown for the task on screen only; the runtime
+            // keeps working for the one left behind. The new task's own
+            // subagents arrive with the snapshot below.
+            self.subagent_epoch += 1;
+            self.subagents.clear();
             // Item-keyed caches of the previous task would only grow for
             // the life of the window.
             self.tool_summaries.clear();
@@ -1574,6 +1673,7 @@ impl ChatScreen {
         self.summary_queue.clear();
         self.summary_requests.clear();
         self.load_attachment_images(cx);
+        self.refresh_subagents(cx);
         self.summarize_loaded_tools(cx);
         self.follow_transcript = true;
         self.awaiting_first_token = false;
@@ -1887,6 +1987,50 @@ impl ChatScreen {
             }
             _ => None,
         }
+    }
+
+    /// Pin a subagent above the composer and start its elapsed time.
+    fn start_subagent(
+        &mut self,
+        id: String,
+        task: String,
+        background: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.subagents.iter().any(|subagent| subagent.id == id) {
+            return;
+        }
+        self.subagent_epoch += 1;
+        self.subagents.push(ActiveSubagent {
+            id,
+            task: task.into(),
+            background,
+            started: std::time::Instant::now(),
+            activity: None,
+        });
+        self.schedule_subagent_tick(cx);
+    }
+
+    /// Paint once a second while a subagent works, so the elapsed time on
+    /// its row stays true. The last subagent to end stops the timer.
+    fn schedule_subagent_tick(&self, cx: &mut Context<Self>) {
+        if self.subagents.is_empty() || self.subagent_tick_pending.replace(true) {
+            return;
+        }
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor().timer(SUBAGENT_TICK).await;
+            entity
+                .update(cx, |this, cx| {
+                    this.subagent_tick_pending.set(false);
+                    if this.subagents.is_empty() {
+                        return;
+                    }
+                    this.schedule_subagent_tick(cx);
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
     }
 
     /// A throttled parse left the newest message one chunk behind: paint
@@ -3499,6 +3643,41 @@ impl ChatScreen {
                     return false;
                 }
             }
+            AgentRunEvent::SubagentStarted {
+                id,
+                task,
+                background,
+            } => {
+                if !self.is_selected(session_id) {
+                    return false;
+                }
+                self.start_subagent(id, task, background, cx);
+            }
+            AgentRunEvent::SubagentActivity { id, tool } => {
+                if !self.is_selected(session_id) {
+                    return false;
+                }
+                let Some(subagent) = self.subagents.iter_mut().find(|subagent| subagent.id == id)
+                else {
+                    return false;
+                };
+                let tool = SharedString::from(tool);
+                if subagent.activity.as_ref() == Some(&tool) {
+                    return false;
+                }
+                subagent.activity = Some(tool);
+            }
+            AgentRunEvent::SubagentFinished { id } => {
+                if !self.is_selected(session_id) {
+                    return false;
+                }
+                let before = self.subagents.len();
+                self.subagents.retain(|subagent| subagent.id != id);
+                if self.subagents.len() == before {
+                    return false;
+                }
+                self.subagent_epoch += 1;
+            }
             AgentRunEvent::SetupWarning(message) => {
                 if self.is_selected(session_id) {
                     self.notice = Some(message.into());
@@ -3534,6 +3713,16 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
+                    // A subagent the run was waiting for ended with it. A
+                    // background one works on and is collected by a later
+                    // turn, so its row stays.
+                    if self.is_selected(session_id) {
+                        let before = self.subagents.len();
+                        self.subagents.retain(|subagent| subagent.background);
+                        if self.subagents.len() != before {
+                            self.subagent_epoch += 1;
+                        }
+                    }
                     // The watcher covers checkouts; this catches a
                     // change that landed between two events.
                     self.read_branch(cx);
@@ -3690,6 +3879,7 @@ impl Render for ChatScreen {
                                 .flex_col()
                         })
                         .children(self.render_btw_card(cx))
+                        .children(self.render_subagents_card())
                         .children(self.render_plan_card(cx))
                         .child(self.render_composer(cx))
                         .children(self.render_menu_panel(cx))

@@ -19,8 +19,8 @@ use maple_agent::agent::{
     AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentProjectTrustStatus,
     AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
     AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
-    AgentSlashCommand, AgentStartRequest, MapleAgentHostResources, MapleAgentService,
-    RecentProjectRoot,
+    AgentSlashCommand, AgentStartRequest, AgentSubagent, MapleAgentHostResources,
+    MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
@@ -1156,6 +1156,21 @@ impl AgentBackend {
             .await?
             .compact_session(session_id.to_string())
             .await
+    }
+
+    /// The subagents still working for a task. A task whose run ended can
+    /// still have a background subagent; this rebuilds the card for it.
+    pub async fn session_subagents(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<Vec<AgentSubagent>, String> {
+        Ok(self
+            .service
+            .handle_for_user(user_id)
+            .await?
+            .session_subagents(session_id)
+            .await)
     }
 
     /// Slash commands (installed skills) for a working directory. Filesystem

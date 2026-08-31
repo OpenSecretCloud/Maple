@@ -14,7 +14,7 @@ use super::speech::speak_message_button;
 use super::{CONTENT_WIDTH, ChatScreen, TranscriptCtx};
 use crate::backend::PendingPermission;
 
-use crate::ui::icons::icon;
+use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::text_input::TextInput;
@@ -467,6 +467,21 @@ pub(super) struct PlanEntry {
     pub(super) status: PlanStatus,
 }
 
+/// One subagent working for the selected task.
+#[derive(Clone, Debug)]
+pub(super) struct ActiveSubagent {
+    /// Request ID of the `delegate` call that started it.
+    pub(super) id: String,
+    /// What the subagent was asked to do.
+    pub(super) task: SharedString,
+    /// It works in the background; the task collects the result later.
+    pub(super) background: bool,
+    /// When the card first showed it, for the elapsed time.
+    pub(super) started: std::time::Instant,
+    /// The tool it called most recently, if any.
+    pub(super) activity: Option<SharedString>,
+}
+
 /// The todo list carried by a todo_write tool item, or `None` for any
 /// other item.
 pub(super) fn plan_entries(item: &AgentTimelineItem) -> Option<Vec<PlanEntry>> {
@@ -492,6 +507,67 @@ pub(super) fn plan_entries(item: &AgentTimelineItem) -> Option<Vec<PlanEntry>> {
             })
             .collect(),
     )
+}
+
+/// One row of the subagent card: what the subagent was asked to do, the
+/// tool it is running now, and how long it has worked.
+pub(super) fn render_subagent_row(subagent: &ActiveSubagent, now: std::time::Instant) -> Div {
+    let elapsed = now.saturating_duration_since(subagent.started);
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(spinner(&subagent.id, px(12.), theme::status_running()))
+        .child(
+            div()
+                .flex_none()
+                .max_w(px(260.))
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_primary()))
+                .truncate()
+                .child(subagent.task.clone()),
+        );
+    if subagent.background {
+        row = row.child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child("background"),
+        );
+    }
+    row.child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .text_xs()
+            .text_color(gpui::rgb(theme::text_secondary()))
+            .truncate()
+            .child(
+                subagent
+                    .activity
+                    .clone()
+                    .unwrap_or_else(|| SharedString::new_static("Starting")),
+            ),
+    )
+    .child(
+        div()
+            .flex_none()
+            .text_xs()
+            .text_color(gpui::rgb(theme::text_muted()))
+            .child(format_subagent_elapsed(elapsed)),
+    )
+}
+
+/// `m:ss` while a subagent is under an hour, `h:mm:ss` after that.
+pub(super) fn format_subagent_elapsed(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    let (hours, minutes, seconds) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
+    if hours == 0 {
+        format!("{minutes}:{seconds:02}")
+    } else {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    }
 }
 
 pub(super) fn render_plan_row(entry: &PlanEntry) -> Div {

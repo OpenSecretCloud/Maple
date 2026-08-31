@@ -74,6 +74,191 @@ mod state_tests {
         }
     }
 
+    /// The subagent card shows one row per live `delegate` call, follows
+    /// the tool each subagent runs, and empties when they end.
+    #[gpui::test]
+    fn test_subagent_card_tracks_live_delegates(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentRunEvent;
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            assert!(this.render_subagents_card().is_none());
+            this.handle_run_event(
+                "s1",
+                "r1",
+                AgentRunEvent::SubagentStarted {
+                    id: "d1".to_string(),
+                    task: "Review the parser".to_string(),
+                    background: false,
+                },
+                cx,
+            );
+            assert_eq!(this.subagents.len(), 1);
+            assert!(this.render_subagents_card().is_some());
+
+            // A subagent of a task that is not on screen stays off it.
+            this.handle_run_event(
+                "s2",
+                "r2",
+                AgentRunEvent::SubagentStarted {
+                    id: "d2".to_string(),
+                    task: "Other task".to_string(),
+                    background: true,
+                },
+                cx,
+            );
+            assert_eq!(this.subagents.len(), 1);
+
+            this.handle_run_event(
+                "s1",
+                "r1",
+                AgentRunEvent::SubagentActivity {
+                    id: "d1".to_string(),
+                    tool: "Terminal: cargo test".to_string(),
+                },
+                cx,
+            );
+            assert_eq!(
+                this.subagents[0]
+                    .activity
+                    .as_ref()
+                    .map(SharedString::as_ref),
+                Some("Terminal: cargo test")
+            );
+            // The same tool again changes nothing, so nothing repaints.
+            assert!(!this.handle_run_event(
+                "s1",
+                "r1",
+                AgentRunEvent::SubagentActivity {
+                    id: "d1".to_string(),
+                    tool: "Terminal: cargo test".to_string(),
+                },
+                cx,
+            ));
+
+            this.handle_run_event(
+                "s1",
+                "r1",
+                AgentRunEvent::SubagentFinished {
+                    id: "d1".to_string(),
+                },
+                cx,
+            );
+            assert!(this.subagents.is_empty());
+            assert!(this.render_subagents_card().is_none());
+        });
+    }
+
+    /// A turn that ends takes the subagents it was waiting for with it,
+    /// but a background subagent keeps working and keeps its row.
+    #[gpui::test]
+    fn test_run_end_keeps_background_subagents(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal, AgentSubagent};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.active_runs.insert("s1".to_string(), "r1".to_string());
+            for (id, background) in [("waited-for", false), ("in-background", true)] {
+                this.handle_run_event(
+                    "s1",
+                    "r1",
+                    AgentRunEvent::SubagentStarted {
+                        id: id.to_string(),
+                        task: id.to_string(),
+                        background,
+                    },
+                    cx,
+                );
+            }
+            assert_eq!(this.subagents.len(), 2);
+
+            this.handle_run_event(
+                "s1",
+                "r1",
+                AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                cx,
+            );
+            assert_eq!(this.subagents.len(), 1);
+            assert_eq!(this.subagents[0].id, "in-background");
+            assert!(this.render_subagents_card().is_some());
+
+            // Opening the task later rebuilds the card from the runtime.
+            this.set_subagents(
+                vec![AgentSubagent {
+                    id: "in-background".to_string(),
+                    task: "Build the release".to_string(),
+                    background: true,
+                    elapsed_ms: 90_000,
+                    activity: Some("Terminal: cargo build".to_string()),
+                }],
+                cx,
+            );
+            assert_eq!(this.subagents.len(), 1);
+            assert_eq!(
+                this.subagents[0]
+                    .activity
+                    .as_ref()
+                    .map(SharedString::as_ref),
+                Some("Terminal: cargo build")
+            );
+            // An elapsed time already on screen is kept, so it cannot
+            // jump backwards when the snapshot lands.
+            assert!(this.subagents[0].started.elapsed() < std::time::Duration::from_secs(60));
+
+            // An empty snapshot for a task with no subagent clears the card.
+            this.set_subagents(Vec::new(), cx);
+            assert!(this.subagents.is_empty());
+            assert!(this.render_subagents_card().is_none());
+        });
+    }
+
+    /// A snapshot describes the moment it was asked for. A row that an
+    /// event added while the snapshot was in flight must survive it;
+    /// nothing re-creates a wiped row until the task is reopened.
+    #[gpui::test]
+    fn test_stale_subagent_snapshot_cannot_wipe_a_live_row(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentRunEvent;
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let requested_at = this.subagent_epoch;
+            // The delegate fires while the snapshot is still in flight.
+            this.handle_run_event(
+                "s1",
+                "r1",
+                AgentRunEvent::SubagentStarted {
+                    id: "d1".to_string(),
+                    task: "Review the parser".to_string(),
+                    background: false,
+                },
+                cx,
+            );
+            // The snapshot predates the row, so it must not remove it.
+            this.apply_subagent_snapshot(requested_at, Vec::new(), cx);
+            assert_eq!(this.subagents.len(), 1);
+
+            // A snapshot from the current epoch is authoritative.
+            let requested_at = this.subagent_epoch;
+            this.apply_subagent_snapshot(requested_at, Vec::new(), cx);
+            assert!(this.subagents.is_empty());
+        });
+    }
+
+    /// Elapsed times read as minutes and seconds, and add hours only
+    /// when a subagent has worked that long.
+    #[test]
+    fn test_subagent_elapsed_reads_as_a_clock() {
+        use crate::ui::chat::transcript::format_subagent_elapsed;
+        use std::time::Duration;
+
+        assert_eq!(format_subagent_elapsed(Duration::from_secs(7)), "0:07");
+        assert_eq!(format_subagent_elapsed(Duration::from_secs(605)), "10:05");
+        assert_eq!(
+            format_subagent_elapsed(Duration::from_secs(3661)),
+            "1:01:01"
+        );
+    }
+
     /// The pinned plan tracks the newest todo_write list: it follows
     /// incoming items in order, and a loaded history uses its last list.
     #[gpui::test]

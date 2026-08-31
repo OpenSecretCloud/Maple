@@ -57,6 +57,17 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. The account's skills appear in the same list.
 - The task's latest todo list stays pinned above the composer.
+- Subagents: the task can give a piece of work to a subagent with the
+  `delegate` tool, which runs it in its own context. Known limitation:
+  a subagent does not inherit the task's permission mode. Goose runs
+  every subagent with all tools approved, so even in Read only mode a
+  subagent can run shell commands and edit files without a prompt. The
+  fix needs the Goose fork to forward subagent approvals to the parent
+  (summon.rs hard-codes Auto because an approval would hang). The
+  subagents that work now show above the composer with the tool each one
+  runs and how long it has worked. A subagent that runs in the background
+  keeps its row after the turn ends, and Maple tells the task when it
+  finishes: into the running turn, or into the next one.
 - Voice: dictate a message with the microphone button, and read any
   message aloud. Both use Maple's speech models; the voice and speed
   are settings.

@@ -394,6 +394,16 @@ pub fn load_usage(account_scope: &str) -> UsageSummary {
     let Some(conn) = crate::backend::open_session_db_read_only(&db) else {
         return UsageSummary::default();
     };
+    usage_from_ledger(&conn)
+}
+
+/// Aggregate one account's ledger.
+///
+/// A subagent has a session of its own, and its provider calls land in
+/// the ledger under it. Every row counts against the task that delegated
+/// the work, so the reader sees what a task cost in total. Goose refuses
+/// a subagent of a subagent, so resolving one parent is enough.
+fn usage_from_ledger(conn: &rusqlite::Connection) -> UsageSummary {
     let mut summary = UsageSummary::default();
 
     if let Ok(mut stmt) = conn.prepare(
@@ -416,9 +426,10 @@ pub fn load_usage(account_scope: &str) -> UsageSummary {
     }
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT model, COUNT(DISTINCT session_id), COUNT(*), \
-         COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0) \
-         FROM usage_ledger GROUP BY model ORDER BY SUM(total_tokens) DESC",
+        "SELECT u.model, COUNT(DISTINCT COALESCE(s.parent_session_id, u.session_id)), COUNT(*), \
+         COALESCE(SUM(u.total_tokens),0), COALESCE(SUM(u.cost),0) \
+         FROM usage_ledger u LEFT JOIN sessions s ON s.id = u.session_id \
+         GROUP BY u.model ORDER BY SUM(u.total_tokens) DESC",
     ) && let Ok(rows) = stmt.query_map([], |row| {
         Ok(UsageRow {
             label: row
@@ -437,10 +448,11 @@ pub fn load_usage(account_scope: &str) -> UsageSummary {
     }
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT s.name, u.session_id, COUNT(*), \
-         COALESCE(SUM(u.total_tokens),0), COALESCE(SUM(u.cost),0) \
+        "SELECT COALESCE(parent.name, s.name), COALESCE(s.parent_session_id, u.session_id) AS task, \
+         COUNT(*), COALESCE(SUM(u.total_tokens),0), COALESCE(SUM(u.cost),0) \
          FROM usage_ledger u JOIN sessions s ON s.id = u.session_id \
-         GROUP BY u.session_id ORDER BY MAX(u.created_timestamp) DESC LIMIT 20",
+         LEFT JOIN sessions parent ON parent.id = s.parent_session_id \
+         GROUP BY task ORDER BY MAX(u.created_timestamp) DESC LIMIT 20",
     ) && let Ok(rows) = stmt.query_map([], |row| {
         Ok(UsageRow {
             label: {
@@ -465,6 +477,52 @@ pub fn load_usage(account_scope: &str) -> UsageSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A subagent bills to the task that delegated the work, so the
+    /// usage screen shows one row per task and not one per subagent.
+    #[test]
+    fn subagent_usage_counts_against_its_parent_task() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL DEFAULT '',
+                 parent_session_id TEXT
+             );
+             CREATE TABLE usage_ledger (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 session_id TEXT NOT NULL,
+                 created_timestamp INTEGER NOT NULL,
+                 model TEXT,
+                 total_tokens INTEGER,
+                 cost REAL
+             );
+             INSERT INTO sessions VALUES ('task-1', 'Review the parser', NULL);
+             INSERT INTO sessions VALUES ('sub-1', 'Delegated task', 'task-1');
+             INSERT INTO sessions VALUES ('task-2', 'Other work', NULL);
+             INSERT INTO usage_ledger (session_id, created_timestamp, model, total_tokens, cost)
+             VALUES ('task-1', 10, 'maple-1', 100, 1.0),
+                    ('sub-1',  20, 'maple-1', 400, 4.0),
+                    ('task-2', 30, 'maple-1', 700, 7.0);",
+        )
+        .unwrap();
+
+        let usage = usage_from_ledger(&conn);
+        let rows = usage
+            .by_session
+            .iter()
+            .map(|row| (row.label.as_str(), row.turns, row.total_tokens))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![("Other work", 1, 700), ("Review the parser", 2, 500)],
+            "the subagent's tokens belong to the task that delegated them"
+        );
+        // Two tasks ran, not three sessions.
+        assert_eq!(usage.by_model.len(), 1);
+        assert_eq!(usage.by_model[0].sessions, 2);
+        assert_eq!(usage.totals.total_tokens, 1200);
+    }
 
     #[test]
     fn permission_mode_round_trips_as_a_string() {

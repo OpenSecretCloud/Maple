@@ -876,6 +876,23 @@ pub enum AgentRunEvent {
         item: AgentTimelineItem,
     },
     SetupWarning(String),
+    /// A `delegate` call handed a task to a subagent. `id` is the request
+    /// ID of that call, which the two events below repeat.
+    SubagentStarted {
+        id: String,
+        task: String,
+        /// The subagent runs in the background; the task collects its
+        /// result later with `load`.
+        background: bool,
+    },
+    /// The subagent called a tool. Only the latest one is shown.
+    SubagentActivity {
+        id: String,
+        tool: String,
+    },
+    SubagentFinished {
+        id: String,
+    },
     HistoryReplaced,
     Error(AgentTimelineItem),
     Finished(AgentRunTerminal),
@@ -920,6 +937,23 @@ pub enum AgentServiceEvent {
         request_id: String,
         event: SideQuestionEvent,
     },
+}
+
+/// One subagent that is still working for a task. A caller that opens
+/// the task after the run ended reads these to rebuild its live view.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSubagent {
+    /// Request ID of the `delegate` call that started it.
+    pub id: String,
+    pub task: String,
+    /// It works in the background; the task collects the result later.
+    pub background: bool,
+    /// How long it has worked, which survives a caller restart better
+    /// than a start time from another clock.
+    pub elapsed_ms: u64,
+    /// The tool it called most recently.
+    pub activity: Option<String>,
 }
 
 /// One finished exchange of a `/btw` thread, replayed on a follow-up so
