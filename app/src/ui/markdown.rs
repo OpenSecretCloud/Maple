@@ -210,12 +210,61 @@ impl Document {
     }
 }
 
+/// Turn bare URLs in the finished paragraph into links. Runs at flush
+/// time, on the whole text, because pulldown-cmark splits text events
+/// at characters like `_`, so a per-event scan would truncate URLs.
+/// URLs already inside a link or a code span stay as they are.
+fn linkify_bare_urls(paragraph: &mut Paragraph) {
+    for range in find_bare_urls(&paragraph.text) {
+        let overlaps = |other: &std::ops::Range<usize>| -> bool {
+            other.start < range.end && range.start < other.end
+        };
+        if paragraph
+            .links
+            .iter()
+            .any(|(existing, _)| overlaps(existing))
+        {
+            continue;
+        }
+        if paragraph
+            .spans
+            .iter()
+            .any(|(span, style)| overlaps(span) && (style.code || style.link))
+        {
+            continue;
+        }
+        let url = paragraph.text[range.clone()].to_string();
+        paragraph.links.push((range.clone(), url));
+        // Overlay the link flag: split every overlapping span so the
+        // part inside the URL keeps its other flags and gains `link`.
+        let mut spans: Vec<(std::ops::Range<usize>, InlineStyle)> =
+            Vec::with_capacity(paragraph.spans.len() + 2);
+        for (span, style) in paragraph.spans.drain(..) {
+            if !overlaps(&span) {
+                spans.push((span, style));
+                continue;
+            }
+            if span.start < range.start {
+                spans.push((span.start..range.start, style));
+            }
+            let mut linked = style;
+            linked.link = true;
+            spans.push((span.start.max(range.start)..span.end.min(range.end), linked));
+            if span.end > range.end {
+                spans.push((range.end..span.end, style));
+            }
+        }
+        paragraph.spans = spans;
+    }
+}
+
 /// Merge a paragraph's styled spans and links into the shared form text
 /// blocks and table cells store. Only styled spans become highlights;
 /// unstyled ranges inherit the ambient text style resolved at paint
 /// time. Spans keep style flags, not colors: the theme is read when the
 /// block is rendered.
-fn resolve_inline(paragraph: Paragraph) -> (SharedString, InlineStyles, Links) {
+fn resolve_inline(mut paragraph: Paragraph) -> (SharedString, InlineStyles, Links) {
+    linkify_bare_urls(&mut paragraph);
     let mut styles: Vec<(std::ops::Range<usize>, InlineStyle)> = Vec::new();
     for (range, style) in paragraph.spans {
         if style.is_plain() {
@@ -348,6 +397,69 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
         };
     }
     container
+}
+
+/// Byte ranges of bare `http(s)://` URLs in `text`. A URL runs to the
+/// next whitespace or angle bracket; trailing punctuation that ends the
+/// sentence is trimmed, and a closing paren only stays while the URL
+/// holds an unmatched open paren (Wikipedia-style paths).
+fn find_bare_urls(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("http") {
+        let start = from + found;
+        let after = &text[start..];
+        let scheme_len = if after.starts_with("https://") {
+            8
+        } else if after.starts_with("http://") {
+            7
+        } else {
+            from = start + 4;
+            continue;
+        };
+        // Not a URL when it continues a word ("xhttps://...").
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric())
+        {
+            from = start + scheme_len;
+            continue;
+        }
+        let len = after
+            .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+            .unwrap_or(after.len());
+        let mut end = start + len;
+        loop {
+            let url = &text[start..end];
+            let Some(last) = url.chars().next_back() else {
+                break;
+            };
+            let trim = match last {
+                '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | '*' | '`' => true,
+                ')' | ']' | '}' => {
+                    let open = match last {
+                        ')' => '(',
+                        ']' => '[',
+                        _ => '{',
+                    };
+                    url.matches(open).count() < url.matches(last).count()
+                }
+                _ => false,
+            };
+            if !trim {
+                break;
+            }
+            end -= last.len_utf8();
+        }
+        if end > start + scheme_len {
+            ranges.push(start..end);
+            from = end;
+        } else {
+            from = start + scheme_len;
+        }
+    }
+    ranges
 }
 
 /// Parse markdown into resolved blocks.
@@ -800,6 +912,66 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, Block::Text { text, .. } if text.trim() == "•"))
         );
+    }
+
+    #[test]
+    fn bare_urls_become_links() {
+        let document = parse("It's live: https://github.com/a/b. Next step");
+        let Block::Text {
+            text,
+            links,
+            styles,
+            ..
+        } = &document.blocks[0]
+        else {
+            panic!("expected a text block");
+        };
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].1, "https://github.com/a/b");
+        assert_eq!(&text[links[0].0.clone()], "https://github.com/a/b");
+        assert!(
+            styles
+                .iter()
+                .any(|(range, style)| style.link && *range == links[0].0),
+            "the URL range carries the link style"
+        );
+    }
+
+    #[test]
+    fn bare_url_in_bold_text_keeps_both_styles() {
+        let document = parse("go to **https://x.test** now");
+        let Block::Text { links, styles, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].1, "https://x.test");
+        assert!(
+            styles
+                .iter()
+                .any(|(range, style)| style.link && style.bold && *range == links[0].0)
+        );
+    }
+
+    #[test]
+    fn bare_url_trims_punctuation_but_keeps_balanced_parens() {
+        let document =
+            parse("see https://en.wikipedia.org/wiki/Rust_(language) (or https://x.test).");
+        let Block::Text { links, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].1, "https://en.wikipedia.org/wiki/Rust_(language)");
+        assert_eq!(links[1].1, "https://x.test");
+    }
+
+    #[test]
+    fn urls_in_markdown_links_and_code_spans_are_untouched() {
+        let document = parse("[docs](https://a.test) and `https://b.test` and xhttps://c.test");
+        let Block::Text { links, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].1, "https://a.test");
     }
 
     #[test]
