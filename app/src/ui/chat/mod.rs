@@ -370,8 +370,8 @@ pub struct ChatScreen {
     /// True from send until the first agent item of the run arrives; shows
     /// the waiting indicator under the transcript.
     awaiting_first_token: bool,
-    /// Item ids whose tool card was clicked; membership inverts the
-    /// `tool_details` default for that card.
+    /// Item ids whose tool card or thinking row was clicked; membership
+    /// inverts the `tool_details` default for that item.
     toggled_tools: HashSet<String>,
     /// Ticked options of a multi-select question.
     question_selected: HashMap<usize, usize>,
@@ -2542,7 +2542,8 @@ impl ChatScreen {
         ))
     }
 
-    /// Toggle one tool card's expansion and re-measure its row.
+    /// Toggle one tool card's or thinking row's expansion and re-measure
+    /// its row.
     fn toggle_tool(&mut self, item_id: &str, cx: &mut Context<Self>) {
         if self.toggled_tools.contains(item_id) {
             self.toggled_tools.remove(item_id);
@@ -3419,6 +3420,18 @@ impl ChatScreen {
             self.set_plan(plan);
         }
         let index = self.apply_timeline_item(session_id, item);
+        // A newer item after a thinking block finalizes the block; that is
+        // when its header summary is requested (it has no status of its
+        // own). Streaming chunks merge in place, so `index` stays put and
+        // the request-once gate makes repeats cheap.
+        if let Some(previous) = index.checked_sub(1)
+            && self
+                .timeline
+                .get(previous)
+                .is_some_and(|item| matches!(item.item_type.as_str(), "thinking" | "reasoning"))
+        {
+            self.maybe_summarize_thinking(previous, cx);
+        }
         if completed {
             if is_tool && self.summaries_enabled {
                 self.maybe_summarize_tool(index, cx);
@@ -3765,6 +3778,11 @@ impl ChatScreen {
                     // the send that is still waiting here.
                     self.awaiting_first_token = false;
                     self.refresh_context_usage(cx);
+                    // A run that ended mid-thought leaves the thinking
+                    // block newest; the run's end finalizes it.
+                    if let Some(last) = self.timeline.len().checked_sub(1) {
+                        self.maybe_summarize_thinking(last, cx);
+                    }
                 }
                 let title = self
                     .sessions

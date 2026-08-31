@@ -1068,6 +1068,29 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_thinking_summary_waits_for_a_following_item(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.summaries_enabled = true;
+            this.active_runs
+                .insert("s1".to_string(), "run-1".to_string());
+            let long_thought = "x".repeat(600);
+            let index =
+                this.apply_timeline_item("s1", item("th-1", "thinking", Some(&long_thought)));
+            // The newest item of an active run is still streaming.
+            this.maybe_summarize_thinking(index, cx);
+            assert!(this.summary_requests.is_empty());
+            // A later item finalizes the block and requests its summary.
+            this.apply_incoming_item("s1", item("m-1", "message", Some("done")), cx);
+            assert!(this.summary_requests.contains("th-1"));
+            // A short thought is not worth a model call.
+            this.apply_incoming_item("s1", item("th-2", "thinking", Some("brief")), cx);
+            this.apply_incoming_item("s1", item("m-2", "message", Some("done")), cx);
+            assert!(!this.summary_requests.contains("th-2"));
+        });
+    }
+
+    #[gpui::test]
     fn test_tool_summaries_queue_past_the_slot_cap(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {

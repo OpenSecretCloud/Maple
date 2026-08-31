@@ -157,6 +157,7 @@ const SIDE_QUESTION_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// system prompt, so the request keeps the session's cached prefix.
 const SIDE_QUESTION_PREFIX: &str = "The user asks a quick side question about the task so far. Answer it directly and briefly in plain prose. Do not call tools and do not continue the task; the task carries on separately and this exchange is not part of it.";
 const TOOL_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a coding agent's activity feed. Reply with ONE short line of at most 12 words that says what the call did. No prefix, no quotes, no explanations.";
+const THINKING_SUMMARY_SYSTEM_PROMPT: &str = "You summarize a coding agent's reasoning for its activity feed. Reply with ONE short line of at most 12 words that says what the agent thought about or decided. No prefix, no quotes, no explanations.";
 const SESSION_TITLE_SYSTEM_PROMPT: &str = "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations.";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
@@ -1022,6 +1023,48 @@ impl AgentRuntimeHandle {
         input: Option<&serde_json::Value>,
         output_text: &str,
     ) -> Result<Option<String>, String> {
+        let truncate = |text: &str| -> String {
+            text.chars()
+                .take(TOOL_SUMMARY_MAX_INPUT_CHARS)
+                .collect::<String>()
+        };
+        let input_line = match input {
+            Some(value) if !value.is_null() => {
+                truncate(&serde_json::to_string(value).unwrap_or_default())
+            }
+            _ => String::new(),
+        };
+        let prompt = format!(
+            "Tool: {tool_name}\nInput: {input_line}\nOutput: {}",
+            truncate(output_text)
+        );
+        self.run_summary_model(session_id, TOOL_SUMMARY_SYSTEM_PROMPT, prompt)
+            .await
+    }
+
+    /// Summarize one finished thinking block with the same cheap title
+    /// model. Used as the header of the transcript's thinking rows.
+    pub async fn summarize_thinking(
+        &self,
+        session_id: &str,
+        thinking_text: &str,
+    ) -> Result<Option<String>, String> {
+        let prompt = thinking_text
+            .chars()
+            .take(TOOL_SUMMARY_MAX_INPUT_CHARS)
+            .collect::<String>();
+        self.run_summary_model(session_id, THINKING_SUMMARY_SYSTEM_PROMPT, prompt)
+            .await
+    }
+
+    /// One round-trip to the title model shared by the tool-call and
+    /// thinking summaries.
+    async fn run_summary_model(
+        &self,
+        session_id: &str,
+        system_prompt: &str,
+        prompt: String,
+    ) -> Result<Option<String>, String> {
         let state = &self.service;
         let runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
@@ -1057,28 +1100,13 @@ impl AgentRuntimeHandle {
             .with_temperature(Some(TOOL_SUMMARY_TEMPERATURE))
             .with_max_tokens(Some(TOOL_SUMMARY_MAX_TOKENS));
 
-        let truncate = |text: &str| -> String {
-            text.chars()
-                .take(TOOL_SUMMARY_MAX_INPUT_CHARS)
-                .collect::<String>()
-        };
-        let input_line = match input {
-            Some(value) if !value.is_null() => {
-                truncate(&serde_json::to_string(value).unwrap_or_default())
-            }
-            _ => String::new(),
-        };
-        let prompt = format!(
-            "Tool: {tool_name}\nInput: {input_line}\nOutput: {}",
-            truncate(output_text)
-        );
         let messages = [Message::user().with_text(prompt)];
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let generation = provider::with_run_cancellation(
             cancel_token.clone(),
             goose::session_context::with_session_id(
                 Some(session_id.to_string()),
-                provider.complete(&model_config, TOOL_SUMMARY_SYSTEM_PROMPT, &messages, &[]),
+                provider.complete(&model_config, system_prompt, &messages, &[]),
             ),
         );
         tokio::pin!(generation);
@@ -1089,10 +1117,10 @@ impl AgentRuntimeHandle {
                 // Keep the provider's credential-reconciliation task from
                 // outliving the timeout, like title generation does.
                 let _ = generation.await;
-                return Err("Tool summary timed out".to_string());
+                return Err("Summary timed out".to_string());
             }
         }
-        .map_err(|error| format!("Failed to summarize tool call: {error}"))?;
+        .map_err(|error| format!("Failed to summarize: {error}"))?;
         Ok(normalize_tool_summary(&completion.0.as_concat_text()))
     }
 

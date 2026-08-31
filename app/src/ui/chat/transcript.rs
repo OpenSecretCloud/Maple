@@ -192,7 +192,7 @@ pub(super) fn render_timeline_item(
 ) -> Div {
     let item = match item.item_type.as_str() {
         "message" => render_message(item, revision, transcript),
-        "thinking" | "reasoning" => render_thinking(item, revision, transcript),
+        "thinking" | "reasoning" => render_thinking(item, revision, expanded, transcript),
         "tool" | "toolCall" => {
             // Dispatch on payload shape; runtime titles are humanized
             // ("todo write", "ask user") and vary by detail suffix.
@@ -410,25 +410,88 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
     }
 }
 
-fn render_thinking(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
+fn render_thinking(
+    item: &AgentTimelineItem,
+    revision: u64,
+    expanded: bool,
+    transcript: &TranscriptCtx,
+) -> Div {
     let text = transcript.derived.get(item, revision).text.clone();
     if text.trim().is_empty() {
-        div().child(
+        return div().child(
             div()
                 .text_color(gpui::rgb(theme::status_running()))
                 .text_sm()
                 .child("Thinking…"),
-        )
-    } else {
+        );
+    }
+    let item_id = item.id.clone();
+    let chat = transcript.chat.clone();
+    // The model summary stands in for the generic "Thinking" label.
+    let title = transcript
+        .tool_summaries
+        .get(&item.id)
+        .cloned()
+        .unwrap_or_else(|| SharedString::from("Thinking"));
+    // Only the header toggles, so clicks in the body still select text.
+    let header = div()
+        .id(gpui::SharedString::from(format!(
+            "thinking-toggle-{}",
+            item.id
+        )))
+        .flex()
+        .items_center()
+        .gap_1()
+        .text_sm()
+        .text_color(gpui::rgb(theme::text_muted()))
+        .hover(|style| {
+            style
+                .cursor_pointer()
+                .text_color(gpui::rgb(theme::text_secondary()))
+        })
+        .on_click(move |_event, _window, cx: &mut gpui::App| {
+            chat.update(cx, |chat, cx| {
+                chat.toggle_tool(&item_id, cx);
+            })
+            .ok();
+        })
+        .child(icon(
+            if expanded {
+                "chevron-down"
+            } else {
+                "chevron-right"
+            },
+            px(14.),
+            theme::text_muted(),
+        ))
+        .child(div().line_clamp(1).child(title));
+    let card = div()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(header);
+    if !expanded {
+        return card;
+    }
+    card.child(
         div()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(gpui::rgb(theme::bg_elevated()))
             .text_sm()
             .text_color(gpui::rgb(theme::text_secondary()))
-            .child(text)
-    }
+            .child(markdown::render_with(
+                &transcript.markdown_cache.get(
+                    &item.id,
+                    MarkdownKind::Body,
+                    revision,
+                    &text,
+                    transcript.streaming,
+                ),
+                transcript.render,
+            )),
+    )
 }
 
 /// Goose's runtime strings rebranded for Maple users, who never see goose.

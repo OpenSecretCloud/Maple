@@ -1216,6 +1216,21 @@ impl AgentBackend {
             .summarize_tool_call(session_id, &tool_name, input.as_ref(), &output_text)
             .await
     }
+
+    /// One-line summary of a finished thinking block from the cheap title
+    /// model.
+    pub async fn summarize_thinking(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        thinking_text: String,
+    ) -> Result<Option<String>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .summarize_thinking(session_id, &thinking_text)
+            .await
+    }
     /// Stream the answer to a `/btw` side question; see
     /// `AgentRuntimeHandle::ask_side_question`.
     pub async fn ask_side_question(
