@@ -2151,10 +2151,11 @@ mod state_tests {
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            ChatScreen::new(backend, "user".to_string(), cx)
-        });
-        chat.update(cx, |this, _cx| {
-            this.selected_session = Some("s1".to_string());
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.recent_roots = vec!["/one".to_string(), "/two".to_string()];
+            chat.booting = false;
+            chat
         });
 
         let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
@@ -2162,13 +2163,6 @@ mod state_tests {
         let composer_handle =
             cx.update(|_window, app| chat.read(app).composer.clone().unwrap().focus_handle(app));
         cx.update(|window, _| window.focus(&composer_handle));
-        // Set after the window exists: the startup refresh replaces the
-        // recent roots as soon as the screen runs.
-        cx.update(|_window, app| {
-            chat.update(app, |this, _cx| {
-                this.recent_roots = vec!["/one".to_string(), "/two".to_string()];
-            })
-        });
 
         cx.simulate_keystrokes("secondary-p");
         assert!(cx.update(|_window, app| chat.read(app).root_menu_open));

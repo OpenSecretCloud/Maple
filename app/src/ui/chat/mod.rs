@@ -469,6 +469,16 @@ const FINISHED_RUNS_KEPT: usize = 64;
 
 impl ChatScreen {
     pub fn new(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
+        let this = Self::new_mounted(backend, user_id, cx);
+        this.start(cx);
+        this
+    }
+
+    /// Build the mounted chat surface without starting backend refreshes.
+    /// Production immediately calls `start`; focused GPUI tests use the
+    /// deterministic seam so unrelated Tokio scheduling cannot replace their
+    /// fixture state mid-interaction.
+    fn new_mounted(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
         let mut this = Self::new_inner(backend, user_id);
         this.attach_composer(weak, cx);
@@ -479,8 +489,16 @@ impl ChatScreen {
         cx.observe(&search, |this, input, cx| this.search_changed(&input, cx))
             .detach();
         this.search_input = Some(search);
-        this.start(cx);
         this
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_without_start(
+        backend: Arc<AgentBackend>,
+        user_id: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_mounted(backend, user_id, cx)
     }
 
     /// Create and wire the composer; called by the real constructor.
