@@ -43,14 +43,18 @@
             rustc = rustToolchain;
           };
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+          linuxRuntimeInputs = with pkgs; [
+            libxcb
+            libxkbcommon
+            mesa
+            vulkan-loader
+            wayland
+          ];
           linuxBuildInputs = with pkgs; [
             alsa-lib
             fontconfig
             freetype
-            libxkbcommon
-            vulkan-loader
-            wayland
-          ];
+          ] ++ linuxRuntimeInputs;
         in
         {
           default = rustPlatform.buildRustPackage {
@@ -79,7 +83,7 @@
               clang
               cmake
               pkg-config
-            ];
+            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.makeWrapper ];
 
             buildInputs =
               [ pkgs.libiconv ]
@@ -101,6 +105,15 @@
             # The upstream CI runs the complete workspace and feature matrix.
             # Keep the package derivation focused on producing the release binary.
             doCheck = false;
+
+            # GPUI loads the Wayland and Vulkan libraries at runtime, so they are
+            # not discovered by ELF dependency scanning. Prefer the NixOS GPU
+            # driver link and retain Mesa as a portable fallback elsewhere.
+            postFixup = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              wrapProgram "$out/bin/maple-gpui" \
+                --prefix LD_LIBRARY_PATH : "${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}" \
+                --suffix VK_ADD_DRIVER_FILES : "${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d"
+            '';
 
             meta = {
               description = "Native Maple desktop app built with GPUI";
@@ -126,14 +139,18 @@
               "rustfmt"
             ];
           };
+          linuxRuntimeInputs = with pkgs; [
+            libxcb
+            libxkbcommon
+            mesa
+            vulkan-loader
+            wayland
+          ];
           linuxBuildInputs = with pkgs; [
             alsa-lib
             fontconfig
             freetype
-            libxkbcommon
-            vulkan-loader
-            wayland
-          ];
+          ] ++ linuxRuntimeInputs;
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           mkDevShell = if isDarwin then pkgs.mkShellNoCC else pkgs.mkShell;
           xcrun = pkgs.writeShellScriptBin "xcrun" ''
@@ -153,7 +170,10 @@
               [ pkgs.libiconv ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
 
-            shellHook = pkgs.lib.optionalString isDarwin ''
+            shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              export LD_LIBRARY_PATH="${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export VK_ADD_DRIVER_FILES="${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d''${VK_ADD_DRIVER_FILES:+:$VK_ADD_DRIVER_FILES}"
+            '' + pkgs.lib.optionalString isDarwin ''
               maple_nix_valid_developer_dir() {
                 [ -d "$1" ] \
                   && [ -x "$1/usr/bin/xcodebuild" ] \
