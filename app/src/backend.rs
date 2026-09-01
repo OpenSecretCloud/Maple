@@ -86,6 +86,7 @@ pub struct AgentBackend {
     service: MapleAgentService,
     auth: MapleApiAuthState,
     api_url: String,
+    persisted_auth: Arc<PersistedAuthStore>,
     client_id: Uuid,
     event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<AgentServiceEvent>>>,
     billing: crate::billing::BillingClient,
@@ -298,29 +299,207 @@ fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> 
         .or_else(fallback_project_root)
 }
 
-fn persist_auth_record(
-    api_url: &str,
-    user_id: &str,
-    access_token: &str,
-    refresh_token: Option<&str>,
-) {
-    let path = AgentBackend::auth_file();
-    let record = serde_json::json!({
-        "user_id": user_id,
-        "api_url": api_url,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-    });
-    if let Err(error) = maple_agent::private_file::write_private_json(&path, &record) {
-        log::error!(
-            "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
-            path.display()
-        );
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+struct PersistedAuthRecord {
+    user_id: String,
+    api_url: String,
+    access_token: String,
+    refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revision: Option<u64>,
+}
+
+impl PersistedAuthRecord {
+    fn from_snapshot(api_url: &str, snapshot: &MapleApiAuthSnapshot) -> Self {
+        Self {
+            user_id: snapshot.user_id.clone(),
+            api_url: api_url.to_string(),
+            access_token: snapshot.access_token.clone(),
+            refresh_token: snapshot.refresh_token.clone(),
+            session_id: Some(snapshot.session_id.clone()),
+            revision: Some(snapshot.revision),
+        }
+    }
+
+    fn owns_snapshot(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
+        self.user_id == snapshot.user_id
+            && self.session_id.as_deref() == Some(snapshot.session_id.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PersistedAuthOwner {
+    user_id: String,
+    session_id: String,
+    revision: u64,
+}
+
+impl PersistedAuthOwner {
+    fn from_snapshot(snapshot: &MapleApiAuthSnapshot) -> Self {
+        Self {
+            user_id: snapshot.user_id.clone(),
+            session_id: snapshot.session_id.clone(),
+            revision: snapshot.revision,
+        }
+    }
+
+    fn matches(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
+        self.user_id == snapshot.user_id && self.session_id == snapshot.session_id
+    }
+}
+
+#[derive(Default)]
+struct PersistedAuthState {
+    owner: Option<PersistedAuthOwner>,
+}
+
+/// Serializes persisted credential ownership with token-rotation callbacks.
+/// A queued callback may update only the exact in-memory auth session that
+/// currently owns the file; sign-out compare-clears that same opaque session.
+struct PersistedAuthStore {
+    path: PathBuf,
+    api_url: String,
+    state: std::sync::Mutex<PersistedAuthState>,
+}
+
+impl PersistedAuthStore {
+    fn new(path: PathBuf, api_url: String) -> Self {
+        Self {
+            path,
+            api_url,
+            state: std::sync::Mutex::new(PersistedAuthState::default()),
+        }
+    }
+
+    fn read_record(&self) -> Option<PersistedAuthRecord> {
+        let bytes = std::fs::read(&self.path).ok()?;
+        let record: PersistedAuthRecord = serde_json::from_slice(&bytes).ok()?;
+        (record.api_url == self.api_url).then_some(record)
+    }
+
+    fn load(&self) -> Option<PersistedAuthRecord> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record = self.read_record()?;
+        state.owner = record
+            .session_id
+            .as_ref()
+            .map(|session_id| PersistedAuthOwner {
+                user_id: record.user_id.clone(),
+                session_id: session_id.clone(),
+                revision: record.revision.unwrap_or(0),
+            });
+        Some(record)
+    }
+
+    fn claim_and_persist(&self, snapshot: &MapleApiAuthSnapshot) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.matches(snapshot) && snapshot.revision < owner.revision)
+        {
+            log::debug!(
+                "ignoring stale persisted auth claim (revision {})",
+                snapshot.revision
+            );
+            return;
+        }
+        state.owner = Some(PersistedAuthOwner::from_snapshot(snapshot));
+        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot));
+    }
+
+    fn persist_rotation(&self, snapshot: &MapleApiAuthSnapshot) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(owner) = state.owner.as_mut() else {
+            log::debug!(
+                "ignoring rotated credentials for an unowned persisted auth session (revision {})",
+                snapshot.revision
+            );
+            return;
+        };
+        if !owner.matches(snapshot) || snapshot.revision < owner.revision {
+            log::debug!(
+                "ignoring stale rotated credentials (revision {})",
+                snapshot.revision
+            );
+            return;
+        }
+        owner.revision = snapshot.revision;
+        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot));
+    }
+
+    fn clear_if_owned(&self, snapshot: &MapleApiAuthSnapshot) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.matches(snapshot))
+        {
+            state.owner = None;
+        }
+        if self
+            .read_record()
+            .is_some_and(|record| record.owns_snapshot(snapshot))
+        {
+            self.remove_locked();
+        }
+    }
+
+    fn clear_record_if_unchanged(&self, expected: &PersistedAuthRecord) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.read_record().as_ref() != Some(expected) {
+            return;
+        }
+        if state
+            .owner
+            .as_ref()
+            .is_some_and(|owner| expected.session_id.as_deref() == Some(owner.session_id.as_str()))
+        {
+            state.owner = None;
+        }
+        self.remove_locked();
+    }
+
+    fn write_locked(&self, record: &PersistedAuthRecord) {
+        if let Err(error) = maple_agent::private_file::write_private_json(&self.path, record) {
+            log::error!(
+                "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
+                self.path.display()
+            );
+        }
+    }
+
+    fn remove_locked(&self) {
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::error!(
+                "Cannot remove credentials at {}: {error}",
+                self.path.display()
+            );
+        }
     }
 }
 
 struct PersistAuthSink {
-    api_url: String,
+    store: Arc<PersistedAuthStore>,
 }
 
 impl MapleApiAuthEventSink for PersistAuthSink {
@@ -330,24 +509,10 @@ impl MapleApiAuthEventSink for PersistAuthSink {
             "persisting rotated credentials (revision {})",
             snapshot.revision
         );
-        let api_url = self.api_url.clone();
-        let snapshot = snapshot.clone();
-        let write = move || {
-            persist_auth_record(
-                &api_url,
-                &snapshot.user_id,
-                &snapshot.access_token,
-                snapshot.refresh_token.as_deref(),
-            );
-        };
-        // Called from a runtime worker mid-request; keep the file write off
-        // the async thread.
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn_blocking(write);
-            }
-            Err(_) => write(),
-        }
+        // Keep this small write synchronous with the session publication. A
+        // detached writer could run after sign-out and resurrect credentials;
+        // the store mutex also orders it against compare-and-clear.
+        self.store.persist_rotation(snapshot);
     }
 }
 
@@ -369,6 +534,7 @@ impl AgentBackend {
         ));
         let runtime =
             Runtime::new().map_err(|error| format!("failed to start runtime: {error}"))?;
+        let persisted_auth = Arc::new(PersistedAuthStore::new(Self::auth_file(), api_url.clone()));
         // reqwest clients must be built inside a Tokio runtime context; one
         // built outside never completes a request.
         let billing = {
@@ -380,6 +546,7 @@ impl AgentBackend {
             service,
             auth: MapleApiAuthState::new(),
             api_url,
+            persisted_auth,
             client_id: configured_client_id(),
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
             billing,
@@ -457,11 +624,7 @@ impl AgentBackend {
                 log::debug!("set_auth failed during sign in: {message}");
                 "Sign in failed. Try again.".to_string()
             })?;
-        self.persist_auth(
-            &snapshot.user_id,
-            &snapshot.access_token,
-            snapshot.refresh_token.as_deref(),
-        );
+        self.persist_auth(&snapshot);
         Ok(AuthSession { user_id })
     }
 
@@ -472,8 +635,8 @@ impl AgentBackend {
         local_data_root().join("auth.json")
     }
 
-    fn persist_auth(&self, user_id: &str, access_token: &str, refresh_token: Option<&str>) {
-        persist_auth_record(&self.api_url, user_id, access_token, refresh_token);
+    fn persist_auth(&self, snapshot: &MapleApiAuthSnapshot) {
+        self.persisted_auth.claim_and_persist(snapshot);
     }
 
     /// The sink the runtime calls when the SDK rotates the token pair
@@ -481,42 +644,19 @@ impl AgentBackend {
     /// next launch does not restore stale tokens.
     fn auth_sink(&self) -> Arc<dyn MapleApiAuthEventSink> {
         Arc::new(PersistAuthSink {
-            api_url: self.api_url.clone(),
+            store: Arc::clone(&self.persisted_auth),
         })
     }
 
-    fn load_persisted_auth(&self) -> Option<(String, String, Option<String>)> {
-        let path = Self::auth_file();
-        let bytes = std::fs::read(&path).ok()?;
-        let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-        let user_id = record.get("user_id")?.as_str()?.to_string();
-        let api_url = record.get("api_url")?.as_str()?.to_string();
-        if api_url != self.api_url {
-            // Credentials belong to a different backend; do not reuse them.
-            return None;
-        }
-        let access_token = record.get("access_token")?.as_str()?.to_string();
-        let refresh_token = record
-            .get("refresh_token")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
-        Some((user_id, access_token, refresh_token))
-    }
-
-    fn clear_persisted_auth() {
-        let path = Self::auth_file();
-        if let Err(error) = std::fs::remove_file(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            log::error!("Cannot remove credentials at {}: {error}", path.display());
-        }
+    fn load_persisted_auth(&self) -> Option<PersistedAuthRecord> {
+        self.persisted_auth.load()
     }
 
     /// The account id saved by a previous sign-in, without validating it.
     /// A local file read, so the UI may show the account's data at once
     /// while [`Self::restore_in_background`] validates the credentials.
     pub fn saved_user_id(&self) -> Option<String> {
-        self.load_persisted_auth().map(|(user_id, _, _)| user_id)
+        self.load_persisted_auth().map(|record| record.user_id)
     }
 
     /// Restore a persisted session before the UI starts. Validates the
@@ -544,14 +684,15 @@ impl AgentBackend {
     /// Validate the saved credentials with the server and install the
     /// session on success. Definitive rejections clear the saved file.
     async fn validate_persisted_auth(&self) -> RestoreOutcome {
-        let Some((user_id, access_token, refresh_token)) = self.load_persisted_auth() else {
+        let Some(persisted) = self.load_persisted_auth() else {
             return RestoreOutcome::Rejected;
         };
+        let request_record = persisted.clone();
         let request = MapleApiAuthRequest {
-            user_id,
+            user_id: request_record.user_id,
             api_url: self.api_url.clone(),
-            access_token,
-            refresh_token,
+            access_token: request_record.access_token,
+            refresh_token: request_record.refresh_token,
         };
         let result = match tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -559,15 +700,18 @@ impl AgentBackend {
         )
         .await
         {
-            Ok(Ok(snapshot)) => Ok(snapshot.user_id),
+            Ok(Ok(snapshot)) => Ok(snapshot),
             Ok(Err(error)) => Err(error),
             Err(_) => Err("timeout".to_string()),
         };
         match result {
-            Ok(user_id) => RestoreOutcome::Valid(user_id),
+            Ok(snapshot) => {
+                self.persist_auth(&snapshot);
+                RestoreOutcome::Valid(snapshot.user_id)
+            }
             Err(error) if maple_agent::maple_api::is_auth_rejection(&error) => {
                 log::debug!("persisted auth rejected: {error:?}");
-                Self::clear_persisted_auth();
+                self.persisted_auth.clear_record_if_unchanged(&persisted);
                 RestoreOutcome::Rejected
             }
             Err(error) => {
@@ -586,20 +730,40 @@ impl AgentBackend {
         &self,
         user_id: &str,
     ) -> Result<Arc<maple_agent::maple_api::MapleApiSession>, String> {
+        self.wait_for_restore().await;
+        self.auth.session_for(user_id).await
+    }
+
+    async fn wait_for_restore(&self) {
         let mut pending = self.restore_pending.1.clone();
         while *pending.borrow() {
             if pending.changed().await.is_err() {
                 break;
             }
         }
-        self.auth.session_for(user_id).await
     }
 
-    /// Sign out completely: forget persisted credentials, then clear the
-    /// in-memory session.
+    /// Sign out completely: invalidate the live session first, then remove
+    /// only the persisted credentials that this sign-out observed.
     pub async fn logout_and_clear(&self, user_id: &str) -> Result<(), String> {
-        Self::clear_persisted_auth();
-        self.auth.clear_auth(user_id).await
+        self.wait_for_restore().await;
+        let auth_snapshot = self.auth.auth_snapshot_for(user_id).await.ok();
+        let persisted_without_session = auth_snapshot
+            .is_none()
+            .then(|| self.load_persisted_auth())
+            .flatten();
+
+        let result = self.auth.clear_auth(user_id).await;
+        if result.is_ok() {
+            if let Some(snapshot) = auth_snapshot.as_ref() {
+                self.persisted_auth.clear_if_owned(snapshot);
+            } else if let Some(persisted) = persisted_without_session.as_ref() {
+                // Preserve the old offline/logout behavior without letting a
+                // concurrent sign-in's replacement record be removed.
+                self.persisted_auth.clear_record_if_unchanged(persisted);
+            }
+        }
+        result
     }
 
     fn oauth_client(&self) -> Result<OpenSecretClient, String> {
@@ -632,11 +796,7 @@ impl AgentBackend {
                 "Sign in failed. Try again.".to_string()
             })
             .map(|snapshot| {
-                self.persist_auth(
-                    &snapshot.user_id,
-                    &snapshot.access_token,
-                    snapshot.refresh_token.as_deref(),
-                );
+                self.persist_auth(&snapshot);
                 AuthSession {
                     user_id: snapshot.user_id.clone(),
                 }
@@ -1571,6 +1731,95 @@ fn decode_query_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn auth_snapshot(
+        user_id: &str,
+        session_id: &str,
+        revision: u64,
+        access_token: &str,
+    ) -> MapleApiAuthSnapshot {
+        MapleApiAuthSnapshot {
+            user_id: user_id.to_string(),
+            access_token: access_token.to_string(),
+            refresh_token: Some(format!("refresh-{access_token}")),
+            native_instance_id: "native-test".to_string(),
+            session_id: session_id.to_string(),
+            revision,
+        }
+    }
+
+    #[test]
+    fn persisted_auth_compare_clear_preserves_a_new_session_and_rejects_late_rotation() {
+        let root = std::env::temp_dir().join(format!(
+            "maple-persisted-auth-race-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("auth.json");
+        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
+        let old = auth_snapshot("same-user", "session-old", 2, "old-token");
+        let new = auth_snapshot("same-user", "session-new", 1, "new-token");
+
+        store.claim_and_persist(&old);
+        let mut newer_old = old.clone();
+        newer_old.revision = 3;
+        newer_old.access_token = "newer-old-token".to_string();
+        store.persist_rotation(&newer_old);
+        store.claim_and_persist(&old);
+        assert_eq!(
+            store.read_record().unwrap().access_token,
+            "newer-old-token",
+            "a late same-session claim must not roll back a newer rotation"
+        );
+
+        store.claim_and_persist(&new);
+        store.clear_if_owned(&old);
+        assert_eq!(
+            store.read_record().unwrap().access_token,
+            "new-token",
+            "a delayed old logout must not erase a new same-account session"
+        );
+
+        let mut late_old = old.clone();
+        late_old.revision = 3;
+        late_old.access_token = "late-old-token".to_string();
+        store.persist_rotation(&late_old);
+        assert_eq!(store.read_record().unwrap().access_token, "new-token");
+
+        store.clear_if_owned(&new);
+        assert!(!path.exists());
+        let mut late_new = new;
+        late_new.revision = 2;
+        late_new.access_token = "late-new-token".to_string();
+        store.persist_rotation(&late_new);
+        assert!(
+            !path.exists(),
+            "a rotation published after sign-out must not recreate auth.json"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejected_restore_clears_only_the_record_that_was_loaded() {
+        let root = std::env::temp_dir().join(format!(
+            "maple-persisted-auth-restore-race-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("auth.json");
+        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
+        let old = auth_snapshot("old-user", "session-old", 1, "old-token");
+        let new = auth_snapshot("new-user", "session-new", 1, "new-token");
+
+        store.claim_and_persist(&old);
+        let loaded = store.load().unwrap();
+        store.claim_and_persist(&new);
+        store.clear_record_if_unchanged(&loaded);
+        assert_eq!(store.read_record().unwrap().user_id, "new-user");
+
+        store.clear_if_owned(&new);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn oauth_callback_values_are_form_decoded() {

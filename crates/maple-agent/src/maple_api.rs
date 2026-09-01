@@ -29,6 +29,10 @@ pub struct MapleApiAuthSnapshot {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub native_instance_id: String,
+    /// Opaque identity for one in-memory authenticated session. Unlike the
+    /// native instance id, this changes after sign-out and a later sign-in so
+    /// hosts can compare-and-clear persisted credentials without an ABA race.
+    pub session_id: String,
     pub revision: u64,
 }
 
@@ -68,6 +72,7 @@ pub struct MapleApiSession {
     user_id: String,
     account_scope: String,
     native_instance_id: String,
+    session_id: String,
     event_sink: Arc<dyn MapleApiAuthEventSink>,
     inner: RwLock<MapleApiSessionInner>,
 }
@@ -110,6 +115,7 @@ impl MapleApiSession {
             user_id,
             account_scope,
             native_instance_id,
+            session_id: new_opaque_auth_id(),
             event_sink,
             inner: RwLock::new(MapleApiSessionInner {
                 active: true,
@@ -140,7 +146,12 @@ impl MapleApiSession {
 
         let current_tokens = capture_tokens(&inner.credentials.client)?;
         if inner.credentials.api_url == api_url && current_tokens == replacement_tokens {
-            return snapshot_from_inner(&self.user_id, &self.native_instance_id, &inner);
+            return snapshot_from_inner(
+                &self.user_id,
+                &self.native_instance_id,
+                &self.session_id,
+                &inner,
+            );
         }
 
         let generation = inner
@@ -157,7 +168,12 @@ impl MapleApiSession {
             api_url,
             client,
         };
-        snapshot_from_inner(&self.user_id, &self.native_instance_id, &inner)
+        snapshot_from_inner(
+            &self.user_id,
+            &self.native_instance_id,
+            &self.session_id,
+            &inner,
+        )
     }
 
     async fn invalidate(&self) {
@@ -208,7 +224,12 @@ impl MapleApiSession {
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| "Maple API authentication revision exhausted".to_string())?;
-            snapshot_from_inner(&self.user_id, &self.native_instance_id, &inner)?
+            snapshot_from_inner(
+                &self.user_id,
+                &self.native_instance_id,
+                &self.session_id,
+                &inner,
+            )?
         };
 
         self.event_sink.auth_changed(&published);
@@ -220,7 +241,12 @@ impl MapleApiSession {
         if !inner.active {
             return Err("Maple API authentication is no longer active".to_string());
         }
-        snapshot_from_inner(&self.user_id, &self.native_instance_id, &inner)
+        snapshot_from_inner(
+            &self.user_id,
+            &self.native_instance_id,
+            &self.session_id,
+            &inner,
+        )
     }
 
     pub(crate) async fn validate_user(&self) -> Result<(), String> {
@@ -474,6 +500,7 @@ impl crate::agent::provider::MapleInferenceTransport for MapleApiSession {
 fn snapshot_from_inner(
     user_id: &str,
     native_instance_id: &str,
+    session_id: &str,
     inner: &MapleApiSessionInner,
 ) -> Result<MapleApiAuthSnapshot, String> {
     let tokens = capture_tokens(&inner.credentials.client)?;
@@ -482,6 +509,7 @@ fn snapshot_from_inner(
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         native_instance_id: native_instance_id.to_string(),
+        session_id: session_id.to_string(),
         revision: inner.revision,
     })
 }
@@ -640,11 +668,15 @@ impl MapleApiCredentialValidator for BackendCredentialValidator {
     }
 }
 
-fn new_native_instance_id() -> String {
+fn new_opaque_auth_id() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     let digest = Sha256::digest(bytes);
     format!("{digest:x}")
+}
+
+fn new_native_instance_id() -> String {
+    new_opaque_auth_id()
 }
 
 impl Default for MapleApiAuthState {
@@ -738,6 +770,12 @@ impl MapleApiAuthState {
             );
         }
         Ok(Arc::clone(session))
+    }
+
+    /// Snapshot the exact active authentication session for ownership-aware
+    /// host persistence and sign-out cleanup.
+    pub async fn auth_snapshot_for(&self, user_id: &str) -> Result<MapleApiAuthSnapshot, String> {
+        self.session_for(user_id).await?.auth_snapshot().await
     }
 
     pub async fn clear_auth(&self, user_id: &str) -> Result<(), String> {
@@ -1100,6 +1138,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.revision, 1);
+        assert!(!first.session_id.is_empty());
         let retained = state.session_for("user-a").await.unwrap();
 
         let unchanged = state
@@ -1113,6 +1152,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replaced.revision, 2);
+        assert_eq!(replaced.session_id, first.session_id);
         assert_eq!(replaced.access_token, "user-a|access-two");
         assert!(
             state
@@ -1131,6 +1171,7 @@ mod tests {
             .unwrap();
         assert_eq!(next_account.user_id, "user-b");
         assert_eq!(next_account.revision, 1);
+        assert_ne!(next_account.session_id, first.session_id);
     }
 
     #[tokio::test]
