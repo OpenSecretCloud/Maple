@@ -47,6 +47,7 @@
             alsa-lib
             fontconfig
             freetype
+            libxcb
             libxkbcommon
             vulkan-loader
             wayland
@@ -130,6 +131,7 @@
             alsa-lib
             fontconfig
             freetype
+            libxcb
             libxkbcommon
             vulkan-loader
             wayland
