@@ -532,6 +532,11 @@ impl SettingsScreen {
         self.edit_setting(move |settings| settings.composer_vim_enabled = next, cx);
     }
 
+    fn toggle_application_vim(&mut self, cx: &mut Context<Self>) {
+        let next = !self.settings.application_vim_enabled;
+        self.edit_setting(move |settings| settings.application_vim_enabled = next, cx);
+    }
+
     /// Persist the editor text as the harness instructions and hand it to
     /// the running backend. Text equal to the default is saved as empty so
     /// a future default change still applies.
@@ -929,6 +934,18 @@ impl SettingsScreen {
                         },
                         cx.listener(|this, _event, _window, cx| {
                             this.toggle_composer_vim(cx);
+                        }),
+                    ))
+                    .child(setting_row(
+                        "Vim navigation across the app",
+                        "Use Vim-style semantic navigation in Chat. Text fields keep their existing editing behavior.",
+                        if self.settings.application_vim_enabled {
+                            "On"
+                        } else {
+                            "Off"
+                        },
+                        cx.listener(|this, _event, _window, cx| {
+                            this.toggle_application_vim(cx);
                         }),
                     ))
                     .child(section_title("Voice"))

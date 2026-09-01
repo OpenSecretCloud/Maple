@@ -79,7 +79,34 @@ impl ChatScreen {
                         .timeline_index
                         .get(&item.id)
                         .map_or(0, |(_, revision)| *revision);
-                    render_timeline_item(item, revision, expanded, &transcript).into_any_element()
+                    let row = render_timeline_item(item, revision, expanded, &transcript);
+                    if !chat.application_vim_enabled {
+                        row.into_any_element()
+                    } else {
+                        let application_selected = chat.application_vim_selects_timeline(&item.id);
+                        let application_item_id = item.id.clone();
+                        let application_entity = entity.clone();
+                        div()
+                            .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
+                                let Some(chat_entity) = application_entity.upgrade() else {
+                                    return;
+                                };
+                                chat_entity.update(cx, |chat, cx| {
+                                    chat.select_timeline_from_pointer(
+                                        &application_item_id,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            })
+                            .when(application_selected, |row| {
+                                row.rounded_md()
+                                    .border_l_2()
+                                    .border_color(gpui::rgb(theme::accent()))
+                            })
+                            .child(row)
+                            .into_any_element()
+                    }
                 }
                 None => div().into_any_element(),
             };
@@ -1248,6 +1275,7 @@ pub(super) fn render_waiting_indicator() -> Div {
 pub(super) fn render_permission_card(
     permission: &PendingPermission,
     responding: bool,
+    application_choice: Option<usize>,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
     let description: SharedString = match permission.prompt.as_deref() {
@@ -1290,7 +1318,7 @@ pub(super) fn render_permission_card(
         );
     }
     let mut buttons = div().flex().gap_2();
-    for (id, label, allow, color) in [
+    for (index, (id, label, allow, color)) in [
         (
             "permission-allow-once",
             "Allow once",
@@ -1298,13 +1326,21 @@ pub(super) fn render_permission_card(
             theme::status_success(),
         ),
         ("permission-deny", "Deny", false, theme::status_error()),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         buttons = buttons.child(
             div()
                 .id(id)
                 .px_4()
                 .py_1()
                 .rounded_md()
+                .when(application_choice == Some(index), |button| {
+                    button
+                        .border_2()
+                        .border_color(gpui::rgb(theme::text_primary()))
+                })
                 .bg(gpui::rgb(if responding { theme::border() } else { color }))
                 .text_sm()
                 .text_color(gpui::rgb(theme::bg_app()))

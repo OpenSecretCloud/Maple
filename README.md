@@ -83,15 +83,18 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
   Visual modes, Unicode-aware motions and text objects, operators and counts,
   an unnamed register, undo/redo transactions, and structured dot repeat.
   Enable it under General settings; every other text field stays standard.
+- Optional application Vim navigation moves a stable semantic selection through
+  Chat sidebar and transcript rows and modal choices. It is independent of
+  composer Vim and leaves ordinary text fields unchanged.
 - Projects (working directories) with pinned and recent roots, rename,
   open in the file manager, and remove. Projects that provide skills ask
   for a trust decision before their guidance loads.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (default permission mode, web tools, appearance,
   tool call details, desktop notifications, tool call summaries, composer Vim,
-  and the speech voice and speed), Keyboard Shortcuts, System prompt, MCP
-  servers, Usage (plan meter from the billing API plus totals from the Goose
-  ledger), and About.
+  application Vim, and the speech voice and speed), Keyboard Shortcuts, System
+  prompt, MCP servers, Usage (plan meter from the billing API plus totals from
+  the Goose ledger), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes, asks a question, or needs
@@ -114,23 +117,43 @@ Visual modes. Escape leaves Insert or Visual for Normal; Enter sends in Insert
 or Normal, while Shift-Enter inserts a newline only in Insert.
 
 Composer Vim uses the same customizable shortcut catalog as the rest of the
-app. Application-wide Vim navigation remains a separate follow-up layer.
+app. It can be enabled with or without application Vim.
+
+### Application Vim preview
+
+Turn on **Vim navigation across the app** in General settings. Application Vim
+owns a stable semantic selection in Chat while ordinary inputs retain normal
+text editing. Chat remembers transcript selection per task, follows streaming
+only while the selection is pinned to the newest row, and resolves sidebar
+projects and tasks by stable IDs rather than virtual-list indices. Direct clicks
+update the same selection state.
+
+The preview includes `j/k`, `gg/G`, counts, `Enter`, `h/l`, `y`, `/`, `ga`,
+`[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Space s n` starts a task and `Space ,`
+opens Settings. Annotation motions are registered and report that no annotation
+source is available in the current app. A root action palette and which-key
+display remain follow-up work rather than hidden partial implementations.
+
+Closing Settings explicitly restores Chat focus because the two screens are
+separately mounted. Application Vim returns to its semantic focus proxy;
+Standard mode returns to the composer. The Standard-mode handoff is intentional
+cross-screen behavior rather than an opt-in Vim side effect.
 
 ### Keyboard shortcuts preview
 
 Open **Keyboard Shortcuts** in Settings to search, record, disable, or reset
-the 118 bindings Maple already ships. Recording accepts sequences of up to
+the 159 bindings Maple ships in this preview. Recording accepts sequences of up to
 four strokes; Enter saves, Backspace removes the latest stroke, and Escape
 cancels. Exact and prefix collisions are shown before saving, with an explicit
 choice to replace the other bindings or keep compatible chords.
 
-This preview changes only physical bindings for existing GPUI actions. It does
-not add commands or expose raw input behavior such as composer send,
-Shift-Enter, slash completion, or login field traversal. Per-binding changes
-are stored in `settings.json` under `shortcut_overrides`; missing entries keep
-their shipped key and `null` disables that exact binding slot. Maple validates
-the complete candidate map before replacing the live one, so a malformed
-override cannot leave ordinary text editing half-installed.
+The catalog covers the existing GPUI actions plus the typed composer and
+application Vim commands. It does not expose raw input behavior such as
+composer send, Shift-Enter, slash completion, or login field traversal.
+Per-binding changes are stored in `settings.json` under `shortcut_overrides`;
+missing entries keep their shipped key and `null` disables that exact binding
+slot. Maple validates the complete candidate map before replacing the live one,
+so a malformed override cannot leave ordinary text editing half-installed.
 
 ## Prerequisites
 

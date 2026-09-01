@@ -886,6 +886,81 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_application_vim_enter_focuses_the_question_answer(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.application_vim_enabled = false;
+            chat.set_application_vim_enabled(true, cx);
+            chat.replace_timeline(vec![user_item("u1", "question")]);
+            chat.handle_service_event(
+                AgentServiceEvent::Question {
+                    session_id: "s1".to_string(),
+                    request_id: "free-form".to_string(),
+                    questions: vec![maple_agent::agent::AgentQuestion {
+                        id: "answer".to_string(),
+                        header: "Question".to_string(),
+                        question: "What should Maple do?".to_string(),
+                        options: Vec::new(),
+                    }],
+                },
+                cx,
+            );
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        let application_focus =
+            cx.update(|_window, app| chat.read(app).application_focus.clone().unwrap());
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(application_focus),
+            "a fresh question starts on the application-navigation proxy"
+        );
+
+        cx.simulate_keystrokes("enter");
+        let answer_focus = cx.update(|_window, app| {
+            chat.read(app)
+                .pending_question_input
+                .clone()
+                .expect("question input")
+                .read(app)
+                .focus_handle(app)
+        });
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(answer_focus),
+            "Enter must provide a keyboard route into the free-form answer"
+        );
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).pending_questions.len()),
+            1,
+            "focusing the answer must not submit an empty response"
+        );
+    }
+
+    #[gpui::test]
     fn test_send_blocked_while_question_pending(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -1935,6 +2010,12 @@ mod state_tests {
         cx.update(|_window, app| {
             let chat = chat.read(app);
             assert_eq!(chat.sidebar_list.item_count(), chat.sidebar_entries.len());
+            assert_eq!(
+                chat.sidebar_application_target(0),
+                None,
+                "the sidebar must not build an application-navigation cache while it is off"
+            );
+            assert_eq!(chat.sidebar_application_target(1), None);
             let top = chat.sidebar_list.logical_scroll_top();
             assert_eq!(top.item_ix, 0);
         });
@@ -1955,7 +2036,46 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_application_vim_off_keeps_chat_projection_empty(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            this.set_application_vim_enabled(false, cx);
+            this.sessions = vec![summary("s1", "Task")];
+            this.rebuild_project_groups();
+            this.replace_timeline(vec![
+                user_item("u1", "question"),
+                item("a1", "message", Some("answer")),
+            ]);
+
+            assert!(
+                this.application_vim_projection_is_empty(),
+                "loading a timeline and rebuilding the sidebar must not populate disabled navigation state"
+            );
+
+            this.set_application_vim_enabled(true, cx);
+            assert!(!this.application_vim_projection_is_empty());
+            this.set_application_vim_enabled(false, cx);
+            assert!(
+                this.application_vim_projection_is_empty(),
+                "disabling the feature must release its cached projection"
+            );
+        });
+    }
+
+    #[gpui::test]
     fn test_streaming_chunk_keeps_wheel_scrolling_up(cx: &mut TestAppContext) {
+        assert_streaming_chunk_keeps_wheel_scrolling_up(cx, false);
+    }
+
+    #[gpui::test]
+    fn test_application_vim_streaming_chunk_keeps_wheel_scrolling_up(cx: &mut TestAppContext) {
+        assert_streaming_chunk_keeps_wheel_scrolling_up(cx, true);
+    }
+
+    fn assert_streaming_chunk_keeps_wheel_scrolling_up(
+        cx: &mut TestAppContext,
+        application_vim_enabled: bool,
+    ) {
         /// A paragraph long enough to need real vertical space when rendered.
         const PARA: &str = "The quick brown fox jumps over the lazy dog. \
             Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump! ";
@@ -1979,7 +2099,7 @@ mod state_tests {
             }
         }
 
-        let chat = cx.new(|_| {
+        let chat = cx.new(move |cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
                 crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
@@ -1987,6 +2107,8 @@ mod state_tests {
             );
             let mut this = ChatScreen::new_inner(backend, "user".to_string());
             this.selected_session = Some("s1".to_string());
+            this.application_vim_enabled = application_vim_enabled;
+            this.application_focus = application_vim_enabled.then(|| cx.focus_handle());
             this
         });
 
@@ -2051,14 +2173,15 @@ mod state_tests {
         // A streamed chunk lands. No repaint runs before the user's wheel
         // event, exactly like a frame that is still pending.
         cx.update(|_window, app| {
-            chat.update(app, |this, _cx| {
-                this.apply_timeline_item(
+            chat.update(app, |this, cx| {
+                this.apply_incoming_item(
                     "s1",
                     AgentTimelineItem {
                         merge: "append".to_string(),
                         text: Some(PARA.to_string()),
                         ..item("stream", "message", None)
                     },
+                    cx,
                 );
             })
         });
@@ -2159,11 +2282,274 @@ mod state_tests {
         );
     }
 
+    #[gpui::test]
+    fn test_application_vim_moves_over_the_semantic_transcript_projection(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_inner(backend, "user".to_string());
+            chat.selected_session = Some("s1".to_string());
+            chat.application_vim_enabled = true;
+            chat.application_focus = Some(cx.focus_handle());
+            chat.screen_focus_pending = true;
+            chat.booting = false;
+
+            let mut assistant = item("a1", "message", Some("answer"));
+            assistant.role = Some("assistant".to_string());
+            chat.replace_timeline(vec![
+                user_item("u1", "question"),
+                item("internal", "internal", Some("state")),
+                item("empty", "message", Some("   ")),
+                todo_item("todo", serde_json::json!([])),
+                assistant,
+                item("tool", "tool", None),
+            ]);
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).navigable_timeline_ids()),
+            vec!["u1", "a1", "tool"]
+        );
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned)),
+            Some("tool".to_string()),
+            "a fresh semantic projection follows its newest visible item"
+        );
+
+        cx.simulate_keystrokes("g g");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned)),
+            Some("u1".to_string())
+        );
+        cx.simulate_keystrokes("2 j");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned)),
+            Some("tool".to_string()),
+            "counts apply to semantic rows and skip non-renderable backing items"
+        );
+        cx.simulate_keystrokes("k");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned)),
+            Some("a1".to_string())
+        );
+    }
+
+    #[gpui::test]
+    fn test_application_vim_escape_assistant_focus_and_plain_command_count(
+        cx: &mut TestAppContext,
+    ) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.application_vim_enabled = false;
+            chat.composer_vim_enabled = false;
+            if let Some(composer) = chat.composer.clone() {
+                composer.update(cx, |input, cx| input.set_vim_enabled(false, cx));
+            }
+            let mut assistant = item("a1", "message", Some("answer"));
+            assistant.role = Some("assistant".to_string());
+            chat.replace_timeline(vec![
+                user_item("u1", "question"),
+                assistant,
+                item("tool", "tool", None),
+            ]);
+            chat.set_application_vim_enabled(true, cx);
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        let application_focus =
+            cx.update(|_window, app| chat.read(app).application_focus.clone().unwrap());
+        let composer = cx.update(|_window, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_window, app| composer.read(app).focus_handle(app));
+
+        // A plain command always cancels an unfinished application count.
+        cx.update(|window, app| {
+            chat.update(app, |this, cx| {
+                this.application_vim.count.push(4);
+                this.execute_command(commands::ChatCommand::ToggleSidebar, window, cx);
+                assert_eq!(this.application_vim.count.pending(), None);
+            });
+        });
+
+        // With composer Vim disabled, Escape hands focus back to the
+        // application proxy instead of being swallowed by TextInput.
+        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.simulate_keystrokes("escape");
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(application_focus.clone())
+        );
+
+        // Once no focus transition consumes Escape, the same central route
+        // still reaches Chat's legacy menu-close behavior.
+        chat.update(cx, |this, cx| this.toggle_root_menu(cx));
+        assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
+        cx.simulate_keystrokes("escape");
+        assert!(!cx.update(|_window, app| chat.read(app).root_menu_open));
+
+        // ga from composer Normal selects the newest assistant and returns
+        // focus to the application proxy rather than leaving a stale chord
+        // highlight behind in the editor.
+        composer.update(cx, |input, cx| input.set_vim_enabled(true, cx));
+        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.simulate_keystrokes("g a");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned)),
+            Some("a1".to_string())
+        );
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(application_focus)
+        );
+    }
+
+    #[gpui::test]
+    fn test_application_vim_reconciles_stable_timeline_ids_per_task(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, _cx| {
+            this.application_vim_enabled = true;
+            this.replace_timeline(vec![
+                item("a", "message", Some("a")),
+                item("b", "message", Some("b")),
+                item("c", "message", Some("c")),
+            ]);
+            assert_eq!(this.selected_transcript_id(), Some("c"));
+
+            // Reordering keeps the stable ID. Removing it chooses the next
+            // item from the old semantic order before falling back backward.
+            this.replace_timeline(vec![
+                item("c", "message", Some("c")),
+                item("a", "message", Some("a")),
+                item("b", "message", Some("b")),
+            ]);
+            assert_eq!(this.selected_transcript_id(), Some("c"));
+            this.replace_timeline(vec![
+                item("a", "message", Some("a")),
+                item("b", "message", Some("b")),
+            ]);
+            assert_eq!(this.selected_transcript_id(), Some("a"));
+
+            this.selected_session = Some("s2".to_string());
+            this.replace_timeline(vec![
+                item("x", "message", Some("x")),
+                item("y", "message", Some("y")),
+            ]);
+            assert_eq!(this.selected_transcript_id(), Some("y"));
+
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(vec![
+                item("a", "message", Some("a")),
+                item("b", "message", Some("b")),
+            ]);
+            assert_eq!(this.selected_transcript_id(), Some("a"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_returning_from_settings_reclaims_chat_focus_without_a_preference_change(
+        cx: &mut TestAppContext,
+    ) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            let settings = crate::settings::AppSettings {
+                application_vim_enabled: true,
+                ..Default::default()
+            };
+            this.application_vim_enabled = true;
+            this.screen_focus_pending = false;
+
+            this.apply_defaults(&settings, cx);
+
+            assert!(
+                this.screen_focus_pending,
+                "the remounted Chat screen must not retain Settings' stale focus handle"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_returning_from_settings_reclaims_standard_chat_focus(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, cx| {
+            let settings = crate::settings::AppSettings {
+                application_vim_enabled: false,
+                ..Default::default()
+            };
+            this.application_vim_enabled = false;
+            this.screen_focus_pending = false;
+
+            this.apply_defaults(&settings, cx);
+
+            assert!(
+                this.screen_focus_pending,
+                "Standard mode intentionally returns Settings focus to the Chat composer"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_persisted_application_vim_starts_an_empty_chat_on_the_sidebar(cx: &mut TestAppContext) {
+        let chat = screen(cx);
+        chat.update(cx, |this, _cx| {
+            this.application_vim_enabled = true;
+            this.application_vim = Default::default();
+
+            this.initialize_application_vim_surface();
+
+            assert_eq!(
+                this.application_vim.region,
+                crate::ui::chat::navigation::ChatRegion::Sidebar
+            );
+        });
+    }
+
     /// Ctrl-P opens the project menu, takes the focus off the composer,
     /// and walks its rows with plain arrow keys. Closing the menu gives
     /// the composer its focus back.
     #[gpui::test]
-    fn test_project_menu_walks_with_the_arrow_keys(cx: &mut TestAppContext) {
+    fn test_project_menu_walks_with_arrows_and_application_vim_jk(cx: &mut TestAppContext) {
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -2241,6 +2627,22 @@ mod state_tests {
             cx.update(|window, app| window.focused(app)),
             Some(composer_handle),
             "closing the menu must hand the focus back"
+        );
+
+        // Application Vim adds its own context to the focused menu, so its
+        // j/k aliases are live without disturbing the legacy arrow bindings.
+        chat.update(cx, |this, cx| this.set_application_vim_enabled(true, cx));
+        cx.simulate_keystrokes("secondary-p");
+        assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
+        cx.simulate_keystrokes("j j");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            Some(1)
+        );
+        cx.simulate_keystrokes("k");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            Some(0)
         );
     }
 }

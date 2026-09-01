@@ -237,8 +237,14 @@ impl ChatScreen {
         }
         let old_count = self.sidebar_list.item_count();
         self.sidebar_entries = entries;
+        if self.application_vim_enabled {
+            self.rebuild_sidebar_application_targets();
+        }
         self.sidebar_list
             .splice(0..old_count, self.sidebar_entries.len());
+        if self.application_vim_enabled {
+            self.reconcile_sidebar_application_selection();
+        }
     }
 
     /// A row changed its height (a rename field came or went): let the
@@ -335,18 +341,28 @@ impl ChatScreen {
             RenameTarget::Project(root) => self.root_name(root),
         };
         let chat = cx.entity().downgrade();
-        let input = cx.new(|cx| {
-            let mut input = TextInput::new("Name", cx).with_tab_index(0);
+        let rename_chat = chat.clone();
+        let application_vim_enabled = self.application_vim_enabled;
+        let input = cx.new(move |cx| {
+            let mut input = TextInput::new("Name", cx)
+                .with_tab_index(0)
+                .application_vim(application_vim_enabled);
             input.set_text(&current, cx);
-            input.on_enter(move |_text, _, cx| {
-                let chat = chat.clone();
-                // commit_rename reads this input; defer out of its update.
-                cx.defer(move |cx| {
-                    if let Some(chat) = chat.upgrade() {
-                        chat.update(cx, |chat, cx| chat.commit_rename(cx));
+            input
+                .on_application_escape(move |window, cx| {
+                    if let Some(chat) = rename_chat.upgrade() {
+                        chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
                     }
-                });
-            })
+                })
+                .on_enter(move |_text, _, cx| {
+                    let chat = chat.clone();
+                    // commit_rename reads this input; defer out of its update.
+                    cx.defer(move |cx| {
+                        if let Some(chat) = chat.upgrade() {
+                            chat.update(cx, |chat, cx| chat.commit_rename(cx));
+                        }
+                    });
+                })
         });
         self.project_menu = None;
         self.rename = Some(target);
@@ -854,7 +870,23 @@ impl ChatScreen {
     /// Fold or unfold a project's task list. Unfolding a project that is
     /// not current also makes it current, so New Task lands in it.
     pub(super) fn toggle_root_collapsed(&mut self, root: &str, cx: &mut Context<Self>) {
-        if self.collapsed_roots.remove(root) {
+        let collapsed = !self.collapsed_roots.contains(root);
+        self.set_root_collapsed(root, collapsed, cx);
+    }
+
+    /// Deterministically fold or unfold one project. Application Vim uses
+    /// this setter for `h`/`l`; pointer clicks retain toggle behavior above.
+    pub(super) fn set_root_collapsed(
+        &mut self,
+        root: &str,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.collapsed_roots.contains(root) == collapsed {
+            return;
+        }
+        if !collapsed {
+            self.collapsed_roots.remove(root);
             if self.project_root.as_deref() != Some(root) {
                 self.switch_root(root.to_string(), cx);
             }
@@ -1100,7 +1132,7 @@ impl ChatScreen {
     /// One row of the sidebar list.
     pub(super) fn render_sidebar_entry(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected_session.as_deref();
-        match self.sidebar_entries.get(ix).copied() {
+        let entry = match self.sidebar_entries.get(ix).copied() {
             Some(SidebarEntry::NewTask) => div()
                 .id("new-task")
                 .mb_3()
@@ -1206,7 +1238,28 @@ impl ChatScreen {
                     .into_any_element()
             }
             None => div().into_any_element(),
+        };
+        if !self.application_vim_enabled {
+            return entry;
         }
+        let application_selected = self.application_vim_selects_sidebar_row(ix);
+        let application_target = self.sidebar_application_target(ix).cloned();
+        div()
+            .when_some(application_target, |row, target| {
+                row.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _event, window, cx| {
+                        this.select_sidebar_from_pointer(target.clone(), window, cx);
+                    }),
+                )
+            })
+            .when(application_selected, |row| {
+                row.rounded_md()
+                    .border_l_2()
+                    .border_color(gpui::rgb(theme::accent()))
+            })
+            .child(entry)
+            .into_any_element()
     }
 
     /// A project header row with its fold chevron, pin, and overflow

@@ -28,6 +28,7 @@ mod cache;
 mod commands;
 mod composer;
 mod images;
+mod navigation;
 mod queue;
 mod sidebar;
 mod speech;
@@ -39,6 +40,7 @@ mod transcript;
 use self::cache::{DerivedCache, MarkdownCache, MarkdownKind, STREAM_PARSE_INTERVAL};
 use self::commands::ChatCommand;
 use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
+use self::navigation::ApplicationVimState;
 use self::sidebar::{
     ProjectGroup, SidebarEntry, SidebarRow, root_display_name, session_summary_eq,
 };
@@ -211,6 +213,16 @@ pub struct ChatScreen {
     composer: Option<Entity<TextInput>>,
     /// Persisted opt-in for modal editing in this composer only.
     composer_vim_enabled: bool,
+    /// Independent, persisted application-level Vim navigation profile.
+    application_vim_enabled: bool,
+    /// Stable-ID semantic selection and count state for application Vim.
+    application_vim: ApplicationVimState,
+    /// Focus proxy used while application navigation, rather than a text
+    /// field, owns keyboard input.
+    application_focus: Option<gpui::FocusHandle>,
+    /// Reclaim the appropriate Chat focus after mounting or returning from
+    /// Settings. The destination depends on the current navigation profile.
+    screen_focus_pending: bool,
     /// Composer holds non-blank text; refreshed when the composer changes.
     composer_has_text: bool,
     /// Palette rows for the composer's current "/" token; rebuilt when the
@@ -484,14 +496,27 @@ impl ChatScreen {
     fn new_mounted(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
         let mut this = Self::new_inner(backend, user_id);
-        this.attach_composer(weak, cx);
+        this.attach_composer(weak.clone(), cx);
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
         this.transcript_focus = Some(cx.focus_handle());
         this.root_menu_focus = Some(cx.focus_handle());
-        let search = cx.new(|cx| TextInput::new("Search tasks", cx).with_tab_index(2));
+        this.application_focus = Some(cx.focus_handle());
+        let application_vim_enabled = this.application_vim_enabled;
+        let search_chat = weak.clone();
+        let search = cx.new(move |cx| {
+            TextInput::new("Search tasks", cx)
+                .with_tab_index(2)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| {
+                    if let Some(chat) = search_chat.upgrade() {
+                        chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
+                    }
+                })
+        });
         cx.observe(&search, |this, input, cx| this.search_changed(&input, cx))
             .detach();
         this.search_input = Some(search);
+        this.initialize_application_vim_surface();
         this
     }
 
@@ -507,9 +532,21 @@ impl ChatScreen {
     /// Create and wire the composer; called by the real constructor.
     fn attach_composer(&mut self, weak: gpui::WeakEntity<Self>, cx: &mut Context<Self>) {
         let vim_enabled = self.composer_vim_enabled;
+        let application_vim_enabled = self.application_vim_enabled;
         let composer = cx.new(|cx| {
             TextInput::new(COMPOSER_PLACEHOLDER, cx)
                 .composer_vim(vim_enabled)
+                .application_vim(application_vim_enabled)
+                .on_vim_leave({
+                    let weak = weak.clone();
+                    move |window, cx| {
+                        if let Some(chat) = weak.upgrade() {
+                            chat.update(cx, |chat, cx| {
+                                chat.restore_region_from_composer(window, cx)
+                            });
+                        }
+                    }
+                })
                 .multiline(8)
                 .spell_check()
                 .on_key({
@@ -683,6 +720,10 @@ impl ChatScreen {
             context_limit: 0,
             composer: None,
             composer_vim_enabled: settings.composer_vim_enabled,
+            application_vim_enabled: settings.application_vim_enabled,
+            application_vim: ApplicationVimState::default(),
+            application_focus: None,
+            screen_focus_pending: settings.application_vim_enabled,
             composer_has_text: false,
             slash_entries: Vec::new(),
             models: Vec::new(),
@@ -1199,8 +1240,18 @@ impl ChatScreen {
     fn show_root_input(&mut self, cx: &mut Context<Self>) {
         // The native picker could not open: offer manual entry.
         if self.root_input.is_none() {
-            let input =
-                cx.new(|cx| TextInput::new("/absolute/path/to/project", cx).with_tab_index(0));
+            let chat = cx.entity().downgrade();
+            let application_vim_enabled = self.application_vim_enabled;
+            let input = cx.new(move |cx| {
+                TextInput::new("/absolute/path/to/project", cx)
+                    .with_tab_index(0)
+                    .application_vim(application_vim_enabled)
+                    .on_application_escape(move |window, cx| {
+                        if let Some(chat) = chat.upgrade() {
+                            chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
+                        }
+                    })
+            });
             self.root_input = Some(input);
         }
         self.root_menu_open = true;
@@ -1463,6 +1514,9 @@ impl ChatScreen {
     /// Install a new timeline and reset every per-item structure that is
     /// keyed by its contents.
     fn replace_timeline(&mut self, timeline: Vec<AgentTimelineItem>) {
+        let old_navigation_order = self
+            .application_vim_enabled
+            .then(|| self.navigable_timeline_ids());
         self.timeline = timeline;
         self.timeline_index = self
             .timeline
@@ -1473,6 +1527,9 @@ impl ChatScreen {
         self.markdown_cache.clear();
         self.derived.clear();
         self.list_state.reset(self.timeline.len());
+        if let Some(old_navigation_order) = old_navigation_order {
+            self.reconcile_timeline_application_selection(&old_navigation_order);
+        }
         let plan = self
             .timeline
             .iter()
@@ -1500,6 +1557,12 @@ impl ChatScreen {
                 input.set_vim_enabled(settings.composer_vim_enabled, cx)
             });
         }
+        self.set_application_vim_enabled(settings.application_vim_enabled, cx);
+        // Settings is a different mounted entity, so its focus handle becomes
+        // stale when Chat is restored even when no preference changed. This
+        // handoff is intentionally cross-mode: Application Vim returns to its
+        // proxy, while Standard mode returns to the composer.
+        self.screen_focus_pending = true;
         self.tts_voice.clone_from(&settings.tts_voice);
         self.tts_speed = settings.tts_speed;
         if self.uses_default_permission_mode {
@@ -2403,6 +2466,11 @@ impl ChatScreen {
         {
             return;
         }
+        if self.application_vim_owns_unfocused_typing(window, cx) {
+            self.application_vim.count.clear();
+            cx.stop_propagation();
+            return;
+        }
         // A focused text input already receives typing.
         let focused = window.focused(cx);
         let typing_here = [
@@ -2997,18 +3065,27 @@ impl ChatScreen {
             return;
         }
         let chat = cx.entity().downgrade();
-        let input = cx.new(|cx| {
-            TextInput::new("Type your answer…", cx).on_enter(move |text, _, cx| {
-                let _ = text;
-                let chat = chat.clone();
-                // submit_question reads this input; defer out of its
-                // update first.
-                cx.defer(move |cx| {
-                    if let Some(chat) = chat.upgrade() {
-                        chat.update(cx, |chat, cx| chat.submit_question(cx));
+        let question_chat = chat.clone();
+        let application_vim_enabled = self.application_vim_enabled;
+        let input = cx.new(move |cx| {
+            TextInput::new("Type your answer…", cx)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, cx| {
+                    if let Some(chat) = question_chat.upgrade() {
+                        chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
                     }
-                });
-            })
+                })
+                .on_enter(move |text, _, cx| {
+                    let _ = text;
+                    let chat = chat.clone();
+                    // submit_question reads this input; defer out of its
+                    // update first.
+                    cx.defer(move |cx| {
+                        if let Some(chat) = chat.upgrade() {
+                            chat.update(cx, |chat, cx| chat.submit_question(cx));
+                        }
+                    });
+                })
         });
         self.pending_question_input = Some(input);
     }
@@ -3416,6 +3493,7 @@ impl ChatScreen {
             self.set_plan(plan);
         }
         let index = self.apply_timeline_item(session_id, item);
+        self.follow_application_stream();
         // A newer item after a thinking block finalizes the block; that is
         // when its header summary is requested (it has no status of its
         // own). Streaming chunks merge in place, so `index` stays put and
@@ -3827,16 +3905,37 @@ impl Render for ChatScreen {
         } else if !self.root_menu_open
             && let Some(handle) = self.root_menu_focus.clone()
             && handle.is_focused(window)
-            && let Some(composer) = self.composer.clone()
         {
-            // The menu closed while it held the focus; typing belongs to
-            // the composer again.
-            let handle = composer.read(cx).focus_handle(cx);
-            window.focus(&handle);
+            // The menu closed while it held focus. Application Vim returns
+            // to its proxy; Standard mode keeps the legacy composer return.
+            if self.application_vim_enabled {
+                if let Some(handle) = self.application_focus.clone() {
+                    window.focus(&handle);
+                }
+            } else if let Some(composer) = self.composer.clone() {
+                let handle = composer.read(cx).focus_handle(cx);
+                window.focus(&handle);
+            }
+        }
+        if self.screen_focus_pending {
+            self.screen_focus_pending = false;
+            if self.application_vim_enabled {
+                if let Some(handle) = self.application_focus.clone() {
+                    window.focus(&handle);
+                }
+            } else if let Some(composer) = self.composer.clone() {
+                let handle = composer.read(cx).focus_handle(cx);
+                window.focus(&handle);
+            }
         }
         if self.question_focus_pending {
             self.question_focus_pending = false;
-            if self.current_question().is_some()
+            if self.application_vim_enabled {
+                self.application_vim.permission_choice = 0;
+                if let Some(handle) = self.application_focus.clone() {
+                    window.focus(&handle);
+                }
+            } else if self.current_question().is_some()
                 && let Some(input) = self.pending_question_input.clone()
             {
                 let handle = input.read(cx).focus_handle(cx);
@@ -3897,6 +3996,7 @@ impl Render for ChatScreen {
                     container.child(render_permission_card(
                         permission,
                         self.permission_responding,
+                        self.application_permission_choice(),
                         cx,
                     ))
                 })
@@ -3923,7 +4023,13 @@ impl Render for ChatScreen {
                 )
         };
         div()
-            .key_context("Chat")
+            .key_context(self.application_vim_context())
+            .when_some(
+                self.application_vim_enabled
+                    .then(|| self.application_focus.clone())
+                    .flatten(),
+                |root, focus| root.track_focus(&focus),
+            )
             .on_action(cx.listener(Self::chat_escape))
             .on_action(cx.listener(Self::copy_selection))
             .on_action(cx.listener(Self::new_task_action))
@@ -3940,6 +4046,24 @@ impl Render for ChatScreen {
             .on_action(cx.listener(Self::allow_permission))
             .on_action(cx.listener(Self::pick_question_option))
             .on_action(cx.listener(Self::select_all_transcript))
+            .on_action(cx.listener(Self::app_vim_next))
+            .on_action(cx.listener(Self::app_vim_previous))
+            .on_action(cx.listener(Self::app_vim_first))
+            .on_action(cx.listener(Self::app_vim_last))
+            .on_action(cx.listener(Self::app_vim_activate))
+            .on_action(cx.listener(Self::app_vim_collapse))
+            .on_action(cx.listener(Self::app_vim_expand))
+            .on_action(cx.listener(Self::app_vim_copy))
+            .on_action(cx.listener(Self::app_vim_search))
+            .on_action(cx.listener(Self::app_vim_escape))
+            .on_action(cx.listener(Self::app_vim_composer))
+            .on_action(cx.listener(Self::app_vim_newest_assistant))
+            .on_action(cx.listener(Self::app_vim_next_assistant))
+            .on_action(cx.listener(Self::app_vim_previous_assistant))
+            .on_action(cx.listener(Self::app_vim_next_annotation))
+            .on_action(cx.listener(Self::app_vim_previous_annotation))
+            .on_action(cx.listener(Self::app_vim_count))
+            .on_action(cx.listener(Self::app_vim_move_region))
             .on_key_down(cx.listener(Self::type_into_composer))
             .flex_1()
             .min_h_0()
