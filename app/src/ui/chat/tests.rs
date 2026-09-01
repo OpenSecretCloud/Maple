@@ -6,7 +6,7 @@ mod state_tests {
     use crate::ui::chat::cache::{MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
-    use crate::ui::chat::transcript::{diff_lines_for, maple_display_text};
+    use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
 
@@ -1455,6 +1455,28 @@ mod state_tests {
             "Context limit reached — compacting to continue…"
         );
         assert_eq!(maple_display_text("Anything else"), "Anything else");
+    }
+
+    #[test]
+    fn test_tool_label_title_strips_descriptive_detail() {
+        // Known friendly labels drop the ": detail" part before the model
+        // summary replaces the title.
+        assert_eq!(tool_label_title("Terminal: cargo test"), "Terminal");
+        assert_eq!(tool_label_title("Read file: src/main.rs"), "Read file");
+        assert_eq!(tool_label_title("Web Search: rust async"), "Web Search");
+        assert_eq!(tool_label_title("Terminal"), "Terminal");
+        // Titles without a known label stay as-is: skill loads, generated
+        // titles, and raw or extension-prefixed tool names.
+        assert_eq!(
+            tool_label_title("Loading skill: rust-error-handling"),
+            "Loading skill: rust-error-handling"
+        );
+        assert_eq!(tool_label_title("Loaded skill: x"), "Loaded skill: x");
+        assert_eq!(tool_label_title("developer: shell"), "developer: shell");
+        assert_eq!(
+            tool_label_title("todo write: one, two"),
+            "todo write: one, two"
+        );
     }
 
     #[test]
