@@ -22,6 +22,9 @@ pub struct AppSettings {
     /// Whether completed tool calls get a one-line model summary.
     #[serde(default = "default_tool_summaries")]
     pub tool_summaries: bool,
+    /// Enable modal Vim editing only in the main chat composer.
+    #[serde(default)]
+    pub composer_vim_enabled: bool,
     #[serde(default)]
     pub pinned_roots: Vec<String>,
     /// Display names for project roots, keyed by absolute path.
@@ -254,6 +257,7 @@ impl Default for AppSettings {
             tool_details: default_tool_details(),
             default_web_enabled: default_web_enabled(),
             tool_summaries: default_tool_summaries(),
+            composer_vim_enabled: false,
             pinned_roots: Vec::new(),
             project_names: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
@@ -552,5 +556,15 @@ mod tests {
     fn default_settings_keep_the_on_disk_permission_string() {
         let json = serde_json::to_value(AppSettings::default()).expect("serialize");
         assert_eq!(json["default_permission_mode"], "smart_approve");
+    }
+
+    #[test]
+    fn existing_settings_files_default_composer_vim_to_off() {
+        let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
+        json.as_object_mut()
+            .expect("settings object")
+            .remove("composer_vim_enabled");
+        let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
+        assert!(!settings.composer_vim_enabled);
     }
 }

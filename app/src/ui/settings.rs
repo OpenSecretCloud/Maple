@@ -444,6 +444,11 @@ impl SettingsScreen {
         self.edit_setting(move |settings| settings.tool_summaries = next, cx);
     }
 
+    fn toggle_composer_vim(&mut self, cx: &mut Context<Self>) {
+        let next = !self.settings.composer_vim_enabled;
+        self.edit_setting(move |settings| settings.composer_vim_enabled = next, cx);
+    }
+
     /// Persist the editor text as the harness instructions and hand it to
     /// the running backend. Text equal to the default is saved as empty so
     /// a future default change still applies.
@@ -664,6 +669,19 @@ impl SettingsScreen {
                         },
                         cx.listener(|this, _event, _window, cx| {
                             this.toggle_tool_summaries(cx);
+                        }),
+                    ))
+                    .child(section_title("Editing"))
+                    .child(setting_row(
+                        "Vim mode in composer",
+                        "Use Normal, Insert, and Visual editing modes in the main chat composer. Other text fields stay unchanged.",
+                        if self.settings.composer_vim_enabled {
+                            "On"
+                        } else {
+                            "Off"
+                        },
+                        cx.listener(|this, _event, _window, cx| {
+                            this.toggle_composer_vim(cx);
                         }),
                     ))
                     .child(section_title("Voice"))

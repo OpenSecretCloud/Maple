@@ -209,6 +209,8 @@ pub struct ChatScreen {
     /// Context limit used with the estimate above.
     context_limit: i64,
     composer: Option<Entity<TextInput>>,
+    /// Persisted opt-in for modal editing in this composer only.
+    composer_vim_enabled: bool,
     /// Composer holds non-blank text; refreshed when the composer changes.
     composer_has_text: bool,
     /// Palette rows for the composer's current "/" token; rebuilt when the
@@ -504,8 +506,10 @@ impl ChatScreen {
 
     /// Create and wire the composer; called by the real constructor.
     fn attach_composer(&mut self, weak: gpui::WeakEntity<Self>, cx: &mut Context<Self>) {
+        let vim_enabled = self.composer_vim_enabled;
         let composer = cx.new(|cx| {
             TextInput::new(COMPOSER_PLACEHOLDER, cx)
+                .composer_vim(vim_enabled)
                 .multiline(8)
                 .spell_check()
                 .on_key({
@@ -678,6 +682,7 @@ impl ChatScreen {
             ledger_context_tokens: 0,
             context_limit: 0,
             composer: None,
+            composer_vim_enabled: settings.composer_vim_enabled,
             composer_has_text: false,
             slash_entries: Vec::new(),
             models: Vec::new(),
@@ -1489,6 +1494,12 @@ impl ChatScreen {
         self.default_web_enabled = settings.default_web_enabled;
         self.notify_enabled = settings.desktop_notifications;
         self.summaries_enabled = settings.tool_summaries;
+        self.composer_vim_enabled = settings.composer_vim_enabled;
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| {
+                input.set_vim_enabled(settings.composer_vim_enabled, cx)
+            });
+        }
         self.tts_voice.clone_from(&settings.tts_voice);
         self.tts_speed = settings.tts_speed;
         if self.uses_default_permission_mode {
@@ -1744,6 +1755,9 @@ impl ChatScreen {
             self.attachment_images.clear();
             self.attachment_requests.clear();
             self.toggled_tools.clear();
+            if let Some(composer) = self.composer.clone() {
+                composer.update(cx, |input, cx| input.reset_vim_context(cx));
+            }
         }
         self.tool_summaries.extend(stored_summaries);
         // Release the edit hold against the session that owns it, before
@@ -2406,6 +2420,7 @@ impl ChatScreen {
         let handle = composer.read(cx).focus_handle(cx);
         window.focus(&handle);
         composer.update(cx, |input, cx| {
+            input.prepare_for_typing(cx);
             input.replace_text_in_range(None, &text, window, cx)
         });
         cx.stop_propagation();

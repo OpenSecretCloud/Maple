@@ -3,6 +3,9 @@
 //! form submit and composer send, and an optional multi-line mode that wraps
 //! text and grows with its content (Shift+Enter inserts a newline).
 
+pub mod vim;
+mod vim_actions;
+
 use super::{spell, theme, widgets};
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -11,11 +14,20 @@ use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, ContentMask, Context, CursorStyle, Element,
     ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
     GlobalElementId, InteractiveElement, KeyBinding, LayoutId, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, SharedString, Style, TextAlign, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px, relative, rgb,
-    size,
+    MouseUpEvent, PaintQuad, Pixels, SharedString, Style, Subscription, TextAlign, TextRun,
+    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px,
+    relative, rgb, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+use self::vim::{
+    HistoryPlan, HistorySnapshot, InsertEditKind, InsertEntry, LifecycleEvent, Motion, VimCommand,
+    VimMode, VimOutcome, VimState, VimStatus,
+};
+use self::vim_actions::{
+    VimBeginOperator, VimCancel, VimContextual, VimCountDigit, VimDeleteChars, VimEnterInsert,
+    VimMotion, VimOpenLine, VimPaste, VimRedo, VimRepeat, VimToggleVisual, VimUndo,
+};
 
 actions!(
     text_input,
@@ -63,6 +75,7 @@ pub fn register_key_bindings(cx: &mut App) {
         KeyBinding::new("secondary-shift-z", Redo, context),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, context),
     ]);
+    vim_actions::register_key_bindings(cx);
 }
 
 type EnterHandler = Box<dyn Fn(String, &mut Window, &mut Context<TextInput>) + 'static>;
@@ -74,6 +87,12 @@ type KeyHandler = Box<
     dyn Fn(&gpui::KeyDownEvent, &SharedString, &mut Window, &mut Context<TextInput>) -> bool
         + 'static,
 >;
+
+#[derive(Clone)]
+struct ImeBaseline {
+    content: String,
+    range: Range<usize>,
+}
 
 pub struct TextInput {
     focus_handle: FocusHandle,
@@ -140,6 +159,20 @@ pub struct TextInput {
     /// Where the last edit left the cursor, so a run of typing or
     /// deleting at that point folds into one undo step.
     last_edit: Option<EditAnchor>,
+    /// Whether this input is the main chat composer. Kept separately from the
+    /// optional engine so a disabled composer still has the right key context
+    /// without letting stale modal state participate in ordinary editing.
+    is_composer: bool,
+    /// Present only while composer Vim is enabled. An absent engine is a hard
+    /// boundary: ordinary caret, selection, popup, and focus lifecycles cannot
+    /// be overwritten by stale modal offsets.
+    vim: Option<VimState>,
+    /// Stable state behind an active IME composition. Only its final commit
+    /// becomes part of the current Vim insertion transaction.
+    vim_ime_baseline: Option<ImeBaseline>,
+    /// Commits an Insert transaction and clears pending grammar when focus
+    /// leaves the composer.
+    focus_out_subscription: Option<Subscription>,
 }
 
 /// How many text states one input remembers for undo.
@@ -219,7 +252,27 @@ impl TextInput {
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             last_edit: None,
+            is_composer: false,
+            vim: None,
+            vim_ime_baseline: None,
+            focus_out_subscription: None,
         }
+    }
+
+    /// Mark this input as the chat composer and choose its initial modal
+    /// state. Ordinary inputs never call this builder.
+    pub fn composer_vim(mut self, enabled: bool) -> Self {
+        self.is_composer = true;
+        self.vim = enabled.then(|| VimState::at(&self.content, self.cursor_offset()));
+        self
+    }
+
+    pub fn vim_mode(&self) -> Option<VimMode> {
+        self.vim.as_ref().map(VimState::mode)
+    }
+
+    pub fn vim_status(&self) -> Option<VimStatus> {
+        self.vim.as_ref().map(VimState::status)
     }
 
     /// Underline misspelled words and offer replacements in the
@@ -242,16 +295,7 @@ impl TextInput {
         if self.content.get(range.clone()).is_none() {
             return;
         }
-        self.record_edit(false);
-        self.last_edit = None;
-        self.content =
-            (self.content[..range.start].to_owned() + replacement + &self.content[range.end..])
-                .into();
-        let end = range.start + replacement.len();
-        self.selected_range = end..end;
-        self.selection_reversed = false;
-        self.refresh_spelling();
-        cx.notify();
+        self.replace_range_with_kind(range, replacement, InsertEditKind::SelectionReplacement, cx);
     }
 
     /// Give this input an explicit position in the tab order.
@@ -320,24 +364,103 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Change the composer setting live without replacing its draft.
+    pub fn set_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if !self.is_composer {
+            return;
+        }
+
+        match (enabled, self.vim.take()) {
+            (true, None) => {
+                // Standard-mode edits are not tracked by the Vim engine. A
+                // newly enabled session starts from the live ordinary caret
+                // with empty registers and repeat state.
+                self.vim = Some(VimState::at(&self.content, self.cursor_offset()));
+                self.apply_vim_selection();
+                self.last_edit = None;
+                cx.notify();
+            }
+            (true, Some(vim)) => {
+                self.vim = Some(vim);
+            }
+            (false, Some(mut vim)) => {
+                // Commit an active Insert transaction and mirror its final
+                // caret once before dropping the engine. From this point on,
+                // ordinary editing has no modal lifecycle to run.
+                let outcome = vim.handle_lifecycle(&self.content, LifecycleEvent::Disable);
+                self.vim = Some(vim);
+                self.apply_vim_outcome(outcome, cx);
+                self.vim = None;
+                self.vim_ime_baseline = None;
+                cx.notify();
+            }
+            (false, None) => {}
+        }
+    }
+
+    /// Existing Chat type-to-compose remains ordinary when only composer Vim
+    /// is enabled: entering from another surface starts one Insert transaction
+    /// before the first character is applied.
+    pub fn prepare_for_typing(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            if self.vim_mode() == Some(VimMode::Visual) {
+                self.execute_vim_command(VimCommand::Cancel, cx);
+            }
+            self.execute_vim_command(VimCommand::EnterInsert(InsertEntry::BeforeCursor), cx);
+        }
+    }
+
+    /// A task change is a hard modal boundary even though Maple currently
+    /// keeps one visible composer draft. Registers, dot state, and history
+    /// must not accidentally operate across task ownership.
+    pub fn reset_vim_context(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut vim) = self.vim.take() {
+            let outcome =
+                vim.handle_lifecycle(&self.content, LifecycleEvent::ExternalDraftReplacement);
+            self.vim = Some(vim);
+            self.apply_vim_outcome(outcome, cx);
+            let cursor_offset = self.cursor_offset();
+            if let Some(vim) = &mut self.vim {
+                vim.reset_after_external_text(&self.content, cursor_offset, false);
+            }
+            self.apply_vim_selection();
+            self.forget_edits();
+            cx.notify();
+        }
+    }
+
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.record_edit(false);
-        self.last_edit = None;
+        if self.vim.is_some() {
+            self.finish_vim_lifecycle(LifecycleEvent::ExternalDraftReplacement, cx);
+            self.forget_edits();
+        } else {
+            self.record_edit(false);
+            self.last_edit = None;
+        }
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
         self.keep_cursor_visible = true;
         self.forget_text_positions();
+        if let Some(vim) = &mut self.vim {
+            vim.reset_after_external_text(&self.content, self.content.len(), false);
+        }
+        self.apply_vim_selection();
         self.refresh_spelling();
         cx.notify();
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.finish_vim_lifecycle(LifecycleEvent::SendOrClear, cx);
         self.forget_edits();
         self.content = "".into();
         self.selected_range = 0..0;
         self.scroll_y = px(0.);
         self.forget_text_positions();
         self.misspelled.clear();
+        if let Some(vim) = &mut self.vim {
+            vim.reset_after_external_text("", 0, true);
+        }
+        self.apply_vim_selection();
         cx.notify();
     }
 
@@ -346,14 +469,176 @@ impl TextInput {
     /// point at a word.
     fn forget_text_positions(&mut self) {
         self.marked_range = None;
+        self.vim_ime_baseline = None;
         self.selection_reversed = false;
         self.spell_menu = None;
         self.context_menu = None;
     }
 
-    /// The core of an edit: swap `range` for `new_text`, record the undo
-    /// step, and refresh what the old byte ranges pointed at.
+    fn push_history_snapshot(&mut self, snapshot: HistorySnapshot) {
+        if self.undo_stack.len() == UNDO_DEPTH {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(EditSnapshot {
+            content: snapshot.text.into(),
+            selected_range: snapshot.cursor..snapshot.cursor,
+            selection_reversed: false,
+        });
+        self.redo_stack.clear();
+        self.last_edit = None;
+    }
+
+    fn apply_vim_history(&mut self, history: HistoryPlan, cx: &mut Context<Self>) {
+        match history {
+            HistoryPlan::None => {}
+            HistoryPlan::Reset => self.forget_edits(),
+            HistoryPlan::Commit { before, .. } => self.push_history_snapshot(before),
+            HistoryPlan::Undo { count } => {
+                for _ in 0..count {
+                    let Some(previous) = self.undo_stack.pop_back() else {
+                        break;
+                    };
+                    self.redo_stack.push(self.snapshot());
+                    self.restore(previous, cx);
+                    let cursor = self.cursor_offset();
+                    if let Some(vim) = &mut self.vim {
+                        vim.sync_after_history(&self.content, cursor);
+                    }
+                }
+            }
+            HistoryPlan::Redo { count } => {
+                for _ in 0..count {
+                    let Some(next) = self.redo_stack.pop() else {
+                        break;
+                    };
+                    self.undo_stack.push_back(self.snapshot());
+                    self.restore(next, cx);
+                    let cursor = self.cursor_offset();
+                    if let Some(vim) = &mut self.vim {
+                        vim.sync_after_history(&self.content, cursor);
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_vim_selection(&mut self) {
+        let Some(vim) = &self.vim else {
+            return;
+        };
+        let selection = vim.selection(&self.content);
+        self.selected_range = selection.range;
+        self.selection_reversed = selection.reversed;
+    }
+
+    fn apply_vim_outcome(&mut self, outcome: VimOutcome, cx: &mut Context<Self>) {
+        let text_changed = outcome.text_changed;
+        if outcome.consumed {
+            self.keep_cursor_visible = true;
+        }
+        self.apply_vim_history(outcome.history, cx);
+        self.apply_vim_selection();
+        self.last_edit = None;
+        self.marked_range = None;
+        self.vim_ime_baseline = None;
+        if text_changed {
+            self.refresh_spelling();
+        }
+        cx.notify();
+    }
+
+    fn finish_vim_lifecycle(&mut self, event: LifecycleEvent, cx: &mut Context<Self>) {
+        let Some(mut vim) = self.vim.take() else {
+            return;
+        };
+        let outcome = vim.handle_lifecycle(&self.content, event);
+        self.vim = Some(vim);
+        self.apply_vim_outcome(outcome, cx);
+    }
+
+    fn execute_vim_command(&mut self, command: VimCommand, cx: &mut Context<Self>) -> bool {
+        if self.marked_range.is_some() && command == VimCommand::Cancel {
+            if let Some(baseline) = self.vim_ime_baseline.take() {
+                let cursor = baseline.range.start;
+                self.content = baseline.content.into();
+                self.selected_range = cursor..cursor;
+                self.refresh_spelling();
+            }
+            self.marked_range = None;
+            cx.notify();
+            return true;
+        }
+        let Some(mut vim) = self.vim.take() else {
+            return false;
+        };
+        let before = self.content.to_string();
+        let mut text = before.clone();
+        let outcome = vim.handle_command(&mut text, command);
+        let consumed = outcome.consumed;
+        self.vim = Some(vim);
+        if text != before {
+            self.content = text.into();
+        }
+        self.apply_vim_outcome(outcome, cx);
+        consumed
+    }
+
+    fn dispatch_vim_action(&mut self, command: VimCommand, cx: &mut Context<Self>) {
+        if self.execute_vim_command(command, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    fn replace_range_with_kind(
+        &mut self,
+        range: Range<usize>,
+        new_text: &str,
+        vim_kind: InsertEditKind,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .vim_mode()
+            .is_some_and(|mode| mode != VimMode::Disabled)
+        {
+            if self.vim_mode() != Some(VimMode::Insert) {
+                return;
+            }
+            let Some(mut vim) = self.vim.take() else {
+                return;
+            };
+            let before = self.content.to_string();
+            let mut text = before.clone();
+            let cursor_after = range.start.saturating_add(new_text.len());
+            let outcome = vim.insert_edit(&mut text, range, new_text, cursor_after, vim_kind);
+            self.vim = Some(vim);
+            if text != before {
+                self.content = text.into();
+            }
+            self.apply_vim_outcome(outcome, cx);
+            return;
+        }
+
+        self.replace_range_standard(range, new_text, cx);
+    }
+
+    #[cfg(test)]
     fn replace_range(&mut self, range: Range<usize>, new_text: &str, cx: &mut Context<Self>) {
+        let kind = if range.is_empty() {
+            InsertEditKind::Text
+        } else {
+            InsertEditKind::SelectionReplacement
+        };
+        self.replace_range_with_kind(range, new_text, kind, cx);
+    }
+
+    /// The ordinary editor core: swap `range` for `new_text`, record the
+    /// undo step, and refresh what old byte ranges pointed at.
+    fn replace_range_standard(
+        &mut self,
+        range: Range<usize>,
+        new_text: &str,
+        cx: &mut Context<Self>,
+    ) {
         // An IME composition was already recorded when it started; a
         // single typed or deleted character continues the run the last
         // one started; anything else is its own undo step.
@@ -455,11 +740,25 @@ impl TextInput {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
-        self.undo_last(cx);
+        if self
+            .vim_mode()
+            .is_some_and(|mode| mode != VimMode::Disabled)
+        {
+            self.execute_vim_command(VimCommand::Undo, cx);
+        } else {
+            self.undo_last(cx);
+        }
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
-        self.redo_last(cx);
+        if self
+            .vim_mode()
+            .is_some_and(|mode| mode != VimMode::Disabled)
+        {
+            self.execute_vim_command(VimCommand::Redo, cx);
+        } else {
+            self.redo_last(cx);
+        }
     }
 
     fn enter_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -473,41 +772,89 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_boundary(self.cursor_offset()), cx)
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::Left), cx);
+            return;
         }
-        self.replace_text_in_range(None, "", window, cx)
+        if self.vim.is_none() && self.marked_range.is_some() {
+            self.replace_text_in_range(None, "", window, cx);
+            return;
+        }
+        let range = if self.selected_range.is_empty() {
+            self.previous_boundary(self.cursor_offset())..self.cursor_offset()
+        } else {
+            self.selected_range.clone()
+        };
+        let _ = window;
+        self.replace_range_with_kind(range, "", InsertEditKind::Backspace, cx)
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_boundary(self.cursor_offset()), cx)
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::DeleteChars, cx);
+            return;
         }
-        self.replace_text_in_range(None, "", window, cx)
+        if self.vim.is_none() && self.marked_range.is_some() {
+            self.replace_text_in_range(None, "", window, cx);
+            return;
+        }
+        let range = if self.selected_range.is_empty() {
+            self.cursor_offset()..self.next_boundary(self.cursor_offset())
+        } else {
+            self.selected_range.clone()
+        };
+        let _ = window;
+        self.replace_range_with_kind(range, "", InsertEditKind::Delete, cx)
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::Left), cx);
+            return;
+        }
         if self.selected_range.is_empty() {
-            self.move_to(self.previous_boundary(self.cursor_offset()), cx);
+            let offset = self.previous_boundary(self.cursor_offset());
+            self.move_to(offset, cx);
+            self.sync_insert_cursor(offset, cx);
         } else {
-            self.move_to(self.selected_range.start, cx)
+            let offset = self.selected_range.start;
+            self.move_to(offset, cx);
+            self.sync_insert_cursor(offset, cx);
         }
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::Right), cx);
+            return;
+        }
         if self.selected_range.is_empty() {
-            self.move_to(self.next_boundary(self.selected_range.end), cx)
+            let offset = self.next_boundary(self.selected_range.end);
+            self.move_to(offset, cx);
+            self.sync_insert_cursor(offset, cx);
         } else {
-            self.move_to(self.selected_range.end, cx)
+            let offset = self.selected_range.end;
+            self.move_to(offset, cx);
+            self.sync_insert_cursor(offset, cx);
         }
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::Left), cx);
+            return;
+        }
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
+        self.sync_insert_cursor(self.cursor_offset(), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::Right), cx);
+            return;
+        }
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
+        self.sync_insert_cursor(self.cursor_offset(), cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -516,25 +863,149 @@ impl TextInput {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::LineStart), cx);
+        } else {
+            self.move_to(0, cx);
+            self.sync_insert_cursor(0, cx);
+        }
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::LineEnd), cx);
+        } else {
+            let offset = self.content.len();
+            self.move_to(offset, cx);
+            self.sync_insert_cursor(offset, cx);
+        }
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::Up), cx);
+            return;
+        }
         match self.vertical_neighbor(-1) {
-            Some(offset) => self.move_to(offset, cx),
-            None => self.move_to(0, cx),
+            Some(offset) => {
+                self.move_to(offset, cx);
+                self.sync_insert_cursor(offset, cx);
+            }
+            None => {
+                self.move_to(0, cx);
+                self.sync_insert_cursor(0, cx);
+            }
         }
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        match self.vertical_neighbor(1) {
-            Some(offset) => self.move_to(offset, cx),
-            None => self.move_to(self.content.len(), cx),
+        if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
+            self.execute_vim_command(VimCommand::Motion(Motion::Down), cx);
+            return;
         }
+        match self.vertical_neighbor(1) {
+            Some(offset) => {
+                self.move_to(offset, cx);
+                self.sync_insert_cursor(offset, cx);
+            }
+            None => {
+                let offset = self.content.len();
+                self.move_to(offset, cx);
+                self.sync_insert_cursor(offset, cx);
+            }
+        }
+    }
+
+    fn sync_insert_cursor(&mut self, offset: usize, cx: &mut Context<Self>) {
+        if self.vim_mode() != Some(VimMode::Insert) {
+            return;
+        }
+        let Some(mut vim) = self.vim.take() else {
+            return;
+        };
+        let outcome = vim.move_insert_cursor(&self.content, offset);
+        self.vim = Some(vim);
+        self.apply_vim_outcome(outcome, cx);
+    }
+
+    fn key_context(&self) -> &'static str {
+        match (self.is_composer, self.vim_mode()) {
+            (true, Some(VimMode::Normal)) => {
+                "TextInput input_role = composer editor_vim_mode = normal"
+            }
+            (true, Some(VimMode::Insert)) => {
+                "TextInput input_role = composer editor_vim_mode = insert"
+            }
+            (true, Some(VimMode::Visual)) => {
+                "TextInput input_role = composer editor_vim_mode = visual"
+            }
+            (true, Some(VimMode::Disabled) | None) => {
+                "TextInput input_role = composer editor_vim_mode = disabled"
+            }
+            (false, _) => "TextInput input_role = other editor_vim_mode = disabled",
+        }
+    }
+
+    fn vim_motion(&mut self, action: &VimMotion, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Motion(action.motion), cx);
+    }
+
+    fn vim_begin_operator(
+        &mut self,
+        action: &VimBeginOperator,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch_vim_action(VimCommand::BeginOperator(action.operator), cx);
+    }
+
+    fn vim_count_digit(&mut self, action: &VimCountDigit, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::CountDigit(action.digit), cx);
+    }
+
+    fn vim_contextual(&mut self, action: &VimContextual, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Contextual(action.token), cx);
+    }
+
+    fn vim_enter_insert(
+        &mut self,
+        action: &VimEnterInsert,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch_vim_action(VimCommand::EnterInsert(action.placement), cx);
+    }
+
+    fn vim_open_line(&mut self, action: &VimOpenLine, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::OpenLine(action.placement), cx);
+    }
+
+    fn vim_toggle_visual(&mut self, _: &VimToggleVisual, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::ToggleVisual, cx);
+    }
+
+    fn vim_delete_chars(&mut self, _: &VimDeleteChars, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::DeleteChars, cx);
+    }
+
+    fn vim_paste(&mut self, action: &VimPaste, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Paste(action.placement), cx);
+    }
+
+    fn vim_undo(&mut self, _: &VimUndo, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Undo, cx);
+    }
+
+    fn vim_redo(&mut self, _: &VimRedo, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Redo, cx);
+    }
+
+    fn vim_repeat(&mut self, _: &VimRepeat, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Repeat, cx);
+    }
+
+    fn vim_cancel(&mut self, _: &VimCancel, _: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_vim_action(VimCommand::Cancel, cx);
     }
 
     /// Offset on the row above (-1) or below (+1) the cursor, keeping the
@@ -560,6 +1031,14 @@ impl TextInput {
     ) {
         self.context_menu = None;
         let index = self.index_for_mouse_position(event.position);
+        if self
+            .vim_mode()
+            .is_some_and(|mode| mode != VimMode::Disabled)
+        {
+            self.is_selecting = false;
+            self.finish_vim_lifecycle(LifecycleEvent::MouseCaretMove { offset: index }, cx);
+            return;
+        }
         match event.click_count {
             // A drag only follows a single click; jitter after a double
             // click must not collapse the word selection.
@@ -609,6 +1088,7 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         self.is_selecting = false;
+        self.finish_vim_lifecycle(LifecycleEvent::PopupTakeover, cx);
         window.focus(&self.focus_handle);
         self.context_menu = Some(event.position);
         let index = self.index_for_mouse_position(event.position);
@@ -958,6 +1438,16 @@ impl TextInput {
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
     }
+
+    fn commit_vim_ime(&mut self, committed: &str, cx: &mut Context<Self>) -> bool {
+        let Some(baseline) = self.vim_ime_baseline.take() else {
+            return false;
+        };
+        self.content = baseline.content.into();
+        self.marked_range = None;
+        self.replace_range_with_kind(baseline.range, committed, InsertEditKind::ImeCommit, cx);
+        true
+    }
 }
 
 impl EntityInputHandler for TextInput {
@@ -995,8 +1485,18 @@ impl EntityInputHandler for TextInput {
             .map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.vim_ime_baseline.is_some() {
+            let committed = self
+                .marked_range
+                .as_ref()
+                .and_then(|range| self.content.get(range.clone()))
+                .unwrap_or_default()
+                .to_owned();
+            self.commit_vim_ime(&committed, cx);
+        } else {
+            self.marked_range = None;
+        }
     }
 
     fn replace_text_in_range(
@@ -1006,12 +1506,23 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.vim_ime_baseline.is_some() {
+            self.commit_vim_ime(new_text, cx);
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
-        self.replace_range(range, new_text, cx);
+        let kind = if self.marked_range.is_some() {
+            InsertEditKind::ImeCommit
+        } else if range.is_empty() {
+            InsertEditKind::Text
+        } else {
+            InsertEditKind::SelectionReplacement
+        };
+        self.replace_range_with_kind(range, new_text, kind, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -1027,6 +1538,39 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+
+        if self
+            .vim_mode()
+            .is_some_and(|mode| mode != VimMode::Disabled)
+        {
+            if self.vim_mode() != Some(VimMode::Insert) {
+                return;
+            }
+            if self.vim_ime_baseline.is_none() {
+                self.vim_ime_baseline = Some(ImeBaseline {
+                    content: self.content.to_string(),
+                    range: range.clone(),
+                });
+            }
+            self.content =
+                (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
+                    .into();
+            self.marked_range = (!new_text.is_empty())
+                .then_some(range.start..range.start.saturating_add(new_text.len()));
+            let len = self.content.len();
+            self.selected_range = new_selected_range_utf16
+                .as_ref()
+                .map(|range_utf16| self.range_from_utf16(range_utf16))
+                .map(|new_range| {
+                    (new_range.start + range.start).min(len)..(new_range.end + range.start).min(len)
+                })
+                .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+            self.spell_menu = None;
+            self.context_menu = None;
+            self.refresh_spelling();
+            cx.notify();
+            return;
+        }
 
         // The whole composition is one undo step: record the text as it
         // was before the first marked update.
@@ -1353,6 +1897,8 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
+        let vim_mode = input.vim_mode();
+        let vim_head = input.vim.as_ref().map(VimState::cursor);
         let mask = input.mask;
         let style = window.text_style();
 
@@ -1508,6 +2054,28 @@ impl Element for TextElement {
             let cursor_pos = layout
                 .position_for_index(display_cursor)
                 .unwrap_or_default();
+            let modal_block = matches!(vim_mode, Some(VimMode::Normal | VimMode::Visual));
+            let cursor_width = if modal_block {
+                let next = content
+                    .grapheme_indices(true)
+                    .find_map(|(offset, _)| (offset > cursor).then_some(offset))
+                    .unwrap_or(content.len());
+                let display_next = if mask {
+                    content[..next.min(content.len())].chars().count()
+                } else {
+                    next
+                };
+                let next_pos = layout
+                    .position_for_index(display_next)
+                    .unwrap_or(cursor_pos);
+                if next_pos.y == cursor_pos.y {
+                    (next_pos.x - cursor_pos.x).max(px(7.))
+                } else {
+                    px(7.)
+                }
+            } else {
+                px(2.)
+            };
             (
                 Vec::new(),
                 Some(fill(
@@ -1516,9 +2084,13 @@ impl Element for TextElement {
                             text_bounds.left() + cursor_pos.x,
                             text_bounds.top() + cursor_pos.y,
                         ),
-                        size(px(2.), line_height),
+                        size(cursor_width, line_height),
                     ),
-                    rgb(theme::text_cursor()),
+                    if modal_block {
+                        theme::text_selection()
+                    } else {
+                        rgb(theme::text_cursor())
+                    },
                 )),
             )
         } else {
@@ -1593,7 +2165,28 @@ impl Element for TextElement {
                     color,
                 ));
             }
-            (quads, None)
+            let visual_head = if vim_mode == Some(VimMode::Visual) {
+                let head = vim_head.unwrap_or(cursor);
+                let head = if mask {
+                    content[..head.min(content.len())].chars().count()
+                } else {
+                    head
+                };
+                let head_pos = layout.position_for_index(head).unwrap_or_default();
+                Some(fill(
+                    Bounds::new(
+                        point(
+                            text_bounds.left() + head_pos.x,
+                            text_bounds.top() + head_pos.y,
+                        ),
+                        size(px(2.), line_height),
+                    ),
+                    rgb(theme::text_cursor()),
+                ))
+            } else {
+                None
+            };
+            (quads, visual_head)
         };
         if !multiline && last_scroll_x != scroll_x {
             self.input.update(cx, |input, _| input.scroll_x = scroll_x);
@@ -1675,12 +2268,23 @@ impl Element for TextElement {
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.vim.is_some() && self.focus_out_subscription.is_none() {
+            let focus = self.focus_handle.clone();
+            self.focus_out_subscription =
+                Some(
+                    cx.on_focus_out(&focus, window, |input, _event, _window, cx| {
+                        input.finish_vim_lifecycle(LifecycleEvent::TaskOrScreenSwitch, cx);
+                    }),
+                );
+        }
+        let key_context = self.key_context();
+        let input = div()
             .flex()
-            .key_context("TextInput")
+            .key_context(key_context)
             .track_focus(&self.focus_handle(cx))
-            .cursor(CursorStyle::IBeam)
+            .cursor(CursorStyle::IBeam);
+        vim_actions::attach_actions(input, cx)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
@@ -1699,7 +2303,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if let Some(on_key) = this.on_key.take() {
+                let modal = matches!(this.vim_mode(), Some(VimMode::Normal | VimMode::Visual));
+                if !modal && let Some(on_key) = this.on_key.take() {
                     let consumed = on_key(event, &this.content.clone(), window, cx);
                     this.on_key = Some(on_key);
                     if consumed {
@@ -1710,6 +2315,29 @@ impl Render for TextInput {
                 let no_modifiers = !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
                     && !event.keystroke.modifiers.platform;
+                if modal {
+                    let visual_enter =
+                        this.vim_mode() == Some(VimMode::Visual) && event.keystroke.key == "enter";
+                    let forbidden_newline =
+                        event.keystroke.key == "enter" && event.keystroke.modifiers.shift;
+                    let unmatched_printable = no_modifiers
+                        && !event.keystroke.key.eq_ignore_ascii_case("enter")
+                        && !event.keystroke.key.eq_ignore_ascii_case("tab")
+                        && event
+                            .keystroke
+                            .key_char
+                            .as_deref()
+                            .is_some_and(|text| !text.is_empty());
+                    if visual_enter
+                        || forbidden_newline
+                        || event.keystroke.key.eq_ignore_ascii_case("tab")
+                        || unmatched_printable
+                    {
+                        this.execute_vim_command(VimCommand::Invalid, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
                 if event.keystroke.key.eq_ignore_ascii_case("tab")
                     && no_modifiers
                     && this.marked_range.is_none()
@@ -1761,6 +2389,17 @@ impl Focusable for TextInput {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+    use std::{cell::RefCell, rc::Rc};
+
+    struct InputHost {
+        input: Entity<TextInput>,
+    }
+
+    impl Render for InputHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(500.)).h(px(240.)).child(self.input.clone())
+        }
+    }
 
     #[test]
     fn snapping_clamps_and_respects_char_boundaries() {
@@ -1957,6 +2596,287 @@ mod tests {
             assert_eq!(input.selected_range, 0..1);
             input.select_to(99, cx);
             assert_eq!(input.selected_range, 0..6);
+        });
+    }
+
+    #[gpui::test]
+    fn ordinary_input_keeps_standard_editing_with_vim_bindings_registered(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            register_key_bindings(cx);
+            TextInput::new("", cx)
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, _app| window.focus(&focus));
+
+        cx.simulate_input("hi");
+        cx.simulate_keystrokes("left backspace");
+
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "i");
+            assert_eq!(input.vim_mode(), None);
+            assert_eq!(
+                input.key_context(),
+                "TextInput input_role = other editor_vim_mode = disabled"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn vim_off_task_switch_preserves_standard_undo_history(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("", cx).composer_vim(false));
+
+        input.update(cx, |input, cx| {
+            input.replace_range(0..0, "draft", cx);
+            input.reset_vim_context(cx);
+            input.undo_last(cx);
+
+            assert_eq!(input.text_ref(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn non_vim_backspace_deletes_the_active_marked_range(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx);
+            input.set_text("a", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "xy", None, window, cx);
+                assert_eq!(input.marked_range, Some(1..3));
+
+                input.backspace(&Backspace, window, cx);
+
+                assert_eq!(input.text_ref(), "a");
+                assert_eq!(input.marked_range, None);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn non_vim_delete_deletes_the_active_marked_range(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx);
+            input.set_text("a", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "xy", None, window, cx);
+                assert_eq!(input.marked_range, Some(1..3));
+
+                input.delete(&Delete, window, cx);
+
+                assert_eq!(input.text_ref(), "a");
+                assert_eq!(input.marked_range, None);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn disabled_composer_vim_never_overwrites_the_ordinary_selection(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx).composer_vim(false);
+            input.set_text("hello world", cx);
+            input.selected_range = 6..11;
+            input
+        });
+
+        input.update(cx, |input, cx| {
+            assert_eq!(input.vim_mode(), None);
+            assert_eq!(
+                input.key_context(),
+                "TextInput input_role = composer editor_vim_mode = disabled"
+            );
+
+            input.finish_vim_lifecycle(LifecycleEvent::PopupTakeover, cx);
+            assert_eq!(input.selected_range, 6..11);
+            input.set_vim_enabled(false, cx);
+            assert_eq!(input.selected_range, 6..11);
+            input.reset_vim_context(cx);
+            assert_eq!(input.selected_range, 6..11);
+        });
+    }
+
+    #[gpui::test]
+    fn composer_vim_bindings_dispatch_and_insert_uses_the_input_handler(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).composer_vim(true).multiline(8);
+            input.set_text("one two", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, _app| window.focus(&focus));
+
+        // Direct text input is a no-op in Normal. The following edits arrive
+        // through real, context-resolved GPUI bindings and the normal input
+        // handler rather than by calling the engine in the test.
+        cx.simulate_input("X");
+        cx.simulate_keystrokes("0 d w");
+        assert_eq!(cx.update(|_window, app| input.read(app).text()), "two");
+
+        cx.simulate_keystrokes("i");
+        assert_eq!(
+            cx.update(|_window, app| input.read(app).vim_mode()),
+            Some(VimMode::Insert)
+        );
+        cx.simulate_input("é🙂");
+        cx.simulate_keystrokes("escape");
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "é🙂two");
+            assert_eq!(input.vim_mode(), Some(VimMode::Normal));
+        });
+
+        // One Insert transaction is one undo/redo step.
+        cx.simulate_keystrokes("u");
+        assert_eq!(cx.update(|_window, app| input.read(app).text()), "two");
+        cx.simulate_keystrokes("ctrl-r");
+        assert_eq!(cx.update(|_window, app| input.read(app).text()), "é🙂two");
+    }
+
+    #[gpui::test]
+    fn normal_backspace_moves_left_without_editing(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).composer_vim(true);
+            input.set_text("abc", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, _app| window.focus(&focus));
+
+        cx.simulate_keystrokes("backspace");
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "abc");
+            assert_eq!(input.selected_range, 1..1);
+        });
+    }
+
+    #[gpui::test]
+    fn vim_spelling_refreshes_after_edits_and_history_but_not_motions(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx).composer_vim(true).spell_check();
+            input.set_text("abc", cx);
+            input
+        });
+
+        input.update(cx, |input, cx| {
+            let stale = input.content.len() + 10..input.content.len() + 11;
+            input.misspelled = vec![stale.clone()];
+            input.execute_vim_command(VimCommand::Motion(Motion::Left), cx);
+            assert_eq!(input.misspelled.as_slice(), std::slice::from_ref(&stale));
+
+            input.execute_vim_command(VimCommand::DeleteChars, cx);
+            assert_eq!(input.text_ref(), "ac");
+            assert!(
+                input
+                    .misspelled
+                    .iter()
+                    .all(|range| range.end <= input.content.len())
+            );
+
+            input.misspelled = vec![stale];
+            input.execute_vim_command(VimCommand::Undo, cx);
+            assert_eq!(input.text_ref(), "abc");
+            assert!(
+                input
+                    .misspelled
+                    .iter()
+                    .all(|range| range.end <= input.content.len())
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn composer_vim_preserves_maple_enter_behavior(cx: &mut TestAppContext) {
+        let submitted = Rc::new(RefCell::new(Vec::<String>::new()));
+        let submitted_for_handler = submitted.clone();
+        let input = cx.new(|cx| {
+            register_key_bindings(cx);
+            let mut input = TextInput::new("", cx)
+                .composer_vim(true)
+                .multiline(8)
+                .on_enter(move |text, _window, _cx| {
+                    submitted_for_handler.borrow_mut().push(text);
+                });
+            input.set_text("draft", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, _app| window.focus(&focus));
+
+        // Normal Enter sends; Shift-Enter is deliberately unavailable.
+        cx.simulate_keystrokes("shift-enter enter");
+        assert_eq!(submitted.borrow().as_slice(), &["draft"]);
+        assert_eq!(cx.update(|_window, app| input.read(app).text()), "draft");
+
+        // Insert keeps Maple's newline/send behavior.
+        cx.simulate_keystrokes("A shift-enter enter");
+        assert_eq!(cx.update(|_window, app| input.read(app).text()), "draft\n");
+        assert_eq!(submitted.borrow().as_slice(), &["draft", "draft\n"]);
+
+        // Visual Enter is consumed and never sends.
+        cx.simulate_keystrokes("escape v enter");
+        assert_eq!(submitted.borrow().len(), 2);
+        assert_eq!(
+            cx.update(|_window, app| input.read(app).vim_mode()),
+            Some(VimMode::Visual)
+        );
+    }
+
+    #[gpui::test]
+    fn toggling_vim_cannot_reuse_state_across_standard_edits(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx).composer_vim(true);
+            input.set_text("abc", cx);
+            input
+        });
+        input.update(cx, |input, cx| {
+            assert!(input.execute_vim_command(VimCommand::CountDigit(0), cx));
+            assert!(input.execute_vim_command(VimCommand::DeleteChars, cx));
+            assert_eq!(input.text_ref(), "bc");
+            assert!(input.vim.as_ref().unwrap().last_change().is_some());
+            assert!(input.vim.as_ref().unwrap().unnamed_register().is_some());
+
+            input.set_vim_enabled(false, cx);
+            assert_eq!(input.vim_mode(), None);
+            let end = input.content.len();
+            input.replace_range_standard(end..end, "z", cx);
+            input.set_vim_enabled(true, cx);
+
+            let vim = input.vim.as_ref().unwrap();
+            assert_eq!(vim.mode(), VimMode::Normal);
+            assert!(vim.last_change().is_none());
+            assert!(vim.unnamed_register().is_none());
+            assert_eq!(input.text_ref(), "bcz");
         });
     }
 }

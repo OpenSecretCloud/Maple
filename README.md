@@ -79,13 +79,17 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
   the queue), or removed.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
+- Optional composer-only Vim editing provides Normal, Insert, and characterwise
+  Visual modes, Unicode-aware motions and text objects, operators and counts,
+  an unnamed register, undo/redo transactions, and structured dot repeat.
+  Enable it under General settings; every other text field stays standard.
 - Projects (working directories) with pinned and recent roots, rename,
   open in the file manager, and remove. Projects that provide skills ask
   for a trust decision before their guidance loads.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (default permission mode, web tools, appearance,
-  tool call details, desktop notifications, tool call summaries, and the
-  speech voice and speed), System prompt, MCP servers, Usage (plan meter
+  tool call details, desktop notifications, tool call summaries, composer Vim,
+  and the speech voice and speed), System prompt, MCP servers, Usage (plan meter
   from the billing API plus totals from the Goose ledger), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
@@ -94,6 +98,22 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 - Release check on launch: a banner links to a newer GitHub release.
   Nothing is downloaded or installed by the app.
 - Window size and maximized state persist between launches.
+
+### Composer Vim preview
+
+Turn on **Vim mode in composer** in General settings. The composer opens in
+Normal mode and shows a small `NORMAL`, `INSERT`, or `VISUAL` badge; login,
+search, rename, settings, prompt, question, and MCP fields keep their ordinary
+editing behavior.
+
+The preview includes `h/j/k/l`, `w/b/e`, `0/$`, `gg/G`, `i/a/I/A/o/O`,
+`d/c/y` with motions or `iw`/`aw`, `dd/cc/yy`, counts, `v`, `x`, `p/P`,
+`u`, `Ctrl-R`, and structured `.` repeat. Arrow keys also move in Normal and
+Visual modes. Escape leaves Insert or Visual for Normal; Enter sends in Insert
+or Normal, while Shift-Enter inserts a newline only in Insert.
+
+Bindings are fixed for this preview. Application-wide Vim navigation and
+shortcut customization are intentionally separate follow-up layers.
 
 ## Prerequisites
 
