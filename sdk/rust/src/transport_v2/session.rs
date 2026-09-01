@@ -17,7 +17,6 @@ use zeroize::Zeroizing;
 use super::{
     crypto::{
         decrypt_key_exchange_record, DirectionalKeys, SessionMaster, KEY_LEN, MIN_RECORD_LEN,
-        RECORD_NONCE_LEN,
     },
     envelope::{
         CacheNamespaceRoot, Credential, EncodedBytes, EncryptedOuterRecord, EnvelopeLimits,
@@ -179,7 +178,6 @@ pub(super) struct V2Session {
 
 struct RequestMaterial {
     request_id: RequestId,
-    fixed_nonce: Option<[u8; RECORD_NONCE_LEN]>,
 }
 
 struct RequestUsage {
@@ -374,10 +372,7 @@ impl V2Session {
             }
         };
         let result = self.prepare_reserved_request(
-            RequestMaterial {
-                request_id,
-                fixed_nonce: None,
-            },
+            RequestMaterial { request_id },
             response_mode,
             credential,
             cache_namespace_root,
@@ -422,18 +417,9 @@ impl V2Session {
             request,
         };
         let plaintext = Zeroizing::new(envelope.to_json_vec(&EnvelopeLimits::DEFAULT)?);
-        let encrypted = match material.fixed_nonce {
-            #[cfg(test)]
-            Some(nonce) => {
-                self.keys
-                    .encrypt_request_record_with_nonce(&self.session_id, &plaintext, nonce)?
-            }
-            #[cfg(not(test))]
-            Some(_) => return Err(TransportV2Error::InvalidRequest),
-            None => self
-                .keys
-                .encrypt_request_record(&self.session_id, &plaintext)?,
-        };
+        let encrypted = self
+            .keys
+            .encrypt_request_record(&self.session_id, &plaintext)?;
         let outer_body = EncryptedOuterRecord {
             encrypted: EncodedBytes::from_bytes(encrypted),
         }
@@ -455,15 +441,15 @@ impl V2Session {
     }
 
     #[cfg(test)]
-    pub(super) fn prepare_request_with_nonce_for_test(
+    pub(super) fn prepare_request_for_test(
         &self,
-        material: (u64, RequestId, [u8; RECORD_NONCE_LEN]),
+        material: (u64, RequestId),
         response_mode: ResponseMode,
         credential: Option<Credential>,
         cache_namespace_root: Option<CacheNamespaceRoot>,
         request: LogicalRequest,
     ) -> Result<PreparedRequest> {
-        let (now_unix_seconds, request_id, nonce) = material;
+        let (now_unix_seconds, request_id) = material;
         self.validate_request_start(now_unix_seconds, response_mode)?;
         self.usage.reserve_fixed_request(request_id)?;
         let initial_response_records = match self.usage.reserve_initial_response(response_mode) {
@@ -474,10 +460,7 @@ impl V2Session {
             }
         };
         let result = self.prepare_reserved_request(
-            RequestMaterial {
-                request_id,
-                fixed_nonce: Some(nonce),
-            },
+            RequestMaterial { request_id },
             response_mode,
             credential,
             cache_namespace_root,

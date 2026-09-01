@@ -22,16 +22,22 @@ import { encodeUtf8, hexToBytes } from "../transportV2/encoding";
 
 const encoder = new TextEncoder();
 
-function fixedRandom(...values: Uint8Array[]): Crypto {
+function fixedRequestIdRandom(...requestIds: Uint8Array[]): Crypto {
   let index = 0;
   return {
     getRandomValues<T extends ArrayBufferView | null>(array: T): T {
-      if (!array || !(array instanceof Uint8Array) || index >= values.length) {
+      if (!array || !(array instanceof Uint8Array)) {
         throw new Error("unexpected random request");
       }
-      const value = values[index];
+      if (array.length === 12) {
+        return globalThis.crypto.getRandomValues(array) as T;
+      }
+      if (array.length !== 16 || index >= requestIds.length) {
+        throw new Error("unexpected random request");
+      }
+      const value = requestIds[index];
       index += 1;
-      if (value.length !== array.length) throw new Error("unexpected random length");
+      if (value.length !== 16) throw new Error("unexpected request ID length");
       array.set(value);
       return array;
     }
@@ -253,7 +259,6 @@ describe("transport v2 dormant session engine", () => {
       1
     );
     const requestIdBytes = hexToBytes(vectors.request_id_hex, 16);
-    const requestNonce = new Uint8Array(12).fill(0x31);
     const prepared = session.prepareRequest(
       {
         responseMode: "unary",
@@ -267,7 +272,7 @@ describe("transport v2 dormant session engine", () => {
           body: null
         }
       },
-      fixedRandom(requestIdBytes, requestNonce),
+      fixedRequestIdRandom(requestIdBytes),
       vectors.expires_at_unix_seconds - 1
     );
     const outbound = prepared.takeHttpRequest();
@@ -292,8 +297,7 @@ describe("transport v2 dormant session engine", () => {
     const responseRecord = encryptTransportV2Record(
       keys.responseKey,
       responsePlaintext,
-      unaryResponseRecordAad(vectors.session_id, vectors.request_id_hex),
-      new Uint8Array(12).fill(0x41)
+      unaryResponseRecordAad(vectors.session_id, vectors.request_id_hex)
     );
     session.dispose();
     expect(session.isDisposed).toBe(true);
@@ -328,7 +332,7 @@ describe("transport v2 dormant session engine", () => {
           body: encoder.encode("{}")
         }
       },
-      fixedRandom(hexToBytes(vectors.request_id_hex, 16), new Uint8Array(12).fill(0x51)),
+      fixedRequestIdRandom(hexToBytes(vectors.request_id_hex, 16)),
       vectors.expires_at_unix_seconds - 1
     );
     prepared.takeHttpRequest();
@@ -364,8 +368,7 @@ describe("transport v2 dormant session engine", () => {
         const encrypted = encryptTransportV2Record(
           keys.responseKey,
           encodeUtf8(plaintext),
-          streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, sequence),
-          new Uint8Array(12).fill(0x61 + sequence)
+          streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, sequence)
         );
         return `data: ${encodeCanonicalBase64(encrypted)}\n\n`;
       })
@@ -406,7 +409,7 @@ describe("transport v2 dormant session engine", () => {
           body: encoder.encode("{}")
         }
       },
-      fixedRandom(hexToBytes(vectors.request_id_hex, 16), new Uint8Array(12).fill(0x59)),
+      fixedRequestIdRandom(hexToBytes(vectors.request_id_hex, 16)),
       vectors.expires_at_unix_seconds - 1
     );
     prepared.takeHttpRequest();
@@ -422,13 +425,9 @@ describe("transport v2 dormant session engine", () => {
     const encrypted = encryptTransportV2Record(
       keys.responseKey,
       plaintext,
-      unaryResponseRecordAad(vectors.session_id, vectors.request_id_hex),
-      new Uint8Array(12).fill(0x5a)
+      unaryResponseRecordAad(vectors.session_id, vectors.request_id_hex)
     );
-    const afterErrorRandom = fixedRandom(
-      new Uint8Array(16).fill(0x5b),
-      new Uint8Array(12).fill(0x5c)
-    );
+    const afterErrorRandom = fixedRequestIdRandom(new Uint8Array(16).fill(0x5b));
     const unaryInput = {
       responseMode: "unary" as const,
       credential: null,
@@ -493,15 +492,12 @@ describe("transport v2 dormant session engine", () => {
 
     const first = session.prepareRequest(
       unaryInput,
-      fixedRandom(new Uint8Array(16).fill(0x81), new Uint8Array(12).fill(0x82)),
+      fixedRequestIdRandom(new Uint8Array(16).fill(0x81)),
       vectors.expires_at_unix_seconds - 1
     );
     expect(first.takeHttpRequest().path).toBe("/v2/request");
 
-    const finalSlotRandom = fixedRandom(
-      new Uint8Array(16).fill(0x83),
-      new Uint8Array(12).fill(0x84)
-    );
+    const finalSlotRandom = fixedRequestIdRandom(new Uint8Array(16).fill(0x83));
     expect(() =>
       session.prepareRequest(streamInput, finalSlotRandom, vectors.expires_at_unix_seconds - 1)
     ).toThrow("response record budget");
@@ -514,7 +510,7 @@ describe("transport v2 dormant session engine", () => {
     expect(() =>
       session.prepareRequest(
         unaryInput,
-        fixedRandom(new Uint8Array(16).fill(0x85), new Uint8Array(12).fill(0x86)),
+        fixedRequestIdRandom(new Uint8Array(16).fill(0x85)),
         vectors.expires_at_unix_seconds - 1
       )
     ).toThrow("response record budget");
@@ -523,7 +519,7 @@ describe("transport v2 dormant session engine", () => {
     expect(() =>
       session.prepareRequest(
         unaryInput,
-        fixedRandom(new Uint8Array(16).fill(0x87), new Uint8Array(12).fill(0x88)),
+        fixedRequestIdRandom(new Uint8Array(16).fill(0x87)),
         vectors.expires_at_unix_seconds - 1
       )
     ).toThrow("response record budget");
@@ -555,7 +551,7 @@ describe("transport v2 dormant session engine", () => {
     expect(() =>
       session.prepareRequest(
         invalidInput,
-        fixedRandom(requestId),
+        fixedRequestIdRandom(requestId),
         vectors.expires_at_unix_seconds - 1
       )
     ).toThrow("origin-relative");
@@ -565,7 +561,7 @@ describe("transport v2 dormant session engine", () => {
         ...invalidInput,
         request: { ...invalidInput.request, path: "/v1/models" }
       },
-      fixedRandom(requestId, new Uint8Array(12).fill(0x8a)),
+      fixedRequestIdRandom(requestId),
       vectors.expires_at_unix_seconds - 1
     );
     expect(prepared.takeHttpRequest().path).toBe("/v2/request");
@@ -598,14 +594,14 @@ describe("transport v2 dormant session engine", () => {
       Promise.resolve().then(() =>
         session.prepareRequest(
           input,
-          fixedRandom(new Uint8Array(16).fill(0x91), new Uint8Array(12).fill(0x92)),
+          fixedRequestIdRandom(new Uint8Array(16).fill(0x91)),
           vectors.expires_at_unix_seconds - 1
         )
       ),
       Promise.resolve().then(() =>
         session.prepareRequest(
           input,
-          fixedRandom(new Uint8Array(16).fill(0x93), new Uint8Array(12).fill(0x94)),
+          fixedRequestIdRandom(new Uint8Array(16).fill(0x93)),
           vectors.expires_at_unix_seconds - 1
         )
       )
@@ -645,7 +641,7 @@ describe("transport v2 dormant session engine", () => {
           body: null
         }
       },
-      fixedRandom(hexToBytes(vectors.request_id_hex, 16), new Uint8Array(12).fill(0x68)),
+      fixedRequestIdRandom(hexToBytes(vectors.request_id_hex, 16)),
       vectors.expires_at_unix_seconds - 1
     );
     prepared.dispose();
@@ -692,7 +688,7 @@ describe("transport v2 dormant session engine", () => {
           body: encoder.encode("{}")
         }
       },
-      fixedRandom(hexToBytes(vectors.request_id_hex, 16), new Uint8Array(12).fill(0x71)),
+      fixedRequestIdRandom(hexToBytes(vectors.request_id_hex, 16)),
       vectors.expires_at_unix_seconds - 1
     );
     prepared.takeHttpRequest();
@@ -710,8 +706,7 @@ describe("transport v2 dormant session engine", () => {
     const encrypted = encryptTransportV2Record(
       keys.responseKey,
       start,
-      streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, 0),
-      new Uint8Array(12).fill(0x72)
+      streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, 0)
     );
     decoder.push(encodeUtf8(`data: ${encodeCanonicalBase64(encrypted)}\n\n`));
     expect(() => decoder.finish()).toThrow("without an authenticated terminal");
@@ -753,8 +748,7 @@ describe("transport v2 dormant session engine", () => {
       const encrypted = encryptTransportV2Record(
         keys.responseKey,
         encodeUtf8(plaintext),
-        streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, sequence),
-        new Uint8Array(12).fill(0x21 + sequence)
+        streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, sequence)
       );
       return encodeUtf8(`data: ${encodeCanonicalBase64(encrypted)}\n\n`);
     });
@@ -819,8 +813,7 @@ describe("transport v2 dormant session engine", () => {
       const encrypted = encryptTransportV2Record(
         keys.responseKey,
         encodeUtf8(plaintext),
-        streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, sequence),
-        new Uint8Array(12).fill(0x31 + sequence)
+        streamResponseRecordAad(vectors.session_id, vectors.request_id_hex, sequence)
       );
       decoder.push(encodeUtf8(`data: ${encodeCanonicalBase64(encrypted)}\n\n`));
     }

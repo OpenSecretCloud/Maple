@@ -209,33 +209,29 @@ impl DirectionalKeys {
     }
 
     #[cfg(test)]
-    pub(super) fn encrypt_unary_response_record_with_nonce(
+    pub(super) fn encrypt_unary_response_record_for_test(
         &self,
         session_id: &Uuid,
         request_id: &RequestId,
         plaintext: &[u8],
-        nonce: [u8; RECORD_NONCE_LEN],
     ) -> Result<Vec<u8>> {
-        self.response.encrypt_with_nonce(
+        self.response.encrypt(
             plaintext,
             &unary_response_record_aad(session_id, request_id),
-            nonce,
         )
     }
 
     #[cfg(test)]
-    pub(super) fn encrypt_stream_response_record_with_nonce(
+    pub(super) fn encrypt_stream_response_record_for_test(
         &self,
         session_id: &Uuid,
         request_id: &RequestId,
         sequence: u64,
         plaintext: &[u8],
-        nonce: [u8; RECORD_NONCE_LEN],
     ) -> Result<Vec<u8>> {
-        self.response.encrypt_with_nonce(
+        self.response.encrypt(
             plaintext,
             &stream_response_record_aad(session_id, request_id, sequence),
-            nonce,
         )
     }
 
@@ -373,4 +369,18 @@ pub(super) fn encrypt_key_exchange_record_with_nonce(
         KEY_EXCHANGE_AAD,
         nonce,
     )
+}
+
+#[cfg(test)]
+pub(super) fn encrypt_key_exchange_record_for_test(
+    shared_secret: &[u8; KEY_LEN],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    if shared_secret.iter().all(|byte| *byte == 0) {
+        return Err(TransportV2Error::NonContributoryKeyExchange);
+    }
+    if plaintext.len() != HANDSHAKE_PAYLOAD_LEN {
+        return Err(TransportV2Error::InvalidKeyExchange);
+    }
+    RecordKey::derive(shared_secret, HANDSHAKE_KEY_INFO)?.encrypt(plaintext, KEY_EXCHANGE_AAD)
 }

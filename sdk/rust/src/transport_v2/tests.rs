@@ -11,9 +11,9 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use super::{
     crypto::{
         decode_canonical_base64, decrypt_key_exchange_record, derive_handshake_key_for_test,
-        encode_canonical_base64, encrypt_key_exchange_record_with_nonce, request_record_aad,
-        stream_response_record_aad, unary_response_record_aad, DirectionalKeys, SessionMaster,
-        MIN_RECORD_LEN,
+        encode_canonical_base64, encrypt_key_exchange_record_for_test,
+        encrypt_key_exchange_record_with_nonce, request_record_aad, stream_response_record_aad,
+        unary_response_record_aad, DirectionalKeys, SessionMaster, MIN_RECORD_LEN,
     },
     envelope::{
         encode_canonical_opaque_path_segment, CacheNamespaceRoot, Credential, EncodedBytes,
@@ -617,7 +617,7 @@ fn key_exchange_is_one_shot_strict_and_binds_inner_and_outer_session_ids() {
     payload.extend_from_slice(session_id.as_bytes());
     payload.extend_from_slice(&session_master);
     payload.extend_from_slice(&expiry.to_be_bytes());
-    let encrypted = encrypt_key_exchange_record_with_nonce(shared.as_bytes(), &payload, [0x44; 12])
+    let encrypted = encrypt_key_exchange_record_for_test(shared.as_bytes(), &payload)
         .expect("encrypted handshake");
     let response_body = serde_json::to_vec(&json!({
         "session_id": session_id.hyphenated().to_string(),
@@ -705,8 +705,8 @@ fn response_context(
     let session =
         V2Session::from_master_for_test(session_id, master, u64::MAX).expect("test session");
     let prepared = session
-        .prepare_request_with_nonce_for_test(
-            (0, request_id, [0x51; 12]),
+        .prepare_request_for_test(
+            (0, request_id),
             response_mode,
             None,
             None,
@@ -738,8 +738,8 @@ fn prepared_requests_are_exact_session_bound_and_reject_reserved_auto_mode() {
     );
 
     let prepared = session
-        .prepare_request_with_nonce_for_test(
-            (0, request_id, fixed_hex(&fixture.request.nonce_hex)),
+        .prepare_request_for_test(
+            (0, request_id),
             ResponseMode::Unary,
             None,
             Some(CacheNamespaceRoot::from_bytes([0x7a; 32])),
@@ -765,8 +765,8 @@ fn sessions_reject_requests_at_or_after_their_expiry() {
     let session = V2Session::from_master_for_test(Uuid::nil(), [0x5a; 32], 100).expect("session");
     let request_id = RequestId::from_bytes([0x5b; 16]);
     session
-        .prepare_request_with_nonce_for_test(
-            (99, request_id, [0x5c; 12]),
+        .prepare_request_for_test(
+            (99, request_id),
             ResponseMode::Unary,
             None,
             None,
@@ -776,8 +776,8 @@ fn sessions_reject_requests_at_or_after_their_expiry() {
 
     assert_eq!(
         session
-            .prepare_request_with_nonce_for_test(
-                (100, request_id, [0x5d; 12]),
+            .prepare_request_for_test(
+                (100, request_id),
                 ResponseMode::Unary,
                 None,
                 None,
@@ -800,8 +800,8 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
             .expect("session");
 
     let first = session
-        .prepare_request_with_nonce_for_test(
-            (0, first_id, [0x62; 12]),
+        .prepare_request_for_test(
+            (0, first_id),
             ResponseMode::Unary,
             None,
             None,
@@ -810,8 +810,8 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
         .expect("first request");
     assert_eq!(
         session
-            .prepare_request_with_nonce_for_test(
-                (0, first_id, [0x63; 12]),
+            .prepare_request_for_test(
+                (0, first_id),
                 ResponseMode::Unary,
                 None,
                 None,
@@ -821,8 +821,8 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
         TransportV2Error::RequestIdCollision
     );
     let second = session
-        .prepare_request_with_nonce_for_test(
-            (0, second_id, [0x64; 12]),
+        .prepare_request_for_test(
+            (0, second_id),
             ResponseMode::Unary,
             None,
             None,
@@ -831,8 +831,8 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
         .expect("second request");
     assert_eq!(
         session
-            .prepare_request_with_nonce_for_test(
-                (0, third_id, [0x65; 12]),
+            .prepare_request_for_test(
+                (0, third_id),
                 ResponseMode::Unary,
                 None,
                 None,
@@ -843,7 +843,7 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
     );
 
     let keys = DirectionalKeys::derive(&SessionMaster::from_bytes(master_bytes)).expect("keys");
-    let outer_response = |request_id, nonce| {
+    let outer_response = |request_id| {
         let response = UnaryResponseEnvelope {
             version: Version2,
             request_id,
@@ -853,7 +853,7 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
         };
         let plaintext = serde_json::to_vec(&response).expect("response JSON");
         let record = keys
-            .encrypt_unary_response_record_with_nonce(&session_id, &request_id, &plaintext, nonce)
+            .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
             .expect("response record");
         serde_json::to_vec(&EncryptedOuterRecord {
             encrypted: EncodedBytes::from_bytes(record),
@@ -862,11 +862,11 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
     };
     let (_, first_context) = first.into_parts();
     first_context
-        .decrypt_unary_outer(&outer_response(first_id, [0x66; 12]))
+        .decrypt_unary_outer(&outer_response(first_id))
         .expect("first response record");
     let (_, second_context) = second.into_parts();
     second_context
-        .decrypt_unary_outer(&outer_response(second_id, [0x67; 12]))
+        .decrypt_unary_outer(&outer_response(second_id))
         .expect("second response record");
 }
 
@@ -877,8 +877,8 @@ fn sessions_reserve_response_capacity_before_emitting_requests() {
             .expect("session");
 
     let first = session
-        .prepare_request_with_nonce_for_test(
-            (0, RequestId::from_bytes([0x69; 16]), [0x6a; 12]),
+        .prepare_request_for_test(
+            (0, RequestId::from_bytes([0x69; 16])),
             ResponseMode::Unary,
             None,
             None,
@@ -889,8 +889,8 @@ fn sessions_reserve_response_capacity_before_emitting_requests() {
 
     assert_eq!(
         session
-            .prepare_request_with_nonce_for_test(
-                (0, RequestId::from_bytes([0x6b; 16]), [0x6c; 12]),
+            .prepare_request_for_test(
+                (0, RequestId::from_bytes([0x6b; 16])),
                 ResponseMode::Stream,
                 None,
                 None,
@@ -901,8 +901,8 @@ fn sessions_reserve_response_capacity_before_emitting_requests() {
     );
 
     let second = session
-        .prepare_request_with_nonce_for_test(
-            (0, RequestId::from_bytes([0x6d; 16]), [0x6e; 12]),
+        .prepare_request_for_test(
+            (0, RequestId::from_bytes([0x6d; 16])),
             ResponseMode::Unary,
             None,
             None,
@@ -914,8 +914,8 @@ fn sessions_reserve_response_capacity_before_emitting_requests() {
 
     assert_eq!(
         session
-            .prepare_request_with_nonce_for_test(
-                (0, RequestId::from_bytes([0x6f; 16]), [0x70; 12]),
+            .prepare_request_for_test(
+                (0, RequestId::from_bytes([0x6f; 16])),
                 ResponseMode::Unary,
                 None,
                 None,
@@ -935,8 +935,8 @@ fn authenticated_stream_pre_start_error_releases_the_unused_terminal_slot() {
         V2Session::from_master_with_budgets_for_test(session_id, master_bytes, u64::MAX, 3, 2)
             .expect("session");
     let stream = session
-        .prepare_request_with_nonce_for_test(
-            (0, stream_request_id, [0x71; 12]),
+        .prepare_request_for_test(
+            (0, stream_request_id),
             ResponseMode::Stream,
             None,
             None,
@@ -954,12 +954,7 @@ fn authenticated_stream_pre_start_error_releases_the_unused_terminal_slot() {
     let plaintext = serde_json::to_vec(&response).expect("response JSON");
     let keys = DirectionalKeys::derive(&SessionMaster::from_bytes(master_bytes)).expect("keys");
     let record = keys
-        .encrypt_unary_response_record_with_nonce(
-            &session_id,
-            &stream_request_id,
-            &plaintext,
-            [0x72; 12],
-        )
+        .encrypt_unary_response_record_for_test(&session_id, &stream_request_id, &plaintext)
         .expect("response record");
     let outer = serde_json::to_vec(&EncryptedOuterRecord {
         encrypted: EncodedBytes::from_bytes(record),
@@ -971,8 +966,8 @@ fn authenticated_stream_pre_start_error_releases_the_unused_terminal_slot() {
         .expect("authenticated pre-Start error");
 
     session
-        .prepare_request_with_nonce_for_test(
-            (0, RequestId::from_bytes([0x73; 16]), [0x74; 12]),
+        .prepare_request_for_test(
+            (0, RequestId::from_bytes([0x73; 16])),
             ResponseMode::Unary,
             None,
             None,
@@ -994,12 +989,8 @@ fn concurrent_requests_cannot_overbook_the_last_response_slot() {
         let barrier = Arc::clone(&barrier);
         handles.push(thread::spawn(move || {
             barrier.wait();
-            session.prepare_request_with_nonce_for_test(
-                (
-                    0,
-                    RequestId::from_bytes([0x76 + index; 16]),
-                    [0x78 + index; 12],
-                ),
+            session.prepare_request_for_test(
+                (0, RequestId::from_bytes([0x76 + index; 16])),
                 ResponseMode::Unary,
                 None,
                 None,
@@ -1041,7 +1032,7 @@ fn unary_response_requires_exact_aad_and_inner_request_id() {
     };
     let plaintext = serde_json::to_vec(&response).expect("response JSON");
     let record = keys
-        .encrypt_unary_response_record_with_nonce(&session_id, &request_id, &plaintext, [0x63; 12])
+        .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
         .expect("response record");
     let outer = serde_json::to_vec(&EncryptedOuterRecord {
         encrypted: EncodedBytes::from_bytes(record),
@@ -1063,7 +1054,7 @@ fn unary_response_requires_exact_aad_and_inner_request_id() {
     };
     let plaintext = serde_json::to_vec(&mismatched).expect("response JSON");
     let record = keys
-        .encrypt_unary_response_record_with_nonce(&session_id, &request_id, &plaintext, [0x65; 12])
+        .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
         .expect("response record");
     let outer = serde_json::to_vec(&EncryptedOuterRecord {
         encrypted: EncodedBytes::from_bytes(record),
@@ -1094,12 +1085,7 @@ fn response_context_enforces_mode_and_only_allows_pre_start_stream_errors() {
         };
         let plaintext = serde_json::to_vec(&response).expect("response JSON");
         let record = keys
-            .encrypt_unary_response_record_with_nonce(
-                &session_id,
-                &request_id,
-                &plaintext,
-                [status as u8; 12],
-            )
+            .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
             .expect("response record");
         serde_json::to_vec(&EncryptedOuterRecord {
             encrypted: EncodedBytes::from_bytes(record),
@@ -1147,13 +1133,7 @@ fn encrypted_stream_frame(
 ) -> Vec<u8> {
     let plaintext = serde_json::to_vec(&record).expect("stream JSON");
     let encrypted = keys
-        .encrypt_stream_response_record_with_nonce(
-            session_id,
-            request_id,
-            sequence,
-            &plaintext,
-            [sequence as u8; 12],
-        )
+        .encrypt_stream_response_record_for_test(session_id, request_id, sequence, &plaintext)
         .expect("stream record");
     format!("data: {}\n\n", encode_canonical_base64(&encrypted)).into_bytes()
 }
@@ -1173,8 +1153,8 @@ fn stream_chunks_charge_capacity_beyond_the_reserved_start_and_terminal() {
         V2Session::from_master_with_budgets_for_test(session_id, master_bytes, u64::MAX, 1, 3)
             .expect("session");
     let prepared = session
-        .prepare_request_with_nonce_for_test(
-            (0, request_id, [0x82; 12]),
+        .prepare_request_for_test(
+            (0, request_id),
             ResponseMode::Stream,
             None,
             None,
@@ -1540,12 +1520,11 @@ fn stream_decoder_rejects_wrong_inner_binding_and_oversized_chunks() {
         encode_canonical_base64(&vec![0_u8; MAX_STREAM_CHUNK_BYTES + 1])
     );
     let oversized_record = keys
-        .encrypt_stream_response_record_with_nonce(
+        .encrypt_stream_response_record_for_test(
             &session_id,
             &request_id,
             1,
             oversized_plaintext.as_bytes(),
-            [0xa4; 12],
         )
         .expect("oversized encrypted record");
     let oversized_frame =
