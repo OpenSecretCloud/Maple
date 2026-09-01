@@ -50,9 +50,11 @@ describe("Transport V2 custom Fetch adapter", () => {
       expect(input.authority).toEqual({ kind: "api_key", value: "real-api-key" });
       const headers = new Headers(input.headers);
       expect(headers.get("x-safe-metadata")).toBe("kept");
+      expect(headers.get("content-type")).toBe("application/octet-stream");
       for (const forbidden of [
         "authorization",
         "user-agent",
+        "accept",
         "accept-encoding",
         "content-length",
         "content-md5",
@@ -78,7 +80,9 @@ describe("Transport V2 custom Fetch adapter", () => {
       headers: {
         authorization: "Bearer fake-openai-key",
         "user-agent": "OpenAI/JS test",
+        accept: "application/json",
         "accept-encoding": "identity",
+        "content-type": "application/octet-stream",
         "content-length": "4",
         "content-md5": "attacker-controlled",
         digest: "sha-256=attacker-controlled",

@@ -43,6 +43,8 @@ const FORBIDDEN_LOGICAL_HEADERS = new Set([
   "content-encoding",
   "content-md5",
   "digest",
+  // Transport v2 selects unary versus streaming through the authenticated response mode.
+  "accept",
   "accept-encoding",
   "connection",
   "keep-alive",
