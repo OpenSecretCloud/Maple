@@ -26,6 +26,17 @@ mod state_tests {
         }
     }
 
+    /// A project root that `switch_root` accepts on every platform. A bare
+    /// `/name` has a root but no drive, so `Path::is_absolute` rejects it on
+    /// Windows and the switch never starts.
+    fn absolute_fixture_root(name: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\{name}")
+        } else {
+            format!("/{name}")
+        }
+    }
+
     fn item(id: &str, item_type: &str, text: Option<&str>) -> AgentTimelineItem {
         AgentTimelineItem {
             id: id.to_string(),
@@ -2175,7 +2186,7 @@ mod state_tests {
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
             chat.selected_session = Some("s1".to_string());
-            chat.recent_roots = vec!["/one".to_string(), "/two".to_string()];
+            chat.recent_roots = vec![absolute_fixture_root("one"), absolute_fixture_root("two")];
             chat.booting = false;
             chat
         });
