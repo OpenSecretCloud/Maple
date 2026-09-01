@@ -84,8 +84,8 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
   an unnamed register, undo/redo transactions, and structured dot repeat.
   Enable it under General settings; every other text field stays standard.
 - Optional application Vim navigation moves a stable semantic selection through
-  Chat sidebar and transcript rows and modal choices. It is independent of
-  composer Vim and leaves ordinary text fields unchanged.
+  Chat sidebar and transcript rows, modal choices, and Settings controls. It is
+  independent of composer Vim and leaves ordinary text fields unchanged.
 - Projects (working directories) with pinned and recent roots, rename,
   open in the file manager, and remove. Projects that provide skills ask
   for a trust decision before their guidance loads.
@@ -122,17 +122,19 @@ app. It can be enabled with or without application Vim.
 ### Application Vim preview
 
 Turn on **Vim navigation across the app** in General settings. Application Vim
-owns a stable semantic selection in Chat while ordinary inputs retain normal
-text editing. Chat remembers transcript selection per task, follows streaming
-only while the selection is pinned to the newest row, and resolves sidebar
-projects and tasks by stable IDs rather than virtual-list indices. Direct clicks
-update the same selection state.
+owns a stable semantic selection while ordinary inputs retain normal text
+editing. Chat remembers transcript selection per task, follows streaming only
+while the selection is pinned to the newest row, and resolves sidebar projects
+and tasks by stable IDs rather than virtual-list indices. Direct clicks update
+the same selection state.
 
 The preview includes `j/k`, `gg/G`, counts, `Enter`, `h/l`, `y`, `/`, `ga`,
 `[a`/`]a`, `gi`, and `Ctrl-W h/j/k/l`. `Space s n` starts a task and `Space ,`
-opens Settings. Annotation motions are registered and report that no annotation
-source is available in the current app. A root action palette and which-key
-display remain follow-up work rather than hidden partial implementations.
+opens Settings. The Settings page itself is navigable, including its shortcut
+search and editable binding rows. Annotation motions are registered and report
+that no annotation source is available in the current app. A root action
+palette and which-key display remain follow-up work rather than hidden partial
+implementations.
 
 Closing Settings explicitly restores Chat focus because the two screens are
 separately mounted. Application Vim returns to its semantic focus proxy;
