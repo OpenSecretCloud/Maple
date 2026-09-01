@@ -7,11 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext, Context, Div, Entity, SharedString, Window, div, prelude::*, px,
+    AnyElement, AppContext, Context, Div, Entity, Focusable, SharedString, Window, div, prelude::*,
+    px,
 };
 use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary};
 
-use super::{ChatScreen, MenuAction, OpenSettings, RenameTarget, SIDEBAR_WIDTH, section_label};
+use super::commands::ChatCommand;
+use super::{ChatScreen, MenuAction, RenameTarget, SIDEBAR_WIDTH, section_label};
 use crate::ui::icons::{icon, wordmark};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
@@ -94,6 +96,39 @@ pub(super) enum SidebarEntry {
 }
 
 impl ChatScreen {
+    pub(super) fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        if self.sidebar_collapsed == collapsed {
+            return;
+        }
+        self.sidebar_collapsed = collapsed;
+        cx.notify();
+    }
+
+    pub(super) fn toggle_sidebar_visibility(&mut self, cx: &mut Context<Self>) {
+        self.set_sidebar_collapsed(!self.sidebar_collapsed, cx);
+    }
+
+    pub(super) fn set_archived_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        if self.archived_expanded == expanded {
+            return;
+        }
+        self.archived_expanded = expanded;
+        self.rebuild_sidebar_entries();
+        cx.notify();
+    }
+
+    pub(super) fn toggle_archived_visibility(&mut self, cx: &mut Context<Self>) {
+        self.set_archived_expanded(!self.archived_expanded, cx);
+    }
+
+    pub(super) fn focus_sidebar_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_sidebar_collapsed(false, cx);
+        if let Some(input) = self.search_input.clone() {
+            input.read(cx).focus_handle(cx).focus(window);
+        }
+        cx.notify();
+    }
+
     /// Rebuild the sidebar sections: pinned roots first (when known),
     /// then the current root, then the other recent roots, then any root
     /// that only appears on a stored task. Called when sessions, roots,
@@ -1082,8 +1117,8 @@ impl ChatScreen {
                         .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         .cursor_pointer()
                 })
-                .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.new_session(cx);
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.execute_command(ChatCommand::NewTask, window, cx);
                 }))
                 .child(icon("square-pen", px(16.), theme::accent()))
                 .child("New Task")
@@ -1149,10 +1184,8 @@ impl ChatScreen {
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                             .cursor_pointer()
                     })
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.archived_expanded = !this.archived_expanded;
-                        this.rebuild_sidebar_entries();
-                        cx.notify();
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        this.execute_command(ChatCommand::ToggleArchived, window, cx);
                     }))
                     .child(icon(
                         if expanded {
@@ -1391,8 +1424,8 @@ impl ChatScreen {
                     .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .cursor_pointer()
             })
-            .on_click(cx.listener(|_this, _event, _window, cx| {
-                cx.emit(OpenSettings);
+            .on_click(cx.listener(|this, _event, window, cx| {
+                this.execute_command(ChatCommand::OpenSettings, window, cx);
             }))
             .child(icon("settings", px(16.), theme::text_secondary()));
         div().flex().items_center().px_3().py_2().child(gear)
