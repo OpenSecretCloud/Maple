@@ -135,12 +135,13 @@
             wayland
           ];
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+          mkDevShell = if isDarwin then pkgs.mkShellNoCC else pkgs.mkShell;
           xcrun = pkgs.writeShellScriptBin "xcrun" ''
             exec /usr/bin/xcrun "$@"
           '';
         in
         {
-          default = pkgs.mkShell {
+          default = mkDevShell {
             packages = with pkgs; [
               clang
               cmake
@@ -153,8 +154,47 @@
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
 
             shellHook = pkgs.lib.optionalString isDarwin ''
-              export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+              maple_nix_valid_developer_dir() {
+                [ -d "$1" ] \
+                  && [ -x "$1/usr/bin/xcodebuild" ] \
+                  && DEVELOPER_DIR="$1" /usr/bin/xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1
+              }
+
+              maple_nix_developer_dir=""
+              if [ -n "''${MAPLE_NIX_XCODE_VERSION:-}" ]; then
+                maple_nix_developer_dir="/Applications/Xcode_''${MAPLE_NIX_XCODE_VERSION}.app/Contents/Developer"
+                if ! maple_nix_valid_developer_dir "$maple_nix_developer_dir"; then
+                  echo "Maple Nix shell: Xcode ''${MAPLE_NIX_XCODE_VERSION} was not found at $maple_nix_developer_dir." >&2
+                  echo "Install that version, or unset MAPLE_NIX_XCODE_VERSION and set DEVELOPER_DIR to a full Xcode installation." >&2
+                  exit 1
+                fi
+              elif [ -n "''${DEVELOPER_DIR:-}" ] && maple_nix_valid_developer_dir "$DEVELOPER_DIR"; then
+                maple_nix_developer_dir="$DEVELOPER_DIR"
+              elif maple_nix_valid_developer_dir "/Applications/Xcode.app/Contents/Developer"; then
+                maple_nix_developer_dir="/Applications/Xcode.app/Contents/Developer"
+              else
+                maple_nix_selected_developer_dir="$(DEVELOPER_DIR= /usr/bin/xcode-select -p 2>/dev/null || true)"
+                if maple_nix_valid_developer_dir "$maple_nix_selected_developer_dir"; then
+                  maple_nix_developer_dir="$maple_nix_selected_developer_dir"
+                else
+                  echo "Maple Nix shell: no full Xcode installation was found." >&2
+                  echo "Install Xcode, select it with xcode-select, or set MAPLE_NIX_XCODE_VERSION/DEVELOPER_DIR." >&2
+                  exit 1
+                fi
+              fi
+
+              export DEVELOPER_DIR="$maple_nix_developer_dir"
+              export SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+              # Native Rust dependencies such as aws-lc ask cc-rs to compile
+              # against the macOS SDK. Point cc-rs at Xcode's actual compiler
+              # so it recognizes the Apple toolchain and supplies -isysroot;
+              # nixpkgs' generic clang wrapper cannot infer that SDK boundary.
+              export CC="$(/usr/bin/xcrun --find clang)"
+              export CXX="$(/usr/bin/xcrun --find clang++)"
               export PATH="${xcrun}/bin:$PATH"
+
+              unset maple_nix_developer_dir maple_nix_selected_developer_dir
+              unset -f maple_nix_valid_developer_dir
             '';
           };
         }
