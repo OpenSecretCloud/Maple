@@ -236,7 +236,7 @@ fn default_web_enabled() -> bool {
 }
 
 fn default_tool_details() -> bool {
-    true
+    false
 }
 
 fn default_desktop_notifications() -> bool {

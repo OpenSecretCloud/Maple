@@ -68,7 +68,6 @@ impl ChatScreen {
                         attachment_images: &chat.attachment_images,
                         chat: &entity,
                         tool_summaries: &chat.tool_summaries,
-                        summary_requests: &chat.summary_requests,
                         render: &render_ctx,
                         speech: chat.speech.as_ref(),
                         speech_available: chat.audio_caps.speech,
@@ -781,6 +780,30 @@ fn render_tool_with_diff(
     )
 }
 
+/// Title shown before the model summary arrives: just the tool label from
+/// the timeline's descriptive title ("Terminal: cargo test" -> "Terminal").
+/// The labels mirror `friendly_tool_label` in the agent's timeline
+/// projection; titles built any other way (generated titles, skill loads)
+/// are kept as-is.
+pub(super) fn tool_label_title(title: &str) -> &str {
+    const LABELS: &[&str] = &[
+        "Terminal",
+        "Subagent",
+        "Load",
+        "Editor",
+        "Web Search",
+        "Read file",
+        "Write file",
+        "List files",
+        "Find files",
+        "Search",
+    ];
+    match title.split_once(": ") {
+        Some((label, _)) if LABELS.contains(&label) => label,
+        _ => title,
+    }
+}
+
 fn render_tool(
     item: &AgentTimelineItem,
     revision: u64,
@@ -792,12 +815,12 @@ fn render_tool(
     let chat_header = transcript.chat.clone();
     let summary = transcript.tool_summaries.get(&item.id).cloned();
     let has_summary = summary.is_some();
-    // The model summary stands in for the raw `tool: args` title.
+    // The model summary stands in for the title; until it lands, show just
+    // the tool label ("Terminal"), not the raw `tool: args` title.
     let title = summary.clone().unwrap_or_else(|| {
-        SharedString::from(item.title.clone().unwrap_or_else(|| item.item_type.clone()))
+        let raw = item.title.as_deref().unwrap_or(&item.item_type);
+        SharedString::from(tool_label_title(raw).to_string())
     });
-    let summary_requested = transcript.summary_requests.contains(&item.id);
-    let derived = transcript.derived.get(item, revision);
     let card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
         .flex()
@@ -847,30 +870,14 @@ fn render_tool(
                     theme::text_muted(),
                 )),
         );
+    // Collapsed: the header alone; the summary takes over the title when
+    // it lands. Only expanded cards pay for the derived payload strings.
+    if !details {
+        return div().child(card);
+    }
+    let derived = transcript.derived.get(item, revision);
     // A click anywhere on the card, payload included, toggles it.
     let mut payload = div().flex().flex_col().gap_1();
-    if !details {
-        // Compact: the model summary when present, otherwise a one-line
-        // raw output preview.
-        if !has_summary && summary_requested {
-            // A summary is on the way; do not flash the raw call first.
-            payload = payload.child(
-                div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .child("Summarizing…"),
-            );
-        } else if !has_summary && let Some(preview) = &derived.preview {
-            payload = payload.child(
-                div()
-                    .text_xs()
-                    .text_color(gpui::rgb(theme::text_muted()))
-                    .line_clamp(1)
-                    .child(preview.clone()),
-            );
-        }
-        return div().child(card.child(payload));
-    }
     // Expanded: the call arguments and, until a summary exists, the raw
     // output.
     if let Some(input) = &derived.input_line {

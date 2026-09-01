@@ -151,7 +151,6 @@ struct TranscriptCtx<'a> {
     attachment_images: &'a HashMap<String, Arc<gpui::Image>>,
     chat: &'a gpui::WeakEntity<ChatScreen>,
     tool_summaries: &'a HashMap<String, SharedString>,
-    summary_requests: &'a HashSet<String>,
     render: &'a RenderCtx,
     /// Message being spoken, if any.
     speech: Option<&'a SpeechState>,

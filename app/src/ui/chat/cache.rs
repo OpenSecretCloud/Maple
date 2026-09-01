@@ -123,8 +123,6 @@ pub(super) struct ItemDerived {
     pub(super) text: SharedString,
     /// Readable tool output for the expanded card.
     pub(super) output_text: Option<SharedString>,
-    /// First non-empty output line for the collapsed card.
-    pub(super) preview: Option<SharedString>,
     /// `input: {json}` for the expanded card.
     pub(super) input_line: Option<SharedString>,
     /// +/- lines of an edit or write tool, capped at `MAX_DIFF_LINES`.
@@ -136,18 +134,11 @@ pub(super) const MAX_DIFF_LINES: usize = 200;
 impl ItemDerived {
     fn build(item: &AgentTimelineItem) -> Self {
         let output_text = tool_output_markdown(item).map(SharedString::from);
-        let preview = output_text.as_ref().and_then(|text| {
-            text.lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(|line| SharedString::from(line.to_string()))
-        });
         Self {
             text: SharedString::from(
                 maple_display_text(item.text.as_deref().unwrap_or("")).into_owned(),
             ),
             output_text,
-            preview,
             input_line: tool_input_line(item).map(SharedString::from),
             diff_lines: Rc::new(diff_lines_for(item)),
         }
