@@ -2415,8 +2415,10 @@ mod tests {
     fn save_config_writes_atomically_and_round_trips() {
         let root = tempfile::tempdir().unwrap();
         let user_id = "acp-config-user";
+        let project_root = root.path().join("project");
+        assert!(project_root.is_absolute());
         let config = AgentAcpConfig {
-            allowed_project_roots: vec!["/tmp/project".to_string()],
+            allowed_project_roots: vec![project_root.to_string_lossy().into_owned()],
             ..AgentAcpConfig::default()
         };
 
