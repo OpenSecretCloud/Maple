@@ -8,6 +8,7 @@ use gpui::{Context, Div, IntoElement, SharedString, div, prelude::*, px};
 use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
+use super::commands::ChatCommand;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatScreen, DraftImage, OpenSettingsSection, ROOT_MENU_RECENTS,
@@ -56,8 +57,8 @@ impl ChatScreen {
                     self.root_menu_open,
                 )
                 .flex_none()
-                .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.toggle_root_menu(cx);
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.execute_command(ChatCommand::ChooseProject, window, cx);
                 })),
             )
             .when_some(self.branch_label.clone(), |row, branch| {

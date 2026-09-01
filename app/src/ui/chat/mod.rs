@@ -25,6 +25,7 @@ use crate::ui::theme;
 use crate::ui::widgets;
 
 mod cache;
+mod commands;
 mod composer;
 mod images;
 mod queue;
@@ -36,6 +37,7 @@ mod tests;
 mod transcript;
 
 use self::cache::{DerivedCache, MarkdownCache, MarkdownKind, STREAM_PARSE_INTERVAL};
+use self::commands::ChatCommand;
 use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::sidebar::{
     ProjectGroup, SidebarEntry, SidebarRow, root_display_name, session_summary_eq,
@@ -2153,78 +2155,6 @@ impl ChatScreen {
             .is_some_and(|session| self.active_runs.contains_key(session))
     }
 
-    /// Ctrl-N / Cmd-N: the keyboard path to the sidebar's New Task row.
-    fn new_task_action(&mut self, _: &NewTask, _window: &mut Window, cx: &mut Context<Self>) {
-        self.new_session(cx);
-    }
-
-    /// Ctrl-K / Cmd-K: type straight into the sidebar search field. A
-    /// hidden sidebar comes back first; a search box nobody can see is
-    /// no use.
-    fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
-        self.sidebar_collapsed = false;
-        if let Some(input) = self.search_input.clone() {
-            input.read(cx).focus_handle(cx).focus(window);
-        }
-        cx.notify();
-    }
-
-    /// Ctrl-B / Cmd-B: the keyboard path to the sidebar toggle.
-    fn toggle_sidebar(&mut self, _: &ToggleSidebar, _window: &mut Window, cx: &mut Context<Self>) {
-        self.sidebar_collapsed = !self.sidebar_collapsed;
-        cx.notify();
-    }
-
-    /// Ctrl-Shift-A / Cmd-Shift-A: fold or unfold the archived section.
-    fn toggle_archived(
-        &mut self,
-        _: &ToggleArchived,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.archived_expanded = !self.archived_expanded;
-        self.rebuild_sidebar_entries();
-        cx.notify();
-    }
-
-    /// Ctrl-, / Cmd-,: open app settings.
-    fn open_app_settings(
-        &mut self,
-        _: &OpenAppSettings,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        cx.emit(OpenSettings);
-    }
-
-    /// Ctrl-P / Cmd-P: open the project menu, where a folder is picked.
-    fn choose_project(&mut self, _: &ChooseProject, _window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_root_menu(cx);
-    }
-
-    /// Up / Down in the open project menu.
-    fn root_menu_previous(
-        &mut self,
-        _: &RootMenuPrevious,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.step_root_menu(-1, cx);
-    }
-
-    fn root_menu_next(&mut self, _: &RootMenuNext, _window: &mut Window, cx: &mut Context<Self>) {
-        self.step_root_menu(1, cx);
-    }
-
-    fn root_menu_confirm(
-        &mut self,
-        _: &RootMenuConfirm,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.confirm_root_menu(cx);
-    }
-
     /// Rows the project menu offers: the recent roots it lists, then
     /// "New project…".
     fn root_menu_rows(&self) -> usize {
@@ -2268,14 +2198,6 @@ impl ChatScreen {
             Some(path) => self.switch_root(path, cx),
             None => self.choose_root_dialog(cx),
         }
-    }
-
-    fn previous_task(&mut self, _: &PreviousTask, _window: &mut Window, cx: &mut Context<Self>) {
-        self.step_task(-1, cx);
-    }
-
-    fn next_task(&mut self, _: &NextTask, _window: &mut Window, cx: &mut Context<Self>) {
-        self.step_task(1, cx);
     }
 
     /// Alt-Up / Alt-Down: open the task before or after the selected one
@@ -2339,25 +2261,9 @@ impl ChatScreen {
         Some((row, id))
     }
 
-    /// Ctrl-Y / Cmd-Y: allow what the permission card is asking about.
-    /// Escape denies it.
-    fn allow_permission(
-        &mut self,
-        _: &AllowPermission,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.respond_permission(true, cx);
-    }
-
     /// Ctrl-1 to Ctrl-9: answer the question card with the numbered
     /// option, the same as picking it and pressing Answer.
-    fn pick_question_option(
-        &mut self,
-        action: &PickQuestionOption,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn pick_and_submit_question_option(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(question) = self.current_question() else {
             return;
         };
@@ -2369,18 +2275,11 @@ impl ChatScreen {
             .get(step)
             .map(|entry| entry.options.len())
             .unwrap_or(0);
-        if action.index >= options {
+        if index >= options {
             return;
         }
-        self.select_question_option(step, action.index, cx);
+        self.select_question_option(step, index, cx);
         self.submit_question(cx);
-    }
-
-    /// Escape, in priority order: close the photo viewer, answer a
-    /// pending prompt, clear a text selection, close the chip menus.
-    /// With nothing left to dismiss it stops the running task.
-    fn chat_escape(&mut self, _: &ChatEscape, _window: &mut Window, cx: &mut Context<Self>) {
-        self.escape(cx);
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
@@ -2452,11 +2351,6 @@ impl ChatScreen {
         false
     }
 
-    /// Copy the transcript drag selection, when there is one.
-    fn copy_selection(&mut self, _: &CopySelection, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_selected_text(cx);
-    }
-
     fn copy_selected_text(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.selection.clone() else {
             return;
@@ -2465,15 +2359,6 @@ impl ChatScreen {
         if !text.is_empty() {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         }
-    }
-
-    fn select_all_transcript(
-        &mut self,
-        _: &SelectAllTranscript,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.select_all_text(cx);
     }
 
     /// Plain typing with no text input focused routes to the composer:
@@ -2575,7 +2460,7 @@ impl ChatScreen {
         let item = |id: &'static str,
                     icon_name: &'static str,
                     label: &'static str,
-                    on_click: MenuAction| {
+                    command: ChatCommand| {
             div()
                 .id(id)
                 .flex()
@@ -2590,10 +2475,10 @@ impl ChatScreen {
                         .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         .cursor_pointer()
                 })
-                .on_click(cx.listener(move |this, _event, _window, cx| {
+                .on_click(cx.listener(move |this, _event, window, cx| {
                     cx.stop_propagation();
                     this.transcript_menu = None;
-                    on_click(this, cx);
+                    this.execute_command(command, window, cx);
                     cx.notify();
                 }))
                 .child(icon(icon_name, px(14.), theme::text_secondary()))
@@ -2625,14 +2510,14 @@ impl ChatScreen {
                                 "transcript-menu-copy",
                                 "copy",
                                 "Copy",
-                                Box::new(|this, cx| this.copy_selected_text(cx)),
+                                ChatCommand::CopySelection,
                             ))
                         })
                         .child(item(
                             "transcript-menu-select-all",
                             "text-select",
                             "Select all",
-                            Box::new(|this, cx| this.select_all_text(cx)),
+                            ChatCommand::SelectAllTranscript,
                         )),
                 ),
         ))
@@ -4126,9 +4011,8 @@ impl ChatScreen {
                     .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .cursor_pointer()
             })
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.sidebar_collapsed = !this.sidebar_collapsed;
-                cx.notify();
+            .on_click(cx.listener(|this, _event, window, cx| {
+                this.execute_command(ChatCommand::ToggleSidebar, window, cx);
             }))
             .child(icon("panel-left", px(16.), theme::text_secondary()))
     }

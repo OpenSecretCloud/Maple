@@ -10,6 +10,7 @@ use gpui::{AnimationExt, Div, Entity, IntoElement, SharedString, Window, div, pr
 use maple_agent::agent::{AgentTimelineItem, compaction_notice_text};
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
+use super::commands::ChatCommand;
 use super::speech::speak_message_button;
 use super::{CONTENT_WIDTH, ChatScreen, TranscriptCtx};
 use crate::backend::PendingPermission;
@@ -1309,8 +1310,12 @@ pub(super) fn render_permission_card(
                 .text_color(gpui::rgb(theme::bg_app()))
                 .when(!responding, |el| {
                     el.hover(|style| style.cursor_pointer())
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                            this.respond_permission(allow, cx);
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            this.execute_command(
+                                ChatCommand::RespondPermission { allow },
+                                window,
+                                cx,
+                            );
                         }))
                 })
                 .child(label.to_string()),
