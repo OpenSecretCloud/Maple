@@ -4,7 +4,7 @@
 //! text and grows with its content (Shift+Enter inserts a newline).
 
 pub mod vim;
-mod vim_actions;
+pub(crate) mod vim_actions;
 
 use super::{spell, theme, widgets};
 use std::collections::VecDeque;
@@ -13,10 +13,10 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, ContentMask, Context, CursorStyle, Element,
     ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
-    GlobalElementId, InteractiveElement, KeyBinding, LayoutId, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, SharedString, Style, Subscription, TextAlign, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px,
-    relative, rgb, size,
+    GlobalElementId, InteractiveElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PaintQuad, Pixels, SharedString, Style, Subscription, TextAlign, TextRun, UTF16Selection,
+    UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px, relative, rgb,
+    size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -51,32 +51,6 @@ actions!(
         Redo,
     ]
 );
-
-/// Register the default key bindings for every TextInput. Safe to call
-/// once at startup; `secondary-` is cmd on macOS and ctrl elsewhere.
-pub fn register_key_bindings(cx: &mut App) {
-    let context = Some("TextInput");
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, context),
-        KeyBinding::new("delete", Delete, context),
-        KeyBinding::new("left", Left, context),
-        KeyBinding::new("right", Right, context),
-        KeyBinding::new("shift-left", SelectLeft, context),
-        KeyBinding::new("shift-right", SelectRight, context),
-        KeyBinding::new("secondary-a", SelectAll, context),
-        KeyBinding::new("secondary-v", Paste, context),
-        KeyBinding::new("secondary-c", Copy, context),
-        KeyBinding::new("secondary-x", Cut, context),
-        KeyBinding::new("home", Home, context),
-        KeyBinding::new("end", End, context),
-        KeyBinding::new("up", Up, context),
-        KeyBinding::new("down", Down, context),
-        KeyBinding::new("secondary-z", Undo, context),
-        KeyBinding::new("secondary-shift-z", Redo, context),
-        KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, context),
-    ]);
-    vim_actions::register_key_bindings(cx);
-}
 
 type EnterHandler = Box<dyn Fn(String, &mut Window, &mut Context<TextInput>) + 'static>;
 type PasteImageHandler = Box<dyn Fn(gpui::Image, &mut Window, &mut Context<TextInput>) + 'static>;
@@ -2602,7 +2576,7 @@ mod tests {
     #[gpui::test]
     fn ordinary_input_keeps_standard_editing_with_vim_bindings_registered(cx: &mut TestAppContext) {
         let input = cx.new(|cx| {
-            register_key_bindings(cx);
+            crate::desktop::register_key_bindings(cx);
             TextInput::new("", cx)
         });
         let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
@@ -2715,7 +2689,7 @@ mod tests {
     #[gpui::test]
     fn composer_vim_bindings_dispatch_and_insert_uses_the_input_handler(cx: &mut TestAppContext) {
         let input = cx.new(|cx| {
-            register_key_bindings(cx);
+            crate::desktop::register_key_bindings(cx);
             let mut input = TextInput::new("", cx).composer_vim(true).multiline(8);
             input.set_text("one two", cx);
             input
@@ -2757,7 +2731,7 @@ mod tests {
     #[gpui::test]
     fn normal_backspace_moves_left_without_editing(cx: &mut TestAppContext) {
         let input = cx.new(|cx| {
-            register_key_bindings(cx);
+            crate::desktop::register_key_bindings(cx);
             let mut input = TextInput::new("", cx).composer_vim(true);
             input.set_text("abc", cx);
             input
@@ -2816,7 +2790,7 @@ mod tests {
         let submitted = Rc::new(RefCell::new(Vec::<String>::new()));
         let submitted_for_handler = submitted.clone();
         let input = cx.new(|cx| {
-            register_key_bindings(cx);
+            crate::desktop::register_key_bindings(cx);
             let mut input = TextInput::new("", cx)
                 .composer_vim(true)
                 .multiline(8)

@@ -5,7 +5,7 @@
 //! shortcut-customization layer can later replace the bindings without
 //! changing editor behavior.
 
-use gpui::{App, Context, Div, InteractiveElement, KeyBinding, actions};
+use gpui::{Context, Div, InteractiveElement, actions};
 
 use super::TextInput;
 use super::vim::{
@@ -88,115 +88,4 @@ pub(super) fn attach_actions(element: Div, cx: &mut Context<TextInput>) -> Div {
         .on_action(cx.listener(TextInput::vim_redo))
         .on_action(cx.listener(TextInput::vim_repeat))
         .on_action(cx.listener(TextInput::vim_cancel))
-}
-
-/// Install the fixed composer-only map after the ordinary TextInput map.
-/// The mode predicates are more specific, so ordinary inputs remain exactly
-/// on the existing bindings and Insert retains platform editing shortcuts.
-pub fn register_key_bindings(cx: &mut App) {
-    let mut bindings = Vec::new();
-
-    for context in [NORMAL_CONTEXT, VISUAL_CONTEXT] {
-        for (key, motion) in [
-            ("h", Motion::Left),
-            ("j", Motion::Down),
-            ("k", Motion::Up),
-            ("l", Motion::Right),
-            ("b", Motion::WordBackward),
-            ("e", Motion::WordEnd),
-            ("$", Motion::LineEnd),
-            ("g g", Motion::FirstLine),
-            ("G", Motion::LastLine),
-            ("left", Motion::Left),
-            ("down", Motion::Down),
-            ("up", Motion::Up),
-            ("right", Motion::Right),
-        ] {
-            bindings.push(KeyBinding::new(key, VimMotion { motion }, Some(context)));
-        }
-        bindings.push(KeyBinding::new(
-            "w",
-            VimContextual {
-                token: ContextualToken::WordOrTextObject,
-            },
-            Some(context),
-        ));
-        bindings.push(KeyBinding::new(
-            "i",
-            VimContextual {
-                token: ContextualToken::InnerOrInsert,
-            },
-            Some(context),
-        ));
-        bindings.push(KeyBinding::new(
-            "a",
-            VimContextual {
-                token: ContextualToken::AroundOrAppend,
-            },
-            Some(context),
-        ));
-        for (key, operator) in [
-            ("d", Operator::Delete),
-            ("c", Operator::Change),
-            ("y", Operator::Yank),
-        ] {
-            bindings.push(KeyBinding::new(
-                key,
-                VimBeginOperator { operator },
-                Some(context),
-            ));
-        }
-        for digit in 0..=9 {
-            bindings.push(KeyBinding::new(
-                &digit.to_string(),
-                VimCountDigit { digit },
-                Some(context),
-            ));
-        }
-        bindings.push(KeyBinding::new("v", VimToggleVisual, Some(context)));
-        bindings.push(KeyBinding::new("x", VimDeleteChars, Some(context)));
-        bindings.push(KeyBinding::new(
-            "p",
-            VimPaste {
-                placement: PastePlacement::After,
-            },
-            Some(context),
-        ));
-        bindings.push(KeyBinding::new(
-            "P",
-            VimPaste {
-                placement: PastePlacement::Before,
-            },
-            Some(context),
-        ));
-    }
-
-    for (key, placement) in [
-        ("I", InsertEntry::FirstNonWhitespace),
-        ("A", InsertEntry::LineEnd),
-    ] {
-        bindings.push(KeyBinding::new(
-            key,
-            VimEnterInsert { placement },
-            Some(NORMAL_CONTEXT),
-        ));
-    }
-    for (key, placement) in [
-        ("o", OpenLinePlacement::Below),
-        ("O", OpenLinePlacement::Above),
-    ] {
-        bindings.push(KeyBinding::new(
-            key,
-            VimOpenLine { placement },
-            Some(NORMAL_CONTEXT),
-        ));
-    }
-    bindings.push(KeyBinding::new("u", VimUndo, Some(NORMAL_CONTEXT)));
-    bindings.push(KeyBinding::new("ctrl-r", VimRedo, Some(NORMAL_CONTEXT)));
-    bindings.push(KeyBinding::new(".", VimRepeat, Some(NORMAL_CONTEXT)));
-    bindings.push(KeyBinding::new("escape", VimCancel, Some(NORMAL_CONTEXT)));
-    bindings.push(KeyBinding::new("escape", VimCancel, Some(VISUAL_CONTEXT)));
-    bindings.push(KeyBinding::new("escape", VimCancel, Some(INSERT_CONTEXT)));
-
-    cx.bind_keys(bindings);
 }

@@ -12,10 +12,14 @@ mod billing;
 mod desktop;
 mod env;
 #[cfg(feature = "desktop")]
+mod keymap;
+#[cfg(feature = "desktop")]
 mod notify;
 #[cfg(feature = "desktop")]
 mod platform;
 mod settings;
+#[cfg(feature = "desktop")]
+mod shortcuts;
 #[cfg(feature = "desktop")]
 mod ui;
 #[cfg(feature = "desktop")]
