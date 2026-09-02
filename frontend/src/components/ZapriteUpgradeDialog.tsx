@@ -18,7 +18,7 @@ import {
   type ZapriteUpgradeQuote,
   type ZapriteUpgradeStatusResponse
 } from "@/billing/zapriteUpgrade";
-import { isIOS } from "@/utils/platform";
+import { isIOS, isMobile, isTauri } from "@/utils/platform";
 
 type ZapriteUpgradeDialogProps = {
   open: boolean;
@@ -133,10 +133,14 @@ export function ZapriteUpgradeDialog({
     setSubmitting(true);
     setError(null);
     try {
+      const successUrl =
+        isTauri() || isMobile()
+          ? "https://trymaple.ai/pricing"
+          : `${window.location.origin}/pricing`;
       const created = await getBillingService().createZapriteUpgrade(
         displayedQuote.quote_id,
         idempotencyKey,
-        `${window.location.origin}/pricing`
+        successUrl
       );
       if (mountedUserId.current !== userId) {
         return;
@@ -152,6 +156,9 @@ export function ZapriteUpgradeDialog({
 
   const currentStatus = upgradeStatus?.status;
   const canConfirm = !!displayedQuote && !upgradeId && !isIOS() && !submitting;
+  const checkoutUrl = upgradeStatus?.checkout_url;
+  const canReopenCheckout =
+    !!checkoutUrl && !isIOS() && !!currentStatus && !isZapriteUpgradeTerminal(currentStatus);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -206,6 +213,18 @@ export function ZapriteUpgradeDialog({
           {canConfirm && (
             <Button variant="primary" onClick={handleConfirm} disabled={submitting}>
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Confirm and pay"}
+            </Button>
+          )}
+          {canReopenCheckout && checkoutUrl && (
+            <Button
+              variant="primary"
+              onClick={() => {
+                void openValidatedCheckoutUrl(checkoutUrl).catch((err: unknown) => {
+                  setError(err instanceof Error ? err.message : "Failed to open checkout");
+                });
+              }}
+            >
+              Open checkout
             </Button>
           )}
         </DialogFooter>

@@ -549,6 +549,11 @@ function PricingPage() {
       }
 
       if (freshBillingStatus?.payment_provider === "zaprite") {
+        const currentPlanName = freshBillingStatus.product_name?.toLowerCase();
+        if (currentPlanName === targetPlanName) {
+          navigate({ to: "/" });
+          return;
+        }
         if (zapriteUpgradeTarget(freshBillingStatus, product) && !isIOSPlatform) {
           setZapriteUpgradeProductId(product.id);
           setZapriteUpgradeOpen(true);
