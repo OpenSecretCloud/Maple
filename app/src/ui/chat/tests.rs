@@ -1305,22 +1305,54 @@ mod state_tests {
         });
     }
 
+    /// A project selection moves the navigation generation only when it
+    /// lands, so a registration that fails leaves loads in flight alive,
+    /// while a task clicked meanwhile supersedes the selection callback.
     #[gpui::test]
-    fn test_project_selection_invalidates_older_load_but_newer_task_click_wins(
-        cx: &mut TestAppContext,
-    ) {
+    fn test_project_selection_keeps_loads_alive_until_it_lands(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             let old_selection = this.selection_generation;
             let old_reload = this.reload_generation;
             this.select_project_root(absolute_fixture_root("other"), cx);
-            let project_selection = this.selection_generation;
 
-            assert!(project_selection > old_selection);
-            assert!(this.reload_generation > old_reload);
+            assert!(this.root_selecting);
+            assert_eq!(this.selection_generation, old_selection);
+            assert_eq!(this.reload_generation, old_reload);
 
             this.select_session("newer-task", cx);
-            assert!(this.selection_generation > project_selection);
+            assert!(this.selection_generation > old_selection);
+        });
+    }
+
+    /// A session list requested before a click must not auto-select over
+    /// the click, whose load leaves the selection empty until it lands.
+    #[gpui::test]
+    fn test_session_list_does_not_auto_select_over_a_newer_click(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.selected_session = None;
+            let requested = this.selection_generation;
+            this.select_session("clicked", cx);
+
+            this.apply_session_list(vec![summary_at("s1", "A", "/work/alpha")], requested, cx);
+
+            assert_eq!(this.selected_session, None);
+            assert!(!this.session_setup_pending);
+            assert_eq!(this.sessions.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn test_new_task_waits_for_a_project_selection(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.root_selecting = true;
+            this.new_session(cx);
+            assert!(!this.session_setup_pending);
+            assert!(this.notice.is_some());
         });
     }
 
@@ -2080,9 +2112,47 @@ mod state_tests {
                 Some(SessionActivity::CompletedUnread)
             );
 
+            // The marker survives the click; the snapshot landing reads it.
             this.select_session("s2", cx);
+            assert_eq!(
+                this.session_activity("s2"),
+                Some(SessionActivity::CompletedUnread)
+            );
+            this.set_active_session(
+                summary_at("s2", "B", "/work/beta"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
             assert_eq!(this.session_activity("s2"), None);
             assert_eq!(this.session_activity("s1"), Some(SessionActivity::Running));
+        });
+    }
+
+    /// A queued turn that starts after a completion and then fails must
+    /// not leave the earlier completion's marker behind.
+    #[gpui::test]
+    fn test_later_failed_run_clears_an_earlier_unread_completion(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.handle_run_event("s2", "run-1", AgentRunEvent::Started, cx);
+            this.handle_run_event(
+                "s2",
+                "run-1",
+                AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                cx,
+            );
+            this.handle_run_event("s2", "run-2", AgentRunEvent::Started, cx);
+            assert_eq!(this.session_activity("s2"), Some(SessionActivity::Running));
+            this.handle_run_event(
+                "s2",
+                "run-2",
+                AgentRunEvent::Finished(AgentRunTerminal::Failed),
+                cx,
+            );
+            assert_eq!(this.session_activity("s2"), None);
         });
     }
 

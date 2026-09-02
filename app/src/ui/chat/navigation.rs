@@ -557,7 +557,7 @@ impl ChatScreen {
             ChatRegion::Sidebar => match self.application_vim.sidebar.clone() {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
                 Some(SidebarTarget::Project(root)) => self.toggle_root_collapsed(&root, cx),
-                Some(SidebarTarget::Task(task_id)) => self.open_session(&task_id, cx),
+                Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
                 None => {}
             },

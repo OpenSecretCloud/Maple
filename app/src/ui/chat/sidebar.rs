@@ -14,7 +14,7 @@ use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary};
 
 use super::commands::ChatCommand;
 use super::{ChatScreen, MenuAction, RenameTarget, SIDEBAR_WIDTH, SessionActivity, section_label};
-use crate::ui::icons::{icon, spinner, wordmark};
+use crate::ui::icons::{icon, wordmark};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
@@ -1025,7 +1025,11 @@ impl ChatScreen {
                         }
                         this.rebuild_project_groups();
                         if was_current && let Some(next) = next_root {
-                            this.select_project_root(next, cx);
+                            // The service keeps the fallback out of roaming
+                            // config; persist it as the default here, then
+                            // open its latest task.
+                            this.persist_project_root(next, cx);
+                            this.refresh_sessions(cx);
                         } else {
                             this.refresh_roots(cx);
                         }
@@ -1318,7 +1322,7 @@ impl ChatScreen {
                         )
                     })
                     .when_some(activity, |row, activity| {
-                        row.child(activity_indicator(&format!("project-{}", root), activity))
+                        row.child(activity_indicator(activity))
                     })
                     .when(is_pinned, |row| {
                         // Pinned: the always-visible pin is the unpin
@@ -1409,7 +1413,7 @@ impl ChatScreen {
                     .cursor_pointer()
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
-                this.open_session(&session_id, cx);
+                this.select_session(&session_id, cx);
             }))
             .when_some(rename_field, |row, field| row.child(field))
             .when(!renaming, |el| {
@@ -1432,7 +1436,7 @@ impl ChatScreen {
                 )
             })
             .when_some(activity, |row_element, activity| {
-                row_element.child(activity_indicator(&format!("task-{}", row.id), activity))
+                row_element.child(activity_indicator(activity))
             })
             .child(row_action(
                 row.rename_id.clone(),
@@ -1484,11 +1488,15 @@ impl ChatScreen {
     }
 }
 
-fn activity_indicator(id: &str, activity: SessionActivity) -> AnyElement {
+/// The running glyph is static on purpose: a repeating animation asks for
+/// a frame on every tick and would repaint the whole screen for as long as
+/// any task in any project runs.
+fn activity_indicator(activity: SessionActivity) -> AnyElement {
     match activity {
-        SessionActivity::Running => spinner(id, px(13.), theme::accent()),
+        SessionActivity::Running => {
+            icon("loader-circle", px(13.), theme::accent()).into_any_element()
+        }
         SessionActivity::CompletedUnread => div()
-            .id(SharedString::from(format!("unread-{id}")))
             .size(px(8.))
             .flex_none()
             .rounded_full()
