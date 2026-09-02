@@ -831,6 +831,29 @@ impl AcpConnectionContext {
                     .data("ACP session is not available on this connection"),
             );
         }
+        // Image blocks are only accepted when the session's current model
+        // can actually see them; catalog gaps fail open inside the lookup.
+        if !images.is_empty() {
+            let model = self
+                .sessions
+                .lock()
+                .await
+                .get(&session_id)
+                .map(|session| session.model.clone());
+            if let Some(model) = model
+                && matches!(
+                    self.agent
+                        .model_supports_vision(&model)
+                        .await
+                        .map_err(internal_acp_error)?,
+                    Some(false)
+                )
+            {
+                return Err(agent_client_protocol::Error::invalid_params().data(format!(
+                    "The current model '{model}' does not support image input; switch to a vision-capable model or send text only"
+                )));
+            }
+        }
         let mut states = self.prompt_states.lock().await;
         if states.contains_key(&session_id) {
             return Err(agent_client_protocol::Error::invalid_request()

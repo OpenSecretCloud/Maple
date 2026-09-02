@@ -4522,9 +4522,6 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let text = request.text.trim().to_string();
-        if !request.attachments.is_empty() && desktop_send == DesktopSendDisposition::StartOnly {
-            return Err("Image attachments are available only in Maple Agent Mode".to_string());
-        }
         if text.is_empty()
             && request.attachments.is_empty()
             && desktop_send == DesktopSendDisposition::StartOnly
