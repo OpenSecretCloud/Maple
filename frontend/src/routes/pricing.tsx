@@ -23,6 +23,8 @@ import { Switch } from "@/components/ui/switch";
 import { PRICING_PLANS } from "@/config/pricingConfig";
 import { VerificationModal } from "@/components/VerificationModal";
 import { TeamSeatDialog } from "@/components/TeamSeatDialog";
+import { ZapriteUpgradeDialog } from "@/components/ZapriteUpgradeDialog";
+import { zapritePaidPlanButtonText, zapriteUpgradeTarget } from "@/billing/zapriteUpgrade";
 import { isIOS, isAndroid, isMobile, isTauri } from "@/utils/platform";
 import { cn } from "@/utils/utils";
 import packageJson from "../../package.json";
@@ -243,6 +245,8 @@ function PricingPage() {
   const [useBitcoin, setUseBitcoin] = useState(false);
   const [showTeamSeatDialog, setShowTeamSeatDialog] = useState(false);
   const [pendingTeamProductId, setPendingTeamProductId] = useState<string | null>(null);
+  const [zapriteUpgradeProductId, setZapriteUpgradeProductId] = useState<string | null>(null);
+  const [zapriteUpgradeOpen, setZapriteUpgradeOpen] = useState(false);
   const navigate = useNavigate();
   const os = useOpenSecret();
   const { setBillingStatus } = useBillingState();
@@ -364,9 +368,9 @@ function PricingPage() {
     const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
     const isCurrentPlan = currentPlanName === targetPlanName;
 
-    // If user is on Zaprite plan, show Contact Us
-    if (freshBillingStatus?.payment_provider === "zaprite") {
-      return "Contact Us";
+    const zapriteButton = zapritePaidPlanButtonText(freshBillingStatus, product, isCurrentPlan);
+    if (zapriteButton) {
+      return zapriteButton;
     }
 
     // If user is on subscription pass, only show button for current plan
@@ -544,9 +548,12 @@ function PricingPage() {
         return;
       }
 
-      // If user is on Zaprite plan, redirect to email
       if (freshBillingStatus?.payment_provider === "zaprite") {
-        // Use Tauri opener plugin for all Tauri platforms, fallback to window.location for web
+        if (zapriteUpgradeTarget(freshBillingStatus, product) && !isIOSPlatform) {
+          setZapriteUpgradeProductId(product.id);
+          setZapriteUpgradeOpen(true);
+          return;
+        }
         if (isTauri()) {
           import("@tauri-apps/api/core")
             .then((coreModule) => {
@@ -554,12 +561,7 @@ function PricingPage() {
                 url: "mailto:support@trymaple.ai"
               });
             })
-            .then(() => {
-              console.log("[Contact] Successfully opened mailto link with Tauri opener");
-            })
-            .catch((err) => {
-              console.error("[Contact] Failed to open mailto link with Tauri opener:", err);
-              // Fallback for web or if Tauri fails
+            .catch(() => {
               window.location.href = "mailto:support@trymaple.ai";
             });
         } else {
@@ -786,13 +788,34 @@ function PricingPage() {
         <PricingHero />
 
         {/* Payment Callback Status Messages */}
-        {success && (
+        {success && freshBillingStatus?.payment_provider !== "zaprite" && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
             <div className="flex items-center gap-3 rounded-lg border border-maple-success/30 bg-maple-success/10 p-4 text-maple-success">
               <div className="rounded-full bg-maple-success/10 p-1">
                 <Check className="w-5 h-5" />
               </div>
               <p>Payment successful! Your subscription has been updated.</p>
+            </div>
+          </div>
+        )}
+
+        {freshBillingStatus?.pending_plan_change && (
+          <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-maple-warning/35 bg-maple-warning/10 p-4 text-maple-warning">
+              <p>
+                Bitcoin upgrade to {freshBillingStatus.pending_plan_change.target_plan_name} is{" "}
+                {freshBillingStatus.pending_plan_change.status.toLowerCase()}. Your current plan is
+                unchanged until payment completes.
+              </p>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setZapriteUpgradeProductId(null);
+                  setZapriteUpgradeOpen(true);
+                }}
+              >
+                View status
+              </Button>
             </div>
           </div>
         )}
@@ -1144,6 +1167,15 @@ function PricingPage() {
         open={showTeamSeatDialog}
         onOpenChange={setShowTeamSeatDialog}
         onConfirm={handleTeamSeatConfirm}
+      />
+      <ZapriteUpgradeDialog
+        open={zapriteUpgradeOpen}
+        onOpenChange={setZapriteUpgradeOpen}
+        userId={os.auth.user?.user.id ?? null}
+        targetProductId={zapriteUpgradeProductId}
+        resumeUpgradeId={
+          zapriteUpgradeProductId ? null : (freshBillingStatus?.pending_plan_change?.id ?? null)
+        }
       />
       <VerificationModal />
     </>

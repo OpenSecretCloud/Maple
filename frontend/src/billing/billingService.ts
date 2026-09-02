@@ -34,8 +34,16 @@ import {
   redeemPassCode,
   PassCheckResponse,
   PassRedeemRequest,
-  PassRedeemResponse
+  PassRedeemResponse,
+  createZapriteUpgradeQuote,
+  createZapriteUpgrade,
+  fetchZapriteUpgradeStatus
 } from "./billingApi";
+import type {
+  ZapriteUpgradeCreateResponse,
+  ZapriteUpgradeQuote,
+  ZapriteUpgradeStatusResponse
+} from "./zapriteUpgrade";
 import type {
   TeamStatus,
   CreateTeamRequest,
@@ -213,6 +221,24 @@ class BillingService {
 
   async redeemPassCode(data: PassRedeemRequest): Promise<PassRedeemResponse> {
     return this.executeWithToken((token) => redeemPassCode(token, data));
+  }
+
+  async createZapriteUpgradeQuote(targetProductId: string): Promise<ZapriteUpgradeQuote> {
+    return this.executeWithToken((token) => createZapriteUpgradeQuote(token, targetProductId));
+  }
+
+  async createZapriteUpgrade(
+    quoteId: string,
+    idempotencyKey: string,
+    successUrl?: string
+  ): Promise<ZapriteUpgradeCreateResponse> {
+    return this.executeWithToken((token) =>
+      createZapriteUpgrade(token, quoteId, idempotencyKey, successUrl)
+    );
+  }
+
+  async getZapriteUpgradeStatus(upgradeId: string): Promise<ZapriteUpgradeStatusResponse> {
+    return this.executeWithToken((token) => fetchZapriteUpgradeStatus(token, upgradeId));
   }
 }
 

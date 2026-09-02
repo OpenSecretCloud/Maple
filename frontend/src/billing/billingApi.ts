@@ -1,4 +1,11 @@
 import { isMobile, isTauri } from "@/utils/platform";
+import {
+  isAllowedZapriteCheckoutUrl,
+  parseBillingApiError,
+  type ZapriteUpgradeCreateResponse,
+  type ZapriteUpgradeQuote,
+  type ZapriteUpgradeStatusResponse
+} from "./zapriteUpgrade";
 
 // API Credit Purchase Constants
 export const MIN_PURCHASE_CREDITS = 10000;
@@ -19,6 +26,13 @@ export type BillingStatus = {
   used_tokens: number | null;
   usage_reset_date: string | null;
   api_credit_balance?: number;
+  pending_plan_change?: {
+    id: string;
+    type: string;
+    target_plan_name: string;
+    status: string;
+    expires_at: string;
+  } | null;
 };
 
 type BillingRecurringInfo = {
@@ -312,6 +326,110 @@ export async function createZapriteCheckoutSession(
 
   // Fall back to regular navigation for web platforms
   window.location.href = checkout_url;
+}
+
+async function readBillingError(response: Response, fallback: string): Promise<never> {
+  const errorText = await response.text();
+  if (response.status === 401) {
+    throw new Error("Unauthorized");
+  }
+  const parsed = parseBillingApiError(errorText);
+  const error = new Error(parsed.error || fallback) as Error & { code?: string };
+  error.code = parsed.code;
+  throw error;
+}
+
+export async function createZapriteUpgradeQuote(
+  thirdPartyToken: string,
+  targetProductId: string
+): Promise<ZapriteUpgradeQuote> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/zaprite/upgrade-quotes`,
+    {
+      method: "POST",
+      body: JSON.stringify({ target_product_id: targetProductId }),
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+  if (!response.ok) {
+    await readBillingError(response, "Failed to create upgrade quote");
+  }
+  return response.json() as Promise<ZapriteUpgradeQuote>;
+}
+
+export async function createZapriteUpgrade(
+  thirdPartyToken: string,
+  quoteId: string,
+  idempotencyKey: string,
+  successUrl?: string
+): Promise<ZapriteUpgradeCreateResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/zaprite/upgrades`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        quote_id: quoteId,
+        ...(successUrl ? { success_url: successUrl } : {})
+      }),
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey
+      }
+    }
+  );
+  if (!response.ok) {
+    await readBillingError(response, "Failed to create upgrade checkout");
+  }
+  const created = (await response.json()) as ZapriteUpgradeCreateResponse;
+  if (!isAllowedZapriteCheckoutUrl(created.checkout_url)) {
+    throw new Error("Checkout URL is not from the expected payment provider");
+  }
+  return created;
+}
+
+export async function fetchZapriteUpgradeStatus(
+  thirdPartyToken: string,
+  upgradeId: string
+): Promise<ZapriteUpgradeStatusResponse> {
+  const response = await fetch(
+    `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/zaprite/upgrades/${upgradeId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${thirdPartyToken}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+  if (!response.ok) {
+    await readBillingError(response, "Failed to fetch upgrade status");
+  }
+  return response.json() as Promise<ZapriteUpgradeStatusResponse>;
+}
+
+export async function openValidatedCheckoutUrl(checkoutUrl: string): Promise<void> {
+  if (!isAllowedZapriteCheckoutUrl(checkoutUrl)) {
+    throw new Error("Checkout URL is not from the expected payment provider");
+  }
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("plugin:opener|open_url", { url: checkoutUrl });
+    } catch {
+      if (isMobile()) {
+        throw new Error(
+          "Failed to open payment page in external browser. This is required for mobile payments."
+        );
+      }
+      window.open(checkoutUrl, "_blank", "noopener");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return;
+  }
+  window.open(checkoutUrl, "_blank", "noopener");
 }
 
 // Team Management API Functions
