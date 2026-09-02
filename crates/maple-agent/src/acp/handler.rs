@@ -119,6 +119,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                 .await
                 .if_request({
                     let context = Arc::clone(&context);
+                    let new_session_cx = cx.clone();
                     |request: NewSessionRequest, responder: Responder<NewSessionResponse>| async move {
                         let task_context = Arc::clone(&context);
                         let mut tasks = context.background_tasks.lock().await;
@@ -132,7 +133,9 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                         }
                         tasks.spawn(async move {
                             let _ = responder.respond_with_result(
-                                task_context.new_session(request, caller_fields).await,
+                                task_context
+                                    .new_session(&new_session_cx, request, caller_fields)
+                                    .await,
                             );
                         });
                         Ok(())

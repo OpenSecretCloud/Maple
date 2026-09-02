@@ -961,6 +961,23 @@ impl MapleAgentService {
 }
 
 impl AgentRuntimeHandle {
+    /// Slash commands available in `working_dir` (installed skills).
+    pub fn slash_commands(&self, working_dir: Option<&str>) -> Vec<AgentSlashCommand> {
+        self.service.list_slash_commands(working_dir)
+    }
+
+    /// Expand `/command args` from the installed skills into the prompt that
+    /// activates the skill. `None` when no skill matches the command.
+    pub fn expand_slash_command(
+        &self,
+        working_dir: Option<&str>,
+        command: &str,
+        args: &str,
+    ) -> Result<Option<String>, String> {
+        self.service
+            .resolve_slash_command(working_dir, command, args)
+    }
+
     /// Compact a session's history now (manual /compact). The runtime's
     /// compaction summarizes the conversation and replaces its history;
     /// callers should reload the session afterwards.

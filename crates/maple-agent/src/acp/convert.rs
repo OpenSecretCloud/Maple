@@ -6,16 +6,16 @@ use super::session::AcpSessionMode;
 use super::transport::AcpOutboundSendError;
 use crate::agent::{
     AgentImageUpload, AgentPermissionDecision, AgentPermissionRequest, AgentRunTerminal,
-    AgentRunUsage, AgentTimelineItem, compaction_notice_text,
+    AgentRunUsage, AgentSlashCommand, AgentTimelineItem, compaction_notice_text,
 };
 use agent_client_protocol::schema::v1::{
-    BooleanPropertySchema, ContentBlock, ContentChunk, CreateElicitationRequest, Diff,
-    ElicitationFormMode, ElicitationSchema, ElicitationSessionScope, InitializeRequest,
-    PermissionOption, PermissionOptionKind, PromptResponse, RequestPermissionOutcome,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption, SessionId,
-    SessionMode, SessionModeState, SessionUpdate, StopReason, TextContent, ToolCall,
-    ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
-    ToolKind, Usage,
+    AvailableCommand, AvailableCommandsUpdate, BooleanPropertySchema, ContentBlock, ContentChunk,
+    CreateElicitationRequest, Diff, ElicitationFormMode, ElicitationSchema,
+    ElicitationSessionScope, InitializeRequest, PermissionOption, PermissionOptionKind,
+    PromptResponse, RequestPermissionOutcome, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionId, SessionMode, SessionModeState, SessionUpdate, StopReason,
+    TextContent, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind, Usage,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -78,6 +78,36 @@ pub(super) fn acp_session_config_options(
         let locked_models = [model.to_string()];
         acp_config_options(model, &locked_models, current_mode)
     }
+}
+
+/// Parse a whole message shaped like a slash command. Mirrors the desktop
+/// composer: one leading `/`, a name without further slashes, optional args.
+pub(super) fn parse_slash_command(text: &str) -> Option<(String, String)> {
+    let body = text.trim().strip_prefix('/')?;
+    let (name, args) = match body.split_once(char::is_whitespace) {
+        Some((name, args)) => (name, args.trim()),
+        None => (body, ""),
+    };
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some((name.to_string(), args.to_string()))
+}
+
+/// The commands an ACP session offers its caller: the agent-side built-ins
+/// plus the skills installed for the session's working directory.
+pub(super) fn acp_available_commands(skills: &[AgentSlashCommand]) -> SessionUpdate {
+    let mut commands = Vec::with_capacity(skills.len() + 1);
+    commands.push(AvailableCommand::new(
+        "compact",
+        "Summarize the conversation to free context",
+    ));
+    commands.extend(
+        skills
+            .iter()
+            .map(|skill| AvailableCommand::new(skill.name.clone(), skill.description.clone())),
+    );
+    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(commands))
 }
 
 pub(super) fn acp_usage(usage: AgentRunUsage) -> Usage {

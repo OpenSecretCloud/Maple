@@ -12,10 +12,10 @@ mod transport;
 pub use config::{AgentAcpConfig, AgentAcpPermissionMode, load_acp_config};
 use config::{AgentAcpStats, normalize_config};
 use convert::{
-    AcpToolProjection, COMPACTION_COMPLETED_NOTICE, MAX_ACP_ERROR_CHARS, acp_config_options,
-    acp_permission_decision, acp_permission_options, acp_permission_tool_call,
+    AcpToolProjection, COMPACTION_COMPLETED_NOTICE, MAX_ACP_ERROR_CHARS, acp_available_commands,
+    acp_config_options, acp_permission_decision, acp_permission_options, acp_permission_tool_call,
     acp_session_config_options, acp_session_modes, acp_usage, bounded_chars, event_error_text,
-    internal_acp_error, outbound_error, project_trust_elicitation_request,
+    internal_acp_error, outbound_error, parse_slash_command, project_trust_elicitation_request,
     project_trust_permission_decision, project_trust_permission_options, prompt_images,
     prompt_result_from_terminal, prompt_text, subagent_tool_update, timeline_update,
 };
@@ -155,6 +155,7 @@ impl AcpConnectionContext {
 
     async fn new_session(
         &self,
+        cx: &ConnectionTo<Client>,
         request: NewSessionRequest,
         caller: AcpCallerSessionFields,
     ) -> Result<NewSessionResponse, agent_client_protocol::Error> {
@@ -170,6 +171,7 @@ impl AcpConnectionContext {
         let config = self.config.read().await.clone();
         let project_root = ensure_allowed_project_root(&request.cwd, &config.allowed_project_roots)
             .map_err(|error| agent_client_protocol::Error::invalid_params().data(error))?;
+        let command_root = project_root.clone();
         let project_trust = self
             .agent
             .get_project_trust(project_root.to_string_lossy().into_owned())
@@ -263,6 +265,8 @@ impl AcpConnectionContext {
                 .fetch_add(1, Ordering::SeqCst);
         }
         drop(finalization);
+        self.send_available_commands(cx, &session_id, &command_root)
+            .await;
         Ok(NewSessionResponse::new(session_id)
             .modes(acp_session_modes(AcpSessionMode::default()))
             .config_options(acp_config_options(
@@ -493,6 +497,7 @@ impl AcpConnectionContext {
             return Err(agent_client_protocol::Error::internal_error()
                 .data("The Maple ACP session closed while it was loading"));
         }
+        let command_root = project_root.clone();
         let mut sessions = self.sessions.lock().await;
         if sessions.contains_key(&session_id) {
             drop(sessions);
@@ -538,6 +543,8 @@ impl AcpConnectionContext {
             }
         }
         drop(operation_guard);
+        self.send_available_commands(cx, &session_id, &command_root)
+            .await;
         Ok(LoadSessionResponse::new()
             .modes(acp_session_modes(session_mode))
             .config_options(acp_session_config_options(
@@ -918,6 +925,64 @@ impl AcpConnectionContext {
         self.outbound.enqueue(cx, notification, reservation)
     }
 
+    /// Run the `/compact` built-in: summarize the history, tell the caller,
+    /// and end the turn. No model turn runs, so only the prompt state that
+    /// `begin_prompt` registered has to be settled.
+    async fn run_compact_command(
+        &self,
+        cx: &ConnectionTo<Client>,
+        protocol_session_id: &SessionId,
+        session_id: &str,
+    ) -> Result<PromptResponse, agent_client_protocol::Error> {
+        self.prompt_states.lock().await.remove(session_id);
+        let compacted = self.agent.compact_session(session_id.to_string()).await;
+        match compacted {
+            Ok(()) => {
+                match self
+                    .send_final_agent_message(
+                        cx,
+                        protocol_session_id.clone(),
+                        COMPACTION_COMPLETED_NOTICE,
+                        &self.lifetime,
+                    )
+                    .await
+                {
+                    // The compaction itself succeeded; a failed notice must
+                    // not turn the command into an error for the caller.
+                    Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {}
+                    Err(AcpOutboundSendError::Cancelled) => {
+                        return Ok(PromptResponse::new(StopReason::Cancelled));
+                    }
+                    Err(AcpOutboundSendError::Transport(error)) => return Err(error),
+                }
+                Ok(PromptResponse::new(StopReason::EndTurn))
+            }
+            Err(error) => Err(internal_acp_error(error)),
+        }
+    }
+
+    /// Tell the caller which slash commands this session offers: the
+    /// agent-side built-ins plus the skills installed for its root.
+    /// Best effort: a failed advertisement never fails the session.
+    async fn send_available_commands(
+        &self,
+        cx: &ConnectionTo<Client>,
+        session_id: &str,
+        root: &Path,
+    ) {
+        let skills = self.agent.slash_commands(Some(&root.to_string_lossy()));
+        let notification = SessionNotification::new(
+            SessionId::new(session_id.to_string()),
+            acp_available_commands(&skills),
+        );
+        if let Err(error) = self
+            .send_session_update(cx, notification, &self.lifetime)
+            .await
+        {
+            log::warn!("Failed to send Maple ACP available commands: {error:?}");
+        }
+    }
+
     async fn send_final_agent_message(
         &self,
         cx: &ConnectionTo<Client>,
@@ -1248,7 +1313,7 @@ impl AcpConnectionContext {
                 return Err(error);
             }
         }
-        let (tool_context_access, model, session_mode) = {
+        let (tool_context_access, model, session_mode, project_root) = {
             let sessions = self.sessions.lock().await;
             match sessions.get(&session_id) {
                 Some(session) => (
@@ -1259,6 +1324,7 @@ impl AcpConnectionContext {
                         .access(),
                     session.model.clone(),
                     session.mode,
+                    session.project_root.clone(),
                 ),
                 None => {
                     drop(sessions);
@@ -1270,6 +1336,22 @@ impl AcpConnectionContext {
                 }
             }
         };
+        let mut prompt = prompt;
+        if let Some((name, args)) = parse_slash_command(&prompt) {
+            if name == "compact" {
+                return self
+                    .run_compact_command(cx, &protocol_session_id, &session_id)
+                    .await;
+            }
+            // A matching skill expands into its activation prompt; anything
+            // else falls through to the model as plain text, like desktop.
+            if let Ok(Some(expanded)) =
+                self.agent
+                    .expand_slash_command(Some(&project_root.to_string_lossy()), &name, &args)
+            {
+                prompt = expanded;
+            }
+        }
         let run = match self
             .agent
             .send_message_with_tool_context(
@@ -2389,6 +2471,38 @@ mod tests {
             encoded["content"][0]["content"]["text"],
             "Terminal: cargo test"
         );
+    }
+
+    #[test]
+    fn slash_commands_parse_like_the_desktop_composer() {
+        assert_eq!(
+            parse_slash_command("/compact"),
+            Some(("compact".to_string(), "".to_string()))
+        );
+        assert_eq!(
+            parse_slash_command("  /skill-name some args  "),
+            Some(("skill-name".to_string(), "some args".to_string()))
+        );
+        assert_eq!(parse_slash_command("plain text"), None);
+        assert_eq!(parse_slash_command("/"), None);
+        assert_eq!(parse_slash_command("/a/b nested"), None);
+        assert_eq!(parse_slash_command("not/leading"), None);
+    }
+
+    #[test]
+    fn available_commands_lead_with_the_built_ins_plus_skills() {
+        let encoded =
+            serde_json::to_value(acp_available_commands(&[crate::agent::AgentSlashCommand {
+                name: "buzz-worklog".to_string(),
+                description: "Publish a coding update".to_string(),
+                input_hint: None,
+            }]))
+            .unwrap();
+        assert_eq!(encoded["sessionUpdate"], "available_commands_update");
+        let commands = encoded["availableCommands"].as_array().unwrap();
+        assert_eq!(commands[0]["name"], "compact");
+        assert_eq!(commands[1]["name"], "buzz-worklog");
+        assert_eq!(commands[1]["description"], "Publish a coding update");
     }
 
     #[test]
