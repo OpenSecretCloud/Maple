@@ -123,9 +123,9 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   - load_skill
   - todo_write
   - request_user_input
-  - delegate
   - load
   ask_before:
+  - delegate
   - read
   - shell
   - edit
@@ -483,11 +483,11 @@ fn matching_leased_tool_context(
 }
 
 fn ensure_external_surface_loadable_session(session: &Session) -> Result<(), String> {
-    if session.goose_mode == GooseMode::SmartApprove {
+    if is_caller_mediated_mode(session.goose_mode) || session.goose_mode == GooseMode::Auto {
         Ok(())
     } else {
         Err(
-            "Maple ACP can load only Read only tasks; this task's saved approval mode was left unchanged"
+            "Maple ACP can load only Read only and Approve all tasks; this task's saved approval mode was left unchanged"
                 .to_string(),
         )
     }
@@ -2701,10 +2701,9 @@ impl AgentRuntimeHandle {
             .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
         let mode = request.mode.unwrap_or(runtime_mode);
         let permission_mode = parse_user_permission_mode(&mode)?;
-        if has_external_tool_context && permission_mode != GooseMode::SmartApprove {
+        if has_external_tool_context && !is_caller_mediated_mode(permission_mode) {
             return Err(
-                "External Agent surfaces require Maple's caller-mediated Read only mode"
-                    .to_string(),
+                "External Agent surfaces support only caller-mediated permission modes".to_string(),
             );
         }
         let model = request.model.unwrap_or(runtime_model);
@@ -4496,12 +4495,15 @@ impl AgentRuntimeHandle {
             )
         };
         let requested_permission_mode = parse_user_permission_mode(&mode)?;
+        // A calling surface may run its tasks in Maple's Auto policy (an ACP
+        // "Approve all" mode). Every other mode stays caller-mediated: the
+        // surface, not Maple, owns each unresolved interactive decision.
         if permission_routing == AgentPermissionRouting::CallingSurface
-            && requested_permission_mode != GooseMode::SmartApprove
+            && !is_caller_mediated_mode(requested_permission_mode)
+            && requested_permission_mode != GooseMode::Auto
         {
             return Err(
-                "External Agent surfaces require Maple's caller-mediated Read only mode"
-                    .to_string(),
+                "External Agent surfaces support only caller-mediated permission modes".to_string(),
             );
         }
 
@@ -4526,14 +4528,27 @@ impl AgentRuntimeHandle {
 
         // A rejected or delayed send must not be able to change a live policy that
         // the mode command already made authoritative. Seed only sessions that do
-        // not yet have runtime policy state, after Goose grants this run its claim.
-        let (permission_mode, seeded_permission_mode) = {
+        // not yet have runtime policy state, after Goose grants this run its
+        // claim. A calling surface is itself authoritative: every prompt carries
+        // its current mode, so a mode switch applies on the next turn. On failure
+        // the previous entry is restored rather than cleared.
+        let (permission_mode, mode_rollback) = {
             let mut modes = permission_modes.lock().await;
-            select_session_permission_mode(
-                &mut modes,
-                &request.session_id,
-                requested_permission_mode,
-            )
+            if permission_routing == AgentPermissionRouting::CallingSurface {
+                (
+                    requested_permission_mode,
+                    ModeRollback::Restore(
+                        request.session_id.clone(),
+                        modes.insert(request.session_id.clone(), requested_permission_mode),
+                    ),
+                )
+            } else {
+                select_session_permission_mode(
+                    &mut modes,
+                    &request.session_id,
+                    requested_permission_mode,
+                )
+            }
         };
         let effective_mode = permission_mode.to_string();
 
@@ -4704,9 +4719,7 @@ impl AgentRuntimeHandle {
                             Err(restore_error) => log::warn!("{restore_error}"),
                         }
                     }
-                    if seeded_permission_mode {
-                        permission_modes.lock().await.remove(&request.session_id);
-                    }
+                    mode_rollback.undo(&permission_modes).await;
                     agent_manager
                         .unregister_cancel_token(&request.session_id)
                         .await;
@@ -4738,9 +4751,7 @@ impl AgentRuntimeHandle {
                     Err(error) => log::warn!("{error}"),
                 }
             }
-            if seeded_permission_mode {
-                permission_modes.lock().await.remove(&request.session_id);
-            }
+            mode_rollback.undo(&permission_modes).await;
             agent_manager
                 .unregister_cancel_token(&request.session_id)
                 .await;
@@ -5206,9 +5217,7 @@ impl AgentRuntimeHandle {
             }
             // Mirror the setup-error path: a mode this send seeded must not
             // outlive the run that never started.
-            if seeded_permission_mode {
-                permission_modes.lock().await.remove(&request.session_id);
-            }
+            mode_rollback.undo(&permission_modes).await;
             agent_manager
                 .unregister_cancel_token(&request.session_id)
                 .await;
@@ -6021,16 +6030,45 @@ async fn selected_permission_mode(
         .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModeRollback {
+    None,
+    Remove(String),
+    Restore(String, Option<GooseMode>),
+}
+
+impl ModeRollback {
+    async fn undo(self, permission_modes: &SessionPermissionModes) {
+        match self {
+            Self::None => {}
+            Self::Remove(session_id) => {
+                permission_modes.lock().await.remove(&session_id);
+            }
+            Self::Restore(session_id, previous) => {
+                let mut modes = permission_modes.lock().await;
+                match previous {
+                    Some(mode) => {
+                        modes.insert(session_id, mode);
+                    }
+                    None => {
+                        modes.remove(&session_id);
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn select_session_permission_mode(
     permission_modes: &mut HashMap<String, GooseMode>,
     session_id: &str,
     requested_mode: GooseMode,
-) -> (GooseMode, bool) {
+) -> (GooseMode, ModeRollback) {
     if let Some(mode) = permission_modes.get(session_id).copied() {
-        (mode, false)
+        (mode, ModeRollback::None)
     } else {
         permission_modes.insert(session_id.to_string(), requested_mode);
-        (requested_mode, true)
+        (requested_mode, ModeRollback::Remove(session_id.to_string()))
     }
 }
 
@@ -7364,9 +7402,9 @@ fn maple_skills_extension_config() -> ExtensionConfig {
 /// because subagent `ActionRequired` messages are not forwarded to the
 /// parent). So a subagent runs every tool without approval, even when
 /// the task is in Read only mode. Fixing this needs the aaif-goose fork
-/// to forward subagent approvals; until then, moving `delegate` into
-/// `ask_before` in `MAPLE_GOOSE_PERMISSION_CONFIG` would at least make
-/// Read only mode prompt before each hand-off.
+/// to forward subagent approvals; until then `delegate` sits in
+/// `ask_before` in `MAPLE_GOOSE_PERMISSION_CONFIG`, so Read only mode
+/// prompts before each hand-off.
 fn maple_subagent_extension_config() -> ExtensionConfig {
     ExtensionConfig::Platform {
         name: SUMMON_EXTENSION_NAME.to_string(),
@@ -8018,9 +8056,18 @@ fn parse_goose_mode(mode: &str) -> GooseMode {
     GooseMode::from_str(mode).unwrap_or(GooseMode::SmartApprove)
 }
 
+/// A permission mode whose unresolved interactive decisions belong to the
+/// calling surface rather than Maple. `Approve` asks before every tool
+/// call; legacy sessions persisted under `smart_approve` keep the same
+/// caller-mediated policy.
+fn is_caller_mediated_mode(mode: GooseMode) -> bool {
+    matches!(mode, GooseMode::Approve | GooseMode::SmartApprove)
+}
+
 fn parse_user_permission_mode(mode: &str) -> Result<GooseMode, String> {
     match mode {
         "auto" => Ok(GooseMode::Auto),
+        "approve" => Ok(GooseMode::Approve),
         "smart_approve" => Ok(GooseMode::SmartApprove),
         _ => Err(format!("Unsupported Agent permission mode: {mode}")),
     }
@@ -9525,6 +9572,90 @@ fn unix_ms() -> u128 {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+/// Cross-module integration-test fixtures. `mod tests` keeps its own local
+/// fixtures for unit scope; adapters that live outside this module (for
+/// example the ACP stdio-surface tests) start their runtime here so the
+/// hermetic wiring exists in exactly one place.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub(crate) struct NoopEventSink;
+    impl AgentEventSink for NoopEventSink {
+        fn emit(&self, _event: &AgentServiceEvent) {}
+    }
+
+    /// A started hermetic Agent runtime plus the handle a long-lived
+    /// adapter (ACP, proxy) would retain. The Maple API session points at
+    /// an unreachable endpoint, so model-catalog requests fail and fall
+    /// back to the configured default model.
+    pub(crate) struct StartedTestAgent {
+        pub(crate) handle: AgentRuntimeHandle,
+        pub(crate) project_root: PathBuf,
+        #[allow(dead_code)]
+        pub(crate) root: PathBuf,
+    }
+
+    pub(crate) async fn started_agent_runtime(label: &str) -> StartedTestAgent {
+        let root = std::env::temp_dir().join(format!(
+            "maple-agent-test-support-{label}-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let paths =
+            AgentPathLayout::from_app_roots(root.join("app-config"), root.join("app-local-data"));
+        let service = MapleAgentService::new(MapleAgentHostResources::new(
+            paths,
+            Arc::new(NoopEventSink),
+            AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
+        ));
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).expect("project directory should be created");
+        let session_manager = Arc::new(SessionManager::new(root.join("sessions")));
+        let permission_manager = Arc::new(PermissionManager::new(root.join("permissions")));
+        let goose_config = GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            permission_manager,
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        );
+        let agent_manager = Arc::new(
+            AgentManager::new(goose_config, None)
+                .await
+                .expect("test Agent manager should start"),
+        );
+        let user_id = format!("{label}-user");
+        let runtime = AgentRuntime {
+            agent_manager,
+            session_manager,
+            maple_api_session: crate::maple_api::test_maple_api_session(&user_id),
+            active_runs: HashMap::new(),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            web_tool_state: Arc::new(WebToolState::default()),
+            project_root: project_root.clone(),
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            mode: DEFAULT_GOOSE_MODE.to_string(),
+            account_scope: account_scope(&user_id).expect("test user id should scope"),
+            lifetime: CancellationToken::new(),
+        };
+        *service.inner.lock().await = Some(runtime);
+        let handle = service
+            .handle_for_user(&user_id)
+            .await
+            .expect("test handle should bind to the started runtime");
+        StartedTestAgent {
+            handle,
+            project_root,
+            root,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -11848,6 +11979,7 @@ mod tests {
                     ..Session::default()
                 })),
                 use_login_shell_path: false,
+                tool_confirmation_router: None,
             })
             .unwrap()
         };
@@ -12857,6 +12989,22 @@ mod tests {
         assert!(error.contains("Start a new task"));
     }
 
+    #[test]
+    fn external_surfaces_admit_caller_mediated_and_auto_modes_only() {
+        // The stdio-surface test pins the same policy end to end; this is
+        // the direct pin so a predicate edit cannot drift silently.
+        assert!(is_caller_mediated_mode(
+            parse_user_permission_mode("smart_approve").unwrap()
+        ));
+        assert!(is_caller_mediated_mode(
+            parse_user_permission_mode("approve").unwrap()
+        ));
+        assert!(!is_caller_mediated_mode(
+            parse_user_permission_mode("auto").unwrap()
+        ));
+        assert!(parse_user_permission_mode("chat").is_err());
+    }
+
     #[tokio::test]
     async fn permission_policy_is_session_scoped_and_mutable_mid_run() {
         assert_eq!(
@@ -12864,7 +13012,7 @@ mod tests {
             Ok(GooseMode::SmartApprove)
         );
         assert_eq!(parse_user_permission_mode("auto"), Ok(GooseMode::Auto));
-        assert!(parse_user_permission_mode("approve").is_err());
+        assert!(parse_user_permission_mode("approve") == Ok(GooseMode::Approve));
 
         let modes = SessionPermissionModes::default();
         assert_eq!(
@@ -12887,12 +13035,15 @@ mod tests {
         let mut claimed = HashMap::from([("session-1".to_string(), GooseMode::SmartApprove)]);
         assert_eq!(
             select_session_permission_mode(&mut claimed, "session-1", GooseMode::Auto),
-            (GooseMode::SmartApprove, false),
+            (GooseMode::SmartApprove, ModeRollback::None),
             "a delayed send must not overwrite a newer authoritative policy"
         );
         assert_eq!(
             select_session_permission_mode(&mut claimed, "session-2", GooseMode::Auto),
-            (GooseMode::Auto, true)
+            (
+                GooseMode::Auto,
+                ModeRollback::Remove("session-2".to_string())
+            )
         );
     }
 
@@ -13259,9 +13410,12 @@ mod tests {
         );
         let manager = PermissionManager::new(root.clone());
         for tool in MAPLE_DEVELOPER_TOOLS {
-            // todo_write only records plan state for the UI; it has no
-            // side effects and is always allowed.
-            let expected = if tool == "todo_write" || tool == "request_user_input" {
+            // todo_write only records plan state for the UI and
+            // request_user_input only opens a prompt; neither has side
+            // effects and both are always allowed. read stays in ask_before:
+            // under smart_approve Maple's read-only automation approves
+            // benign local reads and still prompts for secret paths.
+            let expected = if matches!(tool, "todo_write" | "request_user_input") {
                 goose::config::permission::PermissionLevel::AlwaysAllow
             } else {
                 goose::config::permission::PermissionLevel::AskBefore
@@ -13275,14 +13429,16 @@ mod tests {
         for tool in MAPLE_SUBAGENT_TOOLS {
             // KNOWN ISSUE: a subagent runs with every tool approved,
             // whatever the task's mode (see the note on
-            // maple_subagent_extension_config). Until that is fixed the
-            // hand-off itself runs without a prompt too. Read only mode
-            // therefore does not constrain subagents at all.
-            assert_eq!(
-                manager.get_user_permission(tool),
-                Some(goose::config::permission::PermissionLevel::AlwaysAllow),
-                "{tool} must run without a prompt"
-            );
+            // maple_subagent_extension_config). Until the fork forwards
+            // subagent approvals, the hand-off itself is the only approval
+            // boundary: `delegate` prompts before the subagent runs, while
+            // `load` only collects a finished result.
+            let expected = if tool == "delegate" {
+                goose::config::permission::PermissionLevel::AskBefore
+            } else {
+                goose::config::permission::PermissionLevel::AlwaysAllow
+            };
+            assert_eq!(manager.get_user_permission(tool), Some(expected));
         }
         let _ = fs::remove_dir_all(root);
     }
@@ -18503,6 +18659,43 @@ mod tests {
         let merged = coalesce_timeline_items(vec![request, response]);
         assert_eq!(merged[0].title.as_deref(), Some("shell"));
         assert_eq!(merged[0].status.as_deref(), Some("failed"));
+    }
+    #[test]
+    fn action_required_permission_cards_carry_descriptive_titles() {
+        let edit_arguments: JsonObject = serde_json::from_value(serde_json::json!({
+            "path": "/tmp/notes.md",
+            "edits": [{ "oldText": "foo", "newText": "bar" }]
+        }))
+        .unwrap();
+        let edit =
+            MessageContent::action_required("request-1", "edit".to_string(), edit_arguments, None);
+        let MessageContent::ActionRequired(action) = edit else {
+            unreachable!("action_required builds an ActionRequired message");
+        };
+        let item = super::timeline::action_required_item(&action, 1)
+            .expect("a tool confirmation becomes a permission card");
+        assert_eq!(
+            item.title.as_deref(),
+            Some("edit: /tmp/notes.md"),
+            "the card must say what is being edited"
+        );
+        assert_eq!(item.status.as_deref(), Some("pending"));
+        assert_eq!(item.item_type, "permission");
+
+        let shell_arguments: JsonObject =
+            serde_json::from_value(serde_json::json!({ "command": "ls -la" })).unwrap();
+        let bare = MessageContent::action_required(
+            "request-2",
+            "developer__shell".to_string(),
+            shell_arguments,
+            None,
+        );
+        let MessageContent::ActionRequired(action) = bare else {
+            unreachable!();
+        };
+        let item = super::timeline::action_required_item(&action, 2)
+            .expect("a tool confirmation becomes a permission card");
+        assert_eq!(item.title.as_deref(), Some("Terminal: ls -la"));
     }
 
     #[test]

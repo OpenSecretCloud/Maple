@@ -2,6 +2,7 @@
 //! modes and config options, permission requests and decisions, and timeline
 //! items rendered as session updates.
 
+use super::session::AcpSessionMode;
 use super::transport::AcpOutboundSendError;
 use crate::agent::{
     AgentPermissionDecision, AgentPermissionRequest, AgentRunTerminal, AgentRunUsage,
@@ -20,18 +21,22 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub(super) const MAX_ACP_ERROR_CHARS: usize = 500;
+/// Cap for the argument preview attached to an ACP permission request.
+const MAX_ACP_PERMISSION_PREVIEW_CHARS: usize = 500;
 pub(super) const MAX_ACP_TOOL_TEXT_CHARS: usize = 16_000;
 #[derive(Default)]
 pub(super) struct AcpToolProjection {
     seen: HashSet<String>,
 }
 
-pub(super) fn acp_session_modes() -> SessionModeState {
+pub(super) fn acp_session_modes(current: AcpSessionMode) -> SessionModeState {
     SessionModeState::new(
-        "interactive",
+        current.id(),
         vec![
             SessionMode::new("interactive", "Interactive")
-                .description("Maple asks the ACP caller to approve sensitive tools"),
+                .description("Maple asks the ACP caller to approve sensitive tool calls"),
+            SessionMode::new("approve_all", "Approve all")
+                .description("Automatically approve every tool call without asking"),
         ],
     )
 }
@@ -39,6 +44,7 @@ pub(super) fn acp_session_modes() -> SessionModeState {
 pub(super) fn acp_config_options(
     model: &str,
     available_models: &[String],
+    current_mode: AcpSessionMode,
 ) -> Vec<SessionConfigOption> {
     let model_options = available_models
         .iter()
@@ -50,8 +56,11 @@ pub(super) fn acp_config_options(
         SessionConfigOption::select(
             "mode",
             "Mode",
-            "interactive",
-            vec![SessionConfigSelectOption::new("interactive", "Interactive")],
+            current_mode.id(),
+            vec![
+                SessionConfigSelectOption::new("interactive", "Interactive"),
+                SessionConfigSelectOption::new("approve_all", "Approve all"),
+            ],
         )
         .category(SessionConfigOptionCategory::Mode),
     ]
@@ -61,12 +70,13 @@ pub(super) fn acp_session_config_options(
     model: &str,
     available_models: &[String],
     message_count: usize,
+    current_mode: AcpSessionMode,
 ) -> Vec<SessionConfigOption> {
     if message_count == 0 {
-        acp_config_options(model, available_models)
+        acp_config_options(model, available_models, current_mode)
     } else {
         let locked_models = [model.to_string()];
-        acp_config_options(model, &locked_models)
+        acp_config_options(model, &locked_models, current_mode)
     }
 }
 
@@ -120,12 +130,35 @@ pub(super) fn acp_permission_tool_call(
         .kind(acp_tool_kind(&request.tool_name))
         .status(ToolCallStatus::Pending)
         .raw_input(serde_json::Value::Object(request.arguments.clone()));
-    if let Some(prompt) = request.prompt.as_ref().filter(|prompt| !prompt.is_empty()) {
+    let preview = request
+        .prompt
+        .as_ref()
+        .map(|prompt| prompt.as_str())
+        .filter(|prompt| !prompt.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| bounded_permission_arguments(request));
+    if !preview.is_empty() {
         tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
-            TextContent::new(prompt.clone()),
+            TextContent::new(preview),
         ))]);
     }
     tool_call
+}
+
+/// A bounded, human-readable view of a tool call's arguments. ACP clients
+/// render an approval card from `content`; without it a card such as edit
+/// shows a bare title even though `rawInput` carries the change.
+fn bounded_permission_arguments(request: &AgentPermissionRequest) -> String {
+    let compact = serde_json::Value::Object(request.arguments.clone()).to_string();
+    if compact == "{}" {
+        return String::new();
+    }
+    let bounded = bounded_chars(&compact, MAX_ACP_PERMISSION_PREVIEW_CHARS);
+    if bounded.chars().count() < compact.chars().count() {
+        format!("{bounded}…")
+    } else {
+        bounded
+    }
 }
 
 pub(super) fn acp_tool_kind(tool_name: &str) -> ToolKind {

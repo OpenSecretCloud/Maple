@@ -24,7 +24,11 @@ use tokio_util::sync::CancellationToken;
 use std::os::unix::fs::PermissionsExt as _;
 
 pub(super) const ACP_TRANSIENT_MCP_TIMEOUT_SECONDS: u64 = 30;
+/// Persisted Goose mode for caller-mediated interactive ACP tasks: Maple's
+/// smart approvals, where only sensitive tool calls ask the caller.
 pub(super) const ACP_LOADABLE_GOOSE_MODE: &str = "smart_approve";
+/// Persisted Goose mode for a task whose every tool call is auto-approved.
+pub(super) const ACP_LOADABLE_GOOSE_AUTO_MODE: &str = "auto";
 pub(super) const ALLOWED_BRIDGE_ENV: [&str; 6] = [
     "BUZZ_RELAY_URL",
     "BUZZ_PRIVATE_KEY",
@@ -57,6 +61,39 @@ pub(super) struct AcpConnectionContext {
     pub(super) outbound: Arc<AcpOutboundTracker>,
 }
 
+/// The caller-selected approval policy of one ACP session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum AcpSessionMode {
+    #[default]
+    Interactive,
+    ApproveAll,
+}
+
+impl AcpSessionMode {
+    pub(super) fn parse(id: &str) -> Option<Self> {
+        match id {
+            "interactive" => Some(Self::Interactive),
+            "approve_all" => Some(Self::ApproveAll),
+            _ => None,
+        }
+    }
+
+    pub(super) fn id(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive",
+            Self::ApproveAll => "approve_all",
+        }
+    }
+
+    /// The Maple runtime permission mode this ACP mode maps onto.
+    pub(super) fn maple_mode(self) -> &'static str {
+        match self {
+            Self::Interactive => ACP_LOADABLE_GOOSE_MODE,
+            Self::ApproveAll => ACP_LOADABLE_GOOSE_AUTO_MODE,
+        }
+    }
+}
+
 pub(super) struct AcpSession {
     pub(super) lease: Option<AgentToolContextLease>,
     pub(super) model: String,
@@ -66,6 +103,7 @@ pub(super) struct AcpSession {
     pub(super) prompted: bool,
     pub(super) project_root: PathBuf,
     pub(super) project_trust_decision: Option<bool>,
+    pub(super) mode: AcpSessionMode,
 }
 
 pub(super) struct UnpublishedAcpSession {
@@ -135,7 +173,12 @@ impl AcpSessionOperation {
 
 impl AcpSession {
     pub(super) fn config_options(&self) -> Vec<SessionConfigOption> {
-        acp_session_config_options(&self.model, &self.available_models, self.message_count)
+        acp_session_config_options(
+            &self.model,
+            &self.available_models,
+            self.message_count,
+            self.mode,
+        )
     }
 }
 
@@ -339,6 +382,10 @@ pub(super) fn canonical_session_id_text(
 
 pub(super) fn is_acp_loadable_session_mode(mode: &str) -> bool {
     mode == ACP_LOADABLE_GOOSE_MODE
+        // Tasks persisted while ACP briefly mapped Interactive onto Goose's
+        // ask-every-time Approve mode stay loadable and re-map to Interactive.
+        || mode == "approve"
+        || mode == ACP_LOADABLE_GOOSE_AUTO_MODE
 }
 
 pub(super) fn ensure_acp_session_is_loadable<'a>(
@@ -354,7 +401,7 @@ pub(super) fn ensure_acp_session_is_loadable<'a>(
         })?;
     if !is_acp_loadable_session_mode(&session.mode) {
         return Err(
-            "Maple ACP can load only Read only Agent tasks; this task remains available in Maple Desktop"
+            "Maple ACP can load only Read only and Approve all Agent tasks; this task remains available in Maple Desktop"
                 .to_string(),
         );
     }

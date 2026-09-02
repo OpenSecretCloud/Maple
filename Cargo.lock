@@ -3439,7 +3439,7 @@ dependencies = [
 [[package]]
 name = "goose"
 version = "1.47.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-http",
@@ -3535,7 +3535,7 @@ dependencies = [
 [[package]]
 name = "goose-acp-macros"
 version = "1.47.0"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -3544,7 +3544,7 @@ dependencies = [
 [[package]]
 name = "goose-agent"
 version = "0.1.0-alpha.6"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3559,7 +3559,7 @@ dependencies = [
 [[package]]
 name = "goose-context-management"
 version = "0.1.0-alpha.6"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3575,7 +3575,7 @@ dependencies = [
 [[package]]
 name = "goose-download-manager"
 version = "0.1.0-alpha.6"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -3588,7 +3588,7 @@ dependencies = [
 [[package]]
 name = "goose-provider-types"
 version = "0.1.0-alpha.6"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3614,7 +3614,7 @@ dependencies = [
 [[package]]
 name = "goose-providers"
 version = "0.1.0-alpha.6"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3638,7 +3638,7 @@ dependencies = [
 [[package]]
 name = "goose-sdk-types"
 version = "0.1.0-alpha.6"
-source = "git+https://github.com/aaif-goose/goose.git?rev=f9c7aaccde4834810dfd13d5efa8f0d39ba28a20#f9c7aaccde4834810dfd13d5efa8f0d39ba28a20"
+source = "git+https://github.com/benthecarman/goose.git?rev=3f7cc605aa2ce9620daace75b5f5e58ce57eef3d#3f7cc605aa2ce9620daace75b5f5e58ce57eef3d"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",

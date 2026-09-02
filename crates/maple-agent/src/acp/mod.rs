@@ -22,7 +22,7 @@ use convert::{
 use handler::{AcpCallerSessionFields, MapleAcpHandler};
 use session::{
     ALLOWED_BRIDGE_ENV, AcpConnectionContext, AcpPermissionResolution, AcpProjectTrustResolution,
-    AcpPromptState, AcpSession, AcpSessionOperation, UnpublishedAcpSession,
+    AcpPromptState, AcpSession, AcpSessionMode, AcpSessionOperation, UnpublishedAcpSession,
     bridge_tool_context_spec, canonical_session_id, canonical_session_id_text,
     close_registration_may_be_released, ensure_acp_session_is_loadable,
     ensure_allowed_project_root, filter_bridge_environment, has_buzz_credentials,
@@ -174,7 +174,7 @@ impl AcpConnectionContext {
         let (environment, transient_mcp_servers) =
             prepare_session_mcp(&bridge_environment, &request.mcp_servers)?;
         let tool_context = bridge_tool_context_spec(&environment).map_err(internal_acp_error)?;
-        let mode = config.permission_mode.maple_mode().to_string();
+        let mode = AcpSessionMode::default();
         let created = self
             .agent
             .create_session_with_surface_context(
@@ -187,7 +187,7 @@ impl AcpConnectionContext {
                     ),
                     model: Some(model.clone()),
                     context_limit: None,
-                    mode: Some(mode),
+                    mode: Some(mode.maple_mode().to_string()),
                     mcp_server_names: None,
                     system_prompt: caller.system_prompt,
                 }),
@@ -237,6 +237,7 @@ impl AcpConnectionContext {
                 prompted: false,
                 project_root: project_root.clone(),
                 project_trust_decision: project_trust.decision,
+                mode,
             },
         );
         operations.insert(session_id.clone(), AcpSessionOperation::new(&self.lifetime));
@@ -251,8 +252,12 @@ impl AcpConnectionContext {
         }
         drop(finalization);
         Ok(NewSessionResponse::new(session_id)
-            .modes(acp_session_modes())
-            .config_options(acp_config_options(&model, &available_models)))
+            .modes(acp_session_modes(AcpSessionMode::default()))
+            .config_options(acp_config_options(
+                &model,
+                &available_models,
+                AcpSessionMode::default(),
+            )))
     }
 
     async fn retire_session(&self, session_id: &str) {
@@ -328,6 +333,10 @@ impl AcpConnectionContext {
         let persisted = ensure_acp_session_is_loadable(&persisted_sessions, &session_id)
             .map_err(|error| agent_client_protocol::Error::invalid_request().data(error))?;
         let persisted_model = persisted.model.clone();
+        let session_mode = match persisted.mode.as_str() {
+            "auto" => AcpSessionMode::ApproveAll,
+            _ => AcpSessionMode::Interactive,
+        };
         let available_models = self.available_models().await?;
         if let Some(model) = persisted_model.as_ref()
             && !available_models.iter().any(|available| available == model)
@@ -434,6 +443,7 @@ impl AcpConnectionContext {
                 prompted: false,
                 project_root,
                 project_trust_decision: project_trust.decision,
+                mode: session_mode,
             },
         );
         drop(sessions);
@@ -457,11 +467,12 @@ impl AcpConnectionContext {
         }
         drop(operation_guard);
         Ok(LoadSessionResponse::new()
-            .modes(acp_session_modes())
+            .modes(acp_session_modes(session_mode))
             .config_options(acp_session_config_options(
                 &model,
                 &available_models,
                 message_count,
+                session_mode,
             )))
     }
 
@@ -676,10 +687,12 @@ impl AcpConnectionContext {
                 }
                 session.model = model.to_string();
             }
-            "mode" if selected_value.0.as_ref() == "interactive" => {}
             "mode" => {
-                return Err(agent_client_protocol::Error::invalid_params()
-                    .data("Maple ACP supports only caller-mediated interactive mode"));
+                let mode = AcpSessionMode::parse(selected_value.0.as_ref()).ok_or_else(|| {
+                    agent_client_protocol::Error::invalid_params()
+                        .data("Unknown Maple ACP permission mode")
+                })?;
+                session.mode = mode;
             }
             _ => {
                 return Err(agent_client_protocol::Error::invalid_params()
@@ -716,9 +729,14 @@ impl AcpConnectionContext {
                     .data("ACP session is not available on this connection"),
             );
         }
-        if request.mode_id.0.as_ref() != "interactive" {
+        if let Some(mode) = AcpSessionMode::parse(request.mode_id.0.as_ref()) {
+            let mut sessions = self.sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.mode = mode;
+            }
+        } else {
             return Err(agent_client_protocol::Error::invalid_params()
-                .data("Maple ACP supports only caller-mediated interactive mode"));
+                .data("Unknown Maple ACP permission mode"));
         }
         Ok(SetSessionModeResponse::new())
     }
@@ -1108,7 +1126,6 @@ impl AcpConnectionContext {
     ) -> Result<PromptResponse, agent_client_protocol::Error> {
         let mut operation_guard = Some(operation_guard);
         let protocol_session_id = SessionId::new(session_id.clone());
-        let config = self.config.read().await.clone();
         match self
             .resolve_project_trust_before_prompt(cx, &session_id, &prompt_lifetime)
             .await
@@ -1123,7 +1140,7 @@ impl AcpConnectionContext {
                 return Err(error);
             }
         }
-        let (tool_context_access, model) = {
+        let (tool_context_access, model, session_mode) = {
             let sessions = self.sessions.lock().await;
             match sessions.get(&session_id) {
                 Some(session) => (
@@ -1133,6 +1150,7 @@ impl AcpConnectionContext {
                         .expect("a runnable ACP session must own a lease")
                         .access(),
                     session.model.clone(),
+                    session.mode,
                 ),
                 None => {
                     drop(sessions);
@@ -1152,7 +1170,7 @@ impl AcpConnectionContext {
                     text: prompt,
                     model: Some(model),
                     context_limit: None,
-                    mode: Some(config.permission_mode.maple_mode().to_string()),
+                    mode: Some(session_mode.maple_mode().to_string()),
                     vision_capable: false,
                     steer: false,
                     queue_id: None,
@@ -1808,6 +1826,262 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
 
+    use crate::agent::test_support::started_agent_runtime;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    /// One ACP client speaking the same framed-line transport `serve_stdio`
+    /// runs, one layer below the process boundary: identical
+    /// `BoundedLineReader`/`LinesCodec`/`tracked_outgoing_lines` wiring on
+    /// in-memory duplex pipes instead of stdin/stdout.
+    struct StdioAcpClient {
+        write: tokio::io::DuplexStream,
+        read: BufReader<tokio::io::DuplexStream>,
+        next_id: u64,
+    }
+
+    impl StdioAcpClient {
+        async fn request(&mut self, method: &str, params: serde_json::Value) -> u64 {
+            let id = self.next_id;
+            self.next_id += 1;
+            let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+            self.write
+                .write_all(line.to_string().as_bytes())
+                .await
+                .unwrap();
+            self.write.write_all(b"\n").await.unwrap();
+            self.write.flush().await.unwrap();
+            id
+        }
+
+        /// The response for `id`, skipping interleaved notifications.
+        async fn response(&mut self, id: u64) -> serde_json::Value {
+            loop {
+                let mut line = String::new();
+                let read =
+                    tokio::time::timeout(Duration::from_secs(60), self.read.read_line(&mut line))
+                        .await
+                        .expect("a response should arrive within 60s")
+                        .expect("reading the agent's stdout side should not fail");
+                assert!(
+                    read > 0,
+                    "the agent closed the connection before answering id {id}"
+                );
+                let message: serde_json::Value =
+                    serde_json::from_str(line.trim()).expect("every frame should be valid JSON");
+                if message.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+                    assert!(
+                        message.get("error").is_none() || message.get("result").is_none(),
+                        "a response carries either a result or an error: {message}"
+                    );
+                    return message;
+                }
+            }
+        }
+
+        async fn shutdown(mut self) {
+            self.write.shutdown().await.unwrap();
+        }
+    }
+
+    async fn spawn_acp_stdio_serve(
+        handle: crate::agent::AgentRuntimeHandle,
+    ) -> (
+        StdioAcpClient,
+        tokio::task::JoinHandle<Result<(), agent_client_protocol::Error>>,
+    ) {
+        let config = Arc::new(RwLock::new(
+            normalize_config(AgentAcpConfig::default()).expect("the default ACP config is valid"),
+        ));
+        let stats = Arc::new(AgentAcpStats::default());
+        let context = AcpConnectionContext::new(handle, config, stats);
+        let (client_to_agent, agent_read) = tokio::io::duplex(16 * 1024);
+        let (agent_to_client, client_read) = tokio::io::duplex(16 * 1024);
+        let read = BoundedLineReader::new(agent_read, CancellationToken::new());
+        let incoming = FramedRead::new(read, LinesCodec::new_with_max_length(MAX_ACP_FRAME_BYTES))
+            .map(|result| {
+                result.map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            });
+        let outgoing = tracked_outgoing_lines(agent_to_client, Arc::clone(&context.outbound));
+        let serving = tokio::spawn(async move {
+            AcpAgent
+                .builder()
+                .name("maple-acp")
+                .with_handler(MapleAcpHandler { context })
+                .connect_to(Lines::new(outgoing, incoming))
+                .await
+        });
+        (
+            StdioAcpClient {
+                write: client_to_agent,
+                read: BufReader::new(client_read),
+                next_id: 0,
+            },
+            serving,
+        )
+    }
+
+    async fn finish_acp_stdio_serve(
+        serving: tokio::task::JoinHandle<Result<(), agent_client_protocol::Error>>,
+    ) {
+        let served = tokio::time::timeout(Duration::from_secs(30), serving)
+            .await
+            .expect("the serve task should end after client EOF")
+            .expect("the serve task should not panic");
+        served.expect("serving should complete cleanly after client EOF");
+    }
+
+    /// The stdio contract an editor depends on before it can do anything:
+    /// `initialize` answers, `session/new` returns the mode list AND the model
+    /// list, and the task it persists is loadable by a later connection.
+    /// Regression shape: any mismatch between the mode ACP maps onto and the
+    /// runtime's external-surface gates turns `session/new` (or `session/load`)
+    /// into an error and the editor loses the model list entirely.
+    #[tokio::test]
+    async fn stdio_surface_returns_modes_models_and_loads_persisted_sessions() {
+        let agent = started_agent_runtime("acp-stdio").await;
+        let project_root = agent.project_root.to_string_lossy().into_owned();
+
+        let (mut client, serving) = spawn_acp_stdio_serve(agent.handle.clone()).await;
+        let id = client
+            .request(
+                "initialize",
+                json!({"protocolVersion": 2, "clientCapabilities": {}}),
+            )
+            .await;
+        let initialize = client.response(id).await;
+        assert!(
+            initialize.get("error").is_none(),
+            "initialize failed: {}",
+            initialize["error"]
+        );
+        assert_eq!(initialize["result"]["agentInfo"]["name"], "maple");
+
+        let id = client
+            .request(
+                "session/new",
+                json!({"cwd": project_root, "mcpServers": []}),
+            )
+            .await;
+        let new_session = client.response(id).await;
+        assert!(
+            new_session.get("error").is_none(),
+            "session/new failed: {}",
+            new_session["error"]
+        );
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("session/new must return a session id")
+            .to_string();
+        assert!(!session_id.is_empty());
+        assert_eq!(
+            new_session["result"]["modes"]["currentModeId"], "interactive",
+            "a fresh session must start interactive: {new_session}"
+        );
+        let mode_ids: Vec<&str> = new_session["result"]["modes"]["availableModes"]
+            .as_array()
+            .expect("modes must be a list")
+            .iter()
+            .map(|mode| mode["id"].as_str().expect("mode ids are strings"))
+            .collect();
+        assert_eq!(mode_ids, vec!["interactive", "approve_all"]);
+
+        let model_option = new_session["result"]["configOptions"]
+            .as_array()
+            .expect("configOptions must be a list")
+            .iter()
+            .find(|option| option["id"] == "model")
+            .expect("the model selector must be offered")
+            .clone();
+        let current = model_option["currentValue"]
+            .as_str()
+            .expect("a current model must be set")
+            .to_string();
+        assert!(!current.is_empty());
+        let offered: Vec<&str> = model_option["options"]
+            .as_array()
+            .expect("the model selector must list options")
+            .iter()
+            .map(|option| option["value"].as_str().expect("model ids are strings"))
+            .collect();
+        assert!(
+            offered.contains(&current.as_str()),
+            "the current model must come from the offered list: {current:?} in {offered:?}"
+        );
+
+        let id = client
+            .request(
+                "session/set_mode",
+                json!({"sessionId": session_id, "modeId": "approve_all"}),
+            )
+            .await;
+        let switched = client.response(id).await;
+        assert!(
+            switched.get("error").is_none(),
+            "approve_all is a mode: {switched}"
+        );
+        let id = client
+            .request(
+                "session/set_mode",
+                json!({"sessionId": session_id, "modeId": "bogus"}),
+            )
+            .await;
+        let rejected = client.response(id).await;
+        assert!(
+            rejected.get("error").is_some(),
+            "unknown modes must be rejected: {rejected}"
+        );
+
+        // Client EOF must end the serve task and release the session lease.
+        client.shutdown().await;
+        finish_acp_stdio_serve(serving).await;
+
+        // A persisted task must be loadable by a later connection. The ACP
+        // task above stays hidden from listing until its first prompt, so load
+        // a desktop task saved under the same caller-mediated mode: this only
+        // succeeds while the mode ACP persists is one the load path accepts.
+        let created = agent
+            .handle
+            .create_session(Some(crate::agent::AgentCreateSessionRequest {
+                project_root: Some(project_root.clone()),
+                title: Some("acp load target".to_string()),
+                model: None,
+                context_limit: None,
+                mode: Some("smart_approve".to_string()),
+                mcp_server_names: None,
+                system_prompt: None,
+            }))
+            .await
+            .expect("a desktop task should be creatable");
+        let created_id = created.session.id.clone();
+        let (mut client, serving) = spawn_acp_stdio_serve(agent.handle.clone()).await;
+        let id = client
+            .request(
+                "initialize",
+                json!({"protocolVersion": 2, "clientCapabilities": {}}),
+            )
+            .await;
+        client.response(id).await;
+        let id = client
+            .request(
+                "session/load",
+                json!({"sessionId": created_id, "cwd": project_root, "mcpServers": []}),
+            )
+            .await;
+        let loaded = client.response(id).await;
+        assert!(
+            loaded.get("error").is_none(),
+            "session/load failed: {}",
+            loaded["error"]
+        );
+        assert_eq!(
+            loaded["result"]["modes"]["currentModeId"], "interactive",
+            "a persisted caller-mediated task loads as interactive: {loaded}"
+        );
+        client.shutdown().await;
+        finish_acp_stdio_serve(serving).await;
+    }
+
     #[test]
     fn caller_session_fields_come_from_the_raw_session_new_params() {
         let fields = AcpCallerSessionFields::from_params(&json!({
@@ -1880,10 +2154,10 @@ mod tests {
     }
 
     #[test]
-    fn session_list_loadability_is_fail_closed_to_read_only_tasks() {
+    fn session_list_loadability_accepts_read_only_and_approve_all_tasks() {
         let sessions = [
             session_summary_with_mode("read-only", "smart_approve"),
-            session_summary_with_mode("allow-all", "auto"),
+            session_summary_with_mode("approve-all", "auto"),
             session_summary_with_mode("approval", "approve"),
             session_summary_with_mode("chat", "chat"),
             session_summary_with_mode("unknown", "future_mode"),
@@ -1895,14 +2169,14 @@ mod tests {
             .map(|session| session.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(visible, vec!["read-only"]);
+        assert_eq!(visible, vec!["read-only", "approve-all", "approval"]);
     }
 
     #[test]
-    fn session_load_preflight_rejects_non_read_only_and_missing_tasks() {
+    fn session_load_preflight_rejects_unknown_and_missing_tasks() {
         let sessions = [
             session_summary_with_mode("read-only", "smart_approve"),
-            session_summary_with_mode("allow-all", "auto"),
+            session_summary_with_mode("approve-all", "auto"),
         ];
 
         assert_eq!(
@@ -1911,10 +2185,11 @@ mod tests {
                 .id,
             "read-only"
         );
-        assert!(
-            ensure_acp_session_is_loadable(&sessions, "allow-all")
-                .unwrap_err()
-                .contains("only Read only")
+        assert_eq!(
+            ensure_acp_session_is_loadable(&sessions, "approve-all")
+                .unwrap()
+                .id,
+            "approve-all"
         );
         assert!(
             ensure_acp_session_is_loadable(&sessions, "missing")
@@ -2052,16 +2327,29 @@ mod tests {
     #[test]
     fn model_selector_locks_to_the_persisted_model_after_first_message() {
         let models = vec!["model-a".to_string(), "model-b".to_string()];
-        let fresh = serde_json::to_value(acp_session_config_options("model-b", &models, 0))
-            .expect("fresh model options should serialize");
-        let locked = serde_json::to_value(acp_session_config_options("model-b", &models, 1))
-            .expect("locked model options should serialize");
+        let fresh = serde_json::to_value(acp_session_config_options(
+            "model-b",
+            &models,
+            0,
+            AcpSessionMode::Interactive,
+        ))
+        .expect("fresh model options should serialize");
+        let locked = serde_json::to_value(acp_session_config_options(
+            "model-b",
+            &models,
+            1,
+            AcpSessionMode::ApproveAll,
+        ))
+        .expect("locked model options should serialize");
 
         assert_eq!(fresh[0]["currentValue"], "model-b");
         assert_eq!(fresh[0]["options"].as_array().unwrap().len(), 2);
+        assert_eq!(fresh[1]["currentValue"], "interactive");
         assert_eq!(locked[0]["currentValue"], "model-b");
         assert_eq!(locked[0]["options"].as_array().unwrap().len(), 1);
         assert_eq!(locked[0]["options"][0]["value"], "model-b");
+        assert_eq!(locked[1]["currentValue"], "approve_all");
+        assert_eq!(locked[1]["options"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -2122,14 +2410,8 @@ mod tests {
 
     #[test]
     fn legacy_allow_all_cannot_bypass_the_acp_caller() {
-        assert_eq!(
-            AgentAcpPermissionMode::ReadOnly.maple_mode(),
-            "smart_approve"
-        );
-        assert_eq!(
-            AgentAcpPermissionMode::AllowAll.maple_mode(),
-            "smart_approve"
-        );
+        // The stale Desktop-owned bypass stays readable only so old files
+        // keep loading; it can no longer influence a session's mode.
         let migrated = normalize_config(AgentAcpConfig {
             permission_mode: AgentAcpPermissionMode::AllowAll,
             ..AgentAcpConfig::default()
@@ -2171,6 +2453,10 @@ mod tests {
         assert_eq!(encoded["toolCall"]["toolCallId"], "request-1");
         assert_eq!(encoded["toolCall"]["title"], "Push branch");
         assert_eq!(encoded["toolCall"]["kind"], "execute");
+        assert_eq!(
+            encoded["toolCall"]["content"][0]["content"]["text"],
+            "Push this branch?"
+        );
         assert_eq!(encoded["toolCall"]["status"], "pending");
         assert_eq!(encoded["toolCall"]["rawInput"]["command"], "git push");
         assert_eq!(
@@ -2179,6 +2465,71 @@ mod tests {
                 { "optionId": "allow_once", "name": "Allow once", "kind": "allow_once" },
                 { "optionId": "reject_once", "name": "Reject once", "kind": "reject_once" }
             ])
+        );
+    }
+
+    #[test]
+    fn permission_request_without_prompt_previews_the_arguments() {
+        let request = AgentPermissionRequest {
+            request_id: "request-2".to_string(),
+            tool_name: "edit".to_string(),
+            arguments: serde_json::Map::from_iter([
+                ("path".to_string(), serde_json::json!("/tmp/notes.md")),
+                (
+                    "edits".to_string(),
+                    serde_json::json!([{ "oldText": "foo", "newText": "bar" }]),
+                ),
+            ]),
+            prompt: None,
+        };
+        let item = AgentTimelineItem {
+            id: "permission-request-2".to_string(),
+            item_type: "permission".to_string(),
+            role: Some("system".to_string()),
+            title: Some("edit: /tmp/notes.md".to_string()),
+            text: None,
+            status: Some("pending".to_string()),
+            input: Some(serde_json::Value::Object(request.arguments.clone())),
+            output: None,
+            created_ms: 1,
+            merge: "replace".to_string(),
+        };
+        let permission = RequestPermissionRequest::new(
+            "session-1",
+            acp_permission_tool_call(&request, &item).into(),
+            acp_permission_options(),
+        );
+        let encoded = serde_json::to_value(permission).unwrap();
+        assert_eq!(encoded["toolCall"]["title"], "edit: /tmp/notes.md");
+        let preview = encoded["toolCall"]["content"][0]["content"]["text"]
+            .as_str()
+            .expect("an argument preview must be attached");
+        assert!(preview.contains("/tmp/notes.md"), "preview: {preview}");
+        assert!(preview.contains("oldText"), "preview: {preview}");
+
+        // One approval card must not flood the caller with a huge edit.
+        let long = "x".repeat(20_000);
+        let mut long_request = AgentPermissionRequest {
+            request_id: "request-3".to_string(),
+            tool_name: "edit".to_string(),
+            arguments: serde_json::Map::from_iter([(
+                "path".to_string(),
+                serde_json::json!("/tmp/notes.md"),
+            )]),
+            prompt: None,
+        };
+        long_request.arguments.insert(
+            "edits".to_string(),
+            serde_json::json!([{ "newText": long }]),
+        );
+        let bounded = serde_json::to_value(acp_permission_tool_call(&long_request, &item)).unwrap();
+        let bounded_preview = bounded["content"][0]["content"]["text"]
+            .as_str()
+            .expect("the bounded preview must stay attached");
+        assert!(
+            bounded_preview.chars().count() <= 501,
+            "preview must be bounded, got {}",
+            bounded_preview.chars().count()
         );
     }
 

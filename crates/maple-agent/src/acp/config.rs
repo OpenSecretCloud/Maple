@@ -17,15 +17,6 @@ pub enum AgentAcpPermissionMode {
     AllowAll,
 }
 
-impl AgentAcpPermissionMode {
-    pub(super) fn maple_mode(&self) -> &'static str {
-        // ACP callers own every unresolved interactive decision. Keep the old
-        // allow_all variant readable for configuration compatibility, but do
-        // not let it bypass the caller through Maple's Auto policy.
-        "smart_approve"
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAcpConfig {

@@ -794,7 +794,10 @@ pub(super) fn action_required_item(
             id: format!("permission-{id}"),
             item_type: "permission".to_string(),
             role: Some("system".to_string()),
-            title: Some(format_tool_title(tool_name)),
+            title: Some(
+                descriptive_tool_title(tool_name, arguments)
+                    .unwrap_or_else(|| format_tool_title(tool_name)),
+            ),
             text: prompt.clone(),
             status: Some("pending".to_string()),
             input: Some(Value::Object(arguments.clone())),
