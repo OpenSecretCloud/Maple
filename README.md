@@ -89,8 +89,9 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (default permission mode, web tools, appearance,
   tool call details, desktop notifications, tool call summaries, composer Vim,
-  and the speech voice and speed), System prompt, MCP servers, Usage (plan meter
-  from the billing API plus totals from the Goose ledger), and About.
+  and the speech voice and speed), Keyboard Shortcuts, System prompt, MCP
+  servers, Usage (plan meter from the billing API plus totals from the Goose
+  ledger), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes, asks a question, or needs
@@ -112,8 +113,24 @@ The preview includes `h/j/k/l`, `w/b/e`, `0/$`, `gg/G`, `i/a/I/A/o/O`,
 Visual modes. Escape leaves Insert or Visual for Normal; Enter sends in Insert
 or Normal, while Shift-Enter inserts a newline only in Insert.
 
-Bindings are fixed for this preview. Application-wide Vim navigation and
-shortcut customization are intentionally separate follow-up layers.
+Composer Vim uses the same customizable shortcut catalog as the rest of the
+app. Application-wide Vim navigation remains a separate follow-up layer.
+
+### Keyboard shortcuts preview
+
+Open **Keyboard Shortcuts** in Settings to search, record, disable, or reset
+the 118 bindings Maple already ships. Recording accepts sequences of up to
+four strokes; Enter saves, Backspace removes the latest stroke, and Escape
+cancels. Exact and prefix collisions are shown before saving, with an explicit
+choice to replace the other bindings or keep compatible chords.
+
+This preview changes only physical bindings for existing GPUI actions. It does
+not add commands or expose raw input behavior such as composer send,
+Shift-Enter, slash completion, or login field traversal. Per-binding changes
+are stored in `settings.json` under `shortcut_overrides`; missing entries keep
+their shipped key and `null` disables that exact binding slot. Maple validates
+the complete candidate map before replacing the live one, so a malformed
+override cannot leave ordinary text editing half-installed.
 
 ## Prerequisites
 

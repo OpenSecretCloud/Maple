@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, KeyBinding, Pixels, Render, Window, WindowBounds,
-    WindowOptions, actions, div, prelude::*, px, size,
+    App, Application, Bounds, Context, Entity, Pixels, Render, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, size,
 };
 
 actions!(maple_app, [QuitApp]);
@@ -15,8 +15,10 @@ use crate::backend::AgentBackend;
 use crate::ui;
 use crate::ui::chat::{ChatScreen, LoggedOut};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
-use crate::ui::settings::{Section, SettingsClosed, SettingsScreen, SignOutRequested};
-use crate::ui::text_input;
+use crate::ui::settings::{
+    Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange, ShortcutSettingsRequested,
+    SignOutRequested,
+};
 use crate::ui::titlebar::TitleBar;
 
 enum Screen {
@@ -36,6 +38,9 @@ struct MapleApp {
     /// it with its state intact.
     parked_chat: Option<Entity<ChatScreen>>,
     settings: crate::settings::AppSettings,
+    /// The complete live shortcut map. Settings mutations prepare a full
+    /// replacement before this runtime clears GPUI's process-wide bindings.
+    shortcuts: crate::shortcuts::ShortcutRuntime,
     /// Created once; re-creating it per render leaked an entity per frame.
     titlebar: Entity<TitleBar>,
 }
@@ -123,11 +128,26 @@ impl MapleApp {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone().unwrap_or_default();
         let settings = self.settings.clone();
-        let screen = cx.new(|cx| SettingsScreen::new(backend, user_id, settings, section, cx));
+        let shortcut_snapshot = self.shortcuts.snapshot();
+        let screen = cx.new(|cx| {
+            SettingsScreen::new(backend, user_id, settings, shortcut_snapshot, section, cx)
+        });
         cx.subscribe(
             &screen,
             |app: &mut MapleApp, _emitter, event: &SettingsClosed, cx| {
                 app.close_settings(event.0.clone(), cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &screen,
+            |app: &mut MapleApp, emitter, event: &ShortcutSettingsRequested, cx| {
+                let result = app.apply_shortcut_change(&event.0, cx);
+                let shortcut_overrides = app.settings.shortcut_overrides.clone();
+                let snapshot = app.shortcuts.snapshot();
+                emitter.update(cx, |screen, cx| {
+                    screen.apply_shortcut_result(shortcut_overrides, snapshot, result, cx);
+                });
             },
         )
         .detach();
@@ -181,6 +201,42 @@ impl MapleApp {
             self.screen = Screen::Chat(chat);
         }
         cx.notify();
+    }
+
+    fn apply_shortcut_change(
+        &mut self,
+        change: &ShortcutSettingsChange,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let mut overrides = self.settings.shortcut_overrides.clone();
+        match change {
+            ShortcutSettingsChange::Set {
+                slot_id,
+                sequence,
+                disable_conflicts,
+            } => {
+                for conflict in disable_conflicts {
+                    if conflict != slot_id {
+                        overrides.insert(conflict.clone(), None);
+                    }
+                }
+                overrides.insert(slot_id.clone(), Some(sequence.clone()));
+            }
+            ShortcutSettingsChange::Disable { slot_id } => {
+                overrides.insert(slot_id.clone(), None);
+            }
+            ShortcutSettingsChange::Reset { slot_id } => {
+                overrides.remove(slot_id);
+            }
+            ShortcutSettingsChange::ResetAll => overrides.clear(),
+        }
+
+        self.shortcuts.replace(&overrides, cx)?;
+        self.settings.shortcut_overrides = overrides.clone();
+        crate::settings::update_settings_in_background(move |settings| {
+            settings.shortcut_overrides = overrides;
+        });
+        Ok(())
     }
 }
 
@@ -269,76 +325,9 @@ fn persist_window_state() {
 
 /// Every key binding the window uses. Tests register the same set, so
 /// what they exercise is what ships.
+#[cfg(test)]
 pub(crate) fn register_key_bindings(cx: &mut App) {
-    text_input::register_key_bindings(cx);
-    cx.bind_keys([
-        KeyBinding::new("secondary-q", QuitApp, None),
-        KeyBinding::new("escape", ui::chat::ChatEscape, Some("Chat")),
-        KeyBinding::new("secondary-n", ui::chat::NewTask, Some("Chat")),
-        KeyBinding::new("secondary-k", ui::chat::FocusSearch, Some("Chat")),
-        KeyBinding::new("secondary-b", ui::chat::ToggleSidebar, Some("Chat")),
-        KeyBinding::new("secondary-shift-a", ui::chat::ToggleArchived, Some("Chat")),
-        KeyBinding::new("secondary-,", ui::chat::OpenAppSettings, Some("Chat")),
-        KeyBinding::new("secondary-p", ui::chat::ChooseProject, Some("Chat")),
-        KeyBinding::new("alt-up", ui::chat::PreviousTask, Some("Chat")),
-        KeyBinding::new("alt-down", ui::chat::NextTask, Some("Chat")),
-        KeyBinding::new("secondary-y", ui::chat::AllowPermission, Some("Chat")),
-        KeyBinding::new(
-            "secondary-1",
-            ui::chat::PickQuestionOption { index: 0 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-2",
-            ui::chat::PickQuestionOption { index: 1 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-3",
-            ui::chat::PickQuestionOption { index: 2 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-4",
-            ui::chat::PickQuestionOption { index: 3 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-5",
-            ui::chat::PickQuestionOption { index: 4 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-6",
-            ui::chat::PickQuestionOption { index: 5 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-7",
-            ui::chat::PickQuestionOption { index: 6 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-8",
-            ui::chat::PickQuestionOption { index: 7 },
-            Some("Chat"),
-        ),
-        KeyBinding::new(
-            "secondary-9",
-            ui::chat::PickQuestionOption { index: 8 },
-            Some("Chat"),
-        ),
-        KeyBinding::new("secondary-c", ui::chat::CopySelection, Some("Transcript")),
-        KeyBinding::new(
-            "secondary-a",
-            ui::chat::SelectAllTranscript,
-            Some("Transcript"),
-        ),
-        // The open project menu holds the focus, so plain keys are free.
-        KeyBinding::new("up", ui::chat::RootMenuPrevious, Some("RootMenu")),
-        KeyBinding::new("down", ui::chat::RootMenuNext, Some("RootMenu")),
-        KeyBinding::new("enter", ui::chat::RootMenuConfirm, Some("RootMenu")),
-    ]);
+    crate::keymap::bootstrap(cx);
 }
 
 pub fn run() {
@@ -375,7 +364,10 @@ pub fn run() {
             }
             ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| cx.quit());
-            register_key_bindings(cx);
+            let shortcut_runtime = crate::shortcuts::ShortcutRuntime::bootstrap(
+                &startup_settings.shortcut_overrides,
+                cx,
+            );
             ui::theme::set_preference(ui::theme::Preference::parse(&startup_settings.theme));
             let saved = startup_settings
                 .window
@@ -393,6 +385,8 @@ pub fn run() {
                 persist_window_state();
             })
             .detach();
+            let root_backend = backend.clone();
+            let root_settings = startup_settings.clone();
             let window = cx
                 .open_window(
                     WindowOptions {
@@ -403,13 +397,14 @@ pub fn run() {
                         }),
                         ..Default::default()
                     },
-                    |_, cx| {
-                        cx.new(|cx| MapleApp {
-                            backend: backend.clone(),
+                    move |_, cx| {
+                        cx.new(move |cx| MapleApp {
+                            backend: root_backend,
                             screen: Screen::Restoring,
                             user_id: None,
                             parked_chat: None,
-                            settings: startup_settings.clone(),
+                            settings: root_settings,
+                            shortcuts: shortcut_runtime,
                             titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
                         })
                     },

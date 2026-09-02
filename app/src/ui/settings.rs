@@ -1,10 +1,12 @@
 //! Settings screen: left navigation with content panes, following Maple's
 //! settings layout. Sections: General (defaults), System prompt, MCP
-//! servers, Usage, About.
+//! servers, Keyboard Shortcuts, Usage, About.
 
 use std::sync::Arc;
 
-use gpui::{App, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*, px};
+use gpui::{
+    App, Context, Div, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*, px,
+};
 
 use maple_agent::agent::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport};
 
@@ -13,6 +15,10 @@ use crate::ui::text_input::TextInput;
 
 use crate::backend::AgentBackend;
 use crate::settings::{self, AppSettings, UsageSummary};
+use crate::shortcuts::{
+    ShortcutConflict, ShortcutConflictKind, ShortcutContextOverlap, ShortcutOverrides,
+    ShortcutSnapshot,
+};
 use crate::ui::theme;
 use crate::ui::widgets;
 
@@ -25,6 +31,7 @@ pub struct SignOutRequested;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
+    Shortcuts,
     Prompt,
     Mcp,
     Usage,
@@ -35,6 +42,7 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Mcp => "MCP servers",
             Self::Usage => "Usage",
@@ -42,8 +50,9 @@ impl Section {
         }
     }
 
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::General,
+        Self::Shortcuts,
         Self::Prompt,
         Self::Mcp,
         Self::Usage,
@@ -69,6 +78,60 @@ pub struct SettingsScreen {
     /// Editor for the opening system prompt text (harness instructions).
     prompt_editor: Entity<TextInput>,
     prompt_notice: Option<String>,
+    shortcut_snapshot: ShortcutSnapshot,
+    shortcut_search: Entity<TextInput>,
+    shortcut_query: String,
+    shortcut_list_cache: ShortcutListCache,
+    shortcut_notice: Option<String>,
+    shortcut_recorder: Option<ShortcutRecorder>,
+    shortcut_interceptor: Option<Subscription>,
+    shortcut_reset_confirmation: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ShortcutSettingsChange {
+    Set {
+        slot_id: String,
+        sequence: String,
+        disable_conflicts: Vec<String>,
+    },
+    Disable {
+        slot_id: String,
+    },
+    Reset {
+        slot_id: String,
+    },
+    ResetAll,
+}
+
+pub(crate) struct ShortcutSettingsRequested(pub(crate) ShortcutSettingsChange);
+
+#[derive(Clone, Debug)]
+struct ShortcutRecorder {
+    slot_id: String,
+    strokes: Vec<String>,
+    conflicts: Vec<ShortcutConflict>,
+    reviewing_conflicts: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ShortcutListCache {
+    visible_indices: Vec<usize>,
+    modified_count: usize,
+}
+
+impl ShortcutListCache {
+    fn rebuild(snapshot: &ShortcutSnapshot, query: &str) -> Self {
+        Self {
+            visible_indices: snapshot
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| shortcut_row_matches(row, query).then_some(index))
+                .collect(),
+            modified_count: snapshot.rows.iter().filter(|row| row.modified).count(),
+        }
+    }
 }
 
 /// Form state for adding or editing one MCP server.
@@ -92,12 +155,14 @@ pub struct OpenSettingsSection(pub Section);
 
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
+impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
 impl SettingsScreen {
     pub fn new(
         backend: Arc<AgentBackend>,
         user_id: String,
         settings: AppSettings,
+        shortcut_snapshot: ShortcutSnapshot,
         section: Section,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -110,6 +175,16 @@ impl SettingsScreen {
             input.set_text(&prompt_text, cx);
             input
         });
+        let shortcut_search = cx.new(|cx| {
+            TextInput::new("Search by command, context, or shortcut…", cx).with_tab_index(2)
+        });
+        cx.observe(&shortcut_search, |this, search, cx| {
+            this.shortcut_query = search.read(cx).text().trim().to_lowercase();
+            this.rebuild_shortcut_list_cache();
+            cx.notify();
+        })
+        .detach();
+        let shortcut_list_cache = ShortcutListCache::rebuild(&shortcut_snapshot, "");
         let this = Self {
             backend,
             user_id,
@@ -124,6 +199,14 @@ impl SettingsScreen {
             mcp_saving: false,
             prompt_editor,
             prompt_notice: None,
+            shortcut_snapshot,
+            shortcut_search,
+            shortcut_query: String::new(),
+            shortcut_list_cache,
+            shortcut_notice: None,
+            shortcut_recorder: None,
+            shortcut_interceptor: None,
+            shortcut_reset_confirmation: false,
         };
         this.load_usage(cx);
         this.load_plan(cx);
@@ -475,9 +558,174 @@ impl SettingsScreen {
         cx.notify();
     }
 
+    pub(crate) fn apply_shortcut_result(
+        &mut self,
+        shortcut_overrides: ShortcutOverrides,
+        snapshot: ShortcutSnapshot,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if result.is_ok() {
+            merge_shortcut_overrides(&mut self.settings, shortcut_overrides);
+            self.shortcut_reset_confirmation = false;
+            self.stop_shortcut_recording();
+        }
+        self.shortcut_snapshot = snapshot;
+        self.rebuild_shortcut_list_cache();
+        self.shortcut_notice = Some(match result {
+            Ok(()) => "Shortcut settings applied.".to_string(),
+            Err(message) => format!("Shortcut change failed: {message}"),
+        });
+        cx.notify();
+    }
+
+    fn request_shortcut_change(&mut self, change: ShortcutSettingsChange, cx: &mut Context<Self>) {
+        self.shortcut_notice = None;
+        cx.emit(ShortcutSettingsRequested(change));
+    }
+
+    fn rebuild_shortcut_list_cache(&mut self) {
+        self.shortcut_list_cache =
+            ShortcutListCache::rebuild(&self.shortcut_snapshot, &self.shortcut_query);
+    }
+
+    fn begin_shortcut_recording(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        self.stop_shortcut_recording();
+        self.shortcut_notice = None;
+        self.shortcut_recorder = Some(ShortcutRecorder {
+            slot_id,
+            strokes: Vec::new(),
+            conflicts: Vec::new(),
+            reviewing_conflicts: false,
+        });
+
+        let settings = cx.entity().downgrade();
+        self.shortcut_interceptor = Some(cx.intercept_keystrokes(move |event, _window, app| {
+            let Some(settings) = settings.upgrade() else {
+                return;
+            };
+            settings.update(app, |this, cx| {
+                this.record_shortcut_keystroke(&event.keystroke, cx);
+            });
+            // Recording owns the keystroke. No existing shortcut or text
+            // input handler may observe it underneath the recorder.
+            app.stop_propagation();
+        }));
+        cx.notify();
+    }
+
+    fn record_shortcut_keystroke(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let plain = !keystroke.modifiers.modified();
+        match (plain, keystroke.key.as_str()) {
+            (true, "escape") => {
+                self.stop_shortcut_recording();
+                self.shortcut_notice = Some("Shortcut recording cancelled.".to_string());
+            }
+            (true, "backspace") => {
+                if let Some(recorder) = self.shortcut_recorder.as_mut() {
+                    recorder.strokes.pop();
+                }
+            }
+            (true, "enter") => self.review_recorded_shortcut(cx),
+            _ => {
+                let Some(recorder) = self.shortcut_recorder.as_mut() else {
+                    return;
+                };
+                if recorder.strokes.len() < 4 {
+                    recorder.strokes.push(portable_keystroke_token(keystroke));
+                } else {
+                    self.shortcut_notice =
+                        Some("A shortcut can contain at most four strokes.".to_string());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn review_recorded_shortcut(&mut self, cx: &mut Context<Self>) {
+        let Some(recorder) = self.shortcut_recorder.as_ref() else {
+            return;
+        };
+        if recorder.strokes.is_empty() {
+            self.shortcut_notice = Some("Press at least one shortcut key.".to_string());
+            return;
+        }
+        let slot_id = recorder.slot_id.clone();
+        let sequence = recorder.strokes.join(" ");
+        match self.shortcut_snapshot.conflicts_for(&slot_id, &sequence) {
+            Ok(conflicts) if conflicts.is_empty() => {
+                self.stop_shortcut_recording();
+                self.request_shortcut_change(
+                    ShortcutSettingsChange::Set {
+                        slot_id,
+                        sequence,
+                        disable_conflicts: Vec::new(),
+                    },
+                    cx,
+                );
+            }
+            Ok(conflicts) => {
+                // Conflict review uses ordinary buttons, so release the
+                // keystroke interceptor before showing it.
+                self.shortcut_interceptor = None;
+                if let Some(recorder) = self.shortcut_recorder.as_mut() {
+                    recorder.conflicts = conflicts;
+                    recorder.reviewing_conflicts = true;
+                }
+            }
+            Err(message) => {
+                self.shortcut_notice = Some(format!("Cannot use that shortcut: {message}"));
+            }
+        }
+    }
+
+    fn save_recorded_shortcut(&mut self, replace_conflicts: bool, cx: &mut Context<Self>) {
+        let Some(recorder) = self.shortcut_recorder.take() else {
+            return;
+        };
+        self.shortcut_interceptor = None;
+        let mut disable_conflicts = if replace_conflicts {
+            recorder
+                .conflicts
+                .into_iter()
+                .map(|conflict| conflict.other_slot_id)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        disable_conflicts.sort();
+        disable_conflicts.dedup();
+        self.request_shortcut_change(
+            ShortcutSettingsChange::Set {
+                slot_id: recorder.slot_id,
+                sequence: recorder.strokes.join(" "),
+                disable_conflicts,
+            },
+            cx,
+        );
+    }
+
+    fn stop_shortcut_recording(&mut self) {
+        self.shortcut_interceptor = None;
+        self.shortcut_recorder = None;
+    }
+
+    fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if section != Section::Shortcuts {
+            self.stop_shortcut_recording();
+        }
+        self.section = section;
+        cx.notify();
+    }
+
     fn close(&mut self, cx: &mut Context<Self>) {
+        self.stop_shortcut_recording();
         cx.emit(SettingsClosed(self.settings.clone()));
     }
+}
+
+fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: ShortcutOverrides) {
+    settings.shortcut_overrides = shortcut_overrides;
 }
 
 impl Render for SettingsScreen {
@@ -578,8 +826,7 @@ impl SettingsScreen {
                     .on_click({
                         let section = *section;
                         cx.listener(move |this, _event, _window, cx| {
-                            this.section = section;
-                            cx.notify();
+                            this.select_section(section, cx);
                         })
                     })
                     .child(section.label().to_string())
@@ -703,6 +950,9 @@ impl SettingsScreen {
                         }),
                     ));
             }
+            Section::Shortcuts => {
+                pane = pane.child(self.render_shortcuts_pane(cx));
+            }
             Section::Prompt => {
                 pane = pane.child(self.render_prompt_pane(cx));
             }
@@ -787,6 +1037,364 @@ impl SettingsScreen {
 }
 
 impl SettingsScreen {
+    fn render_shortcuts_pane(&self, cx: &mut Context<Self>) -> Div {
+        let modified_count = self.shortcut_list_cache.modified_count;
+        let rows = &self.shortcut_list_cache.visible_indices;
+
+        let mut pane = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(section_title("Keyboard Shortcuts"))
+                    .when(
+                        modified_count > 0 || self.shortcut_snapshot.last_error.is_some(),
+                        |row| {
+                            row.child(
+                                widgets::ghost_button("shortcuts-reset-all")
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.shortcut_reset_confirmation = true;
+                                        this.shortcut_notice = None;
+                                        cx.notify();
+                                    }))
+                                    .child("Reset all"),
+                            )
+                        },
+                    ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(
+                        "Customize the shortcuts Maple already ships. This page does not add commands or change what an action can do.",
+                    ),
+            )
+            .child(widgets::input_frame().text_sm().child(self.shortcut_search.clone()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(format!(
+                        "{} bindings · {modified_count} modified",
+                        self.shortcut_snapshot.rows.len()
+                    )),
+            );
+
+        if let Some(error) = &self.shortcut_snapshot.last_error {
+            pane = pane.child(
+                widgets::banner(theme::status_warning()).child(format!(
+                    "Saved shortcut overrides were not applied; Maple kept the complete default map. {error}"
+                )),
+            );
+        }
+        if let Some(warning) = &self.shortcut_snapshot.compatibility_warning {
+            pane = pane.child(widgets::banner(theme::status_warning()).child(warning.clone()));
+        }
+        if let Some(notice) = &self.shortcut_notice {
+            pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
+        }
+        if self.shortcut_reset_confirmation {
+            pane = pane.child(
+                widgets::banner(theme::status_warning())
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().flex_1().child(
+                        if self.shortcut_snapshot.last_error.is_some() && modified_count == 0 {
+                            "Clear the invalid saved shortcut overrides?".to_string()
+                        } else {
+                            format!(
+                                "Reset all {modified_count} shortcut change{}?",
+                                if modified_count == 1 { "" } else { "s" }
+                            )
+                        },
+                    ))
+                    .child(
+                        widgets::primary_button("shortcuts-reset-all-confirm")
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.request_shortcut_change(ShortcutSettingsChange::ResetAll, cx);
+                            }))
+                            .child("Reset"),
+                    )
+                    .child(
+                        widgets::ghost_button("shortcuts-reset-all-cancel")
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.shortcut_reset_confirmation = false;
+                                cx.notify();
+                            }))
+                            .child("Cancel"),
+                    ),
+            );
+        }
+        if let Some(recorder) = self.shortcut_recorder.as_ref() {
+            pane = pane.child(self.render_shortcut_recorder(recorder, cx));
+        }
+
+        if rows.is_empty() {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_faint()))
+                    .child("No shortcuts match this search."),
+            );
+        } else {
+            pane =
+                pane.children(rows.iter().map(|&index| {
+                    self.render_shortcut_row(&self.shortcut_snapshot.rows[index], cx)
+                }));
+        }
+        pane
+    }
+
+    fn render_shortcut_recorder(&self, recorder: &ShortcutRecorder, cx: &mut Context<Self>) -> Div {
+        let label = self
+            .shortcut_snapshot
+            .rows
+            .iter()
+            .find(|row| row.slot_id == recorder.slot_id)
+            .map(|row| row.label.as_str())
+            .unwrap_or(recorder.slot_id.as_str())
+            .to_string();
+        let sequence = if recorder.strokes.is_empty() {
+            "Waiting for keys…".to_string()
+        } else {
+            recorder.strokes.join(" ")
+        };
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .border_1()
+            .border_color(gpui::rgb(theme::accent()))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .child(format!("Recording: {label}")),
+            )
+            .child(shortcut_keycap(sequence, true))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(if recorder.reviewing_conflicts {
+                        "Review the conflicts below before saving."
+                    } else {
+                        "Press up to four keys. Enter saves, Backspace removes the latest stroke, and Escape cancels."
+                    }),
+            );
+
+        if recorder.reviewing_conflicts {
+            let can_keep_both = recorder.conflicts.iter().all(|conflict| {
+                !matches!(conflict.kind, ShortcutConflictKind::Exact)
+                    || !matches!(conflict.overlap, ShortcutContextOverlap::Equivalent)
+            });
+            card = card
+                .children(recorder.conflicts.iter().map(|conflict| {
+                    let other = self
+                        .shortcut_snapshot
+                        .rows
+                        .iter()
+                        .find(|row| row.slot_id == conflict.other_slot_id)
+                        .map(|row| row.label.as_str())
+                        .unwrap_or(conflict.other_slot_id.as_str());
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::status_warning()))
+                        .child(format!(
+                            "{} with {} ({})",
+                            shortcut_conflict_label(conflict),
+                            other,
+                            conflict.other_slot_id
+                        ))
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            widgets::primary_button("shortcut-conflict-replace")
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.save_recorded_shortcut(true, cx);
+                                }))
+                                .child("Replace conflicts"),
+                        )
+                        .when(can_keep_both, |actions| {
+                            actions.child(
+                                widgets::ghost_button("shortcut-conflict-keep")
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.save_recorded_shortcut(false, cx);
+                                    }))
+                                    .child("Keep both"),
+                            )
+                        })
+                        .child(
+                            widgets::ghost_button("shortcut-conflict-cancel")
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.stop_shortcut_recording();
+                                    cx.notify();
+                                }))
+                                .child("Cancel"),
+                        ),
+                );
+        } else {
+            card = card.child(
+                widgets::ghost_button("shortcut-record-cancel")
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.stop_shortcut_recording();
+                        cx.notify();
+                    }))
+                    .child("Cancel"),
+            );
+        }
+        card
+    }
+
+    fn render_shortcut_row(
+        &self,
+        row: &crate::shortcuts::ShortcutRow,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let slot_id = row.slot_id.clone();
+        let record_id = slot_id.clone();
+        let disable_id = slot_id.clone();
+        let reset_id = slot_id.clone();
+        let current = row
+            .current_sequence
+            .clone()
+            .unwrap_or_else(|| "Unbound".to_string());
+        widgets::card_row()
+            .flex()
+            .items_center()
+            .gap_4()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(gpui::rgb(theme::text_primary()))
+                                    .child(row.label.clone()),
+                            )
+                            .when(row.modified, |title| {
+                                title.child(
+                                    div()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_full()
+                                        .text_xs()
+                                        .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                                        .text_color(gpui::rgb(theme::accent()))
+                                        .child("Modified"),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(format!(
+                                "{} · {} · {}",
+                                row.category,
+                                shortcut_context_label(row.context.as_deref()),
+                                row.slot_id
+                            )),
+                    )
+                    .when(!row.conflicts.is_empty(), |column| {
+                        column.child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::status_warning()))
+                                .child(format!(
+                                    "{} shortcut conflict{}",
+                                    row.conflicts.len(),
+                                    if row.conflicts.len() == 1 { "" } else { "s" }
+                                )),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap_1()
+                    .child(shortcut_keycap(current, row.current_sequence.is_some()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_faint()))
+                            .child(format!("Default: {}", row.default_sequence)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        widgets::ghost_button(gpui::SharedString::from(format!(
+                            "shortcut-record-{slot_id}"
+                        )))
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.begin_shortcut_recording(record_id.clone(), cx);
+                        }))
+                        .child("Record"),
+                    )
+                    .when(row.current_sequence.is_some(), |actions| {
+                        actions.child(
+                            widgets::ghost_button(gpui::SharedString::from(format!(
+                                "shortcut-disable-{slot_id}"
+                            )))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.request_shortcut_change(
+                                    ShortcutSettingsChange::Disable {
+                                        slot_id: disable_id.clone(),
+                                    },
+                                    cx,
+                                );
+                            }))
+                            .child("Disable"),
+                        )
+                    })
+                    .when(row.modified, |actions| {
+                        actions.child(
+                            widgets::ghost_button(gpui::SharedString::from(format!(
+                                "shortcut-reset-{slot_id}"
+                            )))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.request_shortcut_change(
+                                    ShortcutSettingsChange::Reset {
+                                        slot_id: reset_id.clone(),
+                                    },
+                                    cx,
+                                );
+                            }))
+                            .child("Reset"),
+                        )
+                    }),
+            )
+    }
+
     fn render_prompt_pane(&self, cx: &mut Context<Self>) -> Div {
         let mut pane = div()
             .flex()
@@ -1258,6 +1866,99 @@ fn section_title(label: &str) -> Div {
         .child(label.to_string())
 }
 
+fn shortcut_keycap(label: String, bound: bool) -> Div {
+    div()
+        .px_2p5()
+        .py_1()
+        .rounded_md()
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .bg(gpui::rgb(theme::bg_input()))
+        .text_xs()
+        .font_family(crate::assets::FONT_MONO)
+        .text_color(gpui::rgb(if bound {
+            theme::text_primary()
+        } else {
+            theme::text_faint()
+        }))
+        .child(label)
+}
+
+fn shortcut_context_label(context: Option<&str>) -> &str {
+    match context {
+        None => "Global",
+        Some("Chat") => "Chat",
+        Some("Transcript") => "Transcript",
+        Some("RootMenu") => "Project menu",
+        Some("TextInput") => "Text fields",
+        Some(crate::ui::text_input::vim_actions::NORMAL_CONTEXT) => "Composer — Normal",
+        Some(crate::ui::text_input::vim_actions::VISUAL_CONTEXT) => "Composer — Visual",
+        Some(crate::ui::text_input::vim_actions::INSERT_CONTEXT) => "Composer — Insert",
+        Some(context) => context,
+    }
+}
+
+fn shortcut_row_matches(row: &crate::shortcuts::ShortcutRow, query: &str) -> bool {
+    query.is_empty()
+        || row.label.to_lowercase().contains(query)
+        || row.slot_id.to_lowercase().contains(query)
+        || row.category.to_lowercase().contains(query)
+        || row
+            .context
+            .as_deref()
+            .unwrap_or("global")
+            .to_lowercase()
+            .contains(query)
+        || shortcut_context_label(row.context.as_deref())
+            .to_lowercase()
+            .contains(query)
+        || row.default_sequence.to_lowercase().contains(query)
+        || row
+            .current_sequence
+            .as_deref()
+            .is_some_and(|sequence| sequence.to_lowercase().contains(query))
+}
+
+fn shortcut_conflict_label(conflict: &ShortcutConflict) -> String {
+    let kind = match conflict.kind {
+        ShortcutConflictKind::Exact => "Exact collision",
+        ShortcutConflictKind::Prefix => "Prefix collision",
+    };
+    let overlap = match conflict.overlap {
+        ShortcutContextOverlap::Equivalent => "same context",
+        ShortcutContextOverlap::Scoped => "overlapping scoped context",
+        ShortcutContextOverlap::Possible => "possibly overlapping context",
+    };
+    format!("{kind}, {overlap}")
+}
+
+fn portable_keystroke_token(keystroke: &gpui::Keystroke) -> String {
+    let mut parts = Vec::with_capacity(6);
+    if keystroke.modifiers.secondary() {
+        parts.push("secondary".to_string());
+    }
+    if keystroke.modifiers.control && cfg!(target_os = "macos") {
+        parts.push("ctrl".to_string());
+    }
+    if keystroke.modifiers.alt {
+        parts.push("alt".to_string());
+    }
+    if keystroke.modifiers.shift {
+        parts.push("shift".to_string());
+    }
+    if keystroke.modifiers.platform && !cfg!(target_os = "macos") {
+        parts.push("cmd".to_string());
+    }
+    if keystroke.modifiers.function {
+        parts.push("fn".to_string());
+    }
+    parts.push(match keystroke.key.as_str() {
+        " " => "space".to_string(),
+        key => key.to_lowercase(),
+    });
+    parts.join("-")
+}
+
 fn setting_row(
     title: &str,
     description: &str,
@@ -1417,6 +2118,27 @@ fn format_tokens(tokens: i64) -> String {
 mod tests {
     use super::*;
 
+    fn shortcut_row(
+        slot_id: &str,
+        label: &str,
+        category: &str,
+        context: Option<&str>,
+        default_sequence: &str,
+        current_sequence: Option<&str>,
+        modified: bool,
+    ) -> crate::shortcuts::ShortcutRow {
+        crate::shortcuts::ShortcutRow {
+            slot_id: slot_id.to_string(),
+            label: label.to_string(),
+            category: category.to_string(),
+            context: context.map(str::to_string),
+            default_sequence: default_sequence.to_string(),
+            current_sequence: current_sequence.map(str::to_string),
+            modified,
+            conflicts: Vec::new(),
+        }
+    }
+
     fn server(name: &str) -> AgentMcpServer {
         AgentMcpServer {
             name: name.to_string(),
@@ -1439,6 +2161,25 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_result_preserves_unrelated_general_setting() {
+        let mut settings = AppSettings::default();
+        settings.default_web_enabled = !settings.default_web_enabled;
+        let expected_web_enabled = settings.default_web_enabled;
+        settings
+            .shortcut_overrides
+            .insert("chat.focus_search".into(), None);
+        let overrides = ShortcutOverrides::from([(
+            "chat.new_task".to_owned(),
+            Some("secondary-shift-n".to_owned()),
+        )]);
+
+        merge_shortcut_overrides(&mut settings, overrides.clone());
+
+        assert_eq!(settings.default_web_enabled, expected_web_enabled);
+        assert_eq!(settings.shortcut_overrides, overrides);
+    }
+
+    #[test]
     fn renaming_onto_another_server_is_a_collision() {
         let servers = [server("alpha"), server("beta")];
         // Adding a new server with a taken name.
@@ -1449,5 +2190,134 @@ mod tests {
         // Renaming onto a sibling.
         assert!(name_collides(&servers, Some("alpha"), "beta"));
         assert!(!name_collides(&servers, Some("alpha"), "gamma"));
+    }
+
+    #[test]
+    fn shortcut_recorder_uses_the_portable_primary_modifier() {
+        let source = if cfg!(target_os = "macos") {
+            "cmd-shift-p"
+        } else {
+            "ctrl-shift-p"
+        };
+        let keystroke = gpui::Keystroke::parse(source).expect("valid test keystroke");
+        assert_eq!(portable_keystroke_token(&keystroke), "secondary-shift-p");
+    }
+
+    #[test]
+    fn shortcut_recorder_keeps_literal_control_on_macos() {
+        let keystroke = gpui::Keystroke::parse("ctrl-r").expect("valid test keystroke");
+        let expected = if cfg!(target_os = "macos") {
+            "ctrl-r"
+        } else {
+            "secondary-r"
+        };
+        assert_eq!(portable_keystroke_token(&keystroke), expected);
+    }
+
+    #[test]
+    fn shortcut_search_matches_each_displayed_field() {
+        let row = shortcut_row(
+            "project.menu.open",
+            "Open Project Menu",
+            "Projects",
+            Some("RootMenu"),
+            "secondary-p",
+            Some("secondary-shift-p"),
+            false,
+        );
+
+        for query in [
+            "open project",
+            "project.menu",
+            "projects",
+            "rootmenu",
+            "project menu",
+            "secondary-p",
+            "secondary-shift-p",
+        ] {
+            assert!(shortcut_row_matches(&row, query), "query {query:?}");
+        }
+        assert!(!shortcut_row_matches(&row, "transcript"));
+        assert!(shortcut_row_matches(
+            &shortcut_row(
+                "app.quit",
+                "Quit",
+                "Application",
+                None,
+                "secondary-q",
+                None,
+                false
+            ),
+            "global"
+        ));
+    }
+
+    #[test]
+    fn shortcut_list_cache_rebuilds_after_snapshot_changes() {
+        let snapshot = ShortcutSnapshot {
+            generation: 1,
+            rows: vec![
+                shortcut_row(
+                    "chat.search",
+                    "Search tasks",
+                    "Chat",
+                    Some("Chat"),
+                    "secondary-k",
+                    Some("secondary-k"),
+                    false,
+                ),
+                shortcut_row(
+                    "composer.send",
+                    "Send message",
+                    "Composer",
+                    Some("TextInput"),
+                    "enter",
+                    Some("secondary-enter"),
+                    true,
+                ),
+            ],
+            last_error: None,
+            compatibility_warning: None,
+        };
+        assert_eq!(
+            ShortcutListCache::rebuild(&snapshot, "secondary-enter"),
+            ShortcutListCache {
+                visible_indices: vec![1],
+                modified_count: 1,
+            }
+        );
+
+        let replacement = ShortcutSnapshot {
+            generation: 2,
+            rows: vec![
+                shortcut_row(
+                    "composer.send",
+                    "Send message",
+                    "Composer",
+                    Some("TextInput"),
+                    "enter",
+                    Some("enter"),
+                    false,
+                ),
+                shortcut_row(
+                    "chat.search",
+                    "Search tasks",
+                    "Chat",
+                    Some("Chat"),
+                    "secondary-k",
+                    Some("secondary-enter"),
+                    true,
+                ),
+            ],
+            last_error: None,
+            compatibility_warning: None,
+        };
+        assert_eq!(
+            ShortcutListCache::rebuild(&replacement, "secondary-enter"),
+            ShortcutListCache {
+                visible_indices: vec![1],
+                modified_count: 1,
+            }
+        );
     }
 }

@@ -25,6 +25,11 @@ pub struct AppSettings {
     /// Enable modal Vim editing only in the main chat composer.
     #[serde(default)]
     pub composer_vim_enabled: bool,
+    /// Per-binding shortcut changes keyed by the stable slot IDs exposed in
+    /// Keyboard Shortcuts. A string replaces the physical sequence; `null`
+    /// disables that exact slot. Missing entries retain their shipped key.
+    #[serde(default)]
+    pub shortcut_overrides: std::collections::BTreeMap<String, Option<String>>,
     #[serde(default)]
     pub pinned_roots: Vec<String>,
     /// Display names for project roots, keyed by absolute path.
@@ -258,6 +263,7 @@ impl Default for AppSettings {
             default_web_enabled: default_web_enabled(),
             tool_summaries: default_tool_summaries(),
             composer_vim_enabled: false,
+            shortcut_overrides: std::collections::BTreeMap::new(),
             pinned_roots: Vec::new(),
             project_names: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
@@ -566,5 +572,41 @@ mod tests {
             .remove("composer_vim_enabled");
         let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
         assert!(!settings.composer_vim_enabled);
+    }
+
+    #[test]
+    fn existing_settings_files_default_shortcut_overrides_to_empty() {
+        let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
+        json.as_object_mut()
+            .expect("settings object")
+            .remove("shortcut_overrides");
+        let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
+        assert!(settings.shortcut_overrides.is_empty());
+    }
+
+    #[test]
+    fn shortcut_overrides_distinguish_remapped_disabled_and_default_slots() {
+        let mut settings = AppSettings::default();
+        settings
+            .shortcut_overrides
+            .insert("chat.new_task".into(), Some("secondary-shift-n".into()));
+        settings
+            .shortcut_overrides
+            .insert("chat.focus_search".into(), None);
+
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(
+            json["shortcut_overrides"]["chat.new_task"],
+            "secondary-shift-n"
+        );
+        assert!(json["shortcut_overrides"]["chat.focus_search"].is_null());
+        assert!(
+            json["shortcut_overrides"]
+                .get("chat.toggle_sidebar")
+                .is_none()
+        );
+
+        let restored: AppSettings = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(restored.shortcut_overrides, settings.shortcut_overrides);
     }
 }
