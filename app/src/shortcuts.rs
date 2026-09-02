@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gpui::{App, KeyBinding, Keystroke};
 
-use crate::ui::text_input::vim_actions;
+use crate::ui::{application_vim, text_input::vim_actions};
 
 use crate::keymap::{build_binding, catalog, install};
 
@@ -345,6 +345,10 @@ enum KnownContext {
     ComposerNormal,
     ComposerVisual,
     ComposerInsert,
+    ApplicationVimRoot,
+    ApplicationVimRootMenu,
+    ApplicationVimOtherInput,
+    ApplicationVimComposerNormal,
     Other,
 }
 
@@ -358,6 +362,12 @@ fn known_context(context: Option<&str>) -> KnownContext {
         Some(vim_actions::NORMAL_CONTEXT) => KnownContext::ComposerNormal,
         Some(vim_actions::VISUAL_CONTEXT) => KnownContext::ComposerVisual,
         Some(vim_actions::INSERT_CONTEXT) => KnownContext::ComposerInsert,
+        Some(application_vim::ROOT_CONTEXT) => KnownContext::ApplicationVimRoot,
+        Some(application_vim::ROOT_MENU_CONTEXT) => KnownContext::ApplicationVimRootMenu,
+        Some(application_vim::OTHER_INPUT_CONTEXT) => KnownContext::ApplicationVimOtherInput,
+        Some(application_vim::COMPOSER_NORMAL_CONTEXT) => {
+            KnownContext::ApplicationVimComposerNormal
+        }
         Some(_) => KnownContext::Other,
     }
 }
@@ -376,6 +386,56 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
     }
     if left == KnownContext::Chat || right == KnownContext::Chat {
         return Some(ShortcutContextOverlap::Scoped);
+    }
+    if matches!(
+        (left, right),
+        (KnownContext::RootMenu, KnownContext::ApplicationVimRootMenu)
+            | (KnownContext::ApplicationVimRootMenu, KnownContext::RootMenu)
+            | (KnownContext::Transcript, KnownContext::ApplicationVimRoot)
+            | (KnownContext::ApplicationVimRoot, KnownContext::Transcript)
+            | (
+                KnownContext::TextInput,
+                KnownContext::ApplicationVimOtherInput
+            )
+            | (
+                KnownContext::ApplicationVimOtherInput,
+                KnownContext::TextInput
+            )
+            | (
+                KnownContext::TextInput,
+                KnownContext::ApplicationVimComposerNormal
+            )
+            | (
+                KnownContext::ApplicationVimComposerNormal,
+                KnownContext::TextInput
+            )
+            | (
+                KnownContext::ComposerNormal,
+                KnownContext::ApplicationVimComposerNormal
+            )
+            | (
+                KnownContext::ApplicationVimComposerNormal,
+                KnownContext::ComposerNormal
+            )
+    ) {
+        return Some(ShortcutContextOverlap::Scoped);
+    }
+    if matches!(
+        left,
+        KnownContext::ApplicationVimRoot
+            | KnownContext::ApplicationVimRootMenu
+            | KnownContext::ApplicationVimOtherInput
+            | KnownContext::ApplicationVimComposerNormal
+    ) || matches!(
+        right,
+        KnownContext::ApplicationVimRoot
+            | KnownContext::ApplicationVimRootMenu
+            | KnownContext::ApplicationVimOtherInput
+            | KnownContext::ApplicationVimComposerNormal
+    ) {
+        // The four application predicates explicitly exclude one another.
+        // Their only overlapping legacy parents are handled above.
+        return None;
     }
     if matches!(left, KnownContext::TextInput)
         && matches!(
@@ -422,7 +482,7 @@ mod tests {
     #[test]
     fn shipped_catalog_prepares_without_customization_conflicts() {
         let prepared = prepare(&ShortcutOverrides::new()).unwrap();
-        assert_eq!(prepared.bindings.len(), 118);
+        assert_eq!(prepared.bindings.len(), 159);
         assert!(
             prepared.rows.iter().all(|row| row.conflicts.is_empty()),
             "intentional parent/child context shadowing is not a user conflict"
@@ -509,6 +569,18 @@ mod tests {
         assert_eq!(modified.conflicts[0].other_slot_id, "app.quit");
     }
 
+    #[test]
+    fn transcript_and_application_root_are_scoped_contexts() {
+        assert_eq!(
+            context_overlap(Some("Transcript"), Some(application_vim::ROOT_CONTEXT)),
+            Some(ShortcutContextOverlap::Scoped)
+        );
+        assert_eq!(
+            context_overlap(Some(application_vim::ROOT_CONTEXT), Some("Transcript")),
+            Some(ShortcutContextOverlap::Scoped)
+        );
+    }
+
     #[gpui::test]
     fn invalid_replacement_preserves_live_generation(cx: &mut gpui::TestAppContext) {
         cx.update(|app| {
@@ -588,7 +660,7 @@ mod tests {
             let runtime = ShortcutRuntime::bootstrap(&overrides, app);
             let snapshot = runtime.snapshot();
             assert_eq!(snapshot.generation, 1);
-            assert_eq!(snapshot.rows.len(), 118);
+            assert_eq!(snapshot.rows.len(), 159);
             assert!(snapshot.last_error.is_none());
             assert!(
                 snapshot

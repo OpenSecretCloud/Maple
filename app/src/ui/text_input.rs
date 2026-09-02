@@ -6,7 +6,7 @@
 pub mod vim;
 pub(crate) mod vim_actions;
 
-use super::{spell, theme, widgets};
+use super::{application_vim, spell, theme, widgets};
 use std::collections::VecDeque;
 use std::ops::Range;
 
@@ -22,7 +22,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use self::vim::{
     HistoryPlan, HistorySnapshot, InsertEditKind, InsertEntry, LifecycleEvent, Motion, VimCommand,
-    VimMode, VimOutcome, VimState, VimStatus,
+    VimMode, VimOutcome, VimSignal, VimState, VimStatus,
 };
 use self::vim_actions::{
     VimBeginOperator, VimCancel, VimContextual, VimCountDigit, VimDeleteChars, VimEnterInsert,
@@ -54,6 +54,8 @@ actions!(
 
 type EnterHandler = Box<dyn Fn(String, &mut Window, &mut Context<TextInput>) + 'static>;
 type PasteImageHandler = Box<dyn Fn(gpui::Image, &mut Window, &mut Context<TextInput>) + 'static>;
+type VimLeaveHandler = Box<dyn Fn(&mut Window, &mut Context<TextInput>) + 'static>;
+type ApplicationEscapeHandler = Box<dyn Fn(&mut Window, &mut Context<TextInput>) + 'static>;
 /// First look at a key press with the input's current text. Return true to
 /// consume it. The handler runs while this input is being updated, so it
 /// must not read or update this input entity; defer anything that does.
@@ -141,9 +143,18 @@ pub struct TextInput {
     /// boundary: ordinary caret, selection, popup, and focus lifecycles cannot
     /// be overwritten by stale modal offsets.
     vim: Option<VimState>,
+    /// Repeat the screen's application-Vim marker on the focused input's
+    /// own key context. GPUI resolves bindings from the focused context, so
+    /// this cannot rely on an ancestor screen marker alone.
+    application_vim: bool,
     /// Stable state behind an active IME composition. Only its final commit
     /// becomes part of the current Vim insertion transaction.
     vim_ime_baseline: Option<ImeBaseline>,
+    /// Synchronous application-region transition used by Normal Escape.
+    on_vim_leave: Option<VimLeaveHandler>,
+    /// Synchronous return from an ordinary field to its owning application
+    /// navigation proxy. Kept separate from composer Vim's mode transition.
+    on_application_escape: Option<ApplicationEscapeHandler>,
     /// Commits an Insert transaction and clears pending grammar when focus
     /// leaves the composer.
     focus_out_subscription: Option<Subscription>,
@@ -228,7 +239,10 @@ impl TextInput {
             last_edit: None,
             is_composer: false,
             vim: None,
+            application_vim: false,
             vim_ime_baseline: None,
+            on_vim_leave: None,
+            on_application_escape: None,
             focus_out_subscription: None,
         }
     }
@@ -238,6 +252,40 @@ impl TextInput {
     pub fn composer_vim(mut self, enabled: bool) -> Self {
         self.is_composer = true;
         self.vim = enabled.then(|| VimState::at(&self.content, self.cursor_offset()));
+        self
+    }
+
+    pub fn application_vim(mut self, enabled: bool) -> Self {
+        self.application_vim = enabled;
+        self
+    }
+
+    pub fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.application_vim != enabled {
+            self.application_vim = enabled;
+            cx.notify();
+        }
+    }
+
+    /// Handle a second composer Escape (already in Normal mode) by returning
+    /// synchronously to the owning application's semantic focus proxy.
+    pub fn on_vim_leave(
+        mut self,
+        handler: impl Fn(&mut Window, &mut Context<TextInput>) + 'static,
+    ) -> Self {
+        self.on_vim_leave = Some(Box::new(handler));
+        self
+    }
+
+    /// Return Escape from an ordinary input to its screen-owned semantic
+    /// focus proxy while application Vim is enabled. The key binding remains
+    /// context-gated, so ordinary inputs keep their standard editing behavior
+    /// when application Vim is off.
+    pub fn on_application_escape(
+        mut self,
+        handler: impl Fn(&mut Window, &mut Context<TextInput>) + 'static,
+    ) -> Self {
+        self.on_application_escape = Some(Box::new(handler));
         self
     }
 
@@ -403,6 +451,23 @@ impl TextInput {
         }
     }
 
+    /// Application `gi`: enter Insert at the last insertion boundary. Draft
+    /// replacement paths reset the engine first, so the saved byte offset is
+    /// always valid for the current text.
+    pub fn focus_last_insertion(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(mut vim) = self.vim.take() else {
+            return false;
+        };
+        if vim.mode() == VimMode::Disabled {
+            self.vim = Some(vim);
+            return false;
+        }
+        let outcome = vim.enter_at_last_insertion(&self.content);
+        self.vim = Some(vim);
+        self.apply_vim_outcome(outcome, cx);
+        true
+    }
+
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if self.vim.is_some() {
             self.finish_vim_lifecycle(LifecycleEvent::ExternalDraftReplacement, cx);
@@ -530,7 +595,11 @@ impl TextInput {
         self.apply_vim_outcome(outcome, cx);
     }
 
-    fn execute_vim_command(&mut self, command: VimCommand, cx: &mut Context<Self>) -> bool {
+    fn execute_vim_command_with_signal(
+        &mut self,
+        command: VimCommand,
+        cx: &mut Context<Self>,
+    ) -> (bool, VimSignal) {
         if self.marked_range.is_some() && command == VimCommand::Cancel {
             if let Some(baseline) = self.vim_ime_baseline.take() {
                 let cursor = baseline.range.start;
@@ -540,21 +609,33 @@ impl TextInput {
             }
             self.marked_range = None;
             cx.notify();
-            return true;
+            return (true, VimSignal::None);
         }
         let Some(mut vim) = self.vim.take() else {
-            return false;
+            return (false, VimSignal::None);
         };
         let before = self.content.to_string();
         let mut text = before.clone();
         let outcome = vim.handle_command(&mut text, command);
         let consumed = outcome.consumed;
+        let signal = outcome.signal;
         self.vim = Some(vim);
         if text != before {
             self.content = text.into();
         }
         self.apply_vim_outcome(outcome, cx);
-        consumed
+        (consumed, signal)
+    }
+
+    fn execute_vim_command(&mut self, command: VimCommand, cx: &mut Context<Self>) -> bool {
+        self.execute_vim_command_with_signal(command, cx).0
+    }
+
+    fn invoke_vim_leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handler) = self.on_vim_leave.take() {
+            handler(window, cx);
+            self.on_vim_leave = Some(handler);
+        }
     }
 
     fn dispatch_vim_action(&mut self, command: VimCommand, cx: &mut Context<Self>) {
@@ -903,20 +984,35 @@ impl TextInput {
     }
 
     fn key_context(&self) -> &'static str {
-        match (self.is_composer, self.vim_mode()) {
-            (true, Some(VimMode::Normal)) => {
+        match (self.application_vim, self.is_composer, self.vim_mode()) {
+            (true, true, Some(VimMode::Normal)) => {
+                "TextInput ApplicationVim input_role = composer editor_vim_mode = normal"
+            }
+            (true, true, Some(VimMode::Insert)) => {
+                "TextInput ApplicationVim input_role = composer editor_vim_mode = insert"
+            }
+            (true, true, Some(VimMode::Visual)) => {
+                "TextInput ApplicationVim input_role = composer editor_vim_mode = visual"
+            }
+            (true, true, Some(VimMode::Disabled) | None) => {
+                "TextInput ApplicationVim input_role = composer editor_vim_mode = disabled"
+            }
+            (true, false, _) => {
+                "TextInput ApplicationVim input_role = other editor_vim_mode = disabled"
+            }
+            (false, true, Some(VimMode::Normal)) => {
                 "TextInput input_role = composer editor_vim_mode = normal"
             }
-            (true, Some(VimMode::Insert)) => {
+            (false, true, Some(VimMode::Insert)) => {
                 "TextInput input_role = composer editor_vim_mode = insert"
             }
-            (true, Some(VimMode::Visual)) => {
+            (false, true, Some(VimMode::Visual)) => {
                 "TextInput input_role = composer editor_vim_mode = visual"
             }
-            (true, Some(VimMode::Disabled) | None) => {
+            (false, true, Some(VimMode::Disabled) | None) => {
                 "TextInput input_role = composer editor_vim_mode = disabled"
             }
-            (false, _) => "TextInput input_role = other editor_vim_mode = disabled",
+            (false, false, _) => "TextInput input_role = other editor_vim_mode = disabled",
         }
     }
 
@@ -978,8 +1074,28 @@ impl TextInput {
         self.dispatch_vim_action(VimCommand::Repeat, cx);
     }
 
-    fn vim_cancel(&mut self, _: &VimCancel, _: &mut Window, cx: &mut Context<Self>) {
-        self.dispatch_vim_action(VimCommand::Cancel, cx);
+    fn vim_cancel(&mut self, _: &VimCancel, window: &mut Window, cx: &mut Context<Self>) {
+        let (consumed, signal) = self.execute_vim_command_with_signal(VimCommand::Cancel, cx);
+        if signal == VimSignal::LeaveComposer {
+            self.invoke_vim_leave(window, cx);
+        }
+        if consumed {
+            cx.stop_propagation();
+        }
+    }
+
+    fn application_escape(
+        &mut self,
+        _: &application_vim::Escape,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(handler) = self.on_application_escape.take() else {
+            return;
+        };
+        handler(window, cx);
+        self.on_application_escape = Some(handler);
+        cx.stop_propagation();
     }
 
     /// Offset on the row above (-1) or below (+1) the cursor, keeping the
@@ -2259,6 +2375,7 @@ impl Render for TextInput {
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam);
         vim_actions::attach_actions(input, cx)
+            .on_action(cx.listener(Self::application_escape))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
@@ -2363,7 +2480,10 @@ impl Focusable for TextInput {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     struct InputHost {
         input: Entity<TextInput>,
@@ -2372,6 +2492,20 @@ mod tests {
     impl Render for InputHost {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div().w(px(500.)).h(px(240.)).child(self.input.clone())
+        }
+    }
+
+    struct ApplicationInputHost {
+        input: Entity<TextInput>,
+    }
+
+    impl Render for ApplicationInputHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context("Settings ApplicationVim")
+                .w(px(500.))
+                .h(px(240.))
+                .child(self.input.clone())
         }
     }
 
@@ -2687,6 +2821,28 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ordinary_input_escape_reaches_its_application_focus_handoff(cx: &mut TestAppContext) {
+        let leaves = Rc::new(Cell::new(0));
+        let leaves_for_handler = leaves.clone();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            TextInput::new("", cx)
+                .application_vim(true)
+                .on_application_escape(move |_window, _cx| {
+                    leaves_for_handler.set(leaves_for_handler.get() + 1)
+                })
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ApplicationInputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, _app| window.focus(&focus));
+
+        cx.simulate_keystrokes("escape");
+        assert_eq!(leaves.get(), 1);
+    }
+
+    #[gpui::test]
     fn composer_vim_bindings_dispatch_and_insert_uses_the_input_handler(cx: &mut TestAppContext) {
         let input = cx.new(|cx| {
             crate::desktop::register_key_bindings(cx);
@@ -2783,6 +2939,35 @@ mod tests {
                     .all(|range| range.end <= input.content.len())
             );
         });
+    }
+
+    #[gpui::test]
+    fn composer_normal_escape_notifies_the_application_synchronously(cx: &mut TestAppContext) {
+        let leaves = Rc::new(Cell::new(0));
+        let leaves_for_handler = leaves.clone();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            TextInput::new("", cx)
+                .composer_vim(true)
+                .on_vim_leave(move |_window, _cx| {
+                    leaves_for_handler.set(leaves_for_handler.get() + 1)
+                })
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, _app| window.focus(&focus));
+
+        cx.simulate_keystrokes("escape");
+        assert_eq!(leaves.get(), 1);
+
+        // Insert and Visual Escape are editor-local mode transitions. Only
+        // Escape from settled Normal asks the owning application to leave.
+        cx.simulate_keystrokes("i escape v escape");
+        assert_eq!(leaves.get(), 1);
+        cx.simulate_keystrokes("escape");
+        assert_eq!(leaves.get(), 2);
     }
 
     #[gpui::test]

@@ -10,6 +10,7 @@ use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredic
 use crate::{
     desktop::QuitApp,
     ui::{
+        application_vim::{self, SpatialDirection},
         chat,
         text_input::{
             self,
@@ -29,6 +30,7 @@ pub(crate) enum ShortcutCategory {
     ProjectMenu,
     TextEditing,
     ComposerVim,
+    ApplicationVim,
 }
 
 impl ShortcutCategory {
@@ -40,6 +42,7 @@ impl ShortcutCategory {
             Self::ProjectMenu => "Project Menu",
             Self::TextEditing => "Text Editing",
             Self::ComposerVim => "Composer Vim",
+            Self::ApplicationVim => "Application Vim",
         }
     }
 }
@@ -93,6 +96,24 @@ enum SlotAction {
     VimRedo,
     VimRepeat,
     VimCancel,
+    ApplicationVimNext,
+    ApplicationVimPrevious,
+    ApplicationVimFirst,
+    ApplicationVimLast,
+    ApplicationVimActivate,
+    ApplicationVimCollapse,
+    ApplicationVimExpand,
+    ApplicationVimCopyTarget,
+    ApplicationVimSearch,
+    ApplicationVimEscape,
+    ApplicationVimFocusComposer,
+    ApplicationVimNewestAssistant,
+    ApplicationVimNextAssistant,
+    ApplicationVimPreviousAssistant,
+    ApplicationVimNextAnnotation,
+    ApplicationVimPreviousAnnotation,
+    ApplicationVimCountDigit(u8),
+    ApplicationVimMoveRegion(SpatialDirection),
 }
 
 impl SlotAction {
@@ -147,6 +168,28 @@ impl SlotAction {
             Self::VimRedo => Box::new(vim_actions::VimRedo),
             Self::VimRepeat => Box::new(vim_actions::VimRepeat),
             Self::VimCancel => Box::new(vim_actions::VimCancel),
+            Self::ApplicationVimNext => Box::new(application_vim::Next),
+            Self::ApplicationVimPrevious => Box::new(application_vim::Previous),
+            Self::ApplicationVimFirst => Box::new(application_vim::First),
+            Self::ApplicationVimLast => Box::new(application_vim::Last),
+            Self::ApplicationVimActivate => Box::new(application_vim::Activate),
+            Self::ApplicationVimCollapse => Box::new(application_vim::Collapse),
+            Self::ApplicationVimExpand => Box::new(application_vim::Expand),
+            Self::ApplicationVimCopyTarget => Box::new(application_vim::CopyTarget),
+            Self::ApplicationVimSearch => Box::new(application_vim::Search),
+            Self::ApplicationVimEscape => Box::new(application_vim::Escape),
+            Self::ApplicationVimFocusComposer => Box::new(application_vim::FocusComposer),
+            Self::ApplicationVimNewestAssistant => Box::new(application_vim::NewestAssistant),
+            Self::ApplicationVimNextAssistant => Box::new(application_vim::NextAssistant),
+            Self::ApplicationVimPreviousAssistant => Box::new(application_vim::PreviousAssistant),
+            Self::ApplicationVimNextAnnotation => Box::new(application_vim::NextAnnotation),
+            Self::ApplicationVimPreviousAnnotation => Box::new(application_vim::PreviousAnnotation),
+            Self::ApplicationVimCountDigit(digit) => {
+                Box::new(application_vim::CountDigit { digit })
+            }
+            Self::ApplicationVimMoveRegion(direction) => {
+                Box::new(application_vim::MoveRegion { direction })
+            }
         }
     }
 }
@@ -377,6 +420,8 @@ pub(crate) fn catalog() -> Vec<ShortcutSlot> {
         ),
     ]);
 
+    add_application_vim_slots(&mut slots);
+
     slots.extend([
         slot(
             "text_input.backspace",
@@ -601,6 +646,282 @@ pub(crate) fn catalog() -> Vec<ShortcutSlot> {
         ),
     ]);
     slots
+}
+
+fn add_application_vim_slots(slots: &mut Vec<ShortcutSlot>) {
+    let root = application_vim::ROOT_CONTEXT;
+    for (id, label, sequence, action) in [
+        (
+            "application_vim.next",
+            "Application Vim next item",
+            "j",
+            SlotAction::ApplicationVimNext,
+        ),
+        (
+            "application_vim.previous",
+            "Application Vim previous item",
+            "k",
+            SlotAction::ApplicationVimPrevious,
+        ),
+        (
+            "application_vim.first",
+            "Application Vim first item",
+            "g g",
+            SlotAction::ApplicationVimFirst,
+        ),
+        (
+            "application_vim.last",
+            "Application Vim last item",
+            "G",
+            SlotAction::ApplicationVimLast,
+        ),
+        (
+            "application_vim.activate",
+            "Application Vim activate item",
+            "enter",
+            SlotAction::ApplicationVimActivate,
+        ),
+        (
+            "application_vim.collapse",
+            "Application Vim collapse item",
+            "h",
+            SlotAction::ApplicationVimCollapse,
+        ),
+        (
+            "application_vim.expand",
+            "Application Vim expand item",
+            "l",
+            SlotAction::ApplicationVimExpand,
+        ),
+        (
+            "application_vim.copy_target",
+            "Application Vim copy transcript item",
+            "y",
+            SlotAction::ApplicationVimCopyTarget,
+        ),
+        (
+            "application_vim.search",
+            "Application Vim search",
+            "/",
+            SlotAction::ApplicationVimSearch,
+        ),
+        (
+            "application_vim.newest_assistant",
+            "Application Vim newest assistant item",
+            "g a",
+            SlotAction::ApplicationVimNewestAssistant,
+        ),
+        (
+            "application_vim.previous_assistant",
+            "Application Vim previous assistant item",
+            "[ a",
+            SlotAction::ApplicationVimPreviousAssistant,
+        ),
+        (
+            "application_vim.next_assistant",
+            "Application Vim next assistant item",
+            "] a",
+            SlotAction::ApplicationVimNextAssistant,
+        ),
+        (
+            "application_vim.previous_annotation",
+            "Application Vim previous annotation",
+            "[ d",
+            SlotAction::ApplicationVimPreviousAnnotation,
+        ),
+        (
+            "application_vim.next_annotation",
+            "Application Vim next annotation",
+            "] d",
+            SlotAction::ApplicationVimNextAnnotation,
+        ),
+        (
+            "application_vim.focus_composer",
+            "Application Vim focus last composer insertion",
+            "g i",
+            SlotAction::ApplicationVimFocusComposer,
+        ),
+        (
+            "application_vim.escape",
+            "Application Vim close or return",
+            "escape",
+            SlotAction::ApplicationVimEscape,
+        ),
+        (
+            "application_vim.leader.new_task",
+            "Application Vim new task",
+            "space s n",
+            SlotAction::NewTask,
+        ),
+        (
+            "application_vim.leader.settings",
+            "Application Vim open settings",
+            "space ,",
+            SlotAction::OpenAppSettings,
+        ),
+    ] {
+        slots.push(slot(
+            id,
+            label,
+            ShortcutCategory::ApplicationVim,
+            Some(root),
+            sequence,
+            action,
+        ));
+    }
+
+    for (direction, id, label, sequence) in [
+        (
+            SpatialDirection::Left,
+            "application_vim.region.left",
+            "Application Vim move to left region",
+            "ctrl-w h",
+        ),
+        (
+            SpatialDirection::Down,
+            "application_vim.region.down",
+            "Application Vim move to lower region",
+            "ctrl-w j",
+        ),
+        (
+            SpatialDirection::Up,
+            "application_vim.region.up",
+            "Application Vim move to upper region",
+            "ctrl-w k",
+        ),
+        (
+            SpatialDirection::Right,
+            "application_vim.region.right",
+            "Application Vim move to right region",
+            "ctrl-w l",
+        ),
+    ] {
+        slots.push(slot(
+            id,
+            label,
+            ShortcutCategory::ApplicationVim,
+            Some(root),
+            sequence,
+            SlotAction::ApplicationVimMoveRegion(direction),
+        ));
+    }
+
+    const COUNT_IDS: [&str; 10] = [
+        "application_vim.count.0",
+        "application_vim.count.1",
+        "application_vim.count.2",
+        "application_vim.count.3",
+        "application_vim.count.4",
+        "application_vim.count.5",
+        "application_vim.count.6",
+        "application_vim.count.7",
+        "application_vim.count.8",
+        "application_vim.count.9",
+    ];
+    const COUNT_LABELS: [&str; 10] = [
+        "Application Vim count 0",
+        "Application Vim count 1",
+        "Application Vim count 2",
+        "Application Vim count 3",
+        "Application Vim count 4",
+        "Application Vim count 5",
+        "Application Vim count 6",
+        "Application Vim count 7",
+        "Application Vim count 8",
+        "Application Vim count 9",
+    ];
+    const COUNT_KEYS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    for digit in 0..=9 {
+        slots.push(slot(
+            COUNT_IDS[digit],
+            COUNT_LABELS[digit],
+            ShortcutCategory::ApplicationVim,
+            Some(root),
+            COUNT_KEYS[digit],
+            SlotAction::ApplicationVimCountDigit(digit as u8),
+        ));
+    }
+
+    for (id, label, sequence, action) in [
+        (
+            "application_vim.project_menu.previous",
+            "Application Vim previous project menu item",
+            "k",
+            SlotAction::ApplicationVimPrevious,
+        ),
+        (
+            "application_vim.project_menu.next",
+            "Application Vim next project menu item",
+            "j",
+            SlotAction::ApplicationVimNext,
+        ),
+    ] {
+        slots.push(slot(
+            id,
+            label,
+            ShortcutCategory::ApplicationVim,
+            Some(application_vim::ROOT_MENU_CONTEXT),
+            sequence,
+            action,
+        ));
+    }
+
+    slots.push(slot(
+        "application_vim.input.escape",
+        "Return from an application Vim text field",
+        ShortcutCategory::ApplicationVim,
+        Some(application_vim::OTHER_INPUT_CONTEXT),
+        "escape",
+        SlotAction::ApplicationVimEscape,
+    ));
+
+    for (id, label, sequence, action) in [
+        (
+            "application_vim.composer.newest_assistant",
+            "Leave composer for newest assistant item",
+            "g a",
+            SlotAction::ApplicationVimNewestAssistant,
+        ),
+        (
+            "application_vim.composer.last_insertion",
+            "Composer Vim last insertion",
+            "g i",
+            SlotAction::ApplicationVimFocusComposer,
+        ),
+        (
+            "application_vim.composer.region.left",
+            "Leave composer for left region",
+            "ctrl-w h",
+            SlotAction::ApplicationVimMoveRegion(SpatialDirection::Left),
+        ),
+        (
+            "application_vim.composer.region.down",
+            "Move from composer to lower region",
+            "ctrl-w j",
+            SlotAction::ApplicationVimMoveRegion(SpatialDirection::Down),
+        ),
+        (
+            "application_vim.composer.region.up",
+            "Leave composer for upper region",
+            "ctrl-w k",
+            SlotAction::ApplicationVimMoveRegion(SpatialDirection::Up),
+        ),
+        (
+            "application_vim.composer.region.right",
+            "Move from composer to right region",
+            "ctrl-w l",
+            SlotAction::ApplicationVimMoveRegion(SpatialDirection::Right),
+        ),
+    ] {
+        slots.push(slot(
+            id,
+            label,
+            ShortcutCategory::ApplicationVim,
+            Some(application_vim::COMPOSER_NORMAL_CONTEXT),
+            sequence,
+            action,
+        ));
+    }
 }
 
 fn add_vim_mode_slots(slots: &mut Vec<ShortcutSlot>, mode: &'static str, context: &'static str) {
@@ -889,9 +1210,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn catalog_is_the_exact_existing_118_slots() {
+    fn catalog_contains_existing_shortcuts_and_the_application_vim_layer() {
         let catalog = catalog();
-        assert_eq!(catalog.len(), 118);
+        assert_eq!(catalog.len(), 159);
         let ids = catalog.iter().map(|slot| slot.id).collect::<BTreeSet<_>>();
         assert_eq!(ids.len(), catalog.len());
         assert_eq!(
@@ -901,8 +1222,27 @@ mod tests {
                 .count(),
             76
         );
-        assert_eq!(catalog[0].default_sequence, "secondary-q");
-        assert_eq!(catalog[24].default_sequence, "enter");
-        assert_eq!(catalog[41].default_sequence, "ctrl-cmd-space");
+        assert_eq!(
+            catalog
+                .iter()
+                .filter(|slot| slot.category == ShortcutCategory::ApplicationVim)
+                .count(),
+            41
+        );
+        for (id, sequence) in [
+            ("app.quit", "secondary-q"),
+            ("project_menu.confirm", "enter"),
+            ("text_input.character_palette", "ctrl-cmd-space"),
+            ("application_vim.previous_annotation", "[ d"),
+            ("application_vim.next_annotation", "] d"),
+        ] {
+            assert_eq!(
+                catalog
+                    .iter()
+                    .find(|slot| slot.id == id)
+                    .map(|slot| slot.default_sequence),
+                Some(sequence)
+            );
+        }
     }
 }

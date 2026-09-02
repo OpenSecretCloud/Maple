@@ -7,6 +7,7 @@
 
 use gpui::{Context, Window};
 
+use super::navigation::ApplicationVimCommand;
 use super::{
     AllowPermission, ChatEscape, ChatScreen, ChooseProject, CopySelection, FocusSearch, NewTask,
     NextTask, OpenAppSettings, OpenSettings, PickQuestionOption, PreviousTask, RootMenuConfirm,
@@ -15,6 +16,7 @@ use super::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ChatCommand {
+    ApplicationVim(ApplicationVimCommand),
     ChooseProject,
     CopySelection,
     Escape,
@@ -46,9 +48,18 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !matches!(command, ChatCommand::ApplicationVim(_)) {
+            self.application_vim.count.clear();
+        }
         match command {
+            ChatCommand::ApplicationVim(command) => {
+                self.execute_application_vim(command, window, cx)
+            }
             ChatCommand::ChooseProject => self.toggle_root_menu(cx),
             ChatCommand::CopySelection => self.copy_selected_text(cx),
+            ChatCommand::Escape if self.application_vim_enabled => {
+                self.application_escape(window, cx)
+            }
             ChatCommand::Escape => self.escape(cx),
             ChatCommand::FocusSearch => self.focus_sidebar_search(window, cx),
             ChatCommand::NewTask => self.new_session(cx),

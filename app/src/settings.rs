@@ -25,6 +25,9 @@ pub struct AppSettings {
     /// Enable modal Vim editing only in the main chat composer.
     #[serde(default)]
     pub composer_vim_enabled: bool,
+    /// Enable stable-ID application navigation independently of composer Vim.
+    #[serde(default)]
+    pub application_vim_enabled: bool,
     /// Per-binding shortcut changes keyed by the stable slot IDs exposed in
     /// Keyboard Shortcuts. A string replaces the physical sequence; `null`
     /// disables that exact slot. Missing entries retain their shipped key.
@@ -263,6 +266,7 @@ impl Default for AppSettings {
             default_web_enabled: default_web_enabled(),
             tool_summaries: default_tool_summaries(),
             composer_vim_enabled: false,
+            application_vim_enabled: false,
             shortcut_overrides: std::collections::BTreeMap::new(),
             pinned_roots: Vec::new(),
             project_names: std::collections::HashMap::new(),
@@ -572,6 +576,16 @@ mod tests {
             .remove("composer_vim_enabled");
         let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
         assert!(!settings.composer_vim_enabled);
+    }
+
+    #[test]
+    fn existing_settings_files_default_application_vim_to_off() {
+        let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
+        json.as_object_mut()
+            .expect("settings object")
+            .remove("application_vim_enabled");
+        let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
+        assert!(!settings.application_vim_enabled);
     }
 
     #[test]

@@ -191,10 +191,14 @@ impl ChatScreen {
                     menu.left(SIDEBAR_COLLAPSED_INSET)
                 })
                 .child(
-                    menu.key_context("RootMenu")
-                        .when_some(self.root_menu_focus.clone(), |menu, focus| {
-                            menu.track_focus(&focus)
-                        }),
+                    menu.key_context(if self.application_vim_enabled {
+                        "RootMenu ApplicationVim"
+                    } else {
+                        "RootMenu"
+                    })
+                    .when_some(self.root_menu_focus.clone(), |menu, focus| {
+                        menu.track_focus(&focus)
+                    }),
                 ),
         )
     }

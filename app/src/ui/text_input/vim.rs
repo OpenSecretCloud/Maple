@@ -433,6 +433,8 @@ pub struct VimState {
     register: Option<RegisterSnapshot>,
     transaction: Option<InsertTransaction>,
     last_change: Option<RepeatRecipe>,
+    /// Revision-compatible insertion boundary used by application `gi`.
+    last_insertion: usize,
     notice: Option<VimNotice>,
 }
 
@@ -1174,6 +1176,7 @@ impl VimState {
             register: None,
             transaction: None,
             last_change: None,
+            last_insertion: 0,
             notice: None,
         }
     }
@@ -1187,6 +1190,7 @@ impl VimState {
     pub fn at(text: &str, cursor: usize) -> Self {
         let mut state = Self::new();
         state.cursor = normal_cursor(text, cursor);
+        state.last_insertion = insertion_boundary(text, cursor);
         state
     }
 
@@ -1196,6 +1200,34 @@ impl VimState {
 
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    #[cfg(test)]
+    pub fn last_insertion(&self) -> usize {
+        self.last_insertion
+    }
+
+    /// Enter Insert at the last valid insertion boundary. The host resets
+    /// this boundary whenever it replaces the draft, so stale offsets never
+    /// cross draft revisions.
+    pub fn enter_at_last_insertion(&mut self, text: &str) -> VimOutcome {
+        self.notice = None;
+        if self.mode == VimMode::Disabled {
+            return self.not_consumed(text);
+        }
+        self.mode = VimMode::Insert;
+        self.cursor = insertion_boundary(text, self.last_insertion);
+        self.visual_anchor = None;
+        self.visual_head = None;
+        self.clear_grammar();
+        self.preferred_column = None;
+        self.transaction = Some(InsertTransaction {
+            before: self.snapshot(text),
+            origin: TransactionOrigin::Insert(InsertEntry::BeforeCursor),
+            delta: InsertDelta::default(),
+            changed: false,
+        });
+        self.outcome(text, false, HistoryPlan::None, VimSignal::None)
     }
 
     #[cfg(test)]
@@ -1662,6 +1694,7 @@ impl VimState {
         self.preferred_column = None;
         if operator == Operator::Change {
             self.mode = VimMode::Insert;
+            self.last_insertion = self.cursor;
             self.transaction = Some(InsertTransaction {
                 before,
                 origin: TransactionOrigin::Operator { target, count },
@@ -1729,6 +1762,7 @@ impl VimState {
             self.cursor = changed_line.start + indentation.len();
             self.cursor = insertion_boundary(text, self.cursor);
             self.mode = VimMode::Insert;
+            self.last_insertion = self.cursor;
             self.transaction = Some(InsertTransaction {
                 before,
                 origin: TransactionOrigin::Operator { target, count },
@@ -1848,6 +1882,7 @@ impl VimState {
         self.clear_grammar();
         let before = self.snapshot(text);
         self.cursor = self.insert_entry_boundary(text, entry);
+        self.last_insertion = self.cursor;
         self.mode = VimMode::Insert;
         self.visual_anchor = None;
         self.visual_head = None;
@@ -1885,6 +1920,7 @@ impl VimState {
             }
         };
         self.cursor = insertion_boundary(text, cursor);
+        self.last_insertion = self.cursor;
         self.mode = VimMode::Insert;
         self.preferred_column = None;
         self.transaction = Some(InsertTransaction {
@@ -1958,6 +1994,7 @@ impl VimState {
         };
         let cursor_after = insertion_boundary(text, cursor_after);
         self.cursor = cursor_after;
+        self.last_insertion = cursor_after;
         let changed = old != *text;
         if let Some(transaction) = &mut self.transaction
             && changed
@@ -1995,6 +2032,7 @@ impl VimState {
             });
         }
         self.cursor = cursor;
+        self.last_insertion = cursor;
         self.outcome(text, false, HistoryPlan::None, VimSignal::None)
     }
 
@@ -2027,6 +2065,7 @@ impl VimState {
 
     fn finish_insert(&mut self, text: &str, update_recipe: bool) -> VimOutcome {
         let insert_boundary = insertion_boundary(text, self.cursor);
+        self.last_insertion = insert_boundary;
         self.mode = VimMode::Normal;
         self.clear_grammar();
         self.preferred_column = None;
@@ -2248,6 +2287,7 @@ impl VimState {
         if operator == Operator::Change {
             self.mode = VimMode::Insert;
             self.cursor = insertion_boundary(text, range.start);
+            self.last_insertion = self.cursor;
             self.transaction = Some(InsertTransaction {
                 before,
                 origin: TransactionOrigin::Visual {
@@ -2399,6 +2439,7 @@ impl VimState {
         if let Some(transaction) = &mut self.transaction {
             transaction.delta = delta.clone();
         }
+        self.last_insertion = self.cursor;
         true
     }
 
@@ -2679,6 +2720,7 @@ impl VimState {
             VimMode::Normal
         };
         self.cursor = normal_cursor(text, cursor);
+        self.last_insertion = insertion_boundary(text, cursor);
         self.visual_anchor = None;
         self.visual_head = None;
         self.clear_grammar();
@@ -3659,6 +3701,22 @@ mod tests {
         let visual = editor.escape();
         assert_eq!(visual.signal, VimSignal::None);
         assert_eq!(editor.vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn application_gi_enters_insert_at_the_saved_insertion_boundary() {
+        let mut editor = Editor::at("one two", 4);
+        editor.command(VimCommand::EnterInsert(InsertEntry::BeforeCursor));
+        editor.insert("X");
+        editor.escape();
+        assert_eq!(editor.text, "one Xtwo");
+        assert_eq!(editor.vim.last_insertion(), 5);
+        editor.command(VimCommand::Motion(Motion::LineStart));
+
+        let outcome = editor.vim.enter_at_last_insertion(&editor.text);
+        assert!(outcome.consumed);
+        assert_eq!(outcome.status.mode, VimMode::Insert);
+        assert_eq!(editor.vim.cursor(), 5);
     }
 
     #[test]

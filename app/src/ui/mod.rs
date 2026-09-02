@@ -1,5 +1,6 @@
 //! gpui frontend for Maple: login, chat, shared widgets, theme.
 
+pub(crate) mod application_vim;
 pub mod chat;
 pub mod context_ring;
 pub mod decorations;
