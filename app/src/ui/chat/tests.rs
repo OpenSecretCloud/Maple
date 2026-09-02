@@ -11,13 +11,17 @@ mod state_tests {
     use gpui::TestAppContext;
 
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
+        summary_at(id, title, "/tmp/proj")
+    }
+
+    fn summary_at(id: &str, title: &str, project_root: &str) -> AgentSessionSummary {
         AgentSessionSummary {
             web_enabled: true,
             archived: false,
             acp: false,
             id: id.to_string(),
             title: title.to_string(),
-            project_root: "/tmp/proj".to_string(),
+            project_root: project_root.to_string(),
             created_ms: 0,
             updated_ms: 0,
             message_count: 0,
@@ -26,7 +30,7 @@ mod state_tests {
         }
     }
 
-    /// A project root that `switch_root` accepts on every platform. A bare
+    /// A project root that `select_project_root` accepts on every platform. A bare
     /// `/name` has a root but no drive, so `Path::is_absolute` rejects it on
     /// Windows and the switch never starts.
     fn absolute_fixture_root(name: &str) -> String {
@@ -1285,18 +1289,38 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_pending_select_is_dropped_when_the_switch_does_not_start(cx: &mut TestAppContext) {
+    fn test_project_selection_rejects_reentry_and_relative_paths(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.root_switching = true;
-            this.pending_session_select = Some("s2".to_string());
-            this.switch_root("/tmp/other".to_string(), cx);
-            assert_eq!(this.pending_session_select, None);
-            this.root_switching = false;
-            this.pending_session_select = Some("s2".to_string());
-            this.switch_root("relative".to_string(), cx);
-            assert_eq!(this.pending_session_select, None);
-            assert!(!this.root_switching);
+            this.root_selecting = true;
+            this.select_project_root(absolute_fixture_root("other"), cx);
+            assert!(this.root_selecting);
+            this.root_selecting = false;
+            this.select_project_root("relative".to_string(), cx);
+            assert!(!this.root_selecting);
+            assert_eq!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Enter an absolute directory path")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_project_selection_invalidates_older_load_but_newer_task_click_wins(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let old_selection = this.selection_generation;
+            let old_reload = this.reload_generation;
+            this.select_project_root(absolute_fixture_root("other"), cx);
+            let project_selection = this.selection_generation;
+
+            assert!(project_selection > old_selection);
+            assert!(this.reload_generation > old_reload);
+
+            this.select_session("newer-task", cx);
+            assert!(this.selection_generation > project_selection);
         });
     }
 
@@ -1754,10 +1778,50 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_archive_root_during_a_switch_sets_a_notice(cx: &mut TestAppContext) {
+    fn test_project_selection_clears_view_but_preserves_background_work(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.root_switching = true;
+            this.booting = false;
+            this.active_runs
+                .insert("s1".to_string(), "run-1".to_string());
+            this.pending_permissions.push(PendingPermission {
+                session_id: "s1".to_string(),
+                run_id: "run-1".to_string(),
+                request_id: "req-1".to_string(),
+                tool_name: "bash".to_string(),
+                prompt: None,
+                arguments: "".into(),
+            });
+            this.pending_questions = vec![crate::backend::PendingQuestion {
+                session_id: "s1".to_string(),
+                request_id: "question-1".to_string(),
+                questions: Vec::new(),
+            }];
+            this.queue_edit = Some(QueueEdit {
+                queue_id: "q1".to_string(),
+                draft: String::new(),
+            });
+
+            let left = this.clear_selected_session_presentation(cx);
+
+            assert_eq!(left.as_deref(), Some("s1"));
+            assert_eq!(this.selected_session, None);
+            assert!(this.queue.is_empty());
+            assert!(this.queue_edit.is_none());
+            assert_eq!(
+                this.active_runs.get("s1").map(String::as_str),
+                Some("run-1")
+            );
+            assert_eq!(this.pending_permissions.len(), 1);
+            assert_eq!(this.pending_questions.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn test_archive_root_during_project_selection_sets_a_notice(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.root_selecting = true;
             this.archive_root("/tmp/proj", cx);
             assert!(this.notice.is_some());
         });
@@ -1815,8 +1879,7 @@ mod state_tests {
 
     /// Alt-Up and Alt-Down walk the current project's task rows in the
     /// order the sidebar shows them, and stop at both ends. A task under
-    /// another project is not a step away: opening it switches the
-    /// runtime root, which re-sorts the sidebar under the keys.
+    /// another project is not a step away.
     #[gpui::test]
     fn test_task_stepping_stays_in_the_current_project(cx: &mut TestAppContext) {
         let screen = screen(cx);
@@ -1890,6 +1953,200 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_expanding_another_project_is_presentation_only(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.sessions = vec![
+                summary_at("s1", "A", "/work/alpha"),
+                summary_at("s2", "B", "/work/beta"),
+            ];
+            this.selected_session = Some("s1".to_string());
+            this.active_runs
+                .insert("s1".to_string(), "run-a".to_string());
+            this.collapsed_roots.insert("/work/beta".to_string());
+            this.rebuild_project_groups();
+
+            this.set_root_collapsed("/work/beta", false, cx);
+
+            assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(
+                this.active_runs.get("s1").map(String::as_str),
+                Some("run-a")
+            );
+            assert!(!this.root_selecting);
+        });
+    }
+
+    #[gpui::test]
+    fn test_cross_project_task_selection_preserves_all_active_runs(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.sessions = vec![
+                summary_at("s1", "A", "/work/alpha"),
+                summary_at("s2", "B", "/work/beta"),
+            ];
+            this.selected_session = Some("s1".to_string());
+            this.active_runs = HashMap::from([
+                ("s1".to_string(), "run-a".to_string()),
+                ("s2".to_string(), "run-b".to_string()),
+            ]);
+            this.tool_summaries.insert("old".to_string(), "old".into());
+            this.attachment_requests.insert("old".to_string());
+
+            this.set_active_session(
+                summary_at("s2", "B", "/work/beta"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+
+            assert_eq!(this.selected_session.as_deref(), Some("s2"));
+            assert_eq!(this.project_root.as_deref(), Some("/work/beta"));
+            assert_eq!(this.active_runs.len(), 2);
+            assert_eq!(
+                this.active_runs.get("s1").map(String::as_str),
+                Some("run-a")
+            );
+            assert_eq!(
+                this.active_runs.get("s2").map(String::as_str),
+                Some("run-b")
+            );
+            assert!(this.tool_summaries.is_empty());
+            assert!(this.attachment_requests.is_empty());
+            assert!(!this.root_selecting);
+        });
+    }
+
+    #[gpui::test]
+    fn test_new_task_request_always_names_the_visible_project(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            assert!(this.new_session_request().is_none());
+            this.project_root = Some("/work/beta".to_string());
+            let request = this.new_session_request().expect("explicit root request");
+            assert_eq!(request.project_root.as_deref(), Some("/work/beta"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_stale_new_task_completion_keeps_its_row_without_stealing_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/beta".to_string());
+            this.selected_session = Some("newer".to_string());
+            this.selection_generation = 2;
+            this.session_setup_pending = true;
+
+            this.finish_new_session(summary_at("created", "Created", "/work/alpha"), 1, cx);
+
+            assert!(!this.session_setup_pending);
+            assert_eq!(this.selected_session.as_deref(), Some("newer"));
+            assert_eq!(this.project_root.as_deref(), Some("/work/beta"));
+            assert!(this.sessions.iter().any(|session| session.id == "created"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_running_and_completed_unread_are_session_scoped(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![
+                summary_at("s1", "A", "/work/alpha"),
+                summary_at("s2", "B", "/work/beta"),
+            ];
+            this.selected_session = Some("s1".to_string());
+
+            this.handle_run_event("s1", "run-a", AgentRunEvent::Started, cx);
+            this.handle_run_event("s2", "run-b", AgentRunEvent::Started, cx);
+            assert_eq!(this.session_activity("s1"), Some(SessionActivity::Running));
+            assert_eq!(this.session_activity("s2"), Some(SessionActivity::Running));
+
+            this.handle_run_event(
+                "s2",
+                "run-b",
+                AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                cx,
+            );
+            assert_eq!(this.session_activity("s1"), Some(SessionActivity::Running));
+            assert_eq!(
+                this.session_activity("s2"),
+                Some(SessionActivity::CompletedUnread)
+            );
+
+            this.select_session("s2", cx);
+            assert_eq!(this.session_activity("s2"), None);
+            assert_eq!(this.session_activity("s1"), Some(SessionActivity::Running));
+        });
+    }
+
+    #[gpui::test]
+    fn test_only_successful_background_completion_becomes_unread(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = Some("shown".to_string());
+            for (session, run, terminal) in [
+                ("failed", "run-failed", AgentRunTerminal::Failed),
+                ("cancelled", "run-cancelled", AgentRunTerminal::Cancelled),
+            ] {
+                this.handle_run_event(session, run, AgentRunEvent::Started, cx);
+                this.handle_run_event(session, run, AgentRunEvent::Finished(terminal), cx);
+            }
+            this.handle_run_event("shown", "run-shown", AgentRunEvent::Started, cx);
+            this.handle_run_event(
+                "shown",
+                "run-shown",
+                AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                cx,
+            );
+
+            assert!(this.completed_unread_sessions.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_terminal_run_cannot_be_resurrected_by_an_older_status(cx: &mut TestAppContext) {
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal, AgentRuntimeStatus};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.handle_run_event("s2", "run-2", AgentRunEvent::Started, cx);
+            this.handle_run_event(
+                "s2",
+                "run-2",
+                AgentRunEvent::Finished(AgentRunTerminal::Completed),
+                cx,
+            );
+            assert!(!this.active_runs.contains_key("s2"));
+
+            this.apply_service_event(
+                AgentServiceEvent::RuntimeStatus(AgentRuntimeStatus {
+                    running: true,
+                    project_root: Some("/work/alpha".to_string()),
+                    model: None,
+                    mode: None,
+                    active_runs: HashMap::from([("s2".to_string(), "run-2".to_string())]),
+                }),
+                cx,
+            );
+
+            assert!(!this.active_runs.contains_key("s2"));
+            assert_eq!(
+                this.session_activity("s2"),
+                Some(SessionActivity::CompletedUnread)
+            );
+        });
+    }
+
+    #[gpui::test]
     fn test_finished_only_clears_its_own_run(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -1909,6 +2166,7 @@ mod state_tests {
                 this.active_runs.get("s1").map(String::as_str),
                 Some("run-new")
             );
+            assert!(!this.completed_unread_sessions.contains("s1"));
         });
     }
 
