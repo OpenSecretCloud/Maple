@@ -4342,6 +4342,10 @@ struct CachedModelCatalog {
 /// next to the account config and survives restarts.
 const MODEL_CATALOG_TTL_MS: u64 = 10 * 60 * 1000;
 
+/// Guards the background revalidation so concurrent readers in one process
+/// trigger at most one refresh.
+static MODEL_CATALOG_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
 fn model_catalog_cache_path(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
     Ok(agent_config_dir(paths, user_id)
         .map_err(|e| e.to_string())?
@@ -4389,43 +4393,71 @@ async fn cached_model_catalog_fetch(
         log::debug!("Serving the cached Maple Agent model catalog");
         return CatalogFetch::Fresh(record.models.clone());
     }
+    if let Some(record) = cached {
+        // Stale-while-revalidate: answer from the cache without a network
+        // round trip and refresh the file in the background, so a session
+        // request never blocks on the catalog after the first fetch. A
+        // catalog change therefore appears one connection later.
+        if MODEL_CATALOG_REFRESH_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            let session = Arc::clone(maple_api_session);
+            let path = cache_path.clone();
+            tokio::spawn(async move {
+                refresh_model_catalog(&path, &session).await;
+                MODEL_CATALOG_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
+            });
+        }
+        return CatalogFetch::Stale(record.models);
+    }
+    // No cache at all: fetch inline so a fresh install still gets a real
+    // model list for its first session.
+    let _ = generation;
     match maple_api_session.model_ids().await {
         Ok(models) => {
-            if !cache_path.as_os_str().is_empty() {
-                let record = CachedModelCatalog {
-                    fetched_at_ms: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|since| since.as_millis() as u64)
-                        .unwrap_or(0),
-                    models: models.clone(),
-                };
-                if let Ok(text) = serde_json::to_string(&record) {
-                    let path = cache_path.clone();
-                    let written =
-                        tokio::task::spawn_blocking(move || write_model_catalog_file(&path, &text))
-                            .await
-                            .unwrap_or_else(|error| {
-                                log::warn!("Model catalog cache task failed: {error}");
-                                Err(std::io::Error::other("model catalog cache task failed"))
-                            });
-                    if written.is_err() {
-                        log::warn!(
-                            "Failed to write the model catalog cache at {}",
-                            cache_path.display()
-                        );
-                    }
-                }
-            }
-            let _ = generation;
+            write_model_catalog(&cache_path, &models).await;
             CatalogFetch::Fresh(models)
         }
         Err(error) => {
             log::warn!("Failed to refresh Maple Agent model catalog: {error}");
-            match cached {
-                Some(record) => CatalogFetch::Stale(record.models),
-                None => CatalogFetch::Failed,
-            }
+            CatalogFetch::Failed
         }
+    }
+}
+
+/// Fetch the catalog once and persist it. Shared by the inline first fetch
+/// and the background revalidation.
+async fn refresh_model_catalog(path: &Path, maple_api_session: &Arc<MapleApiSession>) {
+    match maple_api_session.model_ids().await {
+        Ok(models) => write_model_catalog(path, &models).await,
+        Err(error) => log::warn!("Background model catalog refresh failed: {error}"),
+    }
+}
+
+async fn write_model_catalog(path: &Path, models: &[String]) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    let record = CachedModelCatalog {
+        fetched_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or(0),
+        models: models.to_vec(),
+    };
+    let Ok(text) = serde_json::to_string(&record) else {
+        return;
+    };
+    let path = path.to_path_buf();
+    let written = tokio::task::spawn_blocking(move || write_model_catalog_file(&path, &text))
+        .await
+        .unwrap_or_else(|error| {
+            log::warn!("Model catalog cache task failed: {error}");
+            Err(std::io::Error::other("model catalog cache task failed"))
+        });
+    if written.is_err() {
+        log::warn!("Failed to write the model catalog cache");
     }
 }
 
@@ -13137,6 +13169,43 @@ mod tests {
         let error = validate_session_model_lock(3, Some("glm-5-2"), "gemma4-31b").unwrap_err();
         assert!(error.contains("locked to model glm-5-2"));
         assert!(error.contains("Start a new task"));
+    }
+
+    #[tokio::test]
+    async fn stale_model_catalog_serves_without_waiting_on_the_network() {
+        let root = std::env::temp_dir().join(format!(
+            "maple-model-catalog-stale-{}-{}",
+            std::process::id(),
+            NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let paths =
+            AgentPathLayout::from_app_roots(root.join("app-config"), root.join("app-local-data"));
+        let cache_path = model_catalog_cache_path(&paths, "cache-user").unwrap();
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(
+            &cache_path,
+            serde_json::to_string(&CachedModelCatalog {
+                fetched_at_ms: 0,
+                models: vec!["model-a".to_string(), "model-b".to_string()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        // The test session points at an unreachable endpoint: a blocking
+        // fetch would fail the elapsed-time bound below.
+        let session = crate::maple_api::test_maple_api_session("cache-user");
+        let started = std::time::Instant::now();
+        let fetch = cached_model_catalog_fetch(&paths, "cache-user", &session, 0).await;
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(&fetch, CatalogFetch::Stale(models) if models == &["model-a".to_string(), "model-b".to_string()]),
+            "expected the stale list, got {fetch:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "a stale cache must answer without the network, took {elapsed:?}"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
