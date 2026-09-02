@@ -11,9 +11,9 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
-    AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest,
-    AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
-    AgentSubagent, AgentTimelineItem, SideQuestionEvent,
+    AgentCreateSessionRequest, AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage,
+    AgentSendMessageRequest, AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary,
+    AgentSlashCommand, AgentSubagent, AgentTimelineItem, SideQuestionEvent,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -121,6 +121,14 @@ enum RenameTarget {
     Project(String),
 }
 
+/// Derived sidebar presentation for one task or an aggregate of tasks.
+/// Running takes precedence over a prior unread completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionActivity {
+    Running,
+    CompletedUnread,
+}
+
 /// Sent prompts kept for Up/Down recall.
 const PROMPT_HISTORY_LIMIT: usize = 50;
 /// Gap between two repaints of the subagent card, which shows a live
@@ -181,6 +189,10 @@ pub struct ChatScreen {
     timeline: Vec<AgentTimelineItem>,
     /// Active run per session id, kept across selection changes.
     active_runs: HashMap<String, String>,
+    /// Successfully completed tasks that have not been opened since their
+    /// terminal event. This is intentionally independent of selection and
+    /// project grouping; the sidebar derives presentation from it.
+    completed_unread_sessions: HashSet<String>,
     /// Ids of runs whose Finished event already arrived, newest last and
     /// capped at `FINISHED_RUNS_KEPT`. A send that returns after its run
     /// finished must not mark that run active again.
@@ -264,7 +276,8 @@ pub struct ChatScreen {
     /// False once the user picks a mode for this specific session; the
     /// settings default then no longer overrides it.
     uses_default_permission_mode: bool,
-    /// Root the runtime is currently serving; new tasks operate here.
+    /// Project context shown by the UI and used explicitly for new tasks.
+    /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
     recent_roots: Vec<String>,
     root_menu_open: bool,
@@ -275,9 +288,9 @@ pub struct ChatScreen {
     root_menu_focus: Option<gpui::FocusHandle>,
     /// The menu was just opened and still needs the focus.
     root_menu_focus_pending: bool,
-    /// Manual path entry for the root switcher.
+    /// Manual path entry for the project selector.
     root_input: Option<Entity<TextInput>>,
-    root_switching: bool,
+    root_selecting: bool,
     /// Header label for the project root; set when the root changes so
     /// render does not format it.
     project_label: SharedString,
@@ -293,8 +306,6 @@ pub struct ChatScreen {
     watched_git_dir: Option<std::path::PathBuf>,
     /// A native folder picker is open; more clicks must not open another.
     root_picker_open: bool,
-    /// Session to open once a root switch triggered by the sidebar lands.
-    pending_session_select: Option<String>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
     /// Images staged for the next message.
@@ -470,7 +481,7 @@ pub struct ChatScreen {
 /// What a session snapshot load replaces once it lands.
 #[derive(Clone, Copy)]
 enum LoadMode {
-    /// Make the session current (sidebar click, boot, root switch).
+    /// Make the session current (sidebar click, boot, or project selection).
     Select,
     /// Swap the timeline only (mid-run history compaction).
     Reload,
@@ -707,6 +718,7 @@ impl ChatScreen {
             selected_session: None,
             timeline: Vec::new(),
             active_runs: HashMap::new(),
+            completed_unread_sessions: HashSet::new(),
             finished_runs: std::collections::VecDeque::new(),
             pending_permissions: Vec::new(),
             permission_responding: false,
@@ -756,7 +768,6 @@ impl ChatScreen {
             root_menu_selected: None,
             root_menu_focus: None,
             root_menu_focus_pending: false,
-            pending_session_select: None,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
             draft_counter: 0,
@@ -779,7 +790,7 @@ impl ChatScreen {
             collapsed_roots: HashSet::new(),
             archived_expanded: false,
             root_input: None,
-            root_switching: false,
+            root_selecting: false,
             project_label: SharedString::from("Choose folder"),
             project_branch: None,
             branch_label: None,
@@ -942,10 +953,13 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let request = backend.default_start_request();
+        // A task or project selected while the start is in flight owns the
+        // visible project context.
+        let generation = self.selection_generation;
         self.call(
             async move { backend.start_runtime(&user_id, Some(request)).await },
             cx,
-            |this, result, cx| {
+            move |this, result, cx| {
                 match result {
                     Ok(status) => {
                         log::debug!(
@@ -953,11 +967,11 @@ impl ChatScreen {
                             crate::startup_elapsed()
                         );
                         this.runtime_error = None;
-                        if this.project_root != status.project_root {
-                            this.project_root = status.project_root;
-                            this.project_root_changed(cx);
-                            this.check_project_trust(cx);
-                            this.refresh_slash_commands(cx);
+                        // Runtime root is only the fallback used at startup.
+                        if this.selected_session.is_none()
+                            && this.selection_generation == generation
+                        {
+                            this.set_project_context(status.project_root, cx);
                         }
                     }
                     Err(message) => {
@@ -1006,29 +1020,37 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Ok(roots) = result {
-                    this.recent_roots = roots.into_iter().map(|root| root.path).collect();
-                    this.rebuild_project_groups();
+                    this.apply_recent_roots(roots);
                 }
                 cx.notify();
             },
         );
     }
 
-    fn switch_root(&mut self, path: String, cx: &mut Context<Self>) {
-        if self.root_switching {
-            // The sidebar choice that asked for this switch is abandoned;
-            // otherwise a later switch would open a task nobody clicked.
-            self.pending_session_select = None;
+    /// Take the recent-root list the service returned, newest first.
+    fn apply_recent_roots(&mut self, roots: Vec<maple_agent::agent::RecentProjectRoot>) {
+        self.recent_roots = roots.into_iter().map(|root| root.path).collect();
+        self.rebuild_project_groups();
+    }
+
+    /// Select the project context for new tasks without disturbing work that
+    /// is already running in any session.
+    fn select_project_root(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.root_selecting {
             return;
         }
         let path = path.trim().to_string();
         if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
-            self.pending_session_select = None;
             self.notice = Some("Enter an absolute directory path".into());
             cx.notify();
             return;
         }
-        self.root_switching = true;
+        self.root_selecting = true;
+        // Project selection is navigation just like selecting a task. The
+        // generation moves only when the selection lands, so a registration
+        // that fails leaves loads in flight alive, while a task clicked after
+        // this point advances the generation and wins over the callback.
+        let selection_generation = self.selection_generation;
         self.root_menu_open = false;
         self.root_input = None;
         self.notice = None;
@@ -1036,41 +1058,76 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
-            async move { backend.set_project_root(&user_id, path).await },
+            async move { backend.select_project_root(&user_id, path).await },
             cx,
-            |this, result, cx| {
-                this.root_switching = false;
+            move |this, result, cx| {
+                this.root_selecting = false;
                 match result {
-                    Ok(status) => {
-                        this.project_root = status.project_root;
-                        this.project_root_changed(cx);
-                        this.check_project_trust(cx);
-                        this.rebuild_project_groups();
-                        this.replace_timeline(Vec::new());
-                        this.refresh_slash_commands(cx);
-                        this.refresh_roots(cx);
-                        match this.pending_session_select.take() {
-                            Some(session_id) => {
-                                // Keep the auto-select in refresh_sessions
-                                // from racing the explicit choice.
-                                this.selected_session = Some(session_id.clone());
-                                this.refresh_sessions(cx);
-                                this.select_session(&session_id, cx);
-                            }
-                            None => {
-                                this.selected_session = None;
-                                this.refresh_sessions(cx);
-                            }
+                    Ok(registration) => {
+                        this.apply_recent_roots(registration.roots);
+                        if this.selection_generation != selection_generation {
+                            // Registration still succeeded, so the project
+                            // stays listed without overriding the newer
+                            // navigation intent.
+                            cx.notify();
+                            return;
                         }
+                        this.begin_navigation();
+                        this.clear_selected_session_presentation(cx);
+                        this.set_project_context(Some(registration.project_root), cx);
+                        this.refresh_sessions(cx);
                     }
                     Err(message) => {
-                        this.pending_session_select = None;
                         this.notice = Some(message.into());
                     }
                 }
                 cx.notify();
             },
         );
+    }
+
+    /// Persist `root` as the default for new tasks and the next launch
+    /// without changing what is on screen. Used when a task under another
+    /// project is opened and when a project is archived.
+    fn persist_project_root(&mut self, root: String, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.select_project_root(&user_id, root).await },
+            cx,
+            |this, result, cx| match result {
+                Ok(registration) => {
+                    this.apply_recent_roots(registration.roots);
+                    cx.notify();
+                }
+                Err(error) => log::warn!("Cannot persist project root: {error}"),
+            },
+        );
+    }
+
+    /// Start a navigation that supersedes every task load in flight.
+    fn begin_navigation(&mut self) {
+        self.selection_generation += 1;
+        self.reload_generation += 1;
+    }
+
+    /// Adopt a project as the visible task context. This changes only UI
+    /// state; the account runtime and every active run remain untouched.
+    /// Returns whether the context changed.
+    fn set_project_context(
+        &mut self,
+        project_root: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.project_root == project_root {
+            return false;
+        }
+        self.project_root = project_root;
+        self.project_root_changed(cx);
+        self.check_project_trust(cx);
+        self.refresh_slash_commands(cx);
+        self.rebuild_project_groups();
+        true
     }
 
     fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
@@ -1095,7 +1152,7 @@ impl ChatScreen {
                 match picked {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.into_iter().next() {
-                            this.switch_root(path.to_string_lossy().into_owned(), cx);
+                            this.select_project_root(path.to_string_lossy().into_owned(), cx);
                         }
                     }
                     // Cancelled, or the picker dropped its channel.
@@ -1225,9 +1282,9 @@ impl ChatScreen {
 
     /// Claim the folder picker. One at a time: several at once each
     /// applied their own result and stalled the app. Returns `false` when
-    /// a picker or a root switch is already in progress.
+    /// a picker or a project selection is already in progress.
     fn begin_root_picker(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.root_picker_open || self.root_switching {
+        if self.root_picker_open || self.root_selecting {
             return false;
         }
         self.root_picker_open = true;
@@ -1309,35 +1366,15 @@ impl ChatScreen {
     fn refresh_sessions(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        // The sidebar groups tasks by project, so list every root. Opening
-        // a task under another root switches the runtime first (see
-        // open_session), which keeps tools running in the right directory.
+        // The sidebar groups tasks by project, so list every root. Each task's
+        // stored root remains authoritative when it is opened or run.
+        let generation = self.selection_generation;
         self.call(
             async move { backend.list_sessions(&user_id, None).await },
             cx,
-            |this, result, cx| {
+            move |this, result, cx| {
                 match result {
-                    Ok(sessions) => {
-                        this.sessions = sessions;
-                        this.rebuild_project_groups();
-                        if this.selected_session.is_none() {
-                            let root = this.project_root.clone();
-                            let latest = this
-                                .sessions
-                                .iter()
-                                .find(|session| {
-                                    !session.archived
-                                        && Some(&session.project_root) == root.as_ref()
-                                })
-                                .cloned();
-                            if let Some(latest) = latest {
-                                let id = latest.id;
-                                this.select_session(&id, cx);
-                            } else {
-                                this.new_session(cx);
-                            }
-                        }
-                    }
+                    Ok(sessions) => this.apply_session_list(sessions, generation, cx),
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
@@ -1345,34 +1382,69 @@ impl ChatScreen {
         );
     }
 
+    /// Take a fresh session list. With nothing on screen, open the latest
+    /// task of the visible project or create one, but only when no task or
+    /// project was selected since the list was requested: a click whose
+    /// load is still in flight leaves the selection empty too, and the
+    /// auto-select would supersede it.
+    fn apply_session_list(
+        &mut self,
+        sessions: Vec<AgentSessionSummary>,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions = sessions;
+        self.rebuild_project_groups();
+        if self.selected_session.is_some() || self.selection_generation != generation {
+            return;
+        }
+        let root = self.project_root.clone();
+        let latest = self
+            .sessions
+            .iter()
+            .find(|session| !session.archived && Some(&session.project_root) == root.as_ref())
+            .map(|session| session.id.clone());
+        match latest {
+            Some(id) => self.select_session(&id, cx),
+            None => self.new_session(cx),
+        }
+    }
+
     fn new_session(&mut self, cx: &mut Context<Self>) {
         // A boot-time auto-create and a user click can race; one only.
         if self.session_setup_pending {
             return;
         }
+        if self.root_selecting {
+            // The visible project is about to change; a task created now
+            // would land under the old one.
+            self.notice = Some("Wait for the project selection to finish, then try again".into());
+            cx.notify();
+            return;
+        }
+        let Some(request) = self.new_session_request() else {
+            self.notice = Some("Choose a project before creating a task".into());
+            cx.notify();
+            return;
+        };
+        // Creating a task is a navigation intent, but the generation moves
+        // only when the task lands: a failed create leaves loads in flight
+        // alive, and a task or project selected meanwhile supersedes the
+        // eventual callback.
+        let selection_generation = self.selection_generation;
         self.session_setup_pending = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move {
                 backend
-                    .create_session(&user_id, None)
+                    .create_session(&user_id, Some(request))
                     .await
                     .map(|detail| detail.session)
             },
             cx,
-            |this, result, cx| match result {
-                Ok(session) => {
-                    this.session_setup_pending = false;
-                    // The SessionCreated event may arrive before this
-                    // callback; upsert so the sidebar never shows the task
-                    // twice.
-                    this.upsert_session(session.clone());
-                    this.set_active_session(session, Vec::new(), HashMap::new(), cx);
-                    if !this.default_web_enabled {
-                        this.set_web_enabled(false, cx);
-                    }
-                }
+            move |this, result, cx| match result {
+                Ok(session) => this.finish_new_session(session, selection_generation, cx),
                 Err(message) => {
                     this.session_setup_pending = false;
                     this.notice = Some(message.into());
@@ -1381,23 +1453,53 @@ impl ChatScreen {
         );
     }
 
-    /// Sidebar click: switch the runtime root first when the task lives
-    /// under another project, then load it.
-    fn open_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        let root = self
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .map(|session| session.project_root.clone());
-        match root {
-            Some(root) if self.project_root.as_deref() != Some(root.as_str()) => {
-                self.pending_session_select = Some(session_id.to_string());
-                self.switch_root(root, cx);
+    fn finish_new_session(
+        &mut self,
+        session: AgentSessionSummary,
+        selection_generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.session_setup_pending = false;
+        // The SessionCreated event may arrive before this callback; upsert so
+        // the sidebar never shows the task twice, even when its navigation is
+        // no longer current.
+        self.upsert_session(session.clone());
+        if self.selection_generation == selection_generation {
+            self.begin_navigation();
+            self.set_active_session(session, Vec::new(), HashMap::new(), cx);
+            if !self.default_web_enabled {
+                self.set_web_enabled(false, cx);
             }
-            _ => self.select_session(session_id, cx),
+            return;
         }
+
+        // Creation still succeeded, but an older callback must never override
+        // a newer task or project choice. If the project choice left the view
+        // empty while the one-create-at-a-time fence was held, let it settle
+        // now that another task may be created.
+        self.rebuild_project_groups();
+        if self.selected_session.is_none() {
+            self.refresh_sessions(cx);
+        }
+        cx.notify();
     }
 
+    /// Build an explicit request so new-task placement never depends on the
+    /// runtime's startup fallback.
+    fn new_session_request(&self) -> Option<AgentCreateSessionRequest> {
+        Some(AgentCreateSessionRequest {
+            project_root: Some(self.project_root.clone()?),
+            title: None,
+            model: None,
+            context_limit: None,
+            mode: None,
+            mcp_server_names: None,
+            system_prompt: None,
+        })
+    }
+
+    /// Load a task and make it current when its snapshot lands; its
+    /// persisted root then becomes the visible project context.
     fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
         // The side thread belongs to the task it forked.
         if self.btw.is_some() && self.selected_session.as_deref() != Some(session_id) {
@@ -1790,6 +1892,61 @@ impl ChatScreen {
         );
     }
 
+    /// Leave the selected task's presentation without discarding anything
+    /// the account runtime still needs for background work. Pending
+    /// permissions and questions remain keyed by session and reappear when
+    /// that task is opened again.
+    pub(super) fn clear_selected_session_presentation(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let left = self.selected_session.clone();
+        if self.btw.is_some() {
+            self.close_side_thread(cx);
+        }
+        self.subagent_epoch += 1;
+        self.subagents.clear();
+        self.tool_summaries.clear();
+        self.attachment_images.clear();
+        self.attachment_requests.clear();
+        self.toggled_tools.clear();
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.reset_vim_context(cx));
+        }
+        // Release the hold while the previous session id is still selected.
+        self.abandon_queue_edit(cx);
+        self.selected_session = None;
+        self.refresh_selected_title();
+        self.set_queue(Vec::new());
+        self.replace_timeline(Vec::new());
+        self.reset_transcript_view(cx);
+        self.reset_question_card(cx);
+        self.refresh_session_mcp(cx);
+        left
+    }
+
+    /// Restart the state that belongs to the transcript on screen: the
+    /// text selection, the summary slots, scrolling, and open overlays.
+    fn reset_transcript_view(&mut self, cx: &mut Context<Self>) {
+        // Ordinals restart with the transcript; drop any stale selection.
+        if let Some(selection) = &self.selection {
+            selection.update(cx, |selection, _| selection.clear());
+        }
+        // Summaries in flight belong to the previous screen state; their
+        // results are dropped and the queue restarts.
+        self.summary_generation += 1;
+        self.pending_summaries = 0;
+        self.summary_queue.clear();
+        self.summary_requests.clear();
+        self.follow_transcript = true;
+        self.awaiting_first_token = false;
+        self.lightbox = None;
+        self.permission_responding = false;
+        self.models_menu_open = false;
+        self.root_menu_open = false;
+        self.mcp_menu_open = false;
+    }
+
     /// Make `session` the one on screen. `stored_summaries` are the tool
     /// summaries loaded with its snapshot; they land after the per-task
     /// caches of the previous task are dropped.
@@ -1801,32 +1958,27 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         let changed = self.selected_session.as_deref() != Some(session.id.as_str());
-        // The side thread belongs to the task it forked; every path that
-        // lands on another task (new task, archive, root switch) ends it.
-        if changed && self.btw.is_some() {
-            self.close_side_thread(cx);
-        }
         if changed {
-            // Subagents are shown for the task on screen only; the runtime
-            // keeps working for the one left behind. The new task's own
-            // subagents arrive with the snapshot below.
-            self.subagent_epoch += 1;
-            self.subagents.clear();
-            // Item-keyed caches of the previous task would only grow for
-            // the life of the window.
-            self.tool_summaries.clear();
-            self.attachment_images.clear();
-            self.attachment_requests.clear();
-            self.toggled_tools.clear();
-            if let Some(composer) = self.composer.clone() {
-                composer.update(cx, |input, cx| input.reset_vim_context(cx));
-            }
+            // Everything the previous task showed goes; the new task's own
+            // subagents and summaries arrive with the snapshot below.
+            self.clear_selected_session_presentation(cx);
+        } else {
+            // Same task, fresh snapshot: keep its caches, restart the view.
+            self.abandon_queue_edit(cx);
+            self.reset_transcript_view(cx);
         }
         self.tool_summaries.extend(stored_summaries);
-        // Release the edit hold against the session that owns it, before
-        // the selection moves to the new one.
-        self.abandon_queue_edit(cx);
+        let project_root = session.project_root.clone();
+        // Opening the task is what reads its completion.
+        self.completed_unread_sessions.remove(&session.id);
         self.selected_session = Some(session.id);
+        let previous_root = self.project_root.clone();
+        if self.set_project_context(Some(project_root.clone()), cx) && previous_root.is_some() {
+            // Working in another project makes it the default for new
+            // tasks and the next launch, as the project selector does. An
+            // archived task under a removed project restores that project.
+            self.persist_project_root(project_root, cx);
+        }
         self.refresh_selected_title();
         self.set_queue(Vec::new());
         // Adopt the session's stored policy; it persists per session in the
@@ -1836,26 +1988,9 @@ impl ChatScreen {
         }
         self.web_enabled = session.web_enabled;
         self.replace_timeline(timeline);
-        // Ordinals restart for the new session; drop any stale selection.
-        if let Some(selection) = &self.selection {
-            selection.update(cx, |selection, _| selection.clear());
-        }
-        // Summaries in flight belong to the previous screen state; their
-        // results are dropped and the queue restarts for this session.
-        self.summary_generation += 1;
-        self.pending_summaries = 0;
-        self.summary_queue.clear();
-        self.summary_requests.clear();
         self.load_attachment_images(cx);
         self.refresh_subagents(cx);
         self.summarize_loaded_tools(cx);
-        self.follow_transcript = true;
-        self.awaiting_first_token = false;
-        self.lightbox = None;
-        self.permission_responding = false;
-        self.models_menu_open = false;
-        self.root_menu_open = false;
-        self.mcp_menu_open = false;
         // Questions stay queued per session; the card for this session
         // starts on its first step with nothing picked.
         self.reset_question_card(cx);
@@ -1930,11 +2065,14 @@ impl ChatScreen {
     pub fn refresh_slash_commands(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let working_dir = self.project_root.clone();
+        let requested_root = working_dir.clone();
         self.call(
             async move { backend.list_slash_commands(working_dir).await },
             cx,
             move |this, result, cx| {
-                if let Ok(commands) = result {
+                if this.project_root == requested_root
+                    && let Ok(commands) = result
+                {
                     this.slash_commands = commands;
                     cx.notify();
                 }
@@ -2232,6 +2370,34 @@ impl ChatScreen {
             .is_some_and(|session| self.active_runs.contains_key(session))
     }
 
+    fn session_activity(&self, session_id: &str) -> Option<SessionActivity> {
+        if self.active_runs.contains_key(session_id) {
+            Some(SessionActivity::Running)
+        } else if self.completed_unread_sessions.contains(session_id) {
+            Some(SessionActivity::CompletedUnread)
+        } else {
+            None
+        }
+    }
+
+    fn aggregate_session_activity(
+        &self,
+        sessions: impl IntoIterator<Item = usize>,
+    ) -> Option<SessionActivity> {
+        let mut unread = false;
+        for index in sessions {
+            let Some(session) = self.sessions.get(index) else {
+                continue;
+            };
+            match self.session_activity(&session.id) {
+                Some(SessionActivity::Running) => return Some(SessionActivity::Running),
+                Some(SessionActivity::CompletedUnread) => unread = true,
+                None => {}
+            }
+        }
+        unread.then_some(SessionActivity::CompletedUnread)
+    }
+
     /// Rows the project menu offers: the recent roots it lists, then
     /// "New project…".
     fn root_menu_rows(&self) -> usize {
@@ -2272,7 +2438,7 @@ impl ChatScreen {
             .nth(index)
             .cloned();
         match recent {
-            Some(path) => self.switch_root(path, cx),
+            Some(path) => self.select_project_root(path, cx),
             None => self.choose_root_dialog(cx),
         }
     }
@@ -2284,13 +2450,12 @@ impl ChatScreen {
             return;
         };
         self.sidebar_list.scroll_to_reveal_item(row);
-        self.open_session(&id, cx);
+        self.select_session(&id, cx);
     }
 
     /// The task `delta` rows away from the selected one, as the sidebar
     /// row it sits on and its id. Stepping stays inside the current
-    /// project and stops at its ends: opening a task under another root
-    /// switches the runtime, which re-sorts the sidebar under the keys.
+    /// project and stops at its ends.
     fn task_step_target(&self, delta: isize) -> Option<(usize, String)> {
         let root = self.project_root.as_deref()?;
         let rows: Vec<(usize, usize)> = self
@@ -3454,6 +3619,10 @@ impl ChatScreen {
 
     /// Insert or replace a session row; returns whether anything changed.
     fn upsert_session(&mut self, session: AgentSessionSummary) -> bool {
+        // An archived row shows no indicator; drop a marker it may carry.
+        if session.archived {
+            self.completed_unread_sessions.remove(&session.id);
+        }
         if let Some(existing) = self
             .sessions
             .iter_mut()
@@ -3570,9 +3739,13 @@ impl ChatScreen {
     /// Apply one event; returns false when nothing visible changed.
     fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
         match event {
-            AgentServiceEvent::RuntimeStatus(status) => {
-                // The status snapshot is authoritative for active runs; an
-                // idle heartbeat that repeats it changes nothing.
+            AgentServiceEvent::RuntimeStatus(mut status) => {
+                // The status snapshot is authoritative for active runs; one
+                // that repeats the known state changes nothing. A snapshot
+                // raced with a terminal event must not resurrect that run.
+                status
+                    .active_runs
+                    .retain(|_, run_id| !self.finished_runs.contains(run_id));
                 if self.active_runs == status.active_runs {
                     return false;
                 }
@@ -3809,7 +3982,7 @@ impl ChatScreen {
                     return false;
                 }
             }
-            AgentRunEvent::Finished(_) => {
+            AgentRunEvent::Finished(terminal) => {
                 if self.finished_runs.len() >= FINISHED_RUNS_KEPT {
                     self.finished_runs.pop_front();
                 }
@@ -3822,6 +3995,16 @@ impl ChatScreen {
                     .is_none_or(|active| active == run_id);
                 if owns_session {
                     self.active_runs.remove(session_id);
+                    // The marker follows the latest terminal: only a
+                    // successful completion off screen sets it. Opening the
+                    // task (`set_active_session`) is the only other writer.
+                    self.completed_unread_sessions.remove(session_id);
+                    if matches!(terminal, maple_agent::agent::AgentRunTerminal::Completed)
+                        && !self.is_selected(session_id)
+                    {
+                        self.completed_unread_sessions
+                            .insert(session_id.to_string());
+                    }
                     // A subagent the run was waiting for ended with it. A
                     // background one works on and is collected by a later
                     // turn, so its row stays.

@@ -117,7 +117,7 @@ impl ChatScreen {
                         .on_click({
                             let path = path.clone();
                             cx.listener(move |this, _event, _window, cx| {
-                                this.switch_root(path.clone(), cx);
+                                this.select_project_root(path.clone(), cx);
                             })
                         })
                         .child(path.clone()),
@@ -174,7 +174,7 @@ impl ChatScreen {
                                             .as_ref()
                                             .map(|input| input.read(cx).text())
                                         {
-                                            this.switch_root(path, cx);
+                                            this.select_project_root(path, cx);
                                         }
                                     }))
                                     .child("Go"),

@@ -16,11 +16,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentProjectTrustStatus,
-    AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
-    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
-    AgentSlashCommand, AgentStartRequest, AgentSubagent, MapleAgentHostResources,
-    MapleAgentService, RecentProjectRoot,
+    AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink,
+    AgentProjectRootRegistration, AgentProjectTrustStatus, AgentQueueControlRequest,
+    AgentRenameSessionRequest, AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent,
+    AgentSessionDetail, AgentSessionSummary, AgentSlashCommand, AgentStartRequest, AgentSubagent,
+    MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
@@ -1014,26 +1014,33 @@ impl AgentBackend {
             .await
     }
 
-    /// Switch the runtime to a different project root: registers the root as
-    /// recent, restarts the agent under it, and returns the new status.
-    pub async fn set_project_root(
+    /// Register and select the default root for new tasks.
+    ///
+    /// The account runtime is deliberately not restarted: existing tasks own
+    /// their persisted working directories and may keep running under other
+    /// roots while the UI moves between projects.
+    ///
+    /// The root is trusted when no decision is saved yet, as the runtime
+    /// does for the root it starts under: this app treats choosing a
+    /// directory as the choice. A saved "do not trust" answer stays.
+    pub async fn select_project_root(
         &self,
         user_id: &str,
         path: String,
-    ) -> Result<AgentRuntimeStatus, String> {
+    ) -> Result<AgentProjectRootRegistration, String> {
         let handle = self.service.handle_for_user(user_id).await?;
-        handle.save_recent_project_root(path.clone()).await?;
-        let session = self.session_for(user_id).await?;
-        handle
-            .restart(
-                session,
-                Some(AgentStartRequest {
-                    project_root: Some(path),
-                    model: None,
-                    mode: None,
-                }),
-            )
-            .await
+        let registration = handle.save_recent_project_root(path).await?;
+        let root = registration.project_root.clone();
+        match handle.get_project_trust(root.clone()).await {
+            Ok(status) if status.available && status.decision.is_none() => {
+                if let Err(error) = handle.set_project_trust(root, true).await {
+                    log::warn!("Cannot trust selected project root: {error}");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => log::warn!("Cannot read project trust: {error}"),
+        }
+        Ok(registration)
     }
 
     pub async fn list_sessions(

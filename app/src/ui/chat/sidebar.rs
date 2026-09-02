@@ -13,8 +13,8 @@ use gpui::{
 use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary};
 
 use super::commands::ChatCommand;
-use super::{ChatScreen, MenuAction, RenameTarget, SIDEBAR_WIDTH, section_label};
-use crate::ui::icons::{icon, wordmark};
+use super::{ChatScreen, MenuAction, RenameTarget, SIDEBAR_WIDTH, SessionActivity, section_label};
+use crate::ui::icons::{icon, spinner_with_id, wordmark};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
@@ -27,6 +27,8 @@ pub(super) struct SidebarRow {
     pub(super) group: SharedString,
     pub(super) rename_id: SharedString,
     pub(super) archive_id: SharedString,
+    /// Animation id of the running indicator.
+    pub(super) spinner_id: SharedString,
     pub(super) title: SharedString,
     /// Display name of the task's project, for archived rows.
     pub(super) project_name: SharedString,
@@ -43,6 +45,7 @@ impl SidebarRow {
             group: SharedString::from(format!("task-row-{id}")),
             rename_id: SharedString::from(format!("rename-session-{id}")),
             archive_id: SharedString::from(format!("archive-session-{id}")),
+            spinner_id: SharedString::from(format!("spinner-session-{id}")),
             title: SharedString::from(session.title.clone()),
             project_name: SharedString::from(project_name.to_string()),
             search: session.title.to_lowercase(),
@@ -60,6 +63,8 @@ pub(super) struct ProjectGroup {
     pub(super) group: SharedString,
     pub(super) pin_id: SharedString,
     pub(super) menu_id: SharedString,
+    /// Animation id of the folded header's running indicator.
+    pub(super) spinner_id: SharedString,
     /// Indices into `sessions` of the live tasks that pass the filter.
     pub(super) tasks: Vec<usize>,
 }
@@ -73,6 +78,7 @@ impl ProjectGroup {
             group: SharedString::from(format!("project-row-{root}")),
             pin_id: SharedString::from(format!("pin-project-{root}")),
             menu_id: SharedString::from(format!("menu-project-{root}")),
+            spinner_id: SharedString::from(format!("spinner-project-{root}")),
             tasks,
         }
     }
@@ -867,8 +873,7 @@ impl ChatScreen {
             )
     }
 
-    /// Fold or unfold a project's task list. Unfolding a project that is
-    /// not current also makes it current, so New Task lands in it.
+    /// Fold or unfold a project's task list without changing task context.
     pub(super) fn toggle_root_collapsed(&mut self, root: &str, cx: &mut Context<Self>) {
         let collapsed = !self.collapsed_roots.contains(root);
         self.set_root_collapsed(root, collapsed, cx);
@@ -887,9 +892,6 @@ impl ChatScreen {
         }
         if !collapsed {
             self.collapsed_roots.remove(root);
-            if self.project_root.as_deref() != Some(root) {
-                self.switch_root(root.to_string(), cx);
-            }
         } else {
             self.collapsed_roots.insert(root.to_string());
         }
@@ -901,14 +903,7 @@ impl ChatScreen {
     /// transcript, the side thread, the queue, and a permission card that
     /// belongs to the task. Questions stay queued per session.
     pub(super) fn leave_selected_session(&mut self, cx: &mut Context<Self>) {
-        let left = self.selected_session.take();
-        self.refresh_selected_title();
-        self.replace_timeline(Vec::new());
-        if self.btw.is_some() {
-            self.close_side_thread(cx);
-        }
-        self.abandon_queue_edit(cx);
-        self.set_queue(Vec::new());
+        let left = self.clear_selected_session_presentation(cx);
         if let Some(left) = left.as_deref() {
             let showing = self
                 .pending_permissions
@@ -920,7 +915,6 @@ impl ChatScreen {
                 self.permission_responding = false;
             }
         }
-        self.awaiting_first_token = false;
     }
 
     /// Archive or restore one task. The service event updates the row;
@@ -967,11 +961,10 @@ impl ChatScreen {
     }
 
     /// Archive every task in a project and drop the project from the
-    /// sidebar. The runtime moves to the next project when this one was
-    /// current.
+    /// sidebar. The UI selects the next project when this one was current.
     pub(super) fn archive_root(&mut self, root: &str, cx: &mut Context<Self>) {
-        if self.root_switching {
-            self.notice = Some("Wait for the project switch to finish, then try again".into());
+        if self.root_selecting {
+            self.notice = Some("Wait for the project selection to finish, then try again".into());
             cx.notify();
             return;
         }
@@ -1028,17 +1021,21 @@ impl ChatScreen {
                         for session in &mut this.sessions {
                             if session.project_root == removed {
                                 session.archived = true;
+                                this.completed_unread_sessions.remove(&session.id);
                             }
                         }
                         let was_current = this.project_root.as_deref() == Some(&*removed);
                         if was_current {
                             this.leave_selected_session(cx);
-                            this.project_root = next_root.clone();
-                            this.project_root_changed(cx);
+                            this.set_project_context(next_root.clone(), cx);
                         }
                         this.rebuild_project_groups();
                         if was_current && let Some(next) = next_root {
-                            this.switch_root(next, cx);
+                            // The service keeps the fallback out of roaming
+                            // config; persist it as the default here, then
+                            // open its latest task.
+                            this.persist_project_root(next, cx);
+                            this.refresh_sessions(cx);
                         } else {
                             this.refresh_roots(cx);
                         }
@@ -1272,6 +1269,9 @@ impl ChatScreen {
         let is_current = self.project_root.as_deref() == Some(&**root);
         let is_collapsed = self.collapsed_roots.contains(&**root);
         let is_pinned = self.pinned_roots.iter().any(|pinned| **pinned == **root);
+        let activity = is_collapsed
+            .then(|| self.aggregate_session_activity(group.tasks.iter().copied()))
+            .flatten();
         let rename_field = self.project_rename_field(root);
         let renaming = rename_field.is_some();
         let menu = (self.project_menu.as_deref() == Some(&**root))
@@ -1326,6 +1326,9 @@ impl ChatScreen {
                                 .line_clamp(1)
                                 .child(group.name.clone()),
                         )
+                    })
+                    .when_some(activity, |row, activity| {
+                        row.child(activity_indicator(&group.spinner_id, activity))
                     })
                     .when(is_pinned, |row| {
                         // Pinned: the always-visible pin is the unpin
@@ -1385,6 +1388,9 @@ impl ChatScreen {
     ) -> gpui::Stateful<Div> {
         let row = &self.sidebar_rows[index];
         let is_selected = selected == Some(&*row.id);
+        let activity = (!archived)
+            .then(|| self.session_activity(&row.id))
+            .flatten();
         let session_id = Arc::clone(&row.id);
         let action_id = Arc::clone(&row.id);
         let rename_id = Arc::clone(&row.id);
@@ -1413,7 +1419,7 @@ impl ChatScreen {
                     .cursor_pointer()
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
-                this.open_session(&session_id, cx);
+                this.select_session(&session_id, cx);
             }))
             .when_some(rename_field, |row, field| row.child(field))
             .when(!renaming, |el| {
@@ -1434,6 +1440,9 @@ impl ChatScreen {
                             )
                         }),
                 )
+            })
+            .when_some(activity, |row_element, activity| {
+                row_element.child(activity_indicator(&row.spinner_id, activity))
             })
             .child(row_action(
                 row.rename_id.clone(),
@@ -1482,6 +1491,21 @@ impl ChatScreen {
             }))
             .child(icon("settings", px(16.), theme::text_secondary()));
         div().flex().items_center().px_3().py_2().child(gear)
+    }
+}
+
+/// A spinner while the task runs, a dot once it completed unseen. The
+/// spinner keeps the window repainting while any task runs, like the
+/// subagent card does; `spinner_id` is prebuilt so render allocates nothing.
+fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
+    match activity {
+        SessionActivity::Running => spinner_with_id(spinner_id.clone(), px(13.), theme::accent()),
+        SessionActivity::CompletedUnread => div()
+            .size(px(8.))
+            .flex_none()
+            .rounded_full()
+            .bg(gpui::rgb(theme::status_success()))
+            .into_any_element(),
     }
 }
 
