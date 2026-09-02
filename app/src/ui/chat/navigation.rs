@@ -440,11 +440,8 @@ impl ChatScreen {
             {
                 ChatRegion::Transcript
             }
-            _ => {
-                self.notice = Some("There is no application region in that direction".into());
-                cx.notify();
-                return false;
-            }
+            // Reaching a spatial boundary is normal Vim behavior.
+            _ => return false,
         };
         if target == ChatRegion::Composer {
             self.focus_composer(window, cx);
@@ -636,12 +633,11 @@ impl ChatScreen {
         let Some(item) = self.timeline.get(index) else {
             return;
         };
+        // Expanding or collapsing a transcript leaf is a normal Vim no-op.
         if !matches!(
             item.item_type.as_str(),
             "tool" | "toolCall" | "thinking" | "reasoning"
         ) {
-            self.notice = Some("The selected transcript item cannot be expanded".into());
-            cx.notify();
             return;
         }
         let current = self.tool_details != self.toggled_tools.contains(item_id);
