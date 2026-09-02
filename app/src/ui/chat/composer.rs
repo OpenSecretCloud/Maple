@@ -16,6 +16,7 @@ use super::{
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
+use crate::ui::text_input::vim::VimMode;
 use crate::ui::theme;
 
 impl ChatScreen {
@@ -781,6 +782,47 @@ impl ChatScreen {
         let queue_chips = self.render_queue(cx);
         let expanded = self.composer_expanded;
         let composer = self.composer.clone();
+        let vim_badge = composer
+            .as_ref()
+            .and_then(|input| input.read(cx).vim_status())
+            .and_then(|status| {
+                let label = match status.mode {
+                    VimMode::Normal => "NORMAL",
+                    VimMode::Insert => "INSERT",
+                    VimMode::Visual => "VISUAL",
+                    VimMode::Disabled => return None,
+                };
+                Some((label, status.notice))
+            })
+            .map(|(label, notice)| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("composer-vim-mode")
+                            .flex_none()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_md()
+                            .bg(gpui::rgb(theme::bg_elevated()))
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child(label),
+                    )
+                    .when_some(notice, |row, notice| {
+                        row.child(
+                            div()
+                                .id("composer-vim-notice")
+                                .max_w(px(260.))
+                                .truncate()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(notice.message),
+                        )
+                    })
+            });
         let mcp_enabled = self.mcp_enabled_count;
         let drafts = &self.draft_images;
         let model_label = self
@@ -1024,6 +1066,7 @@ impl ChatScreen {
                                 }),
                         )
                     })
+                    .children(vim_badge)
                     .child(div().flex_1())
                     .child(
                         div()
