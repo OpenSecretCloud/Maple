@@ -1,0 +1,804 @@
+//! Stable-ID application Vim navigation for Settings.
+//!
+//! The settings screen owns this projection because its visible controls are
+//! dynamic (shortcut filtering, MCP servers, and editors). Selecting a row is
+//! side-effect free; Enter delegates to the same existing method as its
+//! pointer control.
+
+use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
+
+use super::{Section, SettingsScreen};
+use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SettingsRegion {
+    Navigation,
+    Pane,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GeneralTarget {
+    Permission,
+    Web,
+    Appearance,
+    ToolDetails,
+    Notifications,
+    ToolSummaries,
+    ComposerVim,
+    ApplicationVim,
+    Voice,
+    SpeechSpeed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum SettingsTarget {
+    General(GeneralTarget),
+    Shortcut(String),
+    PromptEditor,
+    PromptSave,
+    PromptReset,
+    McpAdd,
+    McpServer(String),
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SettingsApplicationVimState {
+    pub(super) region: SettingsRegion,
+    pub(super) section: Section,
+    pub(super) target: Option<SettingsTarget>,
+    count: CountState,
+}
+
+impl SettingsApplicationVimState {
+    pub(super) fn new(section: Section) -> Self {
+        Self {
+            region: SettingsRegion::Navigation,
+            section,
+            target: None,
+            count: CountState::default(),
+        }
+    }
+}
+
+impl SettingsScreen {
+    pub(super) fn application_vim_context(&self) -> &'static str {
+        if self.settings.application_vim_enabled {
+            "Settings ApplicationVim"
+        } else {
+            "Settings"
+        }
+    }
+
+    pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
+        if let Some(editor) = &self.mcp_editor {
+            inputs.extend([
+                editor.name.clone(),
+                editor.description.clone(),
+                editor.target.clone(),
+                editor.environment.clone(),
+                editor.headers.clone(),
+            ]);
+        }
+        for input in inputs {
+            input.update(cx, |input, cx| {
+                input.set_application_vim_enabled(enabled, cx)
+            });
+        }
+        if self.settings.application_vim_enabled == enabled {
+            return;
+        }
+        self.edit_setting(
+            move |settings| settings.application_vim_enabled = enabled,
+            cx,
+        );
+        self.application_vim.count.clear();
+        if enabled {
+            self.application_vim.region = SettingsRegion::Navigation;
+            self.application_vim.section = self.section;
+            self.reconcile_application_vim_target();
+            self.application_focus_pending = true;
+        } else {
+            // Keep the always-mounted focus proxy, but release every semantic
+            // target that exists only for Application Vim.
+            self.application_vim = SettingsApplicationVimState::new(self.section);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn visible_application_targets(&self) -> Vec<SettingsTarget> {
+        match self.section {
+            Section::General => [
+                GeneralTarget::Permission,
+                GeneralTarget::Web,
+                GeneralTarget::Appearance,
+                GeneralTarget::ToolDetails,
+                GeneralTarget::Notifications,
+                GeneralTarget::ToolSummaries,
+                GeneralTarget::ComposerVim,
+                GeneralTarget::ApplicationVim,
+                GeneralTarget::Voice,
+                GeneralTarget::SpeechSpeed,
+            ]
+            .into_iter()
+            .map(SettingsTarget::General)
+            .collect(),
+            Section::Shortcuts => self
+                .shortcut_list_cache
+                .visible_indices
+                .iter()
+                .filter_map(|&index| self.shortcut_snapshot.rows.get(index))
+                .map(|row| SettingsTarget::Shortcut(row.slot_id.clone()))
+                .collect(),
+            Section::Prompt => vec![
+                SettingsTarget::PromptEditor,
+                SettingsTarget::PromptSave,
+                SettingsTarget::PromptReset,
+            ],
+            Section::Mcp => std::iter::once(SettingsTarget::McpAdd)
+                .chain(
+                    self.mcp_servers
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|server| SettingsTarget::McpServer(server.name.clone())),
+                )
+                .collect(),
+            Section::Usage | Section::About => Vec::new(),
+        }
+    }
+
+    pub(super) fn reconcile_application_vim_target(&mut self) {
+        if !self.settings.application_vim_enabled {
+            return;
+        }
+        self.application_vim.section = self.section;
+        let targets = self.visible_application_targets();
+        if self
+            .application_vim
+            .target
+            .as_ref()
+            .is_some_and(|selected| targets.contains(selected))
+        {
+            return;
+        }
+        let target = targets.first().cloned();
+        if self.application_vim.target != target {
+            self.application_vim.target = target;
+            if self.application_vim.region == SettingsRegion::Pane {
+                self.application_reveal_pending = true;
+            }
+        }
+    }
+
+    pub(super) fn application_vim_selects_section(&self, section: Section) -> bool {
+        self.settings.application_vim_enabled
+            && self.application_vim.region == SettingsRegion::Navigation
+            && self.application_vim.section == section
+    }
+
+    pub(super) fn application_vim_selects_target(&self, target: &SettingsTarget) -> bool {
+        self.settings.application_vim_enabled
+            && self.application_vim.region == SettingsRegion::Pane
+            && self.application_vim.target.as_ref() == Some(target)
+    }
+
+    pub(super) fn application_target(
+        &self,
+        target: impl FnOnce() -> SettingsTarget,
+        child: impl IntoElement,
+    ) -> gpui::AnyElement {
+        if !self.settings.application_vim_enabled {
+            return child.into_any_element();
+        }
+        let target = target();
+        let selected = self.application_vim_selects_target(&target);
+        let id = gpui::SharedString::from(format!("settings-application-{target:?}"));
+        div()
+            .id(id)
+            .when(selected, |row| {
+                row.rounded_md()
+                    .border_l_2()
+                    .border_color(gpui::rgb(crate::ui::theme::accent()))
+                    .anchor_scroll(Some(self.application_anchor.clone()))
+            })
+            .child(child)
+            .into_any_element()
+    }
+
+    fn move_application_selection(
+        &mut self,
+        direction: isize,
+        count: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.application_vim.region {
+            SettingsRegion::Navigation => {
+                let current = Section::ALL
+                    .iter()
+                    .position(|section| *section == self.application_vim.section)
+                    .unwrap_or(0);
+                let index = stepped_index(Some(current), Section::ALL.len(), direction, count);
+                self.application_vim.section = Section::ALL[index];
+            }
+            SettingsRegion::Pane => {
+                let targets = self.visible_application_targets();
+                if targets.is_empty() {
+                    return;
+                }
+                let current = self
+                    .application_vim
+                    .target
+                    .as_ref()
+                    .and_then(|selected| targets.iter().position(|target| target == selected));
+                let index = stepped_index(current, targets.len(), direction, count);
+                self.application_vim.target = Some(targets[index].clone());
+                self.application_reveal_pending = true;
+            }
+        }
+        cx.notify();
+    }
+
+    fn select_application_edge(
+        &mut self,
+        first: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.application_vim.region {
+            SettingsRegion::Navigation => {
+                self.application_vim.section = if first {
+                    Section::ALL[0]
+                } else {
+                    Section::ALL[Section::ALL.len() - 1]
+                };
+            }
+            SettingsRegion::Pane => {
+                let targets = self.visible_application_targets();
+                self.application_vim.target = if first {
+                    targets.first().cloned()
+                } else {
+                    targets.last().cloned()
+                };
+                self.application_reveal_pending = true;
+            }
+        }
+        cx.notify();
+    }
+
+    fn move_application_region(
+        &mut self,
+        direction: SpatialDirection,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match (self.application_vim.region, direction) {
+            (SettingsRegion::Navigation, SpatialDirection::Right) => {
+                if self.section != self.application_vim.section {
+                    self.select_section(self.application_vim.section, cx);
+                }
+                self.application_vim.region = SettingsRegion::Pane;
+                self.reconcile_application_vim_target();
+                self.application_reveal_pending = true;
+            }
+            (SettingsRegion::Pane, SpatialDirection::Left) => {
+                self.application_vim.region = SettingsRegion::Navigation;
+                self.application_vim.section = self.section;
+            }
+            _ => {
+                self.shortcut_notice =
+                    Some("There is no Settings region in that direction".to_string());
+                cx.notify();
+                return false;
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    fn activate_application_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.application_vim.region == SettingsRegion::Navigation {
+            let section = self.application_vim.section;
+            self.select_section(section, cx);
+            self.application_vim.region = SettingsRegion::Pane;
+            self.reconcile_application_vim_target();
+            self.application_reveal_pending = true;
+            return;
+        }
+        match self.application_vim.target.clone() {
+            Some(SettingsTarget::General(target)) => self.activate_general_target(target, cx),
+            Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
+            Some(SettingsTarget::PromptEditor) => {
+                let handle = self.prompt_editor.read(cx).focus_handle(cx);
+                window.focus(&handle);
+            }
+            Some(SettingsTarget::PromptSave) => self.save_prompt(cx),
+            Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
+            Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
+            Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
+            None => {}
+        }
+    }
+
+    fn activate_general_target(&mut self, target: GeneralTarget, cx: &mut Context<Self>) {
+        match target {
+            GeneralTarget::Permission => self.toggle_permission_default(cx),
+            GeneralTarget::Web => self.toggle_web_default(cx),
+            GeneralTarget::Appearance => self.cycle_theme(cx),
+            GeneralTarget::ToolDetails => self.toggle_tool_details(cx),
+            GeneralTarget::Notifications => self.toggle_desktop_notifications(cx),
+            GeneralTarget::ToolSummaries => self.toggle_tool_summaries(cx),
+            GeneralTarget::ComposerVim => self.toggle_composer_vim(cx),
+            GeneralTarget::ApplicationVim => {
+                let enabled = !self.settings.application_vim_enabled;
+                self.set_application_vim_enabled(enabled, cx);
+            }
+            GeneralTarget::Voice => self.cycle_tts_voice(cx),
+            GeneralTarget::SpeechSpeed => self.cycle_tts_speed(cx),
+        }
+    }
+
+    fn search_application_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.section != Section::Shortcuts {
+            self.select_section(Section::Shortcuts, cx);
+        }
+        let handle = self.shortcut_search.read(cx).focus_handle(cx);
+        window.focus(&handle);
+        cx.notify();
+    }
+
+    fn application_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.application_text_input_focused(window, cx) {
+            window.focus(&self.application_focus);
+            cx.notify();
+            return;
+        }
+        if self.shortcut_recorder.is_some() {
+            self.stop_shortcut_recording();
+            cx.notify();
+            return;
+        }
+        self.close(cx);
+    }
+
+    fn application_text_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        let focused = window.focused(cx);
+        let mut inputs = vec![&self.prompt_editor, &self.shortcut_search];
+        if let Some(editor) = &self.mcp_editor {
+            inputs.extend([
+                &editor.name,
+                &editor.description,
+                &editor.target,
+                &editor.environment,
+                &editor.headers,
+            ]);
+        }
+        inputs
+            .into_iter()
+            .any(|input| Some(input.read(cx).focus_handle(cx)) == focused)
+    }
+
+    fn execute_application_vim(
+        &mut self,
+        command: SettingsApplicationCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.settings.application_vim_enabled {
+            return;
+        }
+        match command {
+            SettingsApplicationCommand::Next => {
+                let count = self.application_vim.count.take();
+                self.move_application_selection(1, count, window, cx);
+            }
+            SettingsApplicationCommand::Previous => {
+                let count = self.application_vim.count.take();
+                self.move_application_selection(-1, count, window, cx);
+            }
+            SettingsApplicationCommand::First => {
+                self.application_vim.count.clear();
+                self.select_application_edge(true, window, cx);
+            }
+            SettingsApplicationCommand::Last => {
+                self.application_vim.count.clear();
+                self.select_application_edge(false, window, cx);
+            }
+            SettingsApplicationCommand::Activate => {
+                self.application_vim.count.clear();
+                self.activate_application_selection(window, cx);
+            }
+            SettingsApplicationCommand::Search => {
+                self.application_vim.count.clear();
+                self.search_application_settings(window, cx);
+            }
+            SettingsApplicationCommand::Escape => {
+                self.application_vim.count.clear();
+                self.application_escape(window, cx);
+            }
+            SettingsApplicationCommand::MoveRegion(direction) => {
+                let count = self.application_vim.count.take();
+                for _ in 0..count {
+                    if !self.move_application_region(direction, window, cx) {
+                        break;
+                    }
+                }
+            }
+            SettingsApplicationCommand::Unavailable => {
+                self.application_vim.count.clear();
+                self.shortcut_notice = Some(
+                    "That application Vim command is not available on this Settings target"
+                        .to_string(),
+                );
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn app_vim_count(
+        &mut self,
+        action: &application_vim::CountDigit,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            self.application_vim.count.push(action.digit),
+            CountOutcome::Capped(_)
+        ) {
+            self.shortcut_notice = Some("Application Vim count capped at 999999".to_string());
+        }
+        cx.notify();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SettingsApplicationCommand {
+    Next,
+    Previous,
+    First,
+    Last,
+    Activate,
+    Search,
+    Escape,
+    MoveRegion(SpatialDirection),
+    Unavailable,
+}
+
+macro_rules! adapter {
+    ($method:ident, $action:ty, $command:expr) => {
+        impl SettingsScreen {
+            pub(super) fn $method(
+                &mut self,
+                _: &$action,
+                window: &mut Window,
+                cx: &mut Context<Self>,
+            ) {
+                self.execute_application_vim($command, window, cx);
+            }
+        }
+    };
+}
+
+adapter!(
+    app_vim_next,
+    application_vim::Next,
+    SettingsApplicationCommand::Next
+);
+adapter!(
+    app_vim_previous,
+    application_vim::Previous,
+    SettingsApplicationCommand::Previous
+);
+adapter!(
+    app_vim_first,
+    application_vim::First,
+    SettingsApplicationCommand::First
+);
+adapter!(
+    app_vim_last,
+    application_vim::Last,
+    SettingsApplicationCommand::Last
+);
+adapter!(
+    app_vim_activate,
+    application_vim::Activate,
+    SettingsApplicationCommand::Activate
+);
+adapter!(
+    app_vim_search,
+    application_vim::Search,
+    SettingsApplicationCommand::Search
+);
+adapter!(
+    app_vim_escape,
+    application_vim::Escape,
+    SettingsApplicationCommand::Escape
+);
+adapter!(
+    app_vim_collapse,
+    application_vim::Collapse,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_expand,
+    application_vim::Expand,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_copy,
+    application_vim::CopyTarget,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_composer,
+    application_vim::FocusComposer,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_newest_assistant,
+    application_vim::NewestAssistant,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_next_assistant,
+    application_vim::NextAssistant,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_previous_assistant,
+    application_vim::PreviousAssistant,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_next_annotation,
+    application_vim::NextAnnotation,
+    SettingsApplicationCommand::Unavailable
+);
+adapter!(
+    app_vim_previous_annotation,
+    application_vim::PreviousAnnotation,
+    SettingsApplicationCommand::Unavailable
+);
+
+impl SettingsScreen {
+    pub(super) fn app_vim_move_region(
+        &mut self,
+        action: &application_vim::MoveRegion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_application_vim(
+            SettingsApplicationCommand::MoveRegion(action.direction),
+            window,
+            cx,
+        );
+    }
+}
+
+fn stepped_index(current: Option<usize>, len: usize, direction: isize, count: usize) -> usize {
+    debug_assert!(len > 0);
+    match current {
+        Some(start) if direction > 0 => start.saturating_add(count).min(len - 1),
+        Some(start) => start.saturating_sub(count),
+        None if direction > 0 => count.saturating_sub(1).min(len - 1),
+        None => len.saturating_sub(count.max(1)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div, px};
+
+    #[test]
+    fn counted_settings_navigation_clamps() {
+        assert_eq!(stepped_index(Some(2), 6, 1, 20), 5);
+        assert_eq!(stepped_index(Some(4), 6, -1, 20), 0);
+    }
+
+    #[gpui::test]
+    fn application_vim_off_keeps_settings_projection_empty(cx: &mut TestAppContext) {
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                .expect("backend"),
+        );
+        let settings = cx.new(|cx| {
+            SettingsScreen::new(
+                backend,
+                "user".to_string(),
+                crate::settings::AppSettings {
+                    application_vim_enabled: false,
+                    ..Default::default()
+                },
+                crate::shortcuts::ShortcutSnapshot {
+                    generation: 1,
+                    rows: vec![crate::shortcuts::ShortcutRow {
+                        slot_id: "application_vim.search".to_string(),
+                        label: "Application Vim search".to_string(),
+                        category: "Application Vim".to_string(),
+                        context: Some(crate::ui::application_vim::ROOT_CONTEXT.to_string()),
+                        default_sequence: "/".to_string(),
+                        current_sequence: Some("/".to_string()),
+                        modified: false,
+                        conflicts: Vec::new(),
+                    }],
+                    last_error: None,
+                    compatibility_warning: None,
+                },
+                Section::Shortcuts,
+                cx,
+            )
+        });
+
+        settings.update(cx, |this, _cx| {
+            this.shortcut_query = "application vim".to_string();
+            this.rebuild_shortcut_list_cache();
+            assert_eq!(this.shortcut_list_cache.visible_indices, vec![0]);
+
+            // The guard is defensive as well as call-site based: ordinary
+            // Settings filtering cannot populate the disabled projection.
+            this.reconcile_application_vim_target();
+            assert_eq!(this.application_vim.target, None);
+            assert!(!this.application_reveal_pending);
+
+            let target_built = std::cell::Cell::new(false);
+            let _element = this.application_target(
+                || {
+                    target_built.set(true);
+                    SettingsTarget::Shortcut("unused".to_string())
+                },
+                div(),
+            );
+            assert!(
+                !target_built.get(),
+                "disabled rows must not allocate semantic targets"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn settings_reveal_waits_for_the_selected_row_render(cx: &mut TestAppContext) {
+        struct SettingsHost {
+            settings: Entity<SettingsScreen>,
+        }
+        impl Render for SettingsHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.settings.clone())
+            }
+        }
+
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                .expect("backend"),
+        );
+        let settings = cx.new(|cx| {
+            SettingsScreen::new(
+                backend,
+                "user".to_string(),
+                crate::settings::AppSettings {
+                    application_vim_enabled: true,
+                    ..Default::default()
+                },
+                crate::shortcuts::ShortcutSnapshot {
+                    generation: 1,
+                    rows: Vec::new(),
+                    last_error: None,
+                    compatibility_warning: None,
+                },
+                Section::General,
+                cx,
+            )
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| SettingsHost {
+            settings: settings.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                assert!(this.move_application_region(SpatialDirection::Right, window, cx));
+                assert_eq!(this.application_vim.region, SettingsRegion::Pane);
+                assert!(
+                    this.application_reveal_pending,
+                    "entering the pane defers reveal until its selected row is rendered"
+                );
+
+                this.move_application_selection(1, 1, window, cx);
+                assert_eq!(
+                    this.application_vim.target,
+                    Some(SettingsTarget::General(GeneralTarget::Web))
+                );
+                assert!(
+                    this.application_reveal_pending,
+                    "j/k must hand the new target to the next render before scrolling"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn disabling_application_vim_keeps_settings_focus_attached(cx: &mut TestAppContext) {
+        struct SettingsHost {
+            settings: Entity<SettingsScreen>,
+        }
+        impl Render for SettingsHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.settings.clone())
+            }
+        }
+
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                .expect("backend"),
+        );
+        let settings = cx.new(|cx| {
+            SettingsScreen::new(
+                backend,
+                "user".to_string(),
+                crate::settings::AppSettings {
+                    application_vim_enabled: true,
+                    ..Default::default()
+                },
+                crate::shortcuts::ShortcutSnapshot {
+                    generation: 1,
+                    rows: Vec::new(),
+                    last_error: None,
+                    compatibility_warning: None,
+                },
+                Section::General,
+                cx,
+            )
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| SettingsHost {
+            settings: settings.clone(),
+        });
+        let window_size = gpui::size(px(1200.), px(800.));
+        cx.simulate_resize(window_size);
+
+        cx.update(|window, app| {
+            let settings = settings.read(app);
+            assert_eq!(
+                window.focused(app),
+                Some(settings.application_focus.clone())
+            );
+            assert!(
+                window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("ApplicationVim"))
+            );
+        });
+
+        settings.update(cx, |this, cx| {
+            // Exercise the render transition directly without persisting a
+            // setting from this test process.
+            this.settings.application_vim_enabled = false;
+            cx.notify();
+        });
+        cx.simulate_resize(window_size);
+
+        cx.update(|window, app| {
+            let settings = settings.read(app);
+            assert_eq!(
+                window.focused(app),
+                Some(settings.application_focus.clone())
+            );
+            let contexts = window.context_stack();
+            assert!(contexts.iter().any(|context| context.contains("Settings")));
+            assert!(
+                contexts
+                    .iter()
+                    .all(|context| !context.contains("ApplicationVim"))
+            );
+        });
+    }
+}

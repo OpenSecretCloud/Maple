@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Div, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*, px,
+    App, Context, Div, Entity, EventEmitter, Render, ScrollAnchor, ScrollHandle, Subscription,
+    Window, div, prelude::*, px,
 };
 
 use maple_agent::agent::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport};
@@ -21,6 +22,9 @@ use crate::shortcuts::{
 };
 use crate::ui::theme;
 use crate::ui::widgets;
+
+mod navigation;
+use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
 /// Emitted when the user leaves settings.
 pub struct SettingsClosed(pub AppSettings);
@@ -86,6 +90,12 @@ pub struct SettingsScreen {
     shortcut_recorder: Option<ShortcutRecorder>,
     shortcut_interceptor: Option<Subscription>,
     shortcut_reset_confirmation: bool,
+    application_vim: SettingsApplicationVimState,
+    application_focus: gpui::FocusHandle,
+    application_focus_pending: bool,
+    application_reveal_pending: bool,
+    pane_scroll: ScrollHandle,
+    application_anchor: ScrollAnchor,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,24 +177,40 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) -> Self {
         let prompt_text = settings.effective_harness_instructions();
-        let prompt_editor = cx.new(|cx| {
+        let application_vim_enabled = settings.application_vim_enabled;
+        let application_focus = cx.focus_handle();
+        let prompt_application_focus = application_focus.clone();
+        let prompt_editor = cx.new(move |cx| {
             let mut input = TextInput::new("You are …", cx)
                 .with_tab_index(1)
                 .multiline(16)
-                .spell_check();
+                .spell_check()
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, _cx| window.focus(&prompt_application_focus));
             input.set_text(&prompt_text, cx);
             input
         });
-        let shortcut_search = cx.new(|cx| {
-            TextInput::new("Search by command, context, or shortcut…", cx).with_tab_index(2)
+        let search_application_focus = application_focus.clone();
+        let shortcut_search = cx.new(move |cx| {
+            TextInput::new("Search by command, context, or shortcut…", cx)
+                .with_tab_index(2)
+                .application_vim(application_vim_enabled)
+                .on_application_escape(move |window, _cx| window.focus(&search_application_focus))
         });
         cx.observe(&shortcut_search, |this, search, cx| {
             this.shortcut_query = search.read(cx).text().trim().to_lowercase();
             this.rebuild_shortcut_list_cache();
+            if this.settings.application_vim_enabled {
+                this.reconcile_application_vim_target();
+            }
             cx.notify();
         })
         .detach();
         let shortcut_list_cache = ShortcutListCache::rebuild(&shortcut_snapshot, "");
+        let pane_scroll = ScrollHandle::new();
+        let application_anchor = ScrollAnchor::for_handle(pane_scroll.clone());
+        let application_vim = SettingsApplicationVimState::new(section);
+        let application_focus_pending = settings.application_vim_enabled;
         let this = Self {
             backend,
             user_id,
@@ -207,6 +233,12 @@ impl SettingsScreen {
             shortcut_recorder: None,
             shortcut_interceptor: None,
             shortcut_reset_confirmation: false,
+            application_vim,
+            application_focus,
+            application_focus_pending,
+            application_reveal_pending: false,
+            pane_scroll,
+            application_anchor,
         };
         this.load_usage(cx);
         this.load_plan(cx);
@@ -284,10 +316,18 @@ impl SettingsScreen {
     }
 
     fn open_mcp_editor(&mut self, existing: Option<AgentMcpServer>, cx: &mut Context<Self>) {
+        let application_focus = self.application_focus.clone();
+        let application_vim_enabled = self.settings.application_vim_enabled;
         let mut field = |placeholder: &str, value: &str, index: isize| {
             let value = value.to_string();
-            cx.new(|cx| {
-                let mut input = TextInput::new(placeholder, cx).with_tab_index(index);
+            let field_application_focus = application_focus.clone();
+            cx.new(move |cx| {
+                let mut input = TextInput::new(placeholder, cx)
+                    .with_tab_index(index)
+                    .application_vim(application_vim_enabled)
+                    .on_application_escape(move |window, _cx| {
+                        window.focus(&field_application_focus)
+                    });
                 if !value.is_empty() {
                     input.set_text(&value, cx);
                 }
@@ -534,7 +574,7 @@ impl SettingsScreen {
 
     fn toggle_application_vim(&mut self, cx: &mut Context<Self>) {
         let next = !self.settings.application_vim_enabled;
-        self.edit_setting(move |settings| settings.application_vim_enabled = next, cx);
+        self.set_application_vim_enabled(next, cx);
     }
 
     /// Persist the editor text as the harness instructions and hand it to
@@ -577,6 +617,9 @@ impl SettingsScreen {
         }
         self.shortcut_snapshot = snapshot;
         self.rebuild_shortcut_list_cache();
+        if self.settings.application_vim_enabled {
+            self.reconcile_application_vim_target();
+        }
         self.shortcut_notice = Some(match result {
             Ok(()) => "Shortcut settings applied.".to_string(),
             Err(message) => format!("Shortcut change failed: {message}"),
@@ -720,6 +763,10 @@ impl SettingsScreen {
             self.stop_shortcut_recording();
         }
         self.section = section;
+        if self.settings.application_vim_enabled {
+            self.application_vim.section = section;
+            self.reconcile_application_vim_target();
+        }
         cx.notify();
     }
 
@@ -734,8 +781,42 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
 }
 
 impl Render for SettingsScreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.application_focus_pending {
+            self.application_focus_pending = false;
+            if self.settings.application_vim_enabled {
+                window.focus(&self.application_focus);
+            }
+        }
+        if self.application_reveal_pending {
+            self.application_reveal_pending = false;
+            if self.application_vim.target.is_some() {
+                // The selected row attaches this anchor later in the same render.
+                // ScrollAnchor defers until the fresh layout origin is available.
+                self.application_anchor.scroll_to(window, cx);
+            }
+        }
         div()
+            .key_context(self.application_vim_context())
+            .track_focus(&self.application_focus)
+            .on_action(cx.listener(Self::app_vim_next))
+            .on_action(cx.listener(Self::app_vim_previous))
+            .on_action(cx.listener(Self::app_vim_first))
+            .on_action(cx.listener(Self::app_vim_last))
+            .on_action(cx.listener(Self::app_vim_activate))
+            .on_action(cx.listener(Self::app_vim_collapse))
+            .on_action(cx.listener(Self::app_vim_expand))
+            .on_action(cx.listener(Self::app_vim_copy))
+            .on_action(cx.listener(Self::app_vim_search))
+            .on_action(cx.listener(Self::app_vim_escape))
+            .on_action(cx.listener(Self::app_vim_composer))
+            .on_action(cx.listener(Self::app_vim_newest_assistant))
+            .on_action(cx.listener(Self::app_vim_next_assistant))
+            .on_action(cx.listener(Self::app_vim_previous_assistant))
+            .on_action(cx.listener(Self::app_vim_next_annotation))
+            .on_action(cx.listener(Self::app_vim_previous_annotation))
+            .on_action(cx.listener(Self::app_vim_count))
+            .on_action(cx.listener(Self::app_vim_move_region))
             .size_full()
             .flex()
             .flex_col()
@@ -808,6 +889,7 @@ impl SettingsScreen {
             .bg(gpui::rgb(theme::bg_sidebar()))
             .children(Section::ALL.iter().map(|section| {
                 let selected = self.section == *section;
+                let application_selected = self.application_vim_selects_section(*section);
                 div()
                     .id(gpui::SharedString::from(format!(
                         "settings-nav-{}",
@@ -827,6 +909,9 @@ impl SettingsScreen {
                     } else {
                         theme::bg_sidebar()
                     }))
+                    .when(application_selected, |row| {
+                        row.border_l_2().border_color(gpui::rgb(theme::accent()))
+                    })
                     .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
                     .on_click({
                         let section = *section;
@@ -848,6 +933,7 @@ impl SettingsScreen {
             .flex_col()
             .gap_4()
             .p_6()
+            .track_scroll(&self.pane_scroll)
             .overflow_y_scroll();
         match self.section {
             Section::General => {
@@ -855,116 +941,122 @@ impl SettingsScreen {
                     .child(section_title("Defaults"))
                     .child({
                         let mode = self.settings.default_permission_mode;
-                        setting_row(
-                            "Default permission mode",
-                            mode.note(),
-                            mode.label(),
-                            cx.listener(|this, _event, _window, cx| {
-                                this.toggle_permission_default(cx);
-                            }),
+                        self.application_target(
+                            || SettingsTarget::General(GeneralTarget::Permission),
+                            setting_row(
+                                "Default permission mode",
+                                mode.note(),
+                                mode.label(),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_permission_default(cx);
+                                }),
+                            ),
                         )
                     })
-                    .child(setting_row(
-                        "New tasks can use the web",
-                        "Offers web_search and open_url to the model. Each task can \
-                         switch web access on or off from its composer.",
-                        if self.settings.default_web_enabled {
-                            "On"
-                        } else {
-                            "Off"
-                        },
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_web_default(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::Web),
+                        setting_row(
+                            "New tasks can use the web",
+                            "Offers web_search and open_url to the model. Each task can \
+                             switch web access on or off from its composer.",
+                            if self.settings.default_web_enabled { "On" } else { "Off" },
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_web_default(cx);
+                            }),
+                        ),
                     ))
-                    .child(setting_row(
-                        "Appearance",
-                        "Follow the system theme, or force dark or light.",
-                        self.theme.label(),
-                        cx.listener(|this, _event, _window, cx| {
-                            this.cycle_theme(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::Appearance),
+                        setting_row(
+                            "Appearance",
+                            "Follow the system theme, or force dark or light.",
+                            self.theme.label(),
+                            cx.listener(|this, _event, _window, cx| {
+                                this.cycle_theme(cx);
+                            }),
+                        ),
                     ))
-                    .child(setting_row(
-                        "Show tool call details",
-                        "Tool cards include their input and output payloads.",
-                        if self.settings.tool_details {
-                            "On"
-                        } else {
-                            "Off"
-                        },
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_tool_details(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ToolDetails),
+                        setting_row(
+                            "Show tool call details",
+                            "Tool cards include their input and output payloads.",
+                            if self.settings.tool_details { "On" } else { "Off" },
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_tool_details(cx);
+                            }),
+                        ),
                     ))
-                    .child(setting_row(
-                        "Desktop notifications",
-                        "Notify when a task finishes or needs your input while \
-                         the window is not focused.",
-                        if self.settings.desktop_notifications {
-                            "On"
-                        } else {
-                            "Off"
-                        },
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_desktop_notifications(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::Notifications),
+                        setting_row(
+                            "Desktop notifications",
+                            "Notify when a task finishes or needs your input while \
+                             the window is not focused.",
+                            if self.settings.desktop_notifications { "On" } else { "Off" },
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_desktop_notifications(cx);
+                            }),
+                        ),
                     ))
-                    .child(setting_row(
-                        "Summarize tool calls",
-                        "Completed tool calls with long output get a one-line \
-                         summary from the title model on their cards.",
-                        if self.settings.tool_summaries {
-                            "On"
-                        } else {
-                            "Off"
-                        },
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_tool_summaries(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ToolSummaries),
+                        setting_row(
+                            "Summarize tool calls",
+                            "Completed tool calls with long output get a one-line \
+                             summary from the title model on their cards.",
+                            if self.settings.tool_summaries { "On" } else { "Off" },
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_tool_summaries(cx);
+                            }),
+                        ),
                     ))
                     .child(section_title("Editing"))
-                    .child(setting_row(
-                        "Vim mode in composer",
-                        "Use Normal, Insert, and Visual editing modes in the main chat composer. Other text fields stay unchanged.",
-                        if self.settings.composer_vim_enabled {
-                            "On"
-                        } else {
-                            "Off"
-                        },
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_composer_vim(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ComposerVim),
+                        setting_row(
+                            "Vim mode in composer",
+                            "Use Normal, Insert, and Visual editing modes in the main chat composer. Other text fields stay unchanged.",
+                            if self.settings.composer_vim_enabled { "On" } else { "Off" },
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_composer_vim(cx);
+                            }),
+                        ),
                     ))
-                    .child(setting_row(
-                        "Vim navigation across the app",
-                        "Use Vim-style semantic navigation in Chat. Text fields keep their existing editing behavior.",
-                        if self.settings.application_vim_enabled {
-                            "On"
-                        } else {
-                            "Off"
-                        },
-                        cx.listener(|this, _event, _window, cx| {
-                            this.toggle_application_vim(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ApplicationVim),
+                        setting_row(
+                            "Vim navigation across the app",
+                            "Navigate stable sidebar, transcript, dialog, and Settings targets. Ordinary text fields still edit normally.",
+                            if self.settings.application_vim_enabled { "On" } else { "Off" },
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_application_vim(cx);
+                            }),
+                        ),
                     ))
                     .child(section_title("Voice"))
-                    .child(setting_row(
-                        "Speech voice",
-                        "The voice that reads messages aloud. Click to move to \
-                         the next voice.",
-                        settings::tts_voice_label(&self.settings.tts_voice),
-                        cx.listener(|this, _event, _window, cx| {
-                            this.cycle_tts_voice(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::Voice),
+                        setting_row(
+                            "Speech voice",
+                            "The voice that reads messages aloud. Click to move to \
+                             the next voice.",
+                            settings::tts_voice_label(&self.settings.tts_voice),
+                            cx.listener(|this, _event, _window, cx| {
+                                this.cycle_tts_voice(cx);
+                            }),
+                        ),
                     ))
-                    .child(setting_row(
-                        "Speech speed",
-                        "How fast messages are read aloud.",
-                        &format!("{:.1}×", self.settings.tts_speed),
-                        cx.listener(|this, _event, _window, cx| {
-                            this.cycle_tts_speed(cx);
-                        }),
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::SpeechSpeed),
+                        setting_row(
+                            "Speech speed",
+                            "How fast messages are read aloud.",
+                            &format!("{:.1}×", self.settings.tts_speed),
+                            cx.listener(|this, _event, _window, cx| {
+                                this.cycle_tts_speed(cx);
+                            }),
+                        ),
                     ));
             }
             Section::Shortcuts => {
@@ -1280,7 +1372,7 @@ impl SettingsScreen {
         &self,
         row: &crate::shortcuts::ShortcutRow,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> gpui::AnyElement {
         let slot_id = row.slot_id.clone();
         let record_id = slot_id.clone();
         let disable_id = slot_id.clone();
@@ -1289,7 +1381,7 @@ impl SettingsScreen {
             .current_sequence
             .clone()
             .unwrap_or_else(|| "Unbound".to_string());
-        widgets::card_row()
+        let card = widgets::card_row()
             .flex()
             .items_center()
             .gap_4()
@@ -1409,7 +1501,8 @@ impl SettingsScreen {
                             .child("Reset"),
                         )
                     }),
-            )
+            );
+        self.application_target(|| SettingsTarget::Shortcut(row.slot_id.clone()), card)
     }
 
     fn render_prompt_pane(&self, cx: &mut Context<Self>) -> Div {
@@ -1429,31 +1522,40 @@ impl SettingsScreen {
                     ),
             )
             .child(
-                div()
-                    .p_3()
-                    .rounded_md()
-                    .bg(gpui::rgb(theme::bg_input()))
-                    .border_1()
-                    .border_color(gpui::rgb(theme::border()))
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .child(self.prompt_editor.clone()),
+                self.application_target(
+                    || SettingsTarget::PromptEditor,
+                    div()
+                        .p_3()
+                        .rounded_md()
+                        .bg(gpui::rgb(theme::bg_input()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(self.prompt_editor.clone()),
+                ),
             )
             .child(
                 div()
                     .flex()
                     .gap_2()
-                    .child(pill_button(
-                        "prompt-save".to_string(),
-                        "Save",
-                        true,
-                        cx.listener(|this, _event, _window, cx| this.save_prompt(cx)),
+                    .child(self.application_target(
+                        || SettingsTarget::PromptSave,
+                        pill_button(
+                            "prompt-save".to_string(),
+                            "Save",
+                            true,
+                            cx.listener(|this, _event, _window, cx| this.save_prompt(cx)),
+                        ),
                     ))
-                    .child(pill_button(
-                        "prompt-reset".to_string(),
-                        "Reset to default",
-                        false,
-                        cx.listener(|this, _event, _window, cx| this.reset_prompt(cx)),
+                    .child(self.application_target(
+                        || SettingsTarget::PromptReset,
+                        pill_button(
+                            "prompt-reset".to_string(),
+                            "Reset to default",
+                            false,
+                            cx.listener(|this, _event, _window, cx| this.reset_prompt(cx)),
+                        ),
                     )),
             );
         if let Some(notice) = &self.prompt_notice {
@@ -1476,12 +1578,15 @@ impl SettingsScreen {
                 .justify_between()
                 .child(section_title("MCP servers"))
                 .child(
-                    widgets::primary_button("mcp-add")
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.open_mcp_editor(None, cx);
-                        }))
-                        .child(icon("plus", widgets::ROW_ICON, theme::bg_app()))
-                        .child("Add server"),
+                    self.application_target(
+                        || SettingsTarget::McpAdd,
+                        widgets::primary_button("mcp-add")
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.open_mcp_editor(None, cx);
+                            }))
+                            .child(icon("plus", widgets::ROW_ICON, theme::bg_app()))
+                            .child("Add server"),
+                    ),
                 ),
         );
         pane = pane.child(
@@ -1522,7 +1627,7 @@ impl SettingsScreen {
                         AgentMcpTransport::Stdio { command, .. } => format!("STDIO · {command}"),
                         AgentMcpTransport::StreamableHttp { url, .. } => format!("HTTP · {url}"),
                     };
-                    widgets::card_row()
+                    let card = widgets::card_row()
                         .flex()
                         .items_center()
                         .gap_3()
@@ -1591,7 +1696,8 @@ impl SettingsScreen {
                             .on_click(cx.listener(
                                 move |this, _event, _window, cx| this.remove_mcp_server(&name, cx),
                             )),
-                        )
+                        );
+                    self.application_target(|| SettingsTarget::McpServer(server.name.clone()), card)
                 }));
             }
         }
