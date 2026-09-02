@@ -3,8 +3,17 @@ import { Link, useBlocker } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { generateSecureSecret, hashSecret, useOpenSecret } from "@opensecret/react";
 import { AlertTriangle, Loader2 } from "lucide-react";
+import { shouldWarnBeforeAccountDeletion } from "@/billing/billingAccess";
 import { getBillingService } from "@/billing/billingService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,11 +24,13 @@ import {
   restoreMapleApiAuthForUser
 } from "@/services/agentRuntimeService";
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
+import { useBillingState } from "@/state/useLocalState";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 export function DeleteAccountSettings() {
   const os = useOpenSecret();
   const queryClient = useQueryClient();
+  const { billingStatus } = useBillingState();
   const [step, setStep] = useState<"request" | "confirm">("request");
   const [confirmationCode, setConfirmationCode] = useState("");
   const [secret, setSecret] = useState("");
@@ -27,8 +38,10 @@ export function DeleteAccountSettings() {
   const [isLoading, setIsLoading] = useState(false);
   const [isAccountDeleted, setIsAccountDeleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showPaidPlanWarning, setShowPaidPlanWarning] = useState(false);
   const cleanupBlockRef = useRef<Awaited<ReturnType<typeof clearAgentDataForUser>> | null>(null);
   const allowProgrammaticUnloadRef = useRef(false);
+  const paidPlanWarningAcknowledgedRef = useRef(false);
   const isNavigationLocked = isLoading || isAccountDeleted;
 
   useBlocker({
@@ -134,6 +147,28 @@ export function DeleteAccountSettings() {
     }
   };
 
+  const handleDeleteAccountClick = () => {
+    if (step !== "request") {
+      void handleConfirmDeletion();
+      return;
+    }
+
+    // Billing does not currently expose cancel-at-period-end, so paid users can
+    // still proceed if they already canceled and are waiting for the period to end.
+    if (!paidPlanWarningAcknowledgedRef.current && shouldWarnBeforeAccountDeletion(billingStatus)) {
+      setShowPaidPlanWarning(true);
+      return;
+    }
+
+    void handleRequestDeletion();
+  };
+
+  const handleProceedAnyway = () => {
+    paidPlanWarningAcknowledgedRef.current = true;
+    setShowPaidPlanWarning(false);
+    void handleRequestDeletion();
+  };
+
   return (
     <SettingsPage
       title={step === "request" ? "Delete account" : "Confirm account deletion"}
@@ -197,7 +232,7 @@ export function DeleteAccountSettings() {
             <Button
               type="button"
               variant="destructive"
-              onClick={step === "request" ? handleRequestDeletion : handleConfirmDeletion}
+              onClick={handleDeleteAccountClick}
               disabled={
                 isLoading ||
                 (step === "request"
@@ -217,6 +252,29 @@ export function DeleteAccountSettings() {
           </div>
         </div>
       </SettingsSection>
+
+      <AlertDialog open={showPaidPlanWarning} onOpenChange={setShowPaidPlanWarning}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel your plan first?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This account is still on a paid plan. Cancel the subscription from the manage plan
+              page before deleting the account. If you already canceled and are waiting for the
+              period to end, you can proceed anyway.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button type="button" variant="outline" onClick={handleProceedAnyway}>
+              Proceed anyway
+            </Button>
+            <Button asChild>
+              <Link to="/settings/billing" replace>
+                Manage plan
+              </Link>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SettingsPage>
   );
 }

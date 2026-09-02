@@ -12,3 +12,11 @@ export function hasApiAccess(billingStatus: BillingStatus | null | undefined): b
 
   return productName.includes("pro") || productName.includes("max") || productName.includes("team");
 }
+
+export function shouldWarnBeforeAccountDeletion(
+  billingStatus: BillingStatus | null | undefined
+): boolean {
+  if (!billingStatus) return false;
+
+  return billingStatus.is_subscribed || hasApiAccess(billingStatus);
+}
