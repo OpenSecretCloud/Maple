@@ -45,6 +45,11 @@ function statusCopy(status: string): string {
       return "This upgrade was canceled. Your current plan is unchanged.";
     case "FAILED":
       return "This upgrade could not be completed. Your current plan is unchanged.";
+    case "PAID_NEEDS_REVIEW":
+      return "Payment was received and needs a short review before the plan change is applied. Your current plan is unchanged.";
+    case "REFUNDED":
+    case "REVOKED":
+      return "This upgrade is no longer active. Your current plan is unchanged.";
     default:
       return "Preparing Bitcoin checkout.";
   }

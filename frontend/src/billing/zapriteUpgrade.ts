@@ -4,7 +4,9 @@ export const ZAPRITE_UPGRADE_TERMINAL_STATUSES = [
   "COMPLETED",
   "EXPIRED",
   "CANCELED",
-  "FAILED"
+  "FAILED",
+  "REFUNDED",
+  "REVOKED"
 ] as const;
 
 export type ZapriteUpgradeStatus =
@@ -18,7 +20,10 @@ export type ZapriteUpgradeStatus =
   | "COMPLETED"
   | "EXPIRED"
   | "CANCELED"
-  | "FAILED";
+  | "FAILED"
+  | "PAID_NEEDS_REVIEW"
+  | "REFUNDED"
+  | "REVOKED";
 
 export type ZapriteUpgradePlanSummary = {
   product_id: string;
