@@ -405,6 +405,18 @@ impl ChatScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // A pointer click can focus the TextInput directly without passing
+        // through `focus_composer`. Region commands originate from the
+        // focused key context, so reconcile that live focus before planning
+        // the move instead of trusting a stale application-region bookmark.
+        let composer_focused = self
+            .composer
+            .as_ref()
+            .is_some_and(|composer| Some(composer.read(cx).focus_handle(cx)) == window.focused(cx));
+        if composer_focused && self.application_vim.region != ChatRegion::Composer {
+            self.application_vim.return_from_composer = self.application_vim.region;
+            self.application_vim.set_region(ChatRegion::Composer);
+        }
         let current = self.application_vim.region;
         let target = match (current, direction) {
             (ChatRegion::Sidebar, SpatialDirection::Right) => {

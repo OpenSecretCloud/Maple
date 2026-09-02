@@ -2774,6 +2774,90 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_application_vim_region_moves_follow_live_composer_focus(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.application_vim_enabled = false;
+            chat.composer_vim_enabled = true;
+            if let Some(composer) = chat.composer.clone() {
+                composer.update(cx, |input, cx| input.set_vim_enabled(true, cx));
+            }
+            chat.replace_timeline(vec![user_item("u1", "question")]);
+            chat.set_application_vim_enabled(true, cx);
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        let (composer_focus, application_focus) = cx.update(|_window, app| {
+            let chat = chat.read(app);
+            (
+                chat.composer.clone().unwrap().focus_handle(app),
+                chat.application_focus.clone().unwrap(),
+            )
+        });
+
+        // Clicking the composer changes the real GPUI focus, but historically
+        // left this bookmark on the sidebar. The chord must honor its focused
+        // composer context rather than planning Left from the stale bookmark.
+        chat.update(cx, |this, _cx| {
+            this.application_vim.region = crate::ui::chat::navigation::ChatRegion::Sidebar;
+            this.notice = None;
+        });
+        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.simulate_keystrokes("ctrl-w h");
+        cx.update(|window, app| {
+            let chat = chat.read(app);
+            assert_eq!(
+                chat.application_vim.region,
+                crate::ui::chat::navigation::ChatRegion::Sidebar
+            );
+            assert!(chat.notice.is_none());
+            assert_eq!(window.focused(app), Some(application_focus.clone()));
+        });
+
+        // The same stale state must still plan Up from the focused composer
+        // and land on its non-empty transcript.
+        chat.update(cx, |this, _cx| {
+            this.application_vim.region = crate::ui::chat::navigation::ChatRegion::Sidebar;
+            this.notice = None;
+        });
+        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.simulate_keystrokes("ctrl-w k");
+        cx.update(|window, app| {
+            let chat = chat.read(app);
+            assert_eq!(
+                chat.application_vim.region,
+                crate::ui::chat::navigation::ChatRegion::Transcript
+            );
+            assert_eq!(chat.selected_transcript_id(), Some("u1"));
+            assert!(chat.notice.is_none());
+            assert_eq!(window.focused(app), Some(application_focus));
+        });
+    }
+
+    #[gpui::test]
     fn test_application_vim_reconciles_stable_timeline_ids_per_task(cx: &mut TestAppContext) {
         let chat = screen(cx);
         chat.update(cx, |this, _cx| {
