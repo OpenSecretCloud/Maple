@@ -2680,6 +2680,33 @@ mod state_tests {
             cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned)),
             Some("a1".to_string())
         );
+
+        // Expanding a transcript leaf is an expected Vim no-op, not an
+        // application error that should leave a persistent banner behind.
+        chat.update(cx, |this, _cx| this.notice = None);
+        cx.simulate_keystrokes("l");
+        cx.update(|_window, app| {
+            let chat = chat.read(app);
+            assert_eq!(chat.selected_transcript_id(), Some("a1"));
+            assert!(chat.notice.is_none());
+        });
+
+        // The first move reaches the sidebar; repeating it at the left edge
+        // is likewise a silent boundary no-op.
+        cx.simulate_keystrokes("ctrl-w h");
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).application_vim.region),
+            crate::ui::chat::navigation::ChatRegion::Sidebar
+        );
+        cx.simulate_keystrokes("ctrl-w h");
+        cx.update(|_window, app| {
+            let chat = chat.read(app);
+            assert_eq!(
+                chat.application_vim.region,
+                crate::ui::chat::navigation::ChatRegion::Sidebar
+            );
+            assert!(chat.notice.is_none());
+        });
     }
 
     #[gpui::test]
