@@ -40,7 +40,7 @@ use agent_client_protocol::schema::v1::{
     NewSessionResponse, PromptRequest, PromptResponse, RequestPermissionRequest, SessionId,
     SessionInfo, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolKind,
+    TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{Agent as AcpAgent, Client, ConnectionTo, Lines};
 use futures_util::StreamExt as _;
@@ -243,6 +243,7 @@ impl AcpConnectionContext {
                 lease: Some(lease),
                 model: model.clone(),
                 available_models: available_models.clone(),
+                context_limit: None,
                 message_count: created.detail.session.message_count,
                 created_here: true,
                 prompted: false,
@@ -298,6 +299,34 @@ impl AcpConnectionContext {
                 .map_err(|error| internal_acp_error(format!("Failed to start the Agent runtime: {error}"))),
         };
         result
+    }
+
+    /// Resolve the session model's context window, cached per session. A
+    /// `usage_update` needs both `used` and `size`, so an unknown window
+    /// means no update is sent rather than a fabricated size.
+    async fn session_context_limit(&self, session_id: &str, model: &str) -> Option<u64> {
+        if let Some(cached) = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|session| session.context_limit)
+        {
+            return Some(cached);
+        }
+        let limit = self
+            .agent
+            .context_limit_for_model(model)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|tokens| u64::try_from(tokens).ok());
+        if let Some(limit) = limit
+            && let Some(session) = self.sessions.lock().await.get_mut(session_id)
+        {
+            session.context_limit = Some(limit);
+        }
+        limit
     }
 
     /// Save a caller-selected mode to the task row so a later connection
@@ -480,6 +509,7 @@ impl AcpConnectionContext {
                 lease: Some(lease),
                 model: model.clone(),
                 available_models: available_models.clone(),
+                context_limit: None,
                 message_count,
                 created_here: false,
                 prompted: false,
@@ -729,6 +759,7 @@ impl AcpConnectionContext {
                             .data("Maple tasks are model-locked after their first message"));
                     }
                     session.model = model.to_string();
+                    session.context_limit = None;
                 }
                 "mode" => {
                     let mode =
@@ -1245,7 +1276,7 @@ impl AcpConnectionContext {
                 AgentSendMessageRequest {
                     session_id: session_id.clone(),
                     text: prompt,
-                    model: Some(model),
+                    model: Some(model.clone()),
                     context_limit: None,
                     mode: Some(session_mode.maple_mode().to_string()),
                     vision_capable: !images.is_empty(),
@@ -1637,6 +1668,20 @@ impl AcpConnectionContext {
         // stores it as currentTurnUsage, so cumulative session totals would be
         // double-counted on every later turn.
         let result = result.map(|response| response.usage(acp_usage(turn_usage)));
+        // ACP's native context indicator: one usage_update per completed
+        // turn carrying the tokens now in context and the model's window.
+        if let Some(size) = self.session_context_limit(&session_id, &model).await {
+            let notification = SessionNotification::new(
+                protocol_session_id.clone(),
+                SessionUpdate::UsageUpdate(UsageUpdate::new(turn_usage.total_tokens, size)),
+            );
+            if let Err(error) = self
+                .send_session_update(cx, notification, &prompt_lifetime)
+                .await
+            {
+                log::warn!("Failed to send the Maple ACP usage update: {error:?}");
+            }
+        }
         let mut deferred_prompt_cleanup = false;
         if cancel_after_result {
             // Synthetic stream stops settle only after the underlying run has
@@ -2382,6 +2427,18 @@ mod tests {
             encoded["rawOutput"]["message"],
             "command exited with status 1"
         );
+    }
+
+    #[test]
+    fn usage_update_carries_context_tokens_and_window() {
+        let encoded = serde_json::to_value(SessionUpdate::UsageUpdate(UsageUpdate::new(
+            53_000, 200_000,
+        )))
+        .unwrap();
+        assert_eq!(encoded["sessionUpdate"], "usage_update");
+        assert_eq!(encoded["used"], 53_000);
+        assert_eq!(encoded["size"], 200_000);
+        assert!(encoded.get("cost").is_none());
     }
 
     #[test]

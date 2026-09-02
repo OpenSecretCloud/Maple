@@ -114,6 +114,9 @@ pub(super) struct AcpSession {
     pub(super) lease: Option<AgentToolContextLease>,
     pub(super) model: String,
     pub(super) available_models: Vec<String>,
+    /// Cached context window of `model` for `usage_update` notifications.
+    /// `None` until resolved (or after a model switch invalidates it).
+    pub(super) context_limit: Option<u64>,
     pub(super) message_count: usize,
     pub(super) created_here: bool,
     pub(super) prompted: bool,
