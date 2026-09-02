@@ -6,7 +6,8 @@ export const ZAPRITE_UPGRADE_TERMINAL_STATUSES = [
   "CANCELED",
   "FAILED",
   "REFUNDED",
-  "REVOKED"
+  "REVOKED",
+  "PAID_UNFULFILLABLE"
 ] as const;
 
 export type ZapriteUpgradeStatus =
@@ -22,6 +23,7 @@ export type ZapriteUpgradeStatus =
   | "CANCELED"
   | "FAILED"
   | "PAID_NEEDS_REVIEW"
+  | "PAID_UNFULFILLABLE"
   | "REFUNDED"
   | "REVOKED";
 

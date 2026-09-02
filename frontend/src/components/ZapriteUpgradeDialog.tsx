@@ -47,6 +47,8 @@ function statusCopy(status: string): string {
       return "This upgrade could not be completed. Your current plan is unchanged.";
     case "PAID_NEEDS_REVIEW":
       return "Payment was received and needs a short review before the plan change is applied. Your current plan is unchanged.";
+    case "PAID_UNFULFILLABLE":
+      return "Payment was received after this upgrade was replaced. Your current plan is unchanged; contact support for the extra payment.";
     case "REFUNDED":
     case "REVOKED":
       return "This upgrade is no longer active. Your current plan is unchanged.";
