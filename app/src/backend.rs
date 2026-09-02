@@ -986,9 +986,15 @@ impl AgentBackend {
         self.runtime.block_on(async {
             let handle = self.service.handle_for_user(user_id).await?;
             let session = self.session_for(user_id).await?;
-            handle.start(session, None).await?;
+            // Start the runtime concurrently instead of before the handshake:
+            // `initialize` answers immediately and the first `session/new`
+            // awaits this shared start.
+            let starting = handle.clone();
+            let runtime_start = maple_agent::acp::shared_runtime_start(async move {
+                starting.start(session, None).await.map(|_| ())
+            });
             let config = maple_agent::acp::load_acp_config(&local_data_root(), user_id)?;
-            let result = maple_agent::acp::serve_stdio(handle.clone(), config).await;
+            let result = maple_agent::acp::serve_stdio(handle.clone(), config, runtime_start).await;
             if let Err(error) = handle.stop().await {
                 log::warn!("failed to stop the agent runtime after ACP: {error}");
             }

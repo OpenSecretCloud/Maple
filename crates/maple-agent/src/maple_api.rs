@@ -249,17 +249,6 @@ impl MapleApiSession {
         )
     }
 
-    pub(crate) async fn validate_user(&self) -> Result<(), String> {
-        let snapshot = self.client_snapshot().await?;
-        let response = snapshot.client.get_user().await;
-        self.record_refresh(&snapshot).await?;
-        let response = response.map_err(map_sdk_error)?;
-        if response.user.id.to_string() != self.user_id {
-            return Err(AUTH_WRONG_ACCOUNT_MESSAGE.to_string());
-        }
-        Ok(())
-    }
-
     /// Mint a third-party JWT for `audience` (for example the Maple billing
     /// API) with the current enclave credentials.
     pub async fn third_party_token(&self, audience: String) -> Result<String, String> {

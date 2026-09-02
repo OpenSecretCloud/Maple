@@ -5,11 +5,11 @@
 use super::session::AcpSessionMode;
 use super::transport::AcpOutboundSendError;
 use crate::agent::{
-    AgentPermissionDecision, AgentPermissionRequest, AgentRunTerminal, AgentRunUsage,
-    AgentTimelineItem, compaction_notice_text,
+    AgentImageUpload, AgentPermissionDecision, AgentPermissionRequest, AgentRunTerminal,
+    AgentRunUsage, AgentTimelineItem, compaction_notice_text,
 };
 use agent_client_protocol::schema::v1::{
-    BooleanPropertySchema, ContentBlock, ContentChunk, CreateElicitationRequest,
+    BooleanPropertySchema, ContentBlock, ContentChunk, CreateElicitationRequest, Diff,
     ElicitationFormMode, ElicitationSchema, ElicitationSessionScope, InitializeRequest,
     PermissionOption, PermissionOptionKind, PromptResponse, RequestPermissionOutcome,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption, SessionId,
@@ -104,18 +104,55 @@ pub(super) fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_clien
             ContentBlock::ResourceLink(link) => {
                 parts.push(format!("[Resource: {}]\n{}", link.name, link.uri));
             }
+            // Image blocks carry no text; `prompt_images` collects them.
+            ContentBlock::Image(_) => {}
             _ => {
                 return Err(agent_client_protocol::Error::invalid_params()
-                    .data("Maple ACP currently accepts text and resource-link prompt blocks"));
+                    .data("Maple ACP accepts text, image, and resource-link prompt blocks"));
             }
         }
     }
     let text = parts.join("\n\n");
-    if text.trim().is_empty() {
+    if text.trim().is_empty()
+        && !blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image(_)))
+    {
         return Err(agent_client_protocol::Error::invalid_params()
-            .data("Maple ACP requires at least one text prompt block"));
+            .data("Maple ACP requires at least one text or image prompt block"));
     }
     Ok(text)
+}
+
+/// The image blocks of a prompt, in order, as uploadable attachments.
+pub(super) fn prompt_images(blocks: &[ContentBlock]) -> Vec<AgentImageUpload> {
+    blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            let ContentBlock::Image(image) = block else {
+                return None;
+            };
+            Some(AgentImageUpload {
+                name: format!(
+                    "acp-image-{index}.{}",
+                    image_file_extension(&image.mime_type)
+                ),
+                data_url: format!("data:{};base64,{}", image.mime_type, image.data),
+            })
+        })
+        .collect()
+}
+
+fn image_file_extension(mime_type: &str) -> &'static str {
+    match mime_type.to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        _ => "img",
+    }
 }
 
 pub(super) fn acp_permission_tool_call(
@@ -130,19 +167,89 @@ pub(super) fn acp_permission_tool_call(
         .kind(acp_tool_kind(&request.tool_name))
         .status(ToolCallStatus::Pending)
         .raw_input(serde_json::Value::Object(request.arguments.clone()));
-    let preview = request
-        .prompt
-        .as_ref()
-        .map(|prompt| prompt.as_str())
-        .filter(|prompt| !prompt.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| bounded_permission_arguments(request));
-    if !preview.is_empty() {
-        tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
-            TextContent::new(preview),
-        ))]);
+    let locations = acp_permission_locations(request);
+    if !locations.is_empty() {
+        tool_call = tool_call.locations(locations);
     }
-    tool_call
+    if let Some(prompt) = request.prompt.as_ref().filter(|prompt| !prompt.is_empty()) {
+        tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
+            TextContent::new(prompt.clone()),
+        ))]);
+        return tool_call;
+    }
+    match edit_diff_contents(request) {
+        Some(diffs) => tool_call.content(diffs),
+        None => {
+            let preview = bounded_permission_arguments(request);
+            if !preview.is_empty() {
+                tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
+                    TextContent::new(preview),
+                ))]);
+            }
+            tool_call
+        }
+    }
+}
+
+/// File locations for an approval card, so the caller can link to what is
+/// about to change. Only absolute paths are reported.
+fn acp_permission_locations(request: &AgentPermissionRequest) -> Vec<ToolCallLocation> {
+    let arguments = serde_json::Value::Object(request.arguments.clone());
+    let Some(path) = tool_path(&arguments).filter(|path| Path::new(path).is_absolute()) else {
+        return Vec::new();
+    };
+    // `offset` names a one-based line for read; `line` covers tools that
+    // say it directly.
+    let line = ["offset", "line"].iter().find_map(|key| {
+        arguments
+            .get(*key)
+            .and_then(serde_json::Value::as_u64)
+            .filter(|line| *line > 0 && *line <= u32::MAX as u64)
+            .map(|line| line as u32)
+    });
+    vec![ToolCallLocation::new(PathBuf::from(path)).line(line)]
+}
+
+/// Edit and write approvals rendered as diffs, the shape ACP clients show
+/// inline. `None` when the call is not a bounded file modification.
+fn edit_diff_contents(request: &AgentPermissionRequest) -> Option<Vec<ToolCallContent>> {
+    let bare_name = request
+        .tool_name
+        .rsplit("__")
+        .next()
+        .unwrap_or(&request.tool_name);
+    let arguments = serde_json::Value::Object(request.arguments.clone());
+    let path = tool_path(&arguments)?;
+    let diff = |old: Option<&str>, new: &str| {
+        ToolCallContent::Diff(
+            Diff::new(
+                PathBuf::from(path),
+                bounded_chars(new, MAX_ACP_PERMISSION_PREVIEW_CHARS),
+            )
+            .old_text(old.map(|old| bounded_chars(old, MAX_ACP_PERMISSION_PREVIEW_CHARS))),
+        )
+    };
+    match bare_name {
+        "edit" => {
+            let edits = arguments.get("edits")?.as_array()?;
+            let contents = edits
+                .iter()
+                .filter_map(|edit| {
+                    let new = edit.get("newText").and_then(serde_json::Value::as_str)?;
+                    let old = edit.get("oldText").and_then(serde_json::Value::as_str);
+                    Some(diff(old, new))
+                })
+                .collect::<Vec<_>>();
+            (!contents.is_empty()).then_some(contents)
+        }
+        "write" => {
+            let new = arguments
+                .get("content")
+                .and_then(serde_json::Value::as_str)?;
+            Some(vec![diff(None, new)])
+        }
+        _ => None,
+    }
 }
 
 /// A bounded, human-readable view of a tool call's arguments. ACP clients

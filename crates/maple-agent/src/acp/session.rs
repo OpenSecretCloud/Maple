@@ -43,8 +43,24 @@ pub(super) struct BridgeHelloNotification {
     pub(super) environment: HashMap<String, String>,
 }
 
+/// The (shared) runtime start `session/new` and `session/load` wait on, so
+/// the ACP handshake can answer before the heavy runtime boots. Driving it
+/// through `Shared` means the first session request starts the runtime once
+/// while later requests await the same start.
+pub(super) type SharedRuntimeStart = futures_util::future::Shared<
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>,
+>;
+
+/// A start gate that is already satisfied; used when the runtime is known
+/// to be running (tests, desktop-owned runs).
+#[cfg(test)]
+pub(super) fn completed_runtime_start() -> SharedRuntimeStart {
+    futures_util::FutureExt::shared(Box::pin(std::future::ready(Ok(()))))
+}
+
 pub(super) struct AcpConnectionContext {
     pub(super) agent: AgentRuntimeHandle,
+    pub(super) runtime_start: SharedRuntimeStart,
     pub(super) config: Arc<RwLock<AgentAcpConfig>>,
     pub(super) stats: Arc<AgentAcpStats>,
     pub(super) bridge_environment: Mutex<HashMap<String, String>>,

@@ -2075,10 +2075,10 @@ async fn start_runtime_for_user(
     ensure_account_scope(maple_api_session.account_scope(), &account_scope).map_err(|_| {
         "Maple API authentication belongs to a different signed-in account".to_string()
     })?;
-    maple_api_session
-        .validate_user()
-        .await
-        .map_err(|error| format!("Failed to validate Maple API authentication: {error}"))?;
+    // No eager `validate_user` here: the scope check above binds the session
+    // to this account locally, and every API call revalidates (and refreshes)
+    // credentials anyway. Skipping the boot-time round trip keeps ACP and
+    // desktop startup off the network's critical path.
 
     let mut agent_config = load_agent_config_inner(&state.host.paths, user_id)
         .map_err(|error| format!("Failed to load Agent config: {error}"))?;
@@ -3368,12 +3368,16 @@ impl AgentRuntimeHandle {
         };
         drop(_runtime_lifecycle_guard);
 
-        let mut models = match maple_api_session.model_ids().await {
-            Ok(models) => models,
-            Err(error) => {
-                log::warn!("Failed to refresh Maple Agent model catalog: {error}");
-                Vec::new()
-            }
+        let mut models = match cached_model_catalog_fetch(
+            &state.host.paths,
+            &self.user_id,
+            &maple_api_session,
+            self.generation,
+        )
+        .await
+        {
+            CatalogFetch::Fresh(models) | CatalogFetch::Stale(models) => models,
+            CatalogFetch::Failed => Vec::new(),
         };
         // A catalog request can outlive logout or runtime replacement. Recheck
         // the exact account generation and transport before publishing a
@@ -4314,6 +4318,124 @@ fn is_goose_declined_tool_response(response: &goose::conversation::message::Tool
                     .is_some_and(|text| text.text.starts_with(DECLINED_PREFIX))
             })
     })
+}
+
+/// How a model-catalog read resolved.
+#[derive(Debug)]
+enum CatalogFetch {
+    /// A live fetch, or a cache entry still inside its TTL.
+    Fresh(Vec<String>),
+    /// The fetch failed and an expired cache answered instead.
+    Stale(Vec<String>),
+    /// No usable source; callers fall back to the default model.
+    Failed,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CachedModelCatalog {
+    fetched_at_ms: u64,
+    models: Vec<String>,
+}
+
+/// A cached catalog answers session/new for this long without a network
+/// round trip. The ACP process is short-lived, so the cache lives on disk
+/// next to the account config and survives restarts.
+const MODEL_CATALOG_TTL_MS: u64 = 10 * 60 * 1000;
+
+fn model_catalog_cache_path(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
+    Ok(agent_config_dir(paths, user_id)
+        .map_err(|e| e.to_string())?
+        .join("model-catalog.json"))
+}
+
+fn model_catalog_is_fresh(fetched_at_ms: u64) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(0);
+    now.saturating_sub(fetched_at_ms) < MODEL_CATALOG_TTL_MS
+}
+
+async fn cached_model_catalog_fetch(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    maple_api_session: &Arc<MapleApiSession>,
+    generation: u64,
+) -> CatalogFetch {
+    let cache_path = match model_catalog_cache_path(paths, user_id) {
+        Ok(path) => path,
+        Err(error) => {
+            log::warn!("Failed to place the model catalog cache: {error}");
+            PathBuf::new()
+        }
+    };
+    let cached = if cache_path.as_os_str().is_empty() {
+        None
+    } else {
+        let path = cache_path.clone();
+        tokio::task::spawn_blocking(move || {
+            fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<CachedModelCatalog>(&text).ok())
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    if let Some(record) = cached
+        .as_ref()
+        .filter(|record| model_catalog_is_fresh(record.fetched_at_ms))
+    {
+        log::debug!("Serving the cached Maple Agent model catalog");
+        return CatalogFetch::Fresh(record.models.clone());
+    }
+    match maple_api_session.model_ids().await {
+        Ok(models) => {
+            if !cache_path.as_os_str().is_empty() {
+                let record = CachedModelCatalog {
+                    fetched_at_ms: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|since| since.as_millis() as u64)
+                        .unwrap_or(0),
+                    models: models.clone(),
+                };
+                if let Ok(text) = serde_json::to_string(&record) {
+                    let path = cache_path.clone();
+                    let written =
+                        tokio::task::spawn_blocking(move || write_model_catalog_file(&path, &text))
+                            .await
+                            .unwrap_or_else(|error| {
+                                log::warn!("Model catalog cache task failed: {error}");
+                                Err(std::io::Error::other("model catalog cache task failed"))
+                            });
+                    if written.is_err() {
+                        log::warn!(
+                            "Failed to write the model catalog cache at {}",
+                            cache_path.display()
+                        );
+                    }
+                }
+            }
+            let _ = generation;
+            CatalogFetch::Fresh(models)
+        }
+        Err(error) => {
+            log::warn!("Failed to refresh Maple Agent model catalog: {error}");
+            match cached {
+                Some(record) => CatalogFetch::Stale(record.models),
+                None => CatalogFetch::Failed,
+            }
+        }
+    }
+}
+
+fn write_model_catalog_file(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, text)?;
+    fs::rename(&temporary, path)
 }
 
 impl AgentRuntimeHandle {
@@ -5554,6 +5676,34 @@ impl AgentRuntimeHandle {
             .await
             .map_err(|error| format!("Failed to load Agent task: {error}"))?;
         Ok(session_summary(&session))
+    }
+
+    /// Persist a caller-selected permission mode to the task row. Runtime
+    /// policy follows on the next prompt regardless, which carries the
+    /// live mode; this only decides what a later connection loads.
+    pub async fn persist_session_permission_mode(
+        &self,
+        session_id: &str,
+        mode: &str,
+    ) -> Result<(), String> {
+        let goose_mode = parse_user_permission_mode(mode)?;
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, self.account_scope.as_ref())?;
+            Arc::clone(&current.session_manager)
+        };
+        session_manager
+            .update(session_id)
+            .goose_mode(goose_mode)
+            .apply()
+            .await
+            .map_err(|error| format!("Failed to save the Agent task's mode: {error}"))
     }
 
     pub async fn set_permission_mode(
@@ -12987,6 +13137,50 @@ mod tests {
         let error = validate_session_model_lock(3, Some("glm-5-2"), "gemma4-31b").unwrap_err();
         assert!(error.contains("locked to model glm-5-2"));
         assert!(error.contains("Start a new task"));
+    }
+
+    #[test]
+    fn model_catalog_cache_freshness_follows_the_ttl() {
+        assert!(!model_catalog_is_fresh(0), "epoch means never fetched");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(model_catalog_is_fresh(now));
+        assert!(!model_catalog_is_fresh(now - MODEL_CATALOG_TTL_MS - 1_000));
+    }
+
+    #[tokio::test]
+    async fn persisted_permission_mode_survives_a_reload() {
+        let agent = test_support::started_agent_runtime("persist-mode").await;
+        let created = agent
+            .handle
+            .create_session(Some(AgentCreateSessionRequest {
+                project_root: Some(agent.project_root.to_string_lossy().into_owned()),
+                title: Some("mode target".to_string()),
+                model: None,
+                context_limit: None,
+                mode: Some("smart_approve".to_string()),
+                mcp_server_names: None,
+                system_prompt: None,
+            }))
+            .await
+            .unwrap();
+        agent
+            .handle
+            .persist_session_permission_mode(&created.session.id, "auto")
+            .await
+            .unwrap();
+        let summaries = agent
+            .handle
+            .list_sessions(Some(agent.project_root.to_string_lossy().into_owned()))
+            .await
+            .unwrap();
+        let summary = summaries
+            .iter()
+            .find(|summary| summary.id == created.session.id)
+            .expect("the task should be listed");
+        assert_eq!(summary.mode, "auto");
     }
 
     #[test]

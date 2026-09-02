@@ -93,7 +93,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                             .load_session(true)
                             .prompt_capabilities(
                                 PromptCapabilities::new()
-                                    .image(false)
+                                    .image(true)
                                     .audio(false)
                                     .embedded_context(false),
                             )
@@ -195,7 +195,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                     let context = Arc::clone(&context);
                     let cx = cx.clone();
                     |request: PromptRequest, responder: Responder<PromptResponse>| async move {
-                        let (prompt, session_id, prompt_lifetime, operation_guard) =
+                        let (prompt, images, session_id, prompt_lifetime, operation_guard) =
                             match context.begin_prompt(&request).await {
                             Ok(prepared) => prepared,
                             Err(error) => {
@@ -222,6 +222,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                                         &prompt_cx,
                                         session_id,
                                         prompt,
+                                        images,
                                         prompt_lifetime,
                                         operation_guard,
                                     )
