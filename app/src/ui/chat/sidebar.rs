@@ -14,7 +14,7 @@ use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary};
 
 use super::commands::ChatCommand;
 use super::{ChatScreen, MenuAction, RenameTarget, SIDEBAR_WIDTH, SessionActivity, section_label};
-use crate::ui::icons::{icon, wordmark};
+use crate::ui::icons::{icon, spinner_with_id, wordmark};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
@@ -27,6 +27,8 @@ pub(super) struct SidebarRow {
     pub(super) group: SharedString,
     pub(super) rename_id: SharedString,
     pub(super) archive_id: SharedString,
+    /// Animation id of the running indicator.
+    pub(super) spinner_id: SharedString,
     pub(super) title: SharedString,
     /// Display name of the task's project, for archived rows.
     pub(super) project_name: SharedString,
@@ -43,6 +45,7 @@ impl SidebarRow {
             group: SharedString::from(format!("task-row-{id}")),
             rename_id: SharedString::from(format!("rename-session-{id}")),
             archive_id: SharedString::from(format!("archive-session-{id}")),
+            spinner_id: SharedString::from(format!("spinner-session-{id}")),
             title: SharedString::from(session.title.clone()),
             project_name: SharedString::from(project_name.to_string()),
             search: session.title.to_lowercase(),
@@ -60,6 +63,8 @@ pub(super) struct ProjectGroup {
     pub(super) group: SharedString,
     pub(super) pin_id: SharedString,
     pub(super) menu_id: SharedString,
+    /// Animation id of the folded header's running indicator.
+    pub(super) spinner_id: SharedString,
     /// Indices into `sessions` of the live tasks that pass the filter.
     pub(super) tasks: Vec<usize>,
 }
@@ -73,6 +78,7 @@ impl ProjectGroup {
             group: SharedString::from(format!("project-row-{root}")),
             pin_id: SharedString::from(format!("pin-project-{root}")),
             menu_id: SharedString::from(format!("menu-project-{root}")),
+            spinner_id: SharedString::from(format!("spinner-project-{root}")),
             tasks,
         }
     }
@@ -1322,7 +1328,7 @@ impl ChatScreen {
                         )
                     })
                     .when_some(activity, |row, activity| {
-                        row.child(activity_indicator(activity))
+                        row.child(activity_indicator(&group.spinner_id, activity))
                     })
                     .when(is_pinned, |row| {
                         // Pinned: the always-visible pin is the unpin
@@ -1436,7 +1442,7 @@ impl ChatScreen {
                 )
             })
             .when_some(activity, |row_element, activity| {
-                row_element.child(activity_indicator(activity))
+                row_element.child(activity_indicator(&row.spinner_id, activity))
             })
             .child(row_action(
                 row.rename_id.clone(),
@@ -1488,14 +1494,12 @@ impl ChatScreen {
     }
 }
 
-/// The running glyph is static on purpose: a repeating animation asks for
-/// a frame on every tick and would repaint the whole screen for as long as
-/// any task in any project runs.
-fn activity_indicator(activity: SessionActivity) -> AnyElement {
+/// A spinner while the task runs, a dot once it completed unseen. The
+/// spinner keeps the window repainting while any task runs, like the
+/// subagent card does; `spinner_id` is prebuilt so render allocates nothing.
+fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
     match activity {
-        SessionActivity::Running => {
-            icon("loader-circle", px(13.), theme::accent()).into_any_element()
-        }
+        SessionActivity::Running => spinner_with_id(spinner_id.clone(), px(13.), theme::accent()),
         SessionActivity::CompletedUnread => div()
             .size(px(8.))
             .flex_none()

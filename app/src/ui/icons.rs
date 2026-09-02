@@ -48,9 +48,15 @@ pub fn wordmark(height: Pixels, color: u32) -> Svg {
 /// A `loader-circle` icon that turns once per second while it is shown.
 /// `id` must be unique among the animations on screen.
 pub fn spinner(id: &str, size: Pixels, color: u32) -> AnyElement {
+    spinner_with_id(SharedString::from(format!("spinner-{id}")), size, color)
+}
+
+/// `spinner` with a prebuilt element id, for render paths that must not
+/// format strings per frame.
+pub fn spinner_with_id(id: SharedString, size: Pixels, color: u32) -> AnyElement {
     icon("loader-circle", size, color)
         .with_animation(
-            gpui::ElementId::Name(format!("spinner-{id}").into()),
+            gpui::ElementId::Name(id),
             gpui::Animation::new(std::time::Duration::from_secs(1)).repeat(),
             |svg, delta| {
                 svg.with_transformation(gpui::Transformation::rotate(gpui::radians(
