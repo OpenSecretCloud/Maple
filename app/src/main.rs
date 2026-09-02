@@ -38,8 +38,17 @@ fn disabled_mode(mode: &str, feature: &str) -> ! {
 
 /// Command line for the binary. With no subcommand it opens the desktop
 /// window; `acp` and `proxy` run headless services.
+/// The `--version` string: package version plus the git revision baked in
+/// by `build.rs`, so a running binary can be matched back to a checkout.
+/// Clap wants a `&'static str` and both inputs are compile-time constants,
+/// but `format!` is still runtime, hence the leak of one small string.
+fn version_string() -> &'static str {
+    let hash = option_env!("MAPLE_GIT_HASH").unwrap_or("unknown");
+    Box::leak(format!("{} ({})", env!("CARGO_PKG_VERSION"), hash).into_boxed_str())
+}
+
 #[derive(Debug, Parser)]
-#[command(name = "maple-gpui", version, about, disable_help_subcommand = true)]
+#[command(name = "maple-gpui", version = version_string(), about, disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
     mode: Option<Mode>,
@@ -354,13 +363,15 @@ mod tests {
 
     #[test]
     fn version_flags_print_the_package_version() {
+        let expected = format!(
+            "maple-gpui {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("MAPLE_GIT_HASH").unwrap_or("unknown")
+        );
         for flag in ["--version", "-V"] {
             let error = parse(&[flag]).expect_err("version exits early");
             assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
-            assert_eq!(
-                error.to_string().trim(),
-                format!("maple-gpui {}", env!("CARGO_PKG_VERSION"))
-            );
+            assert_eq!(error.to_string().trim(), expected);
         }
     }
 
