@@ -2,6 +2,10 @@
 //! event pump that forwards agent service events into the active chat
 //! screen. Compiled only with the `desktop` feature.
 
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{
@@ -330,7 +334,53 @@ pub(crate) fn register_key_bindings(cx: &mut App) {
     crate::keymap::bootstrap(cx);
 }
 
-pub fn run() {
+/// The request a second desktop instance sends to ask the running one to
+/// present its window.
+const SINGLE_INSTANCE_SHOW: &[u8] = b"show\n";
+
+/// The outcome of claiming the desktop single-instance lock.
+pub enum SingleInstance {
+    /// This process is the desktop instance; `show` requests arrive on it.
+    First(UnixListener),
+    /// A desktop instance is already running and has been asked to show.
+    AlreadyRunning,
+}
+
+/// Claim the desktop single-instance lock at `path`. A socket nobody
+/// answers proves no live instance, so a file left by a crash is removed
+/// and reclaimed; a socket that answers means the app is already up.
+pub fn claim_single_instance_at(path: &Path) -> std::io::Result<SingleInstance> {
+    if let Ok(mut stream) = UnixStream::connect(path)
+        && stream.write_all(SINGLE_INSTANCE_SHOW).is_ok()
+    {
+        return Ok(SingleInstance::AlreadyRunning);
+    }
+    std::fs::remove_file(path).ok();
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).ok();
+    Ok(SingleInstance::First(listener))
+}
+
+pub fn claim_single_instance() -> std::io::Result<SingleInstance> {
+    claim_single_instance_at(&crate::backend::local_data_root().join("instance.sock"))
+}
+
+/// Watch the single-instance socket (when this process owns it) and raise
+/// the main window whenever a second launch asks it to show.
+fn watch_single_instance(listener: UnixListener, show: tokio::sync::mpsc::Sender<()>) {
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buffer = [0u8; SINGLE_INSTANCE_SHOW.len()];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            if buffer[..read].eq(SINGLE_INSTANCE_SHOW.trim_ascii_end()) {
+                let _ = show.blocking_send(());
+            }
+        }
+    });
+}
+
+pub fn run(single_instance: Option<UnixListener>) {
     crate::init_logging(crate::LogOutput::FileAndStderr);
     log::debug!("startup: logging ready at {} ms", crate::startup_elapsed());
 
@@ -350,6 +400,10 @@ pub fn run() {
     );
     log::debug!("startup: backend ready at {} ms", crate::startup_elapsed());
 
+    let (show_sender, mut show_receiver) = tokio::sync::mpsc::channel::<()>(1);
+    if let Some(listener) = single_instance {
+        watch_single_instance(listener, show_sender.clone());
+    }
     Application::new()
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
@@ -411,6 +465,13 @@ pub fn run() {
                 )
                 .expect("failed to open main window");
             log::debug!("startup: window open at {} ms", crate::startup_elapsed());
+            // A second desktop launch asks this instance to show itself.
+            cx.spawn(async move |cx| {
+                while let Some(()) = show_receiver.recv().await {
+                    let _ = window.update(cx, |_, window, _| window.activate_window());
+                }
+            })
+            .detach();
             // Saved credentials are trusted at once: the chat screen opens
             // with the account's local task list while the server validates
             // the credentials in the background. Only a definitive rejection
@@ -532,5 +593,43 @@ mod tests {
         assert!(maximized.maximized);
 
         assert!(window_state_for(WindowBounds::Fullscreen(bounds(3840., 2160.))).is_none());
+    }
+}
+
+#[cfg(test)]
+mod single_instance_tests {
+    use super::{SingleInstance, claim_single_instance_at};
+    use std::path::PathBuf;
+
+    fn temp_socket(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "maple-single-instance-{label}-{}-{nanos}",
+            std::process::id(),
+        ))
+    }
+
+    #[test]
+    fn one_live_instance_wins_and_stale_sockets_are_reclaimed() {
+        let path = temp_socket("lock");
+        let _ = std::fs::remove_file(&path);
+
+        // A socket file with nobody listening (a crash leftover) is reclaimed.
+        std::fs::write(&path, b"").unwrap();
+        let first = claim_single_instance_at(&path).unwrap();
+        assert!(matches!(first, SingleInstance::First(_)));
+
+        // While that listener is alive, a second claim is told to show.
+        let second = claim_single_instance_at(&path).unwrap();
+        assert!(matches!(second, SingleInstance::AlreadyRunning));
+
+        drop(first);
+        std::fs::remove_file(&path).unwrap();
+        let third = claim_single_instance_at(&path).unwrap();
+        assert!(matches!(third, SingleInstance::First(_)));
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -171,7 +171,24 @@ fn main() {
         }
         None => {
             #[cfg(feature = "desktop")]
-            desktop::run();
+            {
+                // One desktop window at a time: a second launch asks the
+                // running instance to show itself and exits. Headless `acp`
+                // and `proxy` processes never take this lock, so an editor's
+                // agent keeps running alongside the desktop app.
+                let single_instance = match desktop::claim_single_instance() {
+                    Ok(desktop::SingleInstance::First(listener)) => Some(listener),
+                    Ok(desktop::SingleInstance::AlreadyRunning) => {
+                        println!("Maple is already running; showing the existing window");
+                        std::process::exit(0);
+                    }
+                    Err(error) => {
+                        eprintln!("Maple single-instance lock unavailable: {error}");
+                        None
+                    }
+                };
+                desktop::run(single_instance);
+            }
             #[cfg(not(feature = "desktop"))]
             disabled_mode("(desktop)", "desktop");
         }
