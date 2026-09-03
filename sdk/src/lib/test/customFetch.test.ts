@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { createCustomFetchWithDependencies, type CustomFetchDependencies } from "../ai";
+import {
+  ACCOUNT_CREDENTIAL_MISMATCH_CODE,
+  createCustomFetchWithDependencies,
+  REQUEST_NOT_DISPATCHED_CODE,
+  type CustomFetchDependencies
+} from "../ai";
 import { getApiPcrConfig, getApiUrl, setApiUrl } from "../api";
 import type { Attestation } from "../getAttestation";
 import type { PcrConfig } from "../pcr";
@@ -43,6 +48,12 @@ function contractError(status: number, body: string, code?: string): Response {
   const headers = new Headers({ [ERROR_CONTRACT_HEADER]: "1" });
   if (code) headers.set(ERROR_CODE_HEADER, code);
   return new Response(body, { status, headers });
+}
+
+function tokenForSubject(subject: string, generation = 1): string {
+  const encode = (value: object) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${encode({ alg: "ES256K", typ: "JWT" })}.${encode({ sub: subject, generation })}.sig`;
 }
 
 function dependencies(overrides: Partial<CustomFetchDependencies>): CustomFetchDependencies {
@@ -100,6 +111,383 @@ describe("createCustomFetch stale-session recovery", () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+  });
+
+  test("rejects a mismatched account before attestation or transport", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+    let attestations = 0;
+    let requests = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        getAttestation: async () => {
+          attestations += 1;
+          return staleAttestation;
+        },
+        fetch: async () => {
+          requests += 1;
+          return Response.json({});
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toMatchObject({
+      code: ACCOUNT_CREDENTIAL_MISMATCH_CODE,
+      requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+      definitelyNotDispatched: true
+    });
+    expect(attestations).toBe(0);
+    expect(requests).toBe(0);
+  });
+
+  test("rechecks account ownership after attestation yields", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    let requests = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        getAttestation: async () => {
+          window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+          return staleAttestation;
+        },
+        fetch: async () => {
+          requests += 1;
+          return Response.json({});
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toMatchObject({
+      code: ACCOUNT_CREDENTIAL_MISMATCH_CODE
+    });
+    expect(requests).toBe(0);
+  });
+
+  test("rechecks account ownership after request encryption before transport", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    let requests = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        encryptMessage: (sessionKey, plaintext) => {
+          window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+          return encryptForTest(sessionKey, plaintext);
+        },
+        fetch: async () => {
+          requests += 1;
+          return Response.json({});
+        }
+      })
+    );
+
+    await expect(
+      customFetch("https://example.test/v1/responses", {
+        method: "POST",
+        body: JSON.stringify({ input: "private" })
+      })
+    ).rejects.toMatchObject({
+      code: ACCOUNT_CREDENTIAL_MISMATCH_CODE,
+      requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+      definitelyNotDispatched: true
+    });
+    expect(requests).toBe(0);
+  });
+
+  test("tags an initial attestation failure as definitely not dispatched", async () => {
+    const attestationError = new Error("attestation unavailable");
+    let requests = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        getAttestation: async () => {
+          throw attestationError;
+        },
+        fetch: async () => {
+          requests += 1;
+          return Response.json({});
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toBe(attestationError);
+    expect(attestationError).toMatchObject({
+      requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+      definitelyNotDispatched: true
+    });
+    expect(requests).toBe(0);
+  });
+
+  test("does not tag a fetch rejection after dispatch was attempted", async () => {
+    const transportError = Object.assign(new Error("network failed"), { code: "network_error" });
+    let requests = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        fetch: async () => {
+          requests += 1;
+          throw transportError;
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toBe(transportError);
+    expect((transportError as { code?: string }).code).not.toBe(REQUEST_NOT_DISPATCHED_CODE);
+    expect(transportError).not.toHaveProperty("requestDispatchCode");
+    expect(transportError).not.toHaveProperty("definitelyNotDispatched");
+    expect(requests).toBe(1);
+  });
+
+  test("does not refresh with credentials replaced by another account", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    let requests = 0;
+    let refreshes = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        fetch: async () => {
+          requests += 1;
+          window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+          return contractError(401, "expired", "access_token_expired");
+        },
+        refreshToken: async () => {
+          refreshes += 1;
+          throw new Error("must not refresh replacement credentials");
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toMatchObject({
+      code: ACCOUNT_CREDENTIAL_MISMATCH_CODE
+    });
+    expect(requests).toBe(1);
+    expect(refreshes).toBe(0);
+  });
+
+  test("allows a JWT refresh that retains the expected account subject", async () => {
+    const initialToken = tokenForSubject("user-a", 1);
+    const refreshedToken = tokenForSubject("user-a", 2);
+    window.localStorage.setItem("access_token", initialToken);
+    const authorizations: Array<string | null> = [];
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        fetch: async (_input, init) => {
+          authorizations.push(recordRequest(init).authorization);
+          return authorizations.length === 1
+            ? contractError(401, "expired", "access_token_expired")
+            : Response.json({ encrypted: '1:{"ok":true}' });
+        },
+        refreshToken: async () => {
+          window.localStorage.setItem("access_token", refreshedToken);
+          return { access_token: refreshedToken, refresh_token: "same-account-refresh" };
+        }
+      })
+    );
+
+    expect(await (await customFetch("https://example.test/v1/responses")).json()).toEqual({
+      ok: true
+    });
+    expect(authorizations).toEqual([`Bearer ${initialToken}`, `Bearer ${refreshedToken}`]);
+  });
+
+  test("marks refresh setup failures after a definitive rejection as not accepted", async () => {
+    const initialToken = tokenForSubject("user-a", 1);
+    window.localStorage.setItem("access_token", initialToken);
+    const refreshError = new Error("refresh unavailable");
+    let requests = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        fetch: async () => {
+          requests += 1;
+          return contractError(401, "expired", "access_token_expired");
+        },
+        refreshToken: async () => {
+          throw refreshError;
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toBe(refreshError);
+    expect(refreshError).toMatchObject({
+      requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+      definitelyNotDispatched: true
+    });
+    expect(requests).toBe(1);
+  });
+
+  test("marks a truncated 4xx error body as definitively rejected", async () => {
+    const bodyError = new Error("error body truncated");
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        fetch: async () => {
+          const response = new Response(null, { status: 422 });
+          Object.defineProperty(response, "text", {
+            value: async () => {
+              throw bodyError;
+            }
+          });
+          return response;
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toBe(bodyError);
+    expect(bodyError).toMatchObject({
+      requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+      definitelyNotDispatched: true
+    });
+  });
+
+  test("keeps a truncated generic versioned 5xx body ambiguous", async () => {
+    const bodyError = new Error("error body truncated");
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        fetch: async () => {
+          const response = new Response(null, {
+            status: 500,
+            headers: { "x-opensecret-error-contract": "1" }
+          });
+          Object.defineProperty(response, "text", {
+            value: async () => {
+              throw bodyError;
+            }
+          });
+          return response;
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toBe(bodyError);
+    expect(bodyError).not.toHaveProperty("requestDispatchCode");
+    expect(bodyError).not.toHaveProperty("definitelyNotDispatched");
+  });
+
+  test("marks a truncated coded pre-acceptance 5xx body as definitively rejected", async () => {
+    const bodyError = new Error("error body truncated");
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        fetch: async () => {
+          const response = contractError(
+            503,
+            "upstream unavailable",
+            "image_description_unavailable"
+          );
+          Object.defineProperty(response, "text", {
+            value: async () => {
+              throw bodyError;
+            }
+          });
+          return response;
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toBe(bodyError);
+    expect(bodyError).toMatchObject({
+      requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+      definitelyNotDispatched: true
+    });
+  });
+
+  test("rejects an encrypted JSON result if the account changes while reading its body", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    const options = { expectedUserId: "user-a" };
+    let decryptions = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      options,
+      dependencies({
+        decryptMessage: (sessionKey, ciphertext) => {
+          decryptions += 1;
+          return decryptForTest(sessionKey, ciphertext);
+        },
+        fetch: async () => {
+          const response = Response.json({ encrypted: '1:{"private":"user-a"}' });
+          Object.defineProperty(response, "text", {
+            value: async () => {
+              await Promise.resolve();
+              options.expectedUserId = "user-b";
+              window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+              return '{"encrypted":"1:{\\"private\\":\\"user-a\\"}"}';
+            }
+          });
+          return response;
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toMatchObject({
+      code: ACCOUNT_CREDENTIAL_MISMATCH_CODE
+    });
+    expect(decryptions).toBe(0);
+  });
+
+  test("rejects an error body if the account changes while reading it", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        fetch: async () => {
+          const response = contractError(403, "private failure");
+          Object.defineProperty(response, "text", {
+            value: async () => {
+              await Promise.resolve();
+              window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+              return "private failure";
+            }
+          });
+          return response;
+        }
+      })
+    );
+
+    await expect(customFetch("https://example.test/v1/responses")).rejects.toMatchObject({
+      code: ACCOUNT_CREDENTIAL_MISMATCH_CODE
+    });
+  });
+
+  test("errors an SSE body before enqueueing after the account changes", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    let releaseBody!: () => void;
+    const bodyReleased = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    let decryptions = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { expectedUserId: "user-a" },
+      dependencies({
+        decryptMessage: (sessionKey, ciphertext) => {
+          decryptions += 1;
+          return decryptForTest(sessionKey, ciphertext);
+        },
+        fetch: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              async start(controller) {
+                await bodyReleased;
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    'event: response.output_text.delta\ndata: 1:{"delta":"private"}\n\n'
+                  )
+                );
+                controller.close();
+              }
+            }),
+            { headers: { "content-type": "text/event-stream" } }
+          )
+      })
+    );
+
+    const response = await customFetch("https://example.test/v1/responses");
+    const result = response.text();
+    window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+    releaseBody();
+
+    await expect(result).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+    expect(decryptions).toBe(0);
   });
 
   test("renews once and rebuilds an API-key request with the fresh session", async () => {
@@ -805,7 +1193,11 @@ describe("createCustomFetch stale-session recovery", () => {
 
     await expect(
       customFetch("https://example.test/v1/responses", { signal: controller.signal })
-    ).rejects.toMatchObject({ name: "AbortError" });
+    ).rejects.toMatchObject({
+      name: "AbortError",
+      requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+      definitelyNotDispatched: true
+    });
     expect(attestations).toBe(0);
     expect(requests).toBe(0);
   });

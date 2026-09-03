@@ -114,7 +114,12 @@ export {
 } from "./api";
 
 // Export AI customization options
-export { createCustomFetch, type CustomFetchOptions } from "./ai";
+export {
+  createCustomFetch,
+  REQUEST_NOT_DISPATCHED_CODE,
+  type CustomFetchOptions,
+  type RequestNotDispatchedMarker
+} from "./ai";
 
 // Re-export Model type from OpenAI for convenience
 export type { Model } from "openai/resources/models.js";

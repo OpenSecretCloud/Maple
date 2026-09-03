@@ -2,7 +2,55 @@ import { decryptMessage, encryptMessage } from "./encryption";
 import { getAttestation, type Attestation } from "./getAttestation";
 import * as api from "./api";
 import { serializePcrConfig, snapshotPcrConfig, type PcrConfig } from "./pcr";
-import { classifyRecovery } from "./recovery";
+import { classifyRecovery, ERROR_CODE_HEADER, ERROR_CONTRACT_HEADER } from "./recovery";
+import {
+  ACCOUNT_CREDENTIAL_MISMATCH_CODE,
+  accessTokenSubject,
+  accountCredentialMismatchError,
+  isAccountCredentialMismatchError
+} from "./credentialIdentity";
+
+export { ACCOUNT_CREDENTIAL_MISMATCH_CODE } from "./credentialIdentity";
+
+/** Identifies a failure that occurred before the target fetch was invoked. */
+export const REQUEST_NOT_DISPATCHED_CODE = "opensecret_request_not_dispatched";
+const ERROR_CONTRACT_VERSION = "1";
+const IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE = "image_description_unavailable";
+const IMAGE_DESCRIPTION_UNAVAILABLE_STATUS = 503;
+
+/** Orthogonal dispatch metadata that preserves the source error's code and name. */
+export interface RequestNotDispatchedMarker {
+  readonly requestDispatchCode: typeof REQUEST_NOT_DISPATCHED_CODE;
+  readonly definitelyNotDispatched: true;
+}
+
+function markRequestNotDispatched(error: unknown): unknown & RequestNotDispatchedMarker {
+  const marker: RequestNotDispatchedMarker = {
+    requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+    definitelyNotDispatched: true
+  };
+
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    try {
+      // Errors and DOMExceptions are normally extensible. Tagging the original
+      // preserves credential codes, AbortError names, prototypes, and identity.
+      return Object.assign(error, marker);
+    } catch {
+      // Fall through for frozen or host-provided exception objects.
+    }
+  }
+
+  const wrapped = Object.assign(
+    new Error(error instanceof Error ? error.message : "Request failed before transport dispatch"),
+    { cause: error },
+    marker
+  ) as Error & { code?: unknown } & RequestNotDispatchedMarker;
+  if (typeof error === "object" && error !== null) {
+    if ("name" in error && typeof error.name === "string") wrapped.name = error.name;
+    if ("code" in error) wrapped.code = error.code;
+  }
+  return wrapped;
+}
 
 export interface CustomFetchOptions {
   /** Optional API key to use instead of a JWT token. */
@@ -11,6 +59,8 @@ export interface CustomFetchOptions {
   apiUrl?: string;
   /** PCR0 trust policy enforced before non-loopback session key exchange; defaults to production. */
   pcrConfig?: PcrConfig;
+  /** Optional user ID that every JWT attempt and retry must retain. */
+  expectedUserId?: string;
 }
 
 interface ActiveAttestation {
@@ -197,7 +247,16 @@ export function createCustomFetchWithDependencies(
     // flight; recovery must not switch between API-key and JWT credentials.
     const apiKey = options?.apiKey;
     const usesApiKey = Boolean(apiKey);
+    const expectedUserId = options?.expectedUserId;
+    let requestAcceptanceAmbiguous = false;
+    const assertExpectedAccount = () => {
+      if (!expectedUserId) return;
+      if (accessTokenSubject(window.localStorage.getItem("access_token")) !== expectedUserId) {
+        throw accountCredentialMismatchError();
+      }
+    };
     const getAuthHeader = () => {
+      assertExpectedAccount();
       // If an API key is provided, use it instead of JWT token
       if (apiKey) {
         return `Bearer ${apiKey}`;
@@ -223,6 +282,10 @@ export function createCustomFetchWithDependencies(
       throwIfAborted(request.signal);
 
       const makeRequest = async (attestation: ActiveAttestation) => {
+        // Attestation and request snapshots can yield. Re-check immediately
+        // before each network attempt so an account replacement cannot replay
+        // retained plaintext under another user's credential.
+        assertExpectedAccount();
         const headers = new Headers(request.headers);
         headers.set("Authorization", authHeader);
         headers.set("x-session-id", attestation.sessionId);
@@ -243,10 +306,17 @@ export function createCustomFetchWithDependencies(
           headers.set("Content-Type", "application/json");
         }
 
-        return {
-          attestation,
-          response: await dependencies.fetch(request.url, requestOptions)
-        };
+        // Encryption can be substantial for image-bearing requests, and another
+        // tab can replace browser credentials while this synchronous work runs.
+        // Close that preparation window before handing the request to fetch.
+        assertExpectedAccount();
+
+        // Flip this immediately before invocation: synchronous throws and
+        // rejected fetch promises are both ambiguous because the transport was
+        // asked to dispatch. Only earlier failures are safe to replay.
+        requestAcceptanceAmbiguous = true;
+        const response = await dependencies.fetch(request.url, requestOptions);
+        return { attestation, response };
       };
 
       let attestation = requireActiveAttestation(
@@ -262,12 +332,20 @@ export function createCustomFetchWithDependencies(
 
       while (true) {
         const attempt = await makeRequest(attestation);
+        assertExpectedAccount();
         const recovery = classifyRecovery(attempt.response.status, attempt.response.headers);
 
         if (recovery === "refresh_access_token" && !usesApiKey && !replayed) {
           replayed = true;
+          // This HTTP response definitively rejected the outer request. Any
+          // failure while discarding it, refreshing credentials, or preparing
+          // the retry remains safe for the caller to restore. The next fetch
+          // invocation makes acceptance ambiguous again.
+          requestAcceptanceAmbiguous = false;
           await discardResponse(attempt.response);
           throwIfAborted(request.signal);
+          // Do not consume or rotate a replacement account's refresh token.
+          assertExpectedAccount();
           console.warn("Unauthorized, refreshing access token");
           await dependencies.refreshToken();
           throwIfAborted(request.signal);
@@ -287,6 +365,7 @@ export function createCustomFetchWithDependencies(
 
         if (recovery === "renew_session" && !replayed) {
           replayed = true;
+          requestAcceptanceAmbiguous = false;
           await discardResponse(attempt.response);
           throwIfAborted(request.signal);
           console.warn("Bad Request, renewing attestation and retrying once");
@@ -303,7 +382,25 @@ export function createCustomFetchWithDependencies(
       const { sessionKey } = finalAttempt.attestation;
 
       if (!response.ok) {
+        // OpenSecret's non-timeout 4xx responses and explicit image-description
+        // failure reject a Responses turn before persistence. Record that fact
+        // before reading a possibly truncated error body so callers never wait
+        // for response ownership that cannot exist. The generic contract header
+        // only versions the error schema; it is not proof that a 5xx happened
+        // before persistence.
+        const isImageDescriptionPreAcceptanceError =
+          response.status === IMAGE_DESCRIPTION_UNAVAILABLE_STATUS &&
+          response.headers.get(ERROR_CONTRACT_HEADER) === ERROR_CONTRACT_VERSION &&
+          response.headers.get(ERROR_CODE_HEADER) === IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE;
+        if (
+          response.status !== 408 &&
+          ((response.status >= 400 && response.status < 500) ||
+            isImageDescriptionPreAcceptanceError)
+        ) {
+          requestAcceptanceAmbiguous = false;
+        }
         const errorText = await response.text();
+        assertExpectedAccount();
         console.error(
           "Request failed with response status:",
           response.status,
@@ -327,55 +424,75 @@ export function createCustomFetchWithDependencies(
         let buffer = "";
         const stream = new ReadableStream({
           async start(controller) {
-            while (true) {
-              const { done, value } = await reader!.read();
-              if (done) break;
+            try {
+              while (true) {
+                const { done, value } = await reader!.read();
+                assertExpectedAccount();
+                if (done) break;
 
-              const chunk = decoder.decode(value);
-              buffer += chunk;
+                const chunk = decoder.decode(value);
+                buffer += chunk;
 
-              let event;
-              while ((event = extractEvent(buffer))) {
-                buffer = buffer.slice(event.length);
+                let event;
+                while ((event = extractEvent(buffer))) {
+                  buffer = buffer.slice(event.length);
 
-                // Split the event into individual lines
-                const lines = event.split("\n");
+                  // Split the event into individual lines
+                  const lines = event.split("\n");
 
-                for (const line of lines) {
-                  // Handle event: lines - pass them through as-is
-                  if (line.trim().startsWith("event: ")) {
-                    controller.enqueue(line + "\n");
-                  }
-                  // Handle data: lines - decrypt them
-                  else if (line.trim().startsWith("data: ")) {
-                    const data = line.slice(6).trim();
-                    if (data === "[DONE]") {
-                      controller.enqueue(`data: [DONE]\n\n`);
-                    } else {
-                      try {
-                        const decrypted = dependencies.decryptMessage(sessionKey, data);
+                  for (const line of lines) {
+                    // Handle event: lines - pass them through as-is
+                    if (line.trim().startsWith("event: ")) {
+                      assertExpectedAccount();
+                      controller.enqueue(line + "\n");
+                    }
+                    // Handle data: lines - decrypt them
+                    else if (line.trim().startsWith("data: ")) {
+                      const data = line.slice(6).trim();
+                      if (data === "[DONE]") {
+                        assertExpectedAccount();
+                        controller.enqueue(`data: [DONE]\n\n`);
+                      } else {
+                        try {
+                          const decrypted = dependencies.decryptMessage(sessionKey, data);
 
-                        // Always enqueue the decrypted data
-                        // Note: We don't add \n\n here because the empty line will be added separately
-                        controller.enqueue(`data: ${decrypted}\n`);
-                      } catch (error) {
-                        console.error("Decryption error:", error, "Data:", data);
-                        // Instead of sending the encrypted data, we'll skip this chunk
-                        console.log("Skipping corrupted chunk");
+                          // Always enqueue the decrypted data
+                          // Note: We don't add \n\n here because the empty line will be added separately
+                          assertExpectedAccount();
+                          controller.enqueue(`data: ${decrypted}\n`);
+                        } catch (error) {
+                          if (isAccountCredentialMismatchError(error)) throw error;
+                          console.error("Decryption error:", error, "Data:", data);
+                          // Instead of sending the encrypted data, we'll skip this chunk
+                          console.log("Skipping corrupted chunk");
+                        }
                       }
                     }
-                  }
-                  // Pass through empty lines
-                  else if (line === "") {
-                    controller.enqueue("\n");
+                    // Pass through empty lines
+                    else if (line === "") {
+                      assertExpectedAccount();
+                      controller.enqueue("\n");
+                    }
                   }
                 }
               }
+              assertExpectedAccount();
+              controller.close();
+            } catch (error) {
+              try {
+                await reader?.cancel(error);
+              } catch {
+                // The upstream body may already be closed or errored.
+              }
+              controller.error(error);
             }
-            controller.close();
+          },
+          async cancel(reason) {
+            await reader?.cancel(reason);
           }
         });
 
+        assertExpectedAccount();
         return new Response(stream, {
           headers: response.headers,
           status: response.status,
@@ -385,6 +502,7 @@ export function createCustomFetchWithDependencies(
 
       // Decrypt regular JSON responses
       const responseText = await response.text();
+      assertExpectedAccount();
       try {
         const responseData = JSON.parse(responseText);
 
@@ -423,36 +541,45 @@ export function createCustomFetchWithDependencies(
               headersOut.delete("content-length");
               headersOut.delete("transfer-encoding");
 
+              assertExpectedAccount();
               return new Response(bytes, {
                 headers: headersOut,
                 status: response.status,
                 statusText: response.statusText
               });
             }
-          } catch {
+          } catch (error) {
+            if (isAccountCredentialMismatchError(error)) throw error;
             // Not JSON, continue with regular text response
           }
           // Return a new Response with the decrypted data
+          assertExpectedAccount();
           return new Response(decrypted, {
             headers: response.headers,
             status: response.status,
             statusText: response.statusText
           });
         }
-      } catch {
+      } catch (error) {
+        if (isAccountCredentialMismatchError(error)) throw error;
         // If it's not JSON or doesn't have encrypted field, return original response
         console.log("Response is not encrypted JSON, returning as-is");
       }
 
       // Return the original response text as a new Response
+      assertExpectedAccount();
       return new Response(responseText, {
         headers: response.headers,
         status: response.status,
         statusText: response.statusText
       });
     } catch (error) {
-      console.error("Error during fetch process:", error);
-      throw error;
+      // Keep the original error code/name intact and add orthogonal dispatch
+      // metadata only when no transport invocation occurred in this logical
+      // call. Once fetch is invoked, failure remains deliberately ambiguous.
+      const reportedError = !requestAcceptanceAmbiguous ? markRequestNotDispatched(error) : error;
+      console.error("Error during fetch process:", reportedError);
+      throw reportedError;
     }
   };
 }

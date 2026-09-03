@@ -10,10 +10,11 @@ import {
   updatePushSettings,
   type PushSettings
 } from "../../platformApi";
+import { testAccessTokenForSubject } from "../utils";
 
 const sessionKey = new Uint8Array(32).fill(7);
 const sessionId = "push-settings-session-id";
-const accessToken = "push-settings-access-token";
+const accessToken = testAccessTokenForSubject("push-settings-user");
 const platformApiUrl = "https://platform.example.com";
 const verifiedPcr0 =
   "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";

@@ -3,6 +3,7 @@ import { encryptMessage } from "../encryption";
 import { cacheAttestationSessionForTesting } from "../getAttestation";
 import type { PcrConfig } from "../pcr";
 import { fetchModelCatalog, fetchModels, getApiPcrConfig, getApiUrl, setApiUrl } from "../api";
+import { testAccessTokenForSubject } from "./utils";
 
 const apiUrl = "https://models.example.com";
 const sessionId = "models-session-id";
@@ -71,11 +72,12 @@ test("fetchModels uses the encrypted session before sign-in", async () => {
 });
 
 test("fetchModels preserves stored JWT authentication", async () => {
-  window.localStorage.setItem("access_token", "models-access-token");
+  const accessToken = testAccessTokenForSubject("models-user");
+  window.localStorage.setItem("access_token", accessToken);
 
   globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer models-access-token");
+    expect(headers.get("Authorization")).toBe(`Bearer ${accessToken}`);
     expect(headers.get("x-session-id")).toBe(sessionId);
     return encryptedModelsResponse();
   }) as typeof fetch;
@@ -85,12 +87,13 @@ test("fetchModels preserves stored JWT authentication", async () => {
 
 test("fetchModels never downgrades a rejected stored JWT to anonymous access", async () => {
   let requestCount = 0;
-  window.localStorage.setItem("access_token", "rejected-access-token");
+  const accessToken = testAccessTokenForSubject("models-user");
+  window.localStorage.setItem("access_token", accessToken);
 
   globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
     requestCount += 1;
     const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer rejected-access-token");
+    expect(headers.get("Authorization")).toBe(`Bearer ${accessToken}`);
 
     return Response.json({ message: "Invalid JWT" }, { status: 401 });
   }) as typeof fetch;

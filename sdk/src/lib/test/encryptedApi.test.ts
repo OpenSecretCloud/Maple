@@ -8,6 +8,7 @@ import {
 import type { Attestation } from "../getAttestation";
 import { snapshotPcrConfig } from "../pcr";
 import { ERROR_CODE_HEADER, ERROR_CONTRACT_HEADER } from "../recovery";
+import { ACCOUNT_CREDENTIAL_MISMATCH_CODE } from "../credentialIdentity";
 
 const staleKey = new Uint8Array(32).fill(1);
 const freshKey = new Uint8Array(32).fill(2);
@@ -35,6 +36,12 @@ function encryptedSuccess(sessionKey: Uint8Array, value: unknown): Response {
     { encrypted: encryptForTest(sessionKey, JSON.stringify(value)) },
     { headers: { [ERROR_CONTRACT_HEADER]: "1" } }
   );
+}
+
+function tokenForSubject(subject: string, generation = 1): string {
+  const encode = (value: object) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${encode({ alg: "ES256K", typ: "JWT" })}.${encode({ sub: subject, generation })}.sig`;
 }
 
 function dependencies(overrides: Partial<EncryptedApiDependencies> = {}): EncryptedApiDependencies {
@@ -294,14 +301,224 @@ describe("encrypted API recovery", () => {
     expect(sessionIds).not.toContain("late-extra-session");
   });
 
+  test("an authenticated request fails before transport if attestation yields to another account", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    let sends = 0;
+    let refreshes = 0;
+    const deps = dependencies({
+      getAttestation: async () => {
+        window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+        return staleAttestation;
+      },
+      refreshAccessToken: async () => {
+        refreshes += 1;
+      },
+      fetch: async () => {
+        sends += 1;
+        return encryptedSuccess(staleKey, { ok: true });
+      }
+    });
+
+    await expect(
+      authenticatedApiCallWithDependencies<undefined, { ok: boolean }>(
+        "https://api.example.test/protected/destructive-action",
+        "DELETE",
+        undefined,
+        undefined,
+        deps
+      )
+    ).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+    expect(sends).toBe(0);
+    expect(refreshes).toBe(0);
+  });
+
+  test("a provider-bound request rejects a replacement token before attestation", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+    let attestations = 0;
+    let sends = 0;
+    const deps = dependencies({
+      getAttestation: async () => {
+        attestations += 1;
+        return staleAttestation;
+      },
+      fetch: async () => {
+        sends += 1;
+        return encryptedSuccess(staleKey, { ok: true });
+      }
+    });
+
+    await expect(
+      authenticatedApiCallWithDependencies<undefined, { ok: boolean }>(
+        "https://api.example.test/protected/destructive-action",
+        "DELETE",
+        undefined,
+        undefined,
+        deps,
+        "user-a"
+      )
+    ).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+    expect(attestations).toBe(0);
+    expect(sends).toBe(0);
+  });
+
+  test("does not publish a successful response after the account changes in flight", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    let sends = 0;
+    const deps = dependencies({
+      fetch: async () => {
+        sends += 1;
+        window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+        return encryptedSuccess(staleKey, { private: "user-a" });
+      }
+    });
+
+    await expect(
+      authenticatedApiCallWithDependencies<undefined, { private: string }>(
+        "https://api.example.test/protected/user",
+        "GET",
+        undefined,
+        undefined,
+        deps
+      )
+    ).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+    expect(sends).toBe(1);
+  });
+
+  test("does not publish an encrypted result if the account changes while reading its body", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    let decryptions = 0;
+    const deps = dependencies({
+      decryptMessage: (sessionKey, ciphertext) => {
+        decryptions += 1;
+        return decryptForTest(sessionKey, ciphertext);
+      },
+      fetch: async () => {
+        const response = encryptedSuccess(staleKey, { private: "user-a" });
+        Object.defineProperty(response, "json", {
+          value: async () => {
+            await Promise.resolve();
+            window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+            return { encrypted: encryptForTest(staleKey, '{"private":"user-a"}') };
+          }
+        });
+        return response;
+      }
+    });
+
+    await expect(
+      authenticatedApiCallWithDependencies<undefined, { private: string }>(
+        "https://api.example.test/protected/user",
+        "GET",
+        undefined,
+        undefined,
+        deps
+      )
+    ).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+    expect(decryptions).toBe(0);
+  });
+
+  test("does not downgrade an account change during an error-body read to an HTTP error", async () => {
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
+    const deps = dependencies({
+      fetch: async () => {
+        const response = contractError(403, "Forbidden");
+        Object.defineProperty(response, "json", {
+          value: async () => {
+            await Promise.resolve();
+            window.localStorage.setItem("access_token", tokenForSubject("user-b"));
+            return { message: "Forbidden" };
+          }
+        });
+        return response;
+      }
+    });
+
+    await expect(
+      authenticatedApiCallWithDependencies<undefined, never>(
+        "https://api.example.test/protected/user",
+        "DELETE",
+        undefined,
+        undefined,
+        deps
+      )
+    ).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+  });
+
+  test("a 401 response cannot refresh or replay under a replacement account", async () => {
+    const accessTokenA = tokenForSubject("user-a");
+    const accessTokenB = tokenForSubject("user-b");
+    window.localStorage.setItem("access_token", accessTokenA);
+    let sends = 0;
+    let refreshes = 0;
+    const authorizations: Array<string | null> = [];
+    const deps = dependencies({
+      refreshAccessToken: async () => {
+        refreshes += 1;
+      },
+      fetch: async (_input, init) => {
+        sends += 1;
+        authorizations.push(new Headers(init?.headers).get("Authorization"));
+        window.localStorage.setItem("access_token", accessTokenB);
+        return contractError(401, "Invalid JWT", "access_token_expired");
+      }
+    });
+
+    await expect(
+      authenticatedApiCallWithDependencies<undefined, never>(
+        "https://api.example.test/protected/destructive-action",
+        "DELETE",
+        undefined,
+        undefined,
+        deps
+      )
+    ).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+    expect(sends).toBe(1);
+    expect(refreshes).toBe(0);
+    expect(authorizations).toEqual([`Bearer ${accessTokenA}`]);
+  });
+
+  test("an account replacement during refresh cannot replay the retained request", async () => {
+    const accessTokenA = tokenForSubject("user-a");
+    const accessTokenB = tokenForSubject("user-b");
+    window.localStorage.setItem("access_token", accessTokenA);
+    let sends = 0;
+    let refreshes = 0;
+    const deps = dependencies({
+      refreshAccessToken: async () => {
+        refreshes += 1;
+        window.localStorage.setItem("access_token", accessTokenB);
+      },
+      fetch: async () => {
+        sends += 1;
+        return sends === 1
+          ? contractError(401, "Invalid JWT", "access_token_expired")
+          : encryptedSuccess(staleKey, { ok: true });
+      }
+    });
+
+    await expect(
+      authenticatedApiCallWithDependencies<undefined, { ok: boolean }>(
+        "https://api.example.test/protected/destructive-action",
+        "DELETE",
+        undefined,
+        undefined,
+        deps
+      )
+    ).rejects.toMatchObject({ code: ACCOUNT_CREDENTIAL_MISMATCH_CODE });
+    expect(sends).toBe(1);
+    expect(refreshes).toBe(1);
+  });
+
   test("v1 access-token expiry refreshes once and replays with the new token", async () => {
-    window.localStorage.setItem("access_token", "expired-access-token");
+    const expiredAccessToken = tokenForSubject("user-a", 1);
+    const freshAccessToken = tokenForSubject("user-a", 2);
+    window.localStorage.setItem("access_token", expiredAccessToken);
     let tokenRefreshes = 0;
     const authorizations: Array<string | null> = [];
     const deps = dependencies({
       refreshAccessToken: async () => {
         tokenRefreshes += 1;
-        window.localStorage.setItem("access_token", "fresh-access-token");
+        window.localStorage.setItem("access_token", freshAccessToken);
       },
       fetch: async (_input, init) => {
         authorizations.push(new Headers(init?.headers).get("Authorization"));
@@ -321,7 +538,7 @@ describe("encrypted API recovery", () => {
       )
     ).toEqual({ ok: true });
     expect(tokenRefreshes).toBe(1);
-    expect(authorizations).toEqual(["Bearer expired-access-token", "Bearer fresh-access-token"]);
+    expect(authorizations).toEqual([`Bearer ${expiredAccessToken}`, `Bearer ${freshAccessToken}`]);
   });
 
   for (const ordinary of [
@@ -329,7 +546,7 @@ describe("encrypted API recovery", () => {
     { status: 401, code: "invalid_jwt", message: "Invalid JWT" }
   ]) {
     test(`v1 ordinary ${ordinary.status} fails closed`, async () => {
-      window.localStorage.setItem("access_token", "access-token");
+      window.localStorage.setItem("access_token", tokenForSubject("user-a"));
       let sends = 0;
       let forcedAttestations = 0;
       let tokenRefreshes = 0;
@@ -363,7 +580,9 @@ describe("encrypted API recovery", () => {
   }
 
   test("headerless 400 and 401 retain legacy recovery", async () => {
-    window.localStorage.setItem("access_token", "expired-access-token");
+    const expiredAccessToken = tokenForSubject("user-a", 1);
+    const freshAccessToken = tokenForSubject("user-a", 2);
+    window.localStorage.setItem("access_token", expiredAccessToken);
     let currentAttestation = staleAttestation;
     let sessionSends = 0;
     let authSends = 0;
@@ -379,7 +598,7 @@ describe("encrypted API recovery", () => {
       },
       refreshAccessToken: async () => {
         tokenRefreshes += 1;
-        window.localStorage.setItem("access_token", "fresh-access-token");
+        window.localStorage.setItem("access_token", freshAccessToken);
       },
       fetch: async (input) => {
         if (String(input).endsWith("/legacy-session")) {
@@ -421,7 +640,7 @@ describe("encrypted API recovery", () => {
   });
 
   test("one target replay budget stops alternating recovery reasons", async () => {
-    window.localStorage.setItem("access_token", "access-token");
+    window.localStorage.setItem("access_token", tokenForSubject("user-a"));
     let currentAttestation = staleAttestation;
     let sends = 0;
     let forcedAttestations = 0;
@@ -460,16 +679,16 @@ describe("encrypted API recovery", () => {
   });
 
   test("expired target JWT can refresh through one stale-session repair", async () => {
-    window.localStorage.setItem("access_token", "expired-access-token");
+    const expiredAccessToken = tokenForSubject("user-a", 1);
+    const freshAccessToken = tokenForSubject("user-a", 2);
+    window.localStorage.setItem("access_token", expiredAccessToken);
     let currentAttestation = staleAttestation;
     let forcedAttestations = 0;
     let targetSends = 0;
     let refreshSends = 0;
     const targetRequests: ReturnType<typeof recordedRequest>[] = [];
     const refreshRequests: ReturnType<typeof recordedRequest>[] = [];
-    let deps!: EncryptedApiDependencies;
-
-    deps = dependencies({
+    const deps = dependencies({
       getAttestation: async (forceRefresh) => {
         if (forceRefresh) {
           forcedAttestations += 1;
@@ -501,7 +720,7 @@ describe("encrypted API recovery", () => {
           return refreshSends === 1
             ? contractError(400, "Bad Request", "session_not_found")
             : encryptedSuccess(freshKey, {
-                access_token: "fresh-access-token",
+                access_token: freshAccessToken,
                 refresh_token: "fresh-refresh-token"
               });
         }
@@ -532,13 +751,13 @@ describe("encrypted API recovery", () => {
     ]);
     expect(targetRequests).toEqual([
       {
-        authorization: "Bearer expired-access-token",
+        authorization: `Bearer ${expiredAccessToken}`,
         method: "POST",
         plaintext: '{"prompt":"same prompt"}',
         sessionId: "stale-session"
       },
       {
-        authorization: "Bearer fresh-access-token",
+        authorization: `Bearer ${freshAccessToken}`,
         method: "POST",
         plaintext: '{"prompt":"same prompt"}',
         sessionId: "fresh-session"
