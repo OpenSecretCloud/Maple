@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BillingStatus } from "./billingApi";
-import { hasApiAccess, isKnownFreePlan } from "./billingAccess";
+import { hasApiAccess, isKnownFreePlan, shouldWarnBeforeAccountDeletion } from "./billingAccess";
 
 function billingStatus(productName: string): BillingStatus {
   return {
@@ -40,5 +40,32 @@ describe("isKnownFreePlan", () => {
     expect(isKnownFreePlan(billingStatus("Unknown"))).toBe(false);
     expect(isKnownFreePlan(billingStatus("Pro"))).toBe(false);
     expect(isKnownFreePlan(null)).toBe(false);
+  });
+});
+
+describe("shouldWarnBeforeAccountDeletion", () => {
+  test.each(["Pro", "Max", "Team"])("warns for the %s plan", (productName) => {
+    expect(shouldWarnBeforeAccountDeletion(billingStatus(productName))).toBe(true);
+  });
+
+  test("does not warn for a free plan", () => {
+    expect(shouldWarnBeforeAccountDeletion(billingStatus("Free"))).toBe(false);
+  });
+
+  test.each([null, undefined])("does not warn when billing is %s", (status) => {
+    expect(shouldWarnBeforeAccountDeletion(status)).toBe(false);
+  });
+
+  test("warns when subscribed even if the product name is unrecognized", () => {
+    expect(shouldWarnBeforeAccountDeletion(billingStatus("Unknown"))).toBe(true);
+  });
+
+  test("warns for a paid product name even if is_subscribed is false", () => {
+    expect(
+      shouldWarnBeforeAccountDeletion({
+        ...billingStatus("Pro"),
+        is_subscribed: false
+      })
+    ).toBe(true);
   });
 });
