@@ -28,32 +28,40 @@ type ZapriteUpgradeDialogProps = {
   resumeUpgradeId?: string | null;
 };
 
-function statusCopy(status: string): string {
+function zapriteSuccessUrl(): string {
+  if (isMobile()) {
+    return "https://trymaple.ai/payment-success?source=zaprite";
+  }
+  if (isTauri()) {
+    return "https://trymaple.ai/pricing?success=true";
+  }
+  return `${window.location.origin}/pricing?success=true`;
+}
+
+function statusCopy(status: string, planName?: string): string {
   switch (status) {
     case "PENDING":
     case "PROCESSING":
     case "PAID":
     case "OVERPAID":
-      return "Waiting for Bitcoin payment to confirm. Your current plan stays active until payment completes.";
+      return "Waiting for payment.";
     case "UNDERPAID":
-      return "The payment is underpaid. Send the remaining amount in the checkout window, or contact support.";
+      return "Payment is short.";
     case "COMPLETED":
-      return "Upgrade complete. Your Max entitlement is now active for the rest of this billing period.";
+      return planName ? `You're on ${planName}.` : "Upgrade complete.";
     case "EXPIRED":
-      return "This quote or checkout expired. Your current plan is unchanged.";
+      return "This quote expired.";
     case "CANCELED":
-      return "This upgrade was canceled. Your current plan is unchanged.";
     case "FAILED":
-      return "This upgrade could not be completed. Your current plan is unchanged.";
+      return "Upgrade could not be completed.";
     case "PAID_NEEDS_REVIEW":
-      return "Payment was received and needs a short review before the plan change is applied. Your current plan is unchanged.";
     case "PAID_UNFULFILLABLE":
-      return "Payment was received after this upgrade was replaced. Your current plan is unchanged; contact support for the extra payment.";
+      return "Payment received. Contact support if your plan doesn't update.";
     case "REFUNDED":
     case "REVOKED":
-      return "This upgrade is no longer active. Your current plan is unchanged.";
+      return "This upgrade is no longer active.";
     default:
-      return "Preparing Bitcoin checkout.";
+      return "Preparing checkout.";
   }
 }
 
@@ -140,14 +148,10 @@ export function ZapriteUpgradeDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const successUrl =
-        isTauri() || isMobile()
-          ? "https://trymaple.ai/pricing"
-          : `${window.location.origin}/pricing`;
       const created = await getBillingService().createZapriteUpgrade(
         displayedQuote.quote_id,
         idempotencyKey,
-        successUrl
+        zapriteSuccessUrl()
       );
       if (mountedUserId.current !== userId) {
         return;
@@ -166,14 +170,15 @@ export function ZapriteUpgradeDialog({
   const checkoutUrl = upgradeStatus?.checkout_url;
   const canReopenCheckout =
     !!checkoutUrl && !isIOS() && !!currentStatus && !isZapriteUpgradeTerminal(currentStatus);
+  const targetName = displayedQuote?.target.plan_name ?? "Max";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Upgrade with Bitcoin</DialogTitle>
-          <DialogDescription>
-            The billing server computed this exact amount. Maple does not recalculate the price.
+          <DialogTitle>Upgrade to {targetName}</DialogTitle>
+          <DialogDescription className="sr-only">
+            Confirm your Bitcoin upgrade to {targetName}.
           </DialogDescription>
         </DialogHeader>
 
@@ -182,44 +187,40 @@ export function ZapriteUpgradeDialog({
         {!displayedQuote && !error && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading quote...
+            Loading...
           </div>
         )}
 
-        {displayedQuote && (
-          <div className="space-y-3 text-sm">
-            <p>
-              {displayedQuote.source.plan_name} → {displayedQuote.target.plan_name}
+        {displayedQuote && !currentStatus && (
+          <div className="space-y-1">
+            <p className="text-2xl font-semibold">
+              {formatUsdFromCents(displayedQuote.amount_due_cents)}
             </p>
-            <p>
-              Unused {displayedQuote.source.plan_name} value is credited against the remaining{" "}
-              {displayedQuote.target.plan_name} term. Your expiration date stays{" "}
-              {new Date(displayedQuote.subscription_end).toLocaleDateString()}.
+            <p className="text-sm text-muted-foreground">
+              Renews {new Date(displayedQuote.subscription_end).toLocaleDateString()}
             </p>
-            <p>
-              Amount due: <strong>{formatUsdFromCents(displayedQuote.amount_due_cents)}</strong>
-              {displayedQuote.target.discount_basis_points
-                ? ` including a ${displayedQuote.target.discount_basis_points / 100}% annual Bitcoin discount.`
-                : "."}
-            </p>
-            <p>Quote expires {new Date(displayedQuote.expires_at).toLocaleString()}.</p>
-            {currentStatus && <p>{statusCopy(currentStatus)}</p>}
           </div>
+        )}
+
+        {currentStatus && (
+          <p className="text-sm text-muted-foreground">
+            {statusCopy(currentStatus, displayedQuote?.target.plan_name)}
+          </p>
         )}
 
         {isIOS() && (
           <p className="text-sm text-muted-foreground">
-            Paid Bitcoin upgrades are not available in the iOS app.
+            Bitcoin upgrades aren't available in the iOS app.
           </p>
         )}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Close
+            {currentStatus === "COMPLETED" ? "Done" : "Cancel"}
           </Button>
           {canConfirm && (
             <Button variant="primary" onClick={handleConfirm} disabled={submitting}>
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Confirm and pay"}
+              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Pay with Bitcoin"}
             </Button>
           )}
           {canReopenCheckout && checkoutUrl && (
@@ -231,7 +232,7 @@ export function ZapriteUpgradeDialog({
                 });
               }}
             >
-              Open checkout
+              Continue to payment
             </Button>
           )}
         </DialogFooter>

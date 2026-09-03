@@ -808,9 +808,8 @@ function PricingPage() {
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between gap-3 rounded-lg border border-maple-warning/35 bg-maple-warning/10 p-4 text-maple-warning">
               <p>
-                Bitcoin upgrade to {freshBillingStatus.pending_plan_change.target_plan_name} is{" "}
-                {freshBillingStatus.pending_plan_change.status.toLowerCase()}. Your current plan is
-                unchanged until payment completes.
+                Upgrade to {freshBillingStatus.pending_plan_change.target_plan_name} is waiting for
+                payment.
               </p>
               <Button
                 variant="outline"
@@ -819,7 +818,7 @@ function PricingPage() {
                   setZapriteUpgradeOpen(true);
                 }}
               >
-                View status
+                Continue
               </Button>
             </div>
           </div>

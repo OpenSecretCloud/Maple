@@ -429,7 +429,7 @@ export async function openValidatedCheckoutUrl(checkoutUrl: string): Promise<voi
     await new Promise((resolve) => setTimeout(resolve, 300));
     return;
   }
-  window.open(checkoutUrl, "_blank", "noopener");
+  window.location.href = checkoutUrl;
 }
 
 // Team Management API Functions
