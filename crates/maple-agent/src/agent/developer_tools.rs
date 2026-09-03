@@ -151,6 +151,12 @@ pub(crate) struct MapleDeveloperClient {
     /// When false the web tools are left out of the catalog entirely, so
     /// the model never plans around a tool it cannot call.
     web_enabled: bool,
+    /// When false the tools whose value is a Desktop UI card — the todo
+    /// plan and the question prompt — are left out of the catalog.
+    /// External ACP sessions render neither, so their model plans in the
+    /// conversation and asks in plain text instead of writing to surfaces
+    /// nobody can see.
+    desktop_ui_tools: bool,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
     #[cfg(not(windows))]
@@ -183,6 +189,7 @@ impl MapleDeveloperClient {
             contextual_image_context,
             attachment_store: None,
             web_enabled: true,
+            desktop_ui_tools: true,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
             #[cfg(not(windows))]
@@ -192,6 +199,11 @@ impl MapleDeveloperClient {
 
     pub(super) fn with_attachment_store(mut self, store: Arc<AgentAttachmentStore>) -> Self {
         self.attachment_store = Some(store);
+        self
+    }
+
+    pub(super) fn with_desktop_ui_tools(mut self, enabled: bool) -> Self {
+        self.desktop_ui_tools = enabled;
         self
     }
 
@@ -600,8 +612,10 @@ impl McpClientTrait for MapleDeveloperClient {
                 self.contextual_image_context.is_some(),
             ));
         }
-        tools.push(Self::todo_tool());
-        tools.push(Self::request_user_input_tool());
+        if self.desktop_ui_tools {
+            tools.push(Self::todo_tool());
+            tools.push(Self::request_user_input_tool());
+        }
         if self.web_enabled {
             tools.push(web_search_tool());
             tools.push(open_url_tool());

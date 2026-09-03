@@ -8048,7 +8048,8 @@ async fn finish_session_agent(
     )
     .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?
     .with_attachment_store(attachment_store)
-    .with_web_enabled(session_web_enabled(session));
+    .with_web_enabled(session_web_enabled(session))
+    .with_desktop_ui_tools(session.session_type != SessionType::Acp);
     agent
         .extension_manager
         .add_client(
