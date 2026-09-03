@@ -1282,6 +1282,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "thiserror 2.0.20",
  "tokio",
  "tokio-test",
@@ -1292,6 +1293,7 @@ dependencies = [
  "x25519-dalek",
  "x509-parser",
  "yasna",
+ "zeroize",
 ]
 
 [[package]]
