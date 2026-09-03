@@ -35,12 +35,13 @@ use transport::{
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
-    ContentBlock, ContentChunk, ElicitationAction, ElicitationContentValue, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PromptRequest, PromptResponse, RequestPermissionRequest, SessionId,
-    SessionInfo, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolKind, UsageUpdate,
+    ContentBlock, ContentChunk, DeleteSessionRequest, DeleteSessionResponse, ElicitationAction,
+    ElicitationContentValue, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+    RequestPermissionRequest, SessionId, SessionInfo, SessionInfoUpdate, SessionNotification,
+    SessionUpdate, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse,
+    SetSessionModeRequest, SetSessionModeResponse, StopReason, TextContent, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{Agent as AcpAgent, Client, ConnectionTo, Lines};
 use futures_util::StreamExt as _;
@@ -246,6 +247,7 @@ impl AcpConnectionContext {
                 model: model.clone(),
                 available_models: available_models.clone(),
                 context_limit: None,
+                advertised_title: Some(created.detail.session.title.clone()),
                 message_count: created.detail.session.message_count,
                 created_here: true,
                 prompted: false,
@@ -345,6 +347,27 @@ impl AcpConnectionContext {
             .persist_session_permission_mode(session_id, mode.maple_mode())
             .await
             .map_err(internal_acp_error)
+    }
+
+    /// Soft-delete a task: archive it so it disappears from session lists
+    /// but stays recoverable in Maple Desktop. An owned live session is
+    /// retired first; a running turn refuses the delete.
+    async fn delete_session(
+        &self,
+        request: DeleteSessionRequest,
+    ) -> Result<DeleteSessionResponse, agent_client_protocol::Error> {
+        let session_id = canonical_session_id(&request.session_id)?;
+        if self.sessions.lock().await.contains_key(&session_id) {
+            self.retire_session(&session_id).await;
+        }
+        self.agent
+            .set_session_archived(session_id.clone(), true)
+            .await
+            .map_err(|error| {
+                agent_client_protocol::Error::invalid_request()
+                    .data(bounded_chars(&error, MAX_ACP_ERROR_CHARS))
+            })?;
+        Ok(DeleteSessionResponse::new())
     }
 
     async fn available_models(&self) -> Result<Vec<String>, agent_client_protocol::Error> {
@@ -515,6 +538,7 @@ impl AcpConnectionContext {
                 model: model.clone(),
                 available_models: available_models.clone(),
                 context_limit: None,
+                advertised_title: Some(persisted.title.clone()),
                 message_count,
                 created_here: false,
                 prompted: false,
@@ -1336,6 +1360,42 @@ impl AcpConnectionContext {
                 }
             }
         };
+        // Semantic titles land between turns, after the previous run's
+        // event loop exited; catch up before the next one starts.
+        if let Ok(Some(title)) = self.agent.session_display_title(&session_id).await {
+            let changed = {
+                let mut sessions = self.sessions.lock().await;
+                match sessions.get_mut(&session_id) {
+                    Some(session)
+                        if session.advertised_title.as_deref() != Some(title.as_str()) =>
+                    {
+                        session.advertised_title = Some(title.clone());
+                        Some(title)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(title) = changed {
+                let notification = SessionNotification::new(
+                    protocol_session_id.clone(),
+                    SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(title)),
+                );
+                match self
+                    .send_session_update(cx, notification, &prompt_lifetime)
+                    .await
+                {
+                    Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {}
+                    Err(AcpOutboundSendError::Cancelled) => {
+                        self.prompt_states.lock().await.remove(&session_id);
+                        return Ok(PromptResponse::new(StopReason::Cancelled));
+                    }
+                    Err(AcpOutboundSendError::Transport(error)) => {
+                        self.prompt_states.lock().await.remove(&session_id);
+                        return Err(error);
+                    }
+                }
+            }
+        }
         let mut prompt = prompt;
         if let Some((name, args)) = parse_slash_command(&prompt) {
             if name == "compact" {
@@ -1720,9 +1780,45 @@ impl AcpConnectionContext {
                 // The end of a subagent is the end of its tool call, which
                 // carries the result. Replacing that content with a notice
                 // would drop what the caller came for.
+                // A semantic title landing mid-run renames the task; keep
+                // the caller's session list in sync.
+                Some(AgentRunEvent::SessionUpdated(summary)) => {
+                    let changed = {
+                        let mut sessions = self.sessions.lock().await;
+                        match sessions.get_mut(&session_id) {
+                            Some(session) => {
+                                if session.advertised_title.as_deref()
+                                    == Some(summary.title.as_str())
+                                {
+                                    None
+                                } else {
+                                    session.advertised_title = Some(summary.title.clone());
+                                    Some(summary.title.clone())
+                                }
+                            }
+                            None => None,
+                        }
+                    };
+                    if let Some(title) = changed {
+                        let notification = SessionNotification::new(
+                            protocol_session_id.clone(),
+                            SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(title)),
+                        );
+                        match self
+                            .send_session_update(cx, notification, &prompt_lifetime)
+                            .await
+                        {
+                            Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {}
+                            Err(AcpOutboundSendError::Cancelled) => {
+                                cancel_after_result = true;
+                                break Ok(PromptResponse::new(StopReason::Cancelled));
+                            }
+                            Err(AcpOutboundSendError::Transport(error)) => break Err(error),
+                        }
+                    }
+                }
                 Some(
-                    AgentRunEvent::SessionUpdated(_)
-                    | AgentRunEvent::Started
+                    AgentRunEvent::Started
                     | AgentRunEvent::SetupWarning(_)
                     | AgentRunEvent::SubagentFinished { .. }
                     | AgentRunEvent::QueueChanged(_)

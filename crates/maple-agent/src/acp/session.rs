@@ -117,6 +117,9 @@ pub(super) struct AcpSession {
     /// Cached context window of `model` for `usage_update` notifications.
     /// `None` until resolved (or after a model switch invalidates it).
     pub(super) context_limit: Option<u64>,
+    /// The session title last advertised to the caller; semantic-title
+    /// updates are only sent when the title moves past this.
+    pub(super) advertised_title: Option<String>,
     pub(super) message_count: usize,
     pub(super) created_here: bool,
     pub(super) prompted: bool,

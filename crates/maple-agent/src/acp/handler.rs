@@ -5,10 +5,11 @@ use super::convert::client_supports_form_elicitation;
 use super::session::{AcpConnectionContext, BridgeHelloNotification};
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
-    Implementation, InitializeRequest, InitializeResponse, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities,
-    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
-    SessionCapabilities, SessionCloseCapabilities, SessionListCapabilities,
+    DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
+    InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, McpCapabilities, NewSessionRequest, NewSessionResponse,
+    PromptCapabilities, PromptRequest, PromptResponse, SessionCapabilities,
+    SessionCloseCapabilities, SessionDeleteCapabilities, SessionListCapabilities,
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
     SetSessionModeResponse,
 };
@@ -101,7 +102,8 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                             .session_capabilities(
                                 SessionCapabilities::new()
                                     .list(SessionListCapabilities::new())
-                                    .close(SessionCloseCapabilities::new()),
+                                    .close(SessionCloseCapabilities::new())
+                                    .delete(SessionDeleteCapabilities::new()),
                             );
                         responder.respond(
                             // Protocol 2 tells Buzz that `session/new`
@@ -177,6 +179,13 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                     let context = Arc::clone(&context);
                     |request: CloseSessionRequest, responder: Responder<CloseSessionResponse>| async move {
                         responder.respond_with_result(context.close_session(request).await)
+                    }
+                })
+                .await
+                .if_request({
+                    let context = Arc::clone(&context);
+                    |request: DeleteSessionRequest, responder: Responder<DeleteSessionResponse>| async move {
+                        responder.respond_with_result(context.delete_session(request).await)
                     }
                 })
                 .await

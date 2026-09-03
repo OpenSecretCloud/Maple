@@ -160,6 +160,8 @@ const TOOL_SUMMARY_SYSTEM_PROMPT: &str = "You summarize one tool call for a codi
 const THINKING_SUMMARY_SYSTEM_PROMPT: &str = "You summarize a coding agent's reasoning for its activity feed. Reply with ONE short line of at most 12 words that says what the agent thought about or decided. No prefix, no quotes, no explanations.";
 const SESSION_TITLE_SYSTEM_PROMPT: &str = "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations.";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
+/// Title an ACP task is created under when the caller supplies none.
+const ACP_SESSION_FALLBACK_TITLE: &str = "Maple ACP";
 const DEFAULT_MCP_TIMEOUT_SECONDS: u64 = 300;
 /// Reported when Stop wins the race against a task's MCP server startup.
 const MCP_STARTUP_CANCELLED_ERROR: &str = "Agent run was stopped while starting MCP servers";
@@ -961,6 +963,30 @@ impl MapleAgentService {
 }
 
 impl AgentRuntimeHandle {
+    /// The task's current display title, or `None` when it does not exist.
+    /// Semantic titles land asynchronously between turns, so callers sync
+    /// on this rather than waiting for an event.
+    pub async fn session_display_title(&self, session_id: &str) -> Result<Option<String>, String> {
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let session_manager = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, self.account_scope.as_ref())?;
+                    Arc::clone(&current.session_manager)
+                }
+                None => return Ok(None),
+            }
+        };
+        let session = session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        Ok(Some(session.name))
+    }
+
     /// Slash commands available in `working_dir` (installed skills).
     pub fn slash_commands(&self, working_dir: Option<&str>) -> Vec<AgentSlashCommand> {
         self.service.list_slash_commands(working_dir)
@@ -1450,7 +1476,10 @@ fn normalize_user_provided_session_title(title: &str) -> Result<String, String> 
 fn should_name_session_from_prompt(session: &Session) -> bool {
     session.message_count == 0
         && !session.user_set_name
-        && session.name == DEFAULT_AGENT_SESSION_TITLE
+        // ACP tasks start under their connector's placeholder instead of
+        // the desktop one; both are unnamed-prompt states.
+        && (session.name == DEFAULT_AGENT_SESSION_TITLE
+            || session.name == ACP_SESSION_FALLBACK_TITLE)
 }
 
 fn strip_session_title_reasoning_blocks(raw: &str) -> String {
@@ -1735,9 +1764,15 @@ async fn run_agent_session_title_task(job: AgentSessionTitleJob) {
                 return;
             }
         };
+        // ACP tasks are created under their connector's default title, not
+        // the prompt-derived fallback desktop uses, so both placeholders
+        // stay eligible. A title the caller supplied (`user_set_name` or
+        // anything else) is never overwritten.
         let persisted_message_needs_title = persisted_session.message_count > 0
             && !persisted_session.user_set_name
-            && persisted_session.name == expected_fallback_title;
+            && (persisted_session.name == expected_fallback_title
+                || persisted_session.name == DEFAULT_AGENT_SESSION_TITLE
+                || persisted_session.name == ACP_SESSION_FALLBACK_TITLE);
         if !persisted_message_needs_title {
             if persisted_session.message_count == 0 {
                 match restore_unused_agent_session_fallback_under_lifecycle(
