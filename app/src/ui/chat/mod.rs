@@ -42,7 +42,7 @@ use self::commands::ChatCommand;
 use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
 use self::sidebar::{
-    ProjectGroup, SidebarEntry, SidebarRow, root_display_name, session_summary_eq,
+    SidebarEntry, SidebarRow, SwitcherRoot, root_display_name, session_summary_eq,
 };
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_permission_card,
@@ -245,8 +245,12 @@ pub struct ChatScreen {
     models_menu_open: bool,
     /// Approval-mode dropdown open state, anchored under the composer.
     mode_menu_open: bool,
-    /// Pinned project roots, ordered by pin time; first in the sidebar.
-    pinned_roots: Vec<String>,
+    /// Sidebar task ids the user pinned, in pin order.
+    pinned_tasks: Vec<String>,
+    /// Sidebar task ids the user settled away from the active inbox.
+    settled_tasks: std::collections::HashSet<String>,
+    /// Sidebar task ids the user moved back into the active inbox.
+    unsettled_tasks: std::collections::HashSet<String>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Mirrors `window.is_window_active()` from the last render; refreshed
@@ -280,10 +284,6 @@ pub struct ChatScreen {
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
     recent_roots: Vec<String>,
-    /// Insertion point of an in-flight project header drag: the root the
-    /// pointer is over and whether the project lands before it. Cleared
-    /// when the drag ends without a drop.
-    sidebar_drop_target: Option<(Arc<str>, bool)>,
     root_menu_open: bool,
     /// Row the project menu highlights for the keyboard, if any.
     root_menu_selected: Option<usize>,
@@ -367,15 +367,33 @@ pub struct ChatScreen {
     sidebar_rows: Vec<SidebarRow>,
     /// Title of the selected task, shown in the header.
     selected_title: SharedString,
-    /// Sidebar groups with their tasks, rebuilt when sessions, roots,
-    /// names, or the filter change instead of on every render.
-    project_groups: Vec<ProjectGroup>,
+    /// Sidebar rows per section, newest activity first: pinned tasks,
+    /// the active inbox, and the settled rest.
+    sidebar_pinned: Vec<usize>,
+    sidebar_active: Vec<usize>,
+    sidebar_settled: Vec<usize>,
+    /// Roots the project switcher lists.
+    switcher_roots: Vec<SwitcherRoot>,
+    /// Display label of the scope the task list shows.
+    sidebar_scope_label: SharedString,
+    /// Project the sidebar is scoped to, if any.
+    sidebar_project_filter: Option<String>,
+    /// Project switcher menu open in the sidebar.
+    switcher_menu_open: bool,
+    /// Application-Vim row highlight of the open popup menu.
+    sidebar_menu_selected: Option<usize>,
+    /// Overflow menu of one task row, by task id.
+    task_menu: Option<String>,
     /// Indices into `sessions` of archived tasks, newest first.
     archived_indices: Vec<usize>,
-    /// Roots whose task list is folded in the sidebar.
-    collapsed_roots: HashSet<String>,
     /// Archived section open in the sidebar.
     archived_expanded: bool,
+    /// Settled section open in the sidebar.
+    settled_expanded: bool,
+    /// Active section open in the sidebar.
+    active_expanded: bool,
+    /// Pinned section open in the sidebar.
+    pinned_expanded: bool,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Same guard for mid-run history reloads. Separate from the selection
@@ -746,7 +764,9 @@ impl ChatScreen {
             selected_model: None,
             models_menu_open: false,
             mode_menu_open: false,
-            pinned_roots: settings.pinned_roots.clone(),
+            pinned_tasks: settings.pinned_tasks.clone(),
+            settled_tasks: settings.settled_tasks.iter().cloned().collect(),
+            unsettled_tasks: settings.unsettled_tasks.iter().cloned().collect(),
             notify_enabled: settings.desktop_notifications,
             window_active: true,
             sidebar_plan: None,
@@ -768,7 +788,6 @@ impl ChatScreen {
             uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
             recent_roots: Vec::new(),
-            sidebar_drop_target: None,
             root_menu_open: false,
             root_menu_selected: None,
             root_menu_focus: None,
@@ -790,10 +809,20 @@ impl ChatScreen {
             timeline_index: HashMap::new(),
             sidebar_rows: Vec::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
-            project_groups: Vec::new(),
+            sidebar_pinned: Vec::new(),
+            sidebar_active: Vec::new(),
+            sidebar_settled: Vec::new(),
+            switcher_roots: Vec::new(),
+            sidebar_scope_label: "All projects".into(),
+            sidebar_project_filter: None,
+            switcher_menu_open: false,
+            sidebar_menu_selected: None,
+            task_menu: None,
             archived_indices: Vec::new(),
-            collapsed_roots: HashSet::new(),
             archived_expanded: false,
+            settled_expanded: true,
+            active_expanded: true,
+            pinned_expanded: true,
             root_input: None,
             root_selecting: false,
             project_label: SharedString::from("Choose folder"),
@@ -928,7 +957,7 @@ impl ChatScreen {
                         this.check_project_trust(cx);
                         this.recent_roots = boot.recent_roots;
                         this.sessions = boot.sessions;
-                        this.rebuild_project_groups();
+                        this.rebuild_sidebar_sections();
                         // A click that landed before this callback wins.
                         if let Some(detail) =
                             boot.latest.filter(|_| this.selected_session.is_none())
@@ -1035,7 +1064,7 @@ impl ChatScreen {
     /// Take the recent-root list the service returned, newest first.
     fn apply_recent_roots(&mut self, roots: Vec<maple_agent::agent::RecentProjectRoot>) {
         self.recent_roots = roots.into_iter().map(|root| root.path).collect();
-        self.rebuild_project_groups();
+        self.rebuild_sidebar_sections();
     }
 
     /// Select the project context for new tasks without disturbing work that
@@ -1131,7 +1160,7 @@ impl ChatScreen {
         self.project_root_changed(cx);
         self.check_project_trust(cx);
         self.refresh_slash_commands(cx);
-        self.rebuild_project_groups();
+        self.rebuild_sidebar_sections();
         true
     }
 
@@ -1399,7 +1428,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.sessions = sessions;
-        self.rebuild_project_groups();
+        self.rebuild_sidebar_sections();
         if self.selected_session.is_some() || self.selection_generation != generation {
             return;
         }
@@ -1482,7 +1511,7 @@ impl ChatScreen {
         // a newer task or project choice. If the project choice left the view
         // empty while the one-create-at-a-time fence was held, let it settle
         // now that another task may be created.
-        self.rebuild_project_groups();
+        self.rebuild_sidebar_sections();
         if self.selected_session.is_none() {
             self.refresh_sessions(cx);
         }
@@ -1974,7 +2003,9 @@ impl ChatScreen {
         }
         self.tool_summaries.extend(stored_summaries);
         let project_root = session.project_root.clone();
-        // Opening the task is what reads its completion.
+        // Opening the task is what reads its completion, so the unread
+        // marker goes. Only an explicit settle ever moves a task out of
+        // the active inbox.
         self.completed_unread_sessions.remove(&session.id);
         self.selected_session = Some(session.id);
         let previous_root = self.project_root.clone();
@@ -2385,24 +2416,6 @@ impl ChatScreen {
         }
     }
 
-    fn aggregate_session_activity(
-        &self,
-        sessions: impl IntoIterator<Item = usize>,
-    ) -> Option<SessionActivity> {
-        let mut unread = false;
-        for index in sessions {
-            let Some(session) = self.sessions.get(index) else {
-                continue;
-            };
-            match self.session_activity(&session.id) {
-                Some(SessionActivity::Running) => return Some(SessionActivity::Running),
-                Some(SessionActivity::CompletedUnread) => unread = true,
-                None => {}
-            }
-        }
-        unread.then_some(SessionActivity::CompletedUnread)
-    }
-
     /// Rows the project menu offers: the recent roots it lists, then
     /// "New project…".
     fn root_menu_rows(&self) -> usize {
@@ -2449,7 +2462,7 @@ impl ChatScreen {
     }
 
     /// Alt-Up / Alt-Down: open the task before or after the selected one
-    /// in the current project, in the order the sidebar shows them.
+    /// in the order the sidebar shows them.
     fn step_task(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some((row, id)) = self.task_step_target(delta) else {
             return;
@@ -2459,25 +2472,16 @@ impl ChatScreen {
     }
 
     /// The task `delta` rows away from the selected one, as the sidebar
-    /// row it sits on and its id. Stepping stays inside the current
-    /// project and stops at its ends.
+    /// row it sits on and its id. Stepping walks the flat sidebar list
+    /// and stops at its ends.
     fn task_step_target(&self, delta: isize) -> Option<(usize, String)> {
-        let root = self.project_root.as_deref()?;
         let rows: Vec<(usize, usize)> = self
             .sidebar_entries
             .iter()
             .enumerate()
             .filter_map(|(row, entry)| match entry {
-                SidebarEntry::Task {
-                    session,
-                    archived: false,
-                } => Some((row, *session)),
+                SidebarEntry::Task(task) if !task.archived => Some((row, task.session)),
                 _ => None,
-            })
-            .filter(|(_, session)| {
-                self.sessions
-                    .get(*session)
-                    .is_some_and(|summary| summary.project_root == root)
             })
             .collect();
         if rows.is_empty() {
@@ -2546,9 +2550,15 @@ impl ChatScreen {
             self.clear_search(cx);
             return;
         }
-        if self.confirm_remove_root.is_some() || self.project_menu.is_some() {
+        if self.confirm_remove_root.is_some()
+            || self.project_menu.is_some()
+            || self.switcher_menu_open
+            || self.task_menu.is_some()
+        {
             self.confirm_remove_root = None;
             self.project_menu = None;
+            self.switcher_menu_open = false;
+            self.task_menu = None;
             cx.notify();
             return;
         }
@@ -2985,10 +2995,10 @@ impl ChatScreen {
                 true
             }
             "pin" => {
-                if let Some(root) = self.project_root.clone() {
-                    self.toggle_pin(&root, cx);
+                if let Some(task_id) = self.selected_session.clone() {
+                    self.toggle_task_pin(&task_id, cx);
                 } else {
-                    self.notice = Some("No project to pin".into());
+                    self.notice = Some("No task selected".into());
                     cx.notify();
                 }
                 true
@@ -3156,6 +3166,7 @@ impl ChatScreen {
                     // Finished event already retired it.
                     if !this.finished_runs.contains(&run_id) {
                         this.active_runs.insert(session_id.clone(), run_id);
+                        this.rebuild_sidebar_sections();
                     }
                 }
                 Err(message) => {
@@ -3643,7 +3654,7 @@ impl ChatScreen {
         } else {
             self.sessions.insert(0, session);
         }
-        self.rebuild_project_groups();
+        self.rebuild_sidebar_sections();
         true
     }
 
@@ -3755,6 +3766,9 @@ impl ChatScreen {
                     return false;
                 }
                 self.active_runs = status.active_runs;
+                // Run membership decides the inbox sections: a task woken
+                // from elsewhere moves the moment the snapshot lands.
+                self.rebuild_sidebar_sections();
             }
             AgentServiceEvent::SessionCreated(session) => {
                 return self.upsert_session(session);
@@ -3878,6 +3892,8 @@ impl ChatScreen {
             AgentRunEvent::Started => {
                 self.active_runs
                     .insert(session_id.to_string(), run_id.to_string());
+                // The sections read `active_runs`; keep them in step.
+                self.rebuild_sidebar_sections();
                 self.start_usage_poller(session_id.to_string(), cx);
                 self.refresh_context_usage(cx);
             }
@@ -4009,7 +4025,13 @@ impl ChatScreen {
                     {
                         self.completed_unread_sessions
                             .insert(session_id.to_string());
+                        // A fresh completion is new activity: it wakes a
+                        // task the user settled away earlier.
+                        self.settled_tasks.remove(session_id);
                     }
+                    // Waking or retiring a run moves a task between
+                    // sections; the entries must follow the same frame.
+                    self.rebuild_sidebar_sections();
                     // A subagent the run was waiting for ended with it. A
                     // background one works on and is collected by a later
                     // turn, so its row stays.
@@ -4206,7 +4228,6 @@ impl Render for ChatScreen {
                         .children(self.render_subagents_card())
                         .children(self.render_plan_card(cx))
                         .child(self.render_composer(cx))
-                        .children(self.render_menu_panel(cx))
                         .children(self.render_slash_palette(cx)),
                 )
         };
@@ -4383,7 +4404,6 @@ impl ChatScreen {
                             .w_full()
                             .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
                             .child(self.render_composer(cx))
-                            .children(self.render_menu_panel(cx))
                             .children(self.render_slash_palette(cx)),
                     )
                     .when(

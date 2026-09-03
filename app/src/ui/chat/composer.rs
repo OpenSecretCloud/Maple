@@ -88,6 +88,21 @@ impl ChatScreen {
             .border_color(gpui::rgb(theme::border()))
     }
 
+    /// Anchor point for the open composer menu: floating above the chip
+    /// row, bottom-anchored so the panel grows upward over the transcript
+    /// instead of pushing the layout around. The composer box is the
+    /// containing block (see `render_composer`), so the menu tracks the
+    /// composer in the normal and empty layouts alike.
+    fn menu_overlay(menu: Div) -> Div {
+        div()
+            .absolute()
+            .bottom(px(48.))
+            .left(px(8.))
+            .w(px(480.))
+            .max_w_full()
+            .child(menu)
+    }
+
     /// The project menu, opened from the header chip. Rendered as an
     /// overlay in the chat pane, right under the header.
     pub(super) fn render_root_menu(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -203,9 +218,10 @@ impl ChatScreen {
         )
     }
 
-    /// The open composer menu as an inline panel. Rendered in normal flow
-    /// below the composer; deferred/absolute anchoring proved unreliable.
-    pub(super) fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// The open composer menu as an overlay. The panel floats above the
+    /// chip row, bottom-anchored so it grows upward over the transcript
+    /// instead of pushing the layout around.
+    fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
         let mut menu = Self::menu_panel();
         if self.mode_menu_open {
             for mode in [PermissionMode::Auto, PermissionMode::SmartApprove] {
@@ -253,7 +269,7 @@ impl ChatScreen {
                         ),
                 );
             }
-            return Some(menu);
+            return Some(Self::menu_overlay(menu));
         }
         if self.mcp_menu_open {
             menu = menu.child(
@@ -364,7 +380,7 @@ impl ChatScreen {
                     }))
                     .child("Manage servers…"),
             );
-            return Some(menu);
+            return Some(Self::menu_overlay(menu));
         }
         if self.models_menu_open {
             menu = menu.children(self.models.iter().map(|model| {
@@ -383,7 +399,7 @@ impl ChatScreen {
                     })
                     .child(model.clone())
             }));
-            return Some(menu);
+            return Some(Self::menu_overlay(menu));
         }
         None
     }
@@ -838,6 +854,7 @@ impl ChatScreen {
             .w_full()
             .flex()
             .flex_col()
+            .relative()
             .when(expanded, |container| container.flex_1().min_h_0())
             .rounded(px(24.))
             .bg(gpui::rgb(theme::bg_app()))
@@ -1126,6 +1143,7 @@ impl ChatScreen {
                             }),
                     ),
             )
+            .children(self.render_menu_panel(cx))
     }
 }
 

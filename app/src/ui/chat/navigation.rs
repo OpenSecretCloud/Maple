@@ -28,7 +28,7 @@ pub(super) enum ChatRegion {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SidebarTarget {
     NewTask,
-    Project(String),
+    Projects,
     Task(String),
     Archived,
 }
@@ -330,6 +330,9 @@ impl ChatScreen {
             }
             return;
         }
+        if self.step_sidebar_popup(direction, count, cx) {
+            return;
+        }
         if let Some(question) = self.current_question() {
             let step = self
                 .question_step
@@ -369,6 +372,9 @@ impl ChatScreen {
             let len = self.root_menu_rows();
             self.root_menu_selected = (len > 0).then_some(if first { 0 } else { len - 1 });
             cx.notify();
+            return;
+        }
+        if self.sidebar_popup_edge(first, cx) {
             return;
         }
         if let Some(question) = self.current_question() {
@@ -537,6 +543,9 @@ impl ChatScreen {
             self.confirm_root_menu(cx);
             return;
         }
+        if self.activate_sidebar_popup(cx) {
+            return;
+        }
         if self.current_question().is_some() {
             let step = self
                 .current_question()
@@ -565,7 +574,7 @@ impl ChatScreen {
         match self.application_vim.region {
             ChatRegion::Sidebar => match self.application_vim.sidebar.clone() {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
-                Some(SidebarTarget::Project(root)) => self.toggle_root_collapsed(&root, cx),
+                Some(SidebarTarget::Projects) => self.toggle_switcher_menu(cx),
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
                 None => {}
@@ -597,18 +606,7 @@ impl ChatScreen {
     fn set_application_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.application_vim.region == ChatRegion::Sidebar {
             match self.application_vim.sidebar.clone() {
-                Some(SidebarTarget::Project(root)) => self.set_root_collapsed(&root, !expanded, cx),
-                Some(SidebarTarget::Task(task_id)) if !expanded => {
-                    if let Some(root) = self
-                        .sessions
-                        .iter()
-                        .find(|session| session.id == task_id)
-                        .map(|session| session.project_root.clone())
-                    {
-                        self.application_vim.sidebar = Some(SidebarTarget::Project(root.clone()));
-                        self.set_root_collapsed(&root, true, cx);
-                    }
-                }
+                Some(SidebarTarget::Projects) => self.set_switcher_menu_open(expanded, cx),
                 Some(SidebarTarget::Archived) => self.set_archived_expanded(expanded, cx),
                 _ => {}
             }
@@ -889,14 +887,11 @@ impl ChatScreen {
             .iter()
             .map(|entry| match *entry {
                 SidebarEntry::NewTask => Some(SidebarTarget::NewTask),
-                SidebarEntry::ProjectsHeader => None,
-                SidebarEntry::Project(index) => self
-                    .project_groups
-                    .get(index)
-                    .map(|group| SidebarTarget::Project(group.root.to_string())),
-                SidebarEntry::Task { session, .. } => self
+                SidebarEntry::ProjectsHeader => Some(SidebarTarget::Projects),
+                SidebarEntry::SectionLabel(_) => None,
+                SidebarEntry::Task(task) => self
                     .sessions
-                    .get(session)
+                    .get(task.session)
                     .map(|session| SidebarTarget::Task(session.id.clone())),
                 SidebarEntry::ArchivedHeader => Some(SidebarTarget::Archived),
             })

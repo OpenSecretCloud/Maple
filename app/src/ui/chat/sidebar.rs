@@ -1,6 +1,6 @@
-//! The task sidebar: project groups, the virtualized row list, and the
-//! actions that pin, rename, fold, trust, archive, or remove a project.
-//! Rows and groups are rebuilt when the session list changes, never on
+//! The task sidebar: the project switcher, the virtualized row list, and
+//! the actions that pin, settle, rename, trust, or archive a task.
+//! Rows and sections are rebuilt when the session list changes, never on
 //! a frame.
 
 use std::collections::{HashMap, HashSet};
@@ -18,34 +18,6 @@ use crate::ui::icons::{icon, spinner_with_id, wordmark};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
-/// Payload of a project header drag: the root being moved.
-#[derive(Clone)]
-pub(super) struct ProjectDrag {
-    pub(super) root: Arc<str>,
-}
-
-/// The pill that follows the pointer while a project header is dragged.
-struct ProjectDragGhost {
-    name: SharedString,
-}
-
-impl Render for ProjectDragGhost {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .shadow_md()
-            .text_sm()
-            .text_color(gpui::rgb(theme::text_primary()))
-            .line_clamp(1)
-            .child(self.name.clone())
-    }
-}
-
 /// Strings and element ids one sidebar task row shows, built when the
 /// session list changes instead of on every frame.
 pub(super) struct SidebarRow {
@@ -57,8 +29,16 @@ pub(super) struct SidebarRow {
     pub(super) archive_id: SharedString,
     /// Animation id of the running indicator.
     pub(super) spinner_id: SharedString,
+    pub(super) pin_id: SharedString,
+    pub(super) menu_id: SharedString,
+    /// Id of the overflow-menu panel itself.
+    pub(super) menu_panel_id: SharedString,
+    pub(super) menu_rename_id: SharedString,
+    pub(super) menu_pin_id: SharedString,
+    pub(super) menu_settle_id: SharedString,
+    pub(super) menu_archive_id: SharedString,
     pub(super) title: SharedString,
-    /// Display name of the task's project, for archived rows.
+    /// Display name of the task's project, shown on every row.
     pub(super) project_name: SharedString,
     /// Lower-cased title, matched against the sidebar filter.
     pub(super) search: String,
@@ -74,6 +54,13 @@ impl SidebarRow {
             rename_id: SharedString::from(format!("rename-session-{id}")),
             archive_id: SharedString::from(format!("archive-session-{id}")),
             spinner_id: SharedString::from(format!("spinner-session-{id}")),
+            pin_id: SharedString::from(format!("pin-session-{id}")),
+            menu_id: SharedString::from(format!("menu-session-{id}")),
+            menu_panel_id: SharedString::from(format!("task-menu-{id}")),
+            menu_rename_id: SharedString::from(format!("rename-task-{id}")),
+            menu_pin_id: SharedString::from(format!("pin-task-{id}")),
+            menu_settle_id: SharedString::from(format!("settle-task-{id}")),
+            menu_archive_id: SharedString::from(format!("archive-task-{id}")),
             title: SharedString::from(session.title.clone()),
             project_name: SharedString::from(project_name.to_string()),
             search: session.title.to_lowercase(),
@@ -81,52 +68,85 @@ impl SidebarRow {
     }
 }
 
-/// One project section of the sidebar with its live tasks, rebuilt with
-/// the groups instead of formatted per frame.
-pub(super) struct ProjectGroup {
-    pub(super) root: Arc<str>,
-    pub(super) name: SharedString,
-    pub(super) element_id: SharedString,
-    /// Hover group that reveals the header's action buttons.
-    pub(super) group: SharedString,
-    pub(super) pin_id: SharedString,
-    pub(super) menu_id: SharedString,
-    /// Animation id of the folded header's running indicator.
-    pub(super) spinner_id: SharedString,
-    /// Indices into `sessions` of the live tasks that pass the filter.
-    pub(super) tasks: Vec<usize>,
+/// The popup menu the sidebar shows. The project menu opens inside the
+/// switcher menu, so its variant comes first in `sidebar_popup`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SidebarPopup {
+    Switcher,
+    Project(String),
+    Task(String),
 }
 
-impl ProjectGroup {
-    fn build(root: &str, name: String, tasks: Vec<usize>) -> Self {
-        Self {
-            root: Arc::from(root),
-            name: SharedString::from(name),
-            element_id: SharedString::from(format!("project-{root}")),
-            group: SharedString::from(format!("project-row-{root}")),
-            pin_id: SharedString::from(format!("pin-project-{root}")),
-            menu_id: SharedString::from(format!("menu-project-{root}")),
-            spinner_id: SharedString::from(format!("spinner-project-{root}")),
-            tasks,
+/// One row of the virtualized sidebar list, in display order. Rebuilt
+/// with the sections and when a section folds; the list builds only the
+/// rows on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SidebarEntry {
+    NewTask,
+    /// The project switcher row above the sections.
+    ProjectsHeader,
+    /// A section label, shown only when the section has rows.
+    SectionLabel(SidebarSection),
+    Task(SidebarTaskEntry),
+    ArchivedHeader,
+}
+
+/// A task row: its index into `sessions` plus the section flags the
+/// rebuild already decided, so render never re-derives them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SidebarTaskEntry {
+    pub(super) session: usize,
+    pub(super) pinned: bool,
+    pub(super) settled: bool,
+    pub(super) archived: bool,
+}
+
+/// A named section of the inbox: pinned tasks, active work, and the
+/// settled rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SidebarSection {
+    Pinned,
+    Active,
+    Settled,
+}
+
+impl SidebarSection {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Pinned => "PINNED",
+            Self::Active => "ACTIVE",
+            Self::Settled => "SETTLED",
+        }
+    }
+
+    pub(super) fn element_id(self) -> &'static str {
+        match self {
+            Self::Pinned => "section-toggle-pinned",
+            Self::Active => "section-toggle-active",
+            Self::Settled => "section-toggle-settled",
         }
     }
 }
 
-/// One row of the virtualized sidebar list, in display order. Rebuilt
-/// with the project groups and when a section folds; the list builds
-/// only the rows on screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SidebarEntry {
-    NewTask,
-    ProjectsHeader,
-    /// Index into `project_groups`.
-    Project(usize),
-    /// Index into `sessions`.
-    Task {
-        session: usize,
-        archived: bool,
-    },
-    ArchivedHeader,
+/// One selectable action of a sidebar popup menu. Building the list once
+/// keeps the render path and the Application-Vim Enter key on the same
+/// items.
+struct SidebarMenuItem {
+    id: SharedString,
+    icon: &'static str,
+    label: &'static str,
+    on_click: MenuAction,
+}
+
+/// One project the switcher menu lists: the root path, its display name,
+/// and the element ids its row and menus use. Built when the sections
+/// rebuild, never per frame.
+pub(super) struct SwitcherRoot {
+    root: String,
+    name: SharedString,
+    row_id: SharedString,
+    row_group: SharedString,
+    menu_id: SharedString,
 }
 
 impl ChatScreen {
@@ -163,141 +183,246 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// Rebuild the sidebar sections: pinned roots first (when known),
-    /// then the saved roots in their persisted order, then roots that only
-    /// appear on a stored task. The current project never floats: the
-    /// order is static and changes only when the user drags a project.
-    /// Called when sessions, roots, names, pins, or the filter change, not
-    /// per render.
-    pub(super) fn rebuild_project_groups(&mut self) {
+    /// Rebuild the sidebar sections: pinned tasks first, then the active
+    /// inbox, then the settled rest. Rows are one flat list
+    /// across projects and each row names its project. The order is
+    /// derived, never written back, and changes only when activity or the
+    /// user changes it. Called when sessions, roots, names, or the filter
+    /// change, not per render.
+    pub(super) fn rebuild_sidebar_sections(&mut self) {
         self.sync_sidebar_rows();
         let filter = self.sidebar_filter.as_str();
         let filtering = !filter.is_empty();
-        // One pass over the sessions: live tasks per root (in session
-        // order), the archived ones, and the roots seen on any task.
-        let mut tasks_by_root: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut live_roots: Vec<String> = Vec::new();
-        let mut session_roots: HashSet<&str> = HashSet::new();
-        let mut root_search: HashMap<&str, String> = HashMap::new();
+        let scoped = self.sidebar_project_filter.as_deref();
+        let pinned_ids: HashSet<&str> = self.pinned_tasks.iter().map(String::as_str).collect();
+        let mut pinned = Vec::new();
+        let mut active = Vec::new();
+        let mut settled = Vec::new();
         let mut archived_indices = Vec::new();
+        // Roots that at least one stored task names, in first-seen order,
+        // with a set beside the vec so membership stays a hash lookup.
+        let mut session_roots: Vec<&str> = Vec::new();
+        let mut seen_roots: HashSet<&str> = HashSet::new();
+        let mut root_search: HashMap<&str, String> = HashMap::new();
         for (index, session) in self.sessions.iter().enumerate() {
             let root = session.project_root.as_str();
+            if seen_roots.insert(root) {
+                session_roots.push(root);
+            }
+            // A task with no messages is a draft: it joins the inbox
+            // only once its first message is sent.
+            if session.message_count == 0 {
+                continue;
+            }
+            if scoped.is_some_and(|scoped| scoped != root) {
+                continue;
+            }
             let matches = !filtering
                 || self.sidebar_rows[index].search.contains(filter)
                 || root_search
                     .entry(root)
                     .or_insert_with(|| self.root_name(root).to_lowercase())
                     .contains(filter);
-            if session.archived {
-                if matches {
-                    archived_indices.push(index);
-                }
+            if !matches {
                 continue;
             }
-            // Only a live task keeps its project in the sidebar.
-            session_roots.insert(root);
-            match tasks_by_root.get_mut(root) {
-                Some(tasks) => {
-                    if matches {
-                        tasks.push(index);
-                    }
-                }
-                None => {
-                    live_roots.push(root.to_string());
-                    tasks_by_root.insert(
-                        root.to_string(),
-                        if matches { vec![index] } else { Vec::new() },
-                    );
-                }
+            if session.archived {
+                archived_indices.push(index);
+            } else if pinned_ids.contains(session.id.as_str()) {
+                pinned.push(index);
+            } else if self.session_is_active(session) {
+                active.push(index);
+            } else {
+                settled.push(index);
             }
         }
-        let known = |root: &str| {
-            self.recent_roots.iter().any(|candidate| candidate == root)
-                || self.project_root.as_deref() == Some(root)
-                || session_roots.contains(root)
+        // Every section reads newest activity first.
+        let by_update = |ix: &usize| {
+            std::cmp::Reverse(
+                self.sessions
+                    .get(*ix)
+                    .map(|session| session.updated_ms)
+                    .unwrap_or(0),
+            )
         };
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut roots: Vec<&str> = Vec::new();
-        // Roots that only live tasks know about sort alphabetically so
-        // their position never moves when sessions change.
-        live_roots.sort();
-        // The current project stays visible even when nothing else lists
-        // it, without floating to the top.
-        let ordered = self
-            .pinned_roots
-            .iter()
-            .filter(|root| known(root))
-            .chain(self.recent_roots.iter())
-            .chain(live_roots.iter())
-            .chain(self.project_root.iter());
-        for root in ordered {
-            if seen.insert(root.as_str()) {
-                roots.push(root.as_str());
-            }
-        }
-        let groups: Vec<ProjectGroup> = roots
-            .into_iter()
-            .map(|root| {
-                let tasks = tasks_by_root.remove(root).unwrap_or_default();
-                ProjectGroup::build(root, self.root_name(root), tasks)
-            })
-            // While searching, a project with no matching task is noise.
-            .filter(|group| !filtering || !group.tasks.is_empty())
-            .collect();
-        self.project_groups = groups;
+        pinned.sort_by_cached_key(by_update);
+        // A task woken by hand goes to the top of the active section so
+        // the un-settle click visibly moves it.
+        active.sort_by_cached_key(|ix| {
+            let unsettled = self
+                .sessions
+                .get(*ix)
+                .is_some_and(|session| self.unsettled_tasks.contains(&session.id));
+            (std::cmp::Reverse(unsettled), by_update(ix))
+        });
+        settled.sort_by_cached_key(by_update);
+        self.sidebar_pinned = pinned;
+        self.sidebar_active = active;
+        self.sidebar_settled = settled;
         self.archived_indices = archived_indices;
+        self.sidebar_scope_label = self
+            .sidebar_project_filter
+            .as_deref()
+            .map(|root| self.root_name(root))
+            .map(SharedString::from)
+            .unwrap_or_else(|| "All projects".into());
+        // The switcher lists the saved roots, then roots only tasks know
+        // about, alphabetically so they never move as sessions change.
+        let recent_roots: HashSet<&str> = self.recent_roots.iter().map(String::as_str).collect();
+        let mut fresh_roots: Vec<&str> = session_roots
+            .iter()
+            .copied()
+            .filter(|root| !recent_roots.contains(root))
+            .collect();
+        fresh_roots.sort_unstable();
+        self.switcher_roots = self
+            .recent_roots
+            .iter()
+            .map(String::as_str)
+            .chain(fresh_roots.iter().copied())
+            .filter(|root| seen_roots.contains(root) || recent_roots.contains(root))
+            .map(|root| SwitcherRoot {
+                name: self.root_name(root).into(),
+                root: root.to_string(),
+                row_id: SharedString::from(format!("switcher-{root}")),
+                row_group: SharedString::from(format!("switcher-project-row-{root}")),
+                menu_id: SharedString::from(format!("menu-project-{root}")),
+            })
+            .collect();
         self.rebuild_sidebar_entries();
     }
 
-    /// Flatten the groups into list rows, honoring folded projects and
-    /// the archived section. Every row is re-measured; the scroll
-    /// position is kept.
+    /// Whether a task belongs to the active inbox. Every task stays
+    /// active until it is settled away by hand; a run in flight is
+    /// activity, so it wakes even a settled task.
+    fn session_is_active(&self, session: &AgentSessionSummary) -> bool {
+        self.active_runs.contains_key(&session.id) || !self.settled_tasks.contains(&session.id)
+    }
+
+    /// Flatten the sections into list rows. The list splices only the
+    /// span that changed, so the scroll position and the measured
+    /// heights of untouched rows survive every rebuild.
     pub(super) fn rebuild_sidebar_entries(&mut self) {
         let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::ProjectsHeader];
-        for (index, group) in self.project_groups.iter().enumerate() {
-            entries.push(SidebarEntry::Project(index));
-            if !self.collapsed_roots.contains(&*group.root) {
-                entries.extend(group.tasks.iter().map(|&session| SidebarEntry::Task {
-                    session,
-                    archived: false,
+        let tasks = |entries: &mut Vec<SidebarEntry>,
+                     section: SidebarSection,
+                     rows: &[usize],
+                     expanded: bool| {
+            if rows.is_empty() {
+                return;
+            }
+            entries.push(SidebarEntry::SectionLabel(section));
+            if expanded {
+                entries.extend(rows.iter().map(|&session| {
+                    SidebarEntry::Task(SidebarTaskEntry {
+                        session,
+                        pinned: section == SidebarSection::Pinned,
+                        settled: section == SidebarSection::Settled,
+                        archived: false,
+                    })
                 }));
             }
-        }
+        };
+        tasks(
+            &mut entries,
+            SidebarSection::Pinned,
+            &self.sidebar_pinned,
+            self.section_expanded(SidebarSection::Pinned),
+        );
+        tasks(
+            &mut entries,
+            SidebarSection::Active,
+            &self.sidebar_active,
+            self.section_expanded(SidebarSection::Active),
+        );
+        tasks(
+            &mut entries,
+            SidebarSection::Settled,
+            &self.sidebar_settled,
+            self.section_expanded(SidebarSection::Settled),
+        );
         if !self.archived_indices.is_empty() {
             entries.push(SidebarEntry::ArchivedHeader);
             if self.archived_expanded {
-                entries.extend(
-                    self.archived_indices
-                        .iter()
-                        .map(|&session| SidebarEntry::Task {
-                            session,
-                            archived: true,
-                        }),
-                );
+                entries.extend(self.archived_indices.iter().map(|&session| {
+                    SidebarEntry::Task(SidebarTaskEntry {
+                        session,
+                        archived: true,
+                        pinned: false,
+                        settled: false,
+                    })
+                }));
             }
         }
-        let old_count = self.sidebar_list.item_count();
-        self.sidebar_entries = entries;
+        let old = std::mem::replace(&mut self.sidebar_entries, entries);
         if self.application_vim_enabled {
             self.rebuild_sidebar_application_targets();
         }
-        self.sidebar_list
-            .splice(0..old_count, self.sidebar_entries.len());
+        // Trim the common prefix and suffix so only rows that really
+        // changed are re-measured. gpui resets the scroll top to the
+        // start of the spliced range, so a whole-list splice would jump
+        // back to the top of the sidebar.
+        let common = old.len().min(self.sidebar_entries.len());
+        let mut prefix = 0;
+        while prefix < common && old[prefix] == self.sidebar_entries[prefix] {
+            prefix += 1;
+        }
+        let mut suffix = 0;
+        while suffix < common - prefix
+            && old[old.len() - 1 - suffix]
+                == self.sidebar_entries[self.sidebar_entries.len() - 1 - suffix]
+        {
+            suffix += 1;
+        }
+        if prefix + suffix < old.len() || prefix + suffix < self.sidebar_entries.len() {
+            self.sidebar_list.splice(
+                prefix..old.len() - suffix,
+                self.sidebar_entries.len() - prefix - suffix,
+            );
+        }
         if self.application_vim_enabled {
             self.reconcile_sidebar_application_selection();
         }
     }
 
     /// A row changed its height (a rename field came or went): let the
-    /// list measure again.
-    pub(super) fn remeasure_sidebar(&self) {
-        let count = self.sidebar_list.item_count();
-        self.sidebar_list.splice(0..count, count);
+    /// list measure that one row again. The rest of the list keeps its
+    /// scroll and its cached heights.
+    pub(super) fn remeasure_sidebar(&self, target: &RenameTarget) {
+        let row = match target {
+            RenameTarget::Task(id) => self.sidebar_entries.iter().position(|entry| {
+                matches!(entry, SidebarEntry::Task(task)
+                    if self
+                        .sessions
+                        .get(task.session)
+                        .is_some_and(|session| session.id == *id))
+            }),
+            // The project rename field lives in the switcher menu, which
+            // hangs off the projects header row.
+            RenameTarget::Project(_) => self
+                .sidebar_entries
+                .iter()
+                .position(|entry| matches!(entry, SidebarEntry::ProjectsHeader)),
+        };
+        if let Some(row) = row {
+            self.sidebar_list.splice(row..row + 1, 1);
+        }
+    }
+
+    /// Reveal the switcher root paths for tests.
+    #[cfg(test)]
+    pub(super) fn switcher_root_paths(&self) -> Vec<&str> {
+        self.switcher_roots
+            .iter()
+            .map(|root| root.root.as_str())
+            .collect()
     }
 
     /// Rebuild the per-session sidebar strings when the session list
     /// moved under them; a plain filter change reuses them.
     pub(super) fn sync_sidebar_rows(&mut self) {
+        // Compare against the stored name without building one: this
+        // runs on every rebuild and a fresh list allocates nothing.
         let fresh = self.sidebar_rows.len() == self.sessions.len()
             && self
                 .sidebar_rows
@@ -306,7 +431,7 @@ impl ChatScreen {
                 .all(|(row, session)| {
                     *row.id == *session.id
                         && row.title.as_ref() == session.title
-                        && row.project_name.as_ref() == self.root_name(&session.project_root)
+                        && self.root_name_matches(&session.project_root, &row.project_name)
                 });
         if fresh {
             return;
@@ -324,7 +449,7 @@ impl ChatScreen {
         let filter = input.read(cx).text_ref().trim().to_lowercase();
         if filter != self.sidebar_filter {
             self.sidebar_filter = filter;
-            self.rebuild_project_groups();
+            self.rebuild_sidebar_sections();
             cx.notify();
         }
     }
@@ -334,170 +459,8 @@ impl ChatScreen {
             input.update(cx, |input, cx| input.clear(cx));
         }
         self.sidebar_filter.clear();
-        self.rebuild_project_groups();
+        self.rebuild_sidebar_sections();
         cx.notify();
-    }
-
-    /// Pin or unpin a project root. Pinned roots sort to the top of the
-    /// sidebar and persist in the app settings.
-    pub(super) fn toggle_pin(&mut self, root: &str, cx: &mut Context<Self>) {
-        if self.pinned_roots.iter().any(|pinned| pinned == root) {
-            self.pinned_roots.retain(|pinned| pinned != root);
-        } else {
-            self.pinned_roots.push(root.to_string());
-        }
-        self.rebuild_project_groups();
-        cx.notify();
-        let pinned = self.pinned_roots.clone();
-        self.persist_settings(move |settings| settings.pinned_roots = pinned, cx);
-    }
-
-    /// Track the drop indicator while a project header drag moves over the
-    /// header at `index`: pin the insertion point to this row while the
-    /// pointer is over it, and clear it when the pointer leaves, so at
-    /// most one row shows the line.
-    fn update_sidebar_drop_target(
-        &mut self,
-        index: usize,
-        event: &gpui::DragMoveEvent<ProjectDrag>,
-        cx: &mut Context<Self>,
-    ) {
-        if !event.bounds.contains(&event.event.position) {
-            let mine = self.project_groups.get(index).is_some_and(|group| {
-                self.sidebar_drop_target
-                    .as_ref()
-                    .is_some_and(|(root, _)| root == &group.root)
-            });
-            if mine {
-                self.sidebar_drop_target = None;
-                cx.notify();
-            }
-            return;
-        }
-        let dragged = event.drag(cx).root.clone();
-        let top_half = event.event.position.y < event.bounds.center().y;
-        let target = self
-            .project_drop_index(&dragged, index, top_half)
-            .and_then(|insertion| self.project_drop_target(&dragged, insertion));
-        if self.sidebar_drop_target != target {
-            self.sidebar_drop_target = target;
-            cx.notify();
-        }
-    }
-
-    /// Insertion point that hovering the group at `over` represents for a
-    /// drag of `dragged`: the index the project takes once it is removed
-    /// from the groups, clamped to its own section so pinned and unpinned
-    /// projects never cross. `None` when the drop would not move anything.
-    pub(super) fn project_drop_index(
-        &self,
-        dragged: &str,
-        over: usize,
-        top_half: bool,
-    ) -> Option<usize> {
-        let groups = &self.project_groups;
-        if groups.get(over).is_none_or(|group| &*group.root == dragged) {
-            return None;
-        }
-        let source = groups.iter().position(|group| &*group.root == dragged)?;
-        let over_remaining = over - usize::from(over > source);
-        let pinned = |root: &str| self.pinned_roots.iter().any(|pinned| pinned == root);
-        let pinned_remaining = groups
-            .iter()
-            .filter(|group| pinned(&group.root) && &*group.root != dragged)
-            .count();
-        let insertion = over_remaining + usize::from(!top_half);
-        let insertion = if pinned(dragged) {
-            insertion.min(pinned_remaining)
-        } else {
-            insertion.max(pinned_remaining)
-        };
-        Some(insertion)
-    }
-
-    /// The row that shows the insertion line for `insertion`, the index a
-    /// drag of `dragged` produces once the project is removed from the
-    /// groups: the line sits above the row at the index, or below the
-    /// last one when the project goes to the very end.
-    fn project_drop_target(&self, dragged: &str, insertion: usize) -> Option<(Arc<str>, bool)> {
-        let remaining: Vec<Arc<str>> = self
-            .project_groups
-            .iter()
-            .map(|group| Arc::clone(&group.root))
-            .filter(|root| root.as_ref() != dragged)
-            .collect();
-        if remaining.is_empty() {
-            return None;
-        }
-        let index = insertion.min(remaining.len() - 1);
-        if insertion < remaining.len() {
-            Some((Arc::clone(&remaining[index]), true))
-        } else {
-            Some((Arc::clone(&remaining[remaining.len() - 1]), false))
-        }
-    }
-
-    /// Re-derive the insertion index from a stored drop target so a list
-    /// change mid-drag cannot desync the move.
-    pub(super) fn project_insertion_index(
-        &self,
-        dragged: &str,
-        target_root: &str,
-        before: bool,
-    ) -> Option<usize> {
-        let over = self
-            .project_groups
-            .iter()
-            .position(|group| &*group.root == target_root)?;
-        self.project_drop_index(dragged, over, before)
-    }
-
-    /// Move a dragged project to the insertion point the pointer last
-    /// hovered and persist the new order. The optimistic rebuild makes
-    /// the drop feel instant; a failed save restores the previous order.
-    pub(super) fn reorder_project(&mut self, dragged: &ProjectDrag, cx: &mut Context<Self>) {
-        let Some((target_root, before)) = self.sidebar_drop_target.take() else {
-            return;
-        };
-        let Some(insertion) = self.project_insertion_index(&dragged.root, &target_root, before)
-        else {
-            return;
-        };
-        let roots: Vec<String> = self
-            .project_groups
-            .iter()
-            .map(|group| group.root.to_string())
-            .collect();
-        let Some(source) = roots.iter().position(|root| root == dragged.root.as_ref()) else {
-            return;
-        };
-        let mut order = roots.clone();
-        order.remove(source);
-        order.insert(insertion.min(order.len()), dragged.root.to_string());
-        if order == roots {
-            return;
-        }
-        let previous = self.recent_roots.clone();
-        self.recent_roots = order.clone();
-        self.rebuild_project_groups();
-        cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        self.call(
-            async move { backend.save_project_root_order(&user_id, order).await },
-            cx,
-            move |this, result, cx| {
-                match result {
-                    Ok(roots) => this.apply_recent_roots(roots),
-                    Err(error) => {
-                        this.recent_roots = previous;
-                        this.rebuild_project_groups();
-                        this.notice = Some(error.into());
-                    }
-                }
-                cx.notify();
-            },
-        );
     }
 
     /// Apply `update` to the settings file off the UI thread.
@@ -509,6 +472,106 @@ impl ChatScreen {
         crate::settings::update_settings_in_background(update);
     }
 
+    /// Pin or unpin a task. Pinned tasks stay at the top of the sidebar
+    /// and persist in the app settings.
+    pub(super) fn toggle_task_pin(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        if self.pinned_tasks.iter().any(|pinned| pinned == session_id) {
+            self.pinned_tasks.retain(|pinned| pinned != session_id);
+        } else {
+            self.pinned_tasks.push(session_id.to_string());
+        }
+        self.rebuild_sidebar_sections();
+        cx.notify();
+        let pinned = self.pinned_tasks.clone();
+        self.persist_settings(move |settings| settings.pinned_tasks = pinned, cx);
+    }
+
+    /// Move a task to the settled section: it leaves the active inbox
+    /// until new activity wakes it again.
+    pub(super) fn settle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.unsettled_tasks.remove(session_id);
+        if self.settled_tasks.insert(session_id.to_string()) {
+            self.rebuild_sidebar_sections();
+            cx.notify();
+            Self::persist_task_sets(self.settled_tasks.clone(), self.unsettled_tasks.clone(), cx);
+        }
+    }
+
+    /// Whether a collapsible section shows its rows.
+    fn section_expanded(&self, section: SidebarSection) -> bool {
+        match section {
+            SidebarSection::Pinned => self.pinned_expanded,
+            SidebarSection::Active => self.active_expanded,
+            SidebarSection::Settled => self.settled_expanded,
+        }
+    }
+
+    fn toggle_section_expanded(&mut self, section: SidebarSection, cx: &mut Context<Self>) {
+        match section {
+            SidebarSection::Pinned => self.pinned_expanded = !self.pinned_expanded,
+            SidebarSection::Active => self.active_expanded = !self.active_expanded,
+            SidebarSection::Settled => self.settled_expanded = !self.settled_expanded,
+        }
+        self.rebuild_sidebar_entries();
+        cx.notify();
+    }
+
+    /// Move a task back into the active inbox at the top. It stays
+    /// active until it is settled away by hand again.
+    pub(super) fn unsettle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.settled_tasks.remove(session_id);
+        if self.unsettled_tasks.insert(session_id.to_string()) {
+            self.rebuild_sidebar_sections();
+            cx.notify();
+            Self::persist_task_sets(self.settled_tasks.clone(), self.unsettled_tasks.clone(), cx);
+        }
+    }
+
+    /// Write the settle/unsettle sets in one background update.
+    fn persist_task_sets(
+        settled: std::collections::HashSet<String>,
+        unsettled: std::collections::HashSet<String>,
+        _cx: &mut Context<Self>,
+    ) {
+        crate::settings::update_settings_in_background(move |settings| {
+            settings.settled_tasks = settled.into_iter().collect();
+            settings.unsettled_tasks = unsettled.into_iter().collect();
+        });
+    }
+
+    /// Open or close the project switcher menu.
+    pub(super) fn toggle_switcher_menu(&mut self, cx: &mut Context<Self>) {
+        self.project_menu = None;
+        self.set_switcher_menu_open(!self.switcher_menu_open, cx);
+    }
+
+    /// Deterministically open or close the project switcher menu.
+    /// Application Vim uses this setter; pointer clicks toggle above.
+    pub(super) fn set_switcher_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.sidebar_menu_selected = None;
+        if self.switcher_menu_open == open {
+            return;
+        }
+        self.switcher_menu_open = open;
+        if open {
+            self.project_menu = None;
+        }
+        cx.notify();
+    }
+
+    /// Scope the sidebar to one project, or show every project again.
+    pub(super) fn set_sidebar_project_filter(
+        &mut self,
+        root: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_menu_selected = None;
+        self.sidebar_project_filter = root.filter(|root| !root.is_empty());
+        self.switcher_menu_open = false;
+        self.rebuild_sidebar_sections();
+        cx.notify();
+    }
+
     /// Display name for a project root: the saved name, else the folder name.
     pub(super) fn root_name(&self, root: &str) -> String {
         self.project_names
@@ -516,6 +579,24 @@ impl ChatScreen {
             .filter(|name| !name.trim().is_empty())
             .cloned()
             .unwrap_or_else(|| root_display_name(root))
+    }
+
+    /// Whether `name` is the display name of `root`, without building the
+    /// name the way `root_name` does.
+    fn root_name_matches(&self, root: &str, name: &str) -> bool {
+        match self
+            .project_names
+            .get(root)
+            .filter(|name| !name.trim().is_empty())
+        {
+            Some(stored) => stored == name,
+            None => match std::path::Path::new(root).file_name() {
+                // Invalid UTF-8 misses here and falls to a rebuild, which
+                // stays correct.
+                Some(file) => file.to_string_lossy().as_ref() == name,
+                None => root == name,
+            },
+        }
     }
 
     /// Start an inline rename of a task or project in the sidebar.
@@ -557,12 +638,16 @@ impl ChatScreen {
         self.rename = Some(target);
         self.rename_input = Some(input);
         self.rename_focus_pending = true;
-        self.remeasure_sidebar();
+        if let Some(target) = self.rename.as_ref() {
+            self.remeasure_sidebar(target);
+        }
         cx.notify();
     }
 
     pub(super) fn cancel_rename(&mut self, cx: &mut Context<Self>) {
-        self.remeasure_sidebar();
+        if let Some(target) = self.rename.as_ref() {
+            self.remeasure_sidebar(target);
+        }
         self.rename = None;
         self.rename_input = None;
         cx.notify();
@@ -578,7 +663,7 @@ impl ChatScreen {
             .map(|input| input.read(cx).text())
             .unwrap_or_default();
         let name = name.trim().to_string();
-        self.remeasure_sidebar();
+        self.remeasure_sidebar(&target);
         cx.notify();
         if name.is_empty() {
             return;
@@ -594,7 +679,7 @@ impl ChatScreen {
                         match result {
                             Ok(session) => {
                                 this.upsert_session(session);
-                                this.rebuild_project_groups();
+                                this.rebuild_sidebar_sections();
                             }
                             Err(message) => this.notice = Some(message.into()),
                         }
@@ -608,7 +693,7 @@ impl ChatScreen {
                 } else {
                     self.project_names.insert(root.clone(), name);
                 }
-                self.rebuild_project_groups();
+                self.rebuild_sidebar_sections();
                 let names = self.project_names.clone();
                 self.persist_settings(move |settings| settings.project_names = names, cx);
             }
@@ -637,7 +722,8 @@ impl ChatScreen {
     }
 
     fn toggle_project_menu(&mut self, root: &str, cx: &mut Context<Self>) {
-        self.menu_trust = None;
+        self.task_menu = None;
+        self.sidebar_menu_selected = None;
         if self.project_menu.as_deref() == Some(root) {
             self.project_menu = None;
         } else {
@@ -659,6 +745,288 @@ impl ChatScreen {
             );
         }
         cx.notify();
+    }
+
+    /// Open or close the overflow menu of one task row.
+    fn toggle_task_menu(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.sidebar_menu_selected = None;
+        if self.task_menu.as_deref() == Some(session_id) {
+            self.task_menu = None;
+        } else {
+            self.task_menu = Some(session_id.to_string());
+        }
+        cx.notify();
+    }
+
+    /// The overflow menu of a task row: rename, pin, settle, archive.
+    fn task_menu_items(&self, task: SidebarTaskEntry) -> Vec<SidebarMenuItem> {
+        let Some(row) = self.sidebar_rows.get(task.session) else {
+            return Vec::new();
+        };
+        let rename_id = row.id.to_string();
+        let pinned_id = row.id.to_string();
+        let settle_id = row.id.to_string();
+        let archive_id = row.id.to_string();
+        let pinned = task.pinned;
+        let archived = task.archived;
+        let active = !archived && (self.active_runs.contains_key(&*row.id) || !task.settled);
+        vec![
+            SidebarMenuItem {
+                id: row.menu_rename_id.clone(),
+                icon: "pencil",
+                label: "Rename task",
+                on_click: Box::new(move |this, cx| {
+                    this.begin_rename(RenameTarget::Task(rename_id.clone()), cx)
+                }),
+            },
+            SidebarMenuItem {
+                id: row.menu_pin_id.clone(),
+                icon: "pin",
+                label: if pinned { "Unpin task" } else { "Pin task" },
+                on_click: Box::new(move |this, cx| this.toggle_task_pin(&pinned_id, cx)),
+            },
+            SidebarMenuItem {
+                id: row.menu_settle_id.clone(),
+                icon: if active { "check" } else { "undo-2" },
+                label: if active {
+                    "Settle task"
+                } else {
+                    "Unsettle task"
+                },
+                on_click: Box::new(move |this, cx| {
+                    if active {
+                        this.settle_task(&settle_id, cx)
+                    } else {
+                        this.unsettle_task(&settle_id, cx)
+                    }
+                }),
+            },
+            SidebarMenuItem {
+                id: row.menu_archive_id.clone(),
+                icon: if archived {
+                    "archive-restore"
+                } else {
+                    "archive"
+                },
+                label: if archived {
+                    "Restore task"
+                } else {
+                    "Archive task"
+                },
+                on_click: Box::new(move |this, cx| {
+                    this.set_session_archived(&archive_id, !archived, cx)
+                }),
+            },
+        ]
+    }
+
+    /// The overflow menu of one switcher project row.
+    fn project_menu_items(&self, root: &str) -> Vec<SidebarMenuItem> {
+        let rename_root = root.to_string();
+        let open_root = root.to_string();
+        let remove_root = root.to_string();
+        let mut items = vec![
+            SidebarMenuItem {
+                id: SharedString::from(format!("rename-project-{root}")),
+                icon: "pencil",
+                label: "Rename project",
+                on_click: Box::new(move |this, cx| {
+                    this.begin_rename(RenameTarget::Project(rename_root.clone()), cx)
+                }),
+            },
+            SidebarMenuItem {
+                id: SharedString::from(format!("open-project-{root}")),
+                icon: "folder-open",
+                label: "Open folder",
+                on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
+            },
+        ];
+        if let Some(status) = self
+            .menu_trust
+            .as_ref()
+            .filter(|status| status.available && status.path == root)
+        {
+            let trusted = status.decision == Some(true);
+            let path = status.path.clone();
+            items.push(SidebarMenuItem {
+                id: SharedString::from(format!("trust-project-{root}")),
+                icon: if trusted { "shield-check" } else { "lock" },
+                label: if trusted {
+                    "Untrust project"
+                } else {
+                    "Trust project"
+                },
+                on_click: Box::new(move |this, cx| {
+                    this.set_project_trust(path.clone(), !trusted, cx)
+                }),
+            });
+        }
+        items.push(SidebarMenuItem {
+            id: SharedString::from(format!("remove-project-{root}")),
+            icon: "trash-2",
+            label: "Remove project",
+            on_click: Box::new(move |this, cx| this.request_remove_root(&remove_root, cx)),
+        });
+        items
+    }
+
+    /// The popup menu the sidebar shows, if any. The project menu opens
+    /// inside the switcher, so it takes priority; the task menu and the
+    /// switcher never share the screen with each other.
+    fn sidebar_popup(&self) -> Option<SidebarPopup> {
+        if let Some(root) = &self.project_menu {
+            return Some(SidebarPopup::Project(root.clone()));
+        }
+        if let Some(session) = &self.task_menu {
+            return Some(SidebarPopup::Task(session.clone()));
+        }
+        if self.switcher_menu_open {
+            return Some(SidebarPopup::Switcher);
+        }
+        None
+    }
+
+    /// The task entry whose overflow menu is open.
+    fn task_menu_entry(&self, session_id: &str) -> Option<SidebarTaskEntry> {
+        self.sidebar_entries.iter().find_map(|entry| match entry {
+            SidebarEntry::Task(task) => self
+                .sessions
+                .get(task.session)
+                .filter(|session| session.id == session_id)
+                .map(|_| *task),
+            _ => None,
+        })
+    }
+
+    fn sidebar_popup_rows(&self) -> Option<usize> {
+        match self.sidebar_popup() {
+            Some(SidebarPopup::Switcher) => Some(self.switcher_roots.len() + 2),
+            Some(SidebarPopup::Project(root)) => Some(self.project_menu_items(&root).len()),
+            Some(SidebarPopup::Task(session)) => Some(
+                self.task_menu_entry(&session)
+                    .map(|task| self.task_menu_items(task).len())
+                    .unwrap_or(0),
+            ),
+            None => None,
+        }
+    }
+
+    /// The Application-Vim row highlight of whichever popup menu is open.
+    fn sidebar_menu_selection(&self) -> Option<usize> {
+        (self.application_vim_enabled && self.sidebar_popup().is_some())
+            .then_some(self.sidebar_menu_selected)
+            .flatten()
+    }
+
+    /// Move the Application-Vim selection inside the open popup menu.
+    /// Reports whether one was open.
+    pub(super) fn step_sidebar_popup(
+        &mut self,
+        delta: isize,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(rows) = self.sidebar_popup_rows().filter(|rows| *rows > 0) else {
+            return false;
+        };
+        for _ in 0..count {
+            let next = match self.sidebar_menu_selected {
+                Some(current) => (current as isize + delta).rem_euclid(rows as isize),
+                // Nothing highlighted: enter the menu from the end the key
+                // comes from.
+                None if delta < 0 => rows as isize - 1,
+                None => 0,
+            };
+            self.sidebar_menu_selected = Some(next as usize);
+        }
+        cx.notify();
+        true
+    }
+
+    /// `gg` and `G` inside the open popup menu. Reports whether one was
+    /// open.
+    pub(super) fn sidebar_popup_edge(&mut self, first: bool, cx: &mut Context<Self>) -> bool {
+        let Some(rows) = self.sidebar_popup_rows().filter(|rows| *rows > 0) else {
+            return false;
+        };
+        self.sidebar_menu_selected = Some(if first { 0 } else { rows - 1 });
+        cx.notify();
+        true
+    }
+
+    /// Enter inside the open popup menu: run the highlighted item's
+    /// action. Reports whether one was open.
+    pub(super) fn activate_sidebar_popup(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(popup) = self.sidebar_popup() else {
+            return false;
+        };
+        let Some(rows) = self.sidebar_popup_rows().filter(|rows| *rows > 0) else {
+            return false;
+        };
+        // Like the project chooser: Enter before any step does nothing.
+        let index = match self.sidebar_menu_selected {
+            Some(index) => index.min(rows - 1),
+            None => return true,
+        };
+        match popup {
+            SidebarPopup::Switcher => {
+                if index == 0 {
+                    self.set_sidebar_project_filter(None, cx);
+                } else if let Some(root) = self.switcher_roots.get(index - 1) {
+                    let root = root.root.clone();
+                    self.set_sidebar_project_filter(Some(root), cx);
+                } else if index == self.switcher_roots.len() + 1 {
+                    self.set_switcher_menu_open(false, cx);
+                    self.choose_root_dialog(cx);
+                }
+            }
+            SidebarPopup::Project(root) => {
+                if let Some(item) = self.project_menu_items(&root).into_iter().nth(index) {
+                    let SidebarMenuItem { on_click, .. } = item;
+                    on_click(self, cx);
+                }
+            }
+            SidebarPopup::Task(session) => {
+                if let Some(task) = self.task_menu_entry(&session)
+                    && let Some(item) = self.task_menu_items(task).into_iter().nth(index)
+                {
+                    let SidebarMenuItem { on_click, .. } = item;
+                    on_click(self, cx);
+                }
+            }
+        }
+        true
+    }
+
+    /// Overflow menu for a task row: pin, settle, and archive, beside the
+    /// rename the pencil offers.
+    fn render_task_menu(&self, task: SidebarTaskEntry, cx: &mut Context<Self>) -> gpui::Deferred {
+        let Some(row) = self.sidebar_rows.get(task.session) else {
+            return gpui::deferred(div());
+        };
+        let selected = self.sidebar_menu_selection();
+        let mut menu = div()
+            .id(row.menu_panel_id.clone())
+            .absolute()
+            .top(px(30.))
+            .right_0()
+            .w(px(180.))
+            .py_1()
+            .rounded_md()
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                this.task_menu = None;
+                cx.notify();
+            }));
+        for (index, item) in self.task_menu_items(task).into_iter().enumerate() {
+            menu = menu.child(popup_menu_row(item, selected == Some(index), cx));
+        }
+        gpui::deferred(menu)
     }
 
     /// Ask for a trust decision when the current project provides skills
@@ -869,91 +1237,29 @@ impl ChatScreen {
 
     /// Overflow menu for a project row.
     fn render_project_menu(&self, root: &str, cx: &mut Context<Self>) -> gpui::Deferred {
-        let menu_item =
-            |id: String, icon_name: &'static str, label: &'static str, on_click: MenuAction| {
-                div()
-                    .id(SharedString::from(id))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1p5()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        cx.stop_propagation();
-                        on_click(this, cx);
-                    }))
-                    .child(icon(icon_name, px(14.), theme::text_secondary()))
-                    .child(label)
-            };
-        let rename_root = root.to_string();
-        let open_root = root.to_string();
-        let remove_root = root.to_string();
-        let trust_item = self
-            .menu_trust
-            .as_ref()
-            .filter(|status| status.available && status.path == root)
-            .map(|status| {
-                let trusted = status.decision == Some(true);
-                let path = status.path.clone();
-                menu_item(
-                    format!("trust-project-{root}"),
-                    if trusted { "shield-check" } else { "lock" },
-                    if trusted {
-                        "Untrust project"
-                    } else {
-                        "Trust project"
-                    },
-                    Box::new(move |this, cx| this.set_project_trust(path.clone(), !trusted, cx)),
-                )
-            });
-        gpui::deferred(
-            div()
-                .id(SharedString::from(format!("project-menu-{root}")))
-                .absolute()
-                .top(px(30.))
-                .right_0()
-                .w(px(180.))
-                .py_1()
-                .rounded_md()
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .shadow_md()
-                .flex()
-                .flex_col()
-                .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                    this.project_menu = None;
-                    cx.notify();
-                }))
-                .child(menu_item(
-                    format!("rename-project-{root}"),
-                    "pencil",
-                    "Rename project",
-                    Box::new(move |this, cx| {
-                        this.begin_rename(RenameTarget::Project(rename_root.clone()), cx)
-                    }),
-                ))
-                .child(menu_item(
-                    format!("open-project-{root}"),
-                    "folder-open",
-                    "Open folder",
-                    Box::new(move |this, cx| this.open_folder(&open_root, cx)),
-                ))
-                .children(trust_item)
-                .child(menu_item(
-                    format!("remove-project-{root}"),
-                    "trash-2",
-                    "Remove project",
-                    Box::new(move |this, cx| this.request_remove_root(&remove_root, cx)),
-                )),
-        )
+        let selected = self.sidebar_menu_selection();
+        let mut menu = div()
+            .id(SharedString::from(format!("project-menu-{root}")))
+            .absolute()
+            .top(px(30.))
+            .right_0()
+            .w(px(180.))
+            .py_1()
+            .rounded_md()
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                this.project_menu = None;
+                cx.notify();
+            }));
+        for (index, item) in self.project_menu_items(root).into_iter().enumerate() {
+            menu = menu.child(popup_menu_row(item, selected == Some(index), cx));
+        }
+        gpui::deferred(menu)
     }
 
     /// Modal that confirms a project removal.
@@ -1056,32 +1362,6 @@ impl ChatScreen {
             )
     }
 
-    /// Fold or unfold a project's task list without changing task context.
-    pub(super) fn toggle_root_collapsed(&mut self, root: &str, cx: &mut Context<Self>) {
-        let collapsed = !self.collapsed_roots.contains(root);
-        self.set_root_collapsed(root, collapsed, cx);
-    }
-
-    /// Deterministically fold or unfold one project. Application Vim uses
-    /// this setter for `h`/`l`; pointer clicks retain toggle behavior above.
-    pub(super) fn set_root_collapsed(
-        &mut self,
-        root: &str,
-        collapsed: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if self.collapsed_roots.contains(root) == collapsed {
-            return;
-        }
-        if !collapsed {
-            self.collapsed_roots.remove(root);
-        } else {
-            self.collapsed_roots.insert(root.to_string());
-        }
-        self.rebuild_sidebar_entries();
-        cx.notify();
-    }
-
     /// Drop the selection and everything the composer shows for it: the
     /// transcript, the side thread, the queue, and a permission card that
     /// belongs to the task. Questions stay queued per session.
@@ -1157,9 +1437,8 @@ impl ChatScreen {
         // Pick the fallback from every known project, not only from the
         // sidebar groups, which a search filter may have narrowed.
         let fallback = self
-            .pinned_roots
+            .recent_roots
             .iter()
-            .chain(self.recent_roots.iter())
             .chain(
                 self.sessions
                     .iter()
@@ -1176,6 +1455,7 @@ impl ChatScreen {
             .collect();
         let removed = path.clone();
         let next_root = fallback.clone();
+        let removed_task_ids = task_ids.clone();
         self.call(
             async move {
                 for id in task_ids {
@@ -1188,19 +1468,12 @@ impl ChatScreen {
                 match result {
                     Ok(()) => {
                         this.recent_roots.retain(|candidate| candidate != &removed);
-                        this.collapsed_roots.remove(&removed);
-                        if this
-                            .pinned_roots
-                            .iter()
-                            .any(|candidate| candidate == &removed)
-                        {
-                            this.pinned_roots.retain(|candidate| candidate != &removed);
-                            let pinned = this.pinned_roots.clone();
-                            this.persist_settings(
-                                move |settings| settings.pinned_roots = pinned,
-                                cx,
-                            );
-                        }
+                        this.pinned_tasks
+                            .retain(|candidate| removed_task_ids.iter().all(|id| id != candidate));
+                        this.settled_tasks
+                            .retain(|candidate| removed_task_ids.iter().all(|id| id != candidate));
+                        this.unsettled_tasks
+                            .retain(|candidate| removed_task_ids.iter().all(|id| id != candidate));
                         for session in &mut this.sessions {
                             if session.project_root == removed {
                                 session.archived = true;
@@ -1212,7 +1485,7 @@ impl ChatScreen {
                             this.leave_selected_session(cx);
                             this.set_project_context(next_root.clone(), cx);
                         }
-                        this.rebuild_project_groups();
+                        this.rebuild_sidebar_sections();
                         if was_current && let Some(next) = next_root {
                             // The service keeps the fallback out of roaming
                             // config; persist it as the default here, then
@@ -1302,7 +1575,6 @@ impl ChatScreen {
                     .id("session-list")
                     .flex_1()
                     .min_h_0()
-                    .px_4()
                     .pt_6()
                     .child(list),
             )
@@ -1315,8 +1587,9 @@ impl ChatScreen {
         let entry = match self.sidebar_entries.get(ix).copied() {
             Some(SidebarEntry::NewTask) => div()
                 .id("new-task")
+                .w_full()
                 .mb_3()
-                .px_2()
+                .px_4()
                 .py_1p5()
                 .rounded_md()
                 .flex()
@@ -1335,47 +1608,52 @@ impl ChatScreen {
                 .child(icon("square-pen", px(16.), theme::accent()))
                 .child("New Task")
                 .into_any_element(),
-            Some(SidebarEntry::ProjectsHeader) => div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .mb_3()
-                .child(section_label("PROJECTS"))
-                .child(
-                    div()
-                        .id("new-project")
-                        .size_6()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_md()
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                .cursor_pointer()
-                        })
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            this.choose_root_dialog(cx);
-                        }))
-                        .child(icon("folder-plus", px(16.), theme::text_secondary())),
-                )
-                .into_any_element(),
-            Some(SidebarEntry::Project(index)) => self.render_project_header(index, cx),
-            Some(SidebarEntry::Task { session, archived }) => {
-                let row = self.render_task_row(session, selected, archived, cx);
-                // The last live row of a project carries the gap before
-                // the next section.
-                let last_of_group = !archived
+            Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(cx),
+            Some(SidebarEntry::Task(task)) => {
+                let row = self.render_task_row(task, selected, cx);
+                // The last row of a section carries the gap before the next
+                // section.
+                let last_of_section = !task.archived
                     && !matches!(
                         self.sidebar_entries.get(ix + 1),
-                        Some(SidebarEntry::Task {
-                            archived: false,
-                            ..
-                        })
+                        Some(SidebarEntry::Task(task)) if !task.archived
                     );
                 div()
-                    .when(last_of_group, |row| row.mb_2())
+                    .when(last_of_section, |row| row.mb_2())
                     .child(row)
+                    .into_any_element()
+            }
+            Some(SidebarEntry::SectionLabel(section)) => {
+                let expanded = self.section_expanded(section);
+                div()
+                    .id(gpui::SharedString::from(section.element_id()))
+                    .mt_4()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .mb_1()
+                    .px_4()
+                    .py_1()
+                    .rounded_md()
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                            .cursor_pointer()
+                    })
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        this.toggle_section_expanded(section, cx);
+                    }))
+                    .child(icon(
+                        if expanded {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        },
+                        px(14.),
+                        theme::text_secondary(),
+                    ))
+                    .child(section_label(section.label()))
                     .into_any_element()
             }
             Some(SidebarEntry::ArchivedHeader) => {
@@ -1384,11 +1662,12 @@ impl ChatScreen {
                 div()
                     .id("archived-toggle")
                     .mt_5()
+                    .w_full()
                     .flex()
                     .items_center()
                     .gap_1p5()
                     .mb_1()
-                    .px_2()
+                    .px_4()
                     .py_1()
                     .rounded_md()
                     .hover(|style| {
@@ -1425,6 +1704,7 @@ impl ChatScreen {
         let application_selected = self.application_vim_selects_sidebar_row(ix);
         let application_target = self.sidebar_application_target(ix).cloned();
         div()
+            .w_full()
             .when_some(application_target, |row, target| {
                 row.on_mouse_down(
                     gpui::MouseButton::Left,
@@ -1442,66 +1722,25 @@ impl ChatScreen {
             .into_any_element()
     }
 
-    /// A project header row with its fold chevron, pin, and overflow
-    /// menu. The menu overlays the rows below it.
-    pub(super) fn render_project_header(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(group) = self.project_groups.get(index) else {
-            return div().into_any_element();
-        };
-        let root = &group.root;
-        let is_current = self.project_root.as_deref() == Some(&**root);
-        let is_collapsed = self.collapsed_roots.contains(&**root);
-        let is_pinned = self.pinned_roots.iter().any(|pinned| **pinned == **root);
-        let activity = is_collapsed
-            .then(|| self.aggregate_session_activity(group.tasks.iter().copied()))
-            .flatten();
-        let rename_field = self.project_rename_field(root);
-        let renaming = rename_field.is_some();
-        let menu = (self.project_menu.as_deref() == Some(&**root))
-            .then(|| self.render_project_menu(root, cx));
-        // While searching, the visible projects are a subset of the saved
-        // ones, so a drag cannot produce a complete order to persist.
-        let draggable = self.sidebar_filter.is_empty();
-        let (drop_above, drop_below) = match self.sidebar_drop_target.as_ref() {
-            Some((target, false)) if target == root => (true, false),
-            Some((target, true)) if target == root => (false, true),
-            _ => (false, false),
-        };
+    /// The project switcher row: names the scope the task list shows and
+    /// opens the menu that picks it. The overflow menu of one project
+    /// hangs off its row inside the switcher.
+    pub(super) fn render_projects_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let menu = self
+            .switcher_menu_open
+            .then(|| self.render_switcher_menu(cx));
         div()
             .relative()
-            .when(is_collapsed, |column| column.mb_2())
-            .when(drop_above, |row| {
-                row.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_2()
-                        .right_2()
-                        .h(px(2.))
-                        .rounded_full()
-                        .bg(gpui::rgb(theme::accent())),
-                )
-            })
-            .when(drop_below, |row| {
-                row.child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left_2()
-                        .right_2()
-                        .h(px(2.))
-                        .rounded_full()
-                        .bg(gpui::rgb(theme::accent())),
-                )
-            })
+            .w_full()
+            .mb_3()
             .child(
                 div()
-                    .id(group.element_id.clone())
-                    .group(group.group.clone())
+                    .id("projects-header")
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .px_2()
+                    .w_full()
+                    .px_4()
                     .py_1()
                     .rounded_md()
                     .text_sm()
@@ -1512,118 +1751,200 @@ impl ChatScreen {
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                             .cursor_pointer()
                     })
-                    .on_click({
-                        let root = Arc::clone(root);
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.toggle_root_collapsed(&root, cx);
-                        })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        cx.stop_propagation();
+                        this.toggle_switcher_menu(cx);
+                    }))
+                    .child(icon("folder", px(16.), theme::text_secondary()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .line_clamp(1)
+                            .child(self.sidebar_scope_label.clone()),
+                    )
+                    .when(self.switcher_menu_open, |row| {
+                        row.child(icon("chevron-down", px(14.), theme::text_secondary()))
                     })
-                    .when(draggable, |row| {
-                        row.on_drag(
-                            ProjectDrag {
-                                root: Arc::clone(root),
-                            },
-                            {
-                                let name = group.name.clone();
-                                move |_drag, _position, _window, cx| {
-                                    cx.new(|_| ProjectDragGhost { name: name.clone() })
-                                }
-                            },
-                        )
-                        .on_drag_move::<ProjectDrag>(cx.listener(
-                            move |this, event: &gpui::DragMoveEvent<ProjectDrag>, _window, cx| {
-                                this.update_sidebar_drop_target(index, event, cx);
-                            },
-                        ))
-                        .on_drop::<ProjectDrag>(cx.listener(
-                            |this, drag: &ProjectDrag, _window, cx| {
-                                this.reorder_project(drag, cx);
-                            },
-                        ))
+                    .when(!self.switcher_menu_open, |row| {
+                        row.child(icon("chevron-right", px(14.), theme::text_secondary()))
                     })
-                    .child(icon(
-                        if is_collapsed {
-                            "chevron-right"
-                        } else {
-                            "chevron-down"
-                        },
-                        px(14.),
-                        theme::text_secondary(),
-                    ))
-                    .child(icon(
-                        if is_current { "folder-open" } else { "folder" },
-                        px(16.),
-                        theme::text_primary(),
-                    ))
-                    .when_some(rename_field, |row, field| row.child(field))
-                    .when(!renaming, |row| {
-                        row.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .line_clamp(1)
-                                .child(group.name.clone()),
-                        )
-                    })
-                    .when_some(activity, |row, activity| {
-                        row.child(activity_indicator(&group.spinner_id, activity))
-                    })
-                    .when(is_pinned, |row| {
-                        // Pinned: the always-visible pin is the unpin
-                        // button itself.
-                        row.child(
-                            div()
-                                .id(group.pin_id.clone())
-                                .size_5()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .hover(|style| style.cursor_pointer())
-                                .on_click({
-                                    let root = Arc::clone(root);
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.toggle_pin(&root, cx);
-                                    })
-                                })
-                                .child(icon("pin", px(13.), theme::accent())),
-                        )
-                    })
-                    .when(!is_pinned, |row| {
-                        row.child(row_action(group.pin_id.clone(), &group.group, "pin", {
-                            let root = Arc::clone(root);
-                            cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                this.toggle_pin(&root, cx);
+                    .child(
+                        div()
+                            .id("new-project")
+                            .size_6()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .hover(|style| {
+                                style
+                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                    .cursor_pointer()
                             })
-                        }))
-                    })
-                    .child(row_action(
-                        group.menu_id.clone(),
-                        &group.group,
-                        "ellipsis",
-                        {
-                            let root = Arc::clone(root);
-                            cx.listener(move |this, _event, _window, cx| {
+                            .on_click(cx.listener(|this, _event, _window, cx| {
                                 cx.stop_propagation();
-                                this.toggle_project_menu(&root, cx);
-                            })
-                        },
-                    )),
+                                this.choose_root_dialog(cx);
+                            }))
+                            .child(icon("folder-plus", px(16.), theme::text_secondary())),
+                    ),
             )
             .children(menu)
             .into_any_element()
     }
 
-    /// One task row. Archived rows show the project name under the title
-    /// and a restore button; live rows show an archive button on hover.
+    /// The menu the project switcher opens: every project, each with an
+    /// overflow menu of its own, plus a way back to all projects.
+    fn render_switcher_menu(&self, cx: &mut Context<Self>) -> gpui::Deferred {
+        let selected = self.sidebar_menu_selection();
+        let mut items = vec![
+            div()
+                .id("switcher-all-projects")
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1p5()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_primary()))
+                .when(selected == Some(0), |row| {
+                    row.bg(gpui::rgb(theme::bg_input()))
+                })
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.set_sidebar_project_filter(None, cx);
+                }))
+                .child(div().flex_1().min_w_0().line_clamp(1).child("All projects"))
+                .when(self.sidebar_project_filter.is_none(), |row| {
+                    row.child(icon("check", px(14.), theme::accent()))
+                }),
+        ];
+        for (index, root) in self.switcher_roots.iter().enumerate() {
+            let is_current = self.sidebar_project_filter.as_deref() == Some(root.root.as_str());
+            let has_menu = self.project_menu.as_deref() == Some(root.root.as_str());
+            let rename_field = self.project_rename_field(&root.root);
+            let not_renaming = rename_field.is_none();
+            items.push(
+                div()
+                    .id(root.row_id.clone())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1p5()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_primary()))
+                    .when(
+                        selected.is_some_and(|selected| selected == index + 1),
+                        |row| row.bg(gpui::rgb(theme::bg_input())),
+                    )
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                            .cursor_pointer()
+                    })
+                    .on_click({
+                        let root = root.root.clone();
+                        cx.listener(move |this, _event, _window, cx| {
+                            let root = root.clone();
+                            this.set_sidebar_project_filter(Some(root), cx);
+                        })
+                    })
+                    .when_some(rename_field, |row, field| row.child(field))
+                    .when(not_renaming, |row| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .line_clamp(1)
+                                .child(root.name.clone()),
+                        )
+                    })
+                    .when(is_current, |row| {
+                        row.child(icon("check", px(14.), theme::accent()))
+                    })
+                    .child(row_action(
+                        root.menu_id.clone(),
+                        &root.row_group,
+                        "ellipsis",
+                        {
+                            let root = root.root.clone();
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_project_menu(&root, cx);
+                            })
+                        },
+                    ))
+                    .children(has_menu.then(|| self.render_project_menu(&root.root.clone(), cx))),
+            );
+        }
+        let new_project_row = self.switcher_roots.len() + 1;
+        items.push(
+            div()
+                .id("switcher-new-project")
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1p5()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .when(
+                    selected.is_some_and(|selected| selected == new_project_row),
+                    |row| row.bg(gpui::rgb(theme::bg_input())),
+                )
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.set_switcher_menu_open(false, cx);
+                    this.choose_root_dialog(cx);
+                }))
+                .child(icon("folder-plus", px(14.), theme::text_secondary()))
+                .child("New project…"),
+        );
+        gpui::deferred(
+            div()
+                .id("switcher-menu")
+                .absolute()
+                .top(px(30.))
+                .left_0()
+                .min_w(px(220.))
+                .py_1()
+                .rounded_md()
+                .bg(gpui::rgb(theme::bg_elevated()))
+                .border_1()
+                .border_color(gpui::rgb(theme::border()))
+                .shadow_md()
+                .flex()
+                .flex_col()
+                .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                    this.set_switcher_menu_open(false, cx);
+                }))
+                .children(items),
+        )
+    }
+
+    /// One task row: title, its project, and hover actions. Archived rows
+    /// show a restore button; live rows show an archive button on hover.
     fn render_task_row(
         &self,
-        index: usize,
+        task: SidebarTaskEntry,
         selected: Option<&str>,
-        archived: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
+        let SidebarTaskEntry {
+            session: index,
+            pinned: is_pinned,
+            settled,
+            archived,
+        } = task;
         let row = &self.sidebar_rows[index];
         let is_selected = selected == Some(&*row.id);
         let activity = (!archived)
@@ -1632,17 +1953,22 @@ impl ChatScreen {
         let session_id = Arc::clone(&row.id);
         let action_id = Arc::clone(&row.id);
         let rename_id = Arc::clone(&row.id);
+        let menu_id = Arc::clone(&row.id);
+        let pin_id = row.pin_id.clone();
         let rename_field = self.task_rename_field(&row.id);
         let renaming = rename_field.is_some();
+        let task_menu_open = self.task_menu.as_deref() == Some(&*row.id);
         div()
+            .relative()
+            .w_full()
             .id(row.element_id.clone())
             .group(row.group.clone())
             .flex()
             .items_center()
             .gap_1p5()
-            .when(archived, |row| row.pl_2())
+            .when(archived, |row| row.pl_6())
             .when(!archived, |row| row.pl_8())
-            .pr_2()
+            .pr_6()
             .py_1()
             .rounded_lg()
             .text_sm()
@@ -1668,42 +1994,93 @@ impl ChatScreen {
                         .flex()
                         .flex_col()
                         .child(div().line_clamp(1).child(row.title.clone()))
-                        .when(archived, |column| {
-                            column.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(gpui::rgb(theme::text_muted()))
-                                    .line_clamp(1)
-                                    .child(row.project_name.clone()),
-                            )
-                        }),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(if is_selected {
+                                    theme::text_secondary()
+                                } else {
+                                    theme::text_muted()
+                                }))
+                                .line_clamp(1)
+                                .child(row.project_name.clone()),
+                        ),
                 )
             })
             .when_some(activity, |row_element, activity| {
                 row_element.child(activity_indicator(&row.spinner_id, activity))
             })
-            .child(row_action(
-                row.rename_id.clone(),
-                &row.group,
-                "pencil",
-                cx.listener(move |this, _event, _window, cx| {
-                    cx.stop_propagation();
-                    this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
-                }),
-            ))
-            .child(row_action(
-                row.archive_id.clone(),
-                &row.group,
-                if archived {
-                    "archive-restore"
-                } else {
-                    "archive"
-                },
-                cx.listener(move |this, _event, _window, cx| {
-                    cx.stop_propagation();
-                    this.set_session_archived(&action_id, !archived, cx);
-                }),
-            ))
+            .when(is_pinned, |row| {
+                // Pinned: the always-visible pin is the unpin button itself.
+                row.child(
+                    div()
+                        .id(pin_id.clone())
+                        .size_5()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .hover(|style| style.cursor_pointer())
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            this.toggle_task_pin(&pin_id, cx);
+                        }))
+                        .child(icon("pin", px(13.), theme::accent())),
+                )
+            })
+            // The actions float over the right end of the row instead of
+            // taking flex space, so the title only loses width while the
+            // pointer is over the row. The overlay paints the row hover
+            // colour so the covered tail of the title does not bleed
+            // through the icons. A pinned row keeps its pin in flow, so the
+            // overlay stops short of it.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .when(is_pinned, |overlay| overlay.right(px(26.)))
+                    .when(!is_pinned, |overlay| overlay.right_0().rounded_r_lg())
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .pl_2()
+                    .pr_6()
+                    .group_hover(row.group.clone(), |style| {
+                        style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                    })
+                    .child(row_action(
+                        row.menu_id.clone(),
+                        &row.group,
+                        "ellipsis",
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            this.toggle_task_menu(menu_id.as_ref(), cx);
+                        }),
+                    ))
+                    .child(row_action(
+                        row.rename_id.clone(),
+                        &row.group,
+                        "pencil",
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
+                        }),
+                    ))
+                    .child(row_action(
+                        row.archive_id.clone(),
+                        &row.group,
+                        if settled { "undo-2" } else { "check" },
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            if settled {
+                                this.unsettle_task(&action_id, cx);
+                            } else {
+                                this.settle_task(&action_id, cx);
+                            }
+                        }),
+                    )),
+            )
+            .children(task_menu_open.then(|| self.render_task_menu(task, cx)))
     }
 
     /// Sidebar footer: just the settings gear. Plan usage stays loaded for
@@ -1767,6 +2144,36 @@ pub(super) fn row_action(
         .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .on_click(on_click)
         .child(icon(icon_name, px(14.), theme::text_secondary()))
+}
+
+/// One row of a sidebar popup menu: icon, label, and the hover and
+/// Application-Vim backgrounds.
+fn popup_menu_row(
+    item: SidebarMenuItem,
+    selected: bool,
+    cx: &mut Context<ChatScreen>,
+) -> gpui::Stateful<Div> {
+    div()
+        .id(item.id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_1p5()
+        .text_sm()
+        .text_color(gpui::rgb(theme::text_primary()))
+        .when(selected, |row| row.bg(gpui::rgb(theme::bg_input())))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                .cursor_pointer()
+        })
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            cx.stop_propagation();
+            (item.on_click)(this, cx);
+        }))
+        .child(icon(item.icon, px(14.), theme::text_secondary()))
+        .child(item.label)
 }
 
 /// Field-wise equality for session rows; the summary type has no
