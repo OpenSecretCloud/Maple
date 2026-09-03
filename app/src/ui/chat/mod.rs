@@ -280,6 +280,10 @@ pub struct ChatScreen {
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
     recent_roots: Vec<String>,
+    /// Insertion point of an in-flight project header drag: the root the
+    /// pointer is over and whether the project lands before it. Cleared
+    /// when the drag ends without a drop.
+    sidebar_drop_target: Option<(Arc<str>, bool)>,
     root_menu_open: bool,
     /// Row the project menu highlights for the keyboard, if any.
     root_menu_selected: Option<usize>,
@@ -764,6 +768,7 @@ impl ChatScreen {
             uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
             recent_roots: Vec::new(),
+            sidebar_drop_target: None,
             root_menu_open: false,
             root_menu_selected: None,
             root_menu_focus: None,

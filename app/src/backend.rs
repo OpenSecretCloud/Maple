@@ -1014,6 +1014,20 @@ impl AgentBackend {
             .await
     }
 
+    /// Persist an explicit order for the account's project roots. Every
+    /// known root must be present; the runtime rejects a stale request.
+    pub async fn save_project_root_order(
+        &self,
+        user_id: &str,
+        paths: Vec<String>,
+    ) -> Result<Vec<RecentProjectRoot>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_project_root_order(paths)
+            .await
+    }
+
     /// Register and select the default root for new tasks.
     ///
     /// The account runtime is deliberately not restarted: existing tasks own

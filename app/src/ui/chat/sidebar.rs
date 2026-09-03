@@ -18,6 +18,34 @@ use crate::ui::icons::{icon, spinner_with_id, wordmark};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 
+/// Payload of a project header drag: the root being moved.
+#[derive(Clone)]
+pub(super) struct ProjectDrag {
+    pub(super) root: Arc<str>,
+}
+
+/// The pill that follows the pointer while a project header is dragged.
+struct ProjectDragGhost {
+    name: SharedString,
+}
+
+impl Render for ProjectDragGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .border_1()
+            .border_color(gpui::rgb(theme::border()))
+            .shadow_md()
+            .text_sm()
+            .text_color(gpui::rgb(theme::text_primary()))
+            .line_clamp(1)
+            .child(self.name.clone())
+    }
+}
+
 /// Strings and element ids one sidebar task row shows, built when the
 /// session list changes instead of on every frame.
 pub(super) struct SidebarRow {
@@ -136,9 +164,11 @@ impl ChatScreen {
     }
 
     /// Rebuild the sidebar sections: pinned roots first (when known),
-    /// then the current root, then the other recent roots, then any root
-    /// that only appears on a stored task. Called when sessions, roots,
-    /// names, pins, or the filter change, not per render.
+    /// then the saved roots in their persisted order, then roots that only
+    /// appear on a stored task. The current project never floats: the
+    /// order is static and changes only when the user drags a project.
+    /// Called when sessions, roots, names, pins, or the filter change, not
+    /// per render.
     pub(super) fn rebuild_project_groups(&mut self) {
         self.sync_sidebar_rows();
         let filter = self.sidebar_filter.as_str();
@@ -188,13 +218,18 @@ impl ChatScreen {
         };
         let mut seen: HashSet<&str> = HashSet::new();
         let mut roots: Vec<&str> = Vec::new();
+        // Roots that only live tasks know about sort alphabetically so
+        // their position never moves when sessions change.
+        live_roots.sort();
+        // The current project stays visible even when nothing else lists
+        // it, without floating to the top.
         let ordered = self
             .pinned_roots
             .iter()
             .filter(|root| known(root))
-            .chain(self.project_root.iter())
             .chain(self.recent_roots.iter())
-            .chain(live_roots.iter());
+            .chain(live_roots.iter())
+            .chain(self.project_root.iter());
         for root in ordered {
             if seen.insert(root.as_str()) {
                 roots.push(root.as_str());
@@ -315,6 +350,154 @@ impl ChatScreen {
         cx.notify();
         let pinned = self.pinned_roots.clone();
         self.persist_settings(move |settings| settings.pinned_roots = pinned, cx);
+    }
+
+    /// Track the drop indicator while a project header drag moves over the
+    /// header at `index`: pin the insertion point to this row while the
+    /// pointer is over it, and clear it when the pointer leaves, so at
+    /// most one row shows the line.
+    fn update_sidebar_drop_target(
+        &mut self,
+        index: usize,
+        event: &gpui::DragMoveEvent<ProjectDrag>,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.bounds.contains(&event.event.position) {
+            let mine = self.project_groups.get(index).is_some_and(|group| {
+                self.sidebar_drop_target
+                    .as_ref()
+                    .is_some_and(|(root, _)| root == &group.root)
+            });
+            if mine {
+                self.sidebar_drop_target = None;
+                cx.notify();
+            }
+            return;
+        }
+        let dragged = event.drag(cx).root.clone();
+        let top_half = event.event.position.y < event.bounds.center().y;
+        let target = self
+            .project_drop_index(&dragged, index, top_half)
+            .and_then(|insertion| self.project_drop_target(&dragged, insertion));
+        if self.sidebar_drop_target != target {
+            self.sidebar_drop_target = target;
+            cx.notify();
+        }
+    }
+
+    /// Insertion point that hovering the group at `over` represents for a
+    /// drag of `dragged`: the index the project takes once it is removed
+    /// from the groups, clamped to its own section so pinned and unpinned
+    /// projects never cross. `None` when the drop would not move anything.
+    pub(super) fn project_drop_index(
+        &self,
+        dragged: &str,
+        over: usize,
+        top_half: bool,
+    ) -> Option<usize> {
+        let groups = &self.project_groups;
+        if groups.get(over).is_none_or(|group| &*group.root == dragged) {
+            return None;
+        }
+        let source = groups.iter().position(|group| &*group.root == dragged)?;
+        let over_remaining = over - usize::from(over > source);
+        let pinned = |root: &str| self.pinned_roots.iter().any(|pinned| pinned == root);
+        let pinned_remaining = groups
+            .iter()
+            .filter(|group| pinned(&group.root) && &*group.root != dragged)
+            .count();
+        let insertion = over_remaining + usize::from(!top_half);
+        let insertion = if pinned(dragged) {
+            insertion.min(pinned_remaining)
+        } else {
+            insertion.max(pinned_remaining)
+        };
+        Some(insertion)
+    }
+
+    /// The row that shows the insertion line for `insertion`, the index a
+    /// drag of `dragged` produces once the project is removed from the
+    /// groups: the line sits above the row at the index, or below the
+    /// last one when the project goes to the very end.
+    fn project_drop_target(&self, dragged: &str, insertion: usize) -> Option<(Arc<str>, bool)> {
+        let remaining: Vec<Arc<str>> = self
+            .project_groups
+            .iter()
+            .map(|group| Arc::clone(&group.root))
+            .filter(|root| root.as_ref() != dragged)
+            .collect();
+        if remaining.is_empty() {
+            return None;
+        }
+        let index = insertion.min(remaining.len() - 1);
+        if insertion < remaining.len() {
+            Some((Arc::clone(&remaining[index]), true))
+        } else {
+            Some((Arc::clone(&remaining[remaining.len() - 1]), false))
+        }
+    }
+
+    /// Re-derive the insertion index from a stored drop target so a list
+    /// change mid-drag cannot desync the move.
+    pub(super) fn project_insertion_index(
+        &self,
+        dragged: &str,
+        target_root: &str,
+        before: bool,
+    ) -> Option<usize> {
+        let over = self
+            .project_groups
+            .iter()
+            .position(|group| &*group.root == target_root)?;
+        self.project_drop_index(dragged, over, before)
+    }
+
+    /// Move a dragged project to the insertion point the pointer last
+    /// hovered and persist the new order. The optimistic rebuild makes
+    /// the drop feel instant; a failed save restores the previous order.
+    pub(super) fn reorder_project(&mut self, dragged: &ProjectDrag, cx: &mut Context<Self>) {
+        let Some((target_root, before)) = self.sidebar_drop_target.take() else {
+            return;
+        };
+        let Some(insertion) = self.project_insertion_index(&dragged.root, &target_root, before)
+        else {
+            return;
+        };
+        let roots: Vec<String> = self
+            .project_groups
+            .iter()
+            .map(|group| group.root.to_string())
+            .collect();
+        let Some(source) = roots.iter().position(|root| root == dragged.root.as_ref()) else {
+            return;
+        };
+        let mut order = roots.clone();
+        order.remove(source);
+        order.insert(insertion.min(order.len()), dragged.root.to_string());
+        if order == roots {
+            return;
+        }
+        let previous = self.recent_roots.clone();
+        self.recent_roots = order.clone();
+        self.rebuild_project_groups();
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.save_project_root_order(&user_id, order).await },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok(roots) => this.apply_recent_roots(roots),
+                    Err(error) => {
+                        this.recent_roots = previous;
+                        this.rebuild_project_groups();
+                        this.notice = Some(error.into());
+                    }
+                }
+                cx.notify();
+            },
+        );
     }
 
     /// Apply `update` to the settings file off the UI thread.
@@ -1276,9 +1459,41 @@ impl ChatScreen {
         let renaming = rename_field.is_some();
         let menu = (self.project_menu.as_deref() == Some(&**root))
             .then(|| self.render_project_menu(root, cx));
+        // While searching, the visible projects are a subset of the saved
+        // ones, so a drag cannot produce a complete order to persist.
+        let draggable = self.sidebar_filter.is_empty();
+        let (drop_above, drop_below) = match self.sidebar_drop_target.as_ref() {
+            Some((target, false)) if target == root => (true, false),
+            Some((target, true)) if target == root => (false, true),
+            _ => (false, false),
+        };
         div()
             .relative()
             .when(is_collapsed, |column| column.mb_2())
+            .when(drop_above, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_2()
+                        .right_2()
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(gpui::rgb(theme::accent())),
+                )
+            })
+            .when(drop_below, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_2()
+                        .right_2()
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(gpui::rgb(theme::accent())),
+                )
+            })
             .child(
                 div()
                     .id(group.element_id.clone())
@@ -1302,6 +1517,29 @@ impl ChatScreen {
                         cx.listener(move |this, _event, _window, cx| {
                             this.toggle_root_collapsed(&root, cx);
                         })
+                    })
+                    .when(draggable, |row| {
+                        row.on_drag(
+                            ProjectDrag {
+                                root: Arc::clone(root),
+                            },
+                            {
+                                let name = group.name.clone();
+                                move |_drag, _position, _window, cx| {
+                                    cx.new(|_| ProjectDragGhost { name: name.clone() })
+                                }
+                            },
+                        )
+                        .on_drag_move::<ProjectDrag>(cx.listener(
+                            move |this, event: &gpui::DragMoveEvent<ProjectDrag>, _window, cx| {
+                                this.update_sidebar_drop_target(index, event, cx);
+                            },
+                        ))
+                        .on_drop::<ProjectDrag>(cx.listener(
+                            |this, drag: &ProjectDrag, _window, cx| {
+                                this.reorder_project(drag, cx);
+                            },
+                        ))
                     })
                     .child(icon(
                         if is_collapsed {

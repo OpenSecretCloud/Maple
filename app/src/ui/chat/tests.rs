@@ -6,6 +6,7 @@ mod state_tests {
     use crate::ui::chat::cache::{MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
+    use crate::ui::chat::sidebar::ProjectDrag;
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
@@ -1640,6 +1641,138 @@ mod state_tests {
             .map(|group| &*group.root)
             .collect();
         assert_eq!(roots, vec!["/c", "/a", "/b"]);
+    }
+
+    /// Opening a task in another project must not move that project up:
+    /// the folder order is static and changes only through an explicit
+    /// drag.
+    #[test]
+    fn test_current_project_does_not_float_to_the_top() {
+        let _guard = SETTINGS_LOCK.lock();
+        let mut this = ChatScreen::new_inner(
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            ),
+            "user".to_string(),
+        );
+        this.recent_roots = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+        this.project_root = Some("/b".to_string());
+        this.rebuild_project_groups();
+        let roots: Vec<&str> = this
+            .project_groups
+            .iter()
+            .map(|group| &*group.root)
+            .collect();
+        assert_eq!(roots, vec!["/a", "/b", "/c"]);
+
+        // A root nothing lists stays visible without floating.
+        this.recent_roots = vec!["/a".to_string(), "/b".to_string()];
+        this.project_root = Some("/d".to_string());
+        this.rebuild_project_groups();
+        let roots: Vec<&str> = this
+            .project_groups
+            .iter()
+            .map(|group| &*group.root)
+            .collect();
+        assert_eq!(roots, vec!["/a", "/b", "/d"]);
+    }
+
+    /// Roots that only a stored task knows about append alphabetically, so
+    /// their position never moves when sessions change.
+    #[test]
+    fn test_live_roots_sort_alphabetically() {
+        let _guard = SETTINGS_LOCK.lock();
+        let mut this = ChatScreen::new_inner(
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            ),
+            "user".to_string(),
+        );
+        this.recent_roots = vec!["/z".to_string()];
+        this.sessions = vec![
+            summary_at("s1", "One", "/m"),
+            summary_at("s2", "Two", "/a"),
+            summary_at("s3", "Three", "/m"),
+        ];
+        this.rebuild_project_groups();
+        let roots: Vec<&str> = this
+            .project_groups
+            .iter()
+            .map(|group| &*group.root)
+            .collect();
+        assert_eq!(roots, vec!["/z", "/a", "/m"]);
+    }
+
+    /// A drop index never crosses the pinned section: dragging a pinned
+    /// project over unpinned rows lands at the pinned section's end, and
+    /// the other way around.
+    #[test]
+    fn test_project_drop_index_clamps_to_sections() {
+        let _guard = SETTINGS_LOCK.lock();
+        let mut this = ChatScreen::new_inner(
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            ),
+            "user".to_string(),
+        );
+        // Groups: [/p1, /p2, /u1, /u2].
+        this.recent_roots = vec!["/p1".to_string(), "/u1".to_string(), "/u2".to_string()];
+        this.pinned_roots = vec!["/p1".to_string(), "/p2".to_string()];
+        this.sessions = vec![summary_at("s1", "A", "/p2")];
+        this.rebuild_project_groups();
+        let roots: Vec<&str> = this
+            .project_groups
+            .iter()
+            .map(|group| &*group.root)
+            .collect();
+        assert_eq!(roots, vec!["/p1", "/p2", "/u1", "/u2"]);
+
+        // Hovering the dragged row itself is not a drop.
+        assert_eq!(this.project_drop_index("/p1", 0, true), None);
+        assert_eq!(this.project_drop_index("/u1", 2, false), None);
+
+        // Dragging the pinned /p1 below the last unpinned row clamps to
+        // the end of the pinned section: insert at index 1 (after /p2).
+        assert_eq!(this.project_drop_index("/p1", 3, false), Some(1));
+        // Dragging unpinned /u1 above the pinned rows clamps to the start
+        // of the unpinned section: insert at index 2 (after both /p).
+        assert_eq!(this.project_drop_index("/u1", 0, true), Some(2));
+        // Same-section drops keep their exact position.
+        assert_eq!(this.project_drop_index("/p1", 1, true), Some(0));
+        assert_eq!(this.project_drop_index("/u2", 2, true), Some(2));
+        // Re-deriving from a stored target agrees.
+        assert_eq!(this.project_insertion_index("/p1", "/u2", false), Some(1));
+    }
+
+    /// A drop moves the project and rewrites the persisted root order.
+    #[gpui::test]
+    fn test_reorder_project_moves_the_root(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.recent_roots = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+            this.rebuild_project_groups();
+            this.sidebar_drop_target = Some(("/c".into(), true));
+            this.reorder_project(&ProjectDrag { root: "/a".into() }, cx);
+            let roots: Vec<&str> = this
+                .project_groups
+                .iter()
+                .map(|group| &*group.root)
+                .collect();
+            assert_eq!(roots, vec!["/b", "/a", "/c"]);
+            assert_eq!(this.recent_roots, vec!["/b", "/a", "/c"]);
+
+            // The new position survives a rebuild.
+            this.rebuild_project_groups();
+            let roots: Vec<&str> = this
+                .project_groups
+                .iter()
+                .map(|group| &*group.root)
+                .collect();
+            assert_eq!(roots, vec!["/b", "/a", "/c"]);
+        });
     }
 
     #[gpui::test]
