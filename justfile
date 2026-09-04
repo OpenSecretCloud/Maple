@@ -4,6 +4,12 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 export CARGO_TERM_COLOR := "always"
 
+# Share Cargo intermediate artifacts across maple-gpui worktrees. Final
+# binaries stay in this checkout's target/. Skip in CI, when disabled, or
+# when CARGO_BUILD_BUILD_DIR is already set. rustc host+version keep
+# incompatible toolchains in separate caches.
+export CARGO_BUILD_BUILD_DIR := `if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then printf "%s" "$CARGO_BUILD_BUILD_DIR"; elif [ -n "${CI:-}" ] || [ "${MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" = "1" ]; then printf target; elif command -v rustc >/dev/null 2>&1; then printf "%s/.cache/cargo-build/maple-gpui/%s/rust-%s" "$HOME" "$(rustc -vV | awk '/^host:/{print $2}')" "$(rustc --version | awk '{print $2}')"; else printf target; fi`
+
 headless := "--no-default-features --features acp,proxy"
 
 # List the recipes.
@@ -74,7 +80,10 @@ dist: release
     cp target/release/maple-gpui "dist/${name}"
     (cd dist && shasum -a 256 "${name}" | tee "${name}.sha256")
 
-# Remove build output.
-clean:
-    cargo clean
+# Remove this checkout's target/ without wiping the shared Cargo cache.
+clean-local:
+    CARGO_BUILD_BUILD_DIR=target cargo clean
+
+# Remove this checkout's target/ and dist/. Keeps the shared Cargo cache.
+clean: clean-local
     rm -rf dist
