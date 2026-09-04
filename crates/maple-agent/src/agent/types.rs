@@ -117,6 +117,156 @@ pub struct AgentMcpServer {
     pub transport: AgentMcpTransport,
 }
 
+/// A Maple-curated integration that can be discovered on this device.
+///
+/// Integration discovery is intentionally separate from MCP configuration:
+/// an integration may be installed without being enabled, and device-local
+/// launch details must not leak into the account's roaming configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegration {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub availability: AgentIntegrationAvailability,
+    /// The backend selected for newly-created tasks. This is `None` until the
+    /// integration has been set up or enabled at least once.
+    pub backend: Option<AgentIntegrationBackend>,
+    /// Version of the implementation built into Maple, when one exists.
+    pub version: Option<String>,
+    /// Version of a separately-installed compatible application, when one was
+    /// discovered. Its presence never grants Maple permission or enables it.
+    pub standalone_version: Option<String>,
+    /// Host-process permissions needed by the built-in implementation.
+    pub permissions: Option<AgentIntegrationPermissions>,
+    /// Whether a setup action would still do something. It is false once the
+    /// only thing left is something Maple cannot perform, such as restarting
+    /// the desktop session, so the interface does not offer a button that
+    /// repeats work the user already did.
+    pub setup_available: bool,
+    pub enabled_for_new_tasks: bool,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIntegrationBackend {
+    Embedded,
+    External,
+}
+
+/// One host-process permission that a built-in integration needs.
+///
+/// The set of requirements is platform-shaped: macOS needs two TCC grants that
+/// can be read before use, while portal-based desktops grant capability per
+/// session at first use and therefore require none up front. Callers must not
+/// re-derive that per-platform knowledge; ask [`AgentIntegrationPermissions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIntegrationPermissionKind {
+    Accessibility,
+    ScreenRecording,
+    /// A compositor helper the desktop cannot work without. GNOME advertises
+    /// none of the Wayland protocols that expose window geometry or screen
+    /// capture to an ordinary client, so both go through a Shell extension.
+    DesktopHelper,
+}
+
+impl AgentIntegrationPermissionKind {
+    /// The name the operating system itself uses for this permission.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Accessibility => "Accessibility",
+            Self::ScreenRecording => "Screen Recording",
+            Self::DesktopHelper => "GNOME helper extension",
+        }
+    }
+
+    /// What the user has to do while an operating-system settings window is
+    /// open, or `None` when the remedy is not an external window.
+    ///
+    /// A requirement whose state changes as the user works through it, such as
+    /// a compositor helper that is installed and then needs a session restart,
+    /// deliberately has no answer here. Its remedy is written once, on the
+    /// integration itself, so a second copy cannot describe the wrong step.
+    pub fn guidance(self) -> Option<&'static str> {
+        match self {
+            Self::Accessibility | Self::ScreenRecording => Some(
+                "Grant Maple this access in System Settings, then fully quit and reopen Maple.",
+            ),
+            Self::DesktopHelper => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegrationPermission {
+    pub kind: AgentIntegrationPermissionKind,
+    pub granted: bool,
+}
+
+/// Every host-process permission a built-in integration needs, with its
+/// current grant state.
+///
+/// An empty requirement list means the platform needs no pre-flight grant, so
+/// [`AgentIntegrationPermissions::ready`] is true. That is the single place
+/// where "may this integration run" is decided.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegrationPermissions {
+    pub required: Vec<AgentIntegrationPermission>,
+}
+
+impl AgentIntegrationPermissions {
+    /// No pre-flight grant is required on this platform.
+    pub fn none_required() -> Self {
+        Self::default()
+    }
+
+    pub fn with(mut self, kind: AgentIntegrationPermissionKind, granted: bool) -> Self {
+        self.required
+            .push(AgentIntegrationPermission { kind, granted });
+        self
+    }
+
+    /// Whether every required permission has been granted.
+    pub fn ready(&self) -> bool {
+        self.required.iter().all(|permission| permission.granted)
+    }
+
+    /// The first permission still to be granted, in the order the platform
+    /// wants the user to grant them. Both the setup prompt and the settings
+    /// pane that Maple opens are derived from this one answer.
+    pub fn first_missing(&self) -> Option<AgentIntegrationPermissionKind> {
+        self.required
+            .iter()
+            .find(|permission| !permission.granted)
+            .map(|permission| permission.kind)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIntegrationAvailability {
+    NotDetected,
+    SetupRequired,
+    Available,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetIntegrationEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetupIntegrationRequest {
+    pub id: String,
+}
+
 /// An MCP server supplied by an external Agent surface for one leased session.
 ///
 /// Unlike [`AgentMcpServer`], this type is never serialized into Maple's user

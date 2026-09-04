@@ -1,13 +1,15 @@
 //! Stable-ID application Vim navigation for Settings.
 //!
 //! The settings screen owns this projection because its visible controls are
-//! dynamic (shortcut filtering, MCP servers, and editors). Selecting a row is
-//! side-effect free; Enter delegates to the same existing method as its
-//! pointer control.
+//! dynamic (shortcut filtering, integrations, MCP servers, and editors).
+//! Selecting a row is side-effect free; Enter delegates to the same existing
+//! method as its pointer control.
 
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
-use super::{Section, SettingsScreen};
+use super::{
+    Section, SettingsScreen, integration_can_setup, integration_can_toggle, integration_is_visible,
+};
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +39,8 @@ pub(super) enum SettingsTarget {
     PromptEditor,
     PromptSave,
     PromptReset,
+    Integration(String),
+    IntegrationSetup(String),
     McpAdd,
     McpServer(String),
 }
@@ -135,7 +139,23 @@ impl SettingsScreen {
                 SettingsTarget::PromptSave,
                 SettingsTarget::PromptReset,
             ],
-            Section::Mcp => std::iter::once(SettingsTarget::McpAdd)
+            Section::Integrations => self
+                .integrations
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|integration| integration_is_visible(integration))
+                .flat_map(|integration| {
+                    [
+                        integration_can_setup(integration)
+                            .then(|| SettingsTarget::IntegrationSetup(integration.id.clone())),
+                        integration_can_toggle(integration)
+                            .then(|| SettingsTarget::Integration(integration.id.clone())),
+                    ]
+                    .into_iter()
+                    .flatten()
+                })
+                .chain(std::iter::once(SettingsTarget::McpAdd))
                 .chain(
                     self.mcp_servers
                         .as_deref()
@@ -315,6 +335,8 @@ impl SettingsScreen {
             }
             Some(SettingsTarget::PromptSave) => self.save_prompt(cx),
             Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
+            Some(SettingsTarget::Integration(id)) => self.toggle_integration(&id, cx),
+            Some(SettingsTarget::IntegrationSetup(id)) => self.setup_integration(&id, cx),
             Some(SettingsTarget::McpAdd) => self.open_mcp_editor(None, cx),
             Some(SettingsTarget::McpServer(name)) => self.edit_mcp_server(&name, cx),
             None => {}
@@ -595,6 +617,91 @@ mod tests {
     fn counted_settings_navigation_clamps() {
         assert_eq!(stepped_index(Some(2), 6, 1, 20), 5);
         assert_eq!(stepped_index(Some(4), 6, -1, 20), 0);
+    }
+
+    #[gpui::test]
+    fn integration_targets_follow_the_visible_control_order(cx: &mut TestAppContext) {
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                .expect("backend"),
+        );
+        let settings = cx.new(|cx| {
+            SettingsScreen::new(
+                backend,
+                "user".to_string(),
+                crate::settings::AppSettings::default(),
+                crate::shortcuts::ShortcutSnapshot {
+                    generation: 1,
+                    rows: Vec::new(),
+                    last_error: None,
+                    compatibility_warning: None,
+                },
+                Section::Integrations,
+                cx,
+            )
+        });
+
+        settings.update(cx, |this, _cx| {
+            this.integrations = Some(vec![
+                maple_agent::agent::AgentIntegration {
+                    id: "cua-driver".to_string(),
+                    name: "Cua".to_string(),
+                    description: String::new(),
+                    availability: maple_agent::agent::AgentIntegrationAvailability::Available,
+                    version: None,
+                    enabled_for_new_tasks: true,
+                    detail: None,
+                    permissions: Some(
+                        maple_agent::agent::AgentIntegrationPermissions::default()
+                            .with(
+                                maple_agent::agent::AgentIntegrationPermissionKind::Accessibility,
+                                false,
+                            )
+                            .with(
+                                maple_agent::agent::AgentIntegrationPermissionKind::ScreenRecording,
+                                false,
+                            ),
+                    ),
+                    setup_available: true,
+                    standalone_version: Some("0.23.2".to_string()),
+                    backend: Some(maple_agent::agent::AgentIntegrationBackend::External),
+                },
+                // An undetected integration contributes no focus target.
+                maple_agent::agent::AgentIntegration {
+                    id: "not-ready".to_string(),
+                    name: "Not ready".to_string(),
+                    description: String::new(),
+                    availability: maple_agent::agent::AgentIntegrationAvailability::NotDetected,
+                    version: None,
+                    enabled_for_new_tasks: false,
+                    detail: None,
+                    permissions: None,
+                    setup_available: false,
+                    standalone_version: None,
+                    backend: None,
+                },
+            ]);
+            this.mcp_servers = Some(vec![maple_agent::agent::AgentMcpServer {
+                name: "custom".to_string(),
+                description: String::new(),
+                enabled: true,
+                timeout_seconds: 300,
+                transport: maple_agent::agent::AgentMcpTransport::Stdio {
+                    command: "custom-mcp".to_string(),
+                    environment: Vec::new(),
+                },
+            }]);
+
+            assert_eq!(
+                this.visible_application_targets(),
+                vec![
+                    SettingsTarget::IntegrationSetup("cua-driver".to_string()),
+                    SettingsTarget::Integration("cua-driver".to_string()),
+                    SettingsTarget::McpAdd,
+                    SettingsTarget::McpServer("custom".to_string()),
+                ]
+            );
+        });
     }
 
     #[gpui::test]

@@ -1,7 +1,8 @@
 //! Settings screen: left navigation with content panes, following Maple's
-//! settings layout. Sections: General (defaults), System prompt, MCP
-//! servers, Keyboard Shortcuts, Usage, About.
+//! settings layout. Sections: General (defaults), System prompt,
+//! Integrations, Keyboard Shortcuts, Usage, About.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
@@ -9,7 +10,10 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 
-use maple_agent::agent::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport};
+use maple_agent::agent::{
+    AgentIntegration, AgentIntegrationAvailability, AgentIntegrationBackend,
+    AgentIntegrationPermissions, AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport,
+};
 
 use gpui::Focusable as _;
 
@@ -39,7 +43,7 @@ pub enum Section {
     General,
     Shortcuts,
     Prompt,
-    Mcp,
+    Integrations,
     Usage,
     About,
 }
@@ -50,7 +54,7 @@ impl Section {
             Self::General => "General",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
-            Self::Mcp => "MCP servers",
+            Self::Integrations => "Integrations",
             Self::Usage => "Usage",
             Self::About => "About",
         }
@@ -60,7 +64,7 @@ impl Section {
         Self::General,
         Self::Shortcuts,
         Self::Prompt,
-        Self::Mcp,
+        Self::Integrations,
         Self::Usage,
         Self::About,
     ];
@@ -84,6 +88,10 @@ pub struct SettingsScreen {
     mcp_editor: Option<McpEditor>,
     mcp_notice: Option<String>,
     mcp_saving: bool,
+    /// Device-local integrations discovered by the runtime; None until loaded.
+    integrations: Option<Vec<AgentIntegration>>,
+    integration_notice: Option<String>,
+    integration_saving: HashSet<String>,
     /// Editor for the opening system prompt text (harness instructions).
     prompt_editor: Entity<TextInput>,
     prompt_notice: Option<String>,
@@ -165,7 +173,7 @@ struct McpEditor {
     headers: Entity<TextInput>,
 }
 
-/// Emitted with the section to open (composer "Manage servers" link).
+/// Emitted with the section to open (composer "Manage integrations" link).
 pub struct OpenSettingsSection(pub Section);
 
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
@@ -229,6 +237,9 @@ impl SettingsScreen {
             mcp_editor: None,
             mcp_notice: None,
             mcp_saving: false,
+            integrations: None,
+            integration_notice: None,
+            integration_saving: HashSet::new(),
             prompt_editor,
             prompt_notice: None,
             shortcut_snapshot,
@@ -249,6 +260,7 @@ impl SettingsScreen {
         this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
+        this.load_integrations(cx);
         this
     }
 
@@ -290,6 +302,157 @@ impl SettingsScreen {
                     Ok(servers) => this.mcp_servers = Some(servers),
                     Err(message) => this.mcp_notice = Some(message),
                 }
+                if this.settings.application_vim_enabled {
+                    this.reconcile_application_vim_target();
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn load_integrations(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.list_integrations(&user_id).await },
+            cx,
+            |this, result, cx| {
+                match result {
+                    Ok(integrations) => {
+                        this.integrations = Some(integrations);
+                        this.integration_notice = None;
+                    }
+                    Err(message) => {
+                        this.integrations = Some(Vec::new());
+                        this.integration_notice = Some(message);
+                    }
+                }
+                if this.settings.application_vim_enabled {
+                    this.reconcile_application_vim_target();
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn toggle_integration(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.integration_saving.contains(id) {
+            return;
+        }
+        let Some((currently_enabled, can_enable)) = self
+            .integrations
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|integration| integration.id == id)
+            .map(|integration| {
+                (
+                    integration.enabled_for_new_tasks,
+                    integration_can_enable(integration),
+                )
+            })
+        else {
+            return;
+        };
+        if !currently_enabled && !can_enable {
+            self.integration_notice =
+                Some("This integration is not ready to enable on this device.".to_string());
+            cx.notify();
+            return;
+        }
+
+        let enabled = !currently_enabled;
+        let id = id.to_string();
+        self.integration_saving.insert(id.clone());
+        self.integration_notice = None;
+        cx.notify();
+
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let request_id = id.clone();
+        self.call(
+            async move {
+                backend
+                    .set_integration_enabled(&user_id, &request_id, enabled)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.integration_saving.remove(&id);
+                match result {
+                    Ok(integrations) => this.integrations = Some(integrations),
+                    Err(message) => this.integration_notice = Some(message),
+                }
+                if this.settings.application_vim_enabled {
+                    this.reconcile_application_vim_target();
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn setup_integration(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.integration_saving.contains(id) {
+            return;
+        }
+        let can_setup = self
+            .integrations
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|integration| integration.id == id)
+            .is_some_and(integration_can_setup);
+        if !can_setup {
+            self.integration_notice =
+                Some("This integration does not need setup on this device.".to_string());
+            cx.notify();
+            return;
+        }
+
+        let id = id.to_string();
+        let permissions = match self.backend.begin_integration_setup(&id) {
+            Ok(permissions) => permissions,
+            Err(message) => {
+                self.integration_notice = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        self.integration_notice = integration_setup_notice(&permissions);
+        self.integration_saving.insert(id.clone());
+        cx.notify();
+
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let request_id = id.clone();
+        self.call(
+            async move {
+                backend
+                    .setup_integration(&user_id, &request_id, permissions)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                this.integration_saving.remove(&id);
+                match result {
+                    Ok(integrations) => {
+                        // The notice above described the state before setup
+                        // ran. The refreshed card carries what is left to do,
+                        // so drop the stale one rather than leave it telling
+                        // the user to repeat what they just did.
+                        this.integration_notice = None;
+                        this.integrations = Some(integrations);
+                    }
+                    Err(message) => {
+                        this.integration_notice = Some(match this.integration_notice.take() {
+                            Some(notice) => format!("{notice} {message}"),
+                            None => message,
+                        });
+                    }
+                }
+                if this.settings.application_vim_enabled {
+                    this.reconcile_application_vim_target();
+                }
                 cx.notify();
             },
         );
@@ -315,6 +478,9 @@ impl SettingsScreen {
                         this.mcp_editor = None;
                     }
                     Err(message) => this.mcp_notice = Some(message),
+                }
+                if this.settings.application_vim_enabled {
+                    this.reconcile_application_vim_target();
                 }
                 cx.notify();
             },
@@ -1083,8 +1249,8 @@ impl SettingsScreen {
             Section::Prompt => {
                 pane = pane.child(self.render_prompt_pane(cx));
             }
-            Section::Mcp => {
-                pane = pane.child(self.render_mcp_pane(cx));
+            Section::Integrations => {
+                pane = pane.child(self.render_integrations_pane(cx));
             }
             Section::Usage => {
                 pane = pane.child(
@@ -1586,14 +1752,69 @@ impl SettingsScreen {
         pane
     }
 
-    fn render_mcp_pane(&self, cx: &mut Context<Self>) -> Div {
-        let mut pane = div().flex().flex_col().gap_4();
+    fn render_integrations_pane(&self, cx: &mut Context<Self>) -> Div {
+        let mut pane = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(section_title("Integrations"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child("Connect Maple with apps and tools. Enabled integrations are available to new tasks."),
+            );
+
+        if let Some(notice) = &self.integration_notice {
+            pane = pane.child(widgets::notice(
+                "integration-notice-close",
+                gpui::SharedString::from(notice.clone()),
+                cx.listener(|this, _event, _window, cx| {
+                    this.integration_notice = None;
+                    cx.notify();
+                }),
+            ));
+        }
+
+        match &self.integrations {
+            None => {
+                pane = pane.child(
+                    div()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_faint()))
+                        .child("Detecting integrations…"),
+                );
+            }
+            Some(integrations) => {
+                let mut visible = false;
+                for integration in integrations
+                    .iter()
+                    .filter(|integration| integration_is_visible(integration))
+                {
+                    visible = true;
+                    pane = pane.child(self.render_integration_card(integration, cx));
+                }
+                if !visible {
+                    pane = pane.child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_faint()))
+                            .child("No supported integrations detected on this device."),
+                    );
+                }
+            }
+        }
+
         pane = pane.child(
             div()
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(section_title("MCP servers"))
+                .mt_2()
+                .pt_5()
+                .border_t_1()
+                .border_color(gpui::rgb(theme::border_subtle()))
+                .child(subsection_title("Custom MCP servers"))
                 .child(
                     self.application_target(
                         || SettingsTarget::McpAdd,
@@ -1610,10 +1831,7 @@ impl SettingsScreen {
             div()
                 .text_sm()
                 .text_color(gpui::rgb(theme::text_muted()))
-                .child(
-                    "Servers configured here are available to every task. \
-                     Turn them on or off per task from the composer.",
-                ),
+                .child("Connect additional tools over MCP."),
         );
         if let Some(notice) = &self.mcp_notice {
             pane = pane.child(widgets::banner(theme::status_warning()).child(notice.clone()));
@@ -1626,7 +1844,7 @@ impl SettingsScreen {
                 pane = pane.child(
                     div()
                         .text_color(gpui::rgb(theme::text_faint()))
-                        .child("Loading MCP servers…"),
+                        .child("Loading custom MCP servers…"),
                 );
             }
             Some(servers) if servers.is_empty() => {
@@ -1634,7 +1852,7 @@ impl SettingsScreen {
                     div()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_faint()))
-                        .child("No MCP servers configured."),
+                        .child("No custom MCP servers configured."),
                 );
             }
             Some(servers) => {
@@ -1719,6 +1937,159 @@ impl SettingsScreen {
             }
         }
         pane
+    }
+
+    fn render_integration_card(
+        &self,
+        integration: &AgentIntegration,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (availability, availability_color) = integration_availability(integration);
+        let can_toggle = integration_can_toggle(integration);
+        let can_setup = integration_can_setup(integration);
+        let saving = self.integration_saving.contains(&integration.id);
+        let enabled = integration.enabled_for_new_tasks;
+        let cua_driver = is_cua_driver(&integration.id);
+        let display_name = integration.name.clone();
+        let description = integration.description.clone();
+        let mut details = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(display_name),
+                    )
+                    .child(integration_status_badge(availability, availability_color)),
+            )
+            .when(!description.is_empty(), |col| {
+                col.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .child(description),
+                )
+            });
+        if cua_driver {
+            let mut metadata = div().flex().flex_wrap().items_center().gap_2();
+            metadata = metadata.child(integration_metadata_badge(cua_backend_label(integration)));
+            for permission in integration
+                .permissions
+                .iter()
+                .flat_map(|permissions| permissions.required.iter())
+            {
+                metadata = metadata.child(cua_permission_badge(
+                    permission.kind.label(),
+                    permission.granted,
+                ));
+            }
+            details = details.child(metadata);
+        } else if let Some(version) = integration.version.as_deref() {
+            details = details.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(format!("Version {version}")),
+            );
+        }
+        if let Some(detail) = &integration.detail {
+            details = details.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    // A detail can carry the address of something the user has
+                    // to fetch, which needs more room than a short status line.
+                    .line_clamp(3)
+                    .child(detail.clone()),
+            );
+        }
+
+        let mut actions = div().flex().flex_none().flex_col().items_end().gap_2();
+        if can_setup {
+            let id = integration.id.clone();
+            actions = actions.child(
+                self.application_target(
+                    || SettingsTarget::IntegrationSetup(integration.id.clone()),
+                    pill_button(
+                        format!("integration-setup-{}", integration.id),
+                        if matches!(
+                            &integration.backend,
+                            Some(AgentIntegrationBackend::External)
+                        ) || integration.standalone_version.is_some()
+                        {
+                            "Set up built-in"
+                        } else {
+                            "Set up"
+                        },
+                        false,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.setup_integration(&id, cx);
+                        }),
+                    )
+                    .when(saving, |button| button.opacity(0.5)),
+                ),
+            );
+        }
+        if can_toggle {
+            let id = integration.id.clone();
+            actions = actions.child(
+                self.application_target(
+                    || SettingsTarget::Integration(integration.id.clone()),
+                    pill_button(
+                        format!("integration-toggle-{}", integration.id),
+                        if enabled { "Enabled" } else { "Enable" },
+                        enabled,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.toggle_integration(&id, cx);
+                        }),
+                    )
+                    .when(saving, |button| button.opacity(0.5)),
+                ),
+            );
+        }
+
+        let card = widgets::card_row()
+            .flex()
+            .items_start()
+            .gap_3()
+            .child(
+                div()
+                    .size(px(44.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::RADIUS_SM)
+                    .bg(gpui::rgb(theme::bg_sidebar_card()))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border_subtle()))
+                    .child(if cua_driver {
+                        gpui::svg()
+                            .path(if theme::is_light() {
+                                "icons/cua-mark-black.svg"
+                            } else {
+                                "icons/cua-mark-white.svg"
+                            })
+                            .size(px(28.))
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .into_any_element()
+                    } else {
+                        icon("plug", widgets::ROW_ICON, theme::text_secondary()).into_any_element()
+                    }),
+            )
+            .child(details)
+            .when(can_setup || can_toggle, |card| card.child(actions));
+        card.into_any_element()
     }
 
     fn render_mcp_editor(&self, editor: &McpEditor, cx: &mut Context<Self>) -> Div {
@@ -1937,6 +2308,159 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
         )
 }
 
+fn integration_is_visible(integration: &AgentIntegration) -> bool {
+    if is_cua_driver(&integration.id)
+        && matches!(
+            integration.availability,
+            AgentIntegrationAvailability::NotDetected
+        )
+    {
+        return false;
+    }
+    integration.enabled_for_new_tasks
+        || !matches!(
+            &integration.availability,
+            AgentIntegrationAvailability::NotDetected
+        )
+}
+
+fn integration_can_enable(integration: &AgentIntegration) -> bool {
+    if !is_cua_driver(&integration.id) {
+        return matches!(
+            &integration.availability,
+            AgentIntegrationAvailability::Available
+        );
+    }
+
+    match integration.backend {
+        Some(AgentIntegrationBackend::Embedded) => {
+            cua_permissions_ready(integration.permissions.as_ref())
+        }
+        Some(AgentIntegrationBackend::External) => integration.standalone_version.is_some(),
+        None => {
+            cua_permissions_ready(integration.permissions.as_ref())
+                || integration.standalone_version.is_some()
+        }
+    }
+}
+
+fn integration_can_toggle(integration: &AgentIntegration) -> bool {
+    integration.enabled_for_new_tasks || integration_can_enable(integration)
+}
+
+fn integration_can_setup(integration: &AgentIntegration) -> bool {
+    is_cua_driver(&integration.id)
+        && integration.setup_available
+        && !matches!(
+            integration.availability,
+            AgentIntegrationAvailability::NotDetected
+        )
+        && (!cua_permissions_ready(integration.permissions.as_ref())
+            || matches!(
+                &integration.backend,
+                Some(AgentIntegrationBackend::External)
+            ))
+}
+
+fn integration_availability(integration: &AgentIntegration) -> (&'static str, u32) {
+    if integration.enabled_for_new_tasks
+        && is_cua_driver(&integration.id)
+        && matches!(
+            &integration.backend,
+            Some(AgentIntegrationBackend::Embedded)
+        )
+        && !cua_permissions_ready(integration.permissions.as_ref())
+    {
+        return ("Needs setup", theme::status_warning());
+    }
+
+    match &integration.availability {
+        AgentIntegrationAvailability::NotDetected => ("Not detected", theme::text_muted()),
+        AgentIntegrationAvailability::Available if is_cua_driver(&integration.id) => {
+            if cua_permissions_ready(integration.permissions.as_ref())
+                || integration.standalone_version.is_some()
+            {
+                ("Ready", theme::status_success())
+            } else {
+                ("Available", theme::status_success())
+            }
+        }
+        AgentIntegrationAvailability::Available => ("Detected", theme::status_success()),
+        AgentIntegrationAvailability::SetupRequired => ("Setup required", theme::status_warning()),
+    }
+}
+
+fn cua_permissions_ready(permissions: Option<&AgentIntegrationPermissions>) -> bool {
+    permissions.is_some_and(AgentIntegrationPermissions::ready)
+}
+
+fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option<String> {
+    let missing = permissions.first_missing()?;
+    let guidance = missing.guidance()?;
+    Some(format!("{}: {guidance}", missing.label()))
+}
+
+fn cua_backend_label(integration: &AgentIntegration) -> &'static str {
+    match integration.backend {
+        Some(AgentIntegrationBackend::External) => "Standalone driver",
+        None if integration.standalone_version.is_some()
+            && !cua_permissions_ready(integration.permissions.as_ref()) =>
+        {
+            "Standalone detected"
+        }
+        Some(AgentIntegrationBackend::Embedded) | None => "Built into Maple",
+    }
+}
+
+fn integration_status_badge(label: &'static str, color: u32) -> Div {
+    div()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .bg(gpui::rgb(theme::bg_sidebar_pill()))
+        .text_xs()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::rgb(color))
+        .child(label)
+}
+
+fn integration_metadata_badge(label: &'static str) -> Div {
+    div()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_muted()))
+        .child(label)
+}
+
+fn cua_permission_badge(label: &'static str, granted: bool) -> Div {
+    let (status, color) = if granted {
+        ("on", theme::status_success())
+    } else {
+        ("needed", theme::status_warning())
+    };
+    div()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_muted()))
+        .child(div().size(px(5.)).rounded_full().bg(gpui::rgb(color)))
+        .child(format!("{label} {status}"))
+}
+
+fn is_cua_driver(id: &str) -> bool {
+    id == "cua-driver"
+}
+
 /// Small on/off pill used in list rows.
 fn pill_button(
     id: String,
@@ -2015,6 +2539,14 @@ fn section_title(label: &str) -> Div {
         .text_size(gpui::px(26.))
         .line_height(gpui::px(32.))
         .text_color(gpui::rgb(theme::display_text()))
+        .child(label.to_string())
+}
+
+fn subsection_title(label: &str) -> Div {
+    div()
+        .text_sm()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(gpui::rgb(theme::text_primary()))
         .child(label.to_string())
 }
 
@@ -2333,6 +2865,42 @@ mod tests {
         }
     }
 
+    fn integration(
+        availability: AgentIntegrationAvailability,
+        enabled_for_new_tasks: bool,
+    ) -> AgentIntegration {
+        let ready = matches!(availability, AgentIntegrationAvailability::Available);
+
+        AgentIntegration {
+            id: "cua-driver".to_string(),
+            name: "Computer use (CUA)".to_string(),
+            description: "Computer use".to_string(),
+            availability,
+            version: Some("1.0.0".to_string()),
+            enabled_for_new_tasks,
+            detail: None,
+            permissions: Some(macos_permissions(ready, ready)),
+            setup_available: true,
+            standalone_version: None,
+            backend: Some(AgentIntegrationBackend::Embedded),
+        }
+    }
+
+    /// The two macOS grants, in the order the platform asks for them.
+    fn macos_permissions(
+        accessibility: bool,
+        screen_recording: bool,
+    ) -> AgentIntegrationPermissions {
+        use maple_agent::agent::AgentIntegrationPermissionKind;
+
+        AgentIntegrationPermissions::default()
+            .with(AgentIntegrationPermissionKind::Accessibility, accessibility)
+            .with(
+                AgentIntegrationPermissionKind::ScreenRecording,
+                screen_recording,
+            )
+    }
+
     #[test]
     fn next_cyclic_wraps_and_restarts_on_unknown() {
         let items = ["a", "b", "c"];
@@ -2371,6 +2939,115 @@ mod tests {
         // Renaming onto a sibling.
         assert!(name_collides(&servers, Some("alpha"), "beta"));
         assert!(!name_collides(&servers, Some("alpha"), "gamma"));
+    }
+
+    #[test]
+    fn integration_cards_only_offer_valid_explicit_actions() {
+        let available = integration(AgentIntegrationAvailability::Available, false);
+        assert!(integration_is_visible(&available));
+        assert!(integration_can_enable(&available));
+        assert!(integration_can_toggle(&available));
+        assert!(!integration_can_setup(&available));
+
+        let setup_required = integration(AgentIntegrationAvailability::SetupRequired, false);
+        assert!(integration_is_visible(&setup_required));
+        assert!(!integration_can_enable(&setup_required));
+        assert!(!integration_can_toggle(&setup_required));
+        assert!(integration_can_setup(&setup_required));
+
+        let missing = integration(AgentIntegrationAvailability::NotDetected, false);
+        assert!(!integration_is_visible(&missing));
+        assert!(!integration_can_toggle(&missing));
+
+        // A platform with no CUA backend reports the integration undetected,
+        // so the row stays hidden even if stale device-local state exists.
+        let enabled_but_missing = integration(AgentIntegrationAvailability::NotDetected, true);
+        assert!(!integration_is_visible(&enabled_but_missing));
+        assert!(integration_can_toggle(&enabled_but_missing));
+
+        // Other integrations retain the generic stale-default behavior.
+        let mut generic_missing = enabled_but_missing.clone();
+        generic_missing.id = "other".to_string();
+        assert!(integration_is_visible(&generic_missing));
+
+        let mut external = integration(AgentIntegrationAvailability::Available, true);
+        external.backend = Some(AgentIntegrationBackend::External);
+        external.permissions = Some(macos_permissions(false, false));
+        external.standalone_version = Some("0.23.2".to_string());
+        assert!(integration_can_toggle(&external));
+        assert!(integration_can_setup(&external));
+
+        // A separately installed driver must not make an embedded selection
+        // enableable after Maple's own grants have been revoked. The setup
+        // action is the only route back to a ready embedded backend.
+        let mut revoked_embedded = external.clone();
+        revoked_embedded.backend = Some(AgentIntegrationBackend::Embedded);
+        revoked_embedded.enabled_for_new_tasks = false;
+        assert!(!integration_can_enable(&revoked_embedded));
+        assert!(!integration_can_toggle(&revoked_embedded));
+        assert!(integration_can_setup(&revoked_embedded));
+    }
+
+    #[test]
+    fn built_in_cua_is_ready_only_after_both_maple_permissions() {
+        assert!(!cua_permissions_ready(None));
+        assert!(!cua_permissions_ready(Some(&macos_permissions(
+            true, false
+        ))));
+        assert!(!cua_permissions_ready(Some(&macos_permissions(
+            false, true
+        ))));
+        assert!(cua_permissions_ready(Some(&macos_permissions(true, true))));
+    }
+
+    #[test]
+    fn setup_is_not_offered_once_only_the_user_can_finish_it() {
+        // A desktop helper Maple has already written leaves one step Maple
+        // cannot take: restarting the session. Offering Set up again would
+        // repeat work the user just did and hide the step that matters.
+        let mut integration = integration(AgentIntegrationAvailability::SetupRequired, false);
+        integration.permissions = Some(AgentIntegrationPermissions::default().with(
+            maple_agent::agent::AgentIntegrationPermissionKind::DesktopHelper,
+            false,
+        ));
+        integration.setup_available = true;
+        assert!(integration_can_setup(&integration));
+
+        integration.setup_available = false;
+        assert!(!integration_can_setup(&integration));
+        // The card still reports the integration as unfinished either way.
+        assert!(!integration_can_enable(&integration));
+        assert!(integration_is_visible(&integration));
+    }
+
+    #[test]
+    fn a_platform_that_needs_no_grant_is_ready() {
+        // Portal-based desktops grant capability per session at first use, so
+        // an empty requirement list is a ready integration, not a blocked one.
+        let permissions = AgentIntegrationPermissions::none_required();
+        assert!(cua_permissions_ready(Some(&permissions)));
+        assert_eq!(integration_setup_notice(&permissions), None);
+    }
+
+    #[test]
+    fn the_setup_notice_names_the_requirement_and_its_remedy() {
+        let notice = integration_setup_notice(&macos_permissions(false, false))
+            .expect("a missing grant produces a notice");
+        assert!(notice.starts_with("Accessibility: "));
+        assert!(notice.contains("System Settings"));
+
+        let notice = integration_setup_notice(&macos_permissions(true, false))
+            .expect("a missing grant produces a notice");
+        assert!(notice.starts_with("Screen Recording: "));
+
+        // A compositor helper's remedy changes as the user works through it,
+        // so it is written once on the integration itself. A second copy here
+        // could only go stale and tell the user to redo a finished step.
+        let helper = AgentIntegrationPermissions::default().with(
+            maple_agent::agent::AgentIntegrationPermissionKind::DesktopHelper,
+            false,
+        );
+        assert_eq!(integration_setup_notice(&helper), None);
     }
 
     #[test]

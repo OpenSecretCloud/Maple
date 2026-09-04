@@ -93,8 +93,8 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 - Settings: General (default permission mode, web tools, appearance,
   tool call details, desktop notifications, tool call summaries, composer Vim,
   application Vim, and the speech voice and speed), Keyboard Shortcuts, System
-  prompt, MCP servers, Usage (plan meter from the billing API plus totals from
-  the Goose ledger), and About.
+  prompt, Integrations (detected built-ins and custom MCP servers), Usage (plan
+  meter from the billing API plus totals from the Goose ledger), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes, asks a question, or needs
@@ -102,6 +102,43 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 - Release check on launch: a banner links to a newer GitHub release.
   Nothing is downloaded or installed by the app.
 - Window size and maximized state persist between launches.
+
+### Integrations preview
+
+On macOS and Linux, Settings > Integrations can set up computer use inside
+Maple itself. The embedded CUA runtime uses the pinned Cua Driver Rust SDK; it
+does not need a separate daemon, executable, or MCP child process.
+
+On macOS, setup reports and requests Accessibility and Screen Recording for
+Maple's own app identity. Grants held by a separately installed CuaDriver app
+do not transfer to Maple. On Linux the desktop portal asks for consent the
+first time a task captures the screen or sends input. Under GNOME on Wayland
+the `winrects@cua` GNOME Shell extension that ships with the SDK is required,
+because Mutter exposes no window geometry or screen capture to an ordinary
+client; Settings reports it as an unmet requirement until it is installed and
+the session has been restarted once.
+
+CUA keeps its native screenshot defaults. Every model receives full
+accessibility text plus a bounded projection of exact structured grounding
+data such as window IDs and element tokens. Vision models retain the canonical
+image blocks; text-only models instead receive a CUA-specific description from
+Maple's existing Gemma image helper, with raw screenshot blocks removed before
+the primary-model request. Maple owns the task-scoped session lifecycle and
+prevents models from mixing standalone CLI or other MCP session identities into
+the embedded transport.
+
+Enabling an integration sets a device-local default for new tasks. Existing
+tasks keep their frozen integration choice and expose CUA as an independent
+per-task switch in the composer. A task that never chose a backend adopts the
+device default only when it can actually run it. A detected standalone
+CuaDriver, which Maple looks for on macOS only, remains a legacy-compatible
+backend until the user explicitly sets up the built-in one;
+Maple does not install or update it, start or stop its daemon, or alter another
+client's configuration. Custom STDIO and Streamable HTTP MCP servers remain
+account configuration that may roam between devices.
+
+The embedded design, migration rules, privacy boundary, and preview limits are
+documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 
 ### Composer Vim preview
 
@@ -179,6 +216,17 @@ cargo run -p maple-gpui              # desktop app, dev profile
 cargo build --release -p maple-gpui  # release binary in target/release
 ```
 
+On macOS, use `just debug-app` when testing features that depend on privacy
+permissions. It stages the debug binary in a stable, development-only `.app`
+identity, discovers and embeds any Swift compatibility libraries required by
+native dependencies, signs nested code before sealing the bundle, and prints
+the exact bundle path to launch. This requires a full Xcode toolchain but does
+not require a Developer ID or produce a release artifact. The default ad hoc
+identity changes when Maple is rebuilt, so macOS may require the development
+app's privacy grants again. Set `MAPLE_DEBUG_CODESIGN_IDENTITY` to the name or
+SHA-1 hash of an Apple Development identity in the local keychain when more
+stable grants across rebuilds are useful.
+
 ### Nix
 
 The flake provides a release package and a development shell with the latest
@@ -238,6 +286,7 @@ The `justfile` has recipes for the common tasks. Install
 
 ```sh
 just ci          # all the checks that CI runs
+just debug-app   # stable macOS debug app for privacy-permission testing
 just release     # release binary in target/release
 just dist        # release binary copied to dist/ with a SHA-256
 just run         # debug build with debug logs
@@ -327,10 +376,11 @@ The roots follow the platform, the same way the Tauri app's
 | Path | Content |
 | --- | --- |
 | `<config>/settings.json` | App settings. |
-| `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, MCP servers, project trust). May roam between machines. |
+| `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
 | `<config>/agent/accounts/<scope>/goose/config/` | Goose permission file for the account. |
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
+| `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults and validated launch details for integrations detected on this device. |
 | `<local data>/agent/accounts/<scope>/goose/data/sessions/sessions.db` | Goose session history and usage ledger (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |

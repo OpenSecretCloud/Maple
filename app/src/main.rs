@@ -128,6 +128,9 @@ pub(crate) fn startup_elapsed() -> u128 {
 }
 
 fn main() {
+    // SAFETY: this is the first statement of `main`. No other thread exists
+    // yet, so mutating the process environment here cannot race a reader.
+    unsafe { maple_agent::prepare_process_environment() };
     #[cfg(feature = "desktop")]
     let _ = PROCESS_START.set(std::time::Instant::now());
     let cli = Cli::parse();

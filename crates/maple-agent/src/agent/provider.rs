@@ -163,6 +163,55 @@ pub(crate) struct MapleProvider {
     test_retry_config: Option<RetryConfig>,
 }
 
+/// How many tool-produced images the newest turns may still carry as pixels.
+///
+/// A desktop task calls an observation tool on nearly every step, and each
+/// result holds a full screenshot. Goose keeps tool results verbatim because
+/// Maple disables its history rewrite, so without a bound every screenshot
+/// would be re-uploaded on every later turn.
+const MAX_RETAINED_TOOL_RESULT_IMAGES: usize = 3;
+
+/// Replace all but the newest tool-result images with a short text marker.
+///
+/// Only tool output is bounded. An image the user attached stays a real image
+/// for as long as the conversation does. The stored transcript is untouched,
+/// so the task history and the user-visible timeline keep every screenshot;
+/// this bounds only what one request carries.
+fn bound_tool_result_images(messages: &[Message]) -> Vec<Message> {
+    let mut retained = 0usize;
+    let mut bounded = messages.to_vec();
+    for message in bounded.iter_mut().rev() {
+        for content in message.content.iter_mut().rev() {
+            let MessageContent::ToolResponse(response) = content else {
+                continue;
+            };
+            let Ok(result) = response.tool_result.as_mut() else {
+                continue;
+            };
+            for block in result.content.iter_mut().rev() {
+                if !matches!(block, rmcp::model::ContentBlock::Image(_)) {
+                    continue;
+                }
+                if retained < MAX_RETAINED_TOOL_RESULT_IMAGES {
+                    retained += 1;
+                    continue;
+                }
+                *block = superseded_image_marker();
+            }
+        }
+    }
+    bounded
+}
+
+fn superseded_image_marker() -> rmcp::model::ContentBlock {
+    rmcp::model::ContentBlock::Text(
+        rmcp::model::TextContent::new(
+            "[Earlier screenshot omitted from this request. Take a new observation if the current screen matters.]",
+        )
+        .with_annotations(rmcp::model::Annotations::default().with_priority(0.0)),
+    )
+}
+
 impl MapleProvider {
     pub(crate) fn new<T>(transport: Arc<T>) -> Self
     where
@@ -188,10 +237,11 @@ impl MapleProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<Value, ProviderError> {
+        let messages = bound_tool_result_images(messages);
         create_request_with_options(
             model_config,
             system,
-            messages,
+            &messages,
             tools,
             &ImageFormat::OpenAi,
             true,
@@ -1344,6 +1394,125 @@ mod tests {
             request.body["messages"][1]["content"][1]["image_url"]["url"],
             "data:image/png;base64,aGVsbG8="
         );
+    }
+
+    fn screenshot_response(id: &str, sentinel: &str) -> Message {
+        Message::user().with_tool_response(
+            id,
+            Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text("window_id=7"),
+                rmcp::model::ContentBlock::image(sentinel, "image/png"),
+            ])),
+        )
+    }
+
+    #[test]
+    fn only_the_newest_tool_screenshots_stay_in_a_request() {
+        let history = (0..MAX_RETAINED_TOOL_RESULT_IMAGES + 2)
+            .map(|index| screenshot_response(&format!("call-{index}"), &format!("shot-{index}")))
+            .collect::<Vec<_>>();
+
+        let bounded = bound_tool_result_images(&history);
+        let body = serde_json::to_string(&bounded).expect("bounded history should serialize");
+
+        // The two oldest screenshots became markers; the newest three remain.
+        assert!(!body.contains("shot-0"));
+        assert!(!body.contains("shot-1"));
+        for index in 2..MAX_RETAINED_TOOL_RESULT_IMAGES + 2 {
+            assert!(body.contains(&format!("shot-{index}")));
+        }
+        assert!(body.contains("Earlier screenshot omitted"));
+    }
+
+    #[test]
+    fn bounding_tool_screenshots_keeps_user_attached_images() {
+        let attached = Message::user()
+            .with_text("look at this")
+            .with_image("user-attached-sentinel", "image/png");
+        let history = (0..MAX_RETAINED_TOOL_RESULT_IMAGES + 1)
+            .map(|index| screenshot_response(&format!("call-{index}"), &format!("shot-{index}")))
+            .chain(std::iter::once(attached))
+            .collect::<Vec<_>>();
+
+        let body = serde_json::to_string(&bound_tool_result_images(&history))
+            .expect("bounded history should serialize");
+
+        assert!(body.contains("user-attached-sentinel"));
+        assert!(!body.contains("shot-0"));
+    }
+
+    #[tokio::test]
+    async fn mediated_cua_tool_result_does_not_emit_an_image_message() {
+        let initial = Message::user().with_text("Inspect the Calculator window");
+        let tool_request = Message::assistant().with_tool_request(
+            "cua-call-1",
+            Ok(rmcp::model::CallToolRequestParams::new(
+                "cua-driver__get_window_state",
+            )),
+        );
+
+        // Positive control: Goose turns an MCP image result into a synthetic
+        // user image message. This is the exact path a text-only provider
+        // rejects if Maple's CUA adapter fails to mediate the screenshot.
+        let raw_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let raw_provider = MapleProvider::new(Arc::clone(&raw_transport));
+        let raw_response = Message::user().with_tool_response(
+            "cua-call-1",
+            Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text("window_id=7 size=900x600"),
+                rmcp::model::ContentBlock::image("cua-image-sentinel", "image/png"),
+            ])),
+        );
+        let raw_stream = raw_provider
+            .stream(
+                &ModelConfig::new("deepseek-v4-flash"),
+                "system",
+                &[initial.clone(), tool_request.clone(), raw_response],
+                &[],
+            )
+            .await
+            .expect("raw control request should serialize");
+        let _ = collect_stream(raw_stream)
+            .await
+            .expect("raw control response should parse");
+        let raw_body = serde_json::to_string(&raw_transport.requests.lock().unwrap()[0].body)
+            .expect("raw request should serialize");
+        assert!(raw_body.contains("image_url"));
+        assert!(raw_body.contains("cua-image-sentinel"));
+
+        let mediated_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let mediated_provider = MapleProvider::new(Arc::clone(&mediated_transport));
+        let mut mediated_result = rmcp::model::CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text("window_id=7 size=900x600"),
+            rmcp::model::ContentBlock::text(
+                "Computer-use vision helper description: Calculator shows 437.",
+            ),
+        ]);
+        mediated_result.structured_content = Some(serde_json::json!({
+            "window_id": 7,
+            "screenshot_width": 900,
+            "screenshot_height": 600
+        }));
+        let mediated_response =
+            Message::user().with_tool_response("cua-call-1", Ok(mediated_result));
+        let mediated_stream = mediated_provider
+            .stream(
+                &ModelConfig::new("deepseek-v4-flash"),
+                "system",
+                &[initial, tool_request, mediated_response],
+                &[],
+            )
+            .await
+            .expect("mediated request should serialize");
+        let _ = collect_stream(mediated_stream)
+            .await
+            .expect("mediated response should parse");
+        let mediated_body =
+            serde_json::to_string(&mediated_transport.requests.lock().unwrap()[0].body)
+                .expect("mediated request should serialize");
+        assert!(!mediated_body.contains("image_url"));
+        assert!(!mediated_body.contains("cua-image-sentinel"));
+        assert!(mediated_body.contains("Calculator shows 437"));
     }
 
     #[tokio::test]

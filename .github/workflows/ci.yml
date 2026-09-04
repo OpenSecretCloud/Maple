@@ -75,6 +75,9 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo build --workspace --all-targets --locked
+      - name: Package macOS debug app
+        if: runner.os == 'macOS'
+        run: ./scripts/macos-debug-app.sh
       - run: cargo test --workspace --locked
       - name: Test headless (no desktop feature)
         if: runner.os == 'Linux'
