@@ -11,6 +11,8 @@ use gpui::{
 
 use maple_agent::agent::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport};
 
+use gpui::Focusable as _;
+
 use crate::ui::icons::icon;
 use crate::ui::text_input::TextInput;
 
@@ -65,6 +67,9 @@ impl Section {
 }
 
 pub struct SettingsScreen {
+    /// The focus handle the window reported at the start of this render,
+    /// so input frames can show a focus ring.
+    focused_handle: Option<gpui::FocusHandle>,
     backend: Arc<AgentBackend>,
     user_id: String,
     settings: AppSettings,
@@ -212,6 +217,7 @@ impl SettingsScreen {
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
         let this = Self {
+            focused_handle: None,
             backend,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
@@ -780,8 +786,19 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
     settings.shortcut_overrides = shortcut_overrides;
 }
 
+impl SettingsScreen {
+    /// Whether `input` holds keyboard focus, per the handle captured at the
+    /// start of the current render.
+    fn input_focused(&self, input: &Entity<TextInput>, cx: &App) -> bool {
+        self.focused_handle
+            .as_ref()
+            .is_some_and(|focused| input.read(cx).focus_handle(cx) == *focused)
+    }
+}
+
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.focused_handle = window.focused(cx);
         if self.application_focus_pending {
             self.application_focus_pending = false;
             if self.settings.application_vim_enabled {
@@ -928,6 +945,7 @@ impl SettingsScreen {
             .id("settings-pane")
             .flex_1()
             .min_w_0()
+            .max_w(px(960.))
             .h_full()
             .flex()
             .flex_col()
@@ -955,11 +973,11 @@ impl SettingsScreen {
                     })
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::Web),
-                        setting_row(
+                        toggle_row(
                             "New tasks can use the web",
                             "Offers web_search and open_url to the model. Each task can \
                              switch web access on or off from its composer.",
-                            if self.settings.default_web_enabled { "On" } else { "Off" },
+                            self.settings.default_web_enabled,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_web_default(cx);
                             }),
@@ -978,10 +996,10 @@ impl SettingsScreen {
                     ))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::ToolDetails),
-                        setting_row(
+                        toggle_row(
                             "Show tool call details",
                             "Tool cards include their input and output payloads.",
-                            if self.settings.tool_details { "On" } else { "Off" },
+                            self.settings.tool_details,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_tool_details(cx);
                             }),
@@ -989,11 +1007,11 @@ impl SettingsScreen {
                     ))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::Notifications),
-                        setting_row(
+                        toggle_row(
                             "Desktop notifications",
                             "Notify when a task finishes or needs your input while \
                              the window is not focused.",
-                            if self.settings.desktop_notifications { "On" } else { "Off" },
+                            self.settings.desktop_notifications,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_desktop_notifications(cx);
                             }),
@@ -1001,11 +1019,11 @@ impl SettingsScreen {
                     ))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::ToolSummaries),
-                        setting_row(
+                        toggle_row(
                             "Summarize tool calls",
                             "Completed tool calls with long output get a one-line \
                              summary from the title model on their cards.",
-                            if self.settings.tool_summaries { "On" } else { "Off" },
+                            self.settings.tool_summaries,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_tool_summaries(cx);
                             }),
@@ -1014,10 +1032,10 @@ impl SettingsScreen {
                     .child(section_title("Editing"))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::ComposerVim),
-                        setting_row(
+                        toggle_row(
                             "Vim mode in composer",
                             "Use Normal, Insert, and Visual editing modes in the main chat composer. Other text fields stay unchanged.",
-                            if self.settings.composer_vim_enabled { "On" } else { "Off" },
+                            self.settings.composer_vim_enabled,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_composer_vim(cx);
                             }),
@@ -1025,10 +1043,10 @@ impl SettingsScreen {
                     ))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::ApplicationVim),
-                        setting_row(
+                        toggle_row(
                             "Vim navigation across the app",
                             "Navigate stable sidebar, transcript, dialog, and Settings targets. Ordinary text fields still edit normally.",
-                            if self.settings.application_vim_enabled { "On" } else { "Off" },
+                            self.settings.application_vim_enabled,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_application_vim(cx);
                             }),
@@ -1183,7 +1201,7 @@ impl SettingsScreen {
                         "Customize the shortcuts Maple already ships. This page does not add commands or change what an action can do.",
                     ),
             )
-            .child(widgets::input_frame().text_sm().child(self.shortcut_search.clone()))
+            .child(widgets::input_frame(self.input_focused(&self.shortcut_search, cx)).text_sm().child(self.shortcut_search.clone()))
             .child(
                 div()
                     .text_xs()
@@ -1422,10 +1440,9 @@ impl SettingsScreen {
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .child(format!(
-                                "{} · {} · {}",
+                                "{} · {}",
                                 row.category,
                                 shortcut_context_label(row.context.as_deref()),
-                                row.slot_id
                             )),
                     )
                     .when(!row.conflicts.is_empty(), |column| {
@@ -1717,7 +1734,11 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_secondary()))
                         .child(label),
                 )
-                .child(widgets::input_frame().text_sm().child(input))
+                .child(
+                    widgets::input_frame(self.input_focused(&input, cx))
+                        .text_sm()
+                        .child(input),
+                )
                 .when(!hint.is_empty(), |col| {
                     col.child(
                         div()
@@ -1740,7 +1761,11 @@ impl SettingsScreen {
                     theme::text_secondary()
                 }))
                 .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
-                .hover(|style| style.cursor_pointer())
+                .hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
                 .child(label)
         };
         div()
@@ -1936,7 +1961,8 @@ fn pill_button(
         } else {
             theme::text_secondary()
         }))
-        .hover(|style| style.cursor_pointer())
+        .hover(|style| style.opacity(0.85).cursor_pointer())
+        .active(|style| style.opacity(0.7))
         .on_click(handler)
         .child(label)
 }
@@ -2085,6 +2111,37 @@ fn portable_keystroke_token(keystroke: &gpui::Keystroke) -> String {
     parts.join("-")
 }
 
+/// Title and description column shared by every settings row.
+fn setting_copy(title: &str, description: &str) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(gpui::rgb(theme::text_primary()))
+                .child(title.to_string()),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(description.to_string()),
+        )
+}
+
+fn setting_row_id(title: &str) -> gpui::SharedString {
+    gpui::SharedString::from(format!(
+        "setting-{}",
+        title.to_lowercase().replace(' ', "-")
+    ))
+}
+
+/// A multi-value setting: the current value sits in a pebble pill that
+/// cycles to the next choice on click.
 fn setting_row(
     title: &str,
     description: &str,
@@ -2092,51 +2149,49 @@ fn setting_row(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
     widgets::card_row()
-        .id(gpui::SharedString::from(format!(
-            "setting-{}",
-            title.to_lowercase()
-        )))
+        .id(setting_row_id(title))
         .flex()
         .items_center()
         .justify_between()
         .gap_4()
+        .child(setting_copy(title, description))
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .child(title.to_string()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(description.to_string()),
-                ),
+            widgets::secondary_button(gpui::SharedString::from(format!(
+                "setting-value-{}",
+                title.to_lowercase().replace(' ', "-")
+            )))
+            .flex_none()
+            .py_1p5()
+            .gap_1()
+            .on_click(on_click)
+            .child(value.to_string())
+            .child(icon("chevron-down", px(12.), theme::text_muted())),
         )
-        .child(
-            div()
-                .id(gpui::SharedString::from(format!(
-                    "setting-value-{}",
-                    title.to_lowercase().replace(' ', "-")
-                )))
-                .px_4()
-                .py_2()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_input()))
-                .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .hover(|style| style.cursor_pointer())
-                .on_click(on_click)
-                .child(value.to_string()),
-        )
+}
+
+/// An on/off setting with a switch. The whole row is the click target.
+fn toggle_row(
+    title: &str,
+    description: &str,
+    on: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<Div> {
+    widgets::card_row()
+        .id(setting_row_id(title))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .hover(|style| style.cursor_pointer())
+        .on_click(on_click)
+        .child(setting_copy(title, description))
+        .child(widgets::switch(
+            gpui::SharedString::from(format!(
+                "setting-switch-{}",
+                title.to_lowercase().replace(' ', "-")
+            )),
+            on,
+        ))
 }
 
 fn info_row(label: &str, value: String) -> Div {

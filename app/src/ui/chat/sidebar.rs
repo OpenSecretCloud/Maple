@@ -15,8 +15,10 @@ use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary};
 use super::commands::ChatCommand;
 use super::{ChatScreen, MenuAction, RenameTarget, SIDEBAR_WIDTH, SessionActivity, section_label};
 use crate::ui::icons::{icon, spinner_with_id, wordmark};
+use crate::ui::motion;
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::widgets;
 
 /// Strings and element ids one sidebar task row shows, built when the
 /// session list changes instead of on every frame.
@@ -89,6 +91,8 @@ pub(super) enum SidebarEntry {
     SectionLabel(SidebarSection),
     Task(SidebarTaskEntry),
     ArchivedHeader,
+    /// Placeholder row when no task row is listed.
+    Empty(SidebarEmpty),
 }
 
 /// A task row: its index into `sessions` plus the section flags the
@@ -99,6 +103,15 @@ pub(super) struct SidebarTaskEntry {
     pub(super) pinned: bool,
     pub(super) settled: bool,
     pub(super) archived: bool,
+}
+
+/// Why the task list has no rows to show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SidebarEmpty {
+    /// No tasks exist yet.
+    NoTasks,
+    /// The search filter matched nothing.
+    NoMatches,
 }
 
 /// A named section of the inbox: pinned tasks, active work, and the
@@ -353,6 +366,16 @@ impl ChatScreen {
                     })
                 }));
             }
+        }
+        if !entries
+            .iter()
+            .any(|entry| matches!(entry, SidebarEntry::Task(_) | SidebarEntry::ArchivedHeader))
+        {
+            entries.push(SidebarEntry::Empty(if self.sidebar_filter.is_empty() {
+                SidebarEmpty::NoTasks
+            } else {
+                SidebarEmpty::NoMatches
+            }));
         }
         let old = std::mem::replace(&mut self.sidebar_entries, entries);
         if self.application_vim_enabled {
@@ -1026,7 +1049,7 @@ impl ChatScreen {
         for (index, item) in self.task_menu_items(task).into_iter().enumerate() {
             menu = menu.child(popup_menu_row(item, selected == Some(index), cx));
         }
-        gpui::deferred(menu)
+        gpui::deferred(motion::fade_in(menu, "sidebar-menu-reveal"))
     }
 
     /// Ask for a trust decision when the current project provides skills
@@ -1099,29 +1122,14 @@ impl ChatScreen {
         let name = self.root_name(&status.path);
         let saving = self.trust_saving;
         let button = |id: &'static str, label: &'static str, primary: bool| {
-            div()
-                .id(id)
-                .px_4()
-                .py_1p5()
-                .rounded_full()
-                .text_sm()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .when(primary, |button| {
-                    button
-                        .bg(gpui::rgb(theme::accent()))
-                        .text_color(gpui::rgb(theme::on_accent()))
-                })
-                .when(!primary, |button| {
-                    button
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                })
-                .when(saving, |button| button.opacity(0.6))
-                .when(!saving, |button| {
-                    button.hover(|style| style.cursor_pointer().opacity(0.9))
-                })
-                .child(label)
+            if primary {
+                widgets::primary_button(id)
+            } else {
+                widgets::secondary_button(id)
+            }
+            .py_1p5()
+            .when(saving, |button| button.opacity(0.6))
+            .child(label)
         };
         let keep_path = status.path.clone();
         let trust_path = status.path.clone();
@@ -1139,7 +1147,8 @@ impl ChatScreen {
                 div()
                     .w(px(460.))
                     .p_5()
-                    .rounded(theme::RADIUS_MD)
+                    .rounded(theme::RADIUS_XL)
+                    .shadow_lg()
                     .bg(gpui::rgb(theme::bg_elevated()))
                     .border_1()
                     .border_color(gpui::rgb(theme::border()))
@@ -1260,7 +1269,7 @@ impl ChatScreen {
         for (index, item) in self.project_menu_items(root).into_iter().enumerate() {
             menu = menu.child(popup_menu_row(item, selected == Some(index), cx));
         }
-        gpui::deferred(menu)
+        gpui::deferred(motion::fade_in(menu, "sidebar-menu-reveal"))
     }
 
     /// Modal that confirms a project removal.
@@ -1271,26 +1280,13 @@ impl ChatScreen {
     ) -> gpui::Stateful<Div> {
         let name = self.root_name(root);
         let button = |id: &'static str, label: &'static str, primary: bool| {
-            div()
-                .id(id)
-                .px_4()
-                .py_1p5()
-                .rounded_full()
-                .text_sm()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .when(primary, |button| {
-                    button
-                        .bg(gpui::rgb(theme::status_error()))
-                        .text_color(gpui::rgb(theme::on_accent()))
-                })
-                .when(!primary, |button| {
-                    button
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                })
-                .hover(|style| style.cursor_pointer().opacity(0.9))
-                .child(label)
+            if primary {
+                widgets::danger_button(id)
+            } else {
+                widgets::secondary_button(id)
+            }
+            .py_1p5()
+            .child(label)
         };
         div()
             .id("confirm-remove-backdrop")
@@ -1311,7 +1307,8 @@ impl ChatScreen {
                     .id("confirm-remove-card")
                     .w(px(420.))
                     .p_5()
-                    .rounded(theme::RADIUS_MD)
+                    .rounded(theme::RADIUS_XL)
+                    .shadow_lg()
                     .bg(gpui::rgb(theme::bg_elevated()))
                     .border_1()
                     .border_color(gpui::rgb(theme::border()))
@@ -1564,7 +1561,12 @@ impl ChatScreen {
                                 .items_center()
                                 .justify_center()
                                 .rounded(theme::RADIUS_SM)
-                                .hover(|style| style.cursor_pointer())
+                                .hover(|style| {
+                                    style
+                                        .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                                        .cursor_pointer()
+                                })
+                                .tooltip(widgets::tooltip("Clear search", Some("Esc")))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.clear_search(cx);
                                 }))
@@ -1604,6 +1606,8 @@ impl ChatScreen {
                         .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         .cursor_pointer()
                 })
+                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                .tooltip(widgets::tooltip("Start a new task", Some("⌘N")))
                 .on_click(cx.listener(|this, _event, window, cx| {
                     this.execute_command(ChatCommand::NewTask, window, cx);
                 }))
@@ -1656,6 +1660,42 @@ impl ChatScreen {
                         theme::text_secondary(),
                     ))
                     .child(section_label(section.label()))
+                    .into_any_element()
+            }
+            Some(SidebarEntry::Empty(reason)) => {
+                let (title, hint) = match reason {
+                    SidebarEmpty::NoTasks => ("No tasks yet", "Start one with ⌘N"),
+                    SidebarEmpty::NoMatches => ("Nothing matches", "Try another search"),
+                };
+                div()
+                    .mt_6()
+                    .px_4()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(icon("search", px(18.), theme::text_faint()))
+                    .child(div().mt_1().child(title))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(hint),
+                    )
+                    .when(reason == SidebarEmpty::NoMatches, |column| {
+                        column.child(
+                            widgets::ghost_button("clear-search-empty")
+                                .mt_2()
+                                .text_xs()
+                                .py_1()
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.clear_search(cx);
+                                }))
+                                .child("Clear search"),
+                        )
+                    })
                     .into_any_element()
             }
             Some(SidebarEntry::ArchivedHeader) => {
@@ -1873,6 +1913,7 @@ impl ChatScreen {
                         root.menu_id.clone(),
                         &root.row_group,
                         "ellipsis",
+                        "Project options",
                         {
                             let root = root.root.clone();
                             cx.listener(move |this, _event, _window, cx| {
@@ -1911,14 +1952,16 @@ impl ChatScreen {
                 .child(icon("folder-plus", px(14.), theme::text_secondary()))
                 .child("New project…"),
         );
-        gpui::deferred(
+        gpui::deferred(motion::fade_in(
             div()
                 .id("switcher-menu")
                 .absolute()
                 .top(px(30.))
                 .left_0()
                 .min_w(px(220.))
-                .py_1()
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .p_1()
                 .rounded(theme::RADIUS_SM)
                 .bg(gpui::rgb(theme::bg_elevated()))
                 .border_1()
@@ -1930,7 +1973,8 @@ impl ChatScreen {
                     this.set_switcher_menu_open(false, cx);
                 }))
                 .children(items),
-        )
+            "switcher-menu-reveal",
+        ))
     }
 
     /// One task row: title, its project, and hover actions. Archived rows
@@ -2021,7 +2065,13 @@ impl ChatScreen {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .hover(|style| style.cursor_pointer())
+                        .rounded(theme::RADIUS_SM)
+                        .hover(|style| {
+                            style
+                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                                .cursor_pointer()
+                        })
+                        .tooltip(widgets::tooltip("Unpin", None))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
                             this.toggle_task_pin(&pin_id, cx);
@@ -2056,6 +2106,7 @@ impl ChatScreen {
                         row.menu_id.clone(),
                         &row.group,
                         "ellipsis",
+                        "More",
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
                             this.toggle_task_menu(menu_id.as_ref(), cx);
@@ -2065,6 +2116,7 @@ impl ChatScreen {
                         row.rename_id.clone(),
                         &row.group,
                         "pencil",
+                        "Rename",
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
                             this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
@@ -2074,6 +2126,7 @@ impl ChatScreen {
                         row.archive_id.clone(),
                         &row.group,
                         if settled { "undo-2" } else { "check" },
+                        if settled { "Reopen" } else { "Settle" },
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
                             if settled {
@@ -2093,18 +2146,18 @@ impl ChatScreen {
         let gear = div()
             .id("open-settings")
             .flex_none()
-            .size_6()
+            .size_8()
             .flex()
             .items_center()
             .justify_center()
-            .rounded(theme::RADIUS_SM)
-            .size_9()
             .rounded_full()
             .hover(|style| {
                 style
                     .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .cursor_pointer()
             })
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+            .tooltip(widgets::tooltip("Settings", Some("⌘,")))
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.execute_command(ChatCommand::OpenSettings, window, cx);
             }))
@@ -2133,6 +2186,7 @@ pub(super) fn row_action(
     id: SharedString,
     group: &SharedString,
     icon_name: &'static str,
+    label: &'static str,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
     div()
@@ -2145,7 +2199,13 @@ pub(super) fn row_action(
         .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                .cursor_pointer()
+        })
+        .active(|style| style.bg(gpui::rgb(theme::border())))
+        .tooltip(widgets::tooltip(label, None))
         .on_click(on_click)
         .child(icon(icon_name, px(14.), theme::text_secondary()))
 }

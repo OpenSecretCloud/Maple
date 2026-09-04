@@ -888,7 +888,7 @@ impl ChatScreen {
             .map(|entry| match *entry {
                 SidebarEntry::NewTask => Some(SidebarTarget::NewTask),
                 SidebarEntry::ProjectsHeader => Some(SidebarTarget::Projects),
-                SidebarEntry::SectionLabel(_) => None,
+                SidebarEntry::SectionLabel(_) | SidebarEntry::Empty(_) => None,
                 SidebarEntry::Task(task) => self
                     .sessions
                     .get(task.session)

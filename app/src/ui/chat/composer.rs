@@ -16,8 +16,10 @@ use super::{
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
+use crate::ui::motion;
 use crate::ui::text_input::vim::VimMode;
 use crate::ui::theme;
+use crate::ui::widgets;
 
 impl ChatScreen {
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> Div {
@@ -56,6 +58,7 @@ impl ChatScreen {
                     self.project_label.clone(),
                     true,
                     self.root_menu_open,
+                    false,
                 )
                 .flex_none()
                 .on_click(cx.listener(|this, _event, window, cx| {
@@ -76,16 +79,34 @@ impl ChatScreen {
             .child(div().flex_1())
     }
 
-    fn menu_panel() -> Div {
+    /// Surface for the composer menus. A press outside closes every
+    /// composer menu, like the sidebar menus.
+    fn menu_panel(cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
+            .id("composer-menu-panel")
+            .occlude()
             .flex()
             .flex_col()
             .mt_1()
-            .py_1()
+            .p_1()
             .rounded(theme::RADIUS_MD)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()))
+            .shadow_md()
+            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                this.close_composer_menus(cx);
+            }))
+    }
+
+    /// Close every menu the chip row can open.
+    pub(super) fn close_composer_menus(&mut self, cx: &mut Context<Self>) {
+        if self.mode_menu_open || self.mcp_menu_open || self.models_menu_open {
+            self.mode_menu_open = false;
+            self.mcp_menu_open = false;
+            self.models_menu_open = false;
+            cx.notify();
+        }
     }
 
     /// Anchor point for the open composer menu: floating above the chip
@@ -95,7 +116,7 @@ impl ChatScreen {
     /// composer's border can never paint over it; the containing block is
     /// the wrapper with `px_4` and `pb_4`, hence the +16 offsets that keep
     /// the panel at the same spot it held as a composer child.
-    fn menu_overlay(menu: Div) -> Div {
+    fn menu_overlay(menu: gpui::Stateful<Div>) -> Div {
         div()
             .absolute()
             .bottom(px(64.))
@@ -103,7 +124,7 @@ impl ChatScreen {
             .w(px(480.))
             .max_w_full()
             .debug_selector(|| "composer-menu".to_string())
-            .child(menu)
+            .child(motion::rise_in(menu, "composer-menu-reveal"))
     }
 
     /// The project menu, opened from the header chip. Rendered as an
@@ -112,7 +133,7 @@ impl ChatScreen {
         if !self.root_menu_open {
             return None;
         }
-        let mut menu = Self::menu_panel().w(px(480.)).max_w_full();
+        let mut menu = Self::menu_panel(cx).w(px(480.)).max_w_full();
         {
             for (index, path) in self.recent_roots.iter().take(ROOT_MENU_RECENTS).enumerate() {
                 let is_current = self.project_root.as_deref() == Some(path.as_str());
@@ -184,8 +205,12 @@ impl ChatScreen {
                                     .rounded(theme::RADIUS_SM)
                                     .bg(gpui::rgb(theme::accent()))
                                     .text_sm()
-                                    .text_color(gpui::rgb(theme::text_primary()))
-                                    .hover(|style| style.cursor_pointer())
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(gpui::rgb(theme::on_accent()))
+                                    .hover(|style| {
+                                        style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer()
+                                    })
+                                    .active(|style| style.bg(gpui::rgb(theme::send_bottom())))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         if let Some(path) = this
                                             .root_input
@@ -225,7 +250,7 @@ impl ChatScreen {
     /// chip row, bottom-anchored so it grows upward over the transcript
     /// instead of pushing the layout around.
     pub(super) fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let mut menu = Self::menu_panel();
+        let mut menu = Self::menu_panel(cx);
         if self.mode_menu_open {
             for mode in [PermissionMode::Auto, PermissionMode::SmartApprove] {
                 let (label, note) = (mode.label(), mode.note());
@@ -386,21 +411,25 @@ impl ChatScreen {
             return Some(Self::menu_overlay(menu));
         }
         if self.models_menu_open {
+            let selected_model = self.selected_model.clone();
             menu = menu.children(self.models.iter().map(|model| {
-                div()
-                    .id(gpui::SharedString::from(format!("model-{model}")))
-                    .px_3()
+                let current = selected_model.as_deref() == Some(model.as_str());
+                widgets::menu_row(gpui::SharedString::from(format!("model-{model}")), true)
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .py_1()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
+                    .when(current, |row| row.font_weight(gpui::FontWeight::MEDIUM))
                     .on_click({
                         let model = model.clone();
                         cx.listener(move |this, _event, _window, cx| {
                             this.pick_model(model.clone(), cx);
                         })
                     })
-                    .child(model.clone())
+                    .child(div().flex_1().child(model.clone()))
+                    .when(current, |row| {
+                        row.child(icon("check", px(14.), theme::accent()))
+                    })
             }));
             return Some(Self::menu_overlay(menu));
         }
@@ -421,11 +450,12 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .mt_1()
-            .py_1()
+            .p_1()
             .rounded(theme::RADIUS_MD)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
-            .border_color(gpui::rgb(theme::border()));
+            .border_color(gpui::rgb(theme::border()))
+            .shadow_md();
         for (index, entry) in entries.iter().enumerate() {
             let is_selected = selected == Some(index);
             let name = entry.name.clone();
@@ -437,10 +467,16 @@ impl ChatScreen {
                     .items_baseline()
                     .gap_2()
                     .px_3()
+                    .py_1()
+                    .rounded(theme::RADIUS_SM)
                     .when(is_selected, |row| {
                         row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                     })
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                            .cursor_pointer()
+                    })
                     .on_click(move |_event, _window, cx: &mut gpui::App| {
                         chat.update(cx, |chat, cx| chat.complete_slash_command(&name, cx))
                             .ok();
@@ -462,7 +498,7 @@ impl ChatScreen {
                     ),
             );
         }
-        Some(palette)
+        Some(div().child(motion::rise_in(palette, "slash-palette-reveal")))
     }
 
     fn toggle_plan_collapsed(&mut self, cx: &mut Context<Self>) {
@@ -852,7 +888,6 @@ impl ChatScreen {
             .selected_model
             .clone()
             .unwrap_or_else(|| "Model".to_string());
-        let bypass = self.permission_mode == PermissionMode::Auto;
         div()
             .w_full()
             .flex()
@@ -864,13 +899,18 @@ impl ChatScreen {
             .bg(gpui::rgb(theme::bg_app()))
             .border_1()
             .border_color(gpui::rgb(theme::accent()))
-            .when(disabled, |container| container.opacity(0.5))
+            .when(disabled, |container| {
+                container.border_color(gpui::rgb(theme::border()))
+            })
             // Files dragged from the desktop land as image attachments.
             .can_drop(|dragged, _window, _cx| {
                 dragged.downcast_ref::<gpui::ExternalPaths>().is_some()
             })
             .drag_over::<gpui::ExternalPaths>(|style, _paths, _window, _cx| {
-                style.bg(gpui::rgb(theme::bg_elevated()))
+                style
+                    .bg(gpui::rgb(theme::accent_container()))
+                    .border_color(gpui::rgb(theme::accent_hover()))
+                    .border_dashed()
             })
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
@@ -958,6 +998,14 @@ impl ChatScreen {
                                     .bg(gpui::rgb(theme::accent_container()))
                                     .cursor_pointer()
                             })
+                            .tooltip(widgets::tooltip(
+                                if expanded {
+                                    "Shrink composer"
+                                } else {
+                                    "Expand composer"
+                                },
+                                None,
+                            ))
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.toggle_composer_expanded(cx);
                             }))
@@ -984,6 +1032,7 @@ impl ChatScreen {
                             model_label,
                             true,
                             self.models_menu_open,
+                            false,
                         )
                         .on_click(cx.listener(
                             |this, _event, _window, cx| {
@@ -999,9 +1048,10 @@ impl ChatScreen {
                         chip(
                             "permission-mode-toggle",
                             Some(self.permission_mode.icon()),
-                            if bypass { "Allow all" } else { "Read only" }.to_string(),
+                            self.permission_mode.label().to_string(),
                             true,
                             self.mode_menu_open,
+                            false,
                         )
                         .on_click(cx.listener(
                             |this, _event, _window, cx| {
@@ -1017,9 +1067,14 @@ impl ChatScreen {
                         chip(
                             "mcp-menu",
                             Some("puzzle"),
-                            mcp_enabled.to_string(),
+                            if mcp_enabled == 0 {
+                                "MCP".to_string()
+                            } else {
+                                format!("{mcp_enabled} MCP")
+                            },
                             false,
                             self.mcp_menu_open,
+                            false,
                         )
                         .on_click(cx.listener(
                             |this, _event, _window, cx| {
@@ -1039,6 +1094,7 @@ impl ChatScreen {
                             "web-toggle",
                             Some("globe"),
                             if self.web_enabled { "Web" } else { "Web off" }.to_string(),
+                            false,
                             false,
                             self.web_enabled,
                         )
@@ -1062,7 +1118,9 @@ impl ChatScreen {
                                     .bg(gpui::rgb(theme::accent_container()))
                                     .cursor_pointer()
                             })
+                            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_pill())))
                             .when(self.image_picking, |el| el.opacity(0.5))
+                            .tooltip(widgets::tooltip("Attach images", None))
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.pick_images(cx);
                             }))
@@ -1086,6 +1144,14 @@ impl ChatScreen {
                                         .cursor_pointer()
                                 })
                                 .when(transcribing, |el| el.opacity(0.5))
+                                .tooltip(widgets::tooltip(
+                                    if recording {
+                                        "Stop recording"
+                                    } else {
+                                        "Dictate"
+                                    },
+                                    None,
+                                ))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.toggle_recording(cx);
                                 }))
@@ -1099,6 +1165,19 @@ impl ChatScreen {
                         )
                     })
                     .children(vim_badge)
+                    .when(disabled, |row| {
+                        row.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .px_2()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child(spinner("runtime-boot", px(12.), theme::text_muted()))
+                                .child("Starting Maple…"),
+                        )
+                    })
                     .child(div().flex_1())
                     .child(
                         div()
@@ -1118,9 +1197,11 @@ impl ChatScreen {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(theme::RADIUS_LG)
+                                .rounded_full()
                                 .bg(gpui::rgb(theme::status_error()))
-                                .hover(|style| style.cursor_pointer())
+                                .hover(|style| style.opacity(0.85).cursor_pointer())
+                                .active(|style| style.opacity(0.7))
+                                .tooltip(widgets::tooltip("Stop the run", None))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.stop(cx);
                                 }))
@@ -1147,7 +1228,12 @@ impl ChatScreen {
                             ))
                             .when(!can_send, |el| el.opacity(0.4))
                             .when(can_send, |el| {
-                                el.hover(|style| style.cursor_pointer())
+                                el.hover(|style| style.opacity(0.9).cursor_pointer())
+                                    .active(|style| style.opacity(0.75))
+                                    .tooltip(widgets::tooltip(
+                                        if running { "Queue message" } else { "Send" },
+                                        Some("↵"),
+                                    ))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.send_inner(cx);
                                     }))
@@ -1214,14 +1300,20 @@ pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Ve
     .collect()
 }
 
+/// One control in the composer chip row. `active` means its menu is
+/// open; `highlight` means the feature it toggles is on, shown in the
+/// accent so the two states never look alike.
 fn chip(
     id: &'static str,
     leading: Option<&'static str>,
     label: impl Into<SharedString>,
     chevron: bool,
     active: bool,
+    highlight: bool,
 ) -> gpui::Stateful<Div> {
-    let color = if active {
+    let color = if highlight {
+        theme::accent()
+    } else if active {
         theme::text_primary()
     } else {
         theme::text_secondary()
@@ -1237,8 +1329,13 @@ fn chip(
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))
-        .when(active, |el| el.bg(gpui::rgb(theme::bg_elevated())))
-        .hover(|style| style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer())
+        .when(active, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_sidebar_pill()))
+                .cursor_pointer()
+        })
+        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
         .child(div().whitespace_nowrap().child(label.into()))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
