@@ -2399,7 +2399,10 @@ impl AgentRuntimeHandle {
         // A desktop that needs a compositor helper gets one here, before
         // detection runs, so the projection the caller receives already
         // reflects the install.
-        cua::install_desktop_helper().await?;
+        #[cfg(embedded_cua)]
+        {
+            cua::install_desktop_helper().await?;
+        }
         let detected = detect_integrations().await;
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
