@@ -3259,4 +3259,59 @@ mod state_tests {
             Some(0)
         );
     }
+
+    /// The open composer menu (model picker and friends) floats above the
+    /// composer box as an overlay. Regression test: an anchor inside the
+    /// composer puts the panel over the input row, so the text being typed
+    /// disappears under the menu.
+    #[gpui::test]
+    fn test_composer_menu_floats_above_the_composer(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.replace_timeline(vec![user_item("u1", "hello")]);
+            chat.models = vec!["voxtral-small-24b".to_string()];
+            chat.models_menu_open = true;
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        let menu = cx
+            .debug_bounds("composer-menu")
+            .expect("the models menu renders while models_menu_open is set");
+        let composer = cx
+            .debug_bounds("composer-box")
+            .expect("the composer box renders");
+        assert!(
+            menu.size.width > px(0.) && menu.size.height > px(0.),
+            "the menu overlay must lay out with real bounds, got {menu:?}"
+        );
+        assert!(
+            menu.bottom() <= composer.top(),
+            "the composer menu must sit fully above the composer box \
+             (menu {menu:?}, composer {composer:?})"
+        );
+    }
 }
