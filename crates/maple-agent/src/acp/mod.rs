@@ -860,6 +860,7 @@ impl AcpConnectionContext {
         (
             String,
             Vec<crate::agent::AgentImageUpload>,
+            bool,
             String,
             CancellationToken,
             tokio::sync::OwnedMutexGuard<()>,
@@ -893,29 +894,32 @@ impl AcpConnectionContext {
                     .data("ACP session is not available on this connection"),
             );
         }
-        // Image blocks are only accepted when the session's current model
-        // can actually see them; catalog gaps fail open inside the lookup.
-        if !images.is_empty() {
+        // The catalog decides how prompt images travel for this turn:
+        // embedded for vision models, through the read_image helper for
+        // everyone else. Unknown models fail closed to the helper, which
+        // still sees the image, so no prompt is ever rejected or silently
+        // dropped. Text-only prompts skip the catalog round-trip; they pass
+        // the same value desktop does for a turn without attachments.
+        let vision_capable = if images.is_empty() {
+            false
+        } else {
             let model = self
                 .sessions
                 .lock()
                 .await
                 .get(&session_id)
                 .map(|session| session.model.clone());
-            if let Some(model) = model
-                && matches!(
+            match model {
+                Some(model) => matches!(
                     self.agent
                         .model_supports_vision(&model)
                         .await
                         .map_err(internal_acp_error)?,
-                    Some(false)
-                )
-            {
-                return Err(agent_client_protocol::Error::invalid_params().data(format!(
-                    "The current model '{model}' does not support image input; switch to a vision-capable model or send text only"
-                )));
+                    Some(true)
+                ),
+                None => false,
             }
-        }
+        };
         let mut states = self.prompt_states.lock().await;
         if states.contains_key(&session_id) {
             return Err(agent_client_protocol::Error::invalid_request()
@@ -928,7 +932,14 @@ impl AcpConnectionContext {
                 cancellation: cancellation.clone(),
             },
         );
-        Ok((prompt, images, session_id, cancellation, operation_guard))
+        Ok((
+            prompt,
+            images,
+            vision_capable,
+            session_id,
+            cancellation,
+            operation_guard,
+        ))
     }
 
     async fn send_session_update(
@@ -1318,6 +1329,7 @@ impl AcpConnectionContext {
         session_id: String,
         prompt: String,
         images: Vec<crate::agent::AgentImageUpload>,
+        vision_capable: bool,
         prompt_lifetime: CancellationToken,
         operation_guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<PromptResponse, agent_client_protocol::Error> {
@@ -1421,7 +1433,7 @@ impl AcpConnectionContext {
                     model: Some(model.clone()),
                     context_limit: None,
                     mode: Some(session_mode.maple_mode().to_string()),
-                    vision_capable: !images.is_empty(),
+                    vision_capable,
                     steer: false,
                     queue_id: None,
                     attachments: images,
@@ -2155,6 +2167,17 @@ mod tests {
             id
         }
 
+        /// Send a notification frame: same transport, no id, no response.
+        async fn notification(&mut self, method: &str, params: serde_json::Value) {
+            let line = json!({"jsonrpc": "2.0", "method": method, "params": params});
+            self.write
+                .write_all(line.to_string().as_bytes())
+                .await
+                .unwrap();
+            self.write.write_all(b"\n").await.unwrap();
+            self.write.flush().await.unwrap();
+        }
+
         /// The response for `id`, skipping interleaved notifications.
         async fn response(&mut self, id: u64) -> serde_json::Value {
             loop {
@@ -2379,6 +2402,118 @@ mod tests {
             loaded["result"]["modes"]["currentModeId"], "interactive",
             "a persisted caller-mediated task loads as interactive: {loaded}"
         );
+        client.shutdown().await;
+        finish_acp_stdio_serve(serving).await;
+    }
+
+    /// The stdio contract for image prompts: an editor may attach an image
+    /// no matter what the catalog says about the session model. Vision models
+    /// get the image embedded, everyone else gets a read_image reference, and
+    /// an unreachable catalog (this runtime's model catalog answers over an
+    /// unreachable endpoint) fails closed to the helper instead of rejecting
+    /// the prompt. Regression shape: image prompts were either rejected
+    /// outright or had their attachments silently dropped by the launch path.
+    #[tokio::test]
+    async fn stdio_prompt_images_travel_through_the_read_image_helper() {
+        let agent = started_agent_runtime("acp-image-prompt").await;
+        let project_root = agent.project_root.to_string_lossy().into_owned();
+
+        let (mut client, serving) = spawn_acp_stdio_serve(agent.handle.clone()).await;
+        let id = client
+            .request(
+                "initialize",
+                json!({"protocolVersion": 2, "clientCapabilities": {}}),
+            )
+            .await;
+        client.response(id).await;
+        let id = client
+            .request(
+                "session/new",
+                json!({"cwd": project_root, "mcpServers": []}),
+            )
+            .await;
+        let new_session = client.response(id).await;
+        assert!(
+            new_session.get("error").is_none(),
+            "session/new failed: {}",
+            new_session["error"]
+        );
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("session/new must return a session id")
+            .to_string();
+
+        let id = client
+            .request(
+                "session/prompt",
+                json!({
+                    "sessionId": session_id,
+                    "prompt": [
+                        {"type": "text", "text": "What do you see?"},
+                        {"type": "image", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAELFTkSuQmCC", "mimeType": "image/png"},
+                    ],
+                }),
+            )
+            .await;
+        // The prompt is accepted and its user message persisted before the
+        // model turn, so wait for the persisted attachment instead of the
+        // reply: this runtime's model endpoint is unreachable and the turn
+        // is settled below by cancelling it.
+        let detail = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Ok(detail) = agent.handle.load_session(session_id.clone()).await
+                    && detail.timeline.iter().any(|item| {
+                        item.input
+                            .as_ref()
+                            .and_then(|input| input.get("imageAttachments"))
+                            .is_some()
+                    })
+                {
+                    return detail;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the persisted user message must reference its image attachment");
+        let item = detail
+            .timeline
+            .iter()
+            .find(|item| {
+                item.input
+                    .as_ref()
+                    .and_then(|input| input.get("imageAttachments"))
+                    .is_some()
+            })
+            .expect("the persisted user message must reference its image attachment");
+        assert_eq!(item.text.as_deref(), Some("What do you see?"));
+        let attachment = item
+            .input
+            .as_ref()
+            .and_then(|input| input.get("imageAttachments"))
+            .and_then(|attachments| attachments.as_array())
+            .and_then(|attachments| attachments.first())
+            .expect("one image attachment must be recorded");
+        assert_eq!(attachment["name"], "acp-image-1.png");
+        let source = attachment["source"]
+            .as_str()
+            .expect("attachment sources are strings");
+        assert!(
+            source.starts_with("maple-attachment://"),
+            "a model without catalog vision support must be routed through read_image: {source}"
+        );
+
+        client
+            .notification("session/cancel", json!({"sessionId": session_id}))
+            .await;
+        let prompt = client.response(id).await;
+        assert!(
+            prompt.get("error").is_none(),
+            "an image prompt must be accepted, catalog gaps included: {}",
+            prompt["error"]
+        );
+        assert_eq!(prompt["result"]["stopReason"], "cancelled");
+
         client.shutdown().await;
         finish_acp_stdio_serve(serving).await;
     }

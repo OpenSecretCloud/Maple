@@ -207,7 +207,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                     let context = Arc::clone(&context);
                     let cx = cx.clone();
                     |request: PromptRequest, responder: Responder<PromptResponse>| async move {
-                        let (prompt, images, session_id, prompt_lifetime, operation_guard) =
+                        let (prompt, images, vision_capable, session_id, prompt_lifetime, operation_guard) =
                             match context.begin_prompt(&request).await {
                             Ok(prepared) => prepared,
                             Err(error) => {
@@ -235,6 +235,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                                         session_id,
                                         prompt,
                                         images,
+                                        vision_capable,
                                         prompt_lifetime,
                                         operation_guard,
                                     )
