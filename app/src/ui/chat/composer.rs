@@ -88,17 +88,16 @@ impl ChatScreen {
             .border_color(gpui::rgb(theme::border()))
     }
 
-    /// Anchor point for the open composer menu: floating just above the
-    /// composer box, bottom-anchored so the panel grows upward over the
-    /// transcript instead of pushing the layout around. The composer box is
-    /// the containing block (see `render_composer`), so the menu tracks the
-    /// composer in the normal and empty layouts alike, and clears the whole
-    /// composer — input row included — whatever its current height.
+    /// Anchor point for the open composer menu: floating above the chip
+    /// row, bottom-anchored so the panel grows upward over the transcript
+    /// instead of pushing the layout around. The composer box is the
+    /// containing block (see `render_composer`), so the menu tracks the
+    /// composer in the normal and empty layouts alike. The overlay is the
+    /// composer's last child, so it paints on top of the rest of the box.
     fn menu_overlay(menu: Div) -> Div {
         div()
             .absolute()
-            .bottom(gpui::relative(1.))
-            .mb_2()
+            .bottom(px(48.))
             .left(px(8.))
             .w(px(480.))
             .max_w_full()
@@ -974,6 +973,7 @@ impl ChatScreen {
                     .px_2()
                     .pb_2()
                     .pt_1()
+                    .debug_selector(|| "composer-chips".to_string())
                     .child(
                         chip(
                             "model-picker",

@@ -3261,9 +3261,10 @@ mod state_tests {
     }
 
     /// The open composer menu (model picker and friends) floats above the
-    /// composer box as an overlay. Regression test: an anchor inside the
-    /// composer puts the panel over the input row, so the text being typed
-    /// disappears under the menu.
+    /// chip row as an overlay overlaying the composer contents. Regression
+    /// test: an anchor beyond the chip row would push the panel down into
+    /// the chips, and a menu that dropped out of the stack would hide
+    /// under them.
     #[gpui::test]
     fn test_composer_menu_floats_above_the_composer(cx: &mut TestAppContext) {
         struct ChatHost {
@@ -3301,17 +3302,17 @@ mod state_tests {
         let menu = cx
             .debug_bounds("composer-menu")
             .expect("the models menu renders while models_menu_open is set");
-        let composer = cx
-            .debug_bounds("composer-box")
-            .expect("the composer box renders");
+        let chips = cx
+            .debug_bounds("composer-chips")
+            .expect("the composer chip row renders");
         assert!(
             menu.size.width > px(0.) && menu.size.height > px(0.),
             "the menu overlay must lay out with real bounds, got {menu:?}"
         );
         assert!(
-            menu.bottom() <= composer.top(),
-            "the composer menu must sit fully above the composer box \
-             (menu {menu:?}, composer {composer:?})"
+            menu.bottom() <= chips.top(),
+            "the composer menu must sit above the chip row \
+             (menu {menu:?}, chips {chips:?})"
         );
     }
 }
