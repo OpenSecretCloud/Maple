@@ -32,7 +32,6 @@ use rmcp::model::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::sync::mpsc;
@@ -83,9 +82,8 @@ const RUNTIME_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// parsed, and indexed once instead of on every desktop run.
 static TOOL_CATALOG: tokio::sync::OnceCell<Arc<CuaToolCatalog>> =
     tokio::sync::OnceCell::const_new();
-/// Where Maple's own Goose permission file lives for the running account, and
-/// whether this process has already pinned the CUA tools inside it.
-static PERMISSION_CONFIG_DIR: StdMutex<Option<PathBuf>> = StdMutex::new(None);
+/// Whether this process has already pinned the CUA tools into the running
+/// agent's permission manager.
 static TOOL_PERMISSIONS_PINNED: AtomicBool = AtomicBool::new(false);
 
 static DRIVER: OnceLock<Arc<CuaDriver>> = OnceLock::new();
@@ -277,16 +275,12 @@ fn macos_permissions(status: cua_driver_sdk::MacOsPermissionStatus) -> AgentInte
         )
 }
 
-/// Record where the Maple-owned Goose permission file lives and forget that
-/// this process pinned the CUA tools inside it.
+/// Forget that this process pinned the CUA tools into the previous runtime.
 ///
 /// The runtime rewrites that file whole when it starts, which drops any tool
 /// entry Maple added. Calling this from the same place keeps the pinned set
-/// and the file that holds it from drifting apart.
-pub(super) fn reset_pinned_tool_permissions(config_dir: PathBuf) {
-    *PERMISSION_CONFIG_DIR
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(config_dir);
+/// and the live manager that enforces it from drifting apart.
+pub(super) fn reset_pinned_tool_permissions() {
     TOOL_PERMISSIONS_PINNED.store(false, Ordering::Release);
 }
 
@@ -298,32 +292,36 @@ pub(super) fn reset_pinned_tool_permissions(config_dir: PathBuf) {
 /// application. Goose consults this file before annotations and before any
 /// SmartApprove heuristic, so the rule holds even if that heuristic changes,
 /// and the SDK's canonical annotations reach the model unaltered.
-async fn pin_tool_permissions(known_tools: &HashSet<String>) -> Result<(), String> {
+async fn pin_tool_permissions(
+    permission_manager: Arc<PermissionManager>,
+    known_tools: &HashSet<String>,
+) -> Result<(), String> {
     if TOOL_PERMISSIONS_PINNED.load(Ordering::Acquire) {
         return Ok(());
     }
-    let config_dir = PERMISSION_CONFIG_DIR
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
-        .ok_or_else(|| "Maple's permission file is not ready for built-in CUA tools".to_string())?;
     let names = known_tools.iter().map(|tool| prefixed_tool_name(tool));
     let names = names.collect::<Vec<_>>();
 
-    // Rewriting the permission file is synchronous, and Goose's writer panics
-    // rather than returning an error, so run it on a blocking thread where a
-    // failure is reported instead of taking the process down.
+    // Updating the live manager also rewrites the permission file. Goose's
+    // writer is synchronous and panics rather than returning an error, so run
+    // it on a blocking thread where a failure is reported instead of taking
+    // the process down. Constructing a second manager here would update only
+    // disk; the already-running PermissionInspector would retain its stale
+    // in-memory map and could still auto-approve read-only observations.
     tokio::task::spawn_blocking(move || {
-        let manager = PermissionManager::new(config_dir);
-        for name in names {
-            manager.update_user_permission(&name, PermissionLevel::AskBefore);
-        }
+        pin_tool_permissions_in_manager(permission_manager.as_ref(), &names);
     })
     .await
     .map_err(|error| format!("Could not mark built-in CUA tools as sensitive: {error}"))?;
 
     TOOL_PERMISSIONS_PINNED.store(true, Ordering::Release);
     Ok(())
+}
+
+fn pin_tool_permissions_in_manager(manager: &PermissionManager, names: &[String]) {
+    for name in names {
+        manager.update_user_permission(name, PermissionLevel::AskBefore);
+    }
 }
 
 /// Goose addresses an extension's tools by their namespaced name.
@@ -340,6 +338,7 @@ pub(super) async fn create_embedded_cua_client(
     account_scope: &str,
     session_id: &str,
     text_model_image_context: Option<PlatformExtensionContext>,
+    permission_manager: Arc<PermissionManager>,
 ) -> Result<Arc<dyn McpClientTrait>, String> {
     let identity = embedded_cua_session_identity(account_scope, session_id)?;
 
@@ -358,7 +357,7 @@ pub(super) async fn create_embedded_cua_client(
         // Without this the tools would fall back to CUA's own annotations,
         // which mark observation read-only and would auto-approve it. Fail
         // the attach rather than run with a weaker approval boundary.
-        pin_tool_permissions(&catalog.known_tools).await?;
+        pin_tool_permissions(permission_manager, &catalog.known_tools).await?;
         let session = tokio::task::spawn_blocking(move || {
             driver.create_trusted_session_for_transport(
                 TrustedSessionOptions {
@@ -1174,8 +1173,20 @@ mod tests {
     #[test]
     fn every_catalog_tool_is_pinned_as_permission_bearing() {
         // Goose addresses an extension's tools by their namespaced name, and
-        // consults the user permission file before any annotation.
-        assert_eq!(prefixed_tool_name("click"), "cua-driver__click");
+        // consults the live manager's user permissions before any annotation.
+        let temporary = tempfile::tempdir().unwrap();
+        let manager = PermissionManager::new(temporary.path().to_path_buf());
+        let names = [prefixed_tool_name("click"), prefixed_tool_name("snapshot")];
+
+        pin_tool_permissions_in_manager(&manager, &names);
+
+        assert_eq!(names[0], "cua-driver__click");
+        for name in names {
+            assert_eq!(
+                manager.get_user_permission(&name),
+                Some(PermissionLevel::AskBefore)
+            );
+        }
     }
 
     #[test]

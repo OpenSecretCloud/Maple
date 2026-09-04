@@ -2210,7 +2210,7 @@ async fn start_runtime_for_user(
     // Rewriting that file drops any tool entry Maple added, so the embedded
     // CUA tools must be pinned into it again before the next desktop run.
     #[cfg(embedded_cua)]
-    cua::reset_pinned_tool_permissions(goose_config_dir.clone());
+    cua::reset_pinned_tool_permissions();
 
     #[cfg(target_os = "macos")]
     let login_shell_search_paths = Some(
@@ -8255,9 +8255,13 @@ async fn attach_embedded_cua_client(
         context.extension_manager = Some(Arc::downgrade(&agent.extension_manager));
         Some(context)
     };
-    let client =
-        cua::create_embedded_cua_client(account_scope, &session.id, text_model_image_context)
-            .await?;
+    let client = cua::create_embedded_cua_client(
+        account_scope,
+        &session.id,
+        text_model_image_context,
+        Arc::clone(&agent.config.permission_manager),
+    )
+    .await?;
     agent
         .extension_manager
         .add_ephemeral_client(

@@ -201,7 +201,7 @@ pub(super) fn set_integration_default(
     let mut stored = load_stored_integrations(paths, user_id)?;
 
     if request.enabled {
-        ensure_no_custom_integration_collision(&custom, CUA_DRIVER_MCP_NAME)?;
+        ensure_no_custom_integration_collision(&custom)?;
         match stored.cua_mut() {
             Some(entry) => {
                 match entry.backend {
@@ -267,7 +267,7 @@ pub(super) fn select_embedded_integration_backend(
             .map_err(|error| format!("Failed to load MCP servers: {error}"))?
             .mcp_servers,
     )?;
-    ensure_no_custom_integration_collision(&custom, CUA_DRIVER_MCP_NAME)?;
+    ensure_no_custom_integration_collision(&custom)?;
     let mut stored = load_stored_integrations(paths, user_id)?;
     match stored.cua_mut() {
         Some(entry) => {
@@ -292,16 +292,18 @@ pub(super) fn effective_mcp_servers(
     custom: Vec<AgentMcpServer>,
 ) -> Result<Vec<AgentMcpServer>, String> {
     let mut servers = custom;
-    for entry in &stored.integrations {
+    if let Some(entry) = stored.cua() {
+        // The integration owns this product identity even when the embedded
+        // backend has no external server definition. A custom server that a
+        // previous release accepted under any historical spelling is shadowed
+        // before Goose can select or start it. Merging would make
+        // normalization fail and lock the account out of every task, while
+        // starting it briefly before embedded CUA replaces it would cross the
+        // explicit backend boundary.
+        servers.retain(|candidate| !is_cua_identity(&candidate.name));
         let Some(server) = entry.external_server.as_ref() else {
-            continue;
+            return normalize_mcp_servers(servers);
         };
-        // The integration owns this extension key. A custom server that a
-        // previous release let the user save under the same name is shadowed
-        // rather than merged: merging would make normalization fail and lock
-        // the account out of every task, and silently keeping the custom one
-        // would let it be replaced later without the user being told.
-        servers.retain(|candidate| !is_cua_key(&candidate.name));
         let mut server = server.clone();
         // Keep the concrete external definition available to old tasks,
         // but only select it by default while External owns the global
@@ -314,7 +316,20 @@ pub(super) fn effective_mcp_servers(
 
 /// Whether a configured server name addresses the curated CUA integration.
 pub(super) fn is_cua_key(name: &str) -> bool {
-    goose::config::extensions::name_to_key(name.trim()) == CUA_DRIVER_MCP_NAME
+    is_cua_identity(name)
+}
+
+/// Whether a configured server uses any spelling reserved for curated CUA.
+fn is_cua_identity(name: &str) -> bool {
+    let key = goose::config::extensions::name_to_key(name.trim());
+    [
+        CUA_DRIVER_MCP_NAME,
+        CUA_DRIVER_NAME,
+        "Cua Driver",
+        "cua_driver",
+    ]
+    .into_iter()
+    .any(|candidate| goose::config::extensions::name_to_key(candidate) == key)
 }
 
 /// Read the device-local registry for a path that must keep working.
@@ -398,7 +413,10 @@ pub(super) fn session_cua_backend(
     if let Some(state) = session_cua_state(session) {
         return Some(state.backend);
     }
-    if session_mcp_extension_keys(session).contains(CUA_DRIVER_MCP_NAME) {
+    if session_mcp_extension_keys(session)
+        .iter()
+        .any(|name| is_cua_key(name))
+    {
         // Tasks created by the external-driver PR predate Maple's logical
         // metadata. Their concrete persisted stdio extension is unambiguous.
         return Some(AgentIntegrationBackend::External);
@@ -419,7 +437,9 @@ pub(super) fn project_session_mcp_servers(
     servers.retain(|server| !is_cua_key(&server.name));
 
     let state = session_cua_state(session);
-    let active_external = session_mcp_extension_keys(session).contains(CUA_DRIVER_MCP_NAME);
+    let active_external = session_mcp_extension_keys(session)
+        .iter()
+        .any(|name| is_cua_key(name));
     let Some(backend) = session_cua_backend(stored, session) else {
         return Ok(servers);
     };
@@ -478,29 +498,15 @@ pub(super) fn validate_new_mcp_integration_collisions(
         .filter(|server| !existing.contains(&goose::config::extensions::name_to_key(&server.name)))
         .cloned()
         .collect::<Vec<_>>();
-    ensure_no_custom_integration_collision(&added, CUA_DRIVER_MCP_NAME)
+    ensure_no_custom_integration_collision(&added)
 }
 
-fn ensure_no_custom_integration_collision(
-    custom: &[AgentMcpServer],
-    integration_name: &str,
-) -> Result<(), String> {
+fn ensure_no_custom_integration_collision(custom: &[AgentMcpServer]) -> Result<(), String> {
     // Treat the human-readable and conventional config spellings as one
     // product identity even though Goose preserves '-' and '_' in its lower
     // level extension key. Otherwise a custom server could shadow Maple's
     // built-in Computer use integration under its historical MCP name.
-    let integration_keys = [
-        integration_name,
-        CUA_DRIVER_NAME,
-        "Cua Driver",
-        "cua_driver",
-    ]
-    .into_iter()
-    .map(goose::config::extensions::name_to_key)
-    .collect::<HashSet<_>>();
-    if let Some(server) = custom.iter().find(|server| {
-        integration_keys.contains(&goose::config::extensions::name_to_key(&server.name))
-    }) {
+    if let Some(server) = custom.iter().find(|server| is_cua_identity(&server.name)) {
         return Err(format!(
             "Custom MCP server '{}' conflicts with the {CUA_DRIVER_NAME} integration. Rename or remove the custom server before enabling the integration.",
             server.name
@@ -1020,10 +1026,14 @@ mod tests {
             },
         };
         assert!(
-            ensure_no_custom_integration_collision(&[custom], CUA_DRIVER_MCP_NAME)
+            ensure_no_custom_integration_collision(&[custom])
                 .unwrap_err()
                 .contains("Rename or remove")
         );
+        assert!(is_cua_key("cua-driver"));
+        assert!(is_cua_key("Cua Driver"));
+        assert!(is_cua_key("cua_driver"));
+        assert!(is_cua_key(CUA_DRIVER_NAME));
     }
 
     fn http_server(name: &str) -> AgentMcpServer {
@@ -1113,6 +1123,33 @@ mod tests {
             server.name == CUA_DRIVER_MCP_NAME
                 && matches!(server.transport, AgentMcpTransport::Stdio { .. })
         }));
+    }
+
+    #[test]
+    fn embedded_integration_shadows_every_legacy_cua_alias() {
+        let stored = StoredIntegrationRegistry {
+            version: INTEGRATIONS_FILE_VERSION,
+            integrations: vec![StoredIntegration {
+                id: CUA_DRIVER_INTEGRATION_ID.to_string(),
+                enabled: true,
+                backend: AgentIntegrationBackend::Embedded,
+                external_server: None,
+            }],
+        };
+
+        let effective = effective_mcp_servers(
+            &stored,
+            vec![
+                http_server("cua-driver"),
+                http_server("Cua Driver"),
+                http_server("cua_driver"),
+                http_server(CUA_DRIVER_NAME),
+                http_server("Docs"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(effective, vec![http_server("Docs")]);
     }
 
     #[test]

@@ -16,16 +16,21 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
+fn main() {
+    // Exactly what the application does as the first statement of `main`.
+    // SAFETY: no other thread has started yet.
+    unsafe { maple_agent::prepare_process_environment() };
+
+    run();
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::main]
-async fn main() {
+async fn run() {
     use cua_driver_sdk::{
         ConfiguredDriverOptions, CuaDriver, RuntimeAuthorizationOptions, SessionPermissionMode,
         TrustedSessionOptions,
     };
-
-    // Exactly what the application does as the first statement of `main`.
-    // SAFETY: no other thread has started yet.
-    unsafe { maple_agent::prepare_process_environment() };
 
     for name in [
         "WAYLAND_DISPLAY",
