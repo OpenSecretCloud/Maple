@@ -170,7 +170,20 @@
               [ pkgs.libiconv ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
 
-            shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            shellHook = ''
+              if [ -z "''${CI:-}" ] \
+                && [ "''${MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" != "1" ] \
+                && [ -z "''${CARGO_BUILD_BUILD_DIR:-}" ] \
+                && command -v rustc >/dev/null 2>&1; then
+                maple_gpui_rust_host="$(rustc -vV | awk '/^host:/{print $2}')"
+                maple_gpui_rust_version="$(rustc --version | awk '{print $2}')"
+                export CARGO_BUILD_BUILD_DIR="$HOME/.cache/cargo-build/maple-gpui/''${maple_gpui_rust_host}/rust-''${maple_gpui_rust_version}"
+                unset maple_gpui_rust_host maple_gpui_rust_version
+              fi
+              if [ -n "''${CARGO_BUILD_BUILD_DIR:-}" ]; then
+                echo "maple-gpui Cargo build cache: $CARGO_BUILD_BUILD_DIR"
+              fi
+            '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export VK_ADD_DRIVER_FILES="${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d''${VK_ADD_DRIVER_FILES:+:$VK_ADD_DRIVER_FILES}"
             '' + pkgs.lib.optionalString isDarwin ''

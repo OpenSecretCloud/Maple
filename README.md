@@ -203,6 +203,33 @@ nix develop --command cargo build --release -p maple-gpui --locked
 The development shell uses `/Applications/Xcode.app`. Linux builds use the
 Nix-provided ALSA, font, keyboard, Wayland, and Vulkan dependencies.
 
+### Shared Rust build cache
+
+Local Nix shells and `just` recipes use Cargo's separate build directory
+(`CARGO_BUILD_BUILD_DIR` / `build.build-dir`) to share Rust intermediate
+artifacts across maple-gpui checkouts and git worktrees. Final artifacts
+remain in the current checkout under `target/`, so `just run`,
+`just dist`, and debugger paths do not change.
+
+The default cache is separated by rustc host triple and compiler version:
+
+```text
+$HOME/.cache/cargo-build/maple-gpui/<host-triple>/rust-<version>
+```
+
+An existing `CARGO_BUILD_BUILD_DIR` takes precedence. To temporarily restore
+Cargo's traditional checkout-local layout, set
+`MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR=1`. CI does not enable the local
+shared cache automatically.
+
+Raw `cargo clean` removes both the checkout's target directory and the
+configured shared build directory. To clean only the current checkout
+without invalidating other maple-gpui worktrees, run:
+
+```bash
+just clean-local
+```
+
 Release builds use fat LTO and one codegen unit. Use a release build for any
 performance check; the dev profile is `opt-level = 1`.
 
@@ -210,10 +237,11 @@ The `justfile` has recipes for the common tasks. Install
 [just](https://github.com/casey/just) and run `just` to list them:
 
 ```sh
-just ci        # all the checks that CI runs
-just release   # release binary in target/release
-just dist      # release binary copied to dist/ with a SHA-256
-just run       # debug build with debug logs
+just ci          # all the checks that CI runs
+just release     # release binary in target/release
+just dist        # release binary copied to dist/ with a SHA-256
+just run         # debug build with debug logs
+just clean-local # this checkout's Cargo artifacts only (keeps the shared cache)
 ```
 
 ## Command line

@@ -15,7 +15,12 @@ just build     # debug binary
 just run       # debug binary with RUST_LOG=warn,maple_gpui=debug
 just release   # release binary (fat LTO, one codegen unit)
 just headless  # acp and proxy modes only, no window
+just clean     # this checkout's target/ and dist/ only
 ```
+
+`just` and `nix develop` share Cargo intermediates across worktrees via
+`CARGO_BUILD_BUILD_DIR`. Raw `cargo clean` would delete that shared cache;
+use `just clean` or `just clean-local`.
 
 To stop a running app, use `pkill -x maple-gpui` (exact process name).
 `pkill -f` with the binary path also matches the shell that runs the
