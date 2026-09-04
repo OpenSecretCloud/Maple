@@ -89,16 +89,68 @@ action. If macOS does not raise a prompt, Maple opens the next missing Privacy
 belong to Maple's app identity; permissions previously granted to
 `CuaDriver.app`, Codex, a terminal, or any other host do not transfer.
 
-On Linux the list is empty, so there is no setup step and the card offers
-**Enable** directly. The desktop portal asks for consent when a task first
-takes a screenshot or sends input, and the compositor remembers that choice.
-Under GNOME on Wayland, install and enable the `winrects@cua` GNOME Shell
-extension that ships with the SDK. Without it a client cannot learn a window's
-screen origin, so pointer targeting derived from the accessibility tree is less
-accurate and the agent cursor overlay does not appear. Everything else,
-including screenshots through the portal and input through libei, works without
-it. Per-window PipeWire capture stays off because it needs PipeWire headers at
-build time; full-screen portal screenshots do not.
+On Linux the desktop portal asks for consent when a task first takes a
+screenshot or sends input, and the compositor remembers that choice, so most
+sessions need no setup step and the card offers **Enable** directly.
+
+GNOME is the exception, and the requirement list says so. Mutter advertises
+none of the protocols an ordinary client would use for this: not the wlroots
+family, not `ext-foreign-toplevel-list-v1`, and not `ext-image-copy-capture-v1`.
+Window geometry, window activation, and screen capture therefore all go through
+the `winrects@cua` GNOME Shell extension that ships with the SDK. Without it
+the SDK falls back to X11, finds no windows, and fails capture inside
+`XGetImage`. Maple checks whether the extension owns `org.cua.WinRects` on the
+session bus and reports it as an unmet requirement until it does, because
+installing it is not enough: GNOME loads extensions only when the session
+starts, so the user has to log out and back in once.
+
+The extension is embedded in the binary, so **Set up** writes it into
+`gnome-shell/extensions` and adds it to `enabled-extensions` without a source
+checkout or a download. That matters because Maple is distributed as a bare
+executable. Writing the enabled set reads the current value first and refuses
+to touch anything it cannot parse back exactly, since overwriting that key
+wrongly would disable every extension the user has.
+
+The card distinguishes the two states, because telling somebody to install
+something they already installed is how they conclude the feature is broken.
+Before an install it offers Set up. Afterwards the catalog reports that no
+setup action remains, the button goes away, and the card asks for the session
+restart instead. The interface reads that from the projection rather than
+deciding it, so the two cannot disagree.
+
+The vendored copy lives in `crates/maple-agent/resources/gnome-helper/` and
+moves with the SDK pin, because the driver and the extension negotiate an API
+version. `UPSTREAM_SOURCE_REVISION` records where it came from.
+
+Maple also opts into the SDK's native-Wayland backend on any Wayland session.
+The SDK keeps that backend behind `CUA_DRIVER_RS_ENABLE_WAYLAND` and otherwise
+routes enumeration, capture, and input through X11. GNOME and KDE still export
+`DISPLAY` for Xwayland on a native Wayland session, so the X11 path looks
+viable and fails silently. Maple sets the variable as the first statement of
+`main`, where the process is still single-threaded, and an explicit value from
+the user always wins.
+
+Per-window PipeWire capture stays off because it needs PipeWire headers at
+build time; full-screen portal screenshots and the GNOME helper's stage capture
+do not.
+
+### Driving a browser on Linux
+
+CUA's `browser_*` tools need an owned Chrome DevTools Protocol endpoint. A
+browser the user already had open was not started with remote debugging, so
+`browser_prepare` reports `browser_requires_setup`, and taking that endpoint
+would mean relaunching the browser and discarding the session the user asked
+the agent to work in.
+
+The supported path is the ordinary desktop one: `get_window_state` returns the
+page's accessibility tree together with a window screenshot, and `click`,
+`type_text`, and `press_key` act on it. This was verified against a snap
+Firefox on GNOME Wayland, where one window yielded 739 elements including the
+document, its headings and links, and each element's available actions. Input
+is delivered through the portal's RemoteDesktop session and libei, so the first
+action in a session raises a consent prompt. Background delivery is unavailable
+on GNOME, so actions use `delivery_mode: "foreground"`, which activates the
+target window and restores the previous one afterwards.
 
 Maple detects a compatible standalone `CuaDriver.app` on macOS only, for
 migration from the first integrations preview. It refuses to run that

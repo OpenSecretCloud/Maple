@@ -111,6 +111,7 @@ struct CuaMcpInvocation {
 pub(super) struct CuaDetection {
     availability: AgentIntegrationAvailability,
     permissions: Option<AgentIntegrationPermissions>,
+    setup_available: bool,
     standalone_version: Option<String>,
     detail: Option<String>,
     external_server: Option<AgentMcpServer>,
@@ -122,6 +123,7 @@ impl CuaDetection {
         Self {
             availability: AgentIntegrationAvailability::NotDetected,
             permissions: None,
+            setup_available: false,
             standalone_version: None,
             detail: Some("Built-in CUA is not available on this operating system yet.".to_string()),
             external_server: None,
@@ -144,6 +146,7 @@ impl CuaDetection {
             version: embedded_cua_version(),
             standalone_version: self.standalone_version.clone(),
             permissions: self.permissions.clone(),
+            setup_available: self.setup_available,
             enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
             detail: self.detail.clone(),
         }
@@ -662,14 +665,20 @@ async fn detect_cua_driver() -> CuaDetection {
         } else {
             AgentIntegrationAvailability::SetupRequired
         };
-        let detail = standalone_error.map(|error| {
-            format!(
-                "Maple could not verify the standalone CuaDriver installation: {error}. Built-in CUA can still be set up."
-            )
-        });
+        // Say what is missing on the card itself, and say it in terms of what
+        // is left to do rather than repeating the requirement's name.
+        let detail = super::cua::desktop_helper_hint()
+            .or_else(|| {
+                standalone_error.map(|error| {
+                    format!(
+                        "Maple could not verify the standalone CuaDriver installation: {error}. Built-in CUA can still be set up."
+                    )
+                })
+            });
         CuaDetection {
             availability,
             permissions: Some(permissions),
+            setup_available: super::cua::desktop_setup_available(),
             standalone_version,
             detail,
             external_server,
@@ -1137,6 +1146,7 @@ mod tests {
         let managed = stored_cua_server(temporary.path(), false);
         let detection = CuaDetection {
             availability: AgentIntegrationAvailability::Available,
+            setup_available: true,
             permissions: None,
             standalone_version: Some("test".to_string()),
             detail: None,
@@ -1242,6 +1252,7 @@ mod tests {
         .unwrap();
         let detection = CuaDetection {
             availability: AgentIntegrationAvailability::Available,
+            setup_available: true,
             permissions: Some(AgentIntegrationPermissions::none_required()),
             standalone_version: Some("test".to_string()),
             detail: None,

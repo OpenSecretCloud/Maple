@@ -111,10 +111,12 @@ does not need a separate daemon, executable, or MCP child process.
 
 On macOS, setup reports and requests Accessibility and Screen Recording for
 Maple's own app identity. Grants held by a separately installed CuaDriver app
-do not transfer to Maple. On Linux there is no setup step: the desktop portal
-asks for consent the first time a task captures the screen or sends input.
-Under GNOME on Wayland, install the `winrects@cua` GNOME Shell extension that
-ships with the SDK for accurate pointer targeting and the agent cursor.
+do not transfer to Maple. On Linux the desktop portal asks for consent the
+first time a task captures the screen or sends input. Under GNOME on Wayland
+the `winrects@cua` GNOME Shell extension that ships with the SDK is required,
+because Mutter exposes no window geometry or screen capture to an ordinary
+client; Settings reports it as an unmet requirement until it is installed and
+the session has been restarted once.
 
 CUA keeps its native screenshot defaults. Every model receives full
 accessibility text plus a bounded projection of exact structured grounding

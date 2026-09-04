@@ -435,7 +435,14 @@ impl SettingsScreen {
             move |this, result, cx| {
                 this.integration_saving.remove(&id);
                 match result {
-                    Ok(integrations) => this.integrations = Some(integrations),
+                    Ok(integrations) => {
+                        // The notice above described the state before setup
+                        // ran. The refreshed card carries what is left to do,
+                        // so drop the stale one rather than leave it telling
+                        // the user to repeat what they just did.
+                        this.integration_notice = None;
+                        this.integrations = Some(integrations);
+                    }
                     Err(message) => {
                         this.integration_notice = Some(match this.integration_notice.take() {
                             Some(notice) => format!("{notice} {message}"),
@@ -2000,7 +2007,9 @@ impl SettingsScreen {
                 div()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .line_clamp(2)
+                    // A detail can carry the address of something the user has
+                    // to fetch, which needs more room than a short status line.
+                    .line_clamp(3)
                     .child(detail.clone()),
             );
         }
@@ -2341,6 +2350,7 @@ fn integration_can_toggle(integration: &AgentIntegration) -> bool {
 
 fn integration_can_setup(integration: &AgentIntegration) -> bool {
     is_cua_driver(&integration.id)
+        && integration.setup_available
         && !matches!(
             integration.availability,
             AgentIntegrationAvailability::NotDetected
@@ -2385,10 +2395,9 @@ fn cua_permissions_ready(permissions: Option<&AgentIntegrationPermissions>) -> b
 }
 
 fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option<String> {
-    let pane = permissions.first_missing()?.label();
-    Some(format!(
-        "Grant Maple {pane} access in System Settings, then fully quit and reopen Maple."
-    ))
+    let missing = permissions.first_missing()?;
+    let guidance = missing.guidance()?;
+    Some(format!("{}: {guidance}", missing.label()))
 }
 
 fn cua_backend_label(integration: &AgentIntegration) -> &'static str {
@@ -2871,6 +2880,7 @@ mod tests {
             enabled_for_new_tasks,
             detail: None,
             permissions: Some(macos_permissions(ready, ready)),
+            setup_available: true,
             standalone_version: None,
             backend: Some(AgentIntegrationBackend::Embedded),
         }
@@ -2991,6 +3001,26 @@ mod tests {
     }
 
     #[test]
+    fn setup_is_not_offered_once_only_the_user_can_finish_it() {
+        // A desktop helper Maple has already written leaves one step Maple
+        // cannot take: restarting the session. Offering Set up again would
+        // repeat work the user just did and hide the step that matters.
+        let mut integration = integration(AgentIntegrationAvailability::SetupRequired, false);
+        integration.permissions = Some(AgentIntegrationPermissions::default().with(
+            maple_agent::agent::AgentIntegrationPermissionKind::DesktopHelper,
+            false,
+        ));
+        integration.setup_available = true;
+        assert!(integration_can_setup(&integration));
+
+        integration.setup_available = false;
+        assert!(!integration_can_setup(&integration));
+        // The card still reports the integration as unfinished either way.
+        assert!(!integration_can_enable(&integration));
+        assert!(integration_is_visible(&integration));
+    }
+
+    #[test]
     fn a_platform_that_needs_no_grant_is_ready() {
         // Portal-based desktops grant capability per session at first use, so
         // an empty requirement list is a ready integration, not a blocked one.
@@ -3000,19 +3030,24 @@ mod tests {
     }
 
     #[test]
-    fn the_setup_notice_names_the_pane_that_will_open() {
-        assert_eq!(
-            integration_setup_notice(&macos_permissions(false, false)).as_deref(),
-            Some(
-                "Grant Maple Accessibility access in System Settings, then fully quit and reopen Maple."
-            )
+    fn the_setup_notice_names_the_requirement_and_its_remedy() {
+        let notice = integration_setup_notice(&macos_permissions(false, false))
+            .expect("a missing grant produces a notice");
+        assert!(notice.starts_with("Accessibility: "));
+        assert!(notice.contains("System Settings"));
+
+        let notice = integration_setup_notice(&macos_permissions(true, false))
+            .expect("a missing grant produces a notice");
+        assert!(notice.starts_with("Screen Recording: "));
+
+        // A compositor helper's remedy changes as the user works through it,
+        // so it is written once on the integration itself. A second copy here
+        // could only go stale and tell the user to redo a finished step.
+        let helper = AgentIntegrationPermissions::default().with(
+            maple_agent::agent::AgentIntegrationPermissionKind::DesktopHelper,
+            false,
         );
-        assert_eq!(
-            integration_setup_notice(&macos_permissions(true, false)).as_deref(),
-            Some(
-                "Grant Maple Screen Recording access in System Settings, then fully quit and reopen Maple."
-            )
-        );
+        assert_eq!(integration_setup_notice(&helper), None);
     }
 
     #[test]

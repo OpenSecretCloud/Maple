@@ -50,6 +50,9 @@ windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "e7156658562eea3cb1721f3435ea317edb87acbd", package = "cua-driver-sdk" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Ask the session bus whether the GNOME compositor helper is loaded. It is
+# already in the dependency tree through the SDK, so this adds no build cost.
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 # The same pinned revision supplies the Linux backend: AT-SPI over D-Bus for
 # the accessibility tree, the desktop portal for screenshots, and libei for
 # input. `portal-input` is pure Rust plus libxkbcommon, which the Linux build

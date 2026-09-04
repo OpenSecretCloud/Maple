@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::AgentIntegrationPermissionKind;
 use super::AgentIntegrationPermissions;
 use super::image_mediation::{
@@ -104,10 +104,142 @@ pub(super) fn embedded_cua_permission_status() -> AgentIntegrationPermissions {
     {
         macos_permissions(cua_driver_sdk::current_mac_os_permission_status())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_requirements()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         AgentIntegrationPermissions::none_required()
     }
+}
+
+/// What Linux needs before the runtime is usable.
+///
+/// Portal-based desktops grant screen capture and input per session at first
+/// use, so there is nothing to read up front. GNOME is the exception: Mutter
+/// advertises neither the wlroots protocols nor `ext-image-copy-capture-v1`,
+/// so an ordinary client can read no window geometry and capture no pixels.
+/// Both go through a Shell extension instead, and without it the SDK silently
+/// falls back to X11 and fails. Treat the extension as a real requirement so
+/// the user is told, rather than meeting a broken screenshot later.
+#[cfg(target_os = "linux")]
+fn linux_requirements() -> AgentIntegrationPermissions {
+    if !gnome_wayland_session() {
+        return AgentIntegrationPermissions::none_required();
+    }
+    AgentIntegrationPermissions::default().with(
+        AgentIntegrationPermissionKind::DesktopHelper,
+        gnome_helper_loaded(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn gnome_wayland_session() -> bool {
+    let Some(desktop) = std::env::var_os("XDG_CURRENT_DESKTOP") else {
+        return false;
+    };
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && desktop
+            .to_string_lossy()
+            .split(':')
+            .any(|entry| entry.eq_ignore_ascii_case("GNOME"))
+}
+
+/// Install the compositor helper if this desktop needs one and has none.
+///
+/// Only an explicit user setup action reaches this. It is idempotent, so
+/// pressing setup again after an upgrade refreshes the embedded copy.
+#[cfg(target_os = "linux")]
+pub(super) async fn install_desktop_helper() -> Result<(), String> {
+    if !gnome_wayland_session() || gnome_helper_loaded() {
+        return Ok(());
+    }
+    tokio::task::spawn_blocking(super::gnome_helper::install)
+        .await
+        .map_err(|error| format!("Could not install the GNOME helper extension: {error}"))??;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) async fn install_desktop_helper() -> Result<(), String> {
+    Ok(())
+}
+
+/// One sentence describing what is left to do about the compositor helper,
+/// or `None` when this desktop needs none or already has it working.
+///
+/// The remedy differs by how far along the install is, and saying "install it"
+/// to somebody who already did is how a user concludes the thing is broken.
+pub(super) fn desktop_helper_hint() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use super::gnome_helper::GnomeHelperState;
+
+        if !gnome_wayland_session() {
+            return None;
+        }
+        match super::gnome_helper::state(gnome_helper_loaded()) {
+            GnomeHelperState::Loaded => None,
+            GnomeHelperState::NeedsSessionRestart => Some(
+                "The GNOME helper extension is installed but not loaded. Log out and back in: \
+                 GNOME reads extensions only when the session starts."
+                    .to_string(),
+            ),
+            GnomeHelperState::Missing => Some(
+                "GNOME needs a helper extension for window geometry and screen capture. \
+                 Use Set up to install it, then log out and back in."
+                    .to_string(),
+            ),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Whether a setup action can still do something on this desktop.
+///
+/// Once the helper is written, the only step left is restarting the session,
+/// which Maple cannot do for the user. Offering a button then would repeat
+/// work they already did and hide the step that actually matters.
+pub(super) fn desktop_setup_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use super::gnome_helper::GnomeHelperState;
+
+        gnome_wayland_session()
+            && super::gnome_helper::state(gnome_helper_loaded()) == GnomeHelperState::Missing
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+/// Whether the compositor helper is loaded right now.
+///
+/// Installing the extension is not enough, because GNOME loads extensions only
+/// when the session starts. Owning the bus name is the only signal that says
+/// the helper will actually answer.
+#[cfg(target_os = "linux")]
+fn gnome_helper_loaded() -> bool {
+    const HELPER_BUS_NAME: &str = "org.cua.WinRects";
+
+    // zbus's blocking API drives its own runtime, and a runtime cannot be
+    // started from a thread that is already driving one. This check is reached
+    // from both async and plain call sites, so give it a thread of its own
+    // instead of making every caller prove where it runs.
+    std::thread::spawn(|| {
+        let connection = zbus::blocking::Connection::session().ok()?;
+        let proxy = zbus::blocking::fdo::DBusProxy::new(&connection).ok()?;
+        proxy.name_has_owner(HELPER_BUS_NAME.try_into().ok()?).ok()
+    })
+    .join()
+    .ok()
+    .flatten()
+    .unwrap_or(false)
 }
 
 /// Ask the operating system for the grants Maple's embedded CUA runtime needs.
@@ -122,7 +254,10 @@ pub(super) fn request_embedded_cua_permissions() -> AgentIntegrationPermissions 
     }
     #[cfg(not(target_os = "macos"))]
     {
-        AgentIntegrationPermissions::none_required()
+        // Nothing here can be requested on the user's behalf: a portal grant
+        // is answered when a tool first runs, and a Shell extension is
+        // installed by the user. Report the current state instead.
+        embedded_cua_permission_status()
     }
 }
 

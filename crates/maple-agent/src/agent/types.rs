@@ -139,6 +139,11 @@ pub struct AgentIntegration {
     pub standalone_version: Option<String>,
     /// Host-process permissions needed by the built-in implementation.
     pub permissions: Option<AgentIntegrationPermissions>,
+    /// Whether a setup action would still do something. It is false once the
+    /// only thing left is something Maple cannot perform, such as restarting
+    /// the desktop session, so the interface does not offer a button that
+    /// repeats work the user already did.
+    pub setup_available: bool,
     pub enabled_for_new_tasks: bool,
     pub detail: Option<String>,
 }
@@ -161,6 +166,10 @@ pub enum AgentIntegrationBackend {
 pub enum AgentIntegrationPermissionKind {
     Accessibility,
     ScreenRecording,
+    /// A compositor helper the desktop cannot work without. GNOME advertises
+    /// none of the Wayland protocols that expose window geometry or screen
+    /// capture to an ordinary client, so both go through a Shell extension.
+    DesktopHelper,
 }
 
 impl AgentIntegrationPermissionKind {
@@ -169,6 +178,23 @@ impl AgentIntegrationPermissionKind {
         match self {
             Self::Accessibility => "Accessibility",
             Self::ScreenRecording => "Screen Recording",
+            Self::DesktopHelper => "GNOME helper extension",
+        }
+    }
+
+    /// What the user has to do while an operating-system settings window is
+    /// open, or `None` when the remedy is not an external window.
+    ///
+    /// A requirement whose state changes as the user works through it, such as
+    /// a compositor helper that is installed and then needs a session restart,
+    /// deliberately has no answer here. Its remedy is written once, on the
+    /// integration itself, so a second copy cannot describe the wrong step.
+    pub fn guidance(self) -> Option<&'static str> {
+        match self {
+            Self::Accessibility | Self::ScreenRecording => Some(
+                "Grant Maple this access in System Settings, then fully quit and reopen Maple.",
+            ),
+            Self::DesktopHelper => None,
         }
     }
 }

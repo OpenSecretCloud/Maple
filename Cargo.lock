@@ -5853,6 +5853,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "windows 0.62.2",
+ "zbus",
 ]
 
 [[package]]

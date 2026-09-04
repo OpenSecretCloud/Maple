@@ -1786,6 +1786,9 @@ fn next_integration_setup_settings_url(
         AgentIntegrationPermissionKind::ScreenRecording => {
             Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
         }
+        // The user installs a compositor helper themselves; there is no
+        // settings pane that grants it.
+        AgentIntegrationPermissionKind::DesktopHelper => None,
     }
 }
 
