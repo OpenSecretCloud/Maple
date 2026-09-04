@@ -645,39 +645,32 @@ mod tests {
             this.integrations = Some(vec![
                 maple_agent::agent::AgentIntegration {
                     id: "cua-driver".to_string(),
-                    name: "Computer use (CUA)".to_string(),
+                    name: "Cua".to_string(),
                     description: String::new(),
                     availability: maple_agent::agent::AgentIntegrationAvailability::Available,
                     version: None,
                     enabled_for_new_tasks: true,
                     detail: None,
-                    permissions: Some(maple_agent::agent::AgentIntegrationPermissions {
-                        accessibility: false,
-                        screen_recording: false,
-                    }),
+                    permissions: Some(
+                        maple_agent::agent::AgentIntegrationPermissions::default()
+                            .with(
+                                maple_agent::agent::AgentIntegrationPermissionKind::Accessibility,
+                                false,
+                            )
+                            .with(
+                                maple_agent::agent::AgentIntegrationPermissionKind::ScreenRecording,
+                                false,
+                            ),
+                    ),
                     standalone_version: Some("0.23.2".to_string()),
                     backend: Some(maple_agent::agent::AgentIntegrationBackend::External),
                 },
-                maple_agent::agent::AgentIntegration {
-                    id: "cua_driver".to_string(),
-                    name: "Computer use (CUA)".to_string(),
-                    description: String::new(),
-                    availability: maple_agent::agent::AgentIntegrationAvailability::SetupRequired,
-                    version: None,
-                    enabled_for_new_tasks: false,
-                    detail: None,
-                    permissions: Some(maple_agent::agent::AgentIntegrationPermissions {
-                        accessibility: false,
-                        screen_recording: false,
-                    }),
-                    standalone_version: None,
-                    backend: Some(maple_agent::agent::AgentIntegrationBackend::Embedded),
-                },
+                // An undetected integration contributes no focus target.
                 maple_agent::agent::AgentIntegration {
                     id: "not-ready".to_string(),
                     name: "Not ready".to_string(),
                     description: String::new(),
-                    availability: maple_agent::agent::AgentIntegrationAvailability::Incompatible,
+                    availability: maple_agent::agent::AgentIntegrationAvailability::NotDetected,
                     version: None,
                     enabled_for_new_tasks: false,
                     detail: None,
@@ -702,7 +695,6 @@ mod tests {
                 vec![
                     SettingsTarget::IntegrationSetup("cua-driver".to_string()),
                     SettingsTarget::Integration("cua-driver".to_string()),
-                    SettingsTarget::IntegrationSetup("cua_driver".to_string()),
                     SettingsTarget::McpAdd,
                     SettingsTarget::McpServer("custom".to_string()),
                 ]

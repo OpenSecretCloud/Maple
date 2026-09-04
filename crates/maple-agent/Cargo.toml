@@ -49,6 +49,15 @@ windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 # Maple's embedded runtime remains reproducible.
 cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "e7156658562eea3cb1721f3435ea317edb87acbd", package = "cua-driver-sdk" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The same pinned revision supplies the Linux backend: AT-SPI over D-Bus for
+# the accessibility tree, the desktop portal for screenshots, and libei for
+# input. `portal-input` is pure Rust plus libxkbcommon, which the Linux build
+# already links, so it stays on by default. PipeWire per-window capture needs
+# libpipewire and libspa headers at build time and is deliberately left off;
+# full-screen portal screenshots do not need it.
+cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "e7156658562eea3cb1721f3435ea317edb87acbd", package = "cua-driver-sdk", features = ["portal-input"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

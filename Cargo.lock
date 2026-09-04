@@ -1430,12 +1430,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "calloop"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dbf9978365bac10f54d1d4b04f7ce4427e51f71d61f2fe15e3fed5166474df7"
+dependencies = [
+ "bitflags 2.13.1",
+ "polling",
+ "rustix 1.1.4",
+ "slab",
+ "tracing",
+]
+
+[[package]]
 name = "calloop-wayland-source"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95a66a987056935f7efce4ab5668920b5d0dac4a7c99991a67395f13702ddd20"
 dependencies = [
- "calloop",
+ "calloop 0.13.0",
  "rustix 0.38.44",
  "wayland-backend",
  "wayland-client",
@@ -4216,7 +4229,7 @@ dependencies = [
  "blade-util",
  "block",
  "bytemuck",
- "calloop",
+ "calloop 0.13.0",
  "calloop-wayland-source",
  "cbindgen",
  "cocoa 0.26.0",
@@ -4290,7 +4303,7 @@ dependencies = [
  "windows-registry 0.5.3",
  "x11-clipboard",
  "x11rb",
- "xkbcommon",
+ "xkbcommon 0.8.0",
  "zed-font-kit",
  "zed-scap",
  "zed-xim",
@@ -7311,12 +7324,14 @@ dependencies = [
  "async-trait",
  "atspi",
  "base64 0.22.1",
+ "calloop 0.14.4",
  "clipboard-rs",
  "crossbeam-channel",
  "cua-driver-contract",
  "cua-driver-core",
  "cursor-overlay",
  "dirs 5.0.1",
+ "enumflags2",
  "evdev",
  "getrandom 0.4.3",
  "image 0.25.10",
@@ -7325,6 +7340,7 @@ dependencies = [
  "memmap2",
  "meval",
  "pip-preview",
+ "reis",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -7339,6 +7355,7 @@ dependencies = [
  "wayland-scanner",
  "x11",
  "x11rb",
+ "xkbcommon 0.9.0",
  "zbus",
  "zeroize",
 ]
@@ -8184,6 +8201,19 @@ dependencies = [
  "thiserror 2.0.20",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "reis"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b967ec6489a42067a20724f11987bb96178ea796873cbe1afd25fb93ee6f85f"
+dependencies = [
+ "enumflags2",
+ "futures-util",
+ "log",
+ "rustix 1.1.4",
+ "tokio",
 ]
 
 [[package]]
@@ -12491,6 +12521,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d66ca9352cbd4eecbbc40871d8a11b4ac8107cfc528a6e14d7c19c69d0e1ac9"
 dependencies = [
  "as-raw-xcb-connection",
+ "libc",
+ "memmap2",
+ "xkeysym",
+]
+
+[[package]]
+name = "xkbcommon"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7a974f48060a14e95705c01f24ad9c3345022f4d97441b8a36beb7ed5c4a02d"
+dependencies = [
  "libc",
  "memmap2",
  "xkeysym",

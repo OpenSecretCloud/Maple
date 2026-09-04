@@ -49,6 +49,12 @@
             mesa
             vulkan-loader
             wayland
+            # Embedded CUA drives X11 windows and synthetic input through the
+            # Cua Driver SDK's Linux backend. Wayland sessions reach the
+            # desktop through the portal and libei, which are pure Rust.
+            xorg.libX11
+            xorg.libXi
+            xorg.libXtst
           ];
           linuxBuildInputs = with pkgs; [
             alsa-lib
@@ -146,6 +152,12 @@
             mesa
             vulkan-loader
             wayland
+            # Embedded CUA drives X11 windows and synthetic input through the
+            # Cua Driver SDK's Linux backend. Wayland sessions reach the
+            # desktop through the portal and libei, which are pure Rust.
+            xorg.libX11
+            xorg.libXi
+            xorg.libXtst
           ];
           linuxBuildInputs = with pkgs; [
             alsa-lib

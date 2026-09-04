@@ -1943,16 +1943,8 @@ impl SettingsScreen {
         let saving = self.integration_saving.contains(&integration.id);
         let enabled = integration.enabled_for_new_tasks;
         let cua_driver = is_cua_driver(&integration.id);
-        let display_name = if cua_driver {
-            "Cua".to_string()
-        } else {
-            integration.name.clone()
-        };
-        let description = if cua_driver {
-            "Let Maple see and control apps on this Mac.".to_string()
-        } else {
-            integration.description.clone()
-        };
+        let display_name = integration.name.clone();
+        let description = integration.description.clone();
         let mut details = div()
             .flex_1()
             .min_w_0()
@@ -1984,16 +1976,15 @@ impl SettingsScreen {
         if cua_driver {
             let mut metadata = div().flex().flex_wrap().items_center().gap_2();
             metadata = metadata.child(integration_metadata_badge(cua_backend_label(integration)));
-            if let Some(permissions) = integration.permissions.as_ref() {
-                metadata = metadata
-                    .child(cua_permission_badge(
-                        "Accessibility",
-                        permissions.accessibility,
-                    ))
-                    .child(cua_permission_badge(
-                        "Screen Recording",
-                        permissions.screen_recording,
-                    ));
+            for permission in integration
+                .permissions
+                .iter()
+                .flat_map(|permissions| permissions.required.iter())
+            {
+                metadata = metadata.child(cua_permission_badge(
+                    permission.kind.label(),
+                    permission.granted,
+                ));
             }
             details = details.child(metadata);
         } else if let Some(version) = integration.version.as_deref() {
@@ -2352,7 +2343,7 @@ fn integration_can_setup(integration: &AgentIntegration) -> bool {
     is_cua_driver(&integration.id)
         && !matches!(
             integration.availability,
-            AgentIntegrationAvailability::NotDetected | AgentIntegrationAvailability::Incompatible
+            AgentIntegrationAvailability::NotDetected
         )
         && (!cua_permissions_ready(integration.permissions.as_ref())
             || matches!(
@@ -2385,26 +2376,16 @@ fn integration_availability(integration: &AgentIntegration) -> (&'static str, u3
             }
         }
         AgentIntegrationAvailability::Available => ("Detected", theme::status_success()),
-        AgentIntegrationAvailability::SetupRequired if is_cua_driver(&integration.id) => {
-            ("Setup required", theme::status_warning())
-        }
         AgentIntegrationAvailability::SetupRequired => ("Setup required", theme::status_warning()),
-        AgentIntegrationAvailability::Incompatible => ("Needs attention", theme::status_warning()),
     }
 }
 
 fn cua_permissions_ready(permissions: Option<&AgentIntegrationPermissions>) -> bool {
-    permissions.is_some_and(|permissions| permissions.accessibility && permissions.screen_recording)
+    permissions.is_some_and(AgentIntegrationPermissions::ready)
 }
 
 fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option<String> {
-    let pane = if !permissions.accessibility {
-        "Accessibility"
-    } else if !permissions.screen_recording {
-        "Screen Recording"
-    } else {
-        return None;
-    };
+    let pane = permissions.first_missing()?.label();
     Some(format!(
         "Grant Maple {pane} access in System Settings, then fully quit and reopen Maple."
     ))
@@ -2468,7 +2449,7 @@ fn cua_permission_badge(label: &'static str, granted: bool) -> Div {
 }
 
 fn is_cua_driver(id: &str) -> bool {
-    matches!(id, "cua-driver" | "cua_driver")
+    id == "cua-driver"
 }
 
 /// Small on/off pill used in list rows.
@@ -2880,6 +2861,7 @@ mod tests {
         enabled_for_new_tasks: bool,
     ) -> AgentIntegration {
         let ready = matches!(availability, AgentIntegrationAvailability::Available);
+
         AgentIntegration {
             id: "cua-driver".to_string(),
             name: "Computer use (CUA)".to_string(),
@@ -2888,13 +2870,25 @@ mod tests {
             version: Some("1.0.0".to_string()),
             enabled_for_new_tasks,
             detail: None,
-            permissions: Some(AgentIntegrationPermissions {
-                accessibility: ready,
-                screen_recording: ready,
-            }),
+            permissions: Some(macos_permissions(ready, ready)),
             standalone_version: None,
             backend: Some(AgentIntegrationBackend::Embedded),
         }
+    }
+
+    /// The two macOS grants, in the order the platform asks for them.
+    fn macos_permissions(
+        accessibility: bool,
+        screen_recording: bool,
+    ) -> AgentIntegrationPermissions {
+        use maple_agent::agent::AgentIntegrationPermissionKind;
+
+        AgentIntegrationPermissions::default()
+            .with(AgentIntegrationPermissionKind::Accessibility, accessibility)
+            .with(
+                AgentIntegrationPermissionKind::ScreenRecording,
+                screen_recording,
+            )
     }
 
     #[test]
@@ -2951,18 +2945,12 @@ mod tests {
         assert!(!integration_can_toggle(&setup_required));
         assert!(integration_can_setup(&setup_required));
 
-        let incompatible = integration(AgentIntegrationAvailability::Incompatible, false);
-        assert!(integration_is_visible(&incompatible));
-        assert!(!integration_can_enable(&incompatible));
-        assert!(!integration_can_toggle(&incompatible));
-        assert!(!integration_can_setup(&incompatible));
-
         let missing = integration(AgentIntegrationAvailability::NotDetected, false);
         assert!(!integration_is_visible(&missing));
         assert!(!integration_can_toggle(&missing));
 
-        // Embedded CUA is macOS-only in this preview, so the row stays hidden
-        // on unsupported platforms even if stale device-local state exists.
+        // A platform with no CUA backend reports the integration undetected,
+        // so the row stays hidden even if stale device-local state exists.
         let enabled_but_missing = integration(AgentIntegrationAvailability::NotDetected, true);
         assert!(!integration_is_visible(&enabled_but_missing));
         assert!(integration_can_toggle(&enabled_but_missing));
@@ -2974,10 +2962,7 @@ mod tests {
 
         let mut external = integration(AgentIntegrationAvailability::Available, true);
         external.backend = Some(AgentIntegrationBackend::External);
-        external.permissions = Some(AgentIntegrationPermissions {
-            accessibility: false,
-            screen_recording: false,
-        });
+        external.permissions = Some(macos_permissions(false, false));
         external.standalone_version = Some("0.23.2".to_string());
         assert!(integration_can_toggle(&external));
         assert!(integration_can_setup(&external));
@@ -2996,18 +2981,38 @@ mod tests {
     #[test]
     fn built_in_cua_is_ready_only_after_both_maple_permissions() {
         assert!(!cua_permissions_ready(None));
-        assert!(!cua_permissions_ready(Some(&AgentIntegrationPermissions {
-            accessibility: true,
-            screen_recording: false,
-        })));
-        assert!(!cua_permissions_ready(Some(&AgentIntegrationPermissions {
-            accessibility: false,
-            screen_recording: true,
-        })));
-        assert!(cua_permissions_ready(Some(&AgentIntegrationPermissions {
-            accessibility: true,
-            screen_recording: true,
-        })));
+        assert!(!cua_permissions_ready(Some(&macos_permissions(
+            true, false
+        ))));
+        assert!(!cua_permissions_ready(Some(&macos_permissions(
+            false, true
+        ))));
+        assert!(cua_permissions_ready(Some(&macos_permissions(true, true))));
+    }
+
+    #[test]
+    fn a_platform_that_needs_no_grant_is_ready() {
+        // Portal-based desktops grant capability per session at first use, so
+        // an empty requirement list is a ready integration, not a blocked one.
+        let permissions = AgentIntegrationPermissions::none_required();
+        assert!(cua_permissions_ready(Some(&permissions)));
+        assert_eq!(integration_setup_notice(&permissions), None);
+    }
+
+    #[test]
+    fn the_setup_notice_names_the_pane_that_will_open() {
+        assert_eq!(
+            integration_setup_notice(&macos_permissions(false, false)).as_deref(),
+            Some(
+                "Grant Maple Accessibility access in System Settings, then fully quit and reopen Maple."
+            )
+        );
+        assert_eq!(
+            integration_setup_notice(&macos_permissions(true, false)).as_deref(),
+            Some(
+                "Grant Maple Screen Recording access in System Settings, then fully quit and reopen Maple."
+            )
+        );
     }
 
     #[test]

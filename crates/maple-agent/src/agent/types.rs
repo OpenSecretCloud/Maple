@@ -150,11 +150,74 @@ pub enum AgentIntegrationBackend {
     External,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One host-process permission that a built-in integration needs.
+///
+/// The set of requirements is platform-shaped: macOS needs two TCC grants that
+/// can be read before use, while portal-based desktops grant capability per
+/// session at first use and therefore require none up front. Callers must not
+/// re-derive that per-platform knowledge; ask [`AgentIntegrationPermissions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIntegrationPermissionKind {
+    Accessibility,
+    ScreenRecording,
+}
+
+impl AgentIntegrationPermissionKind {
+    /// The name the operating system itself uses for this permission.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Accessibility => "Accessibility",
+            Self::ScreenRecording => "Screen Recording",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegrationPermission {
+    pub kind: AgentIntegrationPermissionKind,
+    pub granted: bool,
+}
+
+/// Every host-process permission a built-in integration needs, with its
+/// current grant state.
+///
+/// An empty requirement list means the platform needs no pre-flight grant, so
+/// [`AgentIntegrationPermissions::ready`] is true. That is the single place
+/// where "may this integration run" is decided.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentIntegrationPermissions {
-    pub accessibility: bool,
-    pub screen_recording: bool,
+    pub required: Vec<AgentIntegrationPermission>,
+}
+
+impl AgentIntegrationPermissions {
+    /// No pre-flight grant is required on this platform.
+    pub fn none_required() -> Self {
+        Self::default()
+    }
+
+    pub fn with(mut self, kind: AgentIntegrationPermissionKind, granted: bool) -> Self {
+        self.required
+            .push(AgentIntegrationPermission { kind, granted });
+        self
+    }
+
+    /// Whether every required permission has been granted.
+    pub fn ready(&self) -> bool {
+        self.required.iter().all(|permission| permission.granted)
+    }
+
+    /// The first permission still to be granted, in the order the platform
+    /// wants the user to grant them. Both the setup prompt and the settings
+    /// pane that Maple opens are derived from this one answer.
+    pub fn first_missing(&self) -> Option<AgentIntegrationPermissionKind> {
+        self.required
+            .iter()
+            .find(|permission| !permission.granted)
+            .map(|permission| permission.kind)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -163,7 +226,6 @@ pub enum AgentIntegrationAvailability {
     NotDetected,
     SetupRequired,
     Available,
-    Incompatible,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

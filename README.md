@@ -105,11 +105,16 @@ Goose is pinned to the same aaif-goose fork revision as Maple.
 
 ### Integrations preview
 
-On macOS, Settings > Integrations can set up computer use inside Maple itself.
-The embedded CUA runtime uses the pinned Cua Driver Rust SDK; it does not need a
-separate daemon, executable, or MCP child process. Setup reports and requests
-Accessibility and Screen Recording for Maple's own app identity. Grants held by
-a separately installed CuaDriver app do not transfer to Maple.
+On macOS and Linux, Settings > Integrations can set up computer use inside
+Maple itself. The embedded CUA runtime uses the pinned Cua Driver Rust SDK; it
+does not need a separate daemon, executable, or MCP child process.
+
+On macOS, setup reports and requests Accessibility and Screen Recording for
+Maple's own app identity. Grants held by a separately installed CuaDriver app
+do not transfer to Maple. On Linux there is no setup step: the desktop portal
+asks for consent the first time a task captures the screen or sends input.
+Under GNOME on Wayland, install the `winrects@cua` GNOME Shell extension that
+ships with the SDK for accurate pointer targeting and the agent cursor.
 
 CUA keeps its native screenshot defaults. Every model receives full
 accessibility text plus a bounded projection of exact structured grounding
@@ -122,8 +127,10 @@ the embedded transport.
 
 Enabling an integration sets a device-local default for new tasks. Existing
 tasks keep their frozen integration choice and expose CUA as an independent
-per-task switch in the composer. A detected standalone CuaDriver remains a
-legacy-compatible backend until the user explicitly sets up the built-in one;
+per-task switch in the composer. A task that never chose a backend adopts the
+device default only when it can actually run it. A detected standalone
+CuaDriver, which Maple looks for on macOS only, remains a legacy-compatible
+backend until the user explicitly sets up the built-in one;
 Maple does not install or update it, start or stop its daemon, or alter another
 client's configuration. Custom STDIO and Streamable HTTP MCP servers remain
 account configuration that may roam between devices.

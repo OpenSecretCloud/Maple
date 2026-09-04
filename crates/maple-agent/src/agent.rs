@@ -5,8 +5,13 @@
 #![cfg_attr(not(feature = "acp"), allow(dead_code))]
 mod attachments;
 #[cfg(target_os = "macos")]
+mod bounded_process;
+#[cfg(embedded_cua)]
 mod cua;
 mod developer_tools;
+// The computer-use half of this module is reachable only from `cua`, which
+// exists only where Maple can host the CUA runtime.
+#[cfg_attr(not(embedded_cua), allow(dead_code))]
 mod image_mediation;
 mod integrations;
 #[cfg(target_os = "macos")]
@@ -103,20 +108,14 @@ const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
 pub fn begin_integration_setup(
     request: &AgentSetupIntegrationRequest,
 ) -> Result<AgentIntegrationPermissions, String> {
-    if request.id.trim() != CUA_DRIVER_INTEGRATION_ID {
-        return Err(format!("Unknown integration '{}'", request.id.trim()));
-    }
-    #[cfg(target_os = "macos")]
+    require_known_integration(&request.id)?;
+    #[cfg(embedded_cua)]
     {
-        let status = cua::request_embedded_cua_permissions();
-        Ok(AgentIntegrationPermissions {
-            accessibility: status.accessibility,
-            screen_recording: status.screen_recording,
-        })
+        Ok(cua::request_embedded_cua_permissions())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(embedded_cua))]
     {
-        Err("Built-in CUA setup is currently available only on macOS".to_string())
+        Err("Built-in CUA setup is not available on this operating system yet".to_string())
     }
 }
 #[cfg(test)]
@@ -2204,7 +2203,12 @@ async fn start_runtime_for_user(
     // This account-scoped PermissionManager is the one AgentManager actually
     // inspects. Force every Maple-routed tool through ActionRequired before it
     // is constructed so stale Goose AlwaysAllow entries cannot bypass Maple.
-    reset_maple_owned_permission_file(&goose_path_root.join("config").join("permission.yaml"))?;
+    let goose_config_dir = goose_path_root.join("config");
+    reset_maple_owned_permission_file(&goose_config_dir.join("permission.yaml"))?;
+    // Rewriting that file drops any tool entry Maple added, so the embedded
+    // CUA tools must be pinned into it again before the next desktop run.
+    #[cfg(embedded_cua)]
+    cua::reset_pinned_tool_permissions(goose_config_dir.clone());
 
     #[cfg(target_os = "macos")]
     let login_shell_search_paths = Some(
@@ -2230,7 +2234,7 @@ async fn start_runtime_for_user(
     // rollback runs. Such rows have never admitted user work; sweep them before
     // the runtime becomes visible, while renamed or messaged tasks survive.
     sweep_unprompted_acp_sessions(session_manager.as_ref()).await;
-    let permission_manager = Arc::new(PermissionManager::new(goose_path_root.join("config")));
+    let permission_manager = Arc::new(PermissionManager::new(goose_config_dir));
     let goose_config = GooseAgentConfig::new(
         Arc::clone(&session_manager),
         permission_manager,
@@ -2370,9 +2374,7 @@ impl AgentRuntimeHandle {
         &self,
         request: AgentSetIntegrationEnabledRequest,
     ) -> Result<Vec<AgentIntegration>, String> {
-        if request.id.trim() != CUA_DRIVER_INTEGRATION_ID {
-            return Err(format!("Unknown integration '{}'", request.id.trim()));
-        }
+        require_known_integration(&request.id)?;
         self.verify_generation().await?;
         let detected = detect_integrations().await;
         let state = &self.service;
@@ -2390,9 +2392,7 @@ impl AgentRuntimeHandle {
         &self,
         request: AgentSetupIntegrationRequest,
     ) -> Result<Vec<AgentIntegration>, String> {
-        if request.id.trim() != CUA_DRIVER_INTEGRATION_ID {
-            return Err(format!("Unknown integration '{}'", request.id.trim()));
-        }
+        require_known_integration(&request.id)?;
         self.verify_generation().await?;
         let detected = detect_integrations().await;
         let state = &self.service;
@@ -2411,9 +2411,9 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let servers = normalize_mcp_servers(servers)?;
-        validate_custom_mcp_integration_collisions(&state.host.paths, &self.user_id, &servers)?;
         let mut config =
             load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
+        validate_new_mcp_integration_collisions(&config.mcp_servers, &servers)?;
         config.mcp_servers = servers.clone();
         save_agent_config_inner(&state.host.paths, &self.user_id, &config)
             .map_err(|e| e.to_string())?;
@@ -2848,17 +2848,17 @@ impl AgentRuntimeHandle {
         } else {
             SessionType::User
         };
+        let stored_integrations = stored_integrations_for_read(&state.host.paths, user_id);
         let cua_state = cua_state_for_new_session(
-            &state.host.paths,
-            user_id,
+            &stored_integrations,
             request.mcp_server_names.as_deref(),
-            session_type == SessionType::User && !has_external_tool_context,
+            session_type == SessionType::User,
         )?;
         let requested_mcp_names = requested_mcp_names_without_embedded_cua(
             request.mcp_server_names.as_deref(),
             cua_state,
         );
-        let configured_mcp = effective_mcp_servers(&state.host.paths, user_id, config.mcp_servers)?;
+        let configured_mcp = effective_mcp_servers(&stored_integrations, config.mcp_servers)?;
         let selected_mcp = select_mcp_servers(&configured_mcp, requested_mcp_names.as_deref())?;
         let selected_extensions = selected_mcp
             .iter()
@@ -3988,14 +3988,14 @@ impl AgentRuntimeHandle {
             .get_session(session_id.trim(), false)
             .await
             .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        let stored_integrations = stored_integrations_for_read(&state.host.paths, user_id);
         let configured = effective_mcp_servers(
-            &state.host.paths,
-            user_id,
+            &stored_integrations,
             load_agent_config_inner(&state.host.paths, user_id)
                 .map_err(|error| format!("Failed to load MCP servers: {error}"))?
                 .mcp_servers,
         )?;
-        project_session_mcp_servers(&state.host.paths, user_id, &configured, &session)
+        project_session_mcp_servers(&stored_integrations, &configured, &session)
     }
 
     pub async fn set_session_mcp_server_enabled(
@@ -4042,9 +4042,9 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.maple_api_session),
             )
         };
+        let stored_integrations = stored_integrations_for_read(&state.host.paths, user_id);
         let configured = effective_mcp_servers(
-            &state.host.paths,
-            user_id,
+            &stored_integrations,
             load_agent_config_inner(&state.host.paths, user_id)
                 .map_err(|error| format!("Failed to load MCP servers: {error}"))?
                 .mcp_servers,
@@ -4072,7 +4072,7 @@ impl AgentRuntimeHandle {
         }
         let agent = manager_result.agent;
         if requested_key == CUA_DRIVER_MCP_NAME
-            && session_cua_backend(&state.host.paths, user_id, &session)?
+            && session_cua_backend(&stored_integrations, &session)
                 == Some(AgentIntegrationBackend::Embedded)
         {
             if session.session_type != SessionType::User {
@@ -4131,12 +4131,7 @@ impl AgentRuntimeHandle {
                 .get_session(&session_id, false)
                 .await
                 .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
-            return project_session_mcp_servers(
-                &state.host.paths,
-                user_id,
-                &configured,
-                &refreshed,
-            );
+            return project_session_mcp_servers(&stored_integrations, &configured, &refreshed);
         }
         // Preflight Skills restoration before detaching the working client or changing persisted MCP
         // state. Reattaching this prepared client after the mutation cannot fail.
@@ -4211,7 +4206,7 @@ impl AgentRuntimeHandle {
             .get_session(&session_id, false)
             .await
             .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
-        project_session_mcp_servers(&state.host.paths, user_id, &configured, &refreshed)
+        project_session_mcp_servers(&stored_integrations, &configured, &refreshed)
     }
 
     pub async fn delete_session(&self, session_id: String) -> Result<(), String> {
@@ -8175,6 +8170,7 @@ async fn configure_session_agent(
     .await
 }
 
+#[cfg(embedded_cua)]
 fn embedded_cua_extension_config() -> ExtensionConfig {
     ExtensionConfig::Builtin {
         name: CUA_DRIVER_MCP_NAME.to_string(),
@@ -8231,20 +8227,13 @@ async fn reconcile_embedded_cua_client(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(embedded_cua)]
 async fn attach_embedded_cua_client(
     agent: &Arc<Agent>,
     session: &Session,
     account_scope: &str,
     primary_model_supports_vision: bool,
 ) -> Result<(), String> {
-    let permission_status = cua::embedded_cua_permission_status();
-    if !permission_status.accessibility || !permission_status.screen_recording {
-        return Err(
-            "Maple needs Accessibility and Screen Recording permission before built-in CUA can run"
-                .to_string(),
-        );
-    }
     // A CUA trusted authorization has absolute and idle TTLs. Renew that
     // authorization at each desktop run boundary instead of keeping a cached
     // Agent's old authority alive indefinitely. The account/task-scoped CUA
@@ -8276,14 +8265,14 @@ async fn attach_embedded_cua_client(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(embedded_cua))]
 async fn attach_embedded_cua_client(
     _agent: &Arc<Agent>,
     _session: &Session,
     _account_scope: &str,
     _primary_model_supports_vision: bool,
 ) -> Result<(), String> {
-    Err("Built-in CUA is not available on this platform".to_string())
+    Err("Built-in CUA is not available on this operating system yet".to_string())
 }
 
 /// Install Maple's provider, permission routing, and built-in tool clients

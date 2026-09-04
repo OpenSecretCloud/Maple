@@ -172,10 +172,12 @@ pub(super) async fn mediate_tool_result_images(
         return result;
     }
 
+    // A cancelled run still walks every image. `describe_image_for_text_model`
+    // returns immediately once the token is cancelled, and the loop turns that
+    // into an explicit "unavailable" line. Breaking out instead would leave the
+    // images already stripped from the result with nothing in their place, so a
+    // truncated observation would look complete to the model.
     for (offset, (image_data, mime_type)) in images.into_iter().enumerate() {
-        if cancel_token.is_cancelled() {
-            break;
-        }
         let image_index = offset + 1;
         let label = profile.description_label(image_index, image_count);
         let description = describe_image_for_text_model(
@@ -337,11 +339,13 @@ fn text_only_result(mut result: CallToolResult) -> CallToolResult {
     result
 }
 
-fn error_result(text: impl Into<String>) -> CallToolResult {
+pub(super) fn error_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![prioritized_text(format!("Error: {}", text.into()))])
 }
 
-fn prioritized_text(text: impl Into<String>) -> ContentBlock {
+/// Tool output the model should read but never treat as conversation-level
+/// context. Every Maple-authored tool content block uses this shape.
+pub(super) fn prioritized_text(text: impl Into<String>) -> ContentBlock {
     ContentBlock::Text(
         TextContent::new(text).with_annotations(Annotations::default().with_priority(0.0)),
     )

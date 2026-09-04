@@ -11,14 +11,18 @@ use std::collections::HashSet;
 use std::process::Stdio;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
-#[cfg(target_os = "macos")]
-use tokio::io::AsyncReadExt;
 
 pub(super) const CUA_DRIVER_INTEGRATION_ID: &str = "cua-driver";
+/// The name Goose shows for the extension and that Maple uses when it has to
+/// talk about the integration in an error.
 pub(super) const CUA_DRIVER_NAME: &str = "Computer use (CUA)";
 pub(super) const CUA_DRIVER_MCP_NAME: &str = "cua-driver";
 pub(super) const CUA_DRIVER_DESCRIPTION: &str =
     "Let models view and control desktop applications using CUA built into Maple.";
+/// What the Integrations page shows. The catalog owns this copy so the page
+/// renders what it is given instead of keeping a second set of strings.
+const CUA_DRIVER_CARD_NAME: &str = "Cua";
+const CUA_DRIVER_CARD_DESCRIPTION: &str = "Let Maple see and control apps on this computer.";
 const CUA_EXTERNAL_MCP_DESCRIPTION: &str =
     "Control desktop applications through the locally installed Cua Driver.";
 #[cfg(target_os = "macos")]
@@ -34,7 +38,7 @@ const CUA_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CUA_MANIFEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredIntegrationRegistry {
+pub(super) struct StoredIntegrationRegistry {
     version: u32,
     #[serde(default)]
     integrations: Vec<StoredIntegration>,
@@ -46,6 +50,20 @@ impl Default for StoredIntegrationRegistry {
             version: INTEGRATIONS_FILE_VERSION,
             integrations: Vec::new(),
         }
+    }
+}
+
+impl StoredIntegrationRegistry {
+    fn cua(&self) -> Option<&StoredIntegration> {
+        self.integrations
+            .iter()
+            .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
+    }
+
+    fn cua_mut(&mut self) -> Option<&mut StoredIntegration> {
+        self.integrations
+            .iter_mut()
+            .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
     }
 }
 
@@ -99,13 +117,13 @@ pub(super) struct CuaDetection {
 }
 
 impl CuaDetection {
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(not(embedded_cua), test))]
     fn not_detected() -> Self {
         Self {
             availability: AgentIntegrationAvailability::NotDetected,
             permissions: None,
             standalone_version: None,
-            detail: Some("Built-in CUA is currently available only on macOS.".to_string()),
+            detail: Some("Built-in CUA is not available on this operating system yet.".to_string()),
             external_server: None,
         }
     }
@@ -113,14 +131,14 @@ impl CuaDetection {
     fn embedded_ready(&self) -> bool {
         self.permissions
             .as_ref()
-            .is_some_and(|permissions| permissions.accessibility && permissions.screen_recording)
+            .is_some_and(AgentIntegrationPermissions::ready)
     }
 
     fn public(&self, stored: Option<&StoredIntegration>) -> AgentIntegration {
         AgentIntegration {
             id: CUA_DRIVER_INTEGRATION_ID.to_string(),
-            name: CUA_DRIVER_NAME.to_string(),
-            description: CUA_DRIVER_DESCRIPTION.to_string(),
+            name: CUA_DRIVER_CARD_NAME.to_string(),
+            description: CUA_DRIVER_CARD_DESCRIPTION.to_string(),
             availability: self.availability,
             backend: stored.map(|entry| entry.backend),
             version: embedded_cua_version(),
@@ -132,12 +150,12 @@ impl CuaDetection {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(embedded_cua)]
 fn embedded_cua_version() -> Option<String> {
     Some(super::cua::EMBEDDED_CUA_VERSION.to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(embedded_cua))]
 fn embedded_cua_version() -> Option<String> {
     None
 }
@@ -146,17 +164,22 @@ pub(super) async fn detect_integrations() -> CuaDetection {
     detect_cua_driver().await
 }
 
+/// The only integration Maple curates today. Every entry point that accepts an
+/// integration id checks it here so they cannot disagree.
+pub(super) fn require_known_integration(id: &str) -> Result<(), String> {
+    if id.trim() == CUA_DRIVER_INTEGRATION_ID {
+        return Ok(());
+    }
+    Err(format!("Unknown integration '{}'", id.trim()))
+}
+
 pub(super) fn project_integrations(
     paths: &AgentPathLayout,
     user_id: &str,
     detection: &CuaDetection,
 ) -> Result<Vec<AgentIntegration>, String> {
     let stored = load_stored_integrations(paths, user_id)?;
-    let entry = stored
-        .integrations
-        .iter()
-        .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID);
-    Ok(vec![detection.public(entry)])
+    Ok(vec![detection.public(stored.cua())])
 }
 
 pub(super) fn set_integration_default(
@@ -165,10 +188,7 @@ pub(super) fn set_integration_default(
     request: &AgentSetIntegrationEnabledRequest,
     detection: &CuaDetection,
 ) -> Result<Vec<AgentIntegration>, String> {
-    let id = request.id.trim();
-    if id != CUA_DRIVER_INTEGRATION_ID {
-        return Err(format!("Unknown integration '{}'", request.id.trim()));
-    }
+    require_known_integration(&request.id)?;
 
     let custom = normalize_mcp_servers(
         load_agent_config_inner(paths, user_id)
@@ -179,11 +199,7 @@ pub(super) fn set_integration_default(
 
     if request.enabled {
         ensure_no_custom_integration_collision(&custom, CUA_DRIVER_MCP_NAME)?;
-        match stored
-            .integrations
-            .iter_mut()
-            .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
-        {
+        match stored.cua_mut() {
             Some(entry) => {
                 match entry.backend {
                     AgentIntegrationBackend::Embedded if !detection.embedded_ready() => {
@@ -224,23 +240,12 @@ pub(super) fn set_integration_default(
                 });
             }
         }
-    } else if let Some(entry) = stored
-        .integrations
-        .iter_mut()
-        .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
-    {
+    } else if let Some(entry) = stored.cua_mut() {
         entry.enabled = false;
     }
 
     save_stored_integrations(paths, user_id, &stored)?;
-    Ok(vec![
-        detection.public(
-            stored
-                .integrations
-                .iter()
-                .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID),
-        ),
-    ])
+    Ok(vec![detection.public(stored.cua())])
 }
 
 /// Switch the new-task default to Maple's embedded backend only after the OS
@@ -261,11 +266,7 @@ pub(super) fn select_embedded_integration_backend(
     )?;
     ensure_no_custom_integration_collision(&custom, CUA_DRIVER_MCP_NAME)?;
     let mut stored = load_stored_integrations(paths, user_id)?;
-    match stored
-        .integrations
-        .iter_mut()
-        .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
-    {
+    match stored.cua_mut() {
         Some(entry) => {
             entry.backend = AgentIntegrationBackend::Embedded;
             if detection.external_server.is_some() {
@@ -284,21 +285,53 @@ pub(super) fn select_embedded_integration_backend(
 }
 
 pub(super) fn effective_mcp_servers(
-    paths: &AgentPathLayout,
-    user_id: &str,
+    stored: &StoredIntegrationRegistry,
     custom: Vec<AgentMcpServer>,
 ) -> Result<Vec<AgentMcpServer>, String> {
     let mut servers = custom;
-    for entry in load_stored_integrations(paths, user_id)?.integrations {
-        if let Some(mut server) = entry.external_server {
-            // Keep the concrete external definition available to old tasks,
-            // but only select it by default while External owns the global
-            // default. Embedded sessions are represented in Maple metadata.
-            server.enabled = entry.enabled && entry.backend == AgentIntegrationBackend::External;
-            servers.push(server);
-        }
+    for entry in &stored.integrations {
+        let Some(server) = entry.external_server.as_ref() else {
+            continue;
+        };
+        // The integration owns this extension key. A custom server that a
+        // previous release let the user save under the same name is shadowed
+        // rather than merged: merging would make normalization fail and lock
+        // the account out of every task, and silently keeping the custom one
+        // would let it be replaced later without the user being told.
+        servers.retain(|candidate| !is_cua_key(&candidate.name));
+        let mut server = server.clone();
+        // Keep the concrete external definition available to old tasks,
+        // but only select it by default while External owns the global
+        // default. Embedded sessions are represented in Maple metadata.
+        server.enabled = entry.enabled && entry.backend == AgentIntegrationBackend::External;
+        servers.push(server);
     }
     normalize_mcp_servers(servers)
+}
+
+/// Whether a configured server name addresses the curated CUA integration.
+pub(super) fn is_cua_key(name: &str) -> bool {
+    goose::config::extensions::name_to_key(name.trim()) == CUA_DRIVER_MCP_NAME
+}
+
+/// Read the device-local registry for a path that must keep working.
+///
+/// Task creation and the composer MCP menu must not fail because an optional
+/// device-local file was written by a newer build or damaged. Those paths get
+/// an empty registry and a log line instead of an error. None of them writes
+/// the file, so the stored choice is never clobbered and the Integrations page
+/// still reports the real problem.
+pub(super) fn stored_integrations_for_read(
+    paths: &AgentPathLayout,
+    user_id: &str,
+) -> StoredIntegrationRegistry {
+    match load_stored_integrations(paths, user_id) {
+        Ok(registry) => registry,
+        Err(error) => {
+            log::warn!("Ignoring unusable device-local integration settings: {error}");
+            StoredIntegrationRegistry::default()
+        }
+    }
 }
 
 /// Freeze the device default into a newly-created task. Explicit server names
@@ -306,24 +339,15 @@ pub(super) fn effective_mcp_servers(
 /// backend itself always comes from the Maple-managed registry and cannot be
 /// supplied by an external caller.
 pub(super) fn cua_state_for_new_session(
-    paths: &AgentPathLayout,
-    user_id: &str,
+    stored: &StoredIntegrationRegistry,
     requested_names: Option<&[String]>,
     allow_embedded: bool,
 ) -> Result<Option<CuaSessionState>, String> {
-    let stored = load_stored_integrations(paths, user_id)?;
-    let Some(entry) = stored
-        .integrations
-        .iter()
-        .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
-    else {
+    let Some(entry) = stored.cua() else {
         return Ok(None);
     };
-    let explicitly_requested = requested_names.map(|names| {
-        names
-            .iter()
-            .any(|name| goose::config::extensions::name_to_key(name.trim()) == CUA_DRIVER_MCP_NAME)
-    });
+    let explicitly_requested =
+        requested_names.map(|names| names.iter().any(|name| is_cua_key(name)));
     let enabled = explicitly_requested.unwrap_or(entry.enabled);
     if entry.backend == AgentIntegrationBackend::Embedded && !allow_embedded {
         if explicitly_requested == Some(true) {
@@ -349,9 +373,7 @@ pub(super) fn requested_mcp_names_without_embedded_cua(
             .iter()
             .filter(|name| {
                 cua_state.is_none_or(|state| {
-                    state.backend != AgentIntegrationBackend::Embedded
-                        || goose::config::extensions::name_to_key(name.trim())
-                            != CUA_DRIVER_MCP_NAME
+                    state.backend != AgentIntegrationBackend::Embedded || !is_cua_key(name)
                 })
             })
             .cloned()
@@ -359,50 +381,46 @@ pub(super) fn requested_mcp_names_without_embedded_cua(
     })
 }
 
+/// Which backend a task uses, in the order the answer becomes authoritative.
+///
+/// A task that recorded its own choice keeps it. A task that predates that
+/// metadata but holds the concrete external extension is unambiguous. Only a
+/// task that never expressed a choice falls back to the device default, and
+/// only when it could actually run that default: a task outside the desktop
+/// app never adopts the embedded backend, because it cannot use it.
 pub(super) fn session_cua_backend(
-    paths: &AgentPathLayout,
-    user_id: &str,
+    stored: &StoredIntegrationRegistry,
     session: &Session,
-) -> Result<Option<AgentIntegrationBackend>, String> {
+) -> Option<AgentIntegrationBackend> {
     if let Some(state) = session_cua_state(session) {
-        return Ok(Some(state.backend));
+        return Some(state.backend);
     }
     if session_mcp_extension_keys(session).contains(CUA_DRIVER_MCP_NAME) {
         // Tasks created by the external-driver PR predate Maple's logical
         // metadata. Their concrete persisted stdio extension is unambiguous.
-        return Ok(Some(AgentIntegrationBackend::External));
+        return Some(AgentIntegrationBackend::External);
     }
-    Ok(load_stored_integrations(paths, user_id)?
-        .integrations
-        .into_iter()
-        .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
-        .map(|entry| entry.backend))
+    let backend = stored.cua().map(|entry| entry.backend)?;
+    if backend == AgentIntegrationBackend::Embedded && session.session_type != SessionType::User {
+        return None;
+    }
+    Some(backend)
 }
 
 pub(super) fn project_session_mcp_servers(
-    paths: &AgentPathLayout,
-    user_id: &str,
+    stored: &StoredIntegrationRegistry,
     configured: &[AgentMcpServer],
     session: &Session,
 ) -> Result<Vec<AgentSessionMcpServer>, String> {
     let mut servers = session_mcp_servers(configured, session);
-    servers.retain(|server| {
-        goose::config::extensions::name_to_key(&server.name) != CUA_DRIVER_MCP_NAME
-    });
+    servers.retain(|server| !is_cua_key(&server.name));
 
     let state = session_cua_state(session);
     let active_external = session_mcp_extension_keys(session).contains(CUA_DRIVER_MCP_NAME);
-    let stored = load_stored_integrations(paths, user_id)?
-        .integrations
-        .into_iter()
-        .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID);
-    let backend = state
-        .map(|state| state.backend)
-        .or_else(|| active_external.then_some(AgentIntegrationBackend::External))
-        .or_else(|| stored.as_ref().map(|entry| entry.backend));
-    let Some(backend) = backend else {
+    let Some(backend) = session_cua_backend(stored, session) else {
         return Ok(servers);
     };
+    let stored = stored.cua();
     let enabled = match backend {
         AgentIntegrationBackend::Embedded => state.is_some_and(|state| state.enabled),
         AgentIntegrationBackend::External => active_external,
@@ -410,10 +428,7 @@ pub(super) fn project_session_mcp_servers(
     let available = match backend {
         AgentIntegrationBackend::Embedded => embedded_cua_ready(),
         AgentIntegrationBackend::External => {
-            active_external
-                || stored
-                    .as_ref()
-                    .is_some_and(|entry| entry.external_server.is_some())
+            active_external || stored.is_some_and(|entry| entry.external_server.is_some())
         }
     };
     servers.push(AgentSessionMcpServer {
@@ -430,23 +445,37 @@ pub(super) fn project_session_mcp_servers(
     Ok(servers)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(embedded_cua)]
 fn embedded_cua_ready() -> bool {
-    let permissions = super::cua::embedded_cua_permission_status();
-    permissions.accessibility && permissions.screen_recording
+    super::cua::embedded_cua_permission_status().ready()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(embedded_cua))]
 fn embedded_cua_ready() -> bool {
     false
 }
 
-pub(super) fn validate_custom_mcp_integration_collisions(
-    _paths: &AgentPathLayout,
-    _user_id: &str,
-    custom: &[AgentMcpServer],
+/// Reject a *newly* introduced custom server that would shadow the curated
+/// integration.
+///
+/// A name an earlier release accepted stays saveable, so one legacy entry
+/// cannot make every unrelated MCP edit fail. It is still shadowed at
+/// selection time by [`effective_mcp_servers`], and enabling the integration
+/// still refuses outright while it exists.
+pub(super) fn validate_new_mcp_integration_collisions(
+    previous: &[AgentMcpServer],
+    next: &[AgentMcpServer],
 ) -> Result<(), String> {
-    ensure_no_custom_integration_collision(custom, CUA_DRIVER_MCP_NAME)
+    let existing = previous
+        .iter()
+        .map(|server| goose::config::extensions::name_to_key(&server.name))
+        .collect::<HashSet<_>>();
+    let added = next
+        .iter()
+        .filter(|server| !existing.contains(&goose::config::extensions::name_to_key(&server.name)))
+        .cloned()
+        .collect::<Vec<_>>();
+    ensure_no_custom_integration_collision(&added, CUA_DRIVER_MCP_NAME)
 }
 
 fn ensure_no_custom_integration_collision(
@@ -614,34 +643,20 @@ fn save_stored_integrations(
 }
 
 async fn detect_cua_driver() -> CuaDetection {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(embedded_cua))]
     {
-        return CuaDetection::not_detected();
+        CuaDetection::not_detected()
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(embedded_cua)]
     {
-        let permission_status = super::cua::embedded_cua_permission_status();
-        let permissions = AgentIntegrationPermissions {
-            accessibility: permission_status.accessibility,
-            screen_recording: permission_status.screen_recording,
-        };
-        let candidate = PathBuf::from(CUA_DRIVER_MACOS_BINARY);
-        let (standalone_version, external_server, standalone_error) = match candidate.try_exists() {
-            Ok(false) => (None, None, None),
-            Err(error) => (
-                None,
-                None,
-                Some(format!(
-                    "could not inspect the standalone application: {error}"
-                )),
-            ),
-            Ok(true) => match probe_cua_manifest(&candidate).await {
-                Ok((version, server)) => (Some(version), Some(server), None),
-                Err(error) => (None, None, Some(error)),
-            },
-        };
-        let embedded_ready = permissions.accessibility && permissions.screen_recording;
+        let permissions = super::cua::embedded_cua_permission_status();
+        // Only macOS ships a standalone CuaDriver application at a path Maple
+        // knows. Everywhere else the built-in runtime is the only backend, so
+        // there is nothing to discover and no foreign executable to run.
+        let (standalone_version, external_server, standalone_error) =
+            detect_standalone_driver().await;
+        let embedded_ready = permissions.ready();
         let availability = if embedded_ready || external_server.is_some() {
             AgentIntegrationAvailability::Available
         } else {
@@ -660,6 +675,61 @@ async fn detect_cua_driver() -> CuaDetection {
             external_server,
         }
     }
+}
+
+/// Discover a separately installed CuaDriver application, if this platform has
+/// one at a path Maple knows.
+#[cfg(target_os = "macos")]
+async fn detect_standalone_driver() -> (Option<String>, Option<AgentMcpServer>, Option<String>) {
+    let candidate = PathBuf::from(CUA_DRIVER_MACOS_BINARY);
+    let exists = match candidate.try_exists() {
+        Ok(exists) => exists,
+        Err(error) => {
+            return (
+                None,
+                None,
+                Some(format!(
+                    "could not inspect the standalone application: {error}"
+                )),
+            );
+        }
+    };
+    if !exists {
+        return (None, None, None);
+    }
+    if let Err(error) = ensure_standalone_binary_is_protected(&candidate) {
+        return (None, None, Some(error));
+    }
+    match probe_cua_manifest(&candidate).await {
+        Ok((version, server)) => (Some(version), Some(server), None),
+        Err(error) => (None, None, Some(error)),
+    }
+}
+
+#[cfg(all(embedded_cua, not(target_os = "macos")))]
+async fn detect_standalone_driver() -> (Option<String>, Option<AgentMcpServer>, Option<String>) {
+    (None, None, None)
+}
+
+/// Refuse to execute a driver that any other account can rewrite.
+///
+/// Maple runs this binary to read its manifest whenever the Integrations page
+/// opens, so a group- or world-writable file at the expected path would let a
+/// second account choose the code Maple runs. Ownership is deliberately not
+/// checked: a normal drag-install leaves the application owned by the user who
+/// installed it.
+#[cfg(target_os = "macos")]
+fn ensure_standalone_binary_is_protected(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("could not inspect the standalone application: {error}"))?;
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err(
+            "the standalone application is writable by other accounts and was not run".to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -681,7 +751,11 @@ async fn probe_cua_manifest(path: &Path) -> Result<(String, AgentMcpServer), Str
         .stdout
         .take()
         .ok_or_else(|| "could not capture the manifest".to_string())?;
-    let mut reader = tokio::spawn(read_bounded_manifest(stdout));
+    let mut reader = tokio::spawn(super::bounded_process::read_bounded_stdout(
+        stdout,
+        MAX_CUA_MANIFEST_BYTES,
+        "the Cua Driver manifest",
+    ));
 
     let status = match tokio::time::timeout(CUA_PROBE_TIMEOUT, child.wait()).await {
         Ok(Ok(status)) => status,
@@ -708,22 +782,6 @@ async fn probe_cua_manifest(path: &Path) -> Result<(String, AgentMcpServer), Str
         return Err(format!("manifest probe exited with {status}"));
     }
     parse_cua_manifest(&canonical, &bytes)
-}
-
-#[cfg(target_os = "macos")]
-async fn read_bounded_manifest(stdout: tokio::process::ChildStdout) -> Result<Vec<u8>, String> {
-    let mut stdout = stdout.take((MAX_CUA_MANIFEST_BYTES + 1) as u64);
-    let mut bytes = Vec::new();
-    stdout
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|error| format!("could not read the manifest: {error}"))?;
-    if bytes.len() > MAX_CUA_MANIFEST_BYTES {
-        return Err(format!(
-            "manifest exceeds the {MAX_CUA_MANIFEST_BYTES}-byte limit"
-        ));
-    }
-    Ok(bytes)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -930,11 +988,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            effective_mcp_servers(&first, user, Vec::new()).unwrap(),
+            effective_mcp_servers(&stored_integrations_for_read(&first, user), Vec::new()).unwrap(),
             vec![server]
         );
         assert!(
-            effective_mcp_servers(&second, user, Vec::new())
+            effective_mcp_servers(&stored_integrations_for_read(&second, user), Vec::new())
                 .unwrap()
                 .is_empty()
         );
@@ -957,6 +1015,95 @@ mod tests {
                 .unwrap_err()
                 .contains("Rename or remove")
         );
+    }
+
+    fn http_server(name: &str) -> AgentMcpServer {
+        AgentMcpServer {
+            name: name.to_string(),
+            description: String::new(),
+            enabled: true,
+            timeout_seconds: DEFAULT_MCP_TIMEOUT_SECONDS,
+            transport: AgentMcpTransport::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                environment: Vec::new(),
+                headers: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn an_unusable_registry_file_does_not_block_tasks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = AgentPathLayout::from_app_roots(
+            temporary.path().join("config"),
+            temporary.path().join("local-data"),
+        );
+        let user = "cua-unusable@example.com";
+        let path = integrations_path(&paths, user).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A file written by a newer build. Task creation must survive it.
+        std::fs::write(&path, br#"{"version": 99, "integrations": []}"#).unwrap();
+
+        assert!(load_stored_integrations(&paths, user).is_err());
+        let stored = stored_integrations_for_read(&paths, user);
+        assert!(stored.cua().is_none());
+        assert_eq!(
+            effective_mcp_servers(&stored, vec![http_server("Docs")]).unwrap(),
+            vec![http_server("Docs")]
+        );
+        // The unusable file is still there for Settings to report, not clobbered.
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn a_legacy_cua_named_server_does_not_block_unrelated_saves() {
+        let legacy = http_server("Cua Driver");
+        // Saving the same list again, or adding an unrelated server, succeeds.
+        assert!(
+            validate_new_mcp_integration_collisions(
+                std::slice::from_ref(&legacy),
+                &[legacy.clone(), http_server("Docs")],
+            )
+            .is_ok()
+        );
+        // Introducing the colliding name for the first time still fails.
+        assert!(
+            validate_new_mcp_integration_collisions(
+                &[http_server("Docs")],
+                std::slice::from_ref(&legacy),
+            )
+            .unwrap_err()
+            .contains("Rename or remove")
+        );
+    }
+
+    #[test]
+    fn the_integration_shadows_a_custom_server_that_shares_its_key() {
+        let temporary = tempfile::tempdir().unwrap();
+        let managed = stored_cua_server(temporary.path(), true);
+        let stored = StoredIntegrationRegistry {
+            version: INTEGRATIONS_FILE_VERSION,
+            integrations: vec![StoredIntegration {
+                id: CUA_DRIVER_INTEGRATION_ID.to_string(),
+                enabled: true,
+                backend: AgentIntegrationBackend::External,
+                external_server: Some(managed.clone()),
+            }],
+        };
+
+        // A legacy custom server under the same key is replaced rather than
+        // merged: merging would make normalization reject the whole account.
+        let effective = effective_mcp_servers(
+            &stored,
+            vec![http_server("cua-driver"), http_server("Docs")],
+        )
+        .unwrap();
+        assert_eq!(effective.len(), 2);
+        assert!(effective.iter().any(|server| server.name == "Docs"));
+        assert!(effective.iter().any(|server| {
+            server.name == CUA_DRIVER_MCP_NAME
+                && matches!(server.transport, AgentMcpTransport::Stdio { .. })
+        }));
     }
 
     #[test]
@@ -1008,8 +1155,7 @@ mod tests {
         .unwrap();
         assert!(enabled[0].enabled_for_new_tasks);
         let effective = effective_mcp_servers(
-            &paths,
-            user,
+            &stored_integrations_for_read(&paths, user),
             load_agent_config_inner(&paths, user).unwrap().mcp_servers,
         )
         .unwrap();
@@ -1029,8 +1175,7 @@ mod tests {
         .unwrap();
         assert!(!disabled[0].enabled_for_new_tasks);
         let effective = effective_mcp_servers(
-            &paths,
-            user,
+            &stored_integrations_for_read(&paths, user),
             load_agent_config_inner(&paths, user).unwrap().mcp_servers,
         )
         .unwrap();
@@ -1097,10 +1242,7 @@ mod tests {
         .unwrap();
         let detection = CuaDetection {
             availability: AgentIntegrationAvailability::Available,
-            permissions: Some(AgentIntegrationPermissions {
-                accessibility: true,
-                screen_recording: true,
-            }),
+            permissions: Some(AgentIntegrationPermissions::none_required()),
             standalone_version: Some("test".to_string()),
             detail: None,
             external_server: None,
@@ -1112,27 +1254,23 @@ mod tests {
             Some(AgentIntegrationBackend::Embedded)
         );
         assert!(projected[0].enabled_for_new_tasks);
+        let stored = stored_integrations_for_read(&paths, user);
         assert_eq!(
-            cua_state_for_new_session(&paths, user, None, true).unwrap(),
+            cua_state_for_new_session(&stored, None, true).unwrap(),
             Some(CuaSessionState {
                 backend: AgentIntegrationBackend::Embedded,
                 enabled: true,
             })
         );
         assert!(
-            cua_state_for_new_session(&paths, user, None, false)
+            cua_state_for_new_session(&stored, None, false)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            cua_state_for_new_session(
-                &paths,
-                user,
-                Some(&[CUA_DRIVER_MCP_NAME.to_string()]),
-                false,
-            )
-            .unwrap_err()
-            .contains("Maple desktop app")
+            cua_state_for_new_session(&stored, Some(&[CUA_DRIVER_MCP_NAME.to_string()]), false)
+                .unwrap_err()
+                .contains("Maple desktop app")
         );
     }
 }

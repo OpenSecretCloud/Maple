@@ -1,13 +1,17 @@
 # Embedded CUA developer preview
 
 Maple can expose the Cua Driver tool catalog to its embedded Goose agent
-without launching a Cua Driver daemon or an MCP child process. The macOS build
-pins Cua's `cua-driver-sdk` source at an immutable commit directly on top of
-release `0.23.2` and creates the native runtime inside the Maple process. The
-source delta fixes Cua's macOS SDK link declarations for Xcode 26.5 and routes
-self-process window restoration through AppKit's main queue. The latter avoids
-an upstream `invoke_menu` crash that only exists when CUA is embedded inside
-the application whose window it restores.
+without launching a Cua Driver daemon or an MCP child process. The macOS and
+Linux builds pin Cua's `cua-driver-sdk` source at an immutable commit directly
+on top of release `0.23.2` and create the native runtime inside the Maple
+process. The source delta fixes Cua's macOS SDK link declarations for Xcode
+26.5 and routes self-process window restoration through AppKit's main queue.
+The latter avoids an upstream `invoke_menu` crash that only exists when CUA is
+embedded inside the application whose window it restores.
+
+Which platforms host the runtime is decided in one place, by the `embedded_cua`
+configuration flag that `crates/maple-agent/build.rs` sets. Adding a platform
+is a change there plus a dependency entry, not an edit in each module.
 
 This is an explicitly enabled developer preview. It is not an installer, a
 general integration marketplace, or a sandbox for computer-use actions.
@@ -26,9 +30,12 @@ a second copy of CUA's tool definitions or run an in-process network protocol.
 
 Goose still owns tool discovery, namespacing, dispatch, and Maple's normal
 approval routing. Maple marks every CUA operation as sensitive for approval
-purposes, including screenshots and accessibility reads. The user's existing
-Maple permission mode therefore remains the place to choose between per-call
-approval and allow-all behavior.
+purposes, including screenshots and accessibility reads, because an
+observation can carry private data from any application. That rule lives in
+Maple's own Goose permission file, which Goose consults before any annotation
+or heuristic, so CUA's published schemas and annotations reach the model
+unaltered. The user's existing Maple permission mode therefore remains the
+place to choose between per-call approval and allow-all behavior.
 
 CUA's action schemas and screenshot defaults remain canonical. Maple adapts the
 general-purpose catalog only at the bound-session boundary: it hides CUA's six
@@ -43,15 +50,18 @@ image-free projection of CUA's structured grounding fields. This is necessary
 because Goose's current OpenAI formatter otherwise preserves that field without
 showing its exact window IDs, element tokens, coordinate frames, and refusal
 details to the primary model. Vision-capable models also retain the canonical
-raw image blocks. For a text-only primary model, Maple instead sends each
-returned screenshot through the same fixed, tool-free Gemma perception helper
-used by `read_image`, removes the raw image blocks, and appends a factual
-CUA-specific description. The original non-image content, structured metadata,
-protocol metadata, and error state remain intact. The helper is instructed to
-report controls, state, layout, coordinate-space-aware approximate positions,
-and discrepancies from the accessibility tree without selecting actions or
-inventing element identifiers. Helper usage is recorded outside the primary
-context ledger.
+raw image blocks, but a request carries only the newest few tool-produced
+images as pixels and replaces older ones with a short marker; the stored
+transcript keeps every screenshot, so this bounds what one request uploads
+rather than what the task remembers. For a text-only primary model, Maple
+instead sends each returned screenshot through the same fixed, tool-free Gemma
+perception helper used by `read_image`, removes the raw image blocks, and
+appends a factual CUA-specific description. The original non-image content,
+structured metadata, protocol metadata, and error state remain intact. The
+helper is instructed to report controls, state, layout,
+coordinate-space-aware approximate positions, and discrepancies from the
+accessibility tree without selecting actions or inventing element identifiers.
+Helper usage is recorded outside the primary context ledger.
 
 The native client is ephemeral. Goose must not serialize a Rust object as an
 ordinary MCP transport, so its extension snapshot excludes the client. Maple
@@ -66,16 +76,34 @@ desktop authority.
 
 ## Setup and existing installations
 
-Settings > Integrations reports Maple's own Accessibility and Screen Recording
-status. **Set up CUA** invokes Cua's in-process macOS permission helpers on the
-UI thread only after a direct user action. If macOS does not raise a prompt,
-Maple opens the next missing Privacy & Security pane, Accessibility first and
-then Screen Recording. Those grants belong to Maple's app identity;
-permissions previously granted to `CuaDriver.app`, Codex, a terminal, or any
-other host do not transfer.
+What a platform needs before the runtime can start is described by one list of
+permissions with their grant state. An empty list means the platform needs no
+grant up front, so both the readiness rule and the "what is still missing"
+answer come from that one value.
 
-Maple continues to detect a compatible standalone `CuaDriver.app` for migration
-from the first integrations preview. Existing tasks and version-1 device
+On macOS the list holds Accessibility and Screen Recording. Settings >
+Integrations reports Maple's own status for each. **Set up CUA** invokes Cua's
+in-process macOS permission helpers on the UI thread only after a direct user
+action. If macOS does not raise a prompt, Maple opens the next missing Privacy
+& Security pane, Accessibility first and then Screen Recording. Those grants
+belong to Maple's app identity; permissions previously granted to
+`CuaDriver.app`, Codex, a terminal, or any other host do not transfer.
+
+On Linux the list is empty, so there is no setup step and the card offers
+**Enable** directly. The desktop portal asks for consent when a task first
+takes a screenshot or sends input, and the compositor remembers that choice.
+Under GNOME on Wayland, install and enable the `winrects@cua` GNOME Shell
+extension that ships with the SDK. Without it a client cannot learn a window's
+screen origin, so pointer targeting derived from the accessibility tree is less
+accurate and the agent cursor overlay does not appear. Everything else,
+including screenshots through the portal and input through libei, works without
+it. Per-window PipeWire capture stays off because it needs PipeWire headers at
+build time; full-screen portal screenshots do not.
+
+Maple detects a compatible standalone `CuaDriver.app` on macOS only, for
+migration from the first integrations preview. It refuses to run that
+executable when other accounts can write to it. No other platform looks for a
+separately installed driver, so no foreign binary is ever executed. Existing tasks and version-1 device
 settings retain that external backend. A successful explicit setup switches
 the default for future tasks to embedded CUA without rewriting historical task
 snapshots. Maple never installs, updates, launches, or reconfigures the
@@ -114,8 +142,12 @@ remain separate distribution concerns.
 
 ## Preview limits
 
-- macOS is the first embedded platform; other platforms keep the integration
-  hidden until their packaging and permission UX are implemented.
+- macOS and Linux host the runtime. Windows keeps the integration hidden until
+  its packaging and permission story are implemented, even though the SDK
+  carries a Windows backend.
+- On Linux the preview is validated against GNOME on Wayland. Other
+  compositors and X11 sessions are supported by the SDK but are not part of
+  Maple's own testing yet.
 - CUA's Rust packages are not published to crates.io and its portable tool
   contract is still marked experimental, so Maple pins an exact source commit.
   The pin currently includes narrow Xcode 26.5 linker and embedded-host

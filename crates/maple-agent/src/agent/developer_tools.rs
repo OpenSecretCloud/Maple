@@ -26,8 +26,8 @@ use process_wrap::tokio::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
 use process_wrap::tokio::{CreationFlags, JobObject};
 use rmcp::model::{
-    Annotations, CallToolResult, ContentBlock, Implementation, InitializeResult, JsonObject,
-    ListToolsResult, ServerCapabilities, TextContent, Tool, ToolAnnotations,
+    CallToolResult, ContentBlock, Implementation, InitializeResult, JsonObject, ListToolsResult,
+    ServerCapabilities, Tool, ToolAnnotations,
 };
 use rmcp::object;
 use serde::{Deserialize, Deserializer, de::Error as SerdeDeError};
@@ -57,7 +57,8 @@ use super::image_mediation::{
     record_contextual_image_usage,
 };
 use super::image_mediation::{
-    IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS, contextualize_read_image_result,
+    IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS, contextualize_read_image_result, error_result,
+    prioritized_text,
 };
 #[cfg(test)]
 use super::shell_permission::classifier::{side_model_config, thinking_disabled_request_params};
@@ -823,18 +824,8 @@ fn success_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![prioritized_text(text)])
 }
 
-fn error_result(text: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![prioritized_text(format!("Error: {}", text.into()))])
-}
-
 fn text_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![prioritized_text(text)])
-}
-
-fn prioritized_text(text: impl Into<String>) -> ContentBlock {
-    ContentBlock::Text(
-        TextContent::new(text).with_annotations(Annotations::default().with_priority(0.0)),
-    )
 }
 
 fn shell_error_result(message: impl Into<String>, exit_code: Option<i32>) -> CallToolResult {

@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
 
 const LOGIN_SHELL_PATH_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_SHELL_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -139,7 +138,11 @@ async fn run_login_shell_path_query(
         .stdout()
         .take()
         .ok_or_else(|| "could not capture login-shell output".to_string())?;
-    let mut stdout_task = tokio::spawn(read_bounded_stdout(stdout));
+    let mut stdout_task = tokio::spawn(super::bounded_process::read_bounded_stdout(
+        stdout,
+        MAX_LOGIN_SHELL_OUTPUT_BYTES,
+        "login-shell output",
+    ));
 
     let status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(Ok(status)) => status,
@@ -178,21 +181,6 @@ async fn run_login_shell_path_query(
     };
     child.disarm();
     Ok(LoginShellOutput { status, stdout })
-}
-
-async fn read_bounded_stdout(stdout: tokio::process::ChildStdout) -> Result<Vec<u8>, String> {
-    let mut stdout = stdout.take((MAX_LOGIN_SHELL_OUTPUT_BYTES + 1) as u64);
-    let mut bytes = Vec::new();
-    stdout
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|error| format!("could not read login-shell output: {error}"))?;
-    if bytes.len() > MAX_LOGIN_SHELL_OUTPUT_BYTES {
-        return Err(format!(
-            "login shell produced more than {MAX_LOGIN_SHELL_OUTPUT_BYTES} bytes"
-        ));
-    }
-    Ok(bytes)
 }
 
 fn parse_login_shell_search_paths(stdout: &[u8]) -> Result<Vec<String>, String> {

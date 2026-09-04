@@ -19,12 +19,12 @@ use std::sync::Arc;
 
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentIntegration,
-    AgentIntegrationPermissions, AgentProjectRootRegistration, AgentProjectTrustStatus,
-    AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
-    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
-    AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest, AgentSlashCommand,
-    AgentStartRequest, AgentSubagent, MapleAgentHostResources, MapleAgentService,
-    RecentProjectRoot,
+    AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectRootRegistration,
+    AgentProjectTrustStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
+    AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
+    AgentSessionSummary, AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
+    AgentSlashCommand, AgentStartRequest, AgentSubagent, MapleAgentHostResources,
+    MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
@@ -1773,15 +1773,19 @@ const MACOS_ACCESSIBILITY_SETTINGS_URL: &str =
 const MACOS_SCREEN_RECORDING_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
+/// The settings pane that grants the permission the integration still needs.
+///
+/// Which permission that is comes from `AgentIntegrationPermissions`, so the
+/// pane Maple opens and the notice telling the user what to do there cannot
+/// disagree about the order.
 fn next_integration_setup_settings_url(
     permissions: &AgentIntegrationPermissions,
 ) -> Option<&'static str> {
-    if !permissions.accessibility {
-        Some(MACOS_ACCESSIBILITY_SETTINGS_URL)
-    } else if !permissions.screen_recording {
-        Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
-    } else {
-        None
+    match permissions.first_missing()? {
+        AgentIntegrationPermissionKind::Accessibility => Some(MACOS_ACCESSIBILITY_SETTINGS_URL),
+        AgentIntegrationPermissionKind::ScreenRecording => {
+            Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
+        }
     }
 }
 
@@ -1957,27 +1961,30 @@ mod tests {
         );
     }
 
+    fn macos_permissions(
+        accessibility: bool,
+        screen_recording: bool,
+    ) -> AgentIntegrationPermissions {
+        AgentIntegrationPermissions::default()
+            .with(AgentIntegrationPermissionKind::Accessibility, accessibility)
+            .with(
+                AgentIntegrationPermissionKind::ScreenRecording,
+                screen_recording,
+            )
+    }
+
     #[test]
     fn integration_setup_opens_one_missing_permission_at_a_time() {
         assert_eq!(
-            next_integration_setup_settings_url(&AgentIntegrationPermissions {
-                accessibility: false,
-                screen_recording: false,
-            }),
+            next_integration_setup_settings_url(&macos_permissions(false, false)),
             Some(MACOS_ACCESSIBILITY_SETTINGS_URL)
         );
         assert_eq!(
-            next_integration_setup_settings_url(&AgentIntegrationPermissions {
-                accessibility: true,
-                screen_recording: false,
-            }),
+            next_integration_setup_settings_url(&macos_permissions(true, false)),
             Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
         );
         assert_eq!(
-            next_integration_setup_settings_url(&AgentIntegrationPermissions {
-                accessibility: true,
-                screen_recording: true,
-            }),
+            next_integration_setup_settings_url(&macos_permissions(true, true)),
             None
         );
     }
