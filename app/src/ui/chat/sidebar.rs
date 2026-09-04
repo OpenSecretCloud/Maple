@@ -1012,7 +1012,7 @@ impl ChatScreen {
             .right_0()
             .w(px(180.))
             .py_1()
-            .rounded_md()
+            .rounded(theme::RADIUS_SM)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()))
@@ -1101,14 +1101,15 @@ impl ChatScreen {
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
                 .id(id)
-                .px_3()
+                .px_4()
                 .py_1p5()
-                .rounded_md()
+                .rounded_full()
                 .text_sm()
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .when(primary, |button| {
                     button
                         .bg(gpui::rgb(theme::accent()))
-                        .text_color(gpui::rgb(theme::bg_app()))
+                        .text_color(gpui::rgb(theme::on_accent()))
                 })
                 .when(!primary, |button| {
                     button
@@ -1138,7 +1139,7 @@ impl ChatScreen {
                 div()
                     .w(px(460.))
                     .p_5()
-                    .rounded_lg()
+                    .rounded(theme::RADIUS_MD)
                     .bg(gpui::rgb(theme::bg_elevated()))
                     .border_1()
                     .border_color(gpui::rgb(theme::border()))
@@ -1245,7 +1246,7 @@ impl ChatScreen {
             .right_0()
             .w(px(180.))
             .py_1()
-            .rounded_md()
+            .rounded(theme::RADIUS_SM)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()))
@@ -1272,14 +1273,15 @@ impl ChatScreen {
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
                 .id(id)
-                .px_3()
+                .px_4()
                 .py_1p5()
-                .rounded_md()
+                .rounded_full()
                 .text_sm()
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .when(primary, |button| {
                     button
                         .bg(gpui::rgb(theme::status_error()))
-                        .text_color(gpui::rgb(theme::text_primary()))
+                        .text_color(gpui::rgb(theme::on_accent()))
                 })
                 .when(!primary, |button| {
                     button
@@ -1309,7 +1311,7 @@ impl ChatScreen {
                     .id("confirm-remove-card")
                     .w(px(420.))
                     .p_5()
-                    .rounded_lg()
+                    .rounded(theme::RADIUS_MD)
                     .bg(gpui::rgb(theme::bg_elevated()))
                     .border_1()
                     .border_color(gpui::rgb(theme::border()))
@@ -1542,7 +1544,7 @@ impl ChatScreen {
                     .mt_3()
                     .px_2()
                     .py_1()
-                    .rounded_md()
+                    .rounded(theme::RADIUS_SM)
                     .bg(gpui::rgb(theme::bg_sidebar_pill()))
                     .border_1()
                     .border_color(gpui::rgb(if active {
@@ -1561,7 +1563,7 @@ impl ChatScreen {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded_md()
+                                .rounded(theme::RADIUS_SM)
                                 .hover(|style| style.cursor_pointer())
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.clear_search(cx);
@@ -1591,7 +1593,7 @@ impl ChatScreen {
                 .mb_3()
                 .px_4()
                 .py_1p5()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .flex()
                 .items_center()
                 .gap_2()
@@ -1635,7 +1637,7 @@ impl ChatScreen {
                     .mb_1()
                     .px_4()
                     .py_1()
-                    .rounded_md()
+                    .rounded(theme::RADIUS_SM)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -1669,7 +1671,7 @@ impl ChatScreen {
                     .mb_1()
                     .px_4()
                     .py_1()
-                    .rounded_md()
+                    .rounded(theme::RADIUS_SM)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -1714,7 +1716,7 @@ impl ChatScreen {
                 )
             })
             .when(application_selected, |row| {
-                row.rounded_md()
+                row.rounded(theme::RADIUS_SM)
                     .border_l_2()
                     .border_color(gpui::rgb(theme::accent()))
             })
@@ -1742,7 +1744,7 @@ impl ChatScreen {
                     .w_full()
                     .px_4()
                     .py_1()
-                    .rounded_md()
+                    .rounded(theme::RADIUS_SM)
                     .text_sm()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(gpui::rgb(theme::text_primary()))
@@ -1776,7 +1778,7 @@ impl ChatScreen {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_md()
+                            .rounded(theme::RADIUS_SM)
                             .hover(|style| {
                                 style
                                     .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -1917,7 +1919,7 @@ impl ChatScreen {
                 .left_0()
                 .min_w(px(220.))
                 .py_1()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .bg(gpui::rgb(theme::bg_elevated()))
                 .border_1()
                 .border_color(gpui::rgb(theme::border()))
@@ -1970,7 +1972,7 @@ impl ChatScreen {
             .when(!archived, |row| row.pl_8())
             .pr_6()
             .py_1()
-            .rounded_lg()
+            .rounded(theme::RADIUS_MD)
             .text_sm()
             .when(is_selected, |row| {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
@@ -2039,7 +2041,9 @@ impl ChatScreen {
                     .top_0()
                     .bottom_0()
                     .when(is_pinned, |overlay| overlay.right(px(26.)))
-                    .when(!is_pinned, |overlay| overlay.right_0().rounded_r_lg())
+                    .when(!is_pinned, |overlay| {
+                        overlay.right_0().rounded_r(theme::RADIUS_MD)
+                    })
                     .flex()
                     .items_center()
                     .gap_1p5()
@@ -2093,7 +2097,7 @@ impl ChatScreen {
             .flex()
             .items_center()
             .justify_center()
-            .rounded_md()
+            .rounded(theme::RADIUS_SM)
             .size_9()
             .rounded_full()
             .hover(|style| {
@@ -2138,7 +2142,7 @@ pub(super) fn row_action(
         .flex()
         .items_center()
         .justify_center()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .opacity(0.)
         .group_hover(group.clone(), |style| style.opacity(1.))
         .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))

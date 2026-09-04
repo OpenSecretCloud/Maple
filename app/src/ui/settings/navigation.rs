@@ -197,7 +197,7 @@ impl SettingsScreen {
         div()
             .id(id)
             .when(selected, |row| {
-                row.rounded_md()
+                row.rounded(crate::ui::theme::RADIUS_SM)
                     .border_l_2()
                     .border_color(gpui::rgb(crate::ui::theme::accent()))
                     .anchor_scroll(Some(self.application_anchor.clone()))

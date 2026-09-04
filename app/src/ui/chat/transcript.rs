@@ -100,7 +100,7 @@ impl ChatScreen {
                                 });
                             })
                             .when(application_selected, |row| {
-                                row.rounded_md()
+                                row.rounded(theme::RADIUS_SM)
                                     .border_l_2()
                                     .border_color(gpui::rgb(theme::accent()))
                             })
@@ -167,9 +167,9 @@ impl ChatScreen {
                         .mb_2()
                         .px_3()
                         .py_2()
-                        .rounded_md()
+                        .rounded(theme::RADIUS_SM)
                         .bg(gpui::rgb(theme::status_warning()))
-                        .text_color(gpui::rgb(theme::bg_app()))
+                        .text_color(gpui::rgb(theme::on_accent()))
                         .text_sm()
                         .child(notice),
                 )
@@ -271,7 +271,7 @@ fn copy_message_button(
         .gap_1()
         .px_1p5()
         .py_0p5()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .text_xs()
         .text_color(gpui::rgb(theme::text_muted()))
         .opacity(0.)
@@ -326,7 +326,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .max_w(gpui::relative(0.75))
                     .px_4()
                     .py_2()
-                    .rounded_lg()
+                    .rounded(theme::RADIUS_MD)
                     .bg(gpui::rgb(theme::bg_user_bubble()))
                     .border_1()
                     .border_color(gpui::rgb(theme::user_bubble_border()))
@@ -364,7 +364,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                                                     ))
                                                     .max_w(px(320.))
                                                     .max_h(px(240.))
-                                                    .rounded_md()
+                                                    .rounded(theme::RADIUS_SM)
                                                     .overflow_hidden()
                                                     .object_fit(gpui::ObjectFit::Contain)
                                                     .border_1()
@@ -380,7 +380,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                                         .gap_1()
                                         .px_2()
                                         .py_0p5()
-                                        .rounded_md()
+                                        .rounded(theme::RADIUS_SM)
                                         .bg(gpui::rgb(theme::bg_elevated()))
                                         .text_xs()
                                         .text_color(gpui::rgb(theme::text_secondary()))
@@ -495,7 +495,7 @@ fn render_thinking(
     let card = div()
         .px_3()
         .py_2()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .bg(gpui::rgb(theme::bg_elevated()))
         .flex()
         .flex_col()
@@ -674,7 +674,7 @@ pub(super) fn render_plan_row(entry: &PlanEntry) -> Div {
             PlanStatus::Completed => checkbox
                 .border_color(gpui::rgb(theme::status_success()))
                 .bg(gpui::rgb(theme::status_success()))
-                .child(icon("check", px(11.), theme::bg_app())),
+                .child(icon("check", px(11.), theme::on_accent())),
             PlanStatus::InProgress => checkbox
                 .border_color(gpui::rgb(theme::status_running()))
                 .child(
@@ -761,7 +761,7 @@ fn render_tool_with_diff(
         .flex()
         .flex_col()
         .mt_1()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .bg(gpui::rgb(theme::bg_code_block()))
         .border_1()
         .border_color(gpui::rgb(theme::border_subtle()))
@@ -856,7 +856,7 @@ fn render_tool(
         .gap_1()
         .px_3()
         .py_2()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .bg(gpui::rgb(theme::bg_tool_card()))
         .border_1()
         .border_color(gpui::rgb(theme::border_subtle()))
@@ -1038,7 +1038,7 @@ fn render_permission_row(item: &AgentTimelineItem) -> Div {
         .items_center()
         .px_3()
         .py_2()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .bg(gpui::rgb(theme::permission_fill()))
         .border_1()
         .border_color(gpui::rgb(theme::permission_border()))
@@ -1083,7 +1083,7 @@ pub(super) fn render_question_card(
         .m_4()
         .px_4()
         .py_3()
-        .rounded_lg()
+        .rounded(theme::RADIUS_MD)
         .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
         .border_color(gpui::rgb(theme::status_running()))
@@ -1180,7 +1180,7 @@ pub(super) fn render_question_card(
                     .gap_2()
                     .px_2()
                     .py_1p5()
-                    .rounded_md()
+                    .rounded(theme::RADIUS_SM)
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -1225,7 +1225,7 @@ pub(super) fn render_question_card(
             .gap_1p5()
             .px_2()
             .py_1()
-            .rounded_md()
+            .rounded(theme::RADIUS_SM)
             .text_xs()
             .text_color(gpui::rgb(theme::text_muted()))
             .hover(|style| {
@@ -1287,7 +1287,7 @@ pub(super) fn render_permission_card(
         .m_4()
         .px_4()
         .py_3()
-        .rounded_lg()
+        .rounded(theme::RADIUS_MD)
         .bg(gpui::rgb(theme::permission_fill()))
         .border_1()
         .border_color(gpui::rgb(theme::permission_border()))
@@ -1335,7 +1335,8 @@ pub(super) fn render_permission_card(
                 .id(id)
                 .px_4()
                 .py_1()
-                .rounded_md()
+                .rounded_full()
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .when(application_choice == Some(index), |button| {
                     button
                         .border_2()
@@ -1343,7 +1344,7 @@ pub(super) fn render_permission_card(
                 })
                 .bg(gpui::rgb(if responding { theme::border() } else { color }))
                 .text_sm()
-                .text_color(gpui::rgb(theme::bg_app()))
+                .text_color(gpui::rgb(theme::on_accent()))
                 .when(!responding, |el| {
                     el.hover(|style| style.cursor_pointer())
                         .on_click(cx.listener(move |this, _event, window, cx| {

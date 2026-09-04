@@ -849,7 +849,7 @@ impl Render for SettingsScreen {
                             .id("settings-sign-out")
                             .px_2()
                             .py_1()
-                            .rounded_md()
+                            .rounded(theme::RADIUS_SM)
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .hover(|style| {
@@ -897,7 +897,7 @@ impl SettingsScreen {
                     )))
                     .px_3()
                     .py_2()
-                    .rounded_md()
+                    .rounded(theme::RADIUS_SM)
                     .text_sm()
                     .text_color(gpui::rgb(if selected {
                         theme::text_primary()
@@ -1279,7 +1279,7 @@ impl SettingsScreen {
             .flex_col()
             .gap_3()
             .p_4()
-            .rounded_lg()
+            .rounded(theme::RADIUS_MD)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::accent()))
@@ -1526,7 +1526,7 @@ impl SettingsScreen {
                     || SettingsTarget::PromptEditor,
                     div()
                         .p_3()
-                        .rounded_md()
+                        .rounded(theme::RADIUS_SM)
                         .bg(gpui::rgb(theme::bg_input()))
                         .border_1()
                         .border_color(gpui::rgb(theme::border()))
@@ -1584,7 +1584,7 @@ impl SettingsScreen {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.open_mcp_editor(None, cx);
                             }))
-                            .child(icon("plus", widgets::ROW_ICON, theme::bg_app()))
+                            .child(icon("plus", widgets::ROW_ICON, theme::on_accent()))
                             .child("Add server"),
                     ),
                 ),
@@ -1732,7 +1732,7 @@ impl SettingsScreen {
                 .id(id)
                 .px_3()
                 .py_1()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .text_sm()
                 .text_color(gpui::rgb(if active {
                     theme::text_primary()
@@ -1748,7 +1748,7 @@ impl SettingsScreen {
             .flex_col()
             .gap_3()
             .p_4()
-            .rounded_lg()
+            .rounded(theme::RADIUS_MD)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()))
@@ -1782,7 +1782,7 @@ impl SettingsScreen {
                             .flex()
                             .gap_1()
                             .p_1()
-                            .rounded_md()
+                            .rounded(theme::RADIUS_SM)
                             .bg(gpui::rgb(theme::bg_sidebar_chrome()))
                             .w(px(320.))
                             .child(
@@ -1872,7 +1872,7 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
         .gap_3()
         .px_4()
         .py_4()
-        .rounded_lg()
+        .rounded(theme::RADIUS_MD)
         .bg(gpui::rgb(theme::bg_sidebar_card()))
         .child(
             div()
@@ -1932,7 +1932,7 @@ fn pill_button(
             theme::bg_sidebar_card()
         }))
         .text_color(gpui::rgb(if on {
-            theme::bg_app()
+            theme::on_accent()
         } else {
             theme::text_secondary()
         }))
@@ -1981,11 +1981,14 @@ fn text_to_pairs(text: &str) -> Vec<AgentMcpKeyValue> {
         .collect()
 }
 
+/// Pane heading in the brand display face, like the section titles of
+/// the brand kit.
 fn section_title(label: &str) -> Div {
     div()
-        .text_lg()
-        .font_weight(gpui::FontWeight::BOLD)
-        .text_color(gpui::rgb(theme::text_primary()))
+        .font_family(crate::assets::FONT_DISPLAY)
+        .text_size(gpui::px(26.))
+        .line_height(gpui::px(32.))
+        .text_color(gpui::rgb(theme::display_text()))
         .child(label.to_string())
 }
 
@@ -1993,7 +1996,7 @@ fn shortcut_keycap(label: String, bound: bool) -> Div {
     div()
         .px_2p5()
         .py_1()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .border_1()
         .border_color(gpui::rgb(theme::border()))
         .bg(gpui::rgb(theme::bg_input()))
@@ -2124,7 +2127,7 @@ fn setting_row(
                 )))
                 .px_4()
                 .py_2()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .bg(gpui::rgb(theme::bg_input()))
                 .border_1()
                 .border_color(gpui::rgb(theme::border()))
@@ -2193,7 +2196,7 @@ fn usage_table(title: &str, rows: &[crate::settings::UsageRow]) -> Div {
                 .gap_3()
                 .px_3()
                 .py_2()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .bg(gpui::rgb(theme::bg_elevated()))
                 .child(
                     div()

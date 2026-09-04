@@ -2230,7 +2230,7 @@ impl ChatScreen {
                 .gap_3()
                 .px_3()
                 .py_2()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .bg(gpui::rgb(theme::bg_elevated()))
                 .border_1()
                 .border_color(gpui::rgb(theme::border()))
@@ -2247,7 +2247,7 @@ impl ChatScreen {
                         .id("update-open")
                         .px_2()
                         .py_0p5()
-                        .rounded_md()
+                        .rounded(theme::RADIUS_SM)
                         .text_color(gpui::rgb(theme::accent()))
                         .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
                         .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -2266,7 +2266,7 @@ impl ChatScreen {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded_md()
+                        .rounded(theme::RADIUS_SM)
                         .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.update = None;
@@ -2757,7 +2757,7 @@ impl ChatScreen {
                         .occlude()
                         .w(px(160.))
                         .py_1()
-                        .rounded_md()
+                        .rounded(theme::RADIUS_SM)
                         .bg(gpui::rgb(theme::bg_elevated()))
                         .border_1()
                         .border_color(gpui::rgb(theme::border()))
@@ -4334,7 +4334,7 @@ impl Render for ChatScreen {
                             gpui::img(gpui::ImageSource::Image(image))
                                 .max_w(gpui::relative(0.9))
                                 .max_h(gpui::relative(0.9))
-                                .rounded_lg()
+                                .rounded(theme::RADIUS_MD)
                                 .border_1()
                                 .border_color(gpui::rgb(theme::border())),
                         ),
@@ -4355,7 +4355,7 @@ impl ChatScreen {
             .flex()
             .items_center()
             .justify_center()
-            .rounded_md()
+            .rounded(theme::RADIUS_SM)
             .hover(|style| {
                 style
                     .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -4435,9 +4435,9 @@ impl ChatScreen {
                             div()
                                 .px_3()
                                 .py_2()
-                                .rounded_md()
+                                .rounded(theme::RADIUS_SM)
                                 .bg(gpui::rgb(theme::status_warning()))
-                                .text_color(gpui::rgb(theme::bg_app()))
+                                .text_color(gpui::rgb(theme::on_accent()))
                                 .text_sm()
                                 .child(notice),
                         )

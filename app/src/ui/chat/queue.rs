@@ -201,7 +201,7 @@ impl ChatScreen {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .when(busy, |button| button.opacity(0.5))
                 .when(!busy, |button| {
                     button.hover(|style| {
@@ -244,7 +244,7 @@ impl ChatScreen {
                         .gap_2()
                         .px_3()
                         .py_1()
-                        .rounded_lg()
+                        .rounded(theme::RADIUS_MD)
                         .bg(gpui::rgb(theme::bg_elevated()))
                         .border_1()
                         .border_color(gpui::rgb(theme::border_subtle()))

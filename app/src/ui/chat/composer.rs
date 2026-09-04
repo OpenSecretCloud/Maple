@@ -82,7 +82,7 @@ impl ChatScreen {
             .flex_col()
             .mt_1()
             .py_1()
-            .rounded_lg()
+            .rounded(theme::RADIUS_MD)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()))
@@ -181,7 +181,7 @@ impl ChatScreen {
                                     .id("root-apply")
                                     .px_3()
                                     .py_1()
-                                    .rounded_md()
+                                    .rounded(theme::RADIUS_SM)
                                     .bg(gpui::rgb(theme::accent()))
                                     .text_sm()
                                     .text_color(gpui::rgb(theme::text_primary()))
@@ -358,7 +358,7 @@ impl ChatScreen {
                                 .when(enabled, |track| track.justify_end())
                                 .child(div().size(px(14.)).rounded_full().bg(gpui::rgb(
                                     if enabled {
-                                        theme::bg_app()
+                                        theme::on_accent()
                                     } else {
                                         theme::text_secondary()
                                     },
@@ -422,7 +422,7 @@ impl ChatScreen {
             .flex_col()
             .mt_1()
             .py_1()
-            .rounded_lg()
+            .rounded(theme::RADIUS_MD)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()));
@@ -596,7 +596,7 @@ impl ChatScreen {
                 div()
                     .id("btw-close")
                     .px_2()
-                    .rounded_md()
+                    .rounded(theme::RADIUS_SM)
                     .cursor_pointer()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
@@ -640,7 +640,7 @@ impl ChatScreen {
                         .max_w(gpui::relative(0.75))
                         .px_3()
                         .py_1p5()
-                        .rounded_lg()
+                        .rounded(theme::RADIUS_MD)
                         .bg(gpui::rgb(theme::bg_user_bubble()))
                         .border_1()
                         .border_color(gpui::rgb(theme::user_bubble_border()))
@@ -670,7 +670,7 @@ impl ChatScreen {
                 .flex()
                 .flex_col()
                 .mb_2()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .bg(gpui::rgb(theme::bg_tool_card()))
                 .border_1()
                 .border_color(gpui::rgb(theme::border_subtle()))
@@ -712,7 +712,7 @@ impl ChatScreen {
                 .flex()
                 .flex_col()
                 .mb_2()
-                .rounded_md()
+                .rounded(theme::RADIUS_SM)
                 .bg(gpui::rgb(theme::bg_tool_card()))
                 .border_1()
                 .border_color(gpui::rgb(theme::border_subtle()))
@@ -772,7 +772,7 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .mb_2()
-            .rounded_md()
+            .rounded(theme::RADIUS_SM)
             .bg(gpui::rgb(theme::bg_tool_card()))
             .border_1()
             .border_color(gpui::rgb(theme::border_subtle()))
@@ -828,7 +828,7 @@ impl ChatScreen {
                             .flex_none()
                             .px_2()
                             .py_0p5()
-                            .rounded_md()
+                            .rounded(theme::RADIUS_SM)
                             .bg(gpui::rgb(theme::bg_elevated()))
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_secondary()))
@@ -860,7 +860,7 @@ impl ChatScreen {
             .relative()
             .debug_selector(|| "composer-box".to_string())
             .when(expanded, |container| container.flex_1().min_h_0())
-            .rounded(px(24.))
+            .rounded(theme::RADIUS_XL)
             .bg(gpui::rgb(theme::bg_app()))
             .border_1()
             .border_color(gpui::rgb(theme::accent()))
@@ -884,7 +884,7 @@ impl ChatScreen {
                         div()
                             .relative()
                             .size_16()
-                            .rounded_xl()
+                            .rounded(theme::RADIUS_LG)
                             .border_1()
                             .border_color(gpui::rgb(theme::border()))
                             .bg(gpui::rgb(theme::bg_elevated()))
@@ -897,7 +897,7 @@ impl ChatScreen {
                                 Some(thumbnail) => frame.child(
                                     gpui::img(gpui::ImageSource::Image(Arc::clone(thumbnail)))
                                         .size_full()
-                                        .rounded_xl(),
+                                        .rounded(theme::RADIUS_LG),
                                 ),
                                 None => {
                                     frame.child(icon("image", px(20.), theme::text_secondary()))
@@ -952,9 +952,11 @@ impl ChatScreen {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_md()
+                            .rounded(theme::RADIUS_SM)
                             .hover(|style| {
-                                style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer()
+                                style
+                                    .bg(gpui::rgb(theme::accent_container()))
+                                    .cursor_pointer()
                             })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.toggle_composer_expanded(cx);
@@ -1054,9 +1056,11 @@ impl ChatScreen {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_md()
+                            .rounded(theme::RADIUS_SM)
                             .hover(|style| {
-                                style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer()
+                                style
+                                    .bg(gpui::rgb(theme::accent_container()))
+                                    .cursor_pointer()
                             })
                             .when(self.image_picking, |el| el.opacity(0.5))
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -1074,10 +1078,12 @@ impl ChatScreen {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded_md()
+                                .rounded(theme::RADIUS_SM)
                                 .when(recording, |el| el.bg(gpui::rgb(theme::status_error())))
                                 .hover(|style| {
-                                    style.bg(gpui::rgb(theme::bg_elevated())).cursor_pointer()
+                                    style
+                                        .bg(gpui::rgb(theme::accent_container()))
+                                        .cursor_pointer()
                                 })
                                 .when(transcribing, |el| el.opacity(0.5))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
@@ -1086,7 +1092,7 @@ impl ChatScreen {
                                 .child(if transcribing {
                                     spinner("transcribing", px(16.), theme::text_secondary())
                                 } else if recording {
-                                    icon("square", px(14.), theme::bg_app()).into_any_element()
+                                    icon("square", px(14.), theme::on_accent()).into_any_element()
                                 } else {
                                     icon("mic", px(16.), theme::text_secondary()).into_any_element()
                                 }),
@@ -1112,13 +1118,18 @@ impl ChatScreen {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded_xl()
+                                .rounded(theme::RADIUS_LG)
                                 .bg(gpui::rgb(theme::status_error()))
                                 .hover(|style| style.cursor_pointer())
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.stop(cx);
                                 }))
-                                .child(div().size_3().rounded_md().bg(gpui::rgb(theme::bg_app()))),
+                                .child(
+                                    div()
+                                        .size_3()
+                                        .rounded(theme::RADIUS_SM)
+                                        .bg(gpui::rgb(theme::bg_app())),
+                                ),
                         )
                     })
                     .child(
@@ -1142,9 +1153,9 @@ impl ChatScreen {
                                     }))
                             })
                             .child(if disabled {
-                                spinner("send-booting", px(16.), theme::bg_app())
+                                spinner("send-booting", px(16.), theme::on_accent())
                             } else {
-                                icon("arrow-up", px(16.), theme::bg_app()).into_any_element()
+                                icon("arrow-up", px(16.), theme::on_accent()).into_any_element()
                             }),
                     ),
             )
@@ -1222,7 +1233,7 @@ fn chip(
         .items_center()
         .gap_1()
         .px_2()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .text_xs()
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::rgb(color))
