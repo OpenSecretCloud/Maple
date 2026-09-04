@@ -903,7 +903,10 @@ impl ChatScreen {
                 dragged.downcast_ref::<gpui::ExternalPaths>().is_some()
             })
             .drag_over::<gpui::ExternalPaths>(|style, _paths, _window, _cx| {
-                style.bg(gpui::rgb(theme::bg_elevated()))
+                style
+                    .bg(gpui::rgb(theme::accent_container()))
+                    .border_color(gpui::rgb(theme::accent_hover()))
+                    .border_dashed()
             })
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
@@ -1058,7 +1061,11 @@ impl ChatScreen {
                         chip(
                             "mcp-menu",
                             Some("puzzle"),
-                            mcp_enabled.to_string(),
+                            if mcp_enabled == 0 {
+                                "MCP".to_string()
+                            } else {
+                                format!("{mcp_enabled} MCP")
+                            },
                             false,
                             self.mcp_menu_open,
                         )

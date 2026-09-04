@@ -267,6 +267,9 @@ pub struct ChatScreen {
     /// Task being opened whose snapshot has not landed yet, so the pane
     /// can say so instead of showing the previous task.
     loading_session: Option<String>,
+    /// Scrollbar thumb drag in progress: pointer y and thumb top at the
+    /// start, both in window pixels.
+    scrollbar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
     /// Virtualized sidebar list; its own state so the transcript's
@@ -783,6 +786,7 @@ impl ChatScreen {
             notice: None,
             booting: true,
             loading_session: None,
+            scrollbar_drag: None,
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
             sidebar_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
             sidebar_entries: Vec::new(),
@@ -4428,7 +4432,7 @@ impl Render for ChatScreen {
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
-                root.child(
+                root.child(motion::fade_in(
                     div()
                         .id("lightbox")
                         .absolute()
@@ -4450,9 +4454,25 @@ impl Render for ChatScreen {
                                 .max_h(gpui::relative(0.9))
                                 .rounded(theme::RADIUS_MD)
                                 .border_1()
-                                .border_color(gpui::rgb(theme::border())),
+                                .border_color(gpui::rgb(theme::border()))
+                                .shadow_lg(),
+                        )
+                        .child(
+                            div().absolute().top_3().right_3().child(
+                                widgets::icon_button(
+                                    "lightbox-close",
+                                    "x",
+                                    px(16.),
+                                    theme::on_accent(),
+                                )
+                                .size_8()
+                                .rounded_full()
+                                .bg(theme::overlay_hover())
+                                .tooltip(widgets::tooltip("Close", Some("Esc"))),
+                            ),
                         ),
-                )
+                    "lightbox-reveal",
+                ))
             })
             .children(confirm_remove)
             .children(trust_prompt)
@@ -4667,7 +4687,7 @@ fn git_branch(git_dir: &std::path::Path) -> Option<String> {
 fn section_label(text: &'static str) -> Div {
     div()
         .text_xs()
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(gpui::rgb(theme::text_secondary()))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(gpui::rgb(theme::text_muted()))
         .child(text)
 }

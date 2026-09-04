@@ -236,6 +236,15 @@ pub fn scrollbar_thumb() -> gpui::Rgba {
     }
 }
 
+/// Scrollbar thumb while hovered or dragged.
+pub fn scrollbar_thumb_active() -> gpui::Rgba {
+    if is_light() {
+        gpui::rgba(0x00000059)
+    } else {
+        gpui::rgba(0xffffff4d)
+    }
+}
+
 /// Placeholder text in inputs.
 pub fn placeholder() -> gpui::Hsla {
     if is_light() {
