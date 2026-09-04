@@ -10,6 +10,13 @@ layout, prerequisites, and command line modes.
 clippy with `-D warnings` for every feature set, tests). Run it before a
 commit.
 
+Build and test through `just` or `nix develop` so this checkout shares
+Cargo intermediates with other maple-gpui worktrees
+(`CARGO_BUILD_BUILD_DIR` under `~/.cache/cargo-build/maple-gpui/`). Do
+not set a per-worktree `CARGO_TARGET_DIR` or
+`MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR` unless asked. Raw `cargo`
+outside those environments rebuilds gpui into this checkout's `target/`.
+
 ```sh
 just build     # debug binary
 just run       # debug binary with RUST_LOG=warn,maple_gpui=debug
@@ -18,9 +25,8 @@ just headless  # acp and proxy modes only, no window
 just clean     # this checkout's target/ and dist/ only
 ```
 
-`just` and `nix develop` share Cargo intermediates across worktrees via
-`CARGO_BUILD_BUILD_DIR`. Raw `cargo clean` would delete that shared cache;
-use `just clean` or `just clean-local`.
+Raw `cargo clean` would delete the shared cache; use `just clean` or
+`just clean-local`.
 
 To stop a running app, use `pkill -x maple-gpui` (exact process name).
 `pkill -f` with the binary path also matches the shell that runs the
