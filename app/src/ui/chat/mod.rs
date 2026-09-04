@@ -17,7 +17,8 @@ use maple_agent::agent::{
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
-use crate::ui::icons::{icon, wordmark};
+use crate::ui::icons::{icon, spinner, wordmark};
+use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
@@ -109,8 +110,11 @@ const DEFAULT_TASK_TITLE: &str = "New Task";
 /// Recent projects the project menu lists above "New project…".
 pub(super) const ROOT_MENU_RECENTS: usize = 6;
 
-const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder...";
-const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)...";
+/// How long a notice stays before it clears itself.
+const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+
+const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder…";
+const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)…";
 const QUEUE_EDIT_PLACEHOLDER: &str =
     "Edit the queued message, then send to keep its place. Escape discards.";
 
@@ -260,6 +264,9 @@ pub struct ChatScreen {
     runtime_error: Option<SharedString>,
     notice: Option<SharedString>,
     booting: bool,
+    /// Task being opened whose snapshot has not landed yet, so the pane
+    /// can say so instead of showing the previous task.
+    loading_session: Option<String>,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
     /// Virtualized sidebar list; its own state so the transcript's
@@ -358,6 +365,8 @@ pub struct ChatScreen {
     /// A deferred repaint for a throttled stream parse is already on its
     /// way; one at a time is enough.
     stream_repaint_pending: std::cell::Cell<bool>,
+    /// Whether a notice auto-dismiss timer is in flight.
+    notice_dismiss_pending: std::cell::Cell<bool>,
     /// Per-item display strings, rebuilt when the item's revision moves.
     derived: DerivedCache,
     /// Item id to `(index in timeline, revision)`; the revision counts
@@ -773,6 +782,7 @@ impl ChatScreen {
             runtime_error: None,
             notice: None,
             booting: true,
+            loading_session: None,
             list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
             sidebar_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
             sidebar_entries: Vec::new(),
@@ -805,6 +815,7 @@ impl ChatScreen {
             default_web_enabled: settings.default_web_enabled,
             markdown_cache: MarkdownCache::default(),
             stream_repaint_pending: std::cell::Cell::new(false),
+            notice_dismiss_pending: std::cell::Cell::new(false),
             derived: DerivedCache::default(),
             timeline_index: HashMap::new(),
             sidebar_rows: Vec::new(),
@@ -1570,6 +1581,10 @@ impl ChatScreen {
             LoadMode::Reload => self.reload_generation,
         };
         let revision = *self.timeline_revisions.get(session_id).unwrap_or(&0);
+        if matches!(mode, LoadMode::Select) && !self.is_selected(session_id) {
+            self.loading_session = Some(session_id.to_string());
+            cx.notify();
+        }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let session_id = session_id.to_string();
@@ -1611,7 +1626,9 @@ impl ChatScreen {
                 let (detail, summaries) = match result {
                     Ok(detail) => detail,
                     Err(message) => {
+                        this.finish_loading(&session_id);
                         this.notice = Some(message.into());
+                        cx.notify();
                         return;
                     }
                 };
@@ -1623,6 +1640,7 @@ impl ChatScreen {
                     this.load_session(&session_id, mode, retries - 1, cx);
                     return;
                 }
+                this.finish_loading(&session_id);
                 // Stored summaries stand in for the model calls the
                 // timeline would otherwise request again.
                 let summaries: HashMap<String, SharedString> = summaries
@@ -1645,6 +1663,46 @@ impl ChatScreen {
                 }
             },
         );
+    }
+
+    /// The open of `session_id` finished (either way), so the pane stops
+    /// saying it is loading. A newer selection keeps its own marker.
+    fn finish_loading(&mut self, session_id: &str) {
+        if self.loading_session.as_deref() == Some(session_id) {
+            self.loading_session = None;
+        }
+    }
+
+    /// Overlay shown over the pane while a task snapshot is in flight.
+    fn render_loading_overlay(&self) -> Option<Div> {
+        self.loading_session.as_ref()?;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::loading_veil())
+                .child(motion::fade_in(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_4()
+                        .py_2()
+                        .rounded_full()
+                        .bg(gpui::rgb(theme::bg_elevated()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::border()))
+                        .shadow_md()
+                        .text_sm()
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .child(spinner("open-task", px(14.), theme::accent()))
+                        .child("Opening task…"),
+                    "loading-overlay-reveal",
+                )),
+        )
     }
 
     /// Install a new timeline and reset every per-item structure that is
@@ -2375,6 +2433,47 @@ impl ChatScreen {
                     }
                     this.schedule_subagent_tick(cx);
                     cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// The current notice as a dismissable row, or nothing. Showing it
+    /// arms a timer that clears it after `NOTICE_TTL` unless it changed.
+    pub(super) fn render_notice(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let notice = self.notice.clone()?;
+        self.schedule_notice_dismiss(notice.clone(), cx);
+        Some(div().child(motion::fade_in(
+            widgets::notice(
+                "notice-close",
+                notice,
+                cx.listener(|this, _event, _window, cx| {
+                    this.notice = None;
+                    cx.notify();
+                }),
+            ),
+            "notice-reveal",
+        )))
+    }
+
+    fn schedule_notice_dismiss(&self, shown: SharedString, cx: &mut Context<Self>) {
+        if self.notice_dismiss_pending.replace(true) {
+            return;
+        }
+        cx.spawn(async move |entity, cx| {
+            cx.background_executor().timer(NOTICE_TTL).await;
+            entity
+                .update(cx, |this, cx| {
+                    this.notice_dismiss_pending.set(false);
+                    if this.notice.as_ref() == Some(&shown) {
+                        this.notice = None;
+                        cx.notify();
+                    } else if this.notice.is_some() {
+                        // A newer notice replaced it: give that one its own
+                        // full time on screen.
+                        cx.notify();
+                    }
                 })
                 .ok();
         })
@@ -4107,6 +4206,7 @@ impl Render for ChatScreen {
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
         self.window_active = window.is_window_active();
+        let focused = window.focused(cx);
         if self.root_menu_focus_pending {
             self.root_menu_focus_pending = false;
             if let Some(handle) = self.root_menu_focus.clone() {
@@ -4169,6 +4269,7 @@ impl Render for ChatScreen {
             .map(|status| self.render_trust_prompt(&status, cx));
         let empty = self.timeline.is_empty();
         let collapsed = self.sidebar_collapsed;
+        let loading_overlay = self.render_loading_overlay();
         let main = if empty {
             self.render_empty_state(cx)
         } else {
@@ -4199,6 +4300,7 @@ impl Render for ChatScreen {
                         step,
                         input,
                         &self.question_selected,
+                        focused.as_ref(),
                         cx,
                     ))
                 })
@@ -4216,7 +4318,7 @@ impl Render for ChatScreen {
                         .w_full()
                         .max_w(CONTENT_WIDTH)
                         .mx_auto()
-                        .px_4()
+                        .px_6()
                         .pb_4()
                         .when(self.composer_expanded, |wrap| {
                             wrap.flex_none()
@@ -4232,6 +4334,18 @@ impl Render for ChatScreen {
                         .children(self.render_slash_palette(cx))
                         .children(self.render_menu_panel(cx)),
                 )
+        };
+        let main = match loading_overlay {
+            Some(overlay) => div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .h_full()
+                .min_w_0()
+                .child(main)
+                .child(overlay),
+            None => main,
         };
         div()
             .key_context(self.application_vim_context())
@@ -4361,6 +4475,8 @@ impl ChatScreen {
                     .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     .cursor_pointer()
             })
+            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+            .tooltip(widgets::tooltip("Toggle sidebar", Some("⌘B")))
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.execute_command(ChatCommand::ToggleSidebar, window, cx);
             }))
@@ -4384,7 +4500,8 @@ impl ChatScreen {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(if expanded { 900. } else { 650. }))
+                    .max_w(CONTENT_WIDTH)
+                    .px_2()
                     .flex()
                     .flex_col()
                     .items_center()
@@ -4430,18 +4547,7 @@ impl ChatScreen {
                         column.child(widgets::banner(theme::status_error()).child(error))
                     })
                     .children(self.render_update_banner(cx))
-                    .when_some(self.notice.clone(), |column, notice| {
-                        column.child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .rounded(theme::RADIUS_SM)
-                                .bg(gpui::rgb(theme::status_warning()))
-                                .text_color(gpui::rgb(theme::on_accent()))
-                                .text_sm()
-                                .child(notice),
-                        )
-                    }),
+                    .children(self.render_notice(cx)),
             );
         div()
             .flex()

@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*};
+use gpui::{
+    App, AppContext, Context, Div, Entity, EventEmitter, Focusable as _, Render, Window, div,
+    prelude::*,
+};
 
 use crate::backend::{AgentBackend, OAuthProvider};
 use crate::ui::icons::wordmark;
@@ -193,8 +196,9 @@ impl LoginScreen {
 impl EventEmitter<LoginSucceeded> for LoginScreen {}
 
 impl Render for LoginScreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy;
+        let focused = window.focused(cx);
         let mut card = div()
             .flex()
             .flex_col()
@@ -246,8 +250,18 @@ impl Render for LoginScreen {
         match &self.oauth {
             OAuthFlow::Idle => {
                 card = card
-                    .child(field("Email", self.email_input.clone()))
-                    .child(field("Password", self.password_input.clone()))
+                    .child(field(
+                        "Email",
+                        self.email_input.clone(),
+                        focused.as_ref(),
+                        cx,
+                    ))
+                    .child(field(
+                        "Password",
+                        self.password_input.clone(),
+                        focused.as_ref(),
+                        cx,
+                    ))
                     .child(
                         widgets::primary_button("login-submit")
                             .w_full()
@@ -317,7 +331,7 @@ impl Render for LoginScreen {
                             .line_clamp(2)
                             .child(auth_url.clone()),
                     )
-                    .child(field("", self.callback_input.clone()))
+                    .child(field("", self.callback_input.clone(), focused.as_ref(), cx))
                     .child(
                         widgets::primary_button("oauth-confirm")
                             .w_full()
@@ -379,7 +393,13 @@ fn oauth_button(
     .child(provider.label().to_string())
 }
 
-fn field(label: &str, input: Entity<TextInput>) -> Div {
+fn field(
+    label: &str,
+    input: Entity<TextInput>,
+    focused: Option<&gpui::FocusHandle>,
+    cx: &App,
+) -> Div {
+    let is_focused = focused.is_some_and(|focused| input.read(cx).focus_handle(cx) == *focused);
     let mut container = div().flex().flex_col().gap_1();
     if !label.is_empty() {
         container = container.child(
@@ -389,5 +409,5 @@ fn field(label: &str, input: Entity<TextInput>) -> Div {
                 .child(label.to_string()),
         );
     }
-    container.child(widgets::input_frame().child(input))
+    container.child(widgets::input_frame(is_focused).child(input))
 }

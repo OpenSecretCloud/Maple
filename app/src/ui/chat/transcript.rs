@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{AnimationExt, Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
+use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
 use maple_agent::agent::{AgentTimelineItem, compaction_notice_text};
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
@@ -15,12 +15,14 @@ use super::speech::speak_message_button;
 use super::{CONTENT_WIDTH, ChatScreen, TranscriptCtx};
 use crate::backend::PendingPermission;
 
-use crate::ui::icons::{icon, spinner};
+use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
+use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::widgets;
+use gpui::Focusable as _;
 
 impl ChatScreen {
     pub(super) fn render_transcript(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -43,6 +45,7 @@ impl ChatScreen {
             });
         }
         self.follow_transcript = false;
+        let show_jump = !at_bottom && count > 0;
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
@@ -152,6 +155,9 @@ impl ChatScreen {
                     .child(list),
             )
             .child(self.render_scrollbar())
+            .when(show_jump, |container| {
+                container.child(self.render_jump_to_latest(cx))
+            })
             .when_some(self.runtime_error.clone(), |container, error| {
                 container.child(
                     widgets::banner(theme::status_error())
@@ -160,20 +166,36 @@ impl ChatScreen {
                         .child(error),
                 )
             })
-            .when_some(self.notice.clone(), |container, notice| {
-                container.child(
-                    div()
-                        .mx_6()
-                        .mb_2()
-                        .px_3()
-                        .py_2()
-                        .rounded(theme::RADIUS_SM)
-                        .bg(gpui::rgb(theme::status_warning()))
-                        .text_color(gpui::rgb(theme::on_accent()))
-                        .text_sm()
-                        .child(notice),
-                )
-            })
+            .children(self.render_notice(cx).map(|notice| notice.mx_6().mb_2()))
+    }
+
+    /// Pill over the bottom edge while the view is scrolled up, so a
+    /// reader can return to the newest message with one click.
+    fn render_jump_to_latest(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .absolute()
+            .bottom_3()
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(motion::rise_in(
+                widgets::secondary_button("jump-to-latest")
+                    .py_1p5()
+                    .gap_1()
+                    .shadow_md()
+                    .bg(gpui::rgb(theme::bg_elevated()))
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border()))
+                    .text_xs()
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.follow_transcript = true;
+                        cx.notify();
+                    }))
+                    .child(icon("chevron-down", px(12.), theme::text_secondary()))
+                    .child("Jump to latest"),
+                "jump-to-latest-reveal",
+            ))
     }
 
     /// Thin scrollbar overlay driven by the virtualized list state.
@@ -264,30 +286,11 @@ fn copy_message_button(
     group: &SharedString,
     text: SharedString,
 ) -> gpui::Stateful<Div> {
-    div()
-        .id(SharedString::from(format!("copy-message-{item_id}")))
-        .flex()
-        .items_center()
-        .gap_1()
-        .px_1p5()
-        .py_0p5()
-        .rounded(theme::RADIUS_SM)
-        .text_xs()
-        .text_color(gpui::rgb(theme::text_muted()))
-        .opacity(0.)
-        .group_hover(group.clone(), |style| style.opacity(1.))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .cursor_pointer()
-        })
-        .on_click(move |_event, _window, cx: &mut gpui::App| {
-            cx.stop_propagation();
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
-        })
-        .child(icon("copy", px(12.), theme::text_secondary()))
-        .child("Copy")
+    widgets::copy_button(
+        SharedString::from(format!("copy-message-{item_id}")),
+        text,
+        Some(group),
+    )
 }
 
 fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
@@ -839,6 +842,10 @@ fn render_tool(
     transcript: &TranscriptCtx,
 ) -> Div {
     let (label, status_color) = tool_status_style(item.status.as_deref());
+    let running = !matches!(
+        item.status.as_deref(),
+        Some("completed" | "failed" | "error" | "cancelled" | "controlled_externally")
+    );
     let item_id = item.id.clone();
     let chat_header = transcript.chat.clone();
     let summary = transcript.tool_summaries.get(&item.id).cloned();
@@ -860,7 +867,11 @@ fn render_tool(
         .bg(gpui::rgb(theme::bg_tool_card()))
         .border_1()
         .border_color(gpui::rgb(theme::border_subtle()))
-        .hover(|style| style.cursor_pointer())
+        .hover(|style| {
+            style
+                .border_color(gpui::rgb(theme::border()))
+                .cursor_pointer()
+        })
         .on_click(move |_event, _window, cx: &mut gpui::App| {
             chat_header
                 .update(cx, |chat, cx| {
@@ -881,6 +892,13 @@ fn render_tool(
                         .line_clamp(1)
                         .child(title),
                 )
+                .when(running, |header| {
+                    header.child(spinner_with_id(
+                        SharedString::from(format!("tool-spinner-{}", item.id)),
+                        px(12.),
+                        theme::accent(),
+                    ))
+                })
                 .child(
                     div()
                         .text_xs()
@@ -1077,8 +1095,13 @@ pub(super) fn render_question_card(
     step: usize,
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, usize>,
+    focused: Option<&gpui::FocusHandle>,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
+    let input_focused = input
+        .as_ref()
+        .zip(focused)
+        .is_some_and(|(input, focused)| input.read(cx).focus_handle(cx) == *focused);
     let mut card = div()
         .m_4()
         .px_4()
@@ -1206,7 +1229,7 @@ pub(super) fn render_question_card(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(widgets::input_frame().flex_1().child(input))
+                .child(widgets::input_frame(input_focused).flex_1().child(input))
                 .child(
                     widgets::primary_button("question-submit")
                         .py_2()
@@ -1240,36 +1263,37 @@ pub(super) fn render_question_card(
     )
 }
 
-/// Pulsing dots shown between send and the first streamed content.
+/// Pulsing dots shown between send and the first streamed content. They
+/// breathe on the shared low-rate clock, so waiting costs the same as a
+/// spinner rather than a full-rate animation.
 pub(super) fn render_waiting_indicator() -> Div {
-    let dots: [gpui::Pixels; 3] = [px(7.), px(7.), px(7.)];
-    let mut row = div().flex().items_center().gap_1p5().px_4().py_2();
-    for (index, size) in dots.into_iter().enumerate() {
-        let duration = match index {
-            0 => std::time::Duration::from_millis(900),
-            1 => std::time::Duration::from_millis(1200),
-            _ => std::time::Duration::from_millis(1500),
-        };
-        let dot = div()
-            .size(size)
-            .rounded_full()
-            .bg(gpui::rgb(theme::text_secondary()))
-            .with_animation(
-                gpui::ElementId::Name(format!("waiting-dot-{index}").into()),
-                gpui::Animation::new(duration).repeat(),
-                |el, delta| {
-                    let wave = (delta * std::f32::consts::PI).sin();
-                    el.opacity(0.2 + 0.7 * wave)
-                },
-            );
-        row = row.child(dot);
-    }
-    row.child(
-        div()
-            .text_sm()
-            .text_color(gpui::rgb(theme::text_muted()))
-            .child("Maple is thinking"),
-    )
+    const CYCLE: std::time::Duration = std::time::Duration::from_millis(1400);
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_4()
+        .py_2()
+        .child(motion::ticker("waiting-dots", CYCLE, |phase| {
+            let mut row = div().flex().items_center().gap_1p5();
+            for index in 0..3 {
+                let level = motion::pulse(phase, -(index as f32) * 0.18, 0.25, 1.0);
+                row = row.child(
+                    div()
+                        .size(px(7.))
+                        .rounded_full()
+                        .bg(gpui::rgb(theme::accent()))
+                        .opacity(level),
+                );
+            }
+            row.into_any_element()
+        }))
+        .child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child("Maple is thinking"),
+        )
 }
 
 pub(super) fn render_permission_card(
@@ -1346,7 +1370,8 @@ pub(super) fn render_permission_card(
                 .text_sm()
                 .text_color(gpui::rgb(theme::on_accent()))
                 .when(!responding, |el| {
-                    el.hover(|style| style.cursor_pointer())
+                    el.hover(|style| style.opacity(0.9).cursor_pointer())
+                        .active(|style| style.opacity(0.75))
                         .on_click(cx.listener(move |this, _event, window, cx| {
                             this.execute_command(
                                 ChatCommand::RespondPermission { allow },

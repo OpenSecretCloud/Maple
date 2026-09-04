@@ -14,14 +14,14 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    App, ClipboardItem, Div, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox,
-    HitboxBehavior, InspectorElementId, LayoutId, MouseButton, Pixels, SharedString, StyledText,
-    Window, div, prelude::*,
+    App, Div, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior,
+    InspectorElementId, LayoutId, MouseButton, Pixels, SharedString, StyledText, Window, div,
+    prelude::*,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::icons::icon;
 use super::theme;
+use super::widgets;
 
 /// Styled runs of a paragraph, shared between the parsed block and the
 /// element rendered from it each frame.
@@ -748,24 +748,7 @@ pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child(label),
                 )
-                .child(
-                    div()
-                        .id(copy_id)
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded(theme::RADIUS_SM)
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .hover(|style| style.bg(theme::overlay_hover()).cursor_pointer())
-                        .on_click(move |_, _, cx: &mut App| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copy_code.to_string()));
-                        })
-                        .child(icon("copy", gpui::px(12.), theme::text_secondary()))
-                        .child("Copy"),
-                ),
+                .child(widgets::copy_button(copy_id, copy_code, None)),
         )
         .child(
             div()
