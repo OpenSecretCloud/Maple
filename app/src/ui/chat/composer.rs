@@ -90,15 +90,16 @@ impl ChatScreen {
 
     /// Anchor point for the open composer menu: floating above the chip
     /// row, bottom-anchored so the panel grows upward over the transcript
-    /// instead of pushing the layout around. The composer box is the
-    /// containing block (see `render_composer`), so the menu tracks the
-    /// composer in the normal and empty layouts alike. The overlay is the
-    /// composer's last child, so it paints on top of the rest of the box.
+    /// instead of pushing the layout around. The panel is rendered after
+    /// the composer (see the two `render_composer` call sites), so the
+    /// composer's border can never paint over it; the containing block is
+    /// the wrapper with `px_4` and `pb_4`, hence the +16 offsets that keep
+    /// the panel at the same spot it held as a composer child.
     fn menu_overlay(menu: Div) -> Div {
         div()
             .absolute()
-            .bottom(px(48.))
-            .left(px(8.))
+            .bottom(px(64.))
+            .left(px(24.))
             .w(px(480.))
             .max_w_full()
             .debug_selector(|| "composer-menu".to_string())
@@ -223,7 +224,7 @@ impl ChatScreen {
     /// The open composer menu as an overlay. The panel floats above the
     /// chip row, bottom-anchored so it grows upward over the transcript
     /// instead of pushing the layout around.
-    fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
+    pub(super) fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
         let mut menu = Self::menu_panel();
         if self.mode_menu_open {
             for mode in [PermissionMode::Auto, PermissionMode::SmartApprove] {
@@ -1147,7 +1148,6 @@ impl ChatScreen {
                             }),
                     ),
             )
-            .children(self.render_menu_panel(cx))
     }
 }
 

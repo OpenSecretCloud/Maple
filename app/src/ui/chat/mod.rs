@@ -4212,6 +4212,7 @@ impl Render for ChatScreen {
                 })
                 .child(
                     div()
+                        .relative()
                         .w_full()
                         .max_w(CONTENT_WIDTH)
                         .mx_auto()
@@ -4228,7 +4229,8 @@ impl Render for ChatScreen {
                         .children(self.render_subagents_card())
                         .children(self.render_plan_card(cx))
                         .child(self.render_composer(cx))
-                        .children(self.render_slash_palette(cx)),
+                        .children(self.render_slash_palette(cx))
+                        .children(self.render_menu_panel(cx)),
                 )
         };
         div()
@@ -4401,10 +4403,12 @@ impl ChatScreen {
                     })
                     .child(
                         div()
+                            .relative()
                             .w_full()
                             .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
                             .child(self.render_composer(cx))
-                            .children(self.render_slash_palette(cx)),
+                            .children(self.render_slash_palette(cx))
+                            .children(self.render_menu_panel(cx)),
                     )
                     .when(
                         self.awaiting_first_token && self.is_run_active(),
