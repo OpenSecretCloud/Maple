@@ -1,11 +1,19 @@
 //! Maple theme tokens for the gpui frontend.
 //!
-//! Dark values are measured from the Tauri app's dark theme and light
-//! values from its light theme (see docs/maple-theme-spec.md). Each token
-//! is a function that reads the active palette, so a theme switch needs
-//! only a window refresh. Values are `u32` hex literals for `gpui::rgb`.
+//! Values come from the Maple brand kit (`docs/brand.md`): the light
+//! palette is the kit's own; the dark palette is derived from it, using
+//! the Pebble scale for chrome so the dark app keeps the same lavender-grey
+//! cast as the light one. Each token is a function that reads the active
+//! palette, so a theme switch needs only a window refresh. Values are
+//! `u32` hex literals for `gpui::rgb`.
+//!
+//! Scale steps referenced in comments: `maple-500` is the coral primary,
+//! `pebble-*` the secondary grey-lavender, `bark-*` the tertiary brown,
+//! `neutral-*` the greys.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+use gpui::{Pixels, px};
 
 /// Theme preference from settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,72 +122,84 @@ fn palette() -> &'static Palette {
 }
 
 tokens! {
-    bg_app: 0x0a0a0a, 0xfafafa;
-    bg_sidebar: 0x262626, 0xf5f5f5;
-    bg_elevated: 0x171717, 0xffffff;
-    bg_sidebar_card: 0x303030, 0xffffff;
-    bg_sidebar_pill: 0x1c1c1c, 0xe5e5e5;
-    bg_input: 0x121212, 0xffffff;
-    bg_user_bubble: 0x171717, 0xf5f5f5;
-    bg_code_block: 0x0d0d0d, 0xf3f3f3;
-    bg_tool_card: 0x121212, 0xf7f7f7;
+    // Surfaces. Light: white page, neutral-50 cards, pebble-50 sidebar.
+    // Dark: near-black page with pebble-tinted chrome.
+    bg_app: 0x111114, 0xffffff;
+    bg_sidebar: 0x1a1a1f, 0xf7f7f9;
+    bg_elevated: 0x232329, 0xffffff;
+    bg_sidebar_card: 0x232329, 0xfafafa;
+    bg_sidebar_pill: 0x2b2b32, 0xe8e8ed;
+    bg_input: 0x18181c, 0xffffff;
+    bg_user_bubble: 0x232329, 0xe8e8ed;
+    bg_code_block: 0x0c0c0e, 0xf7f7f9;
+    bg_tool_card: 0x1a1a1f, 0xfafafa;
 
-    border: 0x2f2f37, 0xe8e8ed;
-    border_subtle: 0x232323, 0xeeeeee;
+    // Hairlines. pebble-100 on light; pebble-900-ish on dark.
+    border: 0x30313a, 0xe8e8ed;
+    border_subtle: 0x232329, 0xf1f1f4;
 
-    text_primary: 0xfafafa, 0x262626;
-    text_secondary: 0xa3a3a3, 0x515151;
-    text_muted: 0x666666, 0x737373;
-    text_faint: 0x4a4a4a, 0xa8a8a8;
+    // Text. Light: neutral-900 / 600 / 400 / 300. Dark: pebble-50 / 300 / 600 / 800.
+    text_primary: 0xf7f7f9, 0x171717;
+    text_secondary: 0xbabccb, 0x525252;
+    text_muted: 0x757689, 0xa3a3a3;
+    text_faint: 0x474854, 0xd4d4d4;
 
-    /// Maple coral: send button, focus, caret, permission prompts.
+    /// Maple coral (maple-500): send button, focus, caret, permission prompts.
     accent: 0xff9771, 0xff9771;
-    accent_hover: 0xe77040, 0xe77040;
+    /// Hover for accent fills: maple-400 on dark, maple-600 on light.
+    accent_hover: 0xffa88a, 0xf67d57;
+    /// Text and icons placed on an accent fill (pebble-50).
+    on_accent: 0xf7f7f9, 0xf7f7f9;
+    /// Soft coral container (maple-100 / a dark coral tint).
+    accent_container: 0x3a2118, 0xffe8e0;
 
-    status_running: 0xa3a3a3, 0x737373;
-    status_success: 0x87a253, 0x6d8a3a;
-    status_error: 0xd05e41, 0xc4503a;
+    status_running: 0xbabccb, 0xa3a3a3;
+    status_success: 0x8fa35a, 0x7b8f4a;
+    status_error: 0xe07052, 0xd05e41;
     /// Wavy underline under a misspelled word in the composer.
-    spell_error: 0xe0553f, 0xd0402a;
-    status_warning: 0xce994b, 0xb8832f;
+    spell_error: 0xe07052, 0xd05e41;
+    status_warning: 0xd4a35a, 0xd4a35a;
 
-    code_text: 0xe8e8e8, 0x262626;
-    link: 0xb7b7b7, 0x616161;
+    code_text: 0xe8e8ed, 0x171717;
+    /// Links take the tertiary Bark scale (bark-300 / bark-500).
+    link: 0xc29a8d, 0x9e7469;
 
-    /// Permission card fill/border from the Maple spec.
-    permission_fill: 0x191210, 0xfaf4f1;
-    permission_border: 0x784a38, 0xfdc8b8;
+    /// Permission card fill/border: the coral container and maple-300.
+    permission_fill: 0x2a1a14, 0xffe8e0;
+    permission_border: 0x784a38, 0xffbaa2;
 
-    user_bubble_border: 0x262626, 0xe5e5e5;
+    user_bubble_border: 0x30313a, 0xe8e8ed;
 
-    /// Sidebar chrome: segmented toggle track, row hover, selected row.
-    bg_sidebar_chrome: 0x1c1c1c, 0xffffff;
-    bg_sidebar_row_hover: 0x404040, 0xe8e8e8;
-    bg_sidebar_row_selected: 0x525252, 0xdedede;
+    /// Sidebar chrome: segmented toggle track, row hover, selected row
+    /// (pebble-100 / pebble-200 on light).
+    bg_sidebar_chrome: 0x1a1a1f, 0xffffff;
+    bg_sidebar_row_hover: 0x2b2b32, 0xe8e8ed;
+    bg_sidebar_row_selected: 0x35363f, 0xd1d2dc;
 
-    /// Empty-state heading. The web app draws a gradient from #c3c3cb to
-    /// #9d6c5f; gpui text has no gradient, so this is the visual midpoint.
-    display_text: 0xc9b3a6, 0x7a5a4e;
+    /// Display headings (Array face): pebble-300 on dark, pebble-800 on
+    /// light, as the brand kit sets its section titles.
+    display_text: 0xbabccb, 0x474854;
 
-    /// Send button gradient stops (Maple coral to a darker coral).
+    /// Send button gradient stops (maple-500 to maple-700).
     send_top: 0xff9771, 0xff9771;
-    send_bottom: 0xe36e47, 0xe36e47;
+    send_bottom: 0xe8633d, 0xe8633d;
 
     /// Title bar control buttons.
-    bg_title_control: 0x3a3a3a, 0xe5e5e5;
-    bg_title_control_hover: 0x4a4a4a, 0xd4d4d4;
+    bg_title_control: 0x30313a, 0xe8e8ed;
+    bg_title_control_hover: 0x3d3e48, 0xd1d2dc;
 
     /// Text input caret; near the primary text color of each palette.
-    text_cursor: 0xe7e7ea, 0x262626;
+    text_cursor: 0xf7f7f9, 0x171717;
 }
 
-/// Translucent selection highlight in text inputs. Blue on both palettes,
-/// a little stronger on light where the white field washes it out.
+/// Translucent selection highlight in text inputs: the coral primary at a
+/// low alpha, a little stronger on light where the white field washes it
+/// out.
 pub fn text_selection() -> gpui::Rgba {
     if is_light() {
-        gpui::rgba(0x4a7dff4d)
+        gpui::rgba(0xff977159)
     } else {
-        gpui::rgba(0x4a7dff40)
+        gpui::rgba(0xff977147)
     }
 }
 
@@ -215,3 +235,16 @@ pub fn placeholder() -> gpui::Hsla {
         gpui::hsla(0., 0., 1., 0.3)
     }
 }
+
+/// Corner radii from the brand kit. `SM` is for small controls (icon
+/// buttons, menu rows, chips), `MD` for popups and inputs, `LG` for cards
+/// and message bubbles, `XL` for the composer and dialogs. Pills use
+/// `rounded_full`.
+pub const RADIUS_SM: Pixels = px(8.);
+pub const RADIUS_MD: Pixels = px(12.);
+pub const RADIUS_LG: Pixels = px(16.);
+pub const RADIUS_XL: Pixels = px(24.);
+
+/// The brand kit's medium spacing step (`--space-md`): horizontal padding
+/// of every pill button.
+pub const SPACE_MD: Pixels = px(20.);

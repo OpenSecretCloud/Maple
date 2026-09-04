@@ -4,6 +4,10 @@
 //! Every helper returns a bare `div()` builder, so it costs the same as
 //! the inline chain it replaces: no allocation, no parsing, nothing
 //! cached. Callers keep their own ids, children, and click handlers.
+//!
+//! Shapes follow the brand kit: buttons are pills, small controls use
+//! `theme::RADIUS_SM`, popups and inputs `theme::RADIUS_MD`, cards
+//! `theme::RADIUS_LG`.
 
 use gpui::{Div, ElementId, Pixels, Stateful, div, prelude::*, px};
 
@@ -20,8 +24,8 @@ pub fn popup_panel(id: impl Into<ElementId>, width: Pixels) -> Stateful<Div> {
         .id(id)
         .occlude()
         .w(width)
-        .py_1()
-        .rounded_md()
+        .p_1()
+        .rounded(theme::RADIUS_MD)
         .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
         .border_color(gpui::rgb(theme::border()))
@@ -37,6 +41,7 @@ pub fn menu_row(id: impl Into<ElementId>, enabled: bool) -> Stateful<Div> {
         .id(id)
         .px_3()
         .py_1p5()
+        .rounded(theme::RADIUS_SM)
         .text_sm()
         .text_color(gpui::rgb(if enabled {
             theme::text_primary()
@@ -52,36 +57,53 @@ pub fn menu_row(id: impl Into<ElementId>, enabled: bool) -> Stateful<Div> {
         })
 }
 
-/// Accent-filled action button. The label sits on the accent fill, so it
-/// takes the app background color rather than the primary text color.
-pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
+/// Shared pill shape for [`primary_button`], [`secondary_button`], and
+/// [`ghost_button`]: the brand's button sizing (8 px vertical, 20 px
+/// horizontal padding) with a medium-weight label.
+fn pill(id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
         .items_center()
+        .justify_center()
         .gap_1p5()
-        .px_3()
-        .py_1p5()
-        .rounded_md()
-        .bg(gpui::rgb(theme::accent()))
+        .px(theme::SPACE_MD)
+        .py_2()
+        .rounded_full()
         .text_sm()
-        .text_color(gpui::rgb(theme::bg_app()))
+        .font_weight(gpui::FontWeight::MEDIUM)
+}
+
+/// Accent-filled action button: coral pill with a light label.
+pub fn primary_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    pill(id)
+        .bg(gpui::rgb(theme::accent()))
+        .text_color(gpui::rgb(theme::on_accent()))
         .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
 }
 
-/// Text-only button for secondary actions (Back, Cancel): no fill, no
-/// border, and the label brightens on hover.
+/// Neutral pill for the second action beside a [`primary_button`]
+/// (Cancel, Back, alternate sign-in): a pebble fill that darkens on hover.
+pub fn secondary_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    pill(id)
+        .bg(gpui::rgb(theme::bg_sidebar_pill()))
+        .text_color(gpui::rgb(theme::text_primary()))
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                .cursor_pointer()
+        })
+}
+
+/// Text-only button for low-emphasis actions: no fill, no border, and
+/// the label brightens on hover.
 pub fn ghost_button(id: impl Into<ElementId>) -> Stateful<Div> {
-    div()
-        .id(id)
-        .px_3()
-        .py_1p5()
-        .rounded_md()
-        .text_sm()
+    pill(id)
         .text_color(gpui::rgb(theme::text_secondary()))
         .hover(|style| {
             style
                 .text_color(gpui::rgb(theme::text_primary()))
+                .bg(theme::overlay_hover())
                 .cursor_pointer()
         })
 }
@@ -101,7 +123,7 @@ pub fn icon_button(
         .flex()
         .items_center()
         .justify_center()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .hover(|style| {
             style
                 .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -115,7 +137,7 @@ pub fn icon_button(
 pub fn card_row() -> Div {
     div()
         .p_4()
-        .rounded_lg()
+        .rounded(theme::RADIUS_LG)
         .bg(gpui::rgb(theme::bg_elevated()))
         .border_1()
         .border_color(gpui::rgb(theme::border_subtle()))
@@ -128,7 +150,7 @@ pub fn input_frame() -> Div {
     div()
         .px_3()
         .py_2()
-        .rounded_md()
+        .rounded(theme::RADIUS_MD)
         .bg(gpui::rgb(theme::bg_input()))
         .border_1()
         .border_color(gpui::rgb(theme::border()))
@@ -136,15 +158,15 @@ pub fn input_frame() -> Div {
 }
 
 /// Full-width status message on a solid fill, such as
-/// `theme::status_error()` or `theme::status_warning()`. The text takes
-/// the app background color so it reads on any status fill.
+/// `theme::status_error()` or `theme::status_warning()`. The label takes
+/// the on-accent white, which reads on every status fill.
 pub fn banner(background: u32) -> Div {
     div()
         .px_3()
         .py_2()
-        .rounded_md()
+        .rounded(theme::RADIUS_MD)
         .bg(gpui::rgb(background))
-        .text_color(gpui::rgb(theme::bg_app()))
+        .text_color(gpui::rgb(theme::on_accent()))
         .text_sm()
 }
 

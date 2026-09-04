@@ -241,7 +241,7 @@ pub(super) fn speak_message_button(
         .gap_1()
         .px_1p5()
         .py_0p5()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .text_xs()
         .text_color(gpui::rgb(theme::text_muted()))
         .opacity(if active { 1. } else { 0. })

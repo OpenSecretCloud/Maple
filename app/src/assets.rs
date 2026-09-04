@@ -58,24 +58,18 @@ pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Manrope-Medium.ttf"),
     include_bytes!("../assets/fonts/Manrope-SemiBold.ttf"),
     include_bytes!("../assets/fonts/Manrope-Bold.ttf"),
-    include_bytes!("../assets/fonts/ArrayWide.ttf"),
-    include_bytes!("../assets/fonts/Mondwest.ttf"),
+    include_bytes!("../assets/fonts/Array-Regular.otf"),
+    include_bytes!("../assets/fonts/GeistMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
 ];
 
-/// Body font for the whole app.
+/// Body font for the whole app (brand kit: `--font-body`).
 pub const FONT_BODY: &str = "Manrope";
-/// Pixel display font for the empty-state heading.
-pub const FONT_DISPLAY: &str = "Array Wide";
-
-/// Code font: the platform's system monospace face, mirroring the web
-/// app's Tailwind `font-mono` stack. Linux resolves the fontconfig
-/// generic name; macOS and Windows need a concrete family.
-#[cfg(target_os = "macos")]
-pub const FONT_MONO: &str = "Menlo";
-#[cfg(target_os = "windows")]
-pub const FONT_MONO: &str = "Consolas";
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub const FONT_MONO: &str = "monospace";
+/// Display font for headings (brand kit: `--font-display`).
+pub const FONT_DISPLAY: &str = "Array";
+/// Code font (brand kit: `--font-mono`). Bundled, so every platform
+/// renders code the same way.
+pub const FONT_MONO: &str = "Geist Mono";
 
 pub struct Assets;
 

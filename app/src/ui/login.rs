@@ -6,6 +6,7 @@ use std::sync::Arc;
 use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*};
 
 use crate::backend::{AgentBackend, OAuthProvider};
+use crate::ui::icons::wordmark;
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::widgets;
@@ -200,7 +201,7 @@ impl Render for LoginScreen {
             .gap_3()
             .w(gpui::px(380.))
             .p_6()
-            .rounded_lg()
+            .rounded(theme::RADIUS_XL)
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()))
@@ -232,13 +233,7 @@ impl Render for LoginScreen {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_xl()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .child("Maple"),
-                    )
+                    .child(wordmark(gpui::px(22.), theme::text_primary()))
                     .child(div()),
             )
             .child(
@@ -254,23 +249,10 @@ impl Render for LoginScreen {
                     .child(field("Email", self.email_input.clone()))
                     .child(field("Password", self.password_input.clone()))
                     .child(
-                        div()
-                            .id("login-submit")
-                            .flex()
-                            .justify_center()
-                            .py_2()
-                            .rounded_md()
-                            .bg(gpui::rgb(if busy {
-                                theme::border()
-                            } else {
-                                theme::accent()
-                            }))
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .when(!busy, |el| {
-                                el.hover(|style| {
-                                    style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer()
-                                })
-                            })
+                        widgets::primary_button("login-submit")
+                            .w_full()
+                            .mt_1()
+                            .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
                             .when(!busy, |el| el.on_click(cx.listener(Self::submit_clicked)))
                             .child(if busy {
                                 "Signing in…".to_string()
@@ -337,25 +319,9 @@ impl Render for LoginScreen {
                     )
                     .child(field("", self.callback_input.clone()))
                     .child(
-                        div()
-                            .id("oauth-confirm")
-                            .flex()
-                            .justify_center()
-                            .py_2()
-                            .rounded_md()
-                            .bg(gpui::rgb(if busy {
-                                theme::border()
-                            } else {
-                                theme::accent()
-                            }))
-                            .text_color(gpui::rgb(theme::text_primary()))
-                            .when(!busy, |el| {
-                                el.hover(|style| {
-                                    style
-                                        .bg(gpui::rgb(theme::accent_hover()))
-                                        .cursor_pointer()
-                                })
-                            })
+                        widgets::primary_button("oauth-confirm")
+                            .w_full()
+                            .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
                             .when(!busy, |el| {
                                 el.on_click(cx.listener(|this, _event, _window, cx| {
                                     this.confirm_oauth(cx);
@@ -368,14 +334,8 @@ impl Render for LoginScreen {
                             }),
                     )
                     .child(
-                        div()
-                            .id("oauth-cancel")
-                            .flex()
-                            .justify_center()
-                            .py_1()
-                            .text_sm()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .hover(|style| style.cursor_pointer())
+                        widgets::ghost_button("oauth-cancel")
+                            .w_full()
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
                             }))
@@ -404,31 +364,19 @@ fn oauth_button(
     busy: bool,
     cx: &mut Context<LoginScreen>,
 ) -> gpui::Stateful<Div> {
-    div()
-        .id(gpui::SharedString::from(format!(
-            "oauth-{}",
-            provider.label().to_lowercase()
-        )))
-        .flex_1()
-        .flex()
-        .justify_center()
-        .py_2()
-        .rounded_md()
-        .border_1()
-        .border_color(gpui::rgb(theme::border()))
-        .text_sm()
-        .text_color(gpui::rgb(theme::text_primary()))
-        .when(!busy, |el| {
-            el.hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
-        })
-        .when(!busy, |el| {
-            el.on_click({
-                cx.listener(move |this, _event, _window, cx| {
-                    this.start_oauth(provider, cx);
-                })
+    widgets::secondary_button(gpui::SharedString::from(format!(
+        "oauth-{}",
+        provider.label().to_lowercase()
+    )))
+    .flex_1()
+    .when(!busy, |el| {
+        el.on_click({
+            cx.listener(move |this, _event, _window, cx| {
+                this.start_oauth(provider, cx);
             })
         })
-        .child(provider.label().to_string())
+    })
+    .child(provider.label().to_string())
 }
 
 fn field(label: &str, input: Entity<TextInput>) -> Div {

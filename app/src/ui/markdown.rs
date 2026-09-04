@@ -753,7 +753,7 @@ fn table_element(
     let mut table = div()
         .w_full()
         .my_1()
-        .rounded_md()
+        .rounded(theme::RADIUS_SM)
         .border_1()
         .border_color(border)
         .overflow_hidden()
