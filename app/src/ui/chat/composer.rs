@@ -88,6 +88,24 @@ impl ChatScreen {
             .border_color(gpui::rgb(theme::border()))
     }
 
+    /// Anchor point for the open composer menu: floating above the chip
+    /// row, bottom-anchored so the panel grows upward over the transcript
+    /// instead of pushing the layout around. The panel is rendered after
+    /// the composer (see the two `render_composer` call sites), so the
+    /// composer's border can never paint over it; the containing block is
+    /// the wrapper with `px_4` and `pb_4`, hence the +16 offsets that keep
+    /// the panel at the same spot it held as a composer child.
+    fn menu_overlay(menu: Div) -> Div {
+        div()
+            .absolute()
+            .bottom(px(64.))
+            .left(px(24.))
+            .w(px(480.))
+            .max_w_full()
+            .debug_selector(|| "composer-menu".to_string())
+            .child(menu)
+    }
+
     /// The project menu, opened from the header chip. Rendered as an
     /// overlay in the chat pane, right under the header.
     pub(super) fn render_root_menu(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -203,8 +221,9 @@ impl ChatScreen {
         )
     }
 
-    /// The open composer menu as an inline panel. Rendered in normal flow
-    /// below the composer; deferred/absolute anchoring proved unreliable.
+    /// The open composer menu as an overlay. The panel floats above the
+    /// chip row, bottom-anchored so it grows upward over the transcript
+    /// instead of pushing the layout around.
     pub(super) fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
         let mut menu = Self::menu_panel();
         if self.mode_menu_open {
@@ -253,7 +272,7 @@ impl ChatScreen {
                         ),
                 );
             }
-            return Some(menu);
+            return Some(Self::menu_overlay(menu));
         }
         if self.mcp_menu_open {
             menu = menu.child(
@@ -364,7 +383,7 @@ impl ChatScreen {
                     }))
                     .child("Manage servers…"),
             );
-            return Some(menu);
+            return Some(Self::menu_overlay(menu));
         }
         if self.models_menu_open {
             menu = menu.children(self.models.iter().map(|model| {
@@ -383,7 +402,7 @@ impl ChatScreen {
                     })
                     .child(model.clone())
             }));
-            return Some(menu);
+            return Some(Self::menu_overlay(menu));
         }
         None
     }
@@ -838,6 +857,8 @@ impl ChatScreen {
             .w_full()
             .flex()
             .flex_col()
+            .relative()
+            .debug_selector(|| "composer-box".to_string())
             .when(expanded, |container| container.flex_1().min_h_0())
             .rounded(px(24.))
             .bg(gpui::rgb(theme::bg_app()))
@@ -953,6 +974,7 @@ impl ChatScreen {
                     .px_2()
                     .pb_2()
                     .pt_1()
+                    .debug_selector(|| "composer-chips".to_string())
                     .child(
                         chip(
                             "model-picker",

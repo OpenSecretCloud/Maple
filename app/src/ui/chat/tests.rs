@@ -6,7 +6,6 @@ mod state_tests {
     use crate::ui::chat::cache::{MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
-    use crate::ui::chat::sidebar::ProjectDrag;
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
@@ -25,7 +24,7 @@ mod state_tests {
             project_root: project_root.to_string(),
             created_ms: 0,
             updated_ms: 0,
-            message_count: 0,
+            message_count: 1,
             model: None,
             mode: "smart_approve".to_string(),
         }
@@ -367,20 +366,18 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_archived_tasks_leave_project_groups(cx: &mut TestAppContext) {
+    fn test_archived_tasks_leave_the_sections(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             this.sessions = vec![summary("s1", "Live"), summary("s2", "Old")];
             this.sessions[1].archived = true;
-            this.rebuild_project_groups();
-            assert_eq!(this.project_groups.len(), 1);
-            assert_eq!(this.project_groups[0].tasks, vec![0]);
+            this.rebuild_sidebar_sections();
+            assert_eq!(this.sidebar_active, vec![0]);
             assert_eq!(this.archived_indices, vec![1]);
 
-            // A root with only archived tasks does not appear as a project.
             this.sessions[0].archived = true;
-            this.rebuild_project_groups();
-            assert!(this.project_groups.is_empty());
+            this.rebuild_sidebar_sections();
+            assert!(this.sidebar_active.is_empty());
             assert_eq!(this.archived_indices, vec![0, 1]);
         });
     }
@@ -679,7 +676,7 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_sidebar_filter_hides_non_matching_tasks_and_empty_projects(cx: &mut TestAppContext) {
+    fn test_sidebar_filter_hides_non_matching_tasks_and_projects(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, _| {
             let mut a = summary("s1", "Fix login bug");
@@ -690,28 +687,25 @@ mod state_tests {
             c.project_root = "/work/beta".to_string();
             c.archived = true;
             this.sessions = vec![a, b, c];
-            this.rebuild_project_groups();
-            assert_eq!(this.project_groups.len(), 2);
+            this.rebuild_sidebar_sections();
+            assert_eq!(this.sidebar_active.len(), 2);
             assert_eq!(this.archived_indices, vec![2]);
 
             this.sidebar_filter = "login".to_string();
-            this.rebuild_project_groups();
-            // Only alpha has a live match; beta drops out while searching.
-            assert_eq!(this.project_groups.len(), 1);
-            assert_eq!(&*this.project_groups[0].root, "/work/alpha");
-            assert_eq!(this.project_groups[0].tasks, vec![0]);
+            this.rebuild_sidebar_sections();
+            // Only the matching task stays visible.
+            assert_eq!(this.sidebar_active, vec![0]);
             // Archived rows are searched too.
             assert_eq!(this.archived_indices, vec![2]);
 
             // A project name matches all of its tasks.
             this.sidebar_filter = "beta".to_string();
-            this.rebuild_project_groups();
-            assert_eq!(this.project_groups.len(), 1);
-            assert_eq!(this.project_groups[0].tasks, vec![1]);
+            this.rebuild_sidebar_sections();
+            assert_eq!(this.sidebar_active, vec![1]);
 
             this.sidebar_filter.clear();
-            this.rebuild_project_groups();
-            assert_eq!(this.project_groups.len(), 2);
+            this.rebuild_sidebar_sections();
+            assert_eq!(this.sidebar_active.len(), 2);
         });
     }
 
@@ -1623,65 +1617,7 @@ mod state_tests {
     }
 
     #[test]
-    fn test_pinned_roots_sort_first() {
-        let _guard = SETTINGS_LOCK.lock();
-        let mut this = ChatScreen::new_inner(
-            std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            ),
-            "user".to_string(),
-        );
-        this.recent_roots = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
-        this.pinned_roots = vec!["/c".to_string(), "/a".to_string()];
-        this.rebuild_project_groups();
-        let roots: Vec<&str> = this
-            .project_groups
-            .iter()
-            .map(|group| &*group.root)
-            .collect();
-        assert_eq!(roots, vec!["/c", "/a", "/b"]);
-    }
-
-    /// Opening a task in another project must not move that project up:
-    /// the folder order is static and changes only through an explicit
-    /// drag.
-    #[test]
-    fn test_current_project_does_not_float_to_the_top() {
-        let _guard = SETTINGS_LOCK.lock();
-        let mut this = ChatScreen::new_inner(
-            std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            ),
-            "user".to_string(),
-        );
-        this.recent_roots = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
-        this.project_root = Some("/b".to_string());
-        this.rebuild_project_groups();
-        let roots: Vec<&str> = this
-            .project_groups
-            .iter()
-            .map(|group| &*group.root)
-            .collect();
-        assert_eq!(roots, vec!["/a", "/b", "/c"]);
-
-        // A root nothing lists stays visible without floating.
-        this.recent_roots = vec!["/a".to_string(), "/b".to_string()];
-        this.project_root = Some("/d".to_string());
-        this.rebuild_project_groups();
-        let roots: Vec<&str> = this
-            .project_groups
-            .iter()
-            .map(|group| &*group.root)
-            .collect();
-        assert_eq!(roots, vec!["/a", "/b", "/d"]);
-    }
-
-    /// Roots that only a stored task knows about append alphabetically, so
-    /// their position never moves when sessions change.
-    #[test]
-    fn test_live_roots_sort_alphabetically() {
+    fn test_switcher_lists_saved_roots_then_fresh_alphabetically() {
         let _guard = SETTINGS_LOCK.lock();
         let mut this = ChatScreen::new_inner(
             std::sync::Arc::new(
@@ -1696,20 +1632,16 @@ mod state_tests {
             summary_at("s2", "Two", "/a"),
             summary_at("s3", "Three", "/m"),
         ];
-        this.rebuild_project_groups();
-        let roots: Vec<&str> = this
-            .project_groups
-            .iter()
-            .map(|group| &*group.root)
-            .collect();
-        assert_eq!(roots, vec!["/z", "/a", "/m"]);
+        this.rebuild_sidebar_sections();
+        // Saved roots keep their order; roots only tasks know about append
+        // alphabetically so their position never moves.
+        assert_eq!(this.switcher_root_paths(), vec!["/z", "/a", "/m"]);
     }
 
-    /// A drop index never crosses the pinned section: dragging a pinned
-    /// project over unpinned rows lands at the pinned section's end, and
-    /// the other way around.
+    /// Tasks split into the inbox sections: pinned tasks first, the
+    /// active inbox, then the settled rest, each newest activity first.
     #[test]
-    fn test_project_drop_index_clamps_to_sections() {
+    fn test_sections_split_pinned_active_and_settled() {
         let _guard = SETTINGS_LOCK.lock();
         let mut this = ChatScreen::new_inner(
             std::sync::Arc::new(
@@ -1718,60 +1650,249 @@ mod state_tests {
             ),
             "user".to_string(),
         );
-        // Groups: [/p1, /p2, /u1, /u2].
-        this.recent_roots = vec!["/p1".to_string(), "/u1".to_string(), "/u2".to_string()];
-        this.pinned_roots = vec!["/p1".to_string(), "/p2".to_string()];
-        this.sessions = vec![summary_at("s1", "A", "/p2")];
-        this.rebuild_project_groups();
-        let roots: Vec<&str> = this
-            .project_groups
-            .iter()
-            .map(|group| &*group.root)
-            .collect();
-        assert_eq!(roots, vec!["/p1", "/p2", "/u1", "/u2"]);
+        let mut idle = summary_at("s1", "Idle", "/a");
+        idle.updated_ms = 10;
+        let mut newer = summary_at("s2", "Newer", "/a");
+        newer.updated_ms = 20;
+        this.sessions = vec![idle, newer];
+        this.pinned_tasks = vec!["s1".to_string()];
+        this.active_runs
+            .insert("s2".to_string(), "run-1".to_string());
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_pinned, vec![0]);
+        assert_eq!(this.sidebar_active, vec![1]);
+        assert_eq!(this.sidebar_settled, Vec::<usize>::new());
 
-        // Hovering the dragged row itself is not a drop.
-        assert_eq!(this.project_drop_index("/p1", 0, true), None);
-        assert_eq!(this.project_drop_index("/u1", 2, false), None);
+        // A task with no live run and no unseen completion is active
+        // until it is settled away by hand; reading it never settles it.
+        this.pinned_tasks.clear();
+        this.active_runs.clear();
+        this.settled_tasks.insert("s1".to_string());
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_active, vec![1]);
+        assert_eq!(this.sidebar_settled, vec![0]);
 
-        // Dragging the pinned /p1 below the last unpinned row clamps to
-        // the end of the pinned section: insert at index 1 (after /p2).
-        assert_eq!(this.project_drop_index("/p1", 3, false), Some(1));
-        // Dragging unpinned /u1 above the pinned rows clamps to the start
-        // of the unpinned section: insert at index 2 (after both /p).
-        assert_eq!(this.project_drop_index("/u1", 0, true), Some(2));
-        // Same-section drops keep their exact position.
-        assert_eq!(this.project_drop_index("/p1", 1, true), Some(0));
-        assert_eq!(this.project_drop_index("/u2", 2, true), Some(2));
-        // Re-deriving from a stored target agrees.
-        assert_eq!(this.project_insertion_index("/p1", "/u2", false), Some(1));
+        // Sections read newest activity first.
+        let mut older = summary_at("s3", "Older", "/b");
+        older.updated_ms = 5;
+        this.sessions.push(older);
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_active, vec![1, 2]);
+        assert_eq!(this.sidebar_settled, vec![0]);
     }
 
-    /// A drop moves the project and rewrites the persisted root order.
+    /// A new task is a draft until its first message is sent: it stays
+    /// out of the sidebar, then joins the active inbox once it lands.
+    #[test]
+    fn test_draft_tasks_stay_out_until_the_first_message() {
+        let _guard = SETTINGS_LOCK.lock();
+        let mut this = ChatScreen::new_inner(
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            ),
+            "user".to_string(),
+        );
+        let mut draft = summary_at("s1", "New task", "/a");
+        draft.message_count = 0;
+        this.sessions = vec![draft, summary_at("s2", "Real task", "/a")];
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_active, vec![1]);
+        assert!(this.sidebar_settled.is_empty());
+        // The draft's project still feeds the switcher.
+        assert_eq!(this.switcher_root_paths(), vec!["/a"]);
+
+        // The first message moves it into the inbox.
+        this.sessions[0].message_count = 1;
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_active, vec![0, 1]);
+    }
+
+    /// The project filter scopes the sections to one project; the
+    /// switcher still lists every known root.
+    #[test]
+    fn test_project_filter_scopes_the_sections() {
+        let _guard = SETTINGS_LOCK.lock();
+        let mut this = ChatScreen::new_inner(
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            ),
+            "user".to_string(),
+        );
+        this.sessions = vec![summary_at("s1", "One", "/a"), summary_at("s2", "Two", "/b")];
+        this.settled_tasks.insert("s1".to_string());
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_settled, vec![0]);
+        assert_eq!(this.sidebar_active, vec![1]);
+        assert_eq!(this.switcher_root_paths(), vec!["/a", "/b"]);
+
+        this.sidebar_project_filter = Some("/b".to_string());
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_settled, Vec::<usize>::new());
+        assert_eq!(this.sidebar_active, vec![1]);
+        // The switcher is not itself filtered.
+        assert_eq!(this.switcher_root_paths(), vec!["/a", "/b"]);
+    }
+
+    /// A manual settle parks a task outside the active inbox until new
+    /// activity wakes it; a manual un-settle moves it back.
+    #[test]
+    fn test_settling_a_task_moves_it_out_of_the_inbox() {
+        let _guard = SETTINGS_LOCK.lock();
+        let mut this = ChatScreen::new_inner(
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            ),
+            "user".to_string(),
+        );
+        this.sessions = vec![summary_at("s1", "One", "/a")];
+        this.completed_unread_sessions.insert("s1".to_string());
+        this.settled_tasks.insert("s1".to_string());
+        this.rebuild_sidebar_sections();
+        // The manual settle outranks the unseen completion...
+        assert_eq!(this.sidebar_settled, vec![0]);
+        assert!(this.sidebar_active.is_empty());
+        // ...but a live run is activity: it wakes the task again.
+        this.active_runs
+            .insert("s1".to_string(), "run-1".to_string());
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_active, vec![0]);
+
+        this.active_runs.clear();
+        this.settled_tasks.remove("s1");
+        this.unsettled_tasks.insert("s1".to_string());
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_active, vec![0]);
+        assert!(this.sidebar_settled.is_empty());
+        // Reading the task (no live run, no unseen completion) leaves it
+        // in the active inbox; only an explicit settle moves it out.
+        this.completed_unread_sessions.clear();
+        this.unsettled_tasks.clear();
+        this.rebuild_sidebar_sections();
+        assert_eq!(this.sidebar_active, vec![0]);
+        assert!(this.sidebar_settled.is_empty());
+    }
+
+    /// The row buttons drive `settle_task` and `unsettle_task` back to
+    /// back; a settle followed by an un-settle must return the task to
+    /// the top of the active inbox.
     #[gpui::test]
-    fn test_reorder_project_moves_the_root(cx: &mut TestAppContext) {
+    fn test_settle_buttons_toggle_a_task_back_and_forth(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.recent_roots = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
-            this.rebuild_project_groups();
-            this.sidebar_drop_target = Some(("/c".into(), true));
-            this.reorder_project(&ProjectDrag { root: "/a".into() }, cx);
-            let roots: Vec<&str> = this
-                .project_groups
-                .iter()
-                .map(|group| &*group.root)
-                .collect();
-            assert_eq!(roots, vec!["/b", "/a", "/c"]);
-            assert_eq!(this.recent_roots, vec!["/b", "/a", "/c"]);
+            this.sessions = vec![summary("s1", "One")];
+            this.rebuild_sidebar_sections();
+            assert_eq!(this.sidebar_active, vec![0]);
+            assert!(this.sidebar_settled.is_empty());
 
-            // The new position survives a rebuild.
-            this.rebuild_project_groups();
-            let roots: Vec<&str> = this
-                .project_groups
-                .iter()
-                .map(|group| &*group.root)
-                .collect();
-            assert_eq!(roots, vec!["/b", "/a", "/c"]);
+            this.settle_task("s1", cx);
+            assert_eq!(this.sidebar_settled, vec![0]);
+            assert!(this.sidebar_active.is_empty());
+
+            this.unsettle_task("s1", cx);
+            assert_eq!(this.sidebar_active, vec![0]);
+            assert!(this.sidebar_settled.is_empty());
+            // An already-woken task can still be un-settled again.
+            this.settle_task("s1", cx);
+            this.unsettle_task("s1", cx);
+            assert_eq!(this.sidebar_active, vec![0]);
+            assert!(this.sidebar_settled.is_empty());
+        });
+    }
+
+    /// A finished run wakes a settled task and the sections follow
+    /// without any manual rebuild: the run events own the sidebar
+    /// entries.
+    #[gpui::test]
+    fn test_a_finished_run_wakes_a_settled_task(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.sessions = vec![summary("s1", "One")];
+            this.settled_tasks.insert("s1".to_string());
+            this.rebuild_sidebar_sections();
+            assert_eq!(this.sidebar_settled, vec![0]);
+            assert!(this.sidebar_active.is_empty());
+
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Started,
+                cx,
+            );
+            assert_eq!(this.sidebar_active, vec![0]);
+
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                maple_agent::agent::AgentRunEvent::Finished(
+                    maple_agent::agent::AgentRunTerminal::Completed,
+                ),
+                cx,
+            );
+            assert!(this.settled_tasks.is_empty());
+            assert_eq!(this.sidebar_active, vec![0]);
+            assert!(this.sidebar_settled.is_empty());
+            assert!(this.completed_unread_sessions.contains("s1"));
+        });
+    }
+
+    /// Application Vim drives the task popup: stepping moves the
+    /// highlight and Enter runs the highlighted action.
+    #[gpui::test]
+    fn test_popup_vim_drives_the_task_menu(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.application_vim_enabled = true;
+            this.sessions = vec![summary("s1", "One")];
+            this.rebuild_sidebar_sections();
+            this.task_menu = Some("s1".to_string());
+            // The first step highlights "Rename task"; Enter runs it.
+            assert!(this.step_sidebar_popup(1, 1, cx));
+            this.activate_sidebar_popup(cx);
+            assert!(matches!(
+                this.rename,
+                Some(RenameTarget::Task(ref target)) if target == "s1"
+            ));
+            this.cancel_rename(cx);
+            // No popup open: stepping reports nothing to do.
+            this.task_menu = None;
+            assert!(!this.step_sidebar_popup(1, 1, cx));
+        });
+    }
+
+    /// Application Vim drives the switcher popup: a count prefix reaches
+    /// a project row and Enter scopes the sidebar to it.
+    #[gpui::test]
+    fn test_popup_vim_drives_the_switcher_menu(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.application_vim_enabled = true;
+            this.sessions = vec![summary_at("s1", "One", "/a")];
+            this.recent_roots = vec!["/b".to_string()];
+            this.rebuild_sidebar_sections();
+            this.switcher_menu_open = true;
+            // Rows: "All projects", "/b", "/a", "New project…"; a count of
+            // two lands on "/b".
+            assert!(this.step_sidebar_popup(1, 2, cx));
+            this.activate_sidebar_popup(cx);
+            assert_eq!(this.sidebar_project_filter.as_deref(), Some("/b"));
+            assert!(!this.switcher_menu_open);
+        });
+    }
+
+    /// Escape closes whichever sidebar popup is open.
+    #[gpui::test]
+    fn test_escape_closes_the_sidebar_popups(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.switcher_menu_open = true;
+            this.task_menu = Some("s1".to_string());
+            this.escape(cx);
+            assert!(!this.switcher_menu_open);
+            assert!(this.task_menu.is_none());
         });
     }
 
@@ -2021,126 +2142,47 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             this.sessions = vec![summary("s1", "Fix Login")];
-            this.rebuild_project_groups();
+            this.rebuild_sidebar_sections();
             assert_eq!(this.sidebar_rows.len(), 1);
             assert_eq!(this.sidebar_rows[0].search, "fix login");
             assert_eq!(this.sidebar_rows[0].project_name.as_ref(), "proj");
-            assert_eq!(this.project_groups[0].name.as_ref(), "proj");
             // The filter matches the project name case-insensitively.
             this.sidebar_filter = "PROJ".to_lowercase();
-            this.rebuild_project_groups();
-            assert_eq!(this.project_groups[0].tasks, vec![0]);
+            this.rebuild_sidebar_sections();
+            assert_eq!(this.sidebar_active, vec![0]);
             this.sidebar_filter.clear();
             // A rename moves the row strings.
             this.upsert_session(summary("s1", "Renamed"));
             assert_eq!(this.sidebar_rows[0].title.as_ref(), "Renamed");
             this.project_names
                 .insert("/tmp/proj".to_string(), "Nice".to_string());
-            this.rebuild_project_groups();
+            this.rebuild_sidebar_sections();
             assert_eq!(this.sidebar_rows[0].project_name.as_ref(), "Nice");
-            assert_eq!(this.project_groups[0].name.as_ref(), "Nice");
         });
     }
 
-    /// Alt-Up and Alt-Down walk the current project's task rows in the
-    /// order the sidebar shows them, and stop at both ends. A task under
-    /// another project is not a step away.
+    /// Alt-Up and Alt-Down walk the task rows in the order the sidebar
+    /// shows them, across projects, and stop at both ends.
     #[gpui::test]
-    fn test_task_stepping_stays_in_the_current_project(cx: &mut TestAppContext) {
+    fn test_task_stepping_walks_the_whole_list(cx: &mut TestAppContext) {
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             let mut other = summary("s3", "C");
             other.project_root = "/work/beta".to_string();
             this.sessions = vec![summary("s1", "A"), summary("s2", "B"), other];
             this.project_root = Some("/tmp/proj".to_string());
-            this.rebuild_project_groups();
+            this.rebuild_sidebar_sections();
+            // The screen fixture selects s1: one step moves to s2, and
+            // back stops at the top.
             assert_eq!(this.task_step_target(1), Some((4, "s2".to_string())));
             assert_eq!(this.task_step_target(-1), None, "the first task is the top");
             this.selected_session = Some("s2".to_string());
+            assert_eq!(this.task_step_target(1), Some((5, "s3".to_string())));
             assert_eq!(this.task_step_target(-1), Some((3, "s1".to_string())));
-            assert_eq!(
-                this.task_step_target(1),
-                None,
-                "the next project's task is not a step away"
-            );
             // With nothing selected, each direction enters from its end.
             this.selected_session = None;
             assert_eq!(this.task_step_target(1), Some((3, "s1".to_string())));
-            assert_eq!(this.task_step_target(-1), Some((4, "s2".to_string())));
-        });
-    }
-
-    #[gpui::test]
-    fn test_sidebar_entries_follow_folds(cx: &mut TestAppContext) {
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            let mut b = summary("s2", "B");
-            b.project_root = "/work/beta".to_string();
-            let mut old = summary("s3", "Old");
-            old.archived = true;
-            this.sessions = vec![summary("s1", "A"), b, old];
-            this.rebuild_project_groups();
-            assert_eq!(
-                this.sidebar_entries,
-                vec![
-                    SidebarEntry::NewTask,
-                    SidebarEntry::ProjectsHeader,
-                    SidebarEntry::Project(0),
-                    SidebarEntry::Task {
-                        session: 0,
-                        archived: false
-                    },
-                    SidebarEntry::Project(1),
-                    SidebarEntry::Task {
-                        session: 1,
-                        archived: false
-                    },
-                    SidebarEntry::ArchivedHeader,
-                ]
-            );
-            assert_eq!(this.sidebar_list.item_count(), 7);
-            this.toggle_root_collapsed("/tmp/proj", cx);
-            assert!(!this.sidebar_entries.contains(&SidebarEntry::Task {
-                session: 0,
-                archived: false
-            }));
-            this.archived_expanded = true;
-            this.rebuild_sidebar_entries();
-            assert_eq!(
-                this.sidebar_entries.last(),
-                Some(&SidebarEntry::Task {
-                    session: 2,
-                    archived: true
-                })
-            );
-            assert_eq!(this.sidebar_list.item_count(), this.sidebar_entries.len());
-        });
-    }
-
-    #[gpui::test]
-    fn test_expanding_another_project_is_presentation_only(cx: &mut TestAppContext) {
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            this.project_root = Some("/work/alpha".to_string());
-            this.sessions = vec![
-                summary_at("s1", "A", "/work/alpha"),
-                summary_at("s2", "B", "/work/beta"),
-            ];
-            this.selected_session = Some("s1".to_string());
-            this.active_runs
-                .insert("s1".to_string(), "run-a".to_string());
-            this.collapsed_roots.insert("/work/beta".to_string());
-            this.rebuild_project_groups();
-
-            this.set_root_collapsed("/work/beta", false, cx);
-
-            assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
-            assert_eq!(this.selected_session.as_deref(), Some("s1"));
-            assert_eq!(
-                this.active_runs.get("s1").map(String::as_str),
-                Some("run-a")
-            );
-            assert!(!this.root_selecting);
+            assert_eq!(this.task_step_target(-1), Some((5, "s3".to_string())));
         });
     }
 
@@ -2463,7 +2505,7 @@ mod state_tests {
             this.sessions = (0..200)
                 .map(|n| summary(&format!("s{n}"), &format!("Task {n}")))
                 .collect();
-            this.rebuild_project_groups();
+            this.rebuild_sidebar_sections();
             this
         });
         let (_host, cx) = cx.add_window_view(|_window, _cx| SidebarHost { chat: chat.clone() });
@@ -2502,7 +2544,7 @@ mod state_tests {
         chat.update(cx, |this, cx| {
             this.set_application_vim_enabled(false, cx);
             this.sessions = vec![summary("s1", "Task")];
-            this.rebuild_project_groups();
+            this.rebuild_sidebar_sections();
             this.replace_timeline(vec![
                 user_item("u1", "question"),
                 item("a1", "message", Some("answer")),
@@ -3215,6 +3257,62 @@ mod state_tests {
         assert_eq!(
             cx.update(|_window, app| chat.read(app).root_menu_selected),
             Some(0)
+        );
+    }
+
+    /// The open composer menu (model picker and friends) floats above the
+    /// chip row as an overlay overlaying the composer contents. Regression
+    /// test: an anchor beyond the chip row would push the panel down into
+    /// the chips, and a menu that dropped out of the stack would hide
+    /// under them.
+    #[gpui::test]
+    fn test_composer_menu_floats_above_the_composer(cx: &mut TestAppContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.replace_timeline(vec![user_item("u1", "hello")]);
+            chat.models = vec!["voxtral-small-24b".to_string()];
+            chat.models_menu_open = true;
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        let menu = cx
+            .debug_bounds("composer-menu")
+            .expect("the models menu renders while models_menu_open is set");
+        let chips = cx
+            .debug_bounds("composer-chips")
+            .expect("the composer chip row renders");
+        assert!(
+            menu.size.width > px(0.) && menu.size.height > px(0.),
+            "the menu overlay must lay out with real bounds, got {menu:?}"
+        );
+        assert!(
+            menu.bottom() <= chips.top(),
+            "the composer menu must sit above the chip row \
+             (menu {menu:?}, chips {chips:?})"
         );
     }
 }
