@@ -4628,12 +4628,15 @@ impl AgentRuntimeHandle {
                 }
             }
             DesktopSendDisposition::StartOnly => {
-                if text.is_empty() {
+                // The draft carries prompt images the way desktop sends do:
+                // embedded for vision models, referenced through read_image
+                // for everyone else. It is None only for an empty prompt.
+                let Some(launch_message) = draft_message else {
                     return Err("Prompt cannot be empty".to_string());
-                }
+                };
                 reject_foreign_surface_session(state, account_scope, &request.session_id).await?;
                 (
-                    vec![user_message_from_prompt(&text)],
+                    vec![launch_message],
                     empty_desktop_queue_snapshot(),
                     Vec::new(),
                 )
@@ -9838,6 +9841,12 @@ pub(crate) mod test_support {
         ));
         let paths =
             AgentPathLayout::from_app_roots(root.join("app-config"), root.join("app-local-data"));
+        let user_id = format!("{label}-user");
+        // The account history dir, not an ad-hoc one: the prompt path opens
+        // its own manager over that dir (for image attachments), so the
+        // runtime must own the same store the way the started app does.
+        let session_manager = account_session_manager(&paths, &user_id)
+            .expect("test history dir should be creatable");
         let service = MapleAgentService::new(MapleAgentHostResources::new(
             paths,
             Arc::new(NoopEventSink),
@@ -9846,7 +9855,6 @@ pub(crate) mod test_support {
         ));
         let project_root = root.join("project");
         fs::create_dir_all(&project_root).expect("project directory should be created");
-        let session_manager = Arc::new(SessionManager::new(root.join("sessions")));
         let permission_manager = Arc::new(PermissionManager::new(root.join("permissions")));
         let goose_config = GooseAgentConfig::new(
             Arc::clone(&session_manager),
@@ -9861,7 +9869,6 @@ pub(crate) mod test_support {
                 .await
                 .expect("test Agent manager should start"),
         );
-        let user_id = format!("{label}-user");
         let runtime = AgentRuntime {
             agent_manager,
             session_manager,
