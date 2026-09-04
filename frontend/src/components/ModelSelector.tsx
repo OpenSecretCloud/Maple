@@ -74,10 +74,20 @@ function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAl
   });
 }
 
-export function ModelSelector() {
+export type ModelSelectorProps = {
+  disabled?: boolean;
+  model?: string;
+  onModelChange?: (modelId: string, metadata?: OpenSecretModel) => void;
+};
+
+export function ModelSelector({
+  disabled = false,
+  model: controlledModel,
+  onModelChange
+}: ModelSelectorProps = {}) {
   const {
-    model,
-    setModel,
+    model: unmanagedModel,
+    setModel: setUnmanagedModel,
     availableModels,
     setAvailableModels,
     modelAliases,
@@ -86,12 +96,25 @@ export function ModelSelector() {
   } = useModelState();
   const { billingStatus } = useBillingState();
   const os = useOpenSecret();
+  const isManagedSelection = onModelChange != null;
+  const model = isManagedSelection ? (controlledModel ?? "") : unmanagedModel;
   const isFetching = useRef(false);
   const hasFetched = useRef(false);
   const currentModelRef = useRef(model);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState<string>("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const setModel = useCallback(
+    (modelId: string, metadata?: OpenSecretModel) => {
+      if (onModelChange) {
+        onModelChange(modelId, metadata);
+        return;
+      }
+      setUnmanagedModel(modelId, metadata);
+    },
+    [onModelChange, setUnmanagedModel]
+  );
 
   useEffect(() => {
     currentModelRef.current = model;
@@ -175,8 +198,9 @@ export function ModelSelector() {
   }, [os, reconcileSelectedConcreteModel, setAvailableModels, setHasWhisperModel, setModelAliases]);
 
   useEffect(() => {
+    if (isManagedSelection) return;
     void fetchCatalog();
-  }, [fetchCatalog]);
+  }, [fetchCatalog, isManagedSelection]);
 
   const getAlias = useCallback(
     (modelId: string): OpenSecretModelAlias | undefined => {
@@ -326,6 +350,7 @@ export function ModelSelector() {
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
+            disabled={disabled}
             variant="ghost"
             size="sm"
             className="h-8 gap-1 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
@@ -381,7 +406,7 @@ export function ModelSelector() {
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
-                  void fetchCatalog();
+                  if (!isManagedSelection) void fetchCatalog();
                   setShowAdvanced(true);
                 }}
                 className="flex items-center gap-2 px-3 py-1.5 cursor-pointer"

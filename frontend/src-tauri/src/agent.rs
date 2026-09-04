@@ -69,8 +69,8 @@ use web_permission::{
 };
 use web_tools::WebToolState;
 
-const DEFAULT_AGENT_MODEL: &str = "glm-5-2";
-const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
+const DEFAULT_AGENT_MODEL: &str = "auto:quick";
+const PREVIOUS_RECOMMENDED_AGENT_MODEL: &str = "glm-5-2";
 const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // Keep Goose on its ActionRequired path so Maple can apply the currently selected
 // policy at every tool boundary, including when the user changes it mid-run.
@@ -8807,7 +8807,7 @@ fn load_agent_config_file(path: &Path) -> Result<AgentConfig, anyhow::Error> {
 
 fn migrate_agent_config(config: &mut AgentConfig) -> bool {
     let mut changed = false;
-    if config.default_model == LEGACY_AGENT_DEFAULT_MODEL {
+    if config.default_model == PREVIOUS_RECOMMENDED_AGENT_MODEL {
         config.default_model = default_agent_model();
         changed = true;
     }
@@ -11627,7 +11627,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_agent_config_defaults_to_glm() {
+    fn fresh_agent_config_defaults_to_quick() {
         assert_eq!(AgentConfig::default().default_model, DEFAULT_AGENT_MODEL);
         assert!(AgentConfig::default().mcp_servers.is_empty());
 
@@ -13373,10 +13373,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_powerful_agent_default_migrates_to_glm() {
+    fn previous_glm_agent_default_migrates_to_quick() {
         let mut config = AgentConfig {
             default_project_root: Some("/tmp/project".to_string()),
-            default_model: LEGACY_AGENT_DEFAULT_MODEL.to_string(),
+            default_model: PREVIOUS_RECOMMENDED_AGENT_MODEL.to_string(),
             mcp_servers: Vec::new(),
             project_trust: Vec::new(),
             removed_project_roots: Vec::new(),
@@ -13389,7 +13389,7 @@ mod tests {
 
     #[test]
     fn explicit_agent_model_choices_are_not_migrated() {
-        for model in ["kimi-k2-6", "auto:quick", "glm-5-2", "gemma-3-27b"] {
+        for model in ["kimi-k2-6", "auto:quick", "auto:powerful", "gemma-3-27b"] {
             let mut config = AgentConfig {
                 default_project_root: None,
                 default_model: model.to_string(),

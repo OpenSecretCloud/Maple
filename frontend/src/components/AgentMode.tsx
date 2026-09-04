@@ -13,11 +13,7 @@ import { useOpenAI } from "@/ai/useOpenAi";
 import {
   AlertCircle,
   ArrowUp,
-  Brain,
-  Camera,
   Check,
-  ChevronDown,
-  ChevronLeft,
   Circle,
   Expand,
   FilePenLine,
@@ -33,8 +29,7 @@ import {
   ShieldCheck,
   Shrink,
   Trash,
-  X,
-  Zap
+  X
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -86,6 +81,7 @@ import { RenameAgentProjectDialog } from "@/components/RenameAgentProjectDialog"
 import { AgentProjectSettingsDialog } from "@/components/agent/AgentProjectSettingsDialog";
 import { RenameAgentTaskDialog } from "@/components/RenameAgentTaskDialog";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
+import { ModelSelector } from "@/components/ModelSelector";
 import { ToolActivityCard } from "@/components/ToolActivityCard";
 import { AgentMcpMenu, AgentMcpServersDialog } from "@/components/agent/AgentMcpControls";
 import { AgentSidebarInfoCard } from "@/components/agent/AgentSidebarInfoCard";
@@ -181,7 +177,7 @@ import {
 } from "@/services/agentTimeline";
 import {
   DEFAULT_AGENT_MODEL,
-  PRIMARY_AGENT_MODEL_IDS,
+  migrateAgentModelPreference,
   reconcileAgentModel,
   resolveAgentModelForSession,
   resolveAgentModelContextLimit,
@@ -274,7 +270,10 @@ type AgentModelPreference = {
 
 function readAgentModelPreference(): string | null {
   try {
-    return localStorage.getItem(AGENT_MODEL_PREFERENCE_KEY)?.trim() || null;
+    const stored = localStorage.getItem(AGENT_MODEL_PREFERENCE_KEY)?.trim() || null;
+    const migrated = migrateAgentModelPreference(stored);
+    if (migrated !== stored) persistAgentModelPreference(migrated);
+    return migrated;
   } catch {
     return null;
   }
@@ -345,38 +344,22 @@ const AGENT_PERMISSION_MODES: Array<{
   }
 ];
 
-const QUICK_AGENT_MODEL = {
-  id: QUICK_MODEL_ALIAS,
-  label: "Quick",
-  icon: Zap,
-  description: "Fast, everyday responses",
-  access: "free" as ModelAccessTier,
-  capabilities: { vision: false, reasoning: true }
-} as const;
-
-const LEGACY_POWERFUL_AGENT_ALIAS = {
-  id: POWERFUL_MODEL_ALIAS,
-  label: "Powerful",
-  icon: Brain,
-  description: "Deeper thinking & analysis",
-  access: "pro" as ModelAccessTier,
-  capabilities: { vision: true, reasoning: true }
-} as const;
-
-const PRIMARY_AGENT_MODELS = PRIMARY_AGENT_MODEL_IDS.map((id) =>
-  id === DEFAULT_AGENT_MODEL
-    ? {
-        id: DEFAULT_AGENT_MODEL,
-        label: "GLM 5.2",
-        icon: Brain,
-        description: "Recommended for Agent Mode",
-        access: "pro" as ModelAccessTier,
-        capabilities: { vision: false, reasoning: true }
-      }
-    : QUICK_AGENT_MODEL
-);
-
-const FALLBACK_AGENT_MODEL_ALIASES = [QUICK_AGENT_MODEL, LEGACY_POWERFUL_AGENT_ALIAS] as const;
+const FALLBACK_AGENT_MODEL_ALIASES = [
+  {
+    id: QUICK_MODEL_ALIAS,
+    label: "Quick",
+    description: "Fast, everyday responses",
+    access: "free" as ModelAccessTier,
+    capabilities: { vision: false, reasoning: true }
+  },
+  {
+    id: POWERFUL_MODEL_ALIAS,
+    label: "Powerful",
+    description: "Deeper thinking & analysis",
+    access: "pro" as ModelAccessTier,
+    capabilities: { vision: true, reasoning: true }
+  }
+] as const;
 
 const FALLBACK_ALIAS_TARGETS = {
   [QUICK_MODEL_ALIAS]: "gpt-oss-120b",
@@ -5165,7 +5148,7 @@ function AgentComposer({
 
       <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
-          <AgentModelSelector
+          <ModelSelector
             disabled={isModelSelectionDisabled}
             model={model}
             onModelChange={onModelChange}
@@ -5343,331 +5326,6 @@ function AgentModeSelector({
         ))}
       </SelectContent>
     </Select>
-  );
-}
-
-function AgentModelSelector({
-  disabled,
-  model,
-  onModelChange
-}: {
-  disabled?: boolean;
-  model: string;
-  onModelChange: (value: string) => void;
-}) {
-  const { availableModels, modelAliases } = useModelState();
-  const { billingStatus } = useBillingState();
-  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
-  const [selectedModelName, setSelectedModelName] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  const modelById = useMemo(() => {
-    return new Map(availableModels.map((availableModel) => [availableModel.id, availableModel]));
-  }, [availableModels]);
-
-  const aliasById = useMemo(() => {
-    return new Map(modelAliases.map((alias) => [alias.id, alias]));
-  }, [modelAliases]);
-
-  const getAlias = useCallback(
-    (modelId: string): OpenSecretModelAlias | undefined => {
-      const alias = aliasById.get(modelId as OpenSecretModelAlias["id"]);
-      if (alias) return alias;
-
-      const fallback = FALLBACK_AGENT_MODEL_ALIASES.find(
-        (primaryModel) => primaryModel.id === modelId
-      );
-      if (!fallback) return undefined;
-
-      return {
-        id: fallback.id,
-        label: fallback.label,
-        short_name: fallback.label,
-        description: fallback.description,
-        target_model: "",
-        access: fallback.access,
-        capabilities: fallback.capabilities
-      };
-    },
-    [aliasById]
-  );
-
-  const getTargetModel = useCallback(
-    (alias: OpenSecretModelAlias | undefined) => {
-      if (!alias?.target_model) return undefined;
-      return modelById.get(alias.target_model);
-    },
-    [modelById]
-  );
-
-  const getAccess = useCallback(
-    (modelId: string): ModelAccessTier => {
-      const alias = getAlias(modelId);
-      if (alias) {
-        return getTargetModel(alias)?.access || alias.access || "free";
-      }
-      const primaryModel = PRIMARY_AGENT_MODELS.find((candidate) => candidate.id === modelId);
-      return modelById.get(modelId)?.access || primaryModel?.access || "free";
-    },
-    [getAlias, getTargetModel, modelById]
-  );
-
-  const hasAccessToModel = useCallback(
-    (modelId: string) => {
-      const access = getAccess(modelId);
-      if (access === "free") return true;
-
-      const planName = billingStatus?.product_name?.toLowerCase() || "";
-      return planName.includes("pro") || planName.includes("max") || planName.includes("team");
-    },
-    [billingStatus?.product_name, getAccess]
-  );
-
-  const getDisplayLabel = (modelId: string): string => {
-    const alias = getAlias(modelId);
-    if (alias) return alias.short_name || alias.label;
-
-    const selectedModel = modelById.get(modelId);
-    const primaryModel = PRIMARY_AGENT_MODELS.find((candidate) => candidate.id === modelId);
-    return (
-      selectedModel?.short_name || selectedModel?.display_name || primaryModel?.label || modelId
-    );
-  };
-
-  const getDisplayNameText = (modelId: string): string => {
-    const alias = getAlias(modelId);
-    if (alias) return alias.label;
-
-    const selectedModel = modelById.get(modelId);
-    const primaryModel = PRIMARY_AGENT_MODELS.find((candidate) => candidate.id === modelId);
-    return (
-      selectedModel?.display_name || selectedModel?.short_name || primaryModel?.label || modelId
-    );
-  };
-
-  const handlePrimarySelect = (targetModel: string) => {
-    if (!hasAccessToModel(targetModel)) {
-      setSelectedModelName(getDisplayNameText(targetModel));
-      setUpgradeDialogOpen(true);
-      return;
-    }
-
-    onModelChange(targetModel);
-  };
-
-  const getModelBadges = (modelId: string): string[] => {
-    const selectedModel = modelById.get(modelId);
-    const badges = selectedModel?.badges || [];
-    return badges.filter(
-      (badge) =>
-        badge !== "Pro" &&
-        (selectedModel?.access === "free" || badge.toLowerCase() !== selectedModel?.access)
-    );
-  };
-
-  const getDisplayName = (modelId: string, showLock = false) => {
-    const selectedModel = modelById.get(modelId);
-    const elements: React.ReactNode[] = [];
-
-    if (selectedModel) {
-      elements.push(selectedModel.display_name || selectedModel.short_name || modelId);
-
-      const badges = getModelBadges(modelId);
-      badges.forEach((badge, index) => {
-        let badgeClass = "rounded-md px-1.5 py-0.5 text-[10px] font-medium";
-
-        if (badge === "Coming Soon") {
-          badgeClass += " bg-muted text-muted-foreground";
-        } else if (badge === "New") {
-          badgeClass += " bg-maple-info/10 text-maple-info";
-        } else if (badge === "Reasoning") {
-          badgeClass += " bg-maple-error/10 text-maple-error";
-        } else if (badge === "Beta") {
-          badgeClass += " bg-maple-warning/10 text-maple-warning";
-        } else {
-          badgeClass += " bg-[hsl(var(--maple-primary))]/10 text-[hsl(var(--maple-primary))]";
-        }
-
-        elements.push(
-          <span key={`badge-${index}`} className={badgeClass}>
-            {badge}
-          </span>
-        );
-      });
-
-      if (showLock && !hasAccessToModel(modelId)) {
-        elements.push(<Lock key="lock" className="h-3 w-3 opacity-50" />);
-      }
-
-      if (selectedModel.capabilities?.vision) {
-        elements.push(<Camera key="cam" className="h-3 w-3 opacity-50" />);
-      }
-    } else {
-      elements.push(getDisplayNameText(modelId));
-    }
-
-    return <span className="flex items-center gap-1">{elements}</span>;
-  };
-
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            disabled={disabled}
-            variant="ghost"
-            size="sm"
-            className="h-8 gap-1 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-            aria-label={`Current agent model: ${getDisplayNameText(model)}. Click to change model.`}
-          >
-            <span className="text-xs font-medium">{getDisplayLabel(model)}</span>
-            <ChevronDown className="h-3 w-3" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-64 p-0">
-          {!showAdvanced ? (
-            <div className="flex flex-col p-1">
-              {PRIMARY_AGENT_MODELS.map((primaryModel) => {
-                const alias = getAlias(primaryModel.id);
-                const Icon = primaryModel.icon;
-                const targetModel = primaryModel.id;
-                const isActive = model === targetModel;
-                const requiresUpgrade = !hasAccessToModel(targetModel);
-
-                return (
-                  <DropdownMenuItem
-                    key={targetModel}
-                    onClick={() => handlePrimarySelect(targetModel)}
-                    className={cn(
-                      "flex cursor-pointer items-center gap-2 px-3 py-1.5",
-                      requiresUpgrade &&
-                        "hover:bg-[hsl(var(--maple-primary-container))] dark:hover:bg-[hsl(var(--maple-primary))]/10"
-                    )}
-                  >
-                    <Icon className="h-4 w-4 opacity-70" />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-sm font-medium">
-                          {alias?.label || primaryModel.label}
-                        </span>
-                        {requiresUpgrade && <Lock className="h-3 w-3 opacity-50" />}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {alias?.description || primaryModel.description}
-                      </div>
-                    </div>
-                    {isActive && <Check className="h-4 w-4" />}
-                  </DropdownMenuItem>
-                );
-              })}
-
-              <DropdownMenuSeparator />
-
-              <DropdownMenuItem
-                onSelect={(event) => {
-                  event.preventDefault();
-                  setShowAdvanced(true);
-                }}
-                className="flex cursor-pointer items-center gap-2 px-3 py-1.5"
-              >
-                <ChevronLeft className="h-4 w-4 rotate-180 opacity-70" />
-                <div className="flex-1">
-                  <span className="text-sm font-medium">More models</span>
-                  <div className="text-xs text-muted-foreground">All models</div>
-                </div>
-              </DropdownMenuItem>
-            </div>
-          ) : (
-            <div className="flex flex-col p-1">
-              <DropdownMenuItem
-                onSelect={(event) => {
-                  event.preventDefault();
-                  setShowAdvanced(false);
-                }}
-                className="mb-1 flex cursor-pointer items-center gap-2 px-3 py-1.5"
-              >
-                <ChevronLeft className="h-4 w-4" />
-                <span className="text-sm font-medium">Back</span>
-              </DropdownMenuItem>
-
-              <DropdownMenuSeparator />
-
-              <div className="max-h-80 overflow-y-auto">
-                {availableModels.length === 0 ? (
-                  <DropdownMenuItem disabled className="px-3 py-2 text-sm text-muted-foreground">
-                    Loading models...
-                  </DropdownMenuItem>
-                ) : (
-                  [...availableModels]
-                    .filter(isSelectableChatModel)
-                    .filter(
-                      (availableModel, index, self) =>
-                        self.findIndex((candidate) => candidate.id === availableModel.id) === index
-                    )
-                    .sort((a, b) => {
-                      const aDisabled = a.enabled === false;
-                      const bDisabled = b.enabled === false;
-                      const aRestricted = !hasAccessToModel(a.id);
-                      const bRestricted = !hasAccessToModel(b.id);
-
-                      if (aDisabled && !bDisabled) return 1;
-                      if (!aDisabled && bDisabled) return -1;
-                      if (aRestricted && !bRestricted) return 1;
-                      if (!aRestricted && bRestricted) return -1;
-
-                      return (a.sort_order ?? 999) - (b.sort_order ?? 999);
-                    })
-                    .map((availableModel) => {
-                      const isDisabled = availableModel.enabled === false;
-                      const isRestricted = !hasAccessToModel(availableModel.id);
-                      const selectedAliasTarget = getAlias(model)?.target_model;
-                      const isActive =
-                        model === availableModel.id || selectedAliasTarget === availableModel.id;
-
-                      return (
-                        <DropdownMenuItem
-                          key={`agent-model-${availableModel.id}`}
-                          onClick={() => {
-                            if (isDisabled) return;
-                            if (isRestricted) {
-                              setSelectedModelName(
-                                availableModel.display_name || availableModel.id
-                              );
-                              setUpgradeDialogOpen(true);
-                            } else {
-                              onModelChange(availableModel.id);
-                              setShowAdvanced(false);
-                            }
-                          }}
-                          className={cn(
-                            "group flex items-center justify-between",
-                            isDisabled && "cursor-not-allowed opacity-50",
-                            isRestricted &&
-                              "hover:bg-[hsl(var(--maple-primary-container))] dark:hover:bg-[hsl(var(--maple-primary))]/10"
-                          )}
-                          disabled={isDisabled}
-                        >
-                          <div className="flex flex-1 items-center gap-2">
-                            <div className="text-sm">{getDisplayName(availableModel.id, true)}</div>
-                          </div>
-                          {isActive && <Check className="h-4 w-4" />}
-                        </DropdownMenuItem>
-                      );
-                    })
-                )}
-              </div>
-            </div>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <UpgradePromptDialog
-        open={upgradeDialogOpen}
-        onOpenChange={setUpgradeDialogOpen}
-        feature="model"
-        modelName={selectedModelName}
-      />
-    </>
   );
 }
 

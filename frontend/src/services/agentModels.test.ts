@@ -3,7 +3,9 @@ import { POWERFUL_MODEL_ALIAS, QUICK_MODEL_ALIAS } from "@/utils/utils";
 import {
   DEFAULT_AGENT_MODEL,
   PRIMARY_AGENT_MODEL_IDS,
+  PREVIOUS_RECOMMENDED_AGENT_MODEL,
   fallbackAgentModel,
+  migrateAgentModelPreference,
   reconcileAgentModel,
   reconcileAgentModelForCatalog,
   resolveAgentModelForSession,
@@ -11,17 +13,31 @@ import {
   resolveAgentModelVisionCapability
 } from "./agentModels";
 
-const models = [{ id: DEFAULT_AGENT_MODEL }, { id: "kimi-k2-6" }];
+const models = [
+  { id: PREVIOUS_RECOMMENDED_AGENT_MODEL },
+  { id: "glm-5-3" },
+  { id: "deepseek-v4-flash" },
+  { id: "kimi-k2-6" }
+];
 
 describe("Agent Mode model defaults", () => {
-  test("promotes GLM first and leaves Kimi out of the primary choices", () => {
-    expect(PRIMARY_AGENT_MODEL_IDS).toEqual([DEFAULT_AGENT_MODEL, QUICK_MODEL_ALIAS]);
+  test("uses the same Quick/Powerful primary choices as chat", () => {
+    expect(DEFAULT_AGENT_MODEL).toBe(QUICK_MODEL_ALIAS);
+    expect(PRIMARY_AGENT_MODEL_IDS).toEqual([QUICK_MODEL_ALIAS, POWERFUL_MODEL_ALIAS]);
+    expect(PRIMARY_AGENT_MODEL_IDS).not.toContain(PREVIOUS_RECOMMENDED_AGENT_MODEL);
     expect(PRIMARY_AGENT_MODEL_IDS).not.toContain("kimi-k2-6");
   });
 
-  test("falls back to GLM when it is available, otherwise Quick", () => {
-    expect(fallbackAgentModel(models)).toBe(DEFAULT_AGENT_MODEL);
-    expect(fallbackAgentModel([{ id: "kimi-k2-6" }])).toBe(QUICK_MODEL_ALIAS);
+  test("falls back to Quick even when a previous recommended concrete model is available", () => {
+    expect(fallbackAgentModel()).toBe(QUICK_MODEL_ALIAS);
+  });
+
+  test("clears the previous Agent-only recommended model from sticky preferences", () => {
+    expect(migrateAgentModelPreference(PREVIOUS_RECOMMENDED_AGENT_MODEL)).toBeNull();
+    expect(migrateAgentModelPreference("  glm-5-2  ")).toBeNull();
+    expect(migrateAgentModelPreference(null)).toBeNull();
+    expect(migrateAgentModelPreference("kimi-k2-6")).toBe("kimi-k2-6");
+    expect(migrateAgentModelPreference(POWERFUL_MODEL_ALIAS)).toBe(POWERFUL_MODEL_ALIAS);
   });
 
   test("keeps selectable concrete models and existing aliases", () => {
@@ -30,14 +46,19 @@ describe("Agent Mode model defaults", () => {
     expect(reconcileAgentModel(POWERFUL_MODEL_ALIAS, models)).toBe(POWERFUL_MODEL_ALIAS);
   });
 
-  test("replaces a missing concrete model with the best available default", () => {
-    expect(reconcileAgentModel("retired-model", models)).toBe(DEFAULT_AGENT_MODEL);
-    expect(reconcileAgentModel(DEFAULT_AGENT_MODEL, [{ id: "kimi-k2-6" }])).toBe(QUICK_MODEL_ALIAS);
+  test("replaces a missing concrete model with the shared Quick default", () => {
+    expect(reconcileAgentModel("retired-model", models)).toBe(QUICK_MODEL_ALIAS);
+    expect(reconcileAgentModel(PREVIOUS_RECOMMENDED_AGENT_MODEL, models)).toBe(
+      PREVIOUS_RECOMMENDED_AGENT_MODEL
+    );
+    expect(reconcileAgentModel(PREVIOUS_RECOMMENDED_AGENT_MODEL, [{ id: "kimi-k2-6" }])).toBe(
+      QUICK_MODEL_ALIAS
+    );
   });
 
   test("catalog refresh preserves a started task's locked model", () => {
     expect(reconcileAgentModelForCatalog("retired-model", models, true)).toBe("retired-model");
-    expect(reconcileAgentModelForCatalog("retired-model", models, false)).toBe(DEFAULT_AGENT_MODEL);
+    expect(reconcileAgentModelForCatalog("retired-model", models, false)).toBe(QUICK_MODEL_ALIAS);
   });
 
   test("uses remembered models for new tasks without changing started tasks", () => {
