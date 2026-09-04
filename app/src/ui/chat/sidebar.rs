@@ -1606,6 +1606,8 @@ impl ChatScreen {
                         .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         .cursor_pointer()
                 })
+                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                .tooltip(widgets::tooltip("Start a new task", Some("⌘N")))
                 .on_click(cx.listener(|this, _event, window, cx| {
                     this.execute_command(ChatCommand::NewTask, window, cx);
                 }))

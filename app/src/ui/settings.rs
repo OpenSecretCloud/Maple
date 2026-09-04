@@ -1440,10 +1440,9 @@ impl SettingsScreen {
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .child(format!(
-                                "{} · {} · {}",
+                                "{} · {}",
                                 row.category,
                                 shortcut_context_label(row.context.as_deref()),
-                                row.slot_id
                             )),
                     )
                     .when(!row.conflicts.is_empty(), |column| {

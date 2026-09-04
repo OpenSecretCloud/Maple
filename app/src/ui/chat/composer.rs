@@ -58,6 +58,7 @@ impl ChatScreen {
                     self.project_label.clone(),
                     true,
                     self.root_menu_open,
+                    false,
                 )
                 .flex_none()
                 .on_click(cx.listener(|this, _event, window, cx| {
@@ -410,21 +411,25 @@ impl ChatScreen {
             return Some(Self::menu_overlay(menu));
         }
         if self.models_menu_open {
+            let selected_model = self.selected_model.clone();
             menu = menu.children(self.models.iter().map(|model| {
-                div()
-                    .id(gpui::SharedString::from(format!("model-{model}")))
-                    .px_3()
+                let current = selected_model.as_deref() == Some(model.as_str());
+                widgets::menu_row(gpui::SharedString::from(format!("model-{model}")), true)
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .py_1()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
+                    .when(current, |row| row.font_weight(gpui::FontWeight::MEDIUM))
                     .on_click({
                         let model = model.clone();
                         cx.listener(move |this, _event, _window, cx| {
                             this.pick_model(model.clone(), cx);
                         })
                     })
-                    .child(model.clone())
+                    .child(div().flex_1().child(model.clone()))
+                    .when(current, |row| {
+                        row.child(icon("check", px(14.), theme::accent()))
+                    })
             }));
             return Some(Self::menu_overlay(menu));
         }
@@ -883,7 +888,6 @@ impl ChatScreen {
             .selected_model
             .clone()
             .unwrap_or_else(|| "Model".to_string());
-        let bypass = self.permission_mode == PermissionMode::Auto;
         div()
             .w_full()
             .flex()
@@ -1028,6 +1032,7 @@ impl ChatScreen {
                             model_label,
                             true,
                             self.models_menu_open,
+                            false,
                         )
                         .on_click(cx.listener(
                             |this, _event, _window, cx| {
@@ -1043,9 +1048,10 @@ impl ChatScreen {
                         chip(
                             "permission-mode-toggle",
                             Some(self.permission_mode.icon()),
-                            if bypass { "Allow all" } else { "Read only" }.to_string(),
+                            self.permission_mode.label().to_string(),
                             true,
                             self.mode_menu_open,
+                            false,
                         )
                         .on_click(cx.listener(
                             |this, _event, _window, cx| {
@@ -1068,6 +1074,7 @@ impl ChatScreen {
                             },
                             false,
                             self.mcp_menu_open,
+                            false,
                         )
                         .on_click(cx.listener(
                             |this, _event, _window, cx| {
@@ -1087,6 +1094,7 @@ impl ChatScreen {
                             "web-toggle",
                             Some("globe"),
                             if self.web_enabled { "Web" } else { "Web off" }.to_string(),
+                            false,
                             false,
                             self.web_enabled,
                         )
@@ -1292,14 +1300,20 @@ pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Ve
     .collect()
 }
 
+/// One control in the composer chip row. `active` means its menu is
+/// open; `highlight` means the feature it toggles is on, shown in the
+/// accent so the two states never look alike.
 fn chip(
     id: &'static str,
     leading: Option<&'static str>,
     label: impl Into<SharedString>,
     chevron: bool,
     active: bool,
+    highlight: bool,
 ) -> gpui::Stateful<Div> {
-    let color = if active {
+    let color = if highlight {
+        theme::accent()
+    } else if active {
         theme::text_primary()
     } else {
         theme::text_secondary()

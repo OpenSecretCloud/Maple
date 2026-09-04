@@ -401,6 +401,25 @@ fn copy_message_button(
     )
 }
 
+/// When a message was sent, revealed beside its actions on hover: the
+/// clock for today, otherwise the date too.
+fn timestamp_label(item: &AgentTimelineItem, group: &SharedString) -> Div {
+    let sent = chrono::DateTime::<chrono::Local>::from(
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(item.created_ms as u64),
+    );
+    let text = if sent.date_naive() == chrono::Local::now().date_naive() {
+        sent.format("%H:%M").to_string()
+    } else {
+        sent.format("%b %-d, %H:%M").to_string()
+    };
+    div()
+        .text_xs()
+        .text_color(gpui::rgb(theme::text_faint()))
+        .opacity(0.)
+        .group_hover(group.clone(), |style| style.opacity(1.))
+        .child(text)
+}
+
 fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &TranscriptCtx) -> Div {
     let ctx = transcript.render;
     let attachment_images = transcript.attachment_images;
@@ -427,7 +446,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
         };
         let ordinal = user_ctx.base_ordinal;
         div()
-            .group(group)
+            .group(group.clone())
             .flex()
             .flex_col()
             .items_end()
@@ -509,7 +528,14 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                         ))
                     }),
             )
-            .children(copy)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(timestamp_label(item, &group))
+                    .children(copy),
+            )
     } else {
         div()
             .group(group.clone())
@@ -532,8 +558,10 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .children(copy.map(|button| {
                 div()
                     .flex()
+                    .items_center()
                     .gap_1()
                     .child(button)
+                    .child(timestamp_label(item, &group))
                     .when(transcript.speech_available, |row| {
                         let speech = transcript.speech.filter(|speech| speech.item_id == item.id);
                         row.child(speak_message_button(
