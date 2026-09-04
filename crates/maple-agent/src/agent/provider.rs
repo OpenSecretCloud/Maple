@@ -1347,6 +1347,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mediated_cua_tool_result_does_not_emit_an_image_message() {
+        let initial = Message::user().with_text("Inspect the Calculator window");
+        let tool_request = Message::assistant().with_tool_request(
+            "cua-call-1",
+            Ok(rmcp::model::CallToolRequestParams::new(
+                "cua-driver__get_window_state",
+            )),
+        );
+
+        // Positive control: Goose turns an MCP image result into a synthetic
+        // user image message. This is the exact path a text-only provider
+        // rejects if Maple's CUA adapter fails to mediate the screenshot.
+        let raw_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let raw_provider = MapleProvider::new(Arc::clone(&raw_transport));
+        let raw_response = Message::user().with_tool_response(
+            "cua-call-1",
+            Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text("window_id=7 size=900x600"),
+                rmcp::model::ContentBlock::image("cua-image-sentinel", "image/png"),
+            ])),
+        );
+        let raw_stream = raw_provider
+            .stream(
+                &ModelConfig::new("deepseek-v4-flash"),
+                "system",
+                &[initial.clone(), tool_request.clone(), raw_response],
+                &[],
+            )
+            .await
+            .expect("raw control request should serialize");
+        let _ = collect_stream(raw_stream)
+            .await
+            .expect("raw control response should parse");
+        let raw_body = serde_json::to_string(&raw_transport.requests.lock().unwrap()[0].body)
+            .expect("raw request should serialize");
+        assert!(raw_body.contains("image_url"));
+        assert!(raw_body.contains("cua-image-sentinel"));
+
+        let mediated_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
+        let mediated_provider = MapleProvider::new(Arc::clone(&mediated_transport));
+        let mut mediated_result = rmcp::model::CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text("window_id=7 size=900x600"),
+            rmcp::model::ContentBlock::text(
+                "Computer-use vision helper description: Calculator shows 437.",
+            ),
+        ]);
+        mediated_result.structured_content = Some(serde_json::json!({
+            "window_id": 7,
+            "screenshot_width": 900,
+            "screenshot_height": 600
+        }));
+        let mediated_response =
+            Message::user().with_tool_response("cua-call-1", Ok(mediated_result));
+        let mediated_stream = mediated_provider
+            .stream(
+                &ModelConfig::new("deepseek-v4-flash"),
+                "system",
+                &[initial, tool_request, mediated_response],
+                &[],
+            )
+            .await
+            .expect("mediated request should serialize");
+        let _ = collect_stream(mediated_stream)
+            .await
+            .expect("mediated response should parse");
+        let mediated_body =
+            serde_json::to_string(&mediated_transport.requests.lock().unwrap()[0].body)
+                .expect("mediated request should serialize");
+        assert!(!mediated_body.contains("image_url"));
+        assert!(!mediated_body.contains("cua-image-sentinel"));
+        assert!(mediated_body.contains("Calculator shows 437"));
+    }
+
+    #[tokio::test]
     async fn primary_agent_stream_enables_thinking_only_for_direct_gemma_selection() {
         let gemma_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
         let gemma_provider = MapleProvider::new(gemma_transport.clone());

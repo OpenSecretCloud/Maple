@@ -23,8 +23,8 @@ once_cell = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-goose = { git = "https://github.com/benthecarman/goose.git", rev = "3f7cc605aa2ce9620daace75b5f5e58ce57eef3d", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/benthecarman/goose.git", rev = "3f7cc605aa2ce9620daace75b5f5e58ce57eef3d", package = "goose-providers", default-features = false }
+goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose-providers", default-features = false }
 opensecret = "3.6.2"
 maple-proxy = "0.3.2"
 rand = "0.8.6"
@@ -41,6 +41,13 @@ bytes = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# CUA's native SDK is not published to crates.io yet. Pin the exact source
+# commit that applies the Xcode 26.5 linker compatibility and embedded-host
+# main-thread restoration fixes directly on top of the 0.23.2 release so
+# Maple's embedded runtime remains reproducible.
+cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "e7156658562eea3cb1721f3435ea317edb87acbd", package = "cua-driver-sdk" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

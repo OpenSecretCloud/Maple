@@ -13,14 +13,18 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::sync::Arc;
 
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink,
-    AgentProjectRootRegistration, AgentProjectTrustStatus, AgentQueueControlRequest,
-    AgentRenameSessionRequest, AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent,
-    AgentSessionDetail, AgentSessionSummary, AgentSlashCommand, AgentStartRequest, AgentSubagent,
-    MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
+    AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentIntegration,
+    AgentIntegrationPermissions, AgentProjectRootRegistration, AgentProjectTrustStatus,
+    AgentQueueControlRequest, AgentRenameSessionRequest, AgentRuntimeStatus,
+    AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail, AgentSessionSummary,
+    AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest, AgentSlashCommand,
+    AgentStartRequest, AgentSubagent, MapleAgentHostResources, MapleAgentService,
+    RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
@@ -1388,6 +1392,56 @@ impl AgentBackend {
             .await
     }
 
+    pub async fn list_integrations(&self, user_id: &str) -> Result<Vec<AgentIntegration>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .list_integrations()
+            .await
+    }
+
+    pub async fn set_integration_enabled(
+        &self,
+        user_id: &str,
+        id: &str,
+        enabled: bool,
+    ) -> Result<Vec<AgentIntegration>, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_integration_enabled(AgentSetIntegrationEnabledRequest {
+                id: id.to_string(),
+                enabled,
+            })
+            .await
+    }
+
+    /// Start a curated integration's host-owned permission flow from the UI
+    /// thread that received the user's setup action.
+    pub fn begin_integration_setup(
+        &self,
+        id: &str,
+    ) -> Result<maple_agent::agent::AgentIntegrationPermissions, String> {
+        maple_agent::agent::begin_integration_setup(&AgentSetupIntegrationRequest {
+            id: id.to_string(),
+        })
+    }
+
+    /// Persist a curated integration after its host-owned permission flow.
+    pub async fn setup_integration(
+        &self,
+        user_id: &str,
+        id: &str,
+        permissions: AgentIntegrationPermissions,
+    ) -> Result<Vec<AgentIntegration>, String> {
+        open_integration_setup_settings(&permissions).await?;
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .setup_integration(AgentSetupIntegrationRequest { id: id.to_string() })
+            .await
+    }
+
     pub async fn save_mcp_servers(
         &self,
         user_id: &str,
@@ -1714,6 +1768,48 @@ impl AgentBackend {
     }
 }
 
+const MACOS_ACCESSIBILITY_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+const MACOS_SCREEN_RECORDING_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
+fn next_integration_setup_settings_url(
+    permissions: &AgentIntegrationPermissions,
+) -> Option<&'static str> {
+    if !permissions.accessibility {
+        Some(MACOS_ACCESSIBILITY_SETTINGS_URL)
+    } else if !permissions.screen_recording {
+        Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
+    } else {
+        None
+    }
+}
+
+async fn open_integration_setup_settings(
+    permissions: &AgentIntegrationPermissions,
+) -> Result<(), String> {
+    let Some(url) = next_integration_setup_settings_url(permissions) else {
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let status =
+            tokio::task::spawn_blocking(move || Command::new("/usr/bin/open").arg(url).status())
+                .await
+                .map_err(|error| format!("Failed to start macOS System Settings: {error}"))?
+                .map_err(|error| format!("Failed to open macOS System Settings: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "Failed to open macOS System Settings (exit status {:?})",
+                status.code()
+            ));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = url;
+    Ok(())
+}
+
 /// Extract `code` and `state` query parameters from an OAuth redirect URL.
 /// Values are form-decoded: Google codes carry `%2F`, and a browser may
 /// encode a space in `state` as `+`.
@@ -1858,6 +1954,31 @@ mod tests {
         assert_eq!(
             client_id_from(Some(custom)),
             custom.parse::<Uuid>().unwrap()
+        );
+    }
+
+    #[test]
+    fn integration_setup_opens_one_missing_permission_at_a_time() {
+        assert_eq!(
+            next_integration_setup_settings_url(&AgentIntegrationPermissions {
+                accessibility: false,
+                screen_recording: false,
+            }),
+            Some(MACOS_ACCESSIBILITY_SETTINGS_URL)
+        );
+        assert_eq!(
+            next_integration_setup_settings_url(&AgentIntegrationPermissions {
+                accessibility: true,
+                screen_recording: false,
+            }),
+            Some(MACOS_SCREEN_RECORDING_SETTINGS_URL)
+        );
+        assert_eq!(
+            next_integration_setup_settings_url(&AgentIntegrationPermissions {
+                accessibility: true,
+                screen_recording: true,
+            }),
+            None
         );
     }
 }

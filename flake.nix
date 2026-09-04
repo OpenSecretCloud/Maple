@@ -74,7 +74,8 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "goose-1.47.0" = "sha256-/tGoFJinN/4TFJ84LN+gDr9aMOirXxx5hP7Lib2bGeA=";
+                "cua-driver-sdk-0.23.2" = "sha256-aGfd+5Xh0eykliUJTJx+leVtc3ahmiXTHGbqJKrzcck=";
+                "goose-1.47.0" = "sha256-STodRA8jEWr5pmOxOKlNGzmg5h8s4GWZWtOYqfaJTLM=";
                 "opensecret-3.6.2" = "sha256-v1vBeVj5xrRQovm9oKmEkMSmUtcHE+4M7SJO8LYsYOs=";
               };
             };

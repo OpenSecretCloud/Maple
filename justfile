@@ -44,6 +44,11 @@ test:
 build:
     cargo build -p maple-gpui
 
+# Stage the debug binary in a stable macOS app bundle. A stable bundle identity
+# is required for honest Accessibility and Screen Recording permission tests.
+debug-app: build
+    ./scripts/macos-debug-app.sh
+
 # Build the release binary.
 release:
     cargo build --release -p maple-gpui --locked

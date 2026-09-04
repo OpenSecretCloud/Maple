@@ -33,4 +33,15 @@ fn main() {
         revision.push_str("-dirty");
     }
     println!("cargo:rustc-env=MAPLE_GIT_HASH={revision}");
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // The embedded ScreenCaptureKit bridge can link Swift compatibility
+        // libraries with @rpath install names. A transitive library cannot
+        // choose the final host executable's bundle layout, so keep the
+        // system runtime and application fallback paths on Maple's binary
+        // target. Prefer the system runtime so Apple frameworks and Maple do
+        // not load duplicate copies on current macOS releases.
+        println!("cargo:rustc-link-arg-bin=maple-gpui=-Wl,-rpath,/usr/lib/swift");
+        println!("cargo:rustc-link-arg-bin=maple-gpui=-Wl,-rpath,@executable_path/../Frameworks");
+    }
 }

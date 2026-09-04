@@ -8,6 +8,61 @@
 
 use super::*;
 
+const MAPLE_CUA_STATE_KEY: &str = "maple_cua";
+const MAPLE_CUA_STATE_VERSION: &str = "1";
+
+/// Maple-owned logical CUA selection for one task. The embedded client is
+/// intentionally absent from Goose's enabled-extension snapshot because Goose
+/// cannot reconstruct a host-owned Rust object after a cold start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct CuaSessionState {
+    pub(super) backend: AgentIntegrationBackend,
+    pub(super) enabled: bool,
+}
+
+impl ExtensionState for CuaSessionState {
+    const EXTENSION_NAME: &'static str = MAPLE_CUA_STATE_KEY;
+    const VERSION: &'static str = MAPLE_CUA_STATE_VERSION;
+}
+
+pub(super) fn session_cua_state(session: &Session) -> Option<CuaSessionState> {
+    CuaSessionState::from_extension_data(&session.extension_data)
+}
+
+pub(super) fn put_session_cua_state(
+    extension_data: &mut goose::session::ExtensionData,
+    state: CuaSessionState,
+) -> Result<(), String> {
+    state
+        .to_extension_data(extension_data)
+        .map_err(|error| format!("Failed to save task CUA setting: {error}"))
+}
+
+pub(super) async fn persist_session_cua_state(
+    session_manager: &SessionManager,
+    session_id: &str,
+    state: CuaSessionState,
+) -> Result<Session, String> {
+    // Reload immediately before writing so a preceding Goose extension
+    // mutation cannot be overwritten by a stale ExtensionData snapshot.
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+    let mut extension_data = session.extension_data.clone();
+    put_session_cua_state(&mut extension_data, state)?;
+    session_manager
+        .update(session_id)
+        .extension_data(extension_data)
+        .apply()
+        .await
+        .map_err(|error| format!("Failed to persist task CUA setting: {error}"))?;
+    session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to reload Agent task: {error}"))
+}
+
 pub(super) fn normalize_mcp_servers(
     mut servers: Vec<AgentMcpServer>,
 ) -> Result<Vec<AgentMcpServer>, String> {
@@ -556,4 +611,31 @@ pub(super) fn session_mcp_servers(
         })
     }));
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cua_task_metadata_coexists_with_goose_extension_state() {
+        let mut extension_data = goose::session::ExtensionData::new();
+        goose::session::EnabledExtensionsState::new(Vec::new())
+            .to_extension_data(&mut extension_data)
+            .unwrap();
+        let state = CuaSessionState {
+            backend: AgentIntegrationBackend::Embedded,
+            enabled: true,
+        };
+
+        put_session_cua_state(&mut extension_data, state).unwrap();
+
+        assert_eq!(
+            CuaSessionState::from_extension_data(&extension_data),
+            Some(state)
+        );
+        assert!(
+            goose::session::EnabledExtensionsState::from_extension_data(&extension_data).is_some()
+        );
+    }
 }

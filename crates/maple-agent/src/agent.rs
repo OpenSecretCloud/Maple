@@ -4,7 +4,11 @@
 // that is expected.
 #![cfg_attr(not(feature = "acp"), allow(dead_code))]
 mod attachments;
+#[cfg(target_os = "macos")]
+mod cua;
 mod developer_tools;
+mod image_mediation;
+mod integrations;
 #[cfg(target_os = "macos")]
 mod macos_login_path;
 mod mcp;
@@ -50,6 +54,7 @@ use goose::session::session_manager::{Session, SessionType};
 use goose::session::{ExtensionState, SessionManager};
 use goose::skills::{EXTENSION_NAME as SKILLS_EXTENSION_NAME, SkillsClient};
 use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
+use integrations::*;
 use mcp::*;
 use provider::{MAPLE_PROVIDER_NAME, MapleProvider};
 use rmcp::model::{
@@ -88,6 +93,32 @@ const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // Keep Goose on its ActionRequired path so Maple can apply the currently selected
 // policy at every tool boundary, including when the user changes it mid-run.
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
+
+/// Start the explicit, host-owned setup flow for a curated integration.
+///
+/// Desktop callers must invoke this directly from the user's UI action rather
+/// than a backend worker so macOS can attribute and present its privacy UI in
+/// the host application context. Persisting the selected backend remains a
+/// separate asynchronous operation after the OS reports both grants.
+pub fn begin_integration_setup(
+    request: &AgentSetupIntegrationRequest,
+) -> Result<AgentIntegrationPermissions, String> {
+    if request.id.trim() != CUA_DRIVER_INTEGRATION_ID {
+        return Err(format!("Unknown integration '{}'", request.id.trim()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let status = cua::request_embedded_cua_permissions();
+        Ok(AgentIntegrationPermissions {
+            accessibility: status.accessibility,
+            screen_recording: status.screen_recording,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Built-in CUA setup is currently available only on macOS".to_string())
+    }
+}
 #[cfg(test)]
 const MAPLE_DEVELOPER_TOOLS: [&str; 10] = [
     "read",
@@ -2319,6 +2350,58 @@ impl AgentRuntimeHandle {
         normalize_mcp_servers(config.mcp_servers)
     }
 
+    /// Maple-curated integrations discovered on this device.
+    ///
+    /// The external manifest probe runs without holding the runtime lifecycle
+    /// lock. A generation check on each side prevents a stale account handle
+    /// from publishing or mutating device-local state after logout.
+    pub async fn list_integrations(&self) -> Result<Vec<AgentIntegration>, String> {
+        self.verify_generation().await?;
+        let detected = detect_integrations().await;
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        project_integrations(&state.host.paths, &self.user_id, &detected)
+    }
+
+    /// Change whether one curated integration is selected for newly created
+    /// tasks. Existing task snapshots are intentionally untouched.
+    pub async fn set_integration_enabled(
+        &self,
+        request: AgentSetIntegrationEnabledRequest,
+    ) -> Result<Vec<AgentIntegration>, String> {
+        if request.id.trim() != CUA_DRIVER_INTEGRATION_ID {
+            return Err(format!("Unknown integration '{}'", request.id.trim()));
+        }
+        self.verify_generation().await?;
+        let detected = detect_integrations().await;
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        set_integration_default(&state.host.paths, &self.user_id, &request, &detected)
+    }
+
+    /// Finish the host-owned setup flow for a built-in integration by selecting
+    /// it for new tasks once the OS reports both grants. The desktop UI invokes
+    /// [`begin_integration_setup`] synchronously from the initiating user action
+    /// before calling this method.
+    pub async fn setup_integration(
+        &self,
+        request: AgentSetupIntegrationRequest,
+    ) -> Result<Vec<AgentIntegration>, String> {
+        if request.id.trim() != CUA_DRIVER_INTEGRATION_ID {
+            return Err(format!("Unknown integration '{}'", request.id.trim()));
+        }
+        self.verify_generation().await?;
+        let detected = detect_integrations().await;
+        let state = &self.service;
+        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        select_embedded_integration_backend(&state.host.paths, &self.user_id, &detected)
+    }
+
     pub async fn save_mcp_servers(
         &self,
         servers: Vec<AgentMcpServer>,
@@ -2328,6 +2411,7 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let servers = normalize_mcp_servers(servers)?;
+        validate_custom_mcp_integration_collisions(&state.host.paths, &self.user_id, &servers)?;
         let mut config =
             load_agent_config_inner(&state.host.paths, &self.user_id).map_err(|e| e.to_string())?;
         config.mcp_servers = servers.clone();
@@ -2759,25 +2843,34 @@ impl AgentRuntimeHandle {
             );
         }
         let model = request.model.unwrap_or(runtime_model);
-        let configured_mcp = normalize_mcp_servers(config.mcp_servers)?;
-        let selected_mcp =
-            select_mcp_servers(&configured_mcp, request.mcp_server_names.as_deref())?;
+        let session_type = if has_external_tool_context {
+            SessionType::Acp
+        } else {
+            SessionType::User
+        };
+        let cua_state = cua_state_for_new_session(
+            &state.host.paths,
+            user_id,
+            request.mcp_server_names.as_deref(),
+            session_type == SessionType::User && !has_external_tool_context,
+        )?;
+        let requested_mcp_names = requested_mcp_names_without_embedded_cua(
+            request.mcp_server_names.as_deref(),
+            cua_state,
+        );
+        let configured_mcp = effective_mcp_servers(&state.host.paths, user_id, config.mcp_servers)?;
+        let selected_mcp = select_mcp_servers(&configured_mcp, requested_mcp_names.as_deref())?;
         let selected_extensions = selected_mcp
             .iter()
             .map(mcp_server_to_extension)
             .collect::<Result<Vec<_>, _>>()?;
         let selected_extension_keys = mcp_extension_keys(&selected_extensions);
         ensure_extension_sets_do_not_conflict(&selected_extensions, &transient_mcp_servers)?;
-        let session_type = if has_external_tool_context {
-            SessionType::Acp
-        } else {
-            SessionType::User
-        };
         let session = session_manager
             .create_session(root.clone(), title, session_type, permission_mode)
             .await
             .map_err(|e| format!("Failed to create Agent task: {e}"))?;
-        let session = seed_empty_extension_state(&session_manager, session).await?;
+        let session = seed_empty_extension_state(&session_manager, session, cua_state).await?;
         let expected_provisional_session = session.clone();
         // The Goose agent is built below; the caller's prompt must be
         // stored first so the fresh agent picks it up.
@@ -2901,6 +2994,7 @@ impl AgentRuntimeHandle {
                             mode: &mode,
                             primary_model_supports_vision: false,
                             tool_context: &tool_context,
+                            allow_embedded_cua: !has_external_tool_context,
                         },
                     )
                     .await?;
@@ -3277,6 +3371,7 @@ impl AgentRuntimeHandle {
                         mode: &mode,
                         primary_model_supports_vision: false,
                         tool_context: &tool_context,
+                        allow_embedded_cua: false,
                     },
                 )
                 .await?;
@@ -3893,12 +3988,14 @@ impl AgentRuntimeHandle {
             .get_session(session_id.trim(), false)
             .await
             .map_err(|error| format!("Failed to load Agent task: {error}"))?;
-        let configured = normalize_mcp_servers(
+        let configured = effective_mcp_servers(
+            &state.host.paths,
+            user_id,
             load_agent_config_inner(&state.host.paths, user_id)
                 .map_err(|error| format!("Failed to load MCP servers: {error}"))?
                 .mcp_servers,
         )?;
-        Ok(session_mcp_servers(&configured, &session))
+        project_session_mcp_servers(&state.host.paths, user_id, &configured, &session)
     }
 
     pub async fn set_session_mcp_server_enabled(
@@ -3945,7 +4042,9 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.maple_api_session),
             )
         };
-        let configured = normalize_mcp_servers(
+        let configured = effective_mcp_servers(
+            &state.host.paths,
+            user_id,
             load_agent_config_inner(&state.host.paths, user_id)
                 .map_err(|error| format!("Failed to load MCP servers: {error}"))?
                 .mcp_servers,
@@ -3972,6 +4071,73 @@ impl AgentRuntimeHandle {
             );
         }
         let agent = manager_result.agent;
+        if requested_key == CUA_DRIVER_MCP_NAME
+            && session_cua_backend(&state.host.paths, user_id, &session)?
+                == Some(AgentIntegrationBackend::Embedded)
+        {
+            if session.session_type != SessionType::User {
+                return Err(
+                    "Built-in CUA is available only to tasks running in the Maple desktop app"
+                        .to_string(),
+                );
+            }
+            if request.enabled {
+                // Settings does not select a model and cannot run tools. Use
+                // the fail-closed text-model projection for this idle client;
+                // every actual run replaces it using the authoritative model
+                // capability from the catalog.
+                attach_embedded_cua_client(
+                    &agent,
+                    &session,
+                    maple_api_session.account_scope(),
+                    false,
+                )
+                .await
+                .map_err(|error| format!("Failed to start built-in CUA: {error}"))?;
+                if let Err(error) = persist_session_cua_state(
+                    session_manager.as_ref(),
+                    &session_id,
+                    CuaSessionState {
+                        backend: AgentIntegrationBackend::Embedded,
+                        enabled: true,
+                    },
+                )
+                .await
+                {
+                    let _ = agent
+                        .extension_manager
+                        .remove_extension(CUA_DRIVER_MCP_NAME)
+                        .await;
+                    return Err(error);
+                }
+            } else {
+                // Persist first: if storage fails, the still-live client and
+                // durable state continue to agree that CUA is enabled.
+                persist_session_cua_state(
+                    session_manager.as_ref(),
+                    &session_id,
+                    CuaSessionState {
+                        backend: AgentIntegrationBackend::Embedded,
+                        enabled: false,
+                    },
+                )
+                .await?;
+                let _ = agent
+                    .extension_manager
+                    .remove_extension(CUA_DRIVER_MCP_NAME)
+                    .await;
+            }
+            let refreshed = session_manager
+                .get_session(&session_id, false)
+                .await
+                .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
+            return project_session_mcp_servers(
+                &state.host.paths,
+                user_id,
+                &configured,
+                &refreshed,
+            );
+        }
         // Preflight Skills restoration before detaching the working client or changing persisted MCP
         // state. Reattaching this prepared client after the mutation cannot fail.
         let skills_client =
@@ -4029,11 +4195,23 @@ impl AgentRuntimeHandle {
         attach_prepared_skills_client(&agent, skills_client).await;
         mutation_result?;
 
+        if requested_key == CUA_DRIVER_MCP_NAME {
+            persist_session_cua_state(
+                session_manager.as_ref(),
+                &session_id,
+                CuaSessionState {
+                    backend: AgentIntegrationBackend::External,
+                    enabled: request.enabled,
+                },
+            )
+            .await?;
+        }
+
         let refreshed = session_manager
             .get_session(&session_id, false)
             .await
             .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
-        Ok(session_mcp_servers(&configured, &refreshed))
+        project_session_mcp_servers(&state.host.paths, user_id, &configured, &refreshed)
     }
 
     pub async fn delete_session(&self, session_id: String) -> Result<(), String> {
@@ -4892,6 +5070,7 @@ impl AgentRuntimeHandle {
                     mode: &effective_mode,
                     primary_model_supports_vision: request.vision_capable,
                     tool_context: &tool_context,
+                    allow_embedded_cua: permission_routing == AgentPermissionRouting::Desktop,
                 },
             )
             .await?;
@@ -7773,6 +7952,10 @@ struct SessionAgentConfiguration<'a> {
     mode: &'a str,
     primary_model_supports_vision: bool,
     tool_context: &'a SharedAgentToolContext,
+    /// True only while a task is being driven by Maple's desktop surface.
+    /// A cached User session may later be leased by ACP, so SessionType alone
+    /// is not a sufficient host-process capability check.
+    allow_embedded_cua: bool,
 }
 
 fn maple_model_config(
@@ -7839,11 +8022,15 @@ where
 async fn seed_empty_extension_state(
     session_manager: &Arc<SessionManager>,
     session: Session,
+    cua_state: Option<CuaSessionState>,
 ) -> Result<Session, String> {
     let mut extension_data = session.extension_data.clone();
     goose::session::EnabledExtensionsState::new(Vec::new())
         .to_extension_data(&mut extension_data)
         .map_err(|e| format!("Failed to seed Agent task extension state: {e}"))?;
+    if let Some(cua_state) = cua_state {
+        put_session_cua_state(&mut extension_data, cua_state)?;
+    }
     session_manager
         .update(&session.id)
         .extension_data(extension_data)
@@ -7988,6 +8175,117 @@ async fn configure_session_agent(
     .await
 }
 
+fn embedded_cua_extension_config() -> ExtensionConfig {
+    ExtensionConfig::Builtin {
+        name: CUA_DRIVER_MCP_NAME.to_string(),
+        description: CUA_DRIVER_DESCRIPTION.to_string(),
+        display_name: Some(CUA_DRIVER_NAME.to_string()),
+        timeout: Some(DEFAULT_EXTENSION_TIMEOUT),
+        bundled: Some(true),
+        available_tools: Vec::new(),
+    }
+}
+
+/// Make the cached Goose Agent match Maple's task metadata and the surface
+/// currently driving it. The client is registered as ephemeral so Goose never
+/// writes an unreconstructable host-owned Rust object into its extension
+/// snapshot.
+async fn reconcile_embedded_cua_client(
+    agent: &Arc<Agent>,
+    session: &Session,
+    account_scope: &str,
+    allow_embedded_cua: bool,
+    primary_model_supports_vision: bool,
+) -> Option<AgentMcpConnectionError> {
+    let state = session_cua_state(session);
+    let should_attach = session.session_type == SessionType::User
+        && allow_embedded_cua
+        && state.is_some_and(|state| {
+            state.backend == AgentIntegrationBackend::Embedded && state.enabled
+        });
+
+    if !should_attach {
+        if state.is_some_and(|state| state.backend == AgentIntegrationBackend::Embedded) {
+            let _ = agent
+                .extension_manager
+                .remove_extension(CUA_DRIVER_MCP_NAME)
+                .await;
+        }
+        return None;
+    }
+
+    match attach_embedded_cua_client(agent, session, account_scope, primary_model_supports_vision)
+        .await
+    {
+        Ok(()) => None,
+        Err(error) => {
+            let _ = agent
+                .extension_manager
+                .remove_extension(CUA_DRIVER_MCP_NAME)
+                .await;
+            Some(AgentMcpConnectionError {
+                name: CUA_DRIVER_NAME.to_string(),
+                error,
+            })
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn attach_embedded_cua_client(
+    agent: &Arc<Agent>,
+    session: &Session,
+    account_scope: &str,
+    primary_model_supports_vision: bool,
+) -> Result<(), String> {
+    let permission_status = cua::embedded_cua_permission_status();
+    if !permission_status.accessibility || !permission_status.screen_recording {
+        return Err(
+            "Maple needs Accessibility and Screen Recording permission before built-in CUA can run"
+                .to_string(),
+        );
+    }
+    // A CUA trusted authorization has absolute and idle TTLs. Renew that
+    // authorization at each desktop run boundary instead of keeping a cached
+    // Agent's old authority alive indefinitely. The account/task-scoped CUA
+    // lifecycle itself remains stable across these adapter replacements.
+    let _ = agent
+        .extension_manager
+        .remove_extension(CUA_DRIVER_MCP_NAME)
+        .await;
+    let text_model_image_context = if primary_model_supports_vision {
+        None
+    } else {
+        let mut context = agent.extension_manager.get_context().clone();
+        context.extension_manager = Some(Arc::downgrade(&agent.extension_manager));
+        Some(context)
+    };
+    let client =
+        cua::create_embedded_cua_client(account_scope, &session.id, text_model_image_context)
+            .await?;
+    agent
+        .extension_manager
+        .add_ephemeral_client(
+            CUA_DRIVER_MCP_NAME.to_string(),
+            embedded_cua_extension_config(),
+            client,
+            None,
+            None,
+        )
+        .await;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn attach_embedded_cua_client(
+    _agent: &Arc<Agent>,
+    _session: &Session,
+    _account_scope: &str,
+    _primary_model_supports_vision: bool,
+) -> Result<(), String> {
+    Err("Built-in CUA is not available on this platform".to_string())
+}
+
 /// Install Maple's provider, permission routing, and built-in tool clients
 /// into an Agent that [`prepare_session_agent`] already built.
 ///
@@ -8009,8 +8307,12 @@ async fn finish_session_agent(
         mode,
         primary_model_supports_vision,
         tool_context,
+        allow_embedded_cua,
     } = configuration;
-    let PreparedSessionAgent { agent, mcp_errors } = prepared;
+    let PreparedSessionAgent {
+        agent,
+        mut mcp_errors,
+    } = prepared;
     let skills_client =
         prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
     install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
@@ -8078,6 +8380,17 @@ async fn finish_session_agent(
     let persist_result = agent.persist_extension_state(&session.id).await;
     attach_prepared_skills_client(&agent, skills_client).await;
     persist_result.map_err(|e| format!("Failed to persist Maple built-in tools: {e}"))?;
+    if let Some(error) = reconcile_embedded_cua_client(
+        &agent,
+        session,
+        maple_api_session.account_scope(),
+        allow_embedded_cua,
+        primary_model_supports_vision,
+    )
+    .await
+    {
+        mcp_errors.push(error);
+    }
     // Persist the user-facing policy separately for session restoration and display.
     session_manager
         .update(&session.id)

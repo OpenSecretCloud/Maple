@@ -308,7 +308,7 @@ impl ChatScreen {
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child("MCP servers"),
+                    .child("Integrations"),
             );
             if self.session_mcp.is_empty() {
                 menu = menu.child(
@@ -317,22 +317,25 @@ impl ChatScreen {
                         .py_2()
                         .text_sm()
                         .text_color(gpui::rgb(theme::text_muted()))
-                        .child("No MCP servers configured."),
+                        .child("No integrations available for this task."),
                 );
             }
             for server in &self.session_mcp {
                 let name = server.name.clone();
+                let display_name = if matches!(name.as_str(), "cua-driver" | "cua_driver") {
+                    "Cua".to_string()
+                } else {
+                    name.clone()
+                };
                 let enabled = server.enabled;
                 let available = server.available;
+                let row_id = gpui::SharedString::from(format!("mcp-{name}"));
+                let switch_id = gpui::SharedString::from(format!("mcp-toggle-{name}"));
                 menu = menu.child(
-                    div()
-                        .id(gpui::SharedString::from(format!("mcp-{name}")))
+                    widgets::menu_row(row_id, true)
                         .flex()
                         .items_center()
                         .gap_3()
-                        .px_3()
-                        .py_1p5()
-                        .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             this.toggle_session_mcp(name.clone(), !enabled, cx);
                         }))
@@ -348,7 +351,7 @@ impl ChatScreen {
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(gpui::rgb(theme::text_primary()))
                                         .line_clamp(1)
-                                        .child(server.name.clone()),
+                                        .child(display_name),
                                 )
                                 .when(!server.description.is_empty(), |col| {
                                     col.child(
@@ -368,45 +371,20 @@ impl ChatScreen {
                                     )
                                 }),
                         )
-                        .child(
-                            div()
-                                .w(px(32.))
-                                .h(px(18.))
-                                .p(px(2.))
-                                .rounded_full()
-                                .bg(gpui::rgb(if enabled {
-                                    theme::accent()
-                                } else {
-                                    theme::border()
-                                }))
-                                .flex()
-                                .when(enabled, |track| track.justify_end())
-                                .child(div().size(px(14.)).rounded_full().bg(gpui::rgb(
-                                    if enabled {
-                                        theme::on_accent()
-                                    } else {
-                                        theme::text_secondary()
-                                    },
-                                ))),
-                        ),
+                        .child(widgets::switch(switch_id, enabled)),
                 );
             }
             menu = menu.child(
-                div()
-                    .id("mcp-manage")
+                widgets::menu_row("mcp-manage", true)
                     .mt_1()
-                    .px_3()
-                    .py_1p5()
                     .border_t_1()
                     .border_color(gpui::rgb(theme::border_subtle()))
-                    .text_sm()
                     .text_color(gpui::rgb(theme::accent()))
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.mcp_menu_open = false;
-                        cx.emit(OpenSettingsSection(Section::Mcp));
+                        cx.emit(OpenSettingsSection(Section::Integrations));
                     }))
-                    .child("Manage servers…"),
+                    .child("Manage integrations…"),
             );
             return Some(Self::menu_overlay(menu));
         }
@@ -1067,10 +1045,10 @@ impl ChatScreen {
                         chip(
                             "mcp-menu",
                             Some("puzzle"),
-                            if mcp_enabled == 0 {
-                                "MCP".to_string()
-                            } else {
-                                format!("{mcp_enabled} MCP")
+                            match mcp_enabled {
+                                0 => "Integrations".to_string(),
+                                1 => "1 integration".to_string(),
+                                count => format!("{count} integrations"),
                             },
                             false,
                             self.mcp_menu_open,

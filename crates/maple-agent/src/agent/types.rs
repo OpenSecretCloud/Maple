@@ -117,6 +117,68 @@ pub struct AgentMcpServer {
     pub transport: AgentMcpTransport,
 }
 
+/// A Maple-curated integration that can be discovered on this device.
+///
+/// Integration discovery is intentionally separate from MCP configuration:
+/// an integration may be installed without being enabled, and device-local
+/// launch details must not leak into the account's roaming configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegration {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub availability: AgentIntegrationAvailability,
+    /// The backend selected for newly-created tasks. This is `None` until the
+    /// integration has been set up or enabled at least once.
+    pub backend: Option<AgentIntegrationBackend>,
+    /// Version of the implementation built into Maple, when one exists.
+    pub version: Option<String>,
+    /// Version of a separately-installed compatible application, when one was
+    /// discovered. Its presence never grants Maple permission or enables it.
+    pub standalone_version: Option<String>,
+    /// Host-process permissions needed by the built-in implementation.
+    pub permissions: Option<AgentIntegrationPermissions>,
+    pub enabled_for_new_tasks: bool,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIntegrationBackend {
+    Embedded,
+    External,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegrationPermissions {
+    pub accessibility: bool,
+    pub screen_recording: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIntegrationAvailability {
+    NotDetected,
+    SetupRequired,
+    Available,
+    Incompatible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetIntegrationEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSetupIntegrationRequest {
+    pub id: String,
+}
+
 /// An MCP server supplied by an external Agent surface for one leased session.
 ///
 /// Unlike [`AgentMcpServer`], this type is never serialized into Maple's user
