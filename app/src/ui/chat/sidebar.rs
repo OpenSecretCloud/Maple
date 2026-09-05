@@ -428,7 +428,7 @@ impl ChatScreen {
                 .position(|entry| matches!(entry, SidebarEntry::ProjectsHeader)),
         };
         if let Some(row) = row {
-            self.sidebar_list.splice(row..row + 1, 1);
+            self.sidebar_list.remeasure_items(row..row + 1);
         }
     }
 

@@ -280,7 +280,6 @@ pub struct ChatScreen {
     /// Set when the transcript should jump to its newest content on the
     /// next render (session switch or send); streaming follows only while
     /// the view is already at the bottom.
-    follow_transcript: bool,
     /// Whether tool cards show their input/output payloads. Toggled from
     /// the header; off gives a one-line card per tool call.
     tool_details: bool,
@@ -790,10 +789,9 @@ impl ChatScreen {
             booting: true,
             loading_session: None,
             scrollbar_drag: None,
-            list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
+            list_state: transcript_list_state(),
             sidebar_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
             sidebar_entries: Vec::new(),
-            follow_transcript: true,
             tool_details: settings.tool_details,
             // An unset or unknown value in either place means "use the
             // saved default", so only a known mode counts as an override.
@@ -1734,7 +1732,8 @@ impl ChatScreen {
             .collect();
         self.markdown_cache.clear();
         self.derived.clear();
-        self.list_state.reset(self.timeline.len());
+        self.list_state
+            .reset_with_uniform_height(self.timeline.len(), TRANSCRIPT_ROW_ESTIMATE);
         if let Some(old_navigation_order) = old_navigation_order {
             self.reconcile_timeline_application_selection(&old_navigation_order);
         }
@@ -2044,7 +2043,7 @@ impl ChatScreen {
         self.pending_summaries = 0;
         self.summary_queue.clear();
         self.summary_requests.clear();
-        self.follow_transcript = true;
+        self.list_state.scroll_to_end();
         self.awaiting_first_token = false;
         self.lightbox = None;
         self.permission_responding = false;
@@ -2910,7 +2909,7 @@ impl ChatScreen {
         // Resolve the row now: an index baked into the card at render
         // time goes stale once history reloads or items are inserted.
         if let Some(&(index, _)) = self.timeline_index.get(item_id) {
-            self.list_state.splice(index..index + 1, 1);
+            self.list_state.remeasure_items(index..index + 1);
         }
         cx.notify();
     }
@@ -3265,7 +3264,7 @@ impl ChatScreen {
         self.mode_menu_open = false;
         self.mcp_menu_open = false;
         self.root_menu_open = false;
-        self.follow_transcript = true;
+        self.list_state.scroll_to_end();
         if !run_active {
             self.awaiting_first_token = true;
         }
@@ -3654,15 +3653,11 @@ impl ChatScreen {
         self.refresh_context_usage(cx);
     }
 
-    /// Re-measure one row after it changed in place. The newest row is
-    /// exempt: a splice zeroes its cached height until the next paint,
-    /// and a wheel event in that window re-pins the list to the bottom,
-    /// which blocks scrolling up during a stream. The newest row is
-    /// measured on every layout anyway.
+    /// Re-measure one row after it changed in place. The list keeps the
+    /// row's last height as a hint and the scroll position as it was, so
+    /// neither the scroll range nor the view moves before the next paint.
     fn remeasure_item(&mut self, index: usize) {
-        if index + 1 < self.timeline.len() {
-            self.list_state.splice(index..index + 1, 1);
-        }
+        self.list_state.remeasure_items(index..index + 1);
     }
 
     /// Apply a timeline item using Maple's merge contract: `append` extends
@@ -3694,21 +3689,12 @@ impl ChatScreen {
                     merge: incoming_merge,
                     ..
                 } = item;
-                let is_newest = index + 1 == self.timeline.len();
                 let existing = &mut self.timeline[index];
                 // The virtualized list caches item heights; tell it this
-                // one changed so it re-measures. The newest item is the
-                // exception: a splice drops its cached height to zero until
-                // the next paint, which collapses the list's scroll range.
-                // A wheel event in that window clamps back to the bottom
-                // and re-pins the view, so streaming would make the
-                // transcript impossible to scroll up. The newest item is
-                // measured on every layout while it is visible, and its
-                // stale height is a better estimate than zero once the user
-                // scrolls away mid-stream.
-                if !is_newest {
-                    self.list_state.splice(index..index + 1, 1);
-                }
+                // one changed. A remeasure keeps the previous height as a
+                // hint and leaves the scroll position alone, so a stream
+                // never collapses the scroll range or re-pins the view.
+                self.list_state.remeasure_items(index..index + 1);
                 let append = incoming_merge == "append"
                     && matches!(incoming_type.as_str(), "message" | "thinking")
                     && incoming_text.is_some();
@@ -4214,6 +4200,20 @@ impl EventEmitter<LoggedOut> for ChatScreen {}
 
 impl EventEmitter<OpenSettings> for ChatScreen {}
 impl EventEmitter<OpenSettingsSection> for ChatScreen {}
+
+/// Height hint for transcript rows that have not been measured yet, so a
+/// freshly opened task has a scrollbar of about the right size on its
+/// first frame. Rows are measured as they scroll into view.
+const TRANSCRIPT_ROW_ESTIMATE: gpui::Pixels = px(96.);
+
+/// The transcript list: bottom-aligned, following its tail so streaming
+/// content stays in view until the user scrolls up, with enough overdraw
+/// that a fast wheel scroll lands on measured rows.
+fn transcript_list_state() -> gpui::ListState {
+    let state = gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(1024.));
+    state.set_follow_mode(gpui::FollowMode::Tail);
+    state
+}
 
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

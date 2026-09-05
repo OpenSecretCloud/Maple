@@ -96,6 +96,7 @@ mod state_tests {
     /// the tool each subagent runs, and empties when they end.
     #[gpui::test]
     fn test_subagent_card_tracks_live_delegates(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         use maple_agent::agent::AgentRunEvent;
 
         let screen = screen(cx);
@@ -171,6 +172,7 @@ mod state_tests {
     /// but a background subagent keeps working and keeps its row.
     #[gpui::test]
     fn test_run_end_keeps_background_subagents(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         use maple_agent::agent::{AgentRunEvent, AgentRunTerminal, AgentSubagent};
 
         let screen = screen(cx);
@@ -235,6 +237,7 @@ mod state_tests {
     /// nothing re-creates a wiped row until the task is reopened.
     #[gpui::test]
     fn test_stale_subagent_snapshot_cannot_wipe_a_live_row(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         use maple_agent::agent::AgentRunEvent;
 
         let screen = screen(cx);
@@ -281,6 +284,7 @@ mod state_tests {
     /// incoming items in order, and a loaded history uses its last list.
     #[gpui::test]
     fn test_plan_follows_latest_todo_list(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             assert!(this.plan.is_empty());
@@ -333,6 +337,7 @@ mod state_tests {
     /// the settings screen first.
     #[gpui::test]
     fn test_constructor_reads_persisted_defaults(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let _guard = SETTINGS_LOCK.lock();
         let dir = std::env::temp_dir().join(format!("maple-gpui-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -373,6 +378,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_archived_tasks_leave_the_sections(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             this.sessions = vec![summary("s1", "Live"), summary("s2", "Old")];
@@ -390,6 +396,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_timeline_appends_streamed_text(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             this.apply_timeline_item("s1", item("m1", "message", Some("Hel")));
@@ -407,6 +414,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_timeline_field_merge_keeps_prior_payloads(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             let mut tool = item("t1", "tool", None);
@@ -430,6 +438,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_events_from_other_sessions_are_ignored(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let event = AgentServiceEvent::TimelineItem {
             session_id: "other".to_string(),
@@ -460,6 +469,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_decided_permission_row_clears_the_card(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
@@ -503,6 +513,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_permission_for_other_session_waits_until_selected(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
@@ -548,6 +559,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_session_upsert_never_duplicates(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             this.upsert_session(summary("s1", "A"));
@@ -575,6 +587,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_question_event_sets_pending_card(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             assert!(this.pending_questions.is_empty());
@@ -588,6 +601,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_question_options_select_and_compose(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let event = AgentServiceEvent::Question {
             session_id: "s1".to_string(),
@@ -621,6 +635,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_question_typed_text_rides_along_with_picked_option(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let event = AgentServiceEvent::Question {
             session_id: "s1".to_string(),
@@ -651,6 +666,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_question_option_click_toggles_off(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let event = AgentServiceEvent::Question {
             session_id: "s1".to_string(),
@@ -683,6 +699,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_sidebar_filter_hides_non_matching_tasks_and_projects(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _| {
             let mut a = summary("s1", "Fix login bug");
@@ -717,6 +734,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_prompt_history_recall(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _| {
             this.remember_prompt("first");
@@ -737,6 +755,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_skip_question_clears_card(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let event = one_question("skip", "Skip me");
         screen.update(cx, |this, cx| {
@@ -752,6 +771,7 @@ mod state_tests {
     /// task: a permission card is denied, not left behind by a stop.
     #[gpui::test]
     fn test_escape_denies_a_showing_permission(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.pending_permissions.push(PendingPermission {
@@ -769,6 +789,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_first_agent_item_clears_waiting_state(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.awaiting_first_token = true;
@@ -792,6 +813,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_send_closes_chip_menus(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
@@ -810,6 +832,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_multi_question_batch_steps_through(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let event = AgentServiceEvent::Question {
             session_id: "s1".to_string(),
@@ -854,6 +877,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_parallel_questions_queue_and_advance(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let question = |id: &str| AgentServiceEvent::Question {
             session_id: "s1".to_string(),
@@ -892,6 +916,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_application_vim_enter_focuses_the_question_answer(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -967,6 +992,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_send_blocked_while_question_pending(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.booting = false;
@@ -1005,6 +1031,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_side_question_streams_into_panel(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.btw = Some(SideQuestionPanel {
@@ -1083,6 +1110,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_builtin_commands_execute(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.booting = false;
@@ -1100,6 +1128,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_skill_command_resolves_via_backend(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.slash_commands = vec![AgentSlashCommand {
@@ -1126,6 +1155,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_tool_summary_gating(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
@@ -1160,6 +1190,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_thinking_summary_waits_for_a_following_item(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
@@ -1183,6 +1214,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_tool_summaries_queue_past_the_slot_cap(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.summaries_enabled = true;
@@ -1207,6 +1239,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_finished_run_drops_its_questions(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.active_runs
@@ -1238,6 +1271,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_questions_are_scoped_to_their_session(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let other = AgentServiceEvent::Question {
             session_id: "s2".to_string(),
@@ -1291,6 +1325,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_project_selection_rejects_reentry_and_relative_paths(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.root_selecting = true;
@@ -1311,6 +1346,7 @@ mod state_tests {
     /// while a task clicked meanwhile supersedes the selection callback.
     #[gpui::test]
     fn test_project_selection_keeps_loads_alive_until_it_lands(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             let old_selection = this.selection_generation;
@@ -1330,6 +1366,7 @@ mod state_tests {
     /// the click, whose load leaves the selection empty until it lands.
     #[gpui::test]
     fn test_session_list_does_not_auto_select_over_a_newer_click(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.project_root = Some("/work/alpha".to_string());
@@ -1347,6 +1384,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_new_task_waits_for_a_project_selection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.project_root = Some("/work/alpha".to_string());
@@ -1359,6 +1397,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_history_reload_keeps_a_task_switch_alive(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.select_session("s2", cx);
@@ -1376,6 +1415,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_second_picker_click_is_ignored(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.root_menu_open = true;
@@ -1429,6 +1469,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_escape_closes_root_menu(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.root_menu_open = true;
@@ -1439,6 +1480,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_idle_events_do_not_redraw(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             let status = maple_agent::agent::AgentRuntimeStatus {
@@ -1467,6 +1509,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_timeline_index_tracks_items(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             assert_eq!(
@@ -1491,6 +1534,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_attachments_requested_from_the_arriving_item(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             let mut sent = user_item("u1", "see this");
@@ -1570,6 +1614,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_composer_change_updates_slash_entries(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         let input = cx.new(|cx| TextInput::new("", cx));
         screen.update(cx, |this, cx| {
@@ -1786,6 +1831,7 @@ mod state_tests {
     /// the top of the active inbox.
     #[gpui::test]
     fn test_settle_buttons_toggle_a_task_back_and_forth(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
@@ -1813,6 +1859,7 @@ mod state_tests {
     /// entries.
     #[gpui::test]
     fn test_a_finished_run_wakes_a_settled_task(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = None;
@@ -1849,6 +1896,7 @@ mod state_tests {
     /// highlight and Enter runs the highlighted action.
     #[gpui::test]
     fn test_popup_vim_drives_the_task_menu(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.application_vim_enabled = true;
@@ -1873,6 +1921,7 @@ mod state_tests {
     /// a project row and Enter scopes the sidebar to it.
     #[gpui::test]
     fn test_popup_vim_drives_the_switcher_menu(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.application_vim_enabled = true;
@@ -1892,6 +1941,7 @@ mod state_tests {
     /// Escape closes whichever sidebar popup is open.
     #[gpui::test]
     fn test_escape_closes_the_sidebar_popups(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.switcher_menu_open = true;
@@ -1904,6 +1954,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_late_send_ack_does_not_revive_a_finished_run(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.handle_run_event(
@@ -1940,6 +1991,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_another_task_finishing_keeps_the_waiting_dots(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.awaiting_first_token = true;
@@ -1966,6 +2018,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_promoted_queue_item_requests_its_attachments(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             let mut promoted = user_item("u1", "queued text");
@@ -1992,6 +2045,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_toggle_tool_finds_its_row_by_id(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.replace_timeline(vec![item("t1", "tool", None), item("t2", "tool", None)]);
@@ -2008,6 +2062,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_usage_poller_follows_the_selected_session(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.start_usage_poller("s1".to_string(), cx);
@@ -2029,6 +2084,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_second_mic_click_while_opening_is_ignored(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.toggle_recording(cx);
@@ -2044,6 +2100,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_leaving_the_selected_task_clears_its_composer_state(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.booting = false;
@@ -2071,6 +2128,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_project_selection_clears_view_but_preserves_background_work(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.booting = false;
@@ -2111,6 +2169,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_archive_root_during_project_selection_sets_a_notice(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.root_selecting = true;
@@ -2121,6 +2180,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_switching_tasks_drops_item_caches(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.tool_summaries.insert("t1".to_string(), "old".into());
@@ -2145,6 +2205,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_sidebar_rows_follow_titles_and_project_names(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             this.sessions = vec![summary("s1", "Fix Login")];
@@ -2171,6 +2232,7 @@ mod state_tests {
     /// shows them, across projects, and stop at both ends.
     #[gpui::test]
     fn test_task_stepping_walks_the_whole_list(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             let mut other = summary("s3", "C");
@@ -2194,6 +2256,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_cross_project_task_selection_preserves_all_active_runs(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.project_root = Some("/work/alpha".to_string());
@@ -2235,6 +2298,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_new_task_request_always_names_the_visible_project(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, _cx| {
             assert!(this.new_session_request().is_none());
@@ -2266,6 +2330,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_running_and_completed_unread_are_session_scoped(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
 
         let screen = screen(cx);
@@ -2314,6 +2379,7 @@ mod state_tests {
     /// not leave the earlier completion's marker behind.
     #[gpui::test]
     fn test_later_failed_run_clears_an_earlier_unread_completion(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
 
         let screen = screen(cx);
@@ -2339,6 +2405,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_only_successful_background_completion_becomes_unread(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
 
         let screen = screen(cx);
@@ -2365,6 +2432,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_terminal_run_cannot_be_resurrected_by_an_older_status(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         use maple_agent::agent::{AgentRunEvent, AgentRunTerminal, AgentRuntimeStatus};
 
         let screen = screen(cx);
@@ -2399,6 +2467,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_finished_only_clears_its_own_run(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.active_runs
@@ -2430,6 +2499,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_paste_image_stages_a_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, png_bytes());
@@ -2451,6 +2521,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_paste_image_rejects_unsupported_format(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             let image = gpui::Image::from_bytes(gpui::ImageFormat::Gif, b"GIF89a".to_vec());
@@ -2466,6 +2537,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_paste_image_respects_limit(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             for _ in 0..=MAX_DRAFT_IMAGES {
@@ -2486,6 +2558,7 @@ mod state_tests {
     /// must only build the rows in view.
     #[gpui::test]
     fn test_sidebar_list_draws_rows_from_the_entity(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct SidebarHost {
             chat: Entity<ChatScreen>,
         }
@@ -2549,6 +2622,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_application_vim_off_keeps_chat_projection_empty(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let chat = screen(cx);
         chat.update(cx, |this, cx| {
             this.set_application_vim_enabled(false, cx);
@@ -2576,11 +2650,13 @@ mod state_tests {
 
     #[gpui::test]
     fn test_streaming_chunk_keeps_wheel_scrolling_up(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         assert_streaming_chunk_keeps_wheel_scrolling_up(cx, false);
     }
 
     #[gpui::test]
     fn test_application_vim_streaming_chunk_keeps_wheel_scrolling_up(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         assert_streaming_chunk_keeps_wheel_scrolling_up(cx, true);
     }
 
@@ -2705,6 +2781,34 @@ mod state_tests {
             (pinned.item_ix, pinned.offset_in_item),
             "a wheel between a streamed chunk and the next paint must move the viewport up, got {after:?}"
         );
+
+        // The row at the top of the viewport changes in place. The list
+        // remeasures it rather than splicing, so the scroll anchor (row and
+        // offset within it) stays exactly where the user left it.
+        let anchored_id = match after.item_ix {
+            40 => "stream".to_string(),
+            ix if ix % 2 == 0 => format!("u{}", ix / 2),
+            ix => format!("a{}", ix / 2),
+        };
+        cx.update(|_window, app| {
+            chat.update(app, |this, cx| {
+                this.apply_incoming_item(
+                    "s1",
+                    AgentTimelineItem {
+                        merge: "append".to_string(),
+                        text: Some(PARA.to_string()),
+                        ..item(&anchored_id, "message", None)
+                    },
+                    cx,
+                );
+            })
+        });
+        let held = cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top());
+        assert_eq!(
+            (held.item_ix, held.offset_in_item),
+            (after.item_ix, after.offset_in_item),
+            "a row changing under the viewport must not move the scroll anchor, got {held:?}"
+        );
     }
 
     /// Plain typing while the transcript holds focus must land in the
@@ -2712,6 +2816,7 @@ mod state_tests {
     /// Chords and enter/tab keep their meaning instead of stealing focus.
     #[gpui::test]
     fn test_typing_with_transcript_focused_lands_in_composer(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         // Hosts the whole screen so the chat root's key listener is on the
         // dispatch path, exactly like the real window.
         struct ChatHost {
@@ -2796,6 +2901,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_application_vim_moves_over_the_semantic_transcript_projection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -2989,6 +3095,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_application_vim_region_moves_follow_live_composer_focus(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -3073,6 +3180,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_application_vim_reconciles_stable_timeline_ids_per_task(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let chat = screen(cx);
         chat.update(cx, |this, _cx| {
             this.application_vim_enabled = true;
@@ -3137,6 +3245,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_returning_from_settings_reclaims_standard_chat_focus(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let chat = screen(cx);
         chat.update(cx, |this, cx| {
             let settings = crate::settings::AppSettings {
@@ -3157,6 +3266,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_persisted_application_vim_starts_an_empty_chat_on_the_sidebar(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let chat = screen(cx);
         chat.update(cx, |this, _cx| {
             this.application_vim_enabled = true;
@@ -3176,6 +3286,7 @@ mod state_tests {
     /// the composer its focus back.
     #[gpui::test]
     fn test_project_menu_walks_with_arrows_and_application_vim_jk(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -3279,6 +3390,7 @@ mod state_tests {
     /// under them.
     #[gpui::test]
     fn test_composer_menu_floats_above_the_composer(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }

@@ -26,26 +26,16 @@ use gpui::Focusable as _;
 
 impl ChatScreen {
     pub(super) fn render_transcript(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        // Follow the newest content while the view sits at (or near) the
-        // bottom, or after an explicit jump. Checking before render keeps
-        // user scrolls intact mid-stream.
+        // The list follows its own tail: it snaps to the end on each
+        // layout until the user scrolls up, and re-engages when the view
+        // returns to the bottom. Every mutation goes through splice or
+        // remeasure, so the count only drifts if a code path forgot to.
         let count = self.timeline.len();
         if self.list_state.item_count() != count {
-            self.list_state.reset(count);
+            self.list_state
+                .reset_with_uniform_height(count, super::TRANSCRIPT_ROW_ESTIMATE);
         }
-        // Pixel offsets are unreliable here: items that have never been
-        // rendered count as 0 px, so an old chat looks "all visible" until
-        // the user scrolls. The logical position is exact: with bottom
-        // alignment, `item_ix == count` means pinned to the newest item.
-        let at_bottom = self.list_state.logical_scroll_top().item_ix >= count;
-        if self.follow_transcript && !at_bottom {
-            self.list_state.scroll_to(gpui::ListOffset {
-                item_ix: count,
-                offset_in_item: px(0.),
-            });
-        }
-        self.follow_transcript = false;
-        let show_jump = !at_bottom && count > 0;
+        let show_jump = count > 0 && !self.list_state.is_following_tail();
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
@@ -204,7 +194,7 @@ impl ChatScreen {
                     .border_color(gpui::rgb(theme::border()))
                     .text_xs()
                     .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.follow_transcript = true;
+                        this.list_state.scroll_to_end();
                         cx.notify();
                     }))
                     .child(icon("chevron-down", px(12.), theme::text_secondary()))
@@ -277,7 +267,6 @@ impl ChatScreen {
                     let local = event.position.y - top;
                     let target = local - track_geometry.thumb / 2.;
                     this.scroll_to_thumb_top(target, &track_geometry);
-                    this.follow_transcript = false;
                     cx.notify();
                 }),
             )
@@ -320,7 +309,6 @@ impl ChatScreen {
             return;
         };
         self.scroll_to_thumb_top(start_top + (position.y - start_y), &geometry);
-        self.follow_transcript = false;
         cx.notify();
     }
 
