@@ -3,7 +3,10 @@ import { parseTestPcrEnvironment } from "./testPcrEnvironment";
 
 // Get the API URL from environment variables
 const apiUrl = process.env.VITE_OPEN_SECRET_API_URL;
-const pcrEnvironment = parseTestPcrEnvironment(process.env.VITE_OPEN_SECRET_PCR_ENVIRONMENT);
+import { apiConfig } from "../apiConfig";
+const pcrEnvironment = parseTestPcrEnvironment(
+  process.env.VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT
+);
 
 if (!apiUrl) {
   throw new Error("VITE_OPEN_SECRET_API_URL must be set in environment variables");
@@ -11,6 +14,7 @@ if (!apiUrl) {
 
 // Bind the hosted endpoint to one explicit PCR trust environment before tests run.
 setPlatformApiUrl(apiUrl, { environment: pcrEnvironment });
+apiConfig.configure("", apiUrl);
 
 console.log("Platform API URL set to:", apiUrl);
 console.log("Platform PCR trust environment set to:", pcrEnvironment);

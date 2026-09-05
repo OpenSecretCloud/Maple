@@ -27,9 +27,15 @@ path = "src/lib.rs"
 name = "maple-proxy"
 path = "src/main.rs"
 
+[features]
+default = []
+# Explicit development-only opt-in. Release, Docker, and embedded Maple builds
+# use default features and cannot accept mock attestation documents.
+insecure-local-mock-attestation = ["opensecret/mock-attestation"]
+
 [dependencies]
 # OpenSecret SDK
-opensecret = { version = "3.6.2", path = "../sdk/rust" }
+opensecret = { version = "3.6.2", path = "../sdk/rust", default-features = false }
 
 # Web server
 axum = { version = "0.8.4", features = ["http2", "macros"] }

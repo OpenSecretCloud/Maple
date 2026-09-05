@@ -6,7 +6,7 @@ authors = ["OpenSecret"]
 description = "Rust SDK for OpenSecret - secure AI API interactions with nitro attestation"
 license = "MIT"
 homepage = "https://opensecret.cloud"
-repository = "https://github.com/OpenSecretCloud/OpenSecret-SDK"
+repository = "https://github.com/OpenSecretCloud/Maple"
 documentation = "https://docs.rs/opensecret"
 keywords = ["opensecret", "ai", "encryption", "nitro", "attestation"]
 categories = ["cryptography", "api-bindings", "web-programming"]
@@ -34,6 +34,8 @@ sha2 = "0.10"
 base64 = "0.22"
 ring = "0.17"  # For certificate validation
 hex = "0.4"  # For debug output
+sigstore-tuf = { version = "=0.11.0", default-features = false }
+sigstore-verify = { version = "=0.11.0", default-features = false }
 
 # X.509 and certificate handling
 x509-parser = "0.16"
@@ -45,6 +47,10 @@ thiserror = "2.0"
 anyhow = "1.0"
 tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+jiff = "0.2"
+directories = "6.0"
+tempfile = "3.23"
+fs2 = "0.4"
 
 # SSE support for streaming
 eventsource-stream = "0.2"

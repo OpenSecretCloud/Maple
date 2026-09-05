@@ -2,9 +2,9 @@ use crate::{
     attestation::{AttestationDocument, AttestationVerifier},
     cbor::{self, Value as CborValue},
     crypto::{self},
-    error::{Error, Result},
-    pcr::{Pcr0Environment, Pcr0TrustPolicy},
+    error::{Error, InferenceTimeoutPhase, Result},
     session::SessionManager,
+    trusted_release::{AttestationEnvironment, TrustedReleaseConfig, TrustedReleaseManager},
     types::*,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -17,8 +17,9 @@ use reqwest::{
     Client,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{net::IpAddr, pin::Pin};
+use std::{future::Future, net::IpAddr, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 /// A decrypted response body returned by [`OpenSecretClient::send_inference_request`].
@@ -42,13 +43,83 @@ struct EncryptedBody {
 
 const MAX_INFERENCE_SSE_LINE_BYTES: usize = 16 * 1024 * 1024;
 
+struct InferencePhaseBudget {
+    phase: InferenceTimeoutPhase,
+    limit: Duration,
+    remaining: Duration,
+}
+
+impl InferencePhaseBudget {
+    fn new(phase: InferenceTimeoutPhase, limit: Duration) -> Self {
+        Self {
+            phase,
+            limit,
+            remaining: limit,
+        }
+    }
+
+    async fn run<T, F>(&mut self, operation: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        let started = Instant::now();
+        match tokio::time::timeout(self.remaining, operation).await {
+            Ok(result) => {
+                self.remaining = self.remaining.saturating_sub(started.elapsed());
+                result
+            }
+            Err(_) => {
+                self.remaining = Duration::ZERO;
+                Err(Error::InferenceTimeout {
+                    phase: self.phase,
+                    timeout_secs: self
+                        .limit
+                        .as_secs()
+                        .saturating_add(u64::from(self.limit.subsec_nanos() != 0)),
+                })
+            }
+        }
+    }
+}
+
+struct InferenceTimeoutBudgets {
+    ordinary_timeout: Duration,
+    recovery: InferencePhaseBudget,
+}
+
+impl InferenceTimeoutBudgets {
+    fn new(ordinary_timeout: Duration, recovery_timeout: Duration) -> Self {
+        Self {
+            ordinary_timeout,
+            recovery: InferencePhaseBudget::new(InferenceTimeoutPhase::Recovery, recovery_timeout),
+        }
+    }
+
+    fn ordinary_attempt(&self) -> InferencePhaseBudget {
+        InferencePhaseBudget::new(InferenceTimeoutPhase::Ordinary, self.ordinary_timeout)
+    }
+}
+
+async fn run_with_optional_budget<T, F>(
+    budget: Option<&mut InferencePhaseBudget>,
+    operation: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    match budget {
+        Some(budget) => budget.run(operation).await,
+        None => operation.await,
+    }
+}
+
 pub struct OpenSecretClient {
     client: Client,
     base_url: String,
     session_manager: SessionManager,
     refresh_lock: Mutex<()>,
     use_mock_attestation: bool,
-    pcr0_trust_policy: Pcr0TrustPolicy,
+    trusted_release_manager: Arc<TrustedReleaseManager>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,7 +495,7 @@ async fn collect_response_body(mut body: OpenSecretResponseBody) -> Result<Bytes
     Ok(collected.freeze())
 }
 
-fn uses_mock_attestation(base_url: &str) -> Result<bool> {
+fn is_local_attestation_endpoint(base_url: &str) -> Result<bool> {
     let parsed = reqwest::Url::parse(base_url)
         .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -469,27 +540,88 @@ fn uses_mock_attestation(base_url: &str) -> Result<bool> {
     Ok(is_mock_host)
 }
 
+fn uses_mock_attestation(base_url: &str) -> Result<bool> {
+    let is_local = is_local_attestation_endpoint(base_url)?;
+    let is_plain_http = reqwest::Url::parse(base_url)
+        .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?
+        .scheme()
+        == "http";
+
+    // Local mock documents deliberately bypass Nitro certificate, nonce, and
+    // trusted-release verification. Keep that capability out of normal SDK,
+    // proxy, and Maple builds even if they are pointed at a loopback URL.
+    Ok(cfg!(feature = "mock-attestation") && is_local && is_plain_http)
+}
+
+fn official_attestation_environment(base_url: &str) -> Result<Option<AttestationEnvironment>> {
+    let parsed = reqwest::Url::parse(base_url)
+        .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?;
+    Ok(match parsed.origin().ascii_serialization().as_str() {
+        "https://api.opensecret.cloud"
+        | "https://developer.opensecret.cloud"
+        | "https://enclave.trymaple.ai" => Some(AttestationEnvironment::Production),
+        "https://enclave.secretgpt.ai" => Some(AttestationEnvironment::Development),
+        _ => None,
+    })
+}
+
+fn default_attestation_environment(base_url: &str) -> Result<AttestationEnvironment> {
+    if let Some(environment) = official_attestation_environment(base_url)? {
+        return Ok(environment);
+    }
+    if is_local_attestation_endpoint(base_url)? {
+        // The mock path is feature-gated and bypasses this policy, but client
+        // construction still selects a manager even though mock handshakes do
+        // not refresh the embedded TUF root.
+        return Ok(AttestationEnvironment::Production);
+    }
+    Err(Error::Configuration(
+        "No default attestation environment is defined for this origin; use new_with_attestation_config with an explicit TrustedReleaseConfig"
+            .to_string(),
+    ))
+}
+
+fn validate_official_origin_trust_domain(
+    base_url: &str,
+    manager: &TrustedReleaseManager,
+) -> Result<()> {
+    if let Some(expected) = official_attestation_environment(base_url)? {
+        manager.validate_official_trust_domain(expected)?;
+    }
+    Ok(())
+}
+
 impl OpenSecretClient {
-    /// Construct a client using the official production PCR0 trust roots.
+    /// Construct a client using the dynamic TUF channel selected by the exact
+    /// official origin.
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
-        Self::new_with_pcr0_environment(base_url, Pcr0Environment::default())
+        let base_url = base_url.into();
+        let environment = default_attestation_environment(&base_url)?;
+        Self::new_with_trusted_release_manager(
+            base_url,
+            TrustedReleaseManager::official(environment)?,
+        )
     }
 
-    /// Construct a client using one explicit official PCR0 environment.
-    pub fn new_with_pcr0_environment(
+    /// Construct a client with an explicit TUF repository and bootstrap root.
+    pub fn new_with_attestation_config(
         base_url: impl Into<String>,
-        pcr0_environment: Pcr0Environment,
+        config: TrustedReleaseConfig,
     ) -> Result<Self> {
-        Self::new_with_pcr0_trust_policy(base_url, Pcr0TrustPolicy::official_for(pcr0_environment))
+        Self::new_with_trusted_release_manager(
+            base_url,
+            Arc::new(TrustedReleaseManager::new(config)?),
+        )
     }
 
-    /// Construct a client with an explicit PCR0 trust policy.
-    pub fn new_with_pcr0_trust_policy(
+    /// Construct a client with a caller-shared dynamic policy manager.
+    pub fn new_with_trusted_release_manager(
         base_url: impl Into<String>,
-        pcr0_trust_policy: Pcr0TrustPolicy,
+        trusted_release_manager: Arc<TrustedReleaseManager>,
     ) -> Result<Self> {
         let base_url = base_url.into();
         let use_mock = uses_mock_attestation(&base_url)?;
+        validate_official_origin_trust_domain(&base_url, &trusted_release_manager)?;
 
         Ok(Self {
             client: Client::new(),
@@ -497,36 +629,45 @@ impl OpenSecretClient {
             session_manager: SessionManager::new(),
             refresh_lock: Mutex::new(()),
             use_mock_attestation: use_mock,
-            pcr0_trust_policy,
+            trusted_release_manager,
         })
     }
 
-    /// Construct an API-key client using the official production PCR0 trust roots.
+    /// Construct an API-key client using the dynamic TUF channel selected by
+    /// the exact official origin.
     pub fn new_with_api_key(base_url: impl Into<String>, api_key: String) -> Result<Self> {
-        Self::new_with_api_key_and_pcr0_environment(base_url, api_key, Pcr0Environment::default())
-    }
-
-    /// Construct an API-key client using one explicit official PCR0 environment.
-    pub fn new_with_api_key_and_pcr0_environment(
-        base_url: impl Into<String>,
-        api_key: String,
-        pcr0_environment: Pcr0Environment,
-    ) -> Result<Self> {
-        Self::new_with_api_key_and_pcr0_trust_policy(
+        let base_url = base_url.into();
+        let environment = default_attestation_environment(&base_url)?;
+        Self::new_with_api_key_and_trusted_release_manager(
             base_url,
             api_key,
-            Pcr0TrustPolicy::official_for(pcr0_environment),
+            TrustedReleaseManager::official(environment)?,
         )
     }
 
-    /// Construct an API-key client with an explicit PCR0 trust policy.
-    pub fn new_with_api_key_and_pcr0_trust_policy(
+    /// Construct an API-key client with an explicit TUF repository and
+    /// bootstrap root.
+    pub fn new_with_api_key_and_attestation_config(
         base_url: impl Into<String>,
         api_key: String,
-        pcr0_trust_policy: Pcr0TrustPolicy,
+        config: TrustedReleaseConfig,
+    ) -> Result<Self> {
+        Self::new_with_api_key_and_trusted_release_manager(
+            base_url,
+            api_key,
+            Arc::new(TrustedReleaseManager::new(config)?),
+        )
+    }
+
+    /// Construct an API-key client with a caller-shared policy manager.
+    pub fn new_with_api_key_and_trusted_release_manager(
+        base_url: impl Into<String>,
+        api_key: String,
+        trusted_release_manager: Arc<TrustedReleaseManager>,
     ) -> Result<Self> {
         let base_url = base_url.into();
         let use_mock = uses_mock_attestation(&base_url)?;
+        validate_official_origin_trust_domain(&base_url, &trusted_release_manager)?;
 
         Ok(Self {
             client: Client::new(),
@@ -534,7 +675,7 @@ impl OpenSecretClient {
             session_manager: SessionManager::new_with_api_key(api_key),
             refresh_lock: Mutex::new(()),
             use_mock_attestation: use_mock,
-            pcr0_trust_policy,
+            trusted_release_manager,
         })
     }
 
@@ -547,21 +688,22 @@ impl OpenSecretClient {
     }
 
     pub async fn perform_attestation_handshake(&self) -> Result<()> {
-        // Generate a nonce
-        let nonce = Uuid::new_v4().to_string();
-
-        // Step 1: Get attestation document
-        let attestation_doc = self.get_attestation_document(&nonce).await?;
-
-        // Step 2: Parse and verify attestation document
         if !self.use_mock_attestation {
+            // Refresh dynamic trust before requesting the backend's ephemeral
+            // attestation key. The backend keeps that key for five minutes;
+            // a cold TUF/Sigstore refresh can legitimately take longer.
+            let policy = self.trusted_release_manager.refresh_policy().await?;
+            let nonce = Uuid::new_v4().to_string();
+            let attestation_doc = self.get_attestation_document(&nonce).await?;
             let verifier = AttestationVerifier::new();
             let doc = verifier
                 .verify_attestation_document(&attestation_doc.attestation_document, &nonce)?;
-            self.establish_session_from_verified_attestation(&nonce, doc)
+            self.establish_session_from_verified_attestation_with_policy(&nonce, doc, &policy)
                 .await
         } else {
             // For mock mode, extract without full verification
+            let nonce = Uuid::new_v4().to_string();
+            let attestation_doc = self.get_attestation_document(&nonce).await?;
             let doc = self.parse_mock_attestation(&attestation_doc.attestation_document)?;
             self.establish_session_from_document(&nonce, doc).await
         }
@@ -569,17 +711,33 @@ impl OpenSecretClient {
 
     /// Establish a session from a Nitro-authenticated document.
     ///
-    /// Keeping PCR0 enforcement in the same path as key exchange makes the
+    /// Keeping full trusted-release enforcement in the same path as key exchange makes the
     /// fail-before-key-exchange ordering explicit and independently testable.
+    #[cfg(test)]
     async fn establish_session_from_verified_attestation(
         &self,
         nonce: &str,
         doc: AttestationDocument,
     ) -> Result<()> {
-        let pcr0 = doc.pcrs.get(&0).ok_or_else(|| {
-            Error::AttestationVerificationFailed("Missing PCR0 in attestation document".to_string())
-        })?;
-        self.pcr0_trust_policy.verify_pcr0(pcr0).await?;
+        let policy = self.trusted_release_manager.refresh_policy().await?;
+        self.establish_session_from_verified_attestation_with_policy(nonce, doc, &policy)
+            .await
+    }
+
+    async fn establish_session_from_verified_attestation_with_policy(
+        &self,
+        nonce: &str,
+        doc: AttestationDocument,
+        policy: &crate::trusted_release::TrustedReleasePolicy,
+    ) -> Result<()> {
+        // A concurrent tab/process may have persisted a revoke or newer
+        // channel after the pre-nonce refresh. Recheck local durable/shared
+        // floors without another network refresh, then recheck metadata expiry
+        // and the atomic PCR tuple immediately before key exchange.
+        self.trusted_release_manager
+            .assert_policy_current(policy)
+            .await?;
+        policy.verify_attestation(&doc)?;
         self.establish_session_from_document(nonce, doc).await
     }
 
@@ -940,6 +1098,39 @@ impl OpenSecretClient {
         &self,
         request: InferenceRequest,
     ) -> Result<InferenceResponse> {
+        self.send_inference_request_inner(request, None).await
+    }
+
+    /// Sends an inference request with separate ordinary and recovery budgets.
+    ///
+    /// Each actual inference attempt—including response headers and a buffered
+    /// non-SSE response body—gets `ordinary_timeout`. Explicit recovery work
+    /// shares one cumulative `recovery_timeout` across the whole call. That
+    /// recovery budget covers direct reattestation as well as access-token
+    /// recovery, which may itself need to reattest. SSE bodies remain streams
+    /// after their headers arrive and must be governed by the caller's stream
+    /// idle timeout.
+    pub async fn send_inference_request_with_timeouts(
+        &self,
+        request: InferenceRequest,
+        ordinary_timeout: Duration,
+        recovery_timeout: Duration,
+    ) -> Result<InferenceResponse> {
+        self.send_inference_request_inner(
+            request,
+            Some(InferenceTimeoutBudgets::new(
+                ordinary_timeout,
+                recovery_timeout,
+            )),
+        )
+        .await
+    }
+
+    async fn send_inference_request_inner(
+        &self,
+        request: InferenceRequest,
+        mut timeout_budgets: Option<InferenceTimeoutBudgets>,
+    ) -> Result<InferenceResponse> {
         let (parts, body) = request.into_parts();
         if parts.uri.scheme().is_some() || parts.uri.authority().is_some() {
             return Err(Error::Configuration(
@@ -966,51 +1157,91 @@ impl OpenSecretClient {
 
         loop {
             let auth = self.resolve_auth(AuthHeaderMode::ApiKeyOrJwt)?;
-            let result = self
-                .send_inference_request_once(
+            let mut ordinary_budget = timeout_budgets
+                .as_ref()
+                .map(InferenceTimeoutBudgets::ordinary_attempt);
+            let result = run_with_optional_budget(
+                ordinary_budget.as_mut(),
+                self.send_inference_request_once(
                     &parts.method,
                     &path_and_query,
                     &headers,
                     body.clone(),
                     &auth,
-                )
-                .await;
+                ),
+            )
+            .await;
 
             match result {
                 Ok((response, session_key)) if response.status().is_success() => {
-                    return self.finish_inference_response(response, session_key).await
+                    return run_with_optional_budget(
+                        ordinary_budget.as_mut(),
+                        self.finish_inference_response(response, session_key),
+                    )
+                    .await;
                 }
                 Ok((response, session_key)) => {
                     let recovery =
                         classify_response_recovery(response.status(), response.headers());
                     if replayed {
-                        return self.finish_inference_response(response, session_key).await;
+                        return run_with_optional_budget(
+                            ordinary_budget.as_mut(),
+                            self.finish_inference_response(response, session_key),
+                        )
+                        .await;
                     }
 
                     match recovery {
                         Some(RecoveryAction::Reattest) => {
-                            self.perform_attestation_handshake().await?;
+                            let recovery_budget = timeout_budgets
+                                .as_mut()
+                                .map(|budgets| &mut budgets.recovery);
+                            run_with_optional_budget(
+                                recovery_budget,
+                                self.perform_attestation_handshake(),
+                            )
+                            .await?;
                             replayed = true;
                         }
                         Some(RecoveryAction::RefreshAccessToken) => {
-                            if matches!(
+                            let recovery_budget = timeout_budgets
+                                .as_mut()
+                                .map(|budgets| &mut budgets.recovery);
+                            match run_with_optional_budget(
+                                recovery_budget,
                                 self.recover_auth_after_unauthorized(
                                     AuthHeaderMode::ApiKeyOrJwt,
                                     &auth,
-                                )
-                                .await,
-                                Ok(true)
-                            ) {
-                                replayed = true;
-                            } else {
-                                return self.finish_inference_response(response, session_key).await;
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(true) => replayed = true,
+                                Err(error @ Error::InferenceTimeout { .. }) => return Err(error),
+                                Ok(false) | Err(_) => {
+                                    return run_with_optional_budget(
+                                        ordinary_budget.as_mut(),
+                                        self.finish_inference_response(response, session_key),
+                                    )
+                                    .await
+                                }
                             }
                         }
-                        None => return self.finish_inference_response(response, session_key).await,
+                        None => {
+                            return run_with_optional_budget(
+                                ordinary_budget.as_mut(),
+                                self.finish_inference_response(response, session_key),
+                            )
+                            .await;
+                        }
                     }
                 }
                 Err(Error::Session(_)) if !recovered_missing_session => {
-                    self.perform_attestation_handshake().await?;
+                    let recovery_budget = timeout_budgets
+                        .as_mut()
+                        .map(|budgets| &mut budgets.recovery);
+                    run_with_optional_budget(recovery_budget, self.perform_attestation_handshake())
+                        .await?;
                     recovered_missing_session = true;
                 }
                 Err(error) => return Err(error),
@@ -2623,14 +2854,10 @@ mod tests {
     use crate::PushNotificationKeyPair;
     use futures::StreamExt;
     use serde_json::json;
-    use std::{
-        collections::HashMap,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc, Mutex as StdMutex,
-        },
-        time::Duration,
-    };
+    use std::collections::HashMap;
+    #[cfg(feature = "mock-attestation")]
+    use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc, Mutex as StdMutex};
+    use std::time::Duration;
     use wiremock::{
         matchers::{header, method, path, query_param},
         Match, Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -2816,10 +3043,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     struct AttestationResponder {
         server_public_key: [u8; 32],
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for AttestationResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let nonce = request.url.path().rsplit('/').next().unwrap_or_default();
@@ -2831,12 +3060,31 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
+    struct DelayedAttestationResponder {
+        server_public_key: [u8; 32],
+        delay: Duration,
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    impl Respond for DelayedAttestationResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            AttestationResponder {
+                server_public_key: self.server_public_key,
+            }
+            .respond(request)
+            .set_delay(self.delay)
+        }
+    }
+
+    #[cfg(feature = "mock-attestation")]
     struct KeyExchangeResponder {
         server_secret_key: [u8; 32],
         session_key: [u8; 32],
         session_id: String,
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for KeyExchangeResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let body: KeyExchangeRequest = serde_json::from_slice(request.body.as_ref()).unwrap();
@@ -2857,12 +3105,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[derive(Clone)]
     struct PerNonceAttestationResponder {
         server_secrets: Arc<StdMutex<HashMap<String, [u8; 32]>>>,
         next_key: Arc<AtomicUsize>,
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for PerNonceAttestationResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let nonce = request.url.path().rsplit('/').next().unwrap_or_default();
@@ -2884,12 +3134,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[derive(Clone)]
     struct PerNonceKeyExchangeResponder {
         server_secrets: Arc<StdMutex<HashMap<String, [u8; 32]>>>,
         session_key: [u8; 32],
     }
 
+    #[cfg(feature = "mock-attestation")]
     impl Respond for PerNonceKeyExchangeResponder {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let body: KeyExchangeRequest = serde_json::from_slice(request.body.as_ref()).unwrap();
@@ -2921,6 +3173,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn build_mock_attestation_document(nonce: &str, server_public_key: &[u8; 32]) -> String {
         let payload = CborValue::Map(vec![
             (
@@ -3105,11 +3358,73 @@ mod tests {
     async fn test_client_creation() {
         let client = OpenSecretClient::new("http://localhost:3000").unwrap();
         assert_eq!(client.base_url, "http://localhost:3000");
+    }
+
+    #[test]
+    fn official_origins_reject_custom_trust_domains_but_custom_origins_allow_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let custom_config = TrustedReleaseConfig::new_with_cache_path(
+            AttestationEnvironment::Production,
+            "https://attestations.example/tuf/",
+            b"custom bootstrap".to_vec(),
+            directory.path().join("custom.json"),
+        )
+        .unwrap();
+        let custom_manager = Arc::new(TrustedReleaseManager::new(custom_config).unwrap());
+
+        let error = OpenSecretClient::new_with_trusted_release_manager(
+            "https://api.opensecret.cloud",
+            Arc::clone(&custom_manager),
+        )
+        .err()
+        .expect("an official origin must reject a custom repository and bootstrap");
+        assert!(
+            matches!(error, Error::Configuration(message) if message.contains("canonical attestation repository"))
+        );
+
+        let error = OpenSecretClient::new_with_api_key_and_trusted_release_manager(
+            "https://api.opensecret.cloud",
+            "test-key".to_string(),
+            Arc::clone(&custom_manager),
+        )
+        .err()
+        .expect("the API-key constructor must enforce the same official trust domain");
+        assert!(matches!(error, Error::Configuration(_)));
+
+        OpenSecretClient::new_with_trusted_release_manager(
+            "https://custom.example",
+            custom_manager,
+        )
+        .expect("a custom HTTPS origin may use its explicitly configured trust domain");
+
+        let official = TrustedReleaseManager::official_with_cache_path(
+            AttestationEnvironment::Production,
+            directory.path().join("official.json"),
+        )
+        .unwrap();
+        OpenSecretClient::new_with_trusted_release_manager(
+            "https://api.opensecret.cloud",
+            official,
+        )
+        .expect("an official origin accepts the exact official durable trust domain");
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    #[test]
+    fn local_mock_bypass_is_disabled_without_feature() {
+        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
+        assert!(!client.use_mock_attestation);
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    #[test]
+    fn local_mock_bypass_requires_explicit_feature() {
+        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
         assert!(client.use_mock_attestation);
     }
 
     #[tokio::test]
-    async fn cross_environment_pcr0_fails_before_key_exchange() {
+    async fn unreleased_policy_fails_before_key_exchange() {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/key_exchange"))
@@ -3118,37 +3433,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let production_policy =
-            Pcr0TrustPolicy::official_for(Pcr0Environment::Production).without_remote_history();
-        let client =
-            OpenSecretClient::new_with_pcr0_trust_policy(mock_server.uri(), production_policy)
-                .unwrap();
-        let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
-        let nonce = Uuid::new_v4().to_string();
-
-        let error = client
-            .establish_session_from_verified_attestation(&nonce, document)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(error, Error::AttestationVerificationFailed(_)));
-        assert!(client.get_session_id().unwrap().is_none());
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn development_environment_accepts_development_pcr0_before_key_exchange() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let client = OpenSecretClient::new_with_pcr0_environment(
+        let production_policy = crate::trusted_release::TrustedReleasePolicy::for_test(
+            AttestationEnvironment::Production,
+            1,
+            Vec::new(),
+        );
+        let client = OpenSecretClient::new_with_trusted_release_manager(
             mock_server.uri(),
-            Pcr0Environment::Development,
+            TrustedReleaseManager::fixed_for_test(production_policy),
         )
         .unwrap();
         let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
@@ -3159,8 +3451,75 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, Error::Api { status: 500, .. }));
+        assert!(matches!(error, Error::UnreleasedAttestationPolicy { .. }));
         assert!(client.get_session_id().unwrap().is_none());
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_policy_refresh_fails_before_requesting_an_attestation() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/key_exchange"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let manager = TrustedReleaseManager::official(AttestationEnvironment::Production).unwrap();
+        let mut client =
+            OpenSecretClient::new_with_trusted_release_manager(mock_server.uri(), manager).unwrap();
+        // Exercise the production path even in all-feature test builds, where
+        // loopback HTTP would otherwise select the explicit mock bypass.
+        client.use_mock_attestation = false;
+        assert!(matches!(
+            client.perform_attestation_handshake().await,
+            Err(Error::UnreleasedAttestationPolicy { .. })
+        ));
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_revoke_blocks_a_held_policy_before_key_exchange() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/key_exchange"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        let held = crate::trusted_release::TrustedReleasePolicy::for_test(
+            AttestationEnvironment::Production,
+            7,
+            Vec::new(),
+        );
+        let manager = TrustedReleaseManager::fixed_for_test(held.clone());
+        let client = OpenSecretClient::new_with_trusted_release_manager(
+            mock_server.uri(),
+            Arc::clone(&manager),
+        )
+        .unwrap();
+        let revoked = crate::trusted_release::TrustedReleasePolicy::for_test(
+            AttestationEnvironment::Production,
+            8,
+            Vec::new(),
+        );
+        manager.install_policy_floor_for_test(&revoked);
+
+        let error = client
+            .establish_session_from_verified_attestation_with_policy(
+                &Uuid::new_v4().to_string(),
+                synthetic_verified_attestation(DEVELOPMENT_PCR0),
+                &held,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::TrustedReleasePolicy(_)));
         mock_server.verify().await;
     }
 
@@ -3171,24 +3530,44 @@ mod tests {
             "https://example.com/localhost",
             "https://example.com/127.0.0.1",
         ] {
-            let client = OpenSecretClient::new(url).unwrap();
+            let policy = crate::trusted_release::TrustedReleasePolicy::for_test(
+                AttestationEnvironment::Production,
+                1,
+                Vec::new(),
+            );
+            let client = OpenSecretClient::new_with_trusted_release_manager(
+                url,
+                TrustedReleaseManager::fixed_for_test(policy),
+            )
+            .unwrap();
             assert!(!client.use_mock_attestation, "unexpected mock URL: {url}");
         }
 
-        assert!(
-            OpenSecretClient::new("http://localhost:3000")
-                .unwrap()
-                .use_mock_attestation
+        for url in [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ] {
+            let client = OpenSecretClient::new(url).unwrap();
+            assert_eq!(
+                client.use_mock_attestation,
+                cfg!(feature = "mock-attestation"),
+                "unexpected mock-attestation feature behavior for {url}"
+            );
+        }
+
+        let policy = crate::trusted_release::TrustedReleasePolicy::for_test(
+            AttestationEnvironment::Production,
+            1,
+            Vec::new(),
         );
         assert!(
-            OpenSecretClient::new("http://127.0.0.1:3000")
-                .unwrap()
-                .use_mock_attestation
-        );
-        assert!(
-            OpenSecretClient::new("http://[::1]:3000")
-                .unwrap()
-                .use_mock_attestation
+            !OpenSecretClient::new_with_trusted_release_manager(
+                "https://localhost:3000",
+                TrustedReleaseManager::fixed_for_test(policy),
+            )
+            .unwrap()
+            .use_mock_attestation
         );
     }
 
@@ -3212,13 +3591,24 @@ mod tests {
     fn android_emulator_alias_is_not_a_desktop_mock_bypass() {
         let client = OpenSecretClient::new("http://10.0.2.2:3000");
         if cfg!(target_os = "android") {
-            assert!(client.unwrap().use_mock_attestation);
+            assert_eq!(
+                client.unwrap().use_mock_attestation,
+                cfg!(feature = "mock-attestation")
+            );
         } else {
             assert!(client.is_err());
+            let policy = crate::trusted_release::TrustedReleasePolicy::for_test(
+                AttestationEnvironment::Production,
+                1,
+                Vec::new(),
+            );
             assert!(
-                !OpenSecretClient::new("https://10.0.2.2:3000")
-                    .unwrap()
-                    .use_mock_attestation
+                !OpenSecretClient::new_with_trusted_release_manager(
+                    "https://10.0.2.2:3000",
+                    TrustedReleaseManager::fixed_for_test(policy),
+                )
+                .unwrap()
+                .use_mock_attestation
             );
         }
     }
@@ -3235,6 +3625,7 @@ mod tests {
         assert_eq!(tokens.refresh_token.as_deref(), Some("refresh"));
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn concurrent_attestation_handshakes_keep_each_nonce_public_key() {
         let mock_server = MockServer::start().await;
@@ -3777,6 +4168,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn target_replay_budget_is_shared_across_recovery_reasons() {
         let mock_server = MockServer::start().await;
@@ -3857,6 +4249,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn expired_target_with_stale_refresh_session_repairs_each_layer_once() {
         let mock_server = MockServer::start().await;
@@ -3970,6 +4363,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn establishing_a_missing_local_session_does_not_consume_target_replay() {
         let mock_server = MockServer::start().await;
@@ -4281,6 +4675,147 @@ mod tests {
             Some("2 + 2 = 4")
         );
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inference_phase_budget_is_cumulative_within_one_attempt() {
+        let budgets = InferenceTimeoutBudgets::new(Duration::from_secs(3), Duration::from_secs(10));
+        let mut first_attempt = budgets.ordinary_attempt();
+
+        first_attempt
+            .run(async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let error = first_attempt
+            .run(async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InferenceTimeout {
+                phase: InferenceTimeoutPhase::Ordinary,
+                timeout_secs: 3,
+            }
+        ));
+
+        // A replay is a new actual attempt and therefore receives a fresh
+        // ordinary budget rather than inheriting the exhausted body budget.
+        let mut replay_attempt = budgets.ordinary_attempt();
+        replay_attempt
+            .run(async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn inference_transport_reports_ordinary_response_timeout() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = crypto::generate_random_bytes::<32>();
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("authorization", "Bearer api_key"))
+            .and(header("x-session-id", session_id.to_string()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_json(encrypted_response_bytes(&session_key, b"{}")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/embeddings")
+            .body(Bytes::from_static(br#"{"model":"x","input":"y"}"#))
+            .unwrap();
+        let result = client
+            .send_inference_request_with_timeouts(
+                request,
+                Duration::from_millis(50),
+                Duration::from_secs(1),
+            )
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("delayed inference response unexpectedly beat ordinary timeout"),
+        };
+
+        assert!(matches!(
+            error,
+            Error::InferenceTimeout {
+                phase: InferenceTimeoutPhase::Ordinary,
+                timeout_secs: 1,
+            }
+        ));
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn inference_sse_body_is_caller_timed_after_headers() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let session_id = Uuid::new_v4();
+        let session_key = crypto::generate_random_bytes::<32>();
+        client
+            .session_manager
+            .set_session(session_id, session_key)
+            .unwrap();
+        let plaintext = br#"{"delta":"still available"}"#;
+        let sse_body = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            encrypted_sse_bytes(&session_key, plaintext)
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse_body, "text/event-stream"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/chat/completions")
+            .body(Bytes::from_static(br#"{"stream":true}"#))
+            .unwrap();
+        let response = client
+            .send_inference_request_with_timeouts(
+                request,
+                Duration::from_millis(100),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let body = collect_response_body(response.into_body()).await.unwrap();
+        assert_eq!(
+            body,
+            Bytes::from(format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                String::from_utf8_lossy(plaintext)
+            ))
+        );
+        mock_server.verify().await;
     }
 
     #[tokio::test]
@@ -4709,6 +5244,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn inference_transport_establishes_attestation_and_replays_exact_bytes() {
         let mock_server = MockServer::start().await;
@@ -4796,6 +5332,183 @@ mod tests {
             collect_response_body(response.into_body()).await.unwrap(),
             response_body
         );
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    #[tokio::test]
+    async fn inference_recovery_may_outlive_ordinary_attempt_budget() {
+        let mock_server = MockServer::start().await;
+        let client =
+            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
+        let stale_session_id = Uuid::new_v4();
+        let stale_session_key = crypto::generate_random_bytes::<32>();
+        let server_secret_key = crypto::generate_random_bytes::<32>();
+        let server_public_key =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
+        let fresh_session_id = Uuid::new_v4();
+        let fresh_session_key = crypto::generate_random_bytes::<32>();
+        let response_body = Bytes::from_static(br#"{"recovered":true}"#);
+        client
+            .session_manager
+            .set_session(stale_session_id, stale_session_key)
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("x-session-id", stale_session_id.to_string()))
+            .respond_with(v1_error_response(
+                400,
+                Some("session_not_found"),
+                "stale session",
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(PathPrefixMatcher("/attestation/"))
+            .respond_with(DelayedAttestationResponder {
+                server_public_key: server_public_key.to_bytes(),
+                delay: Duration::from_millis(250),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/key_exchange"))
+            .respond_with(KeyExchangeResponder {
+                server_secret_key,
+                session_key: fresh_session_key,
+                session_id: fresh_session_id.to_string(),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("x-session-id", fresh_session_id.to_string()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(encrypted_response_bytes(&fresh_session_key, &response_body)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/embeddings")
+            .body(Bytes::from_static(br#"{"model":"x","input":"y"}"#))
+            .unwrap();
+        let response = client
+            .send_inference_request_with_timeouts(
+                request,
+                Duration::from_millis(100),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            collect_response_body(response.into_body()).await.unwrap(),
+            response_body
+        );
+        mock_server.verify().await;
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    #[tokio::test]
+    async fn inference_direct_and_jwt_recovery_share_one_cumulative_budget() {
+        let mock_server = MockServer::start().await;
+        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
+        let server_secret_key = crypto::generate_random_bytes::<32>();
+        let server_public_key =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
+        let session_id = Uuid::new_v4();
+        let session_key = crypto::generate_random_bytes::<32>();
+        client
+            .session_manager
+            .set_tokens(
+                "expired_access".to_string(),
+                Some("refresh_token".to_string()),
+            )
+            .unwrap();
+
+        Mock::given(method("GET"))
+            .and(PathPrefixMatcher("/attestation/"))
+            .respond_with(DelayedAttestationResponder {
+                server_public_key: server_public_key.to_bytes(),
+                delay: Duration::from_millis(200),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/key_exchange"))
+            .respond_with(KeyExchangeResponder {
+                server_secret_key,
+                session_key,
+                session_id: session_id.to_string(),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(header("authorization", "Bearer expired_access"))
+            .and(header("x-session-id", session_id.to_string()))
+            .respond_with(v1_error_response(
+                401,
+                Some("access_token_expired"),
+                "expired access token",
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/refresh"))
+            .and(MissingHeaderMatcher("authorization"))
+            .and(header("x-session-id", session_id.to_string()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(400))
+                    .set_body_json(encrypted_response(
+                        &session_key,
+                        &json!({
+                            "access_token": "fresh_access",
+                            "refresh_token": "fresh_refresh",
+                        }),
+                    )),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let request = HttpRequest::builder()
+            .method(http::Method::POST)
+            .uri("/v1/embeddings")
+            .body(Bytes::from_static(br#"{"model":"x","input":"y"}"#))
+            .unwrap();
+        let result = client
+            .send_inference_request_with_timeouts(
+                request,
+                Duration::from_millis(150),
+                Duration::from_millis(450),
+            )
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("cumulative recovery unexpectedly exceeded its budget"),
+        };
+
+        assert!(matches!(
+            error,
+            Error::InferenceTimeout {
+                phase: InferenceTimeoutPhase::Recovery,
+                timeout_secs: 1,
+            }
+        ));
+        mock_server.verify().await;
     }
 
     #[tokio::test]
@@ -5041,6 +5754,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn test_refresh_reestablishes_attestation_without_sending_auth_headers() {
         let mock_server = MockServer::start().await;
@@ -5991,6 +6705,7 @@ mod tests {
         mock_server.verify().await;
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn agent_stream_stale_session_reattests_and_decrypts() {
         let mock_server = MockServer::start().await;

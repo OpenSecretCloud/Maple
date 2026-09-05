@@ -38,7 +38,6 @@
           pkg-config
           openssl
           zlib
-          gcc
           clang
           libclang
 
@@ -53,6 +52,8 @@
         ];
 
         linuxOnlyInputs = with pkgs; [
+          gcc
+
           # Container runtime for Docker compatibility
           podman
           conmon

@@ -47,7 +47,6 @@ USER maple
 ENV MAPLE_HOST=0.0.0.0 \
     MAPLE_PORT=8080 \
     MAPLE_BACKEND_URL=https://enclave.trymaple.ai \
-    MAPLE_PCR0_ENVIRONMENT=production \
     MAPLE_DEBUG=false \
     MAPLE_ENABLE_CORS=true \
     MAPLE_REQUEST_TIMEOUT_SECS=300 \

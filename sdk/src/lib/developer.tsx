@@ -12,7 +12,7 @@ import {
 import type { AttestationDocument } from "./attestation";
 import { PcrConfig } from "./pcr";
 
-const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
+const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "prod" };
 import type {
   Organization,
   Project,

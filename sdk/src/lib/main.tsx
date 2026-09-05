@@ -14,7 +14,7 @@ import type { AttestationDocument } from "./attestation";
 import type { LoginResponse, ThirdPartyTokenResponse, DocumentResponse } from "./api";
 import { PcrConfig } from "./pcr";
 
-const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
+const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "prod" };
 
 export type OpenSecretAuthState = {
   loading: boolean;

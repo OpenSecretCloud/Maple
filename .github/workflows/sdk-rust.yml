@@ -52,6 +52,7 @@ jobs:
             cd sdk/rust
             cargo fmt --all -- --check
             cargo clippy --locked --all-targets --all-features -- -D warnings
+            cargo test --locked --no-default-features --lib local_mock_bypass_is_disabled_without_feature
             cargo test --locked --all-features --lib
             RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
           '

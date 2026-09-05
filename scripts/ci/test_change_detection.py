@@ -53,6 +53,18 @@ class ChangeDetectionTests(unittest.TestCase):
         self.assert_routes(["sdk/package.json"], "frontend")
         self.assert_routes(["sdk/bun.lock"], "frontend")
 
+    def test_sdk_attestation_runtime_rebuilds_packaged_mobile_apps(self) -> None:
+        for path in (
+            "sdk/src/lib/attestation-tuf-root.generated.json",
+            "sdk/src/lib/attestation.ts",
+            "sdk/src/lib/attestationForView.ts",
+            "sdk/src/lib/attestationTuf.ts",
+            "sdk/src/lib/getAttestation.ts",
+            "sdk/src/lib/pcr.ts",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path], "frontend", "ios", "android")
+
     def test_renderer_changes_only_mark_the_frontend_lane(self) -> None:
         self.assert_routes(["frontend/src/routes/index.tsx"], "frontend")
         self.assert_routes(["frontend/public/favicon.svg"], "frontend")

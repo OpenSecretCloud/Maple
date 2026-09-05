@@ -1,4 +1,3 @@
-use crate::open_secret_config::configured_pcr0_environment;
 use opensecret::{
     InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest, WebExtractResponse,
     WebSearchRequest, WebSearchResponse,
@@ -12,7 +11,10 @@ use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
 
 const AUTH_CHANGED_EVENT: &str = "maple-api-auth-changed";
-const CREDENTIAL_VALIDATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+// Initial validation may need to traverse up to 32 bounded TUF root updates
+// before it can perform enclave attestation and fetch the account. This is an
+// outer UX cap; the SDK owns the tighter per-request trust-fetch deadlines.
+const CREDENTIAL_VALIDATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -505,11 +507,7 @@ fn build_client(
         return Err("Maple API access token is missing".to_string());
     }
     let refresh_token = refresh_token.filter(|token| !token.trim().is_empty());
-    let client = OpenSecretClient::new_with_pcr0_environment(
-        api_url.to_string(),
-        configured_pcr0_environment()?,
-    )
-    .map_err(map_sdk_error)?;
+    let client = OpenSecretClient::new(api_url.to_string()).map_err(map_sdk_error)?;
     client
         .set_tokens(access_token, refresh_token)
         .map_err(map_sdk_error)?;
@@ -685,6 +683,7 @@ pub async fn maple_api_clear_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "insecure-local-mock-attestation")]
     use axum::{
         extract::{Path, State},
         http::{header::AUTHORIZATION, HeaderMap, StatusCode},
@@ -692,9 +691,13 @@ mod tests {
         routing::{get, post},
         Json, Router,
     };
+    #[cfg(feature = "insecure-local-mock-attestation")]
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    #[cfg(feature = "insecure-local-mock-attestation")]
     use ciborium::value::Value as CborValue;
+    #[cfg(feature = "insecure-local-mock-attestation")]
     use goose_providers::{base::Provider, conversation::message::Message, model::ModelConfig};
+    #[cfg(feature = "insecure-local-mock-attestation")]
     use opensecret::types::KeyExchangeRequest;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Notify;
@@ -748,6 +751,7 @@ mod tests {
         release: Arc<Notify>,
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     #[derive(Clone)]
     struct RefreshThenStallState {
         key_pair: Arc<opensecret::crypto::KeyPair>,
@@ -756,6 +760,7 @@ mod tests {
         retry_started: Arc<Notify>,
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     struct RefreshThenStallFixture {
         session: Arc<MapleApiSession>,
         sink: Arc<RecordingEventSink>,
@@ -763,6 +768,7 @@ mod tests {
         server: tokio::task::JoinHandle<()>,
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     fn mock_attestation_document(nonce: &str, server_public_key: &[u8; 32]) -> String {
         let payload = CborValue::Map(vec![
             (
@@ -787,6 +793,7 @@ mod tests {
         BASE64.encode(cose_bytes)
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     async fn attestation_handler(
         State(state): State<RefreshThenStallState>,
         Path(nonce): Path<String>,
@@ -799,6 +806,7 @@ mod tests {
         }))
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     async fn key_exchange_handler(
         State(state): State<RefreshThenStallState>,
         Json(request): Json<KeyExchangeRequest>,
@@ -818,6 +826,7 @@ mod tests {
         }))
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     async fn refresh_handler(
         State(state): State<RefreshThenStallState>,
     ) -> Json<serde_json::Value> {
@@ -830,6 +839,7 @@ mod tests {
         Json(serde_json::json!({ "encrypted": BASE64.encode(encrypted) }))
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     async fn refresh_then_stall_handler(
         State(state): State<RefreshThenStallState>,
         headers: HeaderMap,
@@ -849,6 +859,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     async fn refresh_then_stall_fixture() -> RefreshThenStallFixture {
         let key_pair = Arc::new(opensecret::crypto::generate_key_pair());
         let retry_started = Arc::new(Notify::new());
@@ -897,6 +908,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     async fn assert_refresh_reconciled(fixture: &RefreshThenStallFixture) {
         let snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -1084,6 +1096,7 @@ mod tests {
         assert_eq!(after.refresh_token, before.refresh_token);
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     #[tokio::test]
     async fn provider_cancellation_after_sdk_refresh_reconciles_rotated_credentials() {
         let fixture = refresh_then_stall_fixture().await;
@@ -1123,6 +1136,7 @@ mod tests {
         fixture.server.abort();
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     #[tokio::test]
     async fn dropped_web_call_after_sdk_refresh_still_reconciles_rotated_credentials() {
         let fixture = refresh_then_stall_fixture().await;
@@ -1148,6 +1162,7 @@ mod tests {
         fixture.server.abort();
     }
 
+    #[cfg(feature = "insecure-local-mock-attestation")]
     #[tokio::test]
     async fn dropped_classifier_provider_future_after_refresh_still_reconciles_credentials() {
         let fixture = refresh_then_stall_fixture().await;

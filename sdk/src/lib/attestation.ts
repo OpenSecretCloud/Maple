@@ -3,6 +3,13 @@ import { decode, encode } from "@stablelib/base64";
 import * as cbor from "cbor2";
 import { z } from "zod";
 import { fetchAttestationDocument, getApiUrl } from "./api";
+import {
+  requireTrustedPcrsAgainstSnapshot,
+  resolveAttestationEnvironment,
+  resolveTrustedPcrPolicy,
+  type AttestationEnvironment,
+  type TrustedEnclaveReleaseSnapshot
+} from "./pcr";
 import awsRootCertDer from "../assets/aws_root.der";
 
 // Assert that the root cert is not empty
@@ -246,7 +253,7 @@ const FakeAttestationDocumentSchema = z.object({
 
 type FakeAttestationDocument = z.infer<typeof FakeAttestationDocumentSchema>;
 
-const LOCAL_DEVELOPMENT_API_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "[::1]"]);
+const LOCAL_DEVELOPMENT_API_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 export function isLocalDevelopmentApiUrl(apiUrl: string): boolean {
   try {
@@ -268,9 +275,11 @@ async function fakeAuthenticate(
   return zodParsed;
 }
 
-export async function verifyAttestation(
+/** @internal Verify the nonce-bound Nitro document without loading release policy. */
+export async function verifyAttestationDocument(
   nonce: string,
-  explicitApiUrl?: string
+  explicitApiUrl?: string,
+  expectedEnvironment?: AttestationEnvironment
 ): Promise<AttestationDocument> {
   try {
     const attestationDocumentBase64 = await fetchAttestationDocument(nonce, explicitApiUrl);
@@ -288,6 +297,13 @@ export async function verifyAttestation(
 
     // The real thing!
     const verifiedDocument = await authenticate(attestationDocumentBase64, awsRootCertDer, nonce);
+    if (verifiedDocument.digest !== "SHA384") {
+      throw new Error("Attestation document must use the SHA384 PCR digest algorithm.");
+    }
+    if (!apiUrl) {
+      throw new Error("Attestation API URL is not configured.");
+    }
+    resolveAttestationEnvironment(apiUrl, expectedEnvironment);
     return verifiedDocument;
   } catch (error) {
     if (error instanceof Error) {
@@ -298,4 +314,46 @@ export async function verifyAttestation(
       throw new Error("Couldn't process attestation document.");
     }
   }
+}
+
+/**
+ * Verify the Nitro document and authorize its complete PCR tuple with current
+ * TUF policy. Session establishment uses verifyAttestationDocument internally
+ * so this policy refresh happens exactly once before key exchange.
+ */
+export async function verifyAttestation(
+  nonce: string,
+  explicitApiUrl?: string,
+  expectedEnvironment?: AttestationEnvironment
+): Promise<AttestationDocument> {
+  return await verifyAttestationWithDependencies(nonce, explicitApiUrl, expectedEnvironment, {
+    verifyDocument: verifyAttestationDocument,
+    resolveTrustedPcrPolicy,
+    requireTrustedPcrsAgainstSnapshot
+  });
+}
+
+/** @internal Exported for deterministic ordering tests, not from the package entry point. */
+export async function verifyAttestationWithDependencies(
+  nonce: string,
+  explicitApiUrl: string | undefined,
+  expectedEnvironment: AttestationEnvironment | undefined,
+  dependencies: {
+    verifyDocument: typeof verifyAttestationDocument;
+    resolveTrustedPcrPolicy: typeof resolveTrustedPcrPolicy;
+    requireTrustedPcrsAgainstSnapshot: typeof requireTrustedPcrsAgainstSnapshot;
+  }
+): Promise<AttestationDocument> {
+  const apiUrl = explicitApiUrl || getApiUrl();
+  let environment: AttestationEnvironment | undefined;
+  let policy: TrustedEnclaveReleaseSnapshot | undefined;
+  if (apiUrl && !isLocalDevelopmentApiUrl(apiUrl)) {
+    environment = resolveAttestationEnvironment(apiUrl, expectedEnvironment);
+    policy = await dependencies.resolveTrustedPcrPolicy(environment);
+  }
+  const document = await dependencies.verifyDocument(nonce, explicitApiUrl, expectedEnvironment);
+  if (environment && policy) {
+    await dependencies.requireTrustedPcrsAgainstSnapshot(document.pcrs, environment, policy);
+  }
+  return document;
 }

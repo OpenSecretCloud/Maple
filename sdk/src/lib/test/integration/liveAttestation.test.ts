@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 test.skipIf(!runLive)(
-  "hosted enclave establishes a session only after signed-history PCR0 validation",
+  "hosted enclave establishes a session only after TUF-authorized release validation",
   async () => {
     const requests: string[] = [];
     globalThis.fetch = async (input, init) => {
@@ -28,26 +28,24 @@ test.skipIf(!runLive)(
     };
 
     const attestation = await getAttestation(true, liveApiUrl, {
-      environment: "development"
+      environment: "dev"
     });
 
     expect(attestation.sessionKey).toHaveLength(32);
     expect(attestation.sessionId).toBeTruthy();
 
     const attestationIndex = requests.findIndex((url) => url.includes("/attestation/"));
-    const prodHistoryIndex = requests.findIndex((url) => url.endsWith("/pcrProdHistory.json"));
-    const devHistoryIndex = requests.findIndex((url) => url.endsWith("/pcrDevHistory.json"));
     const keyExchangeIndex = requests.findIndex((url) => url.endsWith("/key_exchange"));
 
     expect(attestationIndex).toBeGreaterThanOrEqual(0);
-    expect(prodHistoryIndex).toBe(-1);
-    expect(devHistoryIndex).toBeGreaterThan(attestationIndex);
-    expect(keyExchangeIndex).toBeGreaterThan(devHistoryIndex);
+    expect(requests.some((url) => url.includes("pcrDevHistory.json"))).toBe(false);
+    expect(requests.some((url) => url.includes("pcrProdHistory.json"))).toBe(false);
+    expect(keyExchangeIndex).toBeGreaterThan(attestationIndex);
   }
 );
 
 test.skipIf(!runLive)(
-  "hosted enclave cannot reach key exchange when its PCR0 policy is deliberately unknown",
+  "hosted enclave cannot reach key exchange under the wrong trusted-release environment",
   async () => {
     const requests: string[] = [];
     globalThis.fetch = async (input, init) => {
@@ -57,10 +55,9 @@ test.skipIf(!runLive)(
 
     await expect(
       getAttestation(true, liveApiUrl, {
-        environment: "development",
-        remoteAttestation: false
+        environment: "prod"
       })
-    ).rejects.toThrow(/PCR0/i);
+    ).rejects.toThrow(/environment|PCR/i);
 
     expect(requests.filter((url) => url.includes("/attestation/"))).toHaveLength(1);
     expect(requests.filter((url) => url.endsWith("/key_exchange"))).toHaveLength(0);
@@ -68,7 +65,7 @@ test.skipIf(!runLive)(
 );
 
 test.skipIf(!runLive)(
-  "hosted development enclave is rejected by the default production policy",
+  "hosted development enclave is rejected by an incompatible explicit policy",
   async () => {
     const requests: string[] = [];
     globalThis.fetch = async (input, init) => {
@@ -76,11 +73,12 @@ test.skipIf(!runLive)(
       return originalFetch(input, init);
     };
 
-    await expect(getAttestation(true, liveApiUrl)).rejects.toThrow(/PCR0/i);
+    await expect(getAttestation(true, liveApiUrl, { environment: "prod" })).rejects.toThrow(
+      /environment|PCR/i
+    );
 
     expect(requests.filter((url) => url.includes("/attestation/"))).toHaveLength(1);
-    expect(requests.filter((url) => url.endsWith("/pcrProdHistory.json"))).toHaveLength(1);
-    expect(requests.filter((url) => url.endsWith("/pcrDevHistory.json"))).toHaveLength(0);
+    expect(requests.filter((url) => url.includes("History.json"))).toHaveLength(0);
     expect(requests.filter((url) => url.endsWith("/key_exchange"))).toHaveLength(0);
   }
 );

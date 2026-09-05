@@ -39,6 +39,7 @@ Select the intended OpenSecret API in the ignored `frontend/.env.local`:
 
 ```dotenv
 VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
+VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT=dev
 ```
 
 The public Maple client ID is already present in `.env.example`. All `VITE_*`
@@ -53,16 +54,18 @@ just desktop-dev  # Tauri desktop, including Agent Mode and native features
 
 `just desktop-dev` is preferred over a raw `bun tauri dev`: it provisions the
 pinned ONNX Runtime and applies a local Tauri configuration overlay when one is
-present.
+present. It also compiles the explicitly named local mock-attestation feature;
+the bypass activates only for a plain-HTTP local endpoint. Normal debug,
+release, CI, mobile, Docker, and embedded-proxy builds leave that feature off.
 
 ## API configuration
 
 `frontend/.env.example` documents Maple's public configuration surface:
 
 - `VITE_OPEN_SECRET_API_URL` selects the required OpenSecret backend.
-- `VITE_OPEN_SECRET_PCR_ENVIRONMENT` selects the matching PCR0 trust roots;
-  it defaults to `production`, so hosted development enclaves must set
-  `development` explicitly.
+- `VITE_OPEN_SECRET_ATTESTATION_ENVIRONMENT` selects the matching tagged-release
+  policy; it defaults to `prod`, so hosted development enclaves must set `dev`
+  explicitly.
 - `VITE_CLIENT_ID` overrides Maple's public project ID when developing against
   another OpenSecret project.
 - `VITE_OS_FLAGS_BASE_URL` selects an optional feature-flags API.
@@ -144,7 +147,9 @@ just desktop-build-debug-overlay   # Requires .local/tauri-workspace.json
 ```
 
 Only the overlay recipe applies `.local/tauri-workspace.json` while packaging.
-Use it when a checkout-specific bundle identity is part of the smoke test.
+Use it when a checkout-specific bundle identity is part of the smoke test. Like
+`desktop-dev`, this explicitly local recipe compiles mock attestation support;
+the other desktop build recipes do not.
 
 Linux desktop builds require the system libraries supplied by the Nix shell.
 For an already-built binary in a headless display environment, WebKit may need:
@@ -208,9 +213,30 @@ Use `.agents/skills/release-maple/` for version parity, tag safety, workflow
 monitoring, artifact verification, and explicit store handoff. Do not use the
 legacy `just release` recipe to create an unreviewed local tag.
 
-When the OpenSecret enclave changes, update and review the corresponding
-`pcr0DevValues` or `pcr0Values` in `frontend/src/app.tsx` as part of the
-attestation compatibility change.
+When the OpenSecret enclave changes, publish and verify its tagged Sigstore
+release evidence, then promote that exact evidence into the appropriate TUF
+channel before deploying the enclave. Maple does not maintain its own PCR
+allowlist: before key exchange, the SDK requires the complete PCR0/PCR1/PCR2
+tuple to match a release dynamically authorized for the configured environment
+by `attestations.trymaple.ai`. Runtime clients fetch only that fixed-origin TUF
+repository; they do not call GitHub, Fulcio, or Rekor.
+
+The TypeScript and Rust SDKs embed the same TUF bootstrap root, not an ordinary
+release snapshot. Normal enclave releases therefore require no SDK release.
+Changing the configured release builder, source repository, or CI provider also
+does not require an SDK release: those identities are checked before promotion,
+while clients authorize the exact TUF-selected evidence. The SDK changes only
+when its client contract changes. Normal root rotations arrive through the
+authenticated, sequential TUF root chain; replacing or advancing the embedded
+bootstrap out of band is forbidden until a reviewed bridge-history migration
+exists. Until the production root and initial repository are reviewed and
+published, the checked-in placeholder root keeps this draft integration
+fail-closed for real enclave connections.
+
+Packaged Maple selects trust policy only for exact official backend origins.
+Supporting an arbitrary hosted backend requires an explicit custom TUF
+repository and bootstrap-root integration; a custom URL never inherits the
+Maple production trust policy.
 
 Version changes update:
 

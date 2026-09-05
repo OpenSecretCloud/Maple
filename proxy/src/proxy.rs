@@ -8,7 +8,10 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures::{future::BoxFuture, Stream, StreamExt};
-use opensecret::{client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult};
+use opensecret::{
+    client::OpenSecretResponseBody, Error as OpenSecretError, InferenceTimeoutPhase,
+    OpenSecretClient, Result as OpenSecretResult,
+};
 use std::{
     collections::HashSet,
     io,
@@ -21,6 +24,10 @@ use tracing::{debug, error};
 
 const CLIENT_CACHE_MAX_ENTRIES: usize = 1024;
 const CLIENT_CACHE_ENTRY_TTL: Duration = Duration::from_secs(60 * 60);
+// A cold policy refresh can traverse up to 32 individually bounded TUF root
+// updates before enclave attestation. This independent floor applies to initial
+// attestation and to each inference call's cumulative recovery budget.
+const MINIMUM_ATTESTATION_RECOVERY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 type ProxyError = (StatusCode, Json<OpenAIError>);
 
@@ -28,6 +35,8 @@ trait InferenceTransport: Send + Sync {
     fn send_inference_request(
         &self,
         request: Request<Bytes>,
+        ordinary_timeout: Duration,
+        recovery_timeout: Duration,
     ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>>;
 }
 
@@ -35,8 +44,15 @@ impl InferenceTransport for OpenSecretClient {
     fn send_inference_request(
         &self,
         request: Request<Bytes>,
+        ordinary_timeout: Duration,
+        recovery_timeout: Duration,
     ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>> {
-        Box::pin(OpenSecretClient::send_inference_request(self, request))
+        Box::pin(OpenSecretClient::send_inference_request_with_timeouts(
+            self,
+            request,
+            ordinary_timeout,
+            recovery_timeout,
+        ))
     }
 }
 
@@ -107,25 +123,16 @@ impl ProxyState {
         let cache_key = api_key.to_string();
         let client_entry = self.client_entry_for_api_key(&cache_key);
         let backend_url = self.config.backend_url.clone();
-        let pcr0_environment = self.config.pcr0_environment;
         let request_timeout = self.config.request_timeout();
         let init_api_key = cache_key.clone();
 
         let client = client_entry
             .cell
             .get_or_try_init(|| async move {
-                debug!(
-                    "Creating OpenSecret client for API key: {}...",
-                    &init_api_key[..8.min(init_api_key.len())]
-                );
-                create_client_with_auth(
-                    &backend_url,
-                    &init_api_key,
-                    pcr0_environment,
-                    request_timeout,
-                )
-                .await
-                .map(Arc::new)
+                debug!("Creating OpenSecret client for authenticated request");
+                create_client_with_auth(&backend_url, &init_api_key, request_timeout)
+                    .await
+                    .map(Arc::new)
             })
             .await;
 
@@ -209,23 +216,24 @@ fn extract_api_key(
 async fn create_client_with_auth(
     backend_url: &str,
     api_key: &str,
-    pcr0_environment: opensecret::Pcr0Environment,
     request_timeout: Duration,
 ) -> Result<OpenSecretClient, ProxyError> {
-    let client = OpenSecretClient::new_with_api_key_and_pcr0_environment(
-        backend_url,
-        api_key.to_string(),
-        pcr0_environment,
-    )
-    .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
+    let client = OpenSecretClient::new_with_api_key(backend_url, api_key.to_string())
+        .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
 
-    // Perform attestation handshake
-    tokio::time::timeout(request_timeout, client.perform_attestation_handshake())
+    // Perform attestation handshake. A configured value may extend this cap,
+    // but must not truncate a valid bounded TUF root-rotation sequence.
+    let recovery_timeout = attestation_recovery_timeout(request_timeout);
+    tokio::time::timeout(recovery_timeout, client.perform_attestation_handshake())
         .await
-        .map_err(|_| timeout_response("Attestation handshake", request_timeout))?
+        .map_err(|_| timeout_response("Attestation handshake", recovery_timeout))?
         .map_err(|e| transport_error_response("OpenSecret attestation handshake", &e))?;
 
     Ok(client)
+}
+
+fn attestation_recovery_timeout(request_timeout: Duration) -> Duration {
+    request_timeout.max(MINIMUM_ATTESTATION_RECOVERY_TIMEOUT)
 }
 
 fn timeout_response(operation: &str, timeout: Duration) -> ProxyError {
@@ -256,20 +264,16 @@ pub(crate) async fn proxy_openai_request(
     let api_key = extract_api_key(&headers, &state.config.default_api_key)
         .map_err(|e| (StatusCode::UNAUTHORIZED, Json(e)))?;
 
-    debug!(
-        "Proxying {} {} for API key: {}...",
-        method,
-        uri,
-        &api_key[..8.min(api_key.len())]
-    );
+    debug!("Proxying {} {}", method, uri);
 
     let transport = state.transport_for_api_key(&api_key).await?;
     let request = build_upstream_request(method, uri, &headers, body);
     let request_timeout = state.config.request_timeout();
-    let response = tokio::time::timeout(request_timeout, transport.send_inference_request(request))
+    let recovery_timeout = attestation_recovery_timeout(request_timeout);
+    let response = transport
+        .send_inference_request(request, request_timeout, recovery_timeout)
         .await
-        .map_err(|_| timeout_response("OpenAI-compatible request", request_timeout))?
-        .map_err(|error| transport_error_response("OpenSecret inference request", &error))?;
+        .map_err(|error| inference_error_response(&error))?;
 
     Ok(build_downstream_response(
         response,
@@ -341,6 +345,22 @@ fn transport_error_response(operation: &str, error: &impl std::fmt::Display) -> 
             "Failed to communicate securely with the Maple backend",
         )),
     )
+}
+
+fn inference_error_response(error: &OpenSecretError) -> ProxyError {
+    match error {
+        OpenSecretError::InferenceTimeout {
+            phase,
+            timeout_secs,
+        } => {
+            let operation = match phase {
+                InferenceTimeoutPhase::Ordinary => "OpenAI-compatible request",
+                InferenceTimeoutPhase::Recovery => "Inference recovery",
+            };
+            timeout_response(operation, Duration::from_secs(*timeout_secs))
+        }
+        _ => transport_error_response("OpenSecret inference request", error),
+    }
 }
 
 fn build_downstream_response(
@@ -435,7 +455,6 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 0,
             backend_url: "http://localhost:3000".to_string(),
-            pcr0_environment: opensecret::Pcr0Environment::Production,
             default_api_key: None,
             debug: false,
             enable_cors: false,
@@ -444,8 +463,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn attestation_recovery_covers_bounded_root_rotation_without_changing_inference_timeout() {
+        let configured = Duration::from_secs(45);
+
+        assert_eq!(
+            attestation_recovery_timeout(configured),
+            Duration::from_secs(15 * 60)
+        );
+        assert_eq!(configured, Duration::from_secs(45));
+        assert_eq!(
+            attestation_recovery_timeout(Duration::from_secs(20 * 60)),
+            Duration::from_secs(20 * 60)
+        );
+    }
+
     struct MockTransport {
         requests: Mutex<Vec<Request<Bytes>>>,
+        timeouts: Mutex<Vec<(Duration, Duration)>>,
         responses: Mutex<VecDeque<OpenSecretResult<http::Response<OpenSecretResponseBody>>>>,
     }
 
@@ -453,6 +488,7 @@ mod tests {
         fn new(responses: Vec<OpenSecretResult<http::Response<OpenSecretResponseBody>>>) -> Self {
             Self {
                 requests: Mutex::new(Vec::new()),
+                timeouts: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses.into()),
             }
         }
@@ -460,14 +496,24 @@ mod tests {
         fn take_requests(&self) -> Vec<Request<Bytes>> {
             std::mem::take(&mut *self.requests.lock().unwrap())
         }
+
+        fn take_timeouts(&self) -> Vec<(Duration, Duration)> {
+            std::mem::take(&mut *self.timeouts.lock().unwrap())
+        }
     }
 
     impl InferenceTransport for MockTransport {
         fn send_inference_request(
             &self,
             request: Request<Bytes>,
+            ordinary_timeout: Duration,
+            recovery_timeout: Duration,
         ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>> {
             self.requests.lock().unwrap().push(request);
+            self.timeouts
+                .lock()
+                .unwrap()
+                .push((ordinary_timeout, recovery_timeout));
             let response = self
                 .responses
                 .lock()
@@ -475,17 +521,6 @@ mod tests {
                 .pop_front()
                 .expect("a mock response for every request");
             Box::pin(async move { response })
-        }
-    }
-
-    struct PendingTransport;
-
-    impl InferenceTransport for PendingTransport {
-        fn send_inference_request(
-            &self,
-            _request: Request<Bytes>,
-        ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>> {
-            Box::pin(std::future::pending())
         }
     }
 
@@ -756,13 +791,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_start_timeout_is_gateway_timeout() {
+    async fn inference_timeouts_are_forwarded_to_the_sdk() {
+        let transport = Arc::new(MockTransport::new(vec![Ok(raw_response(
+            StatusCode::OK,
+            &[],
+            vec![Bytes::from_static(b"ok")],
+        ))]));
         let mut config = test_config();
         config.default_api_key = Some("default-key".to_string());
-        config.request_timeout_secs = 1;
+        config.request_timeout_secs = 45;
         let state = Arc::new(ProxyState::with_transport(
             config.clone(),
-            Arc::new(PendingTransport),
+            Arc::clone(&transport) as Arc<dyn InferenceTransport>,
         ));
         let response = crate::create_app_with_state(config, state)
             .oneshot(
@@ -775,7 +815,51 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            transport.take_timeouts(),
+            vec![(Duration::from_secs(45), Duration::from_secs(15 * 60))]
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_inference_timeouts_are_safe_gateway_timeouts() {
+        for (phase, timeout_secs, expected_operation) in [
+            (
+                InferenceTimeoutPhase::Ordinary,
+                45,
+                "OpenAI-compatible request",
+            ),
+            (
+                InferenceTimeoutPhase::Recovery,
+                15 * 60,
+                "Inference recovery",
+            ),
+        ] {
+            let transport = Arc::new(MockTransport::new(vec![Err(
+                OpenSecretError::InferenceTimeout {
+                    phase,
+                    timeout_secs,
+                },
+            )]));
+            let response = mock_app(transport)
+                .oneshot(
+                    AxumRequest::builder()
+                        .method(Method::GET)
+                        .uri("/v1/models")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(body.contains(expected_operation));
+            assert!(body.contains(&timeout_secs.to_string()));
+            assert!(!body.contains("OpenSecret"));
+        }
     }
 
     #[tokio::test]

@@ -1,5 +1,4 @@
 use clap::Parser;
-use opensecret::Pcr0Environment;
 use serde::Serialize;
 use std::{net::SocketAddr, time::Duration};
 
@@ -19,22 +18,15 @@ pub struct Config {
     #[arg(short, long, env = "MAPLE_PORT", default_value = "8080")]
     pub port: u16,
 
-    /// OpenSecret/Maple backend URL
+    /// OpenSecret/Maple backend URL. The packaged binary supplies trust policy
+    /// for exact official origins; arbitrary remote HTTPS deployments require
+    /// a library integration with an explicit TrustedReleaseConfig.
     #[arg(
         long,
         env = "MAPLE_BACKEND_URL",
         default_value = "https://enclave.trymaple.ai"
     )]
     pub backend_url: String,
-
-    /// PCR0 trust-root environment for backend attestation
-    #[arg(
-        long,
-        env = "MAPLE_PCR0_ENVIRONMENT",
-        default_value = "production",
-        value_parser = parse_pcr0_environment
-    )]
-    pub pcr0_environment: Pcr0Environment,
 
     /// Default API key for Maple/OpenSecret (can be overridden by client Authorization header)
     #[arg(long, env = "MAPLE_API_KEY")]
@@ -48,7 +40,10 @@ pub struct Config {
     #[arg(long, env = "MAPLE_ENABLE_CORS")]
     pub enable_cors: bool,
 
-    /// Timeout for backend request setup and non-streaming responses, in seconds
+    /// Per-attempt timeout through response headers and any buffered
+    /// non-streaming body, in seconds. Initial attestation and each inference
+    /// call's cumulative SDK recovery budget use at least 15 minutes so a
+    /// bounded TUF root-rotation sequence is not truncated by a shorter timeout.
     #[arg(
         long,
         env = "MAPLE_REQUEST_TIMEOUT_SECS",
@@ -87,7 +82,6 @@ impl Config {
             host,
             port,
             backend_url,
-            pcr0_environment: Pcr0Environment::Production,
             default_api_key: None,
             debug: false,
             enable_cors: false,
@@ -102,12 +96,6 @@ impl Config {
 
     pub fn stream_idle_timeout(&self) -> Duration {
         Duration::from_secs(self.stream_idle_timeout_secs)
-    }
-
-    /// Builder-style method to select the backend PCR0 trust-root environment
-    pub fn with_pcr0_environment(mut self, pcr0_environment: Pcr0Environment) -> Self {
-        self.pcr0_environment = pcr0_environment;
-        self
     }
 
     /// Builder-style method to set the API key
@@ -128,7 +116,8 @@ impl Config {
         self
     }
 
-    /// Builder-style method to set the backend request timeout
+    /// Builder-style method to set the per-attempt inference timeout. Values
+    /// below 15 minutes do not shorten the separate attestation/recovery floor.
     pub fn with_request_timeout_secs(mut self, request_timeout_secs: u64) -> Self {
         self.request_timeout_secs = request_timeout_secs;
         self
@@ -138,14 +127,6 @@ impl Config {
     pub fn with_stream_idle_timeout_secs(mut self, stream_idle_timeout_secs: u64) -> Self {
         self.stream_idle_timeout_secs = stream_idle_timeout_secs;
         self
-    }
-}
-
-fn parse_pcr0_environment(value: &str) -> Result<Pcr0Environment, String> {
-    match value {
-        "production" => Ok(Pcr0Environment::Production),
-        "development" => Ok(Pcr0Environment::Development),
-        _ => Err("PCR0 environment must be 'production' or 'development'".to_string()),
     }
 }
 
@@ -188,28 +169,6 @@ impl OpenAIError {
 mod tests {
     use super::*;
     use clap::{error::ErrorKind, Parser};
-    use std::sync::Mutex;
-
-    static PCR0_ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
-
-    fn with_pcr0_environment_env<T>(value: Option<&str>, run: impl FnOnce() -> T) -> T {
-        let _guard = PCR0_ENVIRONMENT_LOCK.lock().unwrap();
-        let previous = std::env::var_os("MAPLE_PCR0_ENVIRONMENT");
-
-        match value {
-            Some(value) => std::env::set_var("MAPLE_PCR0_ENVIRONMENT", value),
-            None => std::env::remove_var("MAPLE_PCR0_ENVIRONMENT"),
-        }
-
-        let result = run();
-
-        match previous {
-            Some(previous) => std::env::set_var("MAPLE_PCR0_ENVIRONMENT", previous),
-            None => std::env::remove_var("MAPLE_PCR0_ENVIRONMENT"),
-        }
-
-        result
-    }
 
     #[test]
     fn config_new_uses_timeout_defaults() {
@@ -220,7 +179,6 @@ mod tests {
         );
 
         assert_eq!(config.request_timeout_secs, DEFAULT_REQUEST_TIMEOUT_SECS);
-        assert_eq!(config.pcr0_environment, Pcr0Environment::Production);
         assert_eq!(
             config.stream_idle_timeout_secs,
             DEFAULT_STREAM_IDLE_TIMEOUT_SECS
@@ -233,51 +191,6 @@ mod tests {
             config.stream_idle_timeout(),
             Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS)
         );
-    }
-
-    #[test]
-    fn pcr0_environment_defaults_to_production_for_cli() {
-        let config =
-            with_pcr0_environment_env(None, || Config::try_parse_from(["maple-proxy"]).unwrap());
-
-        assert_eq!(config.pcr0_environment, Pcr0Environment::Production);
-    }
-
-    #[test]
-    fn pcr0_environment_accepts_explicit_development_cli_value() {
-        let config =
-            Config::try_parse_from(["maple-proxy", "--pcr0-environment", "development"]).unwrap();
-
-        assert_eq!(config.pcr0_environment, Pcr0Environment::Development);
-    }
-
-    #[test]
-    fn pcr0_environment_builder_selects_development() {
-        let config = Config::new(
-            "127.0.0.1".to_string(),
-            8080,
-            "https://enclave.secretgpt.ai".to_string(),
-        )
-        .with_pcr0_environment(Pcr0Environment::Development);
-
-        assert_eq!(config.pcr0_environment, Pcr0Environment::Development);
-    }
-
-    #[test]
-    fn pcr0_environment_accepts_explicit_development_env_value() {
-        let config = with_pcr0_environment_env(Some("development"), || {
-            Config::try_parse_from(["maple-proxy"]).unwrap()
-        });
-
-        assert_eq!(config.pcr0_environment, Pcr0Environment::Development);
-    }
-
-    #[test]
-    fn pcr0_environment_rejects_unknown_values() {
-        let error =
-            Config::try_parse_from(["maple-proxy", "--pcr0-environment", "staging"]).unwrap_err();
-
-        assert_eq!(error.kind(), ErrorKind::ValueValidation);
     }
 
     #[test]

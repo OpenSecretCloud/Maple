@@ -7,7 +7,8 @@ Environment (TEE) processing.
 ## 🚀 Features
 
 - **OpenAI-Compatible Surface** - Models, chat completions, and embeddings endpoints
-- **Secure TEE Processing** - All requests processed in secure enclaves
+- **Attested TEE Transport** - The OpenSecret SDK establishes an attested,
+  encrypted channel before inference requests are forwarded
 - **Lossless Chat Parameters** - Provider-specific request fields pass through unchanged
 - **Streaming and Non-Streaming** - Supports both chat completion response modes
 - **Flexible Authentication** - Environment variables or per-request API keys
@@ -54,6 +55,11 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
+That published 0.3.2 crate predates the in-tree dynamic TUF/Sigstore trust
+path documented below. The new behavior is currently unreleased and must ship
+only after the breaking Rust SDK release, with a breaking proxy version such as
+0.4.0. Do not infer the behavior below from installing 0.3.2.
+
 ## ⚙️ Configuration
 
 Set environment variables or use command-line arguments:
@@ -62,22 +68,38 @@ Set environment variables or use command-line arguments:
 # Environment Variables
 export MAPLE_HOST=127.0.0.1                    # Server host (default: 127.0.0.1)
 export MAPLE_PORT=8080                         # Server port (default: 8080)
-export MAPLE_BACKEND_URL=http://localhost:3000         # Maple backend URL (prod: https://enclave.trymaple.ai)
-export MAPLE_PCR0_ENVIRONMENT=production       # PCR0 trust roots: production (default) or development
+export MAPLE_BACKEND_URL=https://enclave.trymaple.ai   # Maple backend URL
 export MAPLE_API_KEY=your-maple-api-key        # Optional for trusted, non-browser clients only
 export MAPLE_DEBUG=true                        # Enable debug logging
 export MAPLE_ENABLE_CORS=false                 # Default; see browser warning below
-export MAPLE_REQUEST_TIMEOUT_SECS=300          # Backend request timeout
+export MAPLE_REQUEST_TIMEOUT_SECS=300          # Response-start/non-streaming timeout
 export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between chunks
 ```
+
+Initial attestation has its own timeout. Within each inference call, SDK-owned
+session and authentication recovery share one cumulative recovery budget. Both
+use a 15-minute minimum so a cold, bounded TUF root-rotation sequence is not cut
+off by a shorter inference timeout. `MAPLE_REQUEST_TIMEOUT_SECS` applies
+independently to each actual inference attempt through response headers and any
+buffered non-streaming body; values above 15 minutes also extend the attestation
+and recovery caps. After streaming headers arrive, the separate stream idle
+timeout governs each response chunk.
 
 Or use CLI arguments:
 ```bash
 cargo run --locked -- --host 0.0.0.0 --port 8080 --backend-url https://enclave.trymaple.ai
-
-# Development enclaves must be selected explicitly
-cargo run --locked -- --backend-url https://enclave.secretgpt.ai --pcr0-environment development
 ```
+
+For an unsigned local backend, use `just run-local`. That recipe alone enables
+the explicitly named `insecure-local-mock-attestation` Cargo feature. Generic,
+release, Docker, and embedded Maple builds leave the feature disabled.
+
+The packaged proxy automatically selects attestation policy only for the exact
+official Maple/OpenSecret origins. An arbitrary remote HTTPS backend needs a
+custom library integration that supplies its own `TrustedReleaseConfig` and
+bootstrap root; the proxy CLI does not yet expose that trust configuration.
+Unknown remote origins therefore fail closed instead of inheriting Maple
+production policy.
 
 ## 🛠️ Usage
 
@@ -141,7 +163,7 @@ curl http://localhost:8080/v1/embeddings \
 You can also embed Maple Proxy in your own Rust application:
 
 ```rust
-use maple_proxy::{Config, Pcr0Environment, create_app};
+use maple_proxy::{Config, create_app};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -155,7 +177,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         8081,  // Custom port
         "https://enclave.trymaple.ai".to_string(),
     )
-    .with_pcr0_environment(Pcr0Environment::Production)
     .with_api_key("your-api-key-here".to_string())
     .with_debug(true)
     .with_cors(true);
@@ -402,7 +423,7 @@ The Docker image:
 environment:
   - MAPLE_BACKEND_URL=https://enclave.trymaple.ai  # Production backend
   - MAPLE_ENABLE_CORS=true                         # Enable for web apps
-  - MAPLE_REQUEST_TIMEOUT_SECS=300                 # Backend request timeout
+  - MAPLE_REQUEST_TIMEOUT_SECS=300                 # Response-start/non-streaming timeout
   - MAPLE_STREAM_IDLE_TIMEOUT_SECS=300             # Streaming idle timeout
   - RUST_LOG=info                                  # Logging level
   # - MAPLE_API_KEY=xxx                            # Only for private deployments!
@@ -497,9 +518,53 @@ cargo run --locked
 ```
 
 1. **Client** makes standard OpenAI API calls to localhost
-2. **Maple Proxy** handles authentication and TEE handshake
-3. **Requests** are securely forwarded to Maple's TEE infrastructure
-4. **Responses** are streamed back to the client in OpenAI format
+2. **Maple Proxy** handles authentication and asks the OpenSecret SDK to
+   establish the TEE channel
+3. **OpenSecret SDK** authenticates and authorizes the enclave before accepting
+   its key and completing key exchange
+4. **Requests** are encrypted and forwarded to Maple's TEE infrastructure
+5. **Responses** are streamed back to the client in OpenAI format
+
+### TEE release authorization
+
+Sigstore/Rekor release authorization belongs in the OpenSecret SDK rather than
+Maple Proxy. For each non-local backend, the SDK:
+
+1. refreshes signed release policy from `https://attestations.trymaple.ai/tuf`,
+   verifies its TUF chain and each selected portable Sigstore bundle locally;
+2. creates a fresh nonce, requests the AWS Nitro attestation document, and
+   verifies its certificate chain, nonce, and signature;
+3. extracts the complete PCR0/PCR1/PCR2 measurement tuple;
+4. rechecks the held policy against current local rollback state and expiry,
+   then compares the tuple with one complete active release manifest; and
+5. accepts the enclave public key and performs key exchange only after that
+   atomic tuple is authorized.
+
+Maple Proxy continues to call `perform_attestation_handshake`; it neither
+maintains a second PCR allowlist nor implements a separate Sigstore verifier.
+Keeping this policy in the SDK gives every Rust SDK consumer the same
+fail-closed authorization boundary before application data is sent.
+
+Runtime policy requests go only to `attestations.trymaple.ai`; the SDK does not
+contact GitHub, Fulcio, Rekor, or Sigstore's TUF service during a handshake.
+It starts from its embedded Maple TUF root, verifies current expiring policy and
+the exact immutable manifest/bundle bytes, and performs the Sigstore verification
+offline with the TUF-authenticated Sigstore trusted root. Builder admission is a
+publisher/promotion policy, not a proxy or SDK runtime allowlist.
+
+Sigstore makes a release statement and its signing identity tamper-evident in
+an append-only transparency log. That identity remains useful audit evidence;
+TUF authorizes the exact current manifest and bundle instead of clients pinning
+a repository, workflow, CI provider, issuer, or signer identity. Sigstore does
+**not** prove that an artifact was reproducibly built or decide whether a
+historical release is still current.
+Reproducibility remains a separate Nix rebuild/compare property; TUF supplies
+current authorization, bounded freshness, explicit rollback, and revocation.
+
+> **Integration status:** the embedded TUF root is intentionally an unconfigured,
+> fail-closed placeholder until production bootstrap is reviewed. Remote
+> handshakes therefore fail closed in this draft branch; no release or policy is
+> published by this change.
 
 ## 📝 License
 

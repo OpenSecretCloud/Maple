@@ -3,8 +3,11 @@ import {
   createSigStructure,
   isLocalDevelopmentApiUrl,
   parseDocumentData,
-  parseDocumentPayload
+  parseDocumentPayload,
+  verifyAttestationWithDependencies,
+  type AttestationDocument
 } from "../../attestation";
+import type { TrustedEnclaveReleaseSnapshot } from "../../pcr";
 import { encode } from "@stablelib/base64";
 
 const HARDCODED_TEST_ATTESTATION_DOCUMENT =
@@ -14,6 +17,32 @@ const EXPECTED_MODULE_ID = "i-06c79bf817127030a-enc0192d3d4945e0432";
 
 const EXPECTED_SIGNATURE_STRUCTURE_DIGEST =
   "4OIYuQwzjYJFBjHw0eI4cTKT3mUCMNo0yqgPmPGOFCnoFGes3/qjUhXHbxe/HREv";
+
+const TEST_POLICY: TrustedEnclaveReleaseSnapshot = {
+  environment: "prod",
+  sequence: 1,
+  policyId: "01".repeat(32),
+  metadataVersions: { root: 1, timestamp: 1, snapshot: 1, targets: 1 },
+  expires: {
+    root: "2099-01-01T00:00:00.000Z",
+    timestamp: "2099-01-01T00:00:00.000Z",
+    snapshot: "2099-01-01T00:00:00.000Z",
+    targets: "2099-01-01T00:00:00.000Z"
+  },
+  releases: []
+};
+
+const TEST_DOCUMENT: AttestationDocument = {
+  module_id: "test",
+  digest: "SHA384",
+  timestamp: Date.now(),
+  pcrs: new Map(),
+  certificate: new Uint8Array(),
+  cabundle: [],
+  public_key: new Uint8Array(32),
+  user_data: null,
+  nonce: null
+};
 
 test("Decode document data", async () => {
   const parsedDocument = await parseDocumentData(HARDCODED_TEST_ATTESTATION_DOCUMENT);
@@ -34,12 +63,7 @@ test("Makes CoseSign1 bytes correctly", async () => {
 });
 
 test("Recognizes local development API URLs independent of port", () => {
-  const localApiUrls = [
-    "http://127.0.0.1:31110",
-    "http://localhost:31110/",
-    "http://0.0.0.0:31110",
-    "http://[::1]:31110"
-  ];
+  const localApiUrls = ["http://127.0.0.1:31110", "http://localhost:31110/", "http://[::1]:31110"];
 
   for (const apiUrl of localApiUrls) {
     expect(isLocalDevelopmentApiUrl(apiUrl)).toBe(true);
@@ -51,6 +75,9 @@ test("Does not recognize production or invalid API URLs as local development URL
     "https://api.opensecret.cloud",
     "https://localhost:31110",
     "http://api.opensecret.cloud",
+    "http://0.0.0.0:31110",
+    "http://localhost.example.com:31110",
+    "http://127.0.0.1.example.com:31110",
     "localhost:31110",
     "not a url"
   ];
@@ -58,4 +85,24 @@ test("Does not recognize production or invalid API URLs as local development URL
   for (const apiUrl of nonLocalApiUrls) {
     expect(isLocalDevelopmentApiUrl(apiUrl)).toBe(false);
   }
+});
+
+test("standalone remote verification resolves policy before requesting an attestation document", async () => {
+  const events: string[] = [];
+  await verifyAttestationWithDependencies("nonce", "https://enclave.example.test", "prod", {
+    resolveTrustedPcrPolicy: async () => {
+      events.push("policy");
+      return TEST_POLICY;
+    },
+    verifyDocument: async () => {
+      events.push("attestation");
+      return TEST_DOCUMENT;
+    },
+    requireTrustedPcrsAgainstSnapshot: async () => {
+      events.push("pcrs");
+      return { isMatch: true, text: "trusted", snapshotId: TEST_POLICY.policyId };
+    }
+  });
+
+  expect(events).toEqual(["policy", "attestation", "pcrs"]);
 });

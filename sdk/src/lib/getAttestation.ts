@@ -1,15 +1,18 @@
-import { verifyAttestation, isLocalDevelopmentApiUrl } from "./attestation";
+import { verifyAttestationDocument, isLocalDevelopmentApiUrl } from "./attestation";
 import type { AttestationDocument } from "./attestation";
 import { getApiUrl, keyExchange } from "./api";
 import nacl from "tweetnacl";
 import { ChaCha20Poly1305 } from "@stablelib/chacha20poly1305";
 import { encode, decode } from "@stablelib/base64";
 import {
-  requireTrustedPcr0,
+  requireTrustedPcrsAgainstSnapshot,
+  resolveAttestationEnvironment,
+  resolveTrustedPcrPolicy,
   serializePcrConfig,
   snapshotPcrConfig,
-  validatePcr0Hash,
-  type PcrConfig
+  type AttestationEnvironment,
+  type PcrConfig,
+  type TrustedEnclaveReleaseSnapshot
 } from "./pcr";
 
 export interface Attestation {
@@ -38,8 +41,9 @@ const SESSION_ID_PATTERN = /^[\x21-\x7e]+$/;
 
 /** @internal Exported for deterministic handshake tests, not from the package entry point. */
 export interface GetAttestationDependencies {
-  verifyAttestation: typeof verifyAttestation;
-  validatePcr0Hash: typeof validatePcr0Hash;
+  verifyAttestation: typeof verifyAttestationDocument;
+  resolveTrustedPcrPolicy: typeof resolveTrustedPcrPolicy;
+  requireTrustedPcrsAgainstSnapshot: typeof requireTrustedPcrsAgainstSnapshot;
   keyExchange: typeof keyExchange;
   generateNaclKeyPair: () => NaclKeyPair;
   decryptSessionKey: (
@@ -78,8 +82,9 @@ function decryptSessionKey(
 }
 
 const defaultDependencies: GetAttestationDependencies = {
-  verifyAttestation,
-  validatePcr0Hash,
+  verifyAttestation: verifyAttestationDocument,
+  resolveTrustedPcrPolicy,
+  requireTrustedPcrsAgainstSnapshot,
   keyExchange,
   generateNaclKeyPair,
   decryptSessionKey,
@@ -274,6 +279,9 @@ export async function getAttestationWithDependencies(
   const policy = snapshotPcrConfig(pcrConfig);
   const scope = await getAttestationScope(configuredApiUrl, policy);
   const localDevelopment = isLocalDevelopmentApiUrl(scope.apiUrl);
+  const expectedEnvironment: AttestationEnvironment | undefined = localDevelopment
+    ? undefined
+    : resolveAttestationEnvironment(scope.apiUrl, policy.environment);
 
   console.groupCollapsed("Attestation");
   try {
@@ -292,11 +300,20 @@ export async function getAttestationWithDependencies(
       }
     }
 
+    let trustedPolicy: TrustedEnclaveReleaseSnapshot | undefined;
+    if (!localDevelopment) {
+      // The backend's pending attestation secret is short-lived. Resolve TUF
+      // before requesting a nonce-bound document so repository refresh latency
+      // cannot consume that key-exchange window.
+      trustedPolicy = await dependencies.resolveTrustedPcrPolicy(expectedEnvironment!);
+    }
+
     const attestationNonce = dependencies.randomUUID();
     console.log("Generated attestation nonce:", attestationNonce);
     const document: AttestationDocument = await dependencies.verifyAttestation(
       attestationNonce,
-      scope.apiUrl
+      scope.apiUrl,
+      expectedEnvironment
     );
 
     if (!document.public_key) {
@@ -308,13 +325,17 @@ export async function getAttestationWithDependencies(
       verifiedPcr0 = "local-development";
       console.warn("LOCAL DEVELOPMENT: PCR0 verification is bypassed for exact HTTP loopback.");
     } else {
-      const trustedPcr = await requireTrustedPcr0(
+      await dependencies.requireTrustedPcrsAgainstSnapshot(
         document.pcrs,
-        policy,
-        dependencies.validatePcr0Hash
+        expectedEnvironment!,
+        trustedPolicy!
       );
-      verifiedPcr0 = trustedPcr.hash;
-      console.log("Attestation PCR0 trust verification succeeded.");
+      const pcr0 = document.pcrs.get(0);
+      if (!pcr0 || pcr0.length !== 48) {
+        throw new Error("Attestation document must contain a 48-byte PCR0 value.");
+      }
+      verifiedPcr0 = Array.from(pcr0, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      console.log("Attestation trusted-release PCR0/PCR1/PCR2 verification succeeded.");
     }
 
     const clientKeyPair = dependencies.generateNaclKeyPair();

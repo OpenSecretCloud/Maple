@@ -13,7 +13,7 @@ function App() {
   return (
     <OpenSecretDeveloper
       apiUrl="https://developer.opensecret.cloud"
-      pcrConfig={{ environment: "production" }} // Optional; production is the default
+      pcrConfig={{ environment: "prod" }} // Optional for the official production origin
     >
       <YourApp />
     </OpenSecretDeveloper>
@@ -351,8 +351,8 @@ function PlatformManagement() {
 
 ### Attestation Verification
 
-- `pcrConfig`: The PCR0 trust policy enforced before non-loopback session establishment. Its environment defaults to production. Only the selected environment's embedded roots, custom roots, and pinned-key signed GitHub history are trusted; set `environment: "development"` explicitly for development enclaves.
-- `getAttestation`: Gets an attested session after enforcing the effective PCR0 trust policy.
+- `pcrConfig`: Selects the `"prod"` or `"dev"` trusted-release environment enforced before non-loopback session establishment. Before each new session, the SDK refreshes authenticated release policy from the fixed `https://attestations.trymaple.ai/tuf` origin, locally verifies the exact TUF-selected manifest with its portable Sigstore bundle and trusted root, and requires the complete PCR0/PCR1/PCR2 tuple to match one active manifest. Callers cannot add custom roots, builder allowlists, or runtime history URLs. Builder admission is enforced by release promotion; certificate identity and `build.builderId` remain audit provenance rather than a second client authorization pin.
+- `getAttestation`: Gets an attested session after enforcing the effective trusted-release policy before key exchange.
 - `authenticate`: Authenticates an attestation document.
 - `parseAttestationForView`: Parses an attestation document for viewing.
 - `awsRootCertDer`: AWS root certificate in DER format.

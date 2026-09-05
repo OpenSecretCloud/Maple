@@ -1,8 +1,9 @@
 mod common;
 
-use opensecret::{Error, OpenSecretClient, Pcr0Environment, Result};
+use opensecret::{AttestationEnvironment, Error, OpenSecretClient, Result, TrustedReleaseConfig};
 use std::env;
 
+#[cfg(feature = "mock-attestation")]
 #[tokio::test]
 async fn test_attestation_handshake_localhost() -> Result<()> {
     // Skip if not running against localhost
@@ -45,7 +46,6 @@ async fn test_attestation_handshake_hosted_selected_environment() -> Result<()> 
         return Ok(());
     }
 
-    let pcr0_environment = common::selected_pcr0_environment()?;
     let client = common::new_test_client(base_url.clone())?;
 
     // Perform attestation handshake with real AWS Nitro attestation
@@ -57,17 +57,14 @@ async fn test_attestation_handshake_hosted_selected_environment() -> Result<()> 
         .expect("Session ID should be set after successful handshake");
 
     assert!(!session_id.to_string().is_empty());
-    println!(
-        "✅ Hosted {:?} attestation successful against {}",
-        pcr0_environment, base_url
-    );
+    println!("✅ Hosted attestation successful against {}", base_url);
     println!("   Session ID: {}", session_id);
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_hosted_development_rejects_default_production_policy() -> Result<()> {
+async fn test_hosted_development_rejects_explicit_production_policy() -> Result<()> {
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
 
@@ -75,16 +72,25 @@ async fn test_hosted_development_rejects_default_production_policy() -> Result<(
         println!("Skipping hosted policy-separation test - running against localhost");
         return Ok(());
     }
-    if common::selected_pcr0_environment()? != Pcr0Environment::Development {
+    let is_development_origin = reqwest::Url::parse(&base_url)
+        .ok()
+        .is_some_and(|url| url.origin().ascii_serialization() == "https://enclave.secretgpt.ai");
+    if !is_development_origin {
         println!("Skipping hosted development policy-separation test");
         return Ok(());
     }
 
-    let client = OpenSecretClient::new(base_url)?;
-    let error = client.perform_attestation_handshake().await.unwrap_err();
+    let production_config = TrustedReleaseConfig::new(
+        AttestationEnvironment::Production,
+        "https://attestations.trymaple.ai/tuf/",
+        b"{}".to_vec(),
+    )?;
+    let error = match OpenSecretClient::new_with_attestation_config(base_url, production_config) {
+        Ok(_) => panic!("production policy must not be accepted for the development origin"),
+        Err(error) => error,
+    };
 
-    assert!(matches!(error, Error::AttestationVerificationFailed(_)));
-    assert!(client.get_session_id()?.is_none());
+    assert!(matches!(error, Error::Configuration(_)));
     Ok(())
 }
 
@@ -92,6 +98,13 @@ async fn test_hosted_development_rejects_default_production_policy() -> Result<(
 async fn test_attestation_nonce_verification() -> Result<()> {
     let base_url = env::var("VITE_OPEN_SECRET_API_URL")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
+
+    if !cfg!(feature = "mock-attestation")
+        && (base_url.contains("localhost") || base_url.contains("127.0.0.1"))
+    {
+        println!("Skipping localhost mock test without mock-attestation feature");
+        return Ok(());
+    }
 
     let client = common::new_test_client(base_url.clone())?;
 
