@@ -6,17 +6,25 @@
 //! pages, the way the platform's own bars do. The wheel passes through
 //! to the content underneath.
 //!
-//! The bar is a plain element, not an entity: its only state is the drag
-//! in progress, kept in element state, so a surface adds a scrollbar with
-//! one child and no bookkeeping of its own.
+//! The bar hides itself, like the platform's overlay bars: it appears
+//! when the user scrolls, while the pointer is on its strip, and during
+//! a drag, then fades after a second of quiet. Content that grows under
+//! a list following its tail is not a scroll, so a streaming transcript
+//! never flashes the bar.
+//!
+//! The bar is a plain element, not an entity: its state (the drag, the
+//! last activity) lives in element state, so a surface adds a scrollbar
+//! with one child and no bookkeeping of its own.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, BorderStyle, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox,
     HitboxBehavior, IntoElement, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, ScrollHandle, Style, Window, div, point, prelude::*, px, quad, size,
+    MouseUpEvent, Pixels, ScrollHandle, Style, Task, Window, div, point, prelude::*, px, quad,
+    size,
 };
 
 use super::theme;
@@ -27,6 +35,10 @@ const THUMB_WIDTH: Pixels = px(6.);
 const THUMB_WIDTH_WIDE: Pixels = px(9.);
 const THUMB_MIN_HEIGHT: Pixels = px(25.);
 const EDGE_INSET: Pixels = px(2.);
+/// Quiet time before the bar starts to hide.
+const IDLE: Duration = Duration::from_millis(1000);
+/// How long the hide takes; skipped under reduce motion.
+const FADE: Duration = Duration::from_millis(250);
 
 /// What the bar drives: any surface with a vertical offset. Offsets are
 /// distances from the top, never negative, whatever the surface's own
@@ -81,7 +93,8 @@ impl ScrollTarget for ScrollHandle {
 }
 
 /// A scrollbar overlaid on the right edge of a `relative` container. It
-/// paints nothing and blocks nothing while the content fits.
+/// paints nothing and blocks nothing while the content fits or the bar
+/// is hidden.
 pub fn scrollbar<T: ScrollTarget>(id: impl Into<ElementId>, target: T) -> impl IntoElement {
     div()
         .absolute()
@@ -143,12 +156,33 @@ fn offset_for_thumb_top(geometry: &Geometry, thumb_top: Pixels) -> Pixels {
     geometry.range * progress
 }
 
+/// Whether a change in `(top, range)` between two frames was the user
+/// scrolling, as opposed to content arriving. A list following its tail
+/// moves its top and its range together and stays at the end; that is
+/// growth, not a scroll. A scroll moves the top while the range holds.
+fn user_scrolled(last: (Pixels, Pixels), now: (Pixels, Pixels)) -> bool {
+    let (last_top, last_range) = last;
+    let (top, range) = now;
+    if top == last_top {
+        return false;
+    }
+    let grew = range != last_range;
+    let at_end = (top - range).abs() < px(1.);
+    !(grew && at_end)
+}
+
 #[derive(Default)]
 struct State {
     drag: Option<Drag>,
     /// Pointer over the bar as of the last move, so widening repaints
     /// once per change rather than per move.
     hovered: bool,
+    /// Scroll top and range as of the last frame.
+    last: Option<(Pixels, Pixels)>,
+    /// When the bar was last used: a scroll, a hover, a drag.
+    active_at: Option<Instant>,
+    /// The wake-up that hides the bar after `IDLE`; one at a time.
+    hide_timer: Option<Task<()>>,
 }
 
 #[derive(Clone, Copy)]
@@ -157,10 +191,49 @@ struct Drag {
     thumb_top: Pixels,
 }
 
+/// How visible the bar is this frame.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Visibility {
+    Hidden,
+    /// Mid-fade; the next frame is already requested.
+    Fading(f32),
+    Shown,
+}
+
+impl Visibility {
+    fn opacity(self) -> f32 {
+        match self {
+            Visibility::Hidden => 0.,
+            Visibility::Fading(opacity) => opacity,
+            Visibility::Shown => 1.,
+        }
+    }
+}
+
+/// Visibility from the time since the last activity.
+fn visibility(since_active: Option<Duration>, reduce_motion: bool) -> Visibility {
+    let Some(elapsed) = since_active else {
+        return Visibility::Hidden;
+    };
+    if elapsed <= IDLE {
+        return Visibility::Shown;
+    }
+    if reduce_motion {
+        return Visibility::Hidden;
+    }
+    let fading = elapsed - IDLE;
+    if fading >= FADE {
+        Visibility::Hidden
+    } else {
+        Visibility::Fading(1. - fading.as_secs_f32() / FADE.as_secs_f32())
+    }
+}
+
 pub struct Prepaint {
     hitbox: Hitbox,
     state: Rc<RefCell<State>>,
     geometry: Option<Geometry>,
+    visibility: Visibility,
 }
 
 impl<T: ScrollTarget> IntoElement for Scrollbar<T> {
@@ -204,26 +277,47 @@ impl<T: ScrollTarget> Element for Scrollbar<T> {
         bounds: Bounds<Pixels>,
         _request_layout: &mut (),
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> Prepaint {
         let geometry = geometry(bounds, &self.target);
-        // Swallow presses only while there is a bar to press; the wheel
-        // always reaches the content underneath.
-        let behavior = if geometry.is_some() {
-            HitboxBehavior::BlockMouseExceptScroll
-        } else {
-            HitboxBehavior::Normal
-        };
-        let hitbox = window.insert_hitbox(bounds, behavior);
         let id = id.expect("the scrollbar element has an id");
         let state = window.with_element_state::<Rc<RefCell<State>>, _>(id, |state, _window| {
             let state = state.unwrap_or_default();
             (state.clone(), state)
         });
+        let now = Instant::now();
+        let visibility = {
+            let mut state = state.borrow_mut();
+            let current = (self.target.scroll_top(), self.target.scroll_range());
+            if let Some(last) = state.last
+                && geometry.is_some()
+                && user_scrolled(last, current)
+            {
+                state.active_at = Some(now);
+            }
+            state.last = Some(current);
+            if state.drag.is_some() || state.hovered {
+                state.active_at = Some(now);
+            }
+            visibility(
+                state.active_at.map(|at| now.duration_since(at)),
+                cx.reduce_motion(),
+            )
+        };
+        // Swallow presses only while there is a visible bar to press; the
+        // wheel always reaches the content underneath, and a hidden bar
+        // still notices the pointer so hovering its strip reveals it.
+        let behavior = if geometry.is_some() && visibility != Visibility::Hidden {
+            HitboxBehavior::BlockMouseExceptScroll
+        } else {
+            HitboxBehavior::Normal
+        };
+        let hitbox = window.insert_hitbox(bounds, behavior);
         Prepaint {
             hitbox,
             state,
             geometry,
+            visibility,
         }
     }
 
@@ -235,7 +329,7 @@ impl<T: ScrollTarget> Element for Scrollbar<T> {
         _request_layout: &mut (),
         prepaint: &mut Prepaint,
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) {
         let state = prepaint.state.clone();
         let Some(geometry) = prepaint.geometry else {
@@ -246,30 +340,55 @@ impl<T: ScrollTarget> Element for Scrollbar<T> {
             }
             return;
         };
+        let view = window.current_view();
         let hitbox = prepaint.hitbox.clone();
+        let visibility = prepaint.visibility;
         let dragging = state.borrow().drag.is_some();
         let wide = dragging || hitbox.is_hovered(window);
         let width = if wide { THUMB_WIDTH_WIDE } else { THUMB_WIDTH };
-        let thumb_bounds = Bounds::new(
-            point(
-                bounds.right() - EDGE_INSET - width,
-                bounds.top() + geometry.thumb_top,
-            ),
-            size(width, geometry.thumb),
-        );
-        let color = if wide {
-            theme::scrollbar_thumb_active()
-        } else {
-            theme::scrollbar_thumb()
-        };
-        window.paint_quad(quad(
-            thumb_bounds,
-            width / 2.,
-            color,
-            px(0.),
-            gpui::transparent_black(),
-            BorderStyle::Solid,
-        ));
+        if visibility != Visibility::Hidden {
+            let thumb_bounds = Bounds::new(
+                point(
+                    bounds.right() - EDGE_INSET - width,
+                    bounds.top() + geometry.thumb_top,
+                ),
+                size(width, geometry.thumb),
+            );
+            let mut color = if wide {
+                theme::scrollbar_thumb_active()
+            } else {
+                theme::scrollbar_thumb()
+            };
+            color.a *= visibility.opacity();
+            window.paint_quad(quad(
+                thumb_bounds,
+                width / 2.,
+                color,
+                px(0.),
+                gpui::transparent_black(),
+                BorderStyle::Solid,
+            ));
+        }
+        match visibility {
+            // The fade draws itself frame by frame, only while fading.
+            Visibility::Fading(_) => window.request_animation_frame(),
+            // Shown and quiet: one wake-up starts the hide.
+            Visibility::Shown if !dragging => {
+                let mut guard = state.borrow_mut();
+                if guard.hide_timer.is_none() {
+                    let state = state.clone();
+                    let wake_at = guard.active_at.unwrap_or_else(Instant::now) + IDLE;
+                    guard.hide_timer = Some(window.spawn(cx, async move |cx| {
+                        let wait = wake_at.saturating_duration_since(Instant::now());
+                        cx.background_executor().timer(wait).await;
+                        state.borrow_mut().hide_timer = None;
+                        // The next frame re-arms if activity moved the deadline.
+                        cx.update(|_window, cx| cx.notify(view)).ok();
+                    }));
+                }
+            }
+            _ => {}
+        }
 
         let target = self.target.clone();
         window.on_mouse_event({
@@ -279,6 +398,7 @@ impl<T: ScrollTarget> Element for Scrollbar<T> {
             move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
                     || event.button != MouseButton::Left
+                    || visibility == Visibility::Hidden
                     || !hitbox.is_hovered(window)
                 {
                     return;
@@ -298,15 +418,16 @@ impl<T: ScrollTarget> Element for Scrollbar<T> {
                 } else {
                     target.scroll_to((target.scroll_top() + geometry.track).min(geometry.range));
                 }
+                state.borrow_mut().active_at = Some(Instant::now());
                 cx.stop_propagation();
-                window.refresh();
+                cx.notify(view);
             }
         });
         window.on_mouse_event({
             let hitbox = hitbox.clone();
             let state = state.clone();
             let target = target.clone();
-            move |event: &MouseMoveEvent, phase, window, _cx| {
+            move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
@@ -314,29 +435,71 @@ impl<T: ScrollTarget> Element for Scrollbar<T> {
                 if let Some(drag) = drag {
                     let thumb_top = drag.thumb_top + (event.position.y - drag.pointer_y);
                     target.scroll_to(offset_for_thumb_top(&geometry, thumb_top));
-                    window.refresh();
+                    state.borrow_mut().active_at = Some(Instant::now());
+                    cx.notify(view);
                     return;
                 }
                 let hovered = hitbox.is_hovered(window);
                 let mut state = state.borrow_mut();
                 if state.hovered != hovered {
                     state.hovered = hovered;
-                    window.refresh();
+                    if hovered {
+                        state.active_at = Some(Instant::now());
+                    }
+                    cx.notify(view);
                 }
             }
         });
         window.on_mouse_event({
             let state = state.clone();
-            move |event: &MouseUpEvent, phase, window, _cx| {
+            move |event: &MouseUpEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
                     return;
                 }
                 if state.borrow_mut().drag.take().is_some() {
                     target.drag_ended();
                     window.release_pointer();
-                    window.refresh();
+                    cx.notify(view);
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scroll_moves_the_top_while_the_range_holds() {
+        assert!(user_scrolled((px(100.), px(1000.)), (px(140.), px(1000.))));
+        assert!(user_scrolled((px(1000.), px(1000.)), (px(900.), px(1000.))));
+    }
+
+    #[test]
+    fn content_growing_under_a_tailing_list_is_not_a_scroll() {
+        // At the end before and after: the list followed its tail.
+        assert!(!user_scrolled(
+            (px(1000.), px(1000.)),
+            (px(1060.), px(1060.))
+        ));
+        // Growth while scrolled up leaves the top alone.
+        assert!(!user_scrolled((px(100.), px(1000.)), (px(100.), px(1060.))));
+        // Nothing changed.
+        assert!(!user_scrolled((px(100.), px(1000.)), (px(100.), px(1000.))));
+    }
+
+    #[test]
+    fn visibility_shows_then_fades_then_hides() {
+        assert_eq!(visibility(None, false), Visibility::Hidden);
+        assert_eq!(visibility(Some(Duration::ZERO), false), Visibility::Shown);
+        assert_eq!(visibility(Some(IDLE), false), Visibility::Shown);
+        let Visibility::Fading(opacity) = visibility(Some(IDLE + FADE / 2), false) else {
+            panic!("mid-fade");
+        };
+        assert!(opacity > 0.4 && opacity < 0.6);
+        assert_eq!(visibility(Some(IDLE + FADE), false), Visibility::Hidden);
+        // Reduce motion: no fade at all.
+        assert_eq!(visibility(Some(IDLE + FADE / 2), true), Visibility::Hidden);
     }
 }
