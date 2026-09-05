@@ -490,6 +490,16 @@ fn sanitize_inference_response_headers(headers: &HttpHeaderMap) -> HttpHeaderMap
     sanitized
 }
 
+fn permits_session_recovery(target: &str) -> bool {
+    !matches!(
+        target.split('?').next().unwrap_or(target),
+        "/auth/github/callback"
+            | "/auth/google/callback"
+            | "/auth/apple/callback"
+            | "/auth/native-handoff/redeem"
+    )
+}
+
 async fn collect_response_body(mut body: OpenSecretResponseBody) -> Result<Bytes> {
     let mut collected = BytesMut::new();
     while let Some(chunk) = body.next().await {
@@ -510,9 +520,11 @@ fn transport_error(error: TransportV2Error) -> Error {
             Error::Session("Transport V2 session expired".to_string())
         }
         TransportV2Error::Http(error) => Error::Http(error),
-        TransportV2Error::UntrustedOuterResponse => Error::InvalidResponse(
-            "Transport V2 returned an unauthenticated outer response".to_string(),
-        ),
+        TransportV2Error::UntrustedOuterResponse | TransportV2Error::SessionRecoveryHint(_) => {
+            Error::InvalidResponse(
+                "Transport V2 returned an unauthenticated outer response".to_string(),
+            )
+        }
         TransportV2Error::Authentication
         | TransportV2Error::InvalidFrame
         | TransportV2Error::InvalidRecord
@@ -531,6 +543,7 @@ fn should_retire_transport_session(error: &TransportV2Error) -> bool {
         TransportV2Error::SessionExpired
             | TransportV2Error::Authentication
             | TransportV2Error::UntrustedOuterResponse
+            | TransportV2Error::SessionRecoveryHint(_)
             | TransportV2Error::InvalidFrame
             | TransportV2Error::InvalidRecord
             | TransportV2Error::InvalidSequence
@@ -1105,6 +1118,10 @@ impl OpenSecretClient {
         auth: ResolvedAuth,
         include_cache_namespace: bool,
     ) -> Result<InferenceResponse> {
+        let permits_recovery = permits_session_recovery(&target);
+        let anonymous_generation = matches!(auth.source, CredentialSource::Anonymous)
+            .then(|| self.session_manager.credential_generation())
+            .transpose()?;
         let credential = auth
             .credential_kind()
             .zip(auth.token.as_ref())
@@ -1123,31 +1140,55 @@ impl OpenSecretClient {
         )
         .map_err(transport_error)?;
 
-        // Session establishment can await network and attestation work. Fence
-        // the selected managed credential only after that wait, then allocate
-        // the one-time request ID and seal while the same credential read lock
-        // is still held. A later mutation races after request admission rather
-        // than authorizing a request selected before the session existed.
-        let session = self.ensure_transport_session().await?;
-        let sealed = self
-            .session_manager
-            .admit_if_credential_is_current(auth.fence(), || {
-                self.transport_v2
-                    .seal(&session, request)
-                    .map_err(transport_error)
-            })?;
-        drop(auth);
-
-        let events = match self.transport_v2.send_sealed(sealed).await {
-            Ok(events) => events,
-            Err(error) => {
-                if should_retire_transport_session(&error) {
-                    self.clear_transport_session_if(&session)?;
+        // Capture once: public inference bodies are owned Bytes, and typed
+        // request bodies have already been serialized. A recovery must not
+        // select a new credential or reconstruct any part of the request.
+        let plaintext = request.encode().map_err(transport_error)?;
+        drop(request);
+        let mut recovery_used = false;
+        loop {
+            let session = self.ensure_transport_session().await?;
+            // Fence each admission after session/attestation awaits, then seal
+            // under the same credential read lock. Explicit per-request API
+            // keys are immutable and independent of managed defaults.
+            let sealed = self.session_manager.admit_if_credential_is_current(
+                auth.fence().or_else(|| {
+                    anonymous_generation
+                        .map(|generation| CredentialFence::Generation { generation })
+                }),
+                || {
+                    self.transport_v2
+                        .seal_encoded(&session, &plaintext)
+                        .map_err(transport_error)
+                },
+            )?;
+            match self.transport_v2.send_sealed(sealed).await {
+                Ok(events) => {
+                    drop(auth);
+                    drop(plaintext);
+                    // Once encrypted response processing begins, neither
+                    // authentication/framing errors nor partial bodies replay.
+                    return response_from_events(
+                        events,
+                        Some((Arc::clone(&self.transport_session), session)),
+                    )
+                    .await;
                 }
-                return Err(transport_error(error));
+                Err(error) => {
+                    if should_retire_transport_session(&error) {
+                        self.clear_transport_session_if(&session)?;
+                    }
+                    if permits_recovery
+                        && !recovery_used
+                        && matches!(error, TransportV2Error::SessionRecoveryHint(_))
+                    {
+                        recovery_used = true;
+                        continue;
+                    }
+                    return Err(transport_error(error));
+                }
             }
-        };
-        response_from_events(events, Some((Arc::clone(&self.transport_session), session))).await
+        }
     }
 
     async fn send_resumption_request(
@@ -1212,7 +1253,9 @@ impl OpenSecretClient {
     ///
     /// The complete logical request, including its selected credential, is
     /// authenticated inside one Transport V2 envelope. No outer credential is
-    /// emitted, and a sent request is never retried or downgraded to V1.
+    /// emitted. One marked outer session-recovery error may re-establish the
+    /// attested session and resend the captured request with a fresh request
+    /// ID. No other failure triggers replay, and there is no V1 downgrade.
     pub async fn send_inference_request(
         &self,
         request: InferenceRequest,
@@ -3680,3 +3723,6 @@ mod tests {
         assert!(parse_agent_sse_event("unknown", "{}").is_none());
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;
