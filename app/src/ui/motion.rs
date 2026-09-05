@@ -50,15 +50,34 @@ thread_local! {
     static FRAME_PENDING: RefCell<HashSet<EntityId>> = RefCell::new(HashSet::new());
 }
 
+/// Frames per second under thermal pressure: still reads as motion.
+const THROTTLED_FPS: u32 = 6;
+
+/// Whether looping effects should hold still: the user asked for reduced
+/// motion, or the window is in the background where nobody sees them.
+/// gpui's inactive-window frame cap does not cover timer-driven repaints,
+/// so this gate is what keeps a backgrounded Maple idle.
+pub fn loops_paused(window: &Window, cx: &App) -> bool {
+    cx.reduce_motion() || !window.is_window_active()
+}
+
 /// Ask for one repaint of the view being rendered after a loop interval,
-/// unless one is already on its way.
+/// unless one is already on its way. Does nothing while loops are paused;
+/// the next activation renders the view again, which re-arms the clock.
 pub fn schedule_loop_frame(window: &mut Window, cx: &mut App) {
+    if loops_paused(window, cx) {
+        return;
+    }
     let view = window.current_view();
     let scheduled = FRAME_PENDING.with(|pending| !pending.borrow_mut().insert(view));
     if scheduled {
         return;
     }
-    let interval = Duration::from_secs(1) / LOOP_FPS;
+    let fps = match cx.thermal_state() {
+        gpui::ThermalState::Serious | gpui::ThermalState::Critical => THROTTLED_FPS,
+        _ => LOOP_FPS,
+    };
+    let interval = Duration::from_secs(1) / fps;
     window
         .spawn(cx, async move |cx| {
             cx.background_executor().timer(interval).await;
@@ -116,7 +135,13 @@ impl Element for Ticker {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, AnyElement) {
-        let mut element = (self.build)(phase(self.period));
+        // Paused loops draw their rest frame and never ask for another.
+        let phase = if loops_paused(window, cx) {
+            0.
+        } else {
+            phase(self.period)
+        };
+        let mut element = (self.build)(phase);
         schedule_loop_frame(window, cx);
         (element.request_layout(window, cx), element)
     }

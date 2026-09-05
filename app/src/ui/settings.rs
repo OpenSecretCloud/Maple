@@ -15,8 +15,6 @@ use maple_agent::agent::{
     AgentIntegrationPermissions, AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport,
 };
 
-use gpui::Focusable as _;
-
 use crate::ui::icons::icon;
 use crate::ui::text_input::TextInput;
 
@@ -71,9 +69,6 @@ impl Section {
 }
 
 pub struct SettingsScreen {
-    /// The focus handle the window reported at the start of this render,
-    /// so input frames can show a focus ring.
-    focused_handle: Option<gpui::FocusHandle>,
     /// Backend-call bridges retained for thread-affinity; see
     /// [`crate::ui::task::call`].
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
@@ -232,7 +227,6 @@ impl SettingsScreen {
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
         let this = Self {
-            focused_handle: None,
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             user_id,
@@ -296,12 +290,8 @@ impl SettingsScreen {
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
-        self.bridged_tasks.borrow_mut().push(crate::ui::task::call(
-            &self.backend,
-            future,
-            cx,
-            then,
-        ));
+        let bridge = crate::ui::task::call(&self.backend, future, cx, then);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     fn load_mcp_servers(&self, cx: &mut Context<Self>) {
@@ -708,8 +698,7 @@ impl SettingsScreen {
         );
         // The root view resolves the palette on its next render and
         // refreshes every view when it changed.
-        crate::ui::theme::set_preference(next);
-        cx.refresh_windows();
+        crate::ui::theme::apply_preference(next, cx);
     }
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
@@ -724,11 +713,20 @@ impl SettingsScreen {
             // Fire a test notification so enabling gives immediate feedback
             // and delivery problems surface right away.
             let enabled_at = chrono::Local::now().format("%H:%M").to_string();
-            crate::notify::notify_desktop(
+            crate::notify::notify(
+                cx,
+                "settings:test",
                 "Desktop notifications on",
                 &format!("You will see alerts like this at {enabled_at}."),
+                &[],
             );
         }
+    }
+
+    fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
+        let next = !self.settings.reduce_motion;
+        self.edit_setting(move |settings| settings.reduce_motion = next, cx);
+        cx.set_reduce_motion(next);
     }
 
     fn cycle_tts_voice(&mut self, cx: &mut Context<Self>) {
@@ -965,19 +963,8 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
     settings.shortcut_overrides = shortcut_overrides;
 }
 
-impl SettingsScreen {
-    /// Whether `input` holds keyboard focus, per the handle captured at the
-    /// start of the current render.
-    fn input_focused(&self, input: &Entity<TextInput>, cx: &App) -> bool {
-        self.focused_handle
-            .as_ref()
-            .is_some_and(|focused| input.read(cx).focus_handle(cx) == *focused)
-    }
-}
-
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.focused_handle = window.focused(cx);
         if self.application_focus_pending {
             self.application_focus_pending = false;
             if self.settings.application_vim_enabled {
@@ -1017,17 +1004,22 @@ impl Render for SettingsScreen {
             .flex()
             .flex_col()
             .bg(gpui::rgb(theme::bg_app()))
-            .child(
+            .child(crate::ui::titlebar::drag_region(
                 div()
+                    .id("settings-header")
                     .flex()
                     .items_center()
                     .gap_3()
-                    .px_4()
+                    .pl(crate::ui::titlebar::top_row_inset(px(16.)))
+                    .pr_4()
                     .py_3()
                     .border_b_1()
                     .border_color(gpui::rgb(theme::border()))
                     .child(
                         widgets::ghost_button("settings-back")
+                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.close(cx);
                             }))
@@ -1053,12 +1045,15 @@ impl Render for SettingsScreen {
                                     .text_color(gpui::rgb(theme::status_error()))
                                     .cursor_pointer()
                             })
+                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(|_this, _event, _window, cx| {
                                 cx.emit(SignOutRequested);
                             }))
                             .child("Sign out"),
                     ),
-            )
+            ))
             .child(
                 div()
                     .flex_1()
@@ -1066,14 +1061,29 @@ impl Render for SettingsScreen {
                     .flex()
                     .flex_row()
                     .child(self.render_nav(cx))
-                    .child(self.render_pane(cx)),
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.render_pane(cx))
+                            .child(crate::ui::scrollbar::scrollbar(
+                                "settings-scrollbar",
+                                self.pane_scroll.clone(),
+                            )),
+                    ),
             )
     }
 }
 
 impl SettingsScreen {
-    fn render_nav(&self, cx: &mut Context<Self>) -> Div {
+    fn render_nav(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
+            .id("settings-nav")
+            .role(gpui::Role::TabList)
+            .aria_label("Settings sections")
+            .aria_orientation(gpui::Orientation::Vertical)
             .w(gpui::px(220.))
             .h_full()
             .flex()
@@ -1091,6 +1101,10 @@ impl SettingsScreen {
                         "settings-nav-{}",
                         section.label()
                     )))
+                    .role(gpui::Role::Tab)
+                    .aria_label(section.label())
+                    .aria_selected(selected)
+                    .when(application_selected, |row| row.aria_active_descendant())
                     .px_3()
                     .py_2()
                     .rounded(theme::RADIUS_SM)
@@ -1122,8 +1136,9 @@ impl SettingsScreen {
     fn render_pane(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let mut pane = div()
             .id("settings-pane")
-            .flex_1()
-            .min_w_0()
+            .role(gpui::Role::TabPanel)
+            .aria_label(self.section.label())
+            .w_full()
             .max_w(px(960.))
             .h_full()
             .flex()
@@ -1193,6 +1208,18 @@ impl SettingsScreen {
                             self.settings.desktop_notifications,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_desktop_notifications(cx);
+                            }),
+                        ),
+                    ))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ReduceMotion),
+                        toggle_row(
+                            "Reduce motion",
+                            "Hold spinners and pulsing dots still and skip reveal \
+                             animations.",
+                            self.settings.reduce_motion,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_reduce_motion(cx);
                             }),
                         ),
                     ))
@@ -1380,7 +1407,7 @@ impl SettingsScreen {
                         "Customize the shortcuts Maple already ships. This page does not add commands or change what an action can do.",
                     ),
             )
-            .child(widgets::input_frame(self.input_focused(&self.shortcut_search, cx)).text_sm().child(self.shortcut_search.clone()))
+            .child(widgets::input_frame().text_sm().child(self.shortcut_search.clone()))
             .child(
                 div()
                     .text_xs()
@@ -1926,6 +1953,7 @@ impl SettingsScreen {
                             widgets::icon_button(
                                 gpui::SharedString::from(format!("mcp-edit-{name}")),
                                 "pencil",
+                                "Edit",
                                 widgets::ROW_ICON,
                                 theme::text_secondary(),
                             )
@@ -1938,6 +1966,7 @@ impl SettingsScreen {
                             widgets::icon_button(
                                 gpui::SharedString::from(format!("mcp-remove-{name}")),
                                 "trash-2",
+                                "Remove",
                                 widgets::ROW_ICON,
                                 theme::status_error(),
                             )
@@ -2118,11 +2147,7 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_secondary()))
                         .child(label),
                 )
-                .child(
-                    widgets::input_frame(self.input_focused(&input, cx))
-                        .text_sm()
-                        .child(input),
-                )
+                .child(widgets::input_frame().text_sm().child(input))
                 .when(!hint.is_empty(), |col| {
                     col.child(
                         div()

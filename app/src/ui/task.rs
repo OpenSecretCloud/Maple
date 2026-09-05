@@ -10,6 +10,18 @@ use gpui::{Context, Task};
 
 use crate::backend::AgentBackend;
 
+/// Keep a bridging task alive on its view. Finished bridges are pruned
+/// first, so the vector stays bounded by the number of calls in flight
+/// rather than growing forever. Dropping a live task would cancel it,
+/// which is why nothing here evicts by age.
+pub fn retain(tasks: &std::cell::RefCell<Vec<Task<()>>>, bridge: Task<()>) {
+    let mut tasks = tasks.borrow_mut();
+    if tasks.len() >= 16 {
+        tasks.retain(|task| !task.is_ready());
+    }
+    tasks.push(bridge);
+}
+
 /// Run `future` on the backend runtime and hand its result to `then` on
 /// the UI thread. A cancelled or panicked task becomes an `Err` so the
 /// view always leaves its busy state.
@@ -17,7 +29,8 @@ use crate::backend::AgentBackend;
 /// Returns the bridging task instead of detaching it: the backend's
 /// sender holds the task's waker, and this gpui revision asserts a task
 /// is only dropped by the thread that spawned it. Retaining the task on
-/// the owning view keeps the final drop on the UI (or test) thread.
+/// the owning view (see [`retain`]) keeps the final drop on the UI (or
+/// test) thread.
 pub fn call<V, T, F>(
     backend: &AgentBackend,
     future: F,

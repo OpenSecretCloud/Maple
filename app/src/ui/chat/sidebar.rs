@@ -18,6 +18,7 @@ use crate::ui::icons::{icon, spinner_with_id, wordmark};
 use crate::ui::motion;
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::titlebar;
 use crate::ui::widgets;
 
 /// Strings and element ids one sidebar task row shows, built when the
@@ -428,7 +429,7 @@ impl ChatScreen {
                 .position(|entry| matches!(entry, SidebarEntry::ProjectsHeader)),
         };
         if let Some(row) = row {
-            self.sidebar_list.splice(row..row + 1, 1);
+            self.sidebar_list.remeasure_items(row..row + 1);
         }
     }
 
@@ -1066,19 +1067,27 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Ok(status) = result
+                    && this.trust_prompts
                     && this.project_root.as_deref() == Some(status.path.as_str())
                     && status.available
                     && !status.protected_features.is_empty()
                     && status.decision.is_none()
                 {
                     this.trust_prompt = Some(status);
+                    this.dialog_focus.get_or_insert_with(|| cx.focus_handle());
+                    this.dialog_focus_pending = true;
                     cx.notify();
                 }
             },
         );
     }
 
-    fn set_project_trust(&mut self, path: String, trusted: bool, cx: &mut Context<Self>) {
+    pub(super) fn set_project_trust(
+        &mut self,
+        path: String,
+        trusted: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.trust_saving {
             return;
         }
@@ -1133,18 +1142,46 @@ impl ChatScreen {
         };
         let keep_path = status.path.clone();
         let trust_path = status.path.clone();
+        let key_keep = status.path.clone();
+        let key_trust = status.path.clone();
         div()
             .id("trust-backdrop")
             .absolute()
             .size_full()
             .top_0()
             .left_0()
+            .occlude()
             .bg(theme::scrim())
             .flex()
             .items_center()
             .justify_center()
             .child(
                 div()
+                    .id("trust-card")
+                    .role(gpui::Role::Dialog)
+                    .aria_label(format!("Trust {name}?"))
+                    .when_some(self.dialog_focus.clone(), |card, focus| {
+                        card.track_focus(&focus)
+                    })
+                    .key_context("Dialog")
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, _window, cx| {
+                            if this.trust_saving {
+                                return;
+                            }
+                            match dialog_key(event) {
+                                Some(DialogKey::Confirm) => {
+                                    this.set_project_trust(key_trust.clone(), true, cx);
+                                    cx.stop_propagation();
+                                }
+                                Some(DialogKey::Cancel) => {
+                                    this.set_project_trust(key_keep.clone(), false, cx);
+                                    cx.stop_propagation();
+                                }
+                                None => {}
+                            }
+                        },
+                    ))
                     .w(px(460.))
                     .p_5()
                     .rounded(theme::RADIUS_XL)
@@ -1204,6 +1241,8 @@ impl ChatScreen {
     fn request_remove_root(&mut self, root: &str, cx: &mut Context<Self>) {
         self.project_menu = None;
         self.confirm_remove_root = Some(root.to_string());
+        self.dialog_focus.get_or_insert_with(|| cx.focus_handle());
+        self.dialog_focus_pending = true;
         cx.notify();
     }
 
@@ -1294,6 +1333,7 @@ impl ChatScreen {
             .size_full()
             .top_0()
             .left_0()
+            .occlude()
             .bg(theme::scrim())
             .flex()
             .items_center()
@@ -1305,6 +1345,29 @@ impl ChatScreen {
             .child(
                 div()
                     .id("confirm-remove-card")
+                    .role(gpui::Role::Dialog)
+                    .aria_label(format!("Remove {name}?"))
+                    .when_some(self.dialog_focus.clone(), |card, focus| {
+                        card.track_focus(&focus)
+                    })
+                    .key_context("Dialog")
+                    .on_key_down(
+                        cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| match dialog_key(event)
+                            {
+                                Some(DialogKey::Confirm) => {
+                                    this.confirm_remove_root(cx);
+                                    cx.stop_propagation();
+                                }
+                                Some(DialogKey::Cancel) => {
+                                    this.confirm_remove_root = None;
+                                    cx.notify();
+                                    cx.stop_propagation();
+                                }
+                                None => {}
+                            },
+                        ),
+                    )
                     .w(px(420.))
                     .p_5()
                     .rounded(theme::RADIUS_XL)
@@ -1519,18 +1582,21 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .bg(gpui::rgb(theme::bg_sidebar()))
-            .child(
+            .child(titlebar::drag_region(
                 div()
+                    .id("sidebar-top-row")
                     .flex()
                     .items_center()
                     .justify_between()
                     .pl_4()
                     .pr_3()
-                    .pt_3()
+                    // The wordmark row sits under the traffic lights, not
+                    // beside them; the space above it is still the bar.
+                    .pt(titlebar::top_row_top(px(12.)))
                     .pb_2()
                     .child(wordmark(px(16.), theme::text_primary()))
                     .child(self.render_sidebar_toggle(cx)),
-            )
+            ))
             .children(self.search_input.clone().map(|input| {
                 let active = !self.sidebar_filter.is_empty();
                 div()
@@ -1566,7 +1632,10 @@ impl ChatScreen {
                                         .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                                         .cursor_pointer()
                                 })
-                                .tooltip(widgets::tooltip("Clear search", Some("Esc")))
+                                .tooltip(widgets::tooltip_for_action(
+                                    "Clear search",
+                                    &super::ChatEscape,
+                                ))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.clear_search(cx);
                                 }))
@@ -1577,10 +1646,18 @@ impl ChatScreen {
             .child(
                 div()
                     .id("session-list")
+                    .role(gpui::Role::ListBox)
+                    .aria_label("Tasks")
+                    .aria_orientation(gpui::Orientation::Vertical)
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .pt_6()
-                    .child(list),
+                    .child(list)
+                    .child(crate::ui::scrollbar::scrollbar(
+                        "sidebar-scrollbar",
+                        self.sidebar_list.clone(),
+                    )),
             )
             .child(self.render_sidebar_footer(cx))
     }
@@ -1591,6 +1668,8 @@ impl ChatScreen {
         let entry = match self.sidebar_entries.get(ix).copied() {
             Some(SidebarEntry::NewTask) => div()
                 .id("new-task")
+                .role(gpui::Role::Button)
+                .aria_label("New task")
                 .w_full()
                 .mb_3()
                 .px_4()
@@ -1607,7 +1686,10 @@ impl ChatScreen {
                         .cursor_pointer()
                 })
                 .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-                .tooltip(widgets::tooltip("Start a new task", Some("⌘N")))
+                .tooltip(widgets::tooltip_for_action(
+                    "Start a new task",
+                    &super::NewTask,
+                ))
                 .on_click(cx.listener(|this, _event, window, cx| {
                     this.execute_command(ChatCommand::NewTask, window, cx);
                 }))
@@ -1616,7 +1698,9 @@ impl ChatScreen {
                 .into_any_element(),
             Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(cx),
             Some(SidebarEntry::Task(task)) => {
-                let row = self.render_task_row(task, selected, cx);
+                let application_selected =
+                    self.application_vim_enabled && self.application_vim_selects_sidebar_row(ix);
+                let row = self.render_task_row(task, selected, application_selected, cx);
                 // The last row of a section carries the gap before the next
                 // section.
                 let last_of_section = !task.archived
@@ -1707,6 +1791,9 @@ impl ChatScreen {
                 let count = self.archived_indices.len();
                 div()
                     .id("archived-toggle")
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Archived tasks, {count}"))
+                    .aria_expanded(expanded)
                     .mt_5()
                     .w_full()
                     .flex()
@@ -1782,6 +1869,9 @@ impl ChatScreen {
             .child(
                 div()
                     .id("projects-header")
+                    .role(gpui::Role::Button)
+                    .aria_label("Projects")
+                    .aria_expanded(self.switcher_menu_open)
                     .flex()
                     .items_center()
                     .gap_1p5()
@@ -1807,6 +1897,7 @@ impl ChatScreen {
                             .flex_1()
                             .min_w_0()
                             .line_clamp(1)
+                            .text_ellipsis()
                             .child(self.sidebar_scope_label.clone()),
                     )
                     .when(self.switcher_menu_open, |row| {
@@ -1864,7 +1955,14 @@ impl ChatScreen {
                 .on_click(cx.listener(|this, _event, _window, cx| {
                     this.set_sidebar_project_filter(None, cx);
                 }))
-                .child(div().flex_1().min_w_0().line_clamp(1).child("All projects"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .line_clamp(1)
+                        .text_ellipsis()
+                        .child("All projects"),
+                )
                 .when(self.sidebar_project_filter.is_none(), |row| {
                     row.child(icon("check", px(14.), theme::accent()))
                 }),
@@ -1907,6 +2005,7 @@ impl ChatScreen {
                                 .flex_1()
                                 .min_w_0()
                                 .line_clamp(1)
+                                .text_ellipsis()
                                 .child(root.name.clone()),
                         )
                     })
@@ -1987,6 +2086,7 @@ impl ChatScreen {
         &self,
         task: SidebarTaskEntry,
         selected: Option<&str>,
+        application_selected: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let SidebarTaskEntry {
@@ -2012,6 +2112,12 @@ impl ChatScreen {
             .relative()
             .w_full()
             .id(row.element_id.clone())
+            .role(gpui::Role::ListBoxOption)
+            .accessibility_id(row.id.to_string())
+            .aria_label(row.title.clone())
+            .aria_description(row.project_name.clone())
+            .aria_selected(is_selected)
+            .when(application_selected, |row| row.aria_active_descendant())
             .group(row.group.clone())
             .flex()
             .items_center()
@@ -2043,7 +2149,7 @@ impl ChatScreen {
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(div().line_clamp(1).child(row.title.clone()))
+                        .child(div().line_clamp(1).text_ellipsis().child(row.title.clone()))
                         .child(
                             div()
                                 .text_xs()
@@ -2053,6 +2159,7 @@ impl ChatScreen {
                                     theme::text_muted()
                                 }))
                                 .line_clamp(1)
+                                .text_ellipsis()
                                 .child(row.project_name.clone()),
                         ),
                 )
@@ -2161,7 +2268,10 @@ impl ChatScreen {
                     .cursor_pointer()
             })
             .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            .tooltip(widgets::tooltip("Settings", Some("⌘,")))
+            .tooltip(widgets::tooltip_for_action(
+                "Settings",
+                &super::OpenAppSettings,
+            ))
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.execute_command(ChatCommand::OpenSettings, window, cx);
             }))
@@ -2195,6 +2305,8 @@ pub(super) fn row_action(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
         .flex_none()
         .size_5()
         .flex()
@@ -2223,6 +2335,7 @@ fn popup_menu_row(
 ) -> gpui::Stateful<Div> {
     div()
         .id(item.id)
+        .role(gpui::Role::MenuItem)
         .flex()
         .items_center()
         .gap_2()
@@ -2264,4 +2377,24 @@ pub(super) fn root_display_name(root: &str) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string())
+}
+
+/// What a key press means to a modal dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DialogKey {
+    Confirm,
+    Cancel,
+}
+
+/// Enter confirms and Escape cancels; any modifier means neither.
+fn dialog_key(event: &gpui::KeyDownEvent) -> Option<DialogKey> {
+    let modifiers = &event.keystroke.modifiers;
+    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift {
+        return None;
+    }
+    match event.keystroke.key.as_str() {
+        "enter" => Some(DialogKey::Confirm),
+        "escape" => Some(DialogKey::Cancel),
+        _ => None,
+    }
 }

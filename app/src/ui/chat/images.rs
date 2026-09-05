@@ -147,7 +147,7 @@ impl ChatScreen {
             })
             .ok();
         });
-        self.bridged_tasks.borrow_mut().push(bridge);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     /// Stage images dropped onto the composer. Files that are not PNG,

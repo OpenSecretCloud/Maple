@@ -72,6 +72,19 @@ pub fn set_preference(preference: Preference) {
     );
 }
 
+/// Set the preference and tell the platform, so a forced theme also
+/// restyles the window chrome (traffic lights, native menus, scrollbars).
+/// `System` hands control back to the OS. Every view must render again.
+pub fn apply_preference(preference: Preference, cx: &mut gpui::App) {
+    set_preference(preference);
+    cx.set_window_appearance(match preference {
+        Preference::System => None,
+        Preference::Dark => Some(gpui::WindowAppearance::Dark),
+        Preference::Light => Some(gpui::WindowAppearance::Light),
+    });
+    cx.refresh_windows();
+}
+
 pub fn preference() -> Preference {
     match PREFERENCE.load(Ordering::Relaxed) {
         1 => Preference::Dark,

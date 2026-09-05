@@ -44,7 +44,7 @@ impl ChatScreen {
             })
             .ok();
         });
-        self.bridged_tasks.borrow_mut().push(bridge);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     fn finish_recording(&mut self, cx: &mut Context<Self>) {
@@ -78,7 +78,7 @@ impl ChatScreen {
             })
             .ok();
         });
-        self.bridged_tasks.borrow_mut().push(bridge);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     /// Append a transcript to the composer, after a space when text is
@@ -201,7 +201,7 @@ impl ChatScreen {
             })
             .ok();
         });
-        self.bridged_tasks.borrow_mut().push(bridge);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 }
 

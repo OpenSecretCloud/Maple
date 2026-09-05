@@ -51,6 +51,10 @@ pub struct AppSettings {
     /// notifications while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
     pub desktop_notifications: bool,
+    /// Skip looping and reveal animations. gpui reads no OS preference for
+    /// this, so it is a Maple setting.
+    #[serde(default)]
+    pub reduce_motion: bool,
     /// Opening system prompt text for agents this app hosts. Empty means
     /// [`DEFAULT_HARNESS_INSTRUCTIONS`].
     #[serde(default)]
@@ -283,6 +287,7 @@ impl Default for AppSettings {
             unsettled_tasks: Vec::new(),
             project_names: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
+            reduce_motion: false,
             harness_instructions: String::new(),
             window: None,
             theme: default_theme(),

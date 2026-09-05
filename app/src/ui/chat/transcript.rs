@@ -3,7 +3,6 @@
 //! frame.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
@@ -22,30 +21,19 @@ use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::widgets;
-use gpui::Focusable as _;
 
 impl ChatScreen {
     pub(super) fn render_transcript(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        // Follow the newest content while the view sits at (or near) the
-        // bottom, or after an explicit jump. Checking before render keeps
-        // user scrolls intact mid-stream.
+        // The list follows its own tail: it snaps to the end on each
+        // layout until the user scrolls up, and re-engages when the view
+        // returns to the bottom. Every mutation goes through splice or
+        // remeasure, so the count only drifts if a code path forgot to.
         let count = self.timeline.len();
         if self.list_state.item_count() != count {
-            self.list_state.reset(count);
+            self.list_state
+                .reset_with_uniform_height(count, super::TRANSCRIPT_ROW_ESTIMATE);
         }
-        // Pixel offsets are unreliable here: items that have never been
-        // rendered count as 0 px, so an old chat looks "all visible" until
-        // the user scrolls. The logical position is exact: with bottom
-        // alignment, `item_ix == count` means pinned to the newest item.
-        let at_bottom = self.list_state.logical_scroll_top().item_ix >= count;
-        if self.follow_transcript && !at_bottom {
-            self.list_state.scroll_to(gpui::ListOffset {
-                item_ix: count,
-                offset_in_item: px(0.),
-            });
-        }
-        self.follow_transcript = false;
-        let show_jump = !at_bottom && count > 0;
+        let show_jump = count > 0 && !self.list_state.is_following_tail();
         let tool_details = self.tool_details;
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
@@ -58,7 +46,7 @@ impl ChatScreen {
                 return div().into_any_element();
             };
             let chat = chat_entity.read(cx);
-            let element = match chat.timeline.get(ix) {
+            match chat.timeline.get(ix) {
                 Some(item) => {
                     let render_ctx = RenderCtx {
                         selection: selection.clone(),
@@ -75,7 +63,7 @@ impl ChatScreen {
                         render: &render_ctx,
                         speech: chat.speech.as_ref(),
                         speech_available: chat.audio_caps.speech,
-                        streaming: ix + 1 == chat.timeline.len() && chat.is_run_active(),
+                        position: (ix + 1, chat.timeline.len()),
                     };
                     let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                     let revision = chat
@@ -112,15 +100,13 @@ impl ChatScreen {
                     }
                 }
                 None => div().into_any_element(),
-            };
-            if chat.markdown_cache.take_stale() {
-                chat_entity.update(cx, |chat, cx| chat.schedule_stream_repaint(cx));
             }
-            element
         })
         .size_full();
         div()
             .id("transcript")
+            .role(gpui::Role::Log)
+            .aria_label("Conversation")
             .key_context("Transcript")
             .when_some(self.transcript_focus.clone(), |div, focus| {
                 div.track_focus(&focus)
@@ -130,21 +116,6 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .min_h_0()
-            .on_mouse_move(
-                cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
-                    if this.scrollbar_drag.is_some() {
-                        this.scrollbar_drag_moved(event.position, cx);
-                    }
-                }),
-            )
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.scrollbar_drag_ended(cx)),
-            )
-            .on_mouse_up_out(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.scrollbar_drag_ended(cx)),
-            )
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -169,7 +140,10 @@ impl ChatScreen {
                     .pb_4()
                     .child(list),
             )
-            .child(self.render_scrollbar(cx))
+            .child(crate::ui::scrollbar::scrollbar(
+                "transcript-scrollbar",
+                self.list_state.clone(),
+            ))
             .when(show_jump, |container| {
                 container.child(self.render_jump_to_latest(cx))
             })
@@ -204,7 +178,7 @@ impl ChatScreen {
                     .border_color(gpui::rgb(theme::border()))
                     .text_xs()
                     .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.follow_transcript = true;
+                        this.list_state.scroll_to_end();
                         cx.notify();
                     }))
                     .child(icon("chevron-down", px(12.), theme::text_secondary()))
@@ -212,133 +186,6 @@ impl ChatScreen {
                 "jump-to-latest-reveal",
             ))
     }
-
-    /// Geometry of the scrollbar for the current list layout: track
-    /// height, thumb height, thumb top, and the scrollable content range.
-    fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
-        let state = &self.list_state;
-        let track = state.viewport_bounds().size.height;
-        let max = state.max_offset_for_scrollbar().y;
-        if max <= px(1.) || track <= px(0.) {
-            return None;
-        }
-        let ratio = f32::from(track) / f32::from(max + track);
-        let thumb = (track * ratio).max(px(24.));
-        let offset = -state.scroll_px_offset_for_scrollbar().y;
-        let scrollable = (track - thumb).max(px(0.));
-        let progress = (f32::from(offset) / f32::from(max)).clamp(0., 1.);
-        Some(ScrollbarGeometry {
-            thumb,
-            thumb_top: scrollable * progress,
-            scrollable,
-            max,
-        })
-    }
-
-    /// Scroll so the thumb top sits at `thumb_top` within the track.
-    fn scroll_to_thumb_top(&mut self, thumb_top: gpui::Pixels, geometry: &ScrollbarGeometry) {
-        let progress = if geometry.scrollable > px(0.) {
-            (f32::from(thumb_top) / f32::from(geometry.scrollable)).clamp(0., 1.)
-        } else {
-            0.
-        };
-        self.list_state
-            .set_offset_from_scrollbar(gpui::point(px(0.), -(geometry.max * progress)));
-    }
-
-    /// Scrollbar overlay driven by the virtualized list state. The thumb
-    /// drags, the track jumps on click, and both widen under the pointer.
-    fn render_scrollbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(geometry) = self.scrollbar_geometry() else {
-            return div().into_any_element();
-        };
-        let dragging = self.scrollbar_drag.is_some();
-        let thumb_top = geometry.thumb_top;
-        let track_geometry = geometry.clone();
-        div()
-            .id("transcript-scrollbar")
-            .absolute()
-            .top(px(0.))
-            .right(px(0.))
-            .bottom(px(0.))
-            .w(px(12.))
-            .flex()
-            .flex_col()
-            .items_end()
-            .pr(px(2.))
-            .group("scrollbar")
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
-                    // A press on the track (not the thumb) centres the thumb
-                    // on the pointer. The list viewport shares the track's
-                    // top edge.
-                    let top = this.list_state.viewport_bounds().origin.y;
-                    let local = event.position.y - top;
-                    let target = local - track_geometry.thumb / 2.;
-                    this.scroll_to_thumb_top(target, &track_geometry);
-                    this.follow_transcript = false;
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .id("transcript-thumb")
-                    .mt(thumb_top)
-                    .h(geometry.thumb)
-                    .w(px(6.))
-                    .rounded_full()
-                    .bg(theme::scrollbar_thumb())
-                    .when(dragging, |thumb| {
-                        thumb.w(px(9.)).bg(theme::scrollbar_thumb_active())
-                    })
-                    .group_hover("scrollbar", |style| style.w(px(9.)))
-                    .hover(|style| style.bg(theme::scrollbar_thumb_active()))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
-                            cx.stop_propagation();
-                            this.scrollbar_drag = Some((event.position.y, thumb_top));
-                            this.list_state.scrollbar_drag_started();
-                            cx.notify();
-                        }),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// Pointer moved while the thumb is held: scroll to follow it.
-    pub(super) fn scrollbar_drag_moved(
-        &mut self,
-        position: gpui::Point<gpui::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some((start_y, start_top)) = self.scrollbar_drag else {
-            return;
-        };
-        let Some(geometry) = self.scrollbar_geometry() else {
-            return;
-        };
-        self.scroll_to_thumb_top(start_top + (position.y - start_y), &geometry);
-        self.follow_transcript = false;
-        cx.notify();
-    }
-
-    /// The thumb was released.
-    pub(super) fn scrollbar_drag_ended(&mut self, cx: &mut Context<Self>) {
-        if self.scrollbar_drag.take().is_some() {
-            self.list_state.scrollbar_drag_ended();
-            cx.notify();
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ScrollbarGeometry {
-    thumb: gpui::Pixels,
-    thumb_top: gpui::Pixels,
-    scrollable: gpui::Pixels,
-    max: gpui::Pixels,
 }
 
 pub(super) fn render_timeline_item(
@@ -346,7 +193,16 @@ pub(super) fn render_timeline_item(
     revision: u64,
     expanded: bool,
     transcript: &TranscriptCtx,
-) -> Div {
+) -> gpui::AnyElement {
+    let item_id = item.id.clone();
+    let (role, label): (Option<gpui::Role>, Option<&'static str>) = match item.item_type.as_str() {
+        "message" if item.role.as_deref() == Some("user") => {
+            (Some(gpui::Role::Article), Some("You"))
+        }
+        "message" => (Some(gpui::Role::Article), Some("Maple")),
+        "error" => (Some(gpui::Role::Alert), None),
+        _ => (None, None),
+    };
     let item = match item.item_type.as_str() {
         "message" => render_message(item, revision, transcript),
         "thinking" | "reasoning" => render_thinking(item, revision, expanded, transcript),
@@ -355,7 +211,7 @@ pub(super) fn render_timeline_item(
             // ("todo write", "ask user") and vary by detail suffix.
             if has_tool_input(item, "todos") {
                 // The pinned plan card above the composer shows the list.
-                return div();
+                return div().into_any_element();
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
@@ -369,8 +225,23 @@ pub(super) fn render_timeline_item(
         _ => render_system(item),
     };
     // Per-item spacing (instead of a container gap) keeps non-renderable
-    // items from producing phantom gaps.
-    div().pb_2().child(item)
+    // items from producing phantom gaps. Rows a screen reader should
+    // announce get a role, a sender, and their position in the
+    // conversation; the others stay plain containers.
+    let row = div().pb_2().child(item);
+    match role {
+        Some(role) => {
+            let (position, count) = transcript.position;
+            row.id(SharedString::from(format!("timeline-row-{item_id}")))
+                .role(role)
+                .when_some(label, |row, label| row.aria_label(label))
+                .accessibility_id(item_id)
+                .aria_position_in_set(position)
+                .aria_size_of_set(count)
+                .into_any_element()
+        }
+        None => row.into_any_element(),
+    }
 }
 
 /// Attachment `(id, name)` pairs stored on a user message.
@@ -546,13 +417,9 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .gap_0p5()
             .text_color(gpui::rgb(theme::text_primary()))
             .child(markdown::render_with(
-                &transcript.markdown_cache.get(
-                    &item.id,
-                    MarkdownKind::Body,
-                    revision,
-                    text,
-                    transcript.streaming,
-                ),
+                &transcript
+                    .markdown_cache
+                    .get(&item.id, MarkdownKind::Body, revision, text),
                 ctx,
             ))
             .children(copy.map(|button| {
@@ -605,6 +472,9 @@ fn render_thinking(
             "thinking-toggle-{}",
             item.id
         )))
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label(title.clone())
+        .aria_expanded(expanded)
         .flex()
         .items_center()
         .gap_1()
@@ -630,7 +500,7 @@ fn render_thinking(
             px(14.),
             theme::text_muted(),
         ))
-        .child(div().line_clamp(1).child(title));
+        .child(div().line_clamp(1).text_ellipsis_middle().child(title));
     let card = div()
         .px_3()
         .py_2()
@@ -648,13 +518,9 @@ fn render_thinking(
             .text_sm()
             .text_color(gpui::rgb(theme::text_secondary()))
             .child(markdown::render_with(
-                &transcript.markdown_cache.get(
-                    &item.id,
-                    MarkdownKind::Body,
-                    revision,
-                    &text,
-                    transcript.streaming,
-                ),
+                &transcript
+                    .markdown_cache
+                    .get(&item.id, MarkdownKind::Body, revision, &text),
                 transcript.render,
             )),
     )
@@ -892,7 +758,7 @@ fn render_tool_with_diff(
     if !details {
         return card;
     }
-    let diff_lines = Rc::clone(&transcript.derived.get(item, revision).diff_lines);
+    let diff_lines = Arc::clone(&transcript.derived.get(item, revision).diff_lines);
     if diff_lines.is_empty() {
         return card;
     }
@@ -930,6 +796,7 @@ fn render_tool_with_diff(
                         .min_w_0()
                         .text_color(gpui::rgb(color))
                         .line_clamp(1)
+                        .text_ellipsis()
                         .child(line.clone()),
                 ),
         );
@@ -994,6 +861,9 @@ fn render_tool(
     });
     let card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label(title.clone())
+        .aria_expanded(details)
         .flex()
         .flex_col()
         .gap_1()
@@ -1026,6 +896,7 @@ fn render_tool(
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(gpui::rgb(theme::text_primary()))
                         .line_clamp(1)
+                        .text_ellipsis_middle()
                         .child(title),
                 )
                 .when(running, |header| {
@@ -1084,7 +955,6 @@ fn render_tool(
                     MarkdownKind::ToolOutput,
                     revision,
                     output,
-                    false,
                 ))),
         );
     }
@@ -1231,13 +1101,8 @@ pub(super) fn render_question_card(
     step: usize,
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, usize>,
-    focused: Option<&gpui::FocusHandle>,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
-    let input_focused = input
-        .as_ref()
-        .zip(focused)
-        .is_some_and(|(input, focused)| input.read(cx).focus_handle(cx) == *focused);
     let mut card = div()
         .my_3()
         .mx_auto()
@@ -1368,7 +1233,7 @@ pub(super) fn render_question_card(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(widgets::input_frame(input_focused).flex_1().child(input))
+                .child(widgets::input_frame().flex_1().child(input))
                 .child(
                     widgets::primary_button("question-submit")
                         .py_2()
@@ -1405,9 +1270,12 @@ pub(super) fn render_question_card(
 /// Pulsing dots shown between send and the first streamed content. They
 /// breathe on the shared low-rate clock, so waiting costs the same as a
 /// spinner rather than a full-rate animation.
-pub(super) fn render_waiting_indicator() -> Div {
+pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
     const CYCLE: std::time::Duration = std::time::Duration::from_millis(1400);
     div()
+        .id("waiting-indicator")
+        .role(gpui::Role::Status)
+        .aria_label("Maple is thinking")
         .flex()
         .items_center()
         .gap_2()

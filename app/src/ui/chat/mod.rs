@@ -18,6 +18,7 @@ use maple_agent::agent::{
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
 use crate::ui::icons::{icon, spinner, wordmark};
+use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
@@ -38,7 +39,7 @@ mod summaries;
 mod tests;
 mod transcript;
 
-use self::cache::{DerivedCache, MarkdownCache, MarkdownKind, STREAM_PARSE_INTERVAL};
+use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
 use self::commands::ChatCommand;
 use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
@@ -172,9 +173,9 @@ struct TranscriptCtx<'a> {
     speech: Option<&'a SpeechState>,
     /// The account can use text-to-speech.
     speech_available: bool,
-    /// The item is the newest one of a running turn: its body parse is
-    /// rate-limited while chunks stream in.
-    streaming: bool,
+    /// One-based position of the row and the row count, for
+    /// assistive technology ("message 4 of 17").
+    position: (usize, usize),
 }
 
 /// Text-to-speech progress for one message.
@@ -267,9 +268,6 @@ pub struct ChatScreen {
     /// Task being opened whose snapshot has not landed yet, so the pane
     /// can say so instead of showing the previous task.
     loading_session: Option<String>,
-    /// Scrollbar thumb drag in progress: pointer y and thumb top at the
-    /// start, both in window pixels.
-    scrollbar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
     /// Virtualized sidebar list; its own state so the transcript's
@@ -280,7 +278,6 @@ pub struct ChatScreen {
     /// Set when the transcript should jump to its newest content on the
     /// next render (session switch or send); streaming follows only while
     /// the view is already at the bottom.
-    follow_transcript: bool,
     /// Whether tool cards show their input/output payloads. Toggled from
     /// the header; off gives a one-line card per tool call.
     tool_details: bool,
@@ -300,6 +297,17 @@ pub struct ChatScreen {
     /// Focus for the open project menu, so plain arrow keys reach it
     /// instead of the composer's text handling.
     root_menu_focus: Option<gpui::FocusHandle>,
+    /// Focus for whichever modal dialog is open, so Enter and Escape
+    /// reach it instead of the composer. Created the first time a dialog
+    /// opens: creating it up front shifts the window's focus-id order,
+    /// which the typing-focus test showed gpui is sensitive to.
+    dialog_focus: Option<gpui::FocusHandle>,
+    /// A dialog just opened; the next render moves focus into it.
+    dialog_focus_pending: bool,
+    /// Whether the project-trust question may open its dialog. Tests that
+    /// drive typing turn it off, since the dialog rightly takes focus and
+    /// the machine's home directory decides whether it appears.
+    trust_prompts: bool,
     /// The menu was just opened and still needs the focus.
     root_menu_focus_pending: bool,
     /// Manual path entry for the project selector.
@@ -365,13 +373,13 @@ pub struct ChatScreen {
     /// Parsed markdown per timeline item (keyed by item id and revision),
     /// so visible messages are parsed once, not every frame.
     markdown_cache: MarkdownCache,
-    /// A deferred repaint for a throttled stream parse is already on its
-    /// way; one at a time is enough.
-    stream_repaint_pending: std::cell::Cell<bool>,
     /// Whether a notice auto-dismiss timer is in flight.
     notice_dismiss_pending: std::cell::Cell<bool>,
     /// Per-item display strings, rebuilt when the item's revision moves.
     derived: DerivedCache,
+    /// Background parses of the newest rows after a timeline load, so
+    /// the first scroll finds them ready. A newer load replaces it.
+    markdown_warmup: Option<gpui::Task<()>>,
     /// Item id to `(index in timeline, revision)`; the revision counts
     /// applied updates so caches can tell a changed item from a stable one.
     timeline_index: HashMap<String, (usize, u64)>,
@@ -545,6 +553,7 @@ impl ChatScreen {
         let weak = cx.entity().downgrade();
         let mut this = Self::new_inner(backend, user_id);
         this.attach_composer(weak.clone(), cx);
+        this.markdown_cache.attach(weak.clone(), cx.to_async());
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
         this.transcript_focus = Some(cx.focus_handle());
         this.root_menu_focus = Some(cx.focus_handle());
@@ -772,7 +781,7 @@ impl ChatScreen {
             application_vim_enabled: settings.application_vim_enabled,
             application_vim: ApplicationVimState::default(),
             application_focus: None,
-            screen_focus_pending: settings.application_vim_enabled,
+            screen_focus_pending: true,
             composer_has_text: false,
             slash_entries: Vec::new(),
             models: Vec::new(),
@@ -789,11 +798,9 @@ impl ChatScreen {
             notice: None,
             booting: true,
             loading_session: None,
-            scrollbar_drag: None,
-            list_state: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(400.)),
+            list_state: transcript_list_state(),
             sidebar_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
             sidebar_entries: Vec::new(),
-            follow_transcript: true,
             tool_details: settings.tool_details,
             // An unset or unknown value in either place means "use the
             // saved default", so only a known mode counts as an override.
@@ -808,6 +815,9 @@ impl ChatScreen {
             root_menu_open: false,
             root_menu_selected: None,
             root_menu_focus: None,
+            dialog_focus: None,
+            dialog_focus_pending: false,
+            trust_prompts: true,
             root_menu_focus_pending: false,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
@@ -821,9 +831,9 @@ impl ChatScreen {
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
             markdown_cache: MarkdownCache::default(),
-            stream_repaint_pending: std::cell::Cell::new(false),
             notice_dismiss_pending: std::cell::Cell::new(false),
             derived: DerivedCache::default(),
+            markdown_warmup: None,
             timeline_index: HashMap::new(),
             sidebar_rows: Vec::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
@@ -931,14 +941,9 @@ impl ChatScreen {
         });
         // Retain the bridge: the backend's sender holds its waker, and
         // this gpui revision asserts a task is dropped only by the thread
-        // that spawned it. Handles are cheap; the vec stays bounded by
-        // trimming like the finished-run ring. ChatScreen lives on one
-        // thread, so the RefCell cannot race.
-        let mut tasks = self.bridged_tasks.borrow_mut();
-        tasks.push(bridge);
-        if tasks.len() > 64 {
-            drop(tasks.remove(0));
-        }
+        // that spawned it. ChatScreen lives on one thread, so the RefCell
+        // cannot race.
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     /// Sign-in finished: boot the runtime, then load the workspace state.
@@ -1227,7 +1232,7 @@ impl ChatScreen {
         });
         // The portal dialog completes on its own thread; retained so the
         // bridge dies here (see ChatScreen::call).
-        self.bridged_tasks.borrow_mut().push(bridge);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     /// The root changed: update the header label, then read its branch
@@ -1564,7 +1569,7 @@ impl ChatScreen {
 
     /// Load a task and make it current when its snapshot lands; its
     /// persisted root then becomes the visible project context.
-    fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
         // The side thread belongs to the task it forked.
         if self.btw.is_some() && self.selected_session.as_deref() != Some(session_id) {
             self.close_side_thread(cx);
@@ -1675,6 +1680,7 @@ impl ChatScreen {
                     LoadMode::Reload => {
                         this.tool_summaries.extend(summaries);
                         this.replace_timeline(detail.timeline);
+                        this.warm_markdown(cx);
                         this.load_attachment_images(cx);
                         this.summarize_loaded_tools(cx);
                         cx.notify();
@@ -1739,7 +1745,8 @@ impl ChatScreen {
             .collect();
         self.markdown_cache.clear();
         self.derived.clear();
-        self.list_state.reset(self.timeline.len());
+        self.list_state
+            .reset_with_uniform_height(self.timeline.len(), TRANSCRIPT_ROW_ESTIMATE);
         if let Some(old_navigation_order) = old_navigation_order {
             self.reconcile_timeline_application_selection(&old_navigation_order);
         }
@@ -2049,7 +2056,7 @@ impl ChatScreen {
         self.pending_summaries = 0;
         self.summary_queue.clear();
         self.summary_requests.clear();
-        self.follow_transcript = true;
+        self.list_state.scroll_to_end();
         self.awaiting_first_token = false;
         self.lightbox = None;
         self.permission_responding = false;
@@ -2499,23 +2506,71 @@ impl ChatScreen {
         .detach();
     }
 
-    /// A throttled parse left the newest message one chunk behind: paint
-    /// again once the interval has passed so the last chunk shows even
-    /// when no further event arrives.
-    fn schedule_stream_repaint(&self, cx: &mut Context<Self>) {
-        if self.stream_repaint_pending.replace(true) {
+    /// A markdown parse landed: show it, and let the row measure again
+    /// since its height changed.
+    fn markdown_parsed(
+        &mut self,
+        kind: MarkdownKind,
+        id: &str,
+        revision: u64,
+        len: usize,
+        document: markdown::Document,
+        cx: &mut Context<Self>,
+    ) {
+        self.markdown_cache
+            .install(kind, id, revision, len, document);
+        if let Some((ix, _)) = self.timeline_index.get(id) {
+            self.list_state.remeasure_items(*ix..*ix + 1);
+        }
+        cx.notify();
+    }
+
+    /// Parse the newest long messages in the background after a timeline
+    /// load, newest first, so opening a task does not parse on the first
+    /// scroll. Short ones parse inline when shown, which is cheaper than
+    /// a round trip.
+    fn warm_markdown(&mut self, cx: &mut Context<Self>) {
+        const WARM_ROWS: usize = 32;
+        let sources: Vec<(String, u64, String)> = self
+            .timeline
+            .iter()
+            .rev()
+            .take(WARM_ROWS)
+            .filter(|item| item.item_type == "message")
+            .filter_map(|item| {
+                let text = item.text.as_deref()?;
+                let revision = self.timeline_index.get(&item.id).map_or(0, |(_, rev)| *rev);
+                let wanted = text.len() > INLINE_PARSE_LIMIT
+                    && !self.markdown_cache.is_current(
+                        &item.id,
+                        MarkdownKind::Body,
+                        revision,
+                        text.len(),
+                    );
+                wanted.then(|| (item.id.clone(), revision, text.to_string()))
+            })
+            .collect();
+        if sources.is_empty() {
+            self.markdown_warmup = None;
             return;
         }
-        cx.spawn(async move |entity, cx| {
-            cx.background_executor().timer(STREAM_PARSE_INTERVAL).await;
-            entity
-                .update(cx, |this, cx| {
-                    this.stream_repaint_pending.set(false);
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
+        self.markdown_warmup = Some(cx.spawn(async move |this, cx| {
+            for (id, revision, source) in sources {
+                let len = source.len();
+                let document =
+                    cx.background_executor()
+                        .spawn_with_priority(gpui::Priority::Low, async move {
+                            markdown::parse(&source)
+                        })
+                        .await;
+                let landed = this.update(cx, |this, cx| {
+                    this.markdown_parsed(MarkdownKind::Body, &id, revision, len, document, cx);
+                });
+                if landed.is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     fn is_run_active(&self) -> bool {
@@ -2668,6 +2723,11 @@ impl ChatScreen {
             self.clear_search(cx);
             return;
         }
+        if let Some(status) = self.trust_prompt.as_ref() {
+            let path = status.path.clone();
+            self.set_project_trust(path, false, cx);
+            return;
+        }
         if self.confirm_remove_root.is_some()
             || self.project_menu.is_some()
             || self.switcher_menu_open
@@ -2769,6 +2829,10 @@ impl ChatScreen {
             cx.stop_propagation();
             return;
         }
+        // A modal dialog owns the keyboard; nothing types past it.
+        if self.trust_prompt.is_some() || self.confirm_remove_root.is_some() {
+            return;
+        }
         // A focused text input already receives typing.
         let focused = window.focused(cx);
         let typing_here = [
@@ -2820,7 +2884,7 @@ impl ChatScreen {
                 }
                 let document =
                     self.markdown_cache
-                        .get(&item.id, MarkdownKind::Body, revision, text, false);
+                        .get(&item.id, MarkdownKind::Body, revision, text);
                 document.for_each_selectable(|offset, text| {
                     selection.register(base + offset, text);
                 });
@@ -2915,7 +2979,7 @@ impl ChatScreen {
         // Resolve the row now: an index baked into the card at render
         // time goes stale once history reloads or items are inserted.
         if let Some(&(index, _)) = self.timeline_index.get(item_id) {
-            self.list_state.splice(index..index + 1, 1);
+            self.list_state.remeasure_items(index..index + 1);
         }
         cx.notify();
     }
@@ -3270,7 +3334,7 @@ impl ChatScreen {
         self.mode_menu_open = false;
         self.mcp_menu_open = false;
         self.root_menu_open = false;
-        self.follow_transcript = true;
+        self.list_state.scroll_to_end();
         if !run_active {
             self.awaiting_first_token = true;
         }
@@ -3659,15 +3723,11 @@ impl ChatScreen {
         self.refresh_context_usage(cx);
     }
 
-    /// Re-measure one row after it changed in place. The newest row is
-    /// exempt: a splice zeroes its cached height until the next paint,
-    /// and a wheel event in that window re-pins the list to the bottom,
-    /// which blocks scrolling up during a stream. The newest row is
-    /// measured on every layout anyway.
+    /// Re-measure one row after it changed in place. The list keeps the
+    /// row's last height as a hint and the scroll position as it was, so
+    /// neither the scroll range nor the view moves before the next paint.
     fn remeasure_item(&mut self, index: usize) {
-        if index + 1 < self.timeline.len() {
-            self.list_state.splice(index..index + 1, 1);
-        }
+        self.list_state.remeasure_items(index..index + 1);
     }
 
     /// Apply a timeline item using Maple's merge contract: `append` extends
@@ -3699,21 +3759,12 @@ impl ChatScreen {
                     merge: incoming_merge,
                     ..
                 } = item;
-                let is_newest = index + 1 == self.timeline.len();
                 let existing = &mut self.timeline[index];
                 // The virtualized list caches item heights; tell it this
-                // one changed so it re-measures. The newest item is the
-                // exception: a splice drops its cached height to zero until
-                // the next paint, which collapses the list's scroll range.
-                // A wheel event in that window clamps back to the bottom
-                // and re-pins the view, so streaming would make the
-                // transcript impossible to scroll up. The newest item is
-                // measured on every layout while it is visible, and its
-                // stale height is a better estimate than zero once the user
-                // scrolls away mid-stream.
-                if !is_newest {
-                    self.list_state.splice(index..index + 1, 1);
-                }
+                // one changed. A remeasure keeps the previous height as a
+                // hint and leaves the scroll position alone, so a stream
+                // never collapses the scroll range or re-pins the view.
+                self.list_state.remeasure_items(index..index + 1);
                 let append = incoming_merge == "append"
                     && matches!(incoming_type.as_str(), "message" | "thinking")
                     && incoming_text.is_some();
@@ -3920,7 +3971,7 @@ impl ChatScreen {
                     .first()
                     .map(|question| question.question.chars().take(140).collect())
                     .unwrap_or_default();
-                self.notify_desktop("Maple has a question", &preview);
+                self.notify_desktop(&session_id, "Maple has a question", &preview, cx);
                 // Questions queue per session; one for a task that is not
                 // on screen shows its card when the user switches there.
                 let shows_now = self.current_question().is_none()
@@ -4043,7 +4094,7 @@ impl ChatScreen {
                     .prompt
                     .clone()
                     .unwrap_or_else(|| format!("Run tool {}?", request.tool_name));
-                self.notify_desktop("Maple needs permission", &prompt);
+                self.notify_desktop(session_id, "Maple needs permission", &prompt, cx);
                 // The request is kept even when its session is not on
                 // screen: the run blocks until it is answered, so the card
                 // must appear when the user opens that session.
@@ -4192,7 +4243,7 @@ impl ChatScreen {
                     .find(|session| session.id == session_id)
                     .map(|session| session.title.clone())
                     .unwrap_or_else(|| "Task".to_string());
-                self.notify_desktop("Maple", &format!("“{title}” finished"));
+                self.notify_desktop(session_id, "Maple", &format!("“{title}” finished"), cx);
                 self.refresh_sidebar_plan(cx);
             }
             AgentRunEvent::QueueChanged(snapshot) => {
@@ -4220,12 +4271,31 @@ impl EventEmitter<LoggedOut> for ChatScreen {}
 impl EventEmitter<OpenSettings> for ChatScreen {}
 impl EventEmitter<OpenSettingsSection> for ChatScreen {}
 
+/// Height hint for transcript rows that have not been measured yet, so a
+/// freshly opened task has a scrollbar of about the right size on its
+/// first frame. Rows are measured as they scroll into view.
+const TRANSCRIPT_ROW_ESTIMATE: gpui::Pixels = px(96.);
+
+/// The transcript list: bottom-aligned, following its tail so streaming
+/// content stays in view until the user scrolls up, with enough overdraw
+/// that a fast wheel scroll lands on measured rows.
+fn transcript_list_state() -> gpui::ListState {
+    let state = gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(1024.));
+    state.set_follow_mode(gpui::FollowMode::Tail);
+    state
+}
+
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
         self.window_active = window.is_window_active();
-        let focused = window.focused(cx);
+        if self.dialog_focus_pending {
+            self.dialog_focus_pending = false;
+            if let Some(handle) = self.dialog_focus.clone() {
+                window.focus(&handle, cx);
+            }
+        }
         if self.root_menu_focus_pending {
             self.root_menu_focus_pending = false;
             if let Some(handle) = self.root_menu_focus.clone() {
@@ -4245,6 +4315,13 @@ impl Render for ChatScreen {
                 let handle = composer.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
+        }
+        // A window with no focused element has no dispatch path: menu
+        // items validate as unavailable and shortcuts fall through. The
+        // login screen's fields leaving, or a rename field closing, can
+        // leave it that way; the screen takes focus back.
+        if window.focused(cx).is_none() {
+            self.screen_focus_pending = true;
         }
         if self.screen_focus_pending {
             self.screen_focus_pending = false;
@@ -4319,7 +4396,6 @@ impl Render for ChatScreen {
                         step,
                         input,
                         &self.question_selected,
-                        focused.as_ref(),
                         cx,
                     ))
                 })
@@ -4434,7 +4510,7 @@ impl Render for ChatScreen {
                                     div()
                                         .absolute()
                                         .top_2()
-                                        .left_3()
+                                        .left(crate::ui::titlebar::top_row_inset(px(12.)))
                                         .flex()
                                         .items_center()
                                         .gap_2()
@@ -4477,13 +4553,14 @@ impl Render for ChatScreen {
                                 widgets::icon_button(
                                     "lightbox-close",
                                     "x",
+                                    "Close",
                                     px(16.),
                                     theme::on_accent(),
                                 )
                                 .size_8()
                                 .rounded_full()
                                 .bg(theme::overlay_hover())
-                                .tooltip(widgets::tooltip("Close", Some("Esc"))),
+                                .tooltip(widgets::tooltip_for_action("Close", &ChatEscape)),
                             ),
                         ),
                     "lightbox-reveal",
@@ -4511,7 +4588,14 @@ impl ChatScreen {
                     .cursor_pointer()
             })
             .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            .tooltip(widgets::tooltip("Toggle sidebar", Some("⌘B")))
+            // Inside a drag region: a press here is a click, not a drag.
+            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .tooltip(widgets::tooltip_for_action(
+                "Toggle sidebar",
+                &ToggleSidebar,
+            ))
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.execute_command(ChatCommand::ToggleSidebar, window, cx);
             }))
@@ -4626,8 +4710,9 @@ impl ChatScreen {
     }
 
     /// Raise a desktop notification when enabled and the window is not
-    /// focused.
-    fn notify_desktop(&self, title: &str, body: &str) {
+    /// focused. `tag` names the task, so a later alert about the same task
+    /// replaces the earlier one instead of stacking.
+    fn notify_desktop(&self, tag: &str, title: &str, body: &str, cx: &gpui::App) {
         if !self.notify_enabled {
             log::info!("desktop notification skipped (disabled): {title}");
             return;
@@ -4637,7 +4722,7 @@ impl ChatScreen {
             return;
         }
         log::info!("desktop notification sent: {title}");
-        crate::notify::notify_desktop(title, &body.replace('\n', " "));
+        crate::notify::notify(cx, format!("task:{tag}"), title, body, &[]);
     }
 
     /// Load the plan card from the Maple billing API. Failures keep the

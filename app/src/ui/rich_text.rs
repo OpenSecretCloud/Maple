@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     App, Div, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior,
@@ -25,10 +25,20 @@ use super::widgets;
 
 /// Styled runs of a paragraph, shared between the parsed block and the
 /// element rendered from it each frame.
-pub type Highlights = Rc<[(Range<usize>, HighlightStyleT)]>;
+pub type Highlights = Arc<[(Range<usize>, HighlightStyleT)]>;
 
 /// Clickable link ranges with destinations, shared like [`Highlights`].
-pub type Links = Rc<[(Range<usize>, String)]>;
+pub type Links = Arc<[(Range<usize>, String)]>;
+/// Byte ranges set in the monospace face: inline code spans.
+pub type Mono = Arc<[Range<usize>]>;
+
+/// Everything the parser resolved inside one paragraph.
+#[derive(Clone, Default)]
+pub struct Inline {
+    pub highlights: Highlights,
+    pub links: Links,
+    pub mono: Mono,
+}
 
 /// Registry entries kept on each side of the selection when it overflows.
 const REGISTRY_CAP: usize = 8192;
@@ -375,6 +385,7 @@ pub struct RichText {
     text: SharedString,
     highlights: Highlights,
     links: Links,
+    mono: Mono,
     selection: Option<Entity<TextSelection>>,
     focus: Option<FocusHandle>,
     styled: Option<StyledText>,
@@ -449,10 +460,20 @@ impl RichText {
             .zip(self.ordinal)
             .and_then(|(entity, ordinal)| entity.read(cx).range_for(ordinal));
         let styled = StyledText::new(self.text.clone());
-        match merged_highlights(&self.highlights, selection_range, &self.text) {
+        let styled = match merged_highlights(&self.highlights, selection_range, &self.text) {
             Some(highlights) => styled.with_highlights(highlights),
             None => styled.with_highlights(self.highlights.iter().cloned()),
+        };
+        if self.mono.is_empty() {
+            return styled;
         }
+        // Inline code stays inside the one shaped line; the ranges come
+        // sorted and disjoint from the parser, as the override requires.
+        styled.with_font_family_overrides(
+            self.mono
+                .iter()
+                .map(|range| (range.clone(), SharedString::from(crate::assets::FONT_MONO))),
+        )
     }
 }
 
@@ -691,8 +712,7 @@ pub fn open_link(url: &str) {
 /// A styled, selectable paragraph. `ordinal` enables selection when set.
 pub fn paragraph(
     text: SharedString,
-    highlights: Highlights,
-    links: Links,
+    inline: Inline,
     text_size: Option<Pixels>,
     weight: Option<gpui::FontWeight>,
     ordinal: Option<u64>,
@@ -705,11 +725,17 @@ pub fn paragraph(
     if let Some(weight) = weight {
         container = container.font_weight(weight);
     }
+    let Inline {
+        highlights,
+        links,
+        mono,
+    } = inline;
     container.child(RichText {
         ordinal,
         text,
         highlights,
         links,
+        mono,
         selection: ctx.selection.clone(),
         focus: ctx.focus.clone(),
         styled: None,
@@ -718,13 +744,20 @@ pub fn paragraph(
 
 /// Plain (unstyled) selectable text, used for user message bubbles.
 pub fn plain_paragraph(text: SharedString, ordinal: Option<u64>, ctx: &RenderCtx) -> Div {
-    paragraph(text, Rc::new([]), Rc::new([]), None, None, ordinal, ctx)
+    paragraph(text, Inline::default(), None, None, ordinal, ctx)
 }
 
 /// Code block with a language label and a copy button. `label` is the
 /// display name of the language; `copy_id` must be unique per block.
-pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -> Div {
+pub fn code_block(
+    code: SharedString,
+    label: SharedString,
+    id_name: SharedString,
+    index: u64,
+) -> Div {
     let copy_code = code.clone();
+    let copy_id = ElementId::NamedInteger(id_name.clone(), index);
+    let body_id = ElementId::NamedInteger(SharedString::from(format!("{id_name}-code")), index);
     div()
         .w_full()
         .my_1()
@@ -751,10 +784,16 @@ pub fn code_block(code: SharedString, label: SharedString, copy_id: ElementId) -
                 .child(widgets::copy_button(copy_id, copy_code, None)),
         )
         .child(
+            // Long lines scroll sideways instead of wrapping; a vertical
+            // wheel still reaches the transcript.
             div()
+                .id(body_id)
                 .px_3()
                 .py_2()
                 .w_full()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .whitespace_nowrap()
                 .font_family(crate::assets::FONT_MONO)
                 .text_size(gpui::px(13.))
                 .text_color(gpui::rgb(theme::code_text()))

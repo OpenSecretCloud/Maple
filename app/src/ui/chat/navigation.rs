@@ -643,7 +643,7 @@ impl ChatScreen {
             if !self.toggled_tools.insert(item_id.to_owned()) {
                 self.toggled_tools.remove(item_id);
             }
-            self.list_state.splice(index..index + 1, 1);
+            self.list_state.remeasure_items(index..index + 1);
             cx.notify();
         }
     }
@@ -742,9 +742,20 @@ impl ChatScreen {
         let follow = index + 1 == ids.len() && direction > 0;
         self.application_vim
             .set_transcript(&task_id, ids[index].clone(), follow);
-        self.follow_transcript = follow;
+        self.follow_tail(follow);
         self.reveal_application_selection();
         cx.notify();
+    }
+
+    /// Keep the transcript pinned to its newest content, or hold it where
+    /// the selection sits. The list re-engages on its own once the view
+    /// returns to the bottom.
+    fn follow_tail(&mut self, follow: bool) {
+        if follow {
+            self.list_state.scroll_to_end();
+        } else {
+            self.list_state.pause_following_tail();
+        }
     }
 
     fn select_transcript_edge(&mut self, first: bool, follow: bool, cx: &mut Context<Self>) {
@@ -757,7 +768,7 @@ impl ChatScreen {
         };
         self.application_vim
             .set_transcript(&task_id, item_id.clone(), follow && !first);
-        self.follow_transcript = follow && !first;
+        self.follow_tail(follow && !first);
         self.reveal_application_selection();
         cx.notify();
     }
@@ -800,7 +811,7 @@ impl ChatScreen {
         };
         self.application_vim
             .set_transcript(&task_id, assistant[index].clone(), false);
-        self.follow_transcript = false;
+        self.follow_tail(false);
         self.reveal_application_selection();
         self.focus_application_vim(window, cx);
     }

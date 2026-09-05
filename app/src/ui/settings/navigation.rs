@@ -25,6 +25,7 @@ pub(super) enum GeneralTarget {
     Appearance,
     ToolDetails,
     Notifications,
+    ReduceMotion,
     ToolSummaries,
     ComposerVim,
     ApplicationVim,
@@ -118,6 +119,7 @@ impl SettingsScreen {
                 GeneralTarget::Appearance,
                 GeneralTarget::ToolDetails,
                 GeneralTarget::Notifications,
+                GeneralTarget::ReduceMotion,
                 GeneralTarget::ToolSummaries,
                 GeneralTarget::ComposerVim,
                 GeneralTarget::ApplicationVim,
@@ -350,6 +352,7 @@ impl SettingsScreen {
             GeneralTarget::Appearance => self.cycle_theme(cx),
             GeneralTarget::ToolDetails => self.toggle_tool_details(cx),
             GeneralTarget::Notifications => self.toggle_desktop_notifications(cx),
+            GeneralTarget::ReduceMotion => self.toggle_reduce_motion(cx),
             GeneralTarget::ToolSummaries => self.toggle_tool_summaries(cx),
             GeneralTarget::ComposerVim => self.toggle_composer_vim(cx),
             GeneralTarget::ApplicationVim => {

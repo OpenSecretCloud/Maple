@@ -19,64 +19,71 @@ use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::text_input::vim::VimMode;
 use crate::ui::theme;
+use crate::ui::titlebar;
 use crate::ui::widgets;
 
 impl ChatScreen {
-    pub(super) fn render_header(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_header(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let title = self.selected_title.clone();
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .h(px(40.))
-            .flex_none()
-            .pl_4()
-            .pr_3()
-            .when(self.sidebar_collapsed, |row| {
-                row.pl(SIDEBAR_COLLAPSED_INSET)
-            })
-            .child(
-                div()
-                    // Sized by its text, like the chips: nowrap gives it a
-                    // real intrinsic width (a clamped, shrinkable title
-                    // measured as 0 px and vanished). The cap keeps a long
-                    // title from pushing the chips out of the pane.
-                    .flex_none()
-                    .max_w(gpui::relative(0.6))
-                    .truncate()
-                    .text_lg()
-                    .line_height(px(24.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .child(title),
-            )
-            .child(
-                chip(
-                    "root-picker",
-                    Some("folder-open"),
-                    self.project_label.clone(),
-                    true,
-                    self.root_menu_open,
-                    false,
-                )
+        titlebar::drag_region(
+            div()
+                .id("chat-header")
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .h(px(40.))
                 .flex_none()
-                .on_click(cx.listener(|this, _event, window, cx| {
-                    this.execute_command(ChatCommand::ChooseProject, window, cx);
-                })),
+                .pl_4()
+                .pr_3()
+                .when(self.sidebar_collapsed, |row| {
+                    row.pl(SIDEBAR_COLLAPSED_INSET)
+                }),
+        )
+        .child(
+            div()
+                // Sized by its text, like the chips: nowrap gives it a
+                // real intrinsic width (a clamped, shrinkable title
+                // measured as 0 px and vanished). The cap keeps a long
+                // title from pushing the chips out of the pane.
+                .flex_none()
+                .max_w(gpui::relative(0.6))
+                .truncate()
+                .text_lg()
+                .line_height(px(24.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(gpui::rgb(theme::text_primary()))
+                .child(title),
+        )
+        .child(
+            chip(
+                "root-picker",
+                Some("folder-open"),
+                self.project_label.clone(),
+                true,
+                self.root_menu_open,
+                false,
             )
-            .when_some(self.branch_label.clone(), |row, branch| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(gpui::rgb(theme::status_error()))
-                        .whitespace_nowrap()
-                        .child(branch),
-                )
+            .flex_none()
+            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
             })
-            .child(div().flex_1())
+            .on_click(cx.listener(|this, _event, window, cx| {
+                this.execute_command(ChatCommand::ChooseProject, window, cx);
+            })),
+        )
+        .when_some(self.branch_label.clone(), |row, branch| {
+            row.child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(gpui::rgb(theme::status_error()))
+                    .whitespace_nowrap()
+                    .child(branch),
+            )
+        })
+        .child(div().flex_1())
     }
 
     /// Surface for the composer menus. A press outside closes every
@@ -148,7 +155,9 @@ impl ChatScreen {
                         } else {
                             theme::text_primary()
                         }))
+                        // A path: keep the file name, drop the start.
                         .line_clamp(1)
+                        .text_ellipsis_start()
                         .when(self.root_menu_selected == Some(index), |row| {
                             row.bg(gpui::rgb(theme::bg_input()))
                         })
@@ -351,6 +360,7 @@ impl ChatScreen {
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(gpui::rgb(theme::text_primary()))
                                         .line_clamp(1)
+                                        .text_ellipsis()
                                         .child(display_name),
                                 )
                                 .when(!server.description.is_empty(), |col| {
@@ -472,6 +482,7 @@ impl ChatScreen {
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .line_clamp(1)
+                            .text_ellipsis()
                             .child(entry.description.clone()),
                     ),
             );
@@ -635,17 +646,9 @@ impl ChatScreen {
             // Finished turns never change; only the last one is re-parsed.
             let revision = if index == last { btw.revision } else { 0 };
             let key = format!("btw-answer-{index}");
-            let streaming = index == last && btw.pending;
-            let document = self.markdown_cache.get(
-                &key,
-                MarkdownKind::Body,
-                revision,
-                &turn.answer,
-                streaming,
-            );
-            if self.markdown_cache.take_stale() {
-                self.schedule_stream_repaint(cx);
-            }
+            let document =
+                self.markdown_cache
+                    .get(&key, MarkdownKind::Body, revision, &turn.answer);
             // Same shape as the transcript: the question is a right-aligned
             // bubble, the answer is plain text on the left.
             body = body.child(

@@ -3,10 +3,7 @@
 
 use std::sync::Arc;
 
-use gpui::{
-    App, AppContext, Context, Div, Entity, EventEmitter, Focusable as _, Render, Window, div,
-    prelude::*,
-};
+use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*};
 
 use crate::backend::{AgentBackend, OAuthProvider};
 use crate::ui::icons::wordmark;
@@ -45,7 +42,9 @@ impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
         let email = cx.new(|cx| TextInput::new("Email", cx).with_tab_index(0));
         let password = cx.new(|cx| TextInput::new("Password", cx).masked().with_tab_index(1));
-        let callback = cx.new(|cx| TextInput::new("Paste the URL you were redirected to…", cx));
+        let callback = cx.new(|cx| {
+            TextInput::new("Paste the URL you were redirected to…", cx).with_tab_index(0)
+        });
         // Enter handlers receive their own field's text and read the sibling
         // through its entity; neither path leases the focused input.
         let (email_handle, password_handle) = (email.clone(), password.clone());
@@ -134,16 +133,12 @@ impl LoginScreen {
     {
         // Retained for the same thread-affinity reason as ChatScreen's
         // bridges; see ui::task::call.
-        self.bridged_tasks.borrow_mut().push(crate::ui::task::call(
-            &self.backend,
-            future,
-            cx,
-            |this, result, cx| {
-                this.busy = false;
-                then(this, result, cx);
-                cx.notify();
-            },
-        ));
+        let bridge = crate::ui::task::call(&self.backend, future, cx, |this, result, cx| {
+            this.busy = false;
+            then(this, result, cx);
+            cx.notify();
+        });
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     fn submit_clicked(
@@ -207,9 +202,8 @@ impl LoginScreen {
 impl EventEmitter<LoginSucceeded> for LoginScreen {}
 
 impl Render for LoginScreen {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy;
-        let focused = window.focused(cx);
         let mut card = div()
             .flex()
             .flex_col()
@@ -221,28 +215,7 @@ impl Render for LoginScreen {
             .border_1()
             .border_color(gpui::rgb(theme::border()))
             .when(busy, |container| container.opacity(0.7))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key.eq_ignore_ascii_case("tab")
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                    && !event.keystroke.modifiers.platform
-                    && matches!(this.oauth, OAuthFlow::Idle)
-                {
-                    // focus_next is unreliable in this gpui release; move
-                    // between the two fields explicitly.
-                    use gpui::Focusable as _;
-                    let focused_on_email = window.focused(cx).as_ref()
-                        == Some(&this.email_input.read(cx).focus_handle(cx));
-                    let target = if focused_on_email {
-                        this.password_input.clone()
-                    } else {
-                        this.email_input.clone()
-                    };
-                    let handle = target.read(cx).focus_handle(cx);
-                    window.focus(&handle, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .tab_group()
             .child(
                 div()
                     .flex()
@@ -261,18 +234,8 @@ impl Render for LoginScreen {
         match &self.oauth {
             OAuthFlow::Idle => {
                 card = card
-                    .child(field(
-                        "Email",
-                        self.email_input.clone(),
-                        focused.as_ref(),
-                        cx,
-                    ))
-                    .child(field(
-                        "Password",
-                        self.password_input.clone(),
-                        focused.as_ref(),
-                        cx,
-                    ))
+                    .child(field("Email", self.email_input.clone()))
+                    .child(field("Password", self.password_input.clone()))
                     .child(
                         widgets::primary_button("login-submit")
                             .w_full()
@@ -342,7 +305,7 @@ impl Render for LoginScreen {
                             .line_clamp(2)
                             .child(auth_url.clone()),
                     )
-                    .child(field("", self.callback_input.clone(), focused.as_ref(), cx))
+                    .child(field("", self.callback_input.clone()))
                     .child(
                         widgets::primary_button("oauth-confirm")
                             .w_full()
@@ -374,12 +337,14 @@ impl Render for LoginScreen {
         }
 
         div()
+            .relative()
             .flex_1()
             .min_h_0()
             .flex()
             .justify_center()
             .items_center()
             .bg(gpui::rgb(theme::bg_app()))
+            .child(crate::ui::titlebar::drag_strip())
             .child(card)
     }
 }
@@ -404,13 +369,7 @@ fn oauth_button(
     .child(provider.label().to_string())
 }
 
-fn field(
-    label: &str,
-    input: Entity<TextInput>,
-    focused: Option<&gpui::FocusHandle>,
-    cx: &App,
-) -> Div {
-    let is_focused = focused.is_some_and(|focused| input.read(cx).focus_handle(cx) == *focused);
+fn field(label: &str, input: Entity<TextInput>) -> Div {
     let mut container = div().flex().flex_col().gap_1();
     if !label.is_empty() {
         container = container.child(
@@ -420,5 +379,5 @@ fn field(
                 .child(label.to_string()),
         );
     }
-    container.child(widgets::input_frame(is_focused).child(input))
+    container.child(widgets::input_frame().child(input))
 }

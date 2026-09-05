@@ -58,6 +58,14 @@ impl MapleApp {
         }
     }
 
+    /// Show a task, for a click on its notification. Only the chat screen
+    /// can: login has no tasks, and settings keeps its parked chat as is.
+    fn open_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        if let Screen::Chat(chat) = &self.screen {
+            chat.update(cx, |chat, cx| chat.select_session(session_id, cx));
+        }
+    }
+
     /// A newer release exists: tell the chat screen so it shows the banner.
     /// Without a chat screen (login in progress) nothing is done here; the
     /// result stays in `update::available()` and seeds the next chat.
@@ -194,7 +202,7 @@ impl MapleApp {
     /// Restore the parked chat screen, applying any changed defaults.
     fn close_settings(&mut self, updated: crate::settings::AppSettings, cx: &mut Context<Self>) {
         self.settings = updated;
-        ui::theme::set_preference(ui::theme::Preference::parse(&self.settings.theme));
+        ui::theme::apply_preference(ui::theme::Preference::parse(&self.settings.theme), cx);
         if let Some(chat) = self.parked_chat.take() {
             let settings = self.settings.clone();
             chat.update(cx, |chat, cx| chat.apply_defaults(&settings, cx));
@@ -271,12 +279,14 @@ impl Render for MapleApp {
 /// which places it in the same event-loop turn as the window open.
 fn restoring_view() -> gpui::Div {
     div()
+        .relative()
         .flex_1()
         .min_h_0()
         .flex()
         .justify_center()
         .items_center()
         .bg(gpui::rgb(ui::theme::bg_app()))
+        .child(ui::titlebar::drag_strip())
         .child(
             div()
                 .text_sm()
@@ -368,7 +378,28 @@ pub fn run() {
                 &startup_settings.shortcut_overrides,
                 cx,
             );
-            ui::theme::set_preference(ui::theme::Preference::parse(&startup_settings.theme));
+            ui::theme::apply_preference(ui::theme::Preference::parse(&startup_settings.theme), cx);
+            ui::menus::install(cx);
+            // A click on a notification brings the app forward and shows
+            // the task it was about (tags are `task:<session id>`; see
+            // `ChatScreen::notify_desktop`).
+            cx.on_system_notification_response(|response, cx| {
+                cx.activate(true);
+                let session_id = response.tag.strip_prefix("task:").map(str::to_owned);
+                for window in cx.windows() {
+                    window
+                        .update(cx, |root, window, cx| {
+                            window.activate_window();
+                            if let (Some(session_id), Ok(app)) =
+                                (session_id.as_deref(), root.downcast::<MapleApp>())
+                            {
+                                app.update(cx, |app, cx| app.open_task(session_id, cx));
+                            }
+                        })
+                        .ok();
+                }
+            });
+            cx.set_reduce_motion(startup_settings.reduce_motion);
             let saved = startup_settings
                 .window
                 .map(crate::settings::WindowState::clamped);
@@ -393,8 +424,13 @@ pub fn run() {
                         window_bounds: Some(window_bounds),
                         titlebar: Some(gpui::TitlebarOptions {
                             title: Some(ui::titlebar::WINDOW_TITLE.into()),
-                            ..Default::default()
+                            // macOS: the bar is transparent and the app's
+                            // top row stands in for it; see ui::titlebar.
+                            appears_transparent: ui::titlebar::TRANSPARENT_TITLEBAR,
+                            traffic_light_position: ui::titlebar::TRANSPARENT_TITLEBAR
+                                .then_some(ui::titlebar::TRAFFIC_LIGHT_POSITION),
                         }),
+                        app_owns_titlebar_drag: ui::titlebar::TRANSPARENT_TITLEBAR,
                         ..Default::default()
                     },
                     move |_, cx| {

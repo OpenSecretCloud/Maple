@@ -254,7 +254,14 @@ impl ChatScreen {
                             row.border_color(gpui::rgb(theme::accent()))
                                 .text_color(gpui::rgb(theme::text_muted()))
                         })
-                        .child(div().flex_1().min_w_0().line_clamp(1).child(preview))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .line_clamp(1)
+                                .text_ellipsis()
+                                .child(preview),
+                        )
                         .when(!item.attachments.is_empty(), |row| {
                             row.child(icon("paperclip", px(12.), theme::text_muted()))
                         })

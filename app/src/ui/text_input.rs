@@ -2374,6 +2374,14 @@ impl Render for TextInput {
         }
         let key_context = self.key_context();
         let input = div()
+            .id(("text-input", cx.entity_id().as_u64()))
+            .role(if self.multiline {
+                gpui::Role::MultilineTextInput
+            } else {
+                gpui::Role::TextInput
+            })
+            .aria_label(self.placeholder.clone())
+            .aria_placeholder(self.placeholder.clone())
             .flex()
             .key_context(key_context)
             .track_focus(&self.focus_handle(cx))

@@ -56,14 +56,19 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
   (see `rebuild_project_groups`, `MarkdownCache`) and read it in render.
 - The transcript renders through `gpui::list` with `ListState`. Keep it
   that way: never emit all timeline items as plain children. When an item
-  changes in place, call `list_state.splice(ix..ix + 1, 1)` so its cached
-  height is re-measured — except the newest item, which must not be
-  spliced on streaming updates. A splice marks the item unmeasured (0 px)
-  until the next paint; a wheel event in that window clamps back to the
-  bottom and re-pins the view, so streaming would block scrolling up
-  (regression test: `test_streaming_chunk_keeps_wheel_scrolling_up`).
+  changes in place, call `list_state.remeasure_items(ix..ix + 1)`: it
+  keeps the row's last height as a hint and leaves the scroll anchor
+  alone. Reserve `splice` for items arriving or leaving; a splice drops
+  the measurement and moves the scroll anchor to the spliced row. The
+  list follows its own tail (`FollowMode::Tail`); call `scroll_to_end`
+  to pin it and `pause_following_tail` to hold it, never a render-time
+  scroll (regression test: `test_streaming_chunk_keeps_wheel_scrolling_up`).
 - Never block the UI thread. File dialogs, file reads, and SQLite go
   through `tokio::task::spawn_blocking` or `AgentBackend::spawn`.
+- Markdown parses off the UI thread. `MarkdownCache::get` returns the
+  previous document (or the raw text) while a background parse runs and
+  `ChatScreen::markdown_parsed` installs the result; only a short cold
+  source parses inline. Never call `markdown::parse` from a render path.
 - Batch events. The backend pump drains the channel and applies a batch
   in one update; `apply_service_event` returns whether anything visible
   changed so a batch with no visible change does not re-render.
