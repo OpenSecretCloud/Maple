@@ -47,7 +47,7 @@ windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 # commit that applies the Xcode 26.5 linker compatibility and embedded-host
 # main-thread restoration fixes directly on top of the 0.23.2 release so
 # Maple's embedded runtime remains reproducible.
-cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "e7156658562eea3cb1721f3435ea317edb87acbd", package = "cua-driver-sdk" }
+cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "4c17c70aa920f238bcccc4f1b13375d87ef0c478", package = "cua-driver-sdk" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Ask the session bus whether the GNOME compositor helper is loaded. It is
@@ -59,7 +59,7 @@ zbus = { version = "5.19", default-features = false, features = ["blocking-api",
 # already links, so it stays on by default. PipeWire per-window capture needs
 # libpipewire and libspa headers at build time and is deliberately left off;
 # full-screen portal screenshots do not need it.
-cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "e7156658562eea3cb1721f3435ea317edb87acbd", package = "cua-driver-sdk", features = ["portal-input"] }
+cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "4c17c70aa920f238bcccc4f1b13375d87ef0c478", package = "cua-driver-sdk", features = ["portal-input"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

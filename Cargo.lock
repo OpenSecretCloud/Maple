@@ -248,6 +248,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "const-random",
  "getrandom 0.3.4",
  "once_cell",
  "serde",
@@ -476,6 +477,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "as-raw-xcb-connection"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
+
+[[package]]
 name = "as-slice"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -500,11 +507,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb8421aaa9644a5faf26735f258b669b15f063313ef8f8e2bdb28912a1a6f111"
 dependencies = [
  "enumflags2",
+ "futures-channel",
  "futures-util",
  "getrandom 0.4.3",
  "serde",
  "serde_repr",
- "tokio",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "zbus",
 ]
 
@@ -1419,6 +1429,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "calloop-wayland-source"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "138efcf0940a02ebf0cc8d1eff41a1682a46b431630f4c52450d6265876021fa"
+dependencies = [
+ "calloop",
+ "rustix 1.1.4",
+ "wayland-backend",
+ "wayland-client",
+]
+
+[[package]]
 name = "camino"
 version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1915,6 +1937,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
+name = "const-random"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87e00182fe74b066627d63b85fd550ac2998d4b0bd86bfed477a0ae4c7c71359"
+dependencies = [
+ "const-random-macro",
+]
+
+[[package]]
+name = "const-random-macro"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9d839f2a20b0aee515dc581a6172f2321f96cab76c1a38a4c584a194955390e"
+dependencies = [
+ "getrandom 0.2.17",
+ "once_cell",
+ "tiny-keccak",
+]
+
+[[package]]
 name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2359,7 +2401,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-contract"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -2370,7 +2412,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-core"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2407,7 +2449,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-sdk"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.0",
@@ -2429,7 +2471,7 @@ dependencies = [
 [[package]]
 name = "cursor-overlay"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "anyhow",
  "cua-driver-contract",
@@ -3295,6 +3337,17 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "filedescriptor"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e40758ed24c9b2eeb76c35fb0aebc66c626084edd827e07e1552279814c6682d"
+dependencies = [
+ "libc",
+ "thiserror 1.0.69",
+ "winapi",
+]
 
 [[package]]
 name = "find-msvc-tools"
@@ -4172,12 +4225,18 @@ dependencies = [
  "accesskit",
  "accesskit_unix",
  "anyhow",
+ "as-raw-xcb-connection",
+ "ashpd",
+ "bitflags 2.13.1",
  "bytemuck",
  "calloop",
+ "calloop-wayland-source",
  "collections",
+ "filedescriptor",
  "futures",
  "gpui",
  "gpui_util",
+ "gpui_wgpu",
  "http_client",
  "image 0.25.10",
  "itertools 0.14.0",
@@ -4185,6 +4244,7 @@ dependencies = [
  "log",
  "notify-rust",
  "oo7",
+ "open",
  "parking_lot",
  "pathfinder_geometry",
  "pollster 0.4.0",
@@ -4196,6 +4256,17 @@ dependencies = [
  "swash",
  "url",
  "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-cursor",
+ "wayland-protocols",
+ "wayland-protocols-plasma",
+ "wayland-protocols-wlr",
+ "x11-clipboard",
+ "x11rb",
+ "xkbcommon 0.8.0",
+ "zed-scap",
+ "zed-xim",
 ]
 
 [[package]]
@@ -4341,6 +4412,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+ "zed-font-kit",
 ]
 
 [[package]]
@@ -5117,6 +5189,25 @@ name = "ipnet"
 version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
+
+[[package]]
+name = "is-docker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
+name = "is-wsl"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
+dependencies = [
+ "is-docker",
+ "once_cell",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -6890,6 +6981,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "open"
+version = "5.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c603ab8300cf18bc3b14146b19fe3dfcc4843ae5a400cd0e7a30b95aa366634"
+dependencies = [
+ "is-wsl",
+ "libc",
+]
+
+[[package]]
 name = "opensecret"
 version = "3.6.2"
 source = "git+https://github.com/benthecarman/Maple?branch=opensecret-git#0efc1bbb463d2d51aabcc9d1c3638e37094abe94"
@@ -7239,7 +7340,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pip-preview"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -7282,7 +7383,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-linux"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -7320,7 +7421,7 @@ dependencies = [
  "wayland-scanner",
  "x11",
  "x11rb",
- "xkbcommon",
+ "xkbcommon 0.9.0",
  "zbus",
  "zeroize",
 ]
@@ -7328,7 +7429,7 @@ dependencies = [
 [[package]]
 name = "platform-macos"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7367,7 +7468,7 @@ dependencies = [
 [[package]]
 name = "platform-windows"
 version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=e7156658562eea3cb1721f3435ea317edb87acbd#e7156658562eea3cb1721f3435ea317edb87acbd"
+source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8751,6 +8852,12 @@ dependencies = [
  "serde_derive_internals",
  "syn 3.0.4",
 ]
+
+[[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
 name = "scopeguard"
@@ -10147,6 +10254,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiny-keccak"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
+dependencies = [
+ "crunchy",
+]
+
+[[package]]
 name = "tiny-skia"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11368,6 +11484,7 @@ dependencies = [
  "cc",
  "downcast-rs",
  "rustix 1.1.4",
+ "scoped-tls",
  "smallvec",
  "wayland-sys",
 ]
@@ -11385,6 +11502,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayland-cursor"
+version = "0.31.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a52d18780be9b1314328a3de5f930b73d2200112e3849ca6cb11822793fb34d"
+dependencies = [
+ "rustix 1.1.4",
+ "wayland-client",
+ "xcursor",
+]
+
+[[package]]
 name = "wayland-protocols"
 version = "0.32.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11393,6 +11521,19 @@ dependencies = [
  "bitflags 2.13.1",
  "wayland-backend",
  "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "wayland-protocols-plasma"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b6d8cf1eb2c1c31ed1f5643c88a6e53538129d4af80030c8cabd1f9fa884d91"
+dependencies = [
+ "bitflags 2.13.1",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "wayland-scanner",
 ]
 
@@ -12552,14 +12693,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "x11-clipboard"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "662d74b3d77e396b8e5beb00b9cad6a9eccf40b2ef68cc858784b14c41d535a3"
+dependencies = [
+ "libc",
+ "x11rb",
+]
+
+[[package]]
 name = "x11rb"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414"
 dependencies = [
+ "as-raw-xcb-connection",
  "gethostname",
+ "libc",
  "rustix 1.1.4",
  "x11rb-protocol",
+ "xcursor",
 ]
 
 [[package]]
@@ -12607,6 +12761,40 @@ dependencies = [
  "libc",
  "quick-xml",
  "x11",
+]
+
+[[package]]
+name = "xcursor"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
+
+[[package]]
+name = "xim-ctext"
+version = "0.3.0"
+source = "git+https://github.com/zed-industries/xim-rs.git?rev=16f35a2c881b815a2b6cdfd6687988e84f8447d8#16f35a2c881b815a2b6cdfd6687988e84f8447d8"
+dependencies = [
+ "encoding_rs",
+]
+
+[[package]]
+name = "xim-parser"
+version = "0.2.1"
+source = "git+https://github.com/zed-industries/xim-rs.git?rev=16f35a2c881b815a2b6cdfd6687988e84f8447d8#16f35a2c881b815a2b6cdfd6687988e84f8447d8"
+dependencies = [
+ "bitflags 2.13.1",
+]
+
+[[package]]
+name = "xkbcommon"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d66ca9352cbd4eecbbc40871d8a11b4ac8107cfc528a6e14d7c19c69d0e1ac9"
+dependencies = [
+ "as-raw-xcb-connection",
+ "libc",
+ "memmap2",
+ "xkeysym",
 ]
 
 [[package]]
@@ -12851,6 +13039,19 @@ dependencies = [
  "windows-capture",
  "x11",
  "xcb",
+]
+
+[[package]]
+name = "zed-xim"
+version = "0.4.0-zed"
+source = "git+https://github.com/zed-industries/xim-rs.git?rev=16f35a2c881b815a2b6cdfd6687988e84f8447d8#16f35a2c881b815a2b6cdfd6687988e84f8447d8"
+dependencies = [
+ "ahash",
+ "hashbrown 0.14.5",
+ "log",
+ "x11rb",
+ "xim-ctext",
+ "xim-parser",
 ]
 
 [[package]]
