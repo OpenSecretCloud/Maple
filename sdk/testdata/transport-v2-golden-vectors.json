@@ -1,0 +1,50 @@
+{
+  "fixture_version": 1,
+  "protocol_version": 2,
+  "shared_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "session_master_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "session_id": "00112233-4455-6677-8899-aabbccddeeff",
+  "session_id_hex": "00112233445566778899aabbccddeeff",
+  "expires_at_unix_seconds": 1800003900,
+  "request_id_hex": "ffeeddccbbaa99887766554433221100",
+  "stream_sequence": 7,
+  "handshake": {
+    "info_utf8": "opensecret/transport-v2/handshake-key",
+    "derived_key_hex": "d534157fe075f3c5c13899ec5cabf66121006330a15a9e340132aaec235fb634",
+    "aad_hex": "6f70656e7365637265742f7472616e73706f72742d76322f6b65792d65786368616e6765",
+    "nonce_hex": "000102030405060708090a0b",
+    "plaintext_hex": "0200112233445566778899aabbccddeeff202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f000000006b49e13c",
+    "record_hex": "000102030405060708090a0bb88afcfdf3ec719871b6844fbfd510210dcef6c86b1e217bd66a24ef9be9746e784de2d83125ec52cfe009e0826bb85bd029744bd2759acd8dd698091d54b34fa9dfe9b6f26138375b",
+    "record_base64": "AAECAwQFBgcICQoLuIr8/fPscZhxtoRPv9UQIQ3O9shrHiF71mok75vpdG54TeLYMSXsUs/gCeCCa7hb0Cl0S9J1ms2N1pgJHVSzT6nf6bbyYTg3Ww=="
+  },
+  "request": {
+    "info_utf8": "opensecret/transport-v2/client-request",
+    "derived_key_hex": "c8865e05fdd7c0a8eada79cb117e97b1c11aeee640fd315f5971a89b3c8504f3",
+    "aad_hex": "6f70656e7365637265742f7472616e73706f72742d76322f726571756573742d7265636f72640000112233445566778899aabbccddeeff",
+    "nonce_hex": "0c0d0e0f1011121314151617",
+    "plaintext_utf8": "transport-v2 request vector",
+    "plaintext_hex": "7472616e73706f72742d7632207265717565737420766563746f72",
+    "record_hex": "0c0d0e0f1011121314151617ccab23f6818e4331eb8a631f5d0fb5c874bb20cc11efce9deeda2c8747fe81729890b1638dfac9cbc222f8",
+    "record_base64": "DA0ODxAREhMUFRYXzKsj9oGOQzHrimMfXQ+1yHS7IMwR786d7tosh0f+gXKYkLFjjfrJy8Ii+A=="
+  },
+  "unary_response": {
+    "info_utf8": "opensecret/transport-v2/enclave-response",
+    "derived_key_hex": "ac0b87b944dd080ed214ee042458f159df7dad0bca10c3bb1caee552d8633a0a",
+    "aad_hex": "6f70656e7365637265742f7472616e73706f72742d76322f756e6172792d726573706f6e73652d7265636f72640000112233445566778899aabbccddeeffffeeddccbbaa99887766554433221100",
+    "nonce_hex": "18191a1b1c1d1e1f20212223",
+    "plaintext_utf8": "transport-v2 unary response vector",
+    "plaintext_hex": "7472616e73706f72742d763220756e61727920726573706f6e736520766563746f72",
+    "record_hex": "18191a1b1c1d1e1f2021222356b4bfabc752cd7a75ac37c452d93ca225ddacf1a266267a17c5fdfec9945ace742d11a6a91de3d90e475fe7455bab8ecdd1",
+    "record_base64": "GBkaGxwdHh8gISIjVrS/q8dSzXp1rDfEUtk8oiXdrPGiZiZ6F8X9/smUWs50LRGmqR3j2Q5HX+dFW6uOzdE="
+  },
+  "stream_response": {
+    "aad_hex": "6f70656e7365637265742f7472616e73706f72742d76322f73747265616d2d726573706f6e73652d7265636f72640000112233445566778899aabbccddeeffffeeddccbbaa998877665544332211000000000000000007",
+    "nonce_hex": "2425262728292a2b2c2d2e2f",
+    "plaintext_utf8": "transport-v2 stream record vector",
+    "plaintext_hex": "7472616e73706f72742d76322073747265616d207265636f726420766563746f72",
+    "record_hex": "2425262728292a2b2c2d2e2f7f7818dab8d77e819361a2b9cb7fbccc2ba70f4bb6b751e1329622624dfa35cefb9031a6e93e608bc9777a57a7f35480ba",
+    "record_base64": "JCUmJygpKissLS4vf3gY2rjXfoGTYaK5y3+8zCunD0u2t1HhMpYiYk36Nc77kDGm6T5gi8l3elen81SAug=="
+  },
+  "request_without_body_json": "{\"version\":2,\"request_id\":\"ffeeddccbbaa99887766554433221100\",\"response_mode\":\"unary\",\"credential\":null,\"cache_namespace_root_base64\":null,\"request\":{\"method\":\"GET\",\"path\":\"/v1/models\",\"query\":\"limit=10\",\"headers\":[{\"name\":\"x-provider-beta\",\"value_base64\":\"YmV0YQ==\"}],\"body_base64\":null}}",
+  "request_with_empty_body_json": "{\"version\":2,\"request_id\":\"ffeeddccbbaa99887766554433221100\",\"response_mode\":\"unary\",\"credential\":null,\"cache_namespace_root_base64\":null,\"request\":{\"method\":\"POST\",\"path\":\"/v1/responses\",\"query\":null,\"headers\":[{\"name\":\"content-type\",\"value_base64\":\"YXBwbGljYXRpb24vanNvbg==\"}],\"body_base64\":\"\"}}"
+}

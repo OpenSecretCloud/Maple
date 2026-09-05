@@ -6,6 +6,7 @@ pub mod error;
 pub mod pcr;
 pub mod push;
 pub mod session;
+mod transport_v2;
 pub mod types;
 
 pub use client::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
