@@ -13,9 +13,10 @@ import {
   type WebSearchRequest,
   type WebSearchResponse
 } from "../../api";
+import { testAccessTokenForSubject } from "../utils";
 
 const apiUrl = "https://api.example.com";
-const accessToken = "web-access-token";
+const accessToken = testAccessTokenForSubject("web-user");
 const sessionId = "web-session-id";
 const sessionKey = new Uint8Array(32).fill(19);
 const verifiedPcr0 =

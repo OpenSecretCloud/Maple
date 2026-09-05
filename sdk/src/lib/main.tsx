@@ -13,6 +13,7 @@ import {
 import type { AttestationDocument } from "./attestation";
 import type { LoginResponse, ThirdPartyTokenResponse, DocumentResponse } from "./api";
 import { PcrConfig } from "./pcr";
+import { revokeAndClearUserCredentials } from "./credentialIdentity";
 
 const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
 
@@ -1034,6 +1035,7 @@ export function OpenSecretProvider({
     loading: true,
     user: undefined
   });
+  const authenticatedUserId = auth.user?.user.id;
   const [apiKey, setApiKeyState] = useState<string | undefined>();
   const [aiCustomFetch, setAiCustomFetch] = useState<OpenSecretContextType["aiCustomFetch"]>();
 
@@ -1079,11 +1081,13 @@ export function OpenSecretProvider({
   useEffect(() => {
     if (apiUrl) {
       // Pass API key if available, otherwise falls back to JWT
-      setAiCustomFetch(() => createCustomFetch({ apiKey, apiUrl, pcrConfig }));
+      setAiCustomFetch(() =>
+        createCustomFetch({ apiKey, apiUrl, pcrConfig, expectedUserId: authenticatedUserId })
+      );
     } else {
       setAiCustomFetch(undefined);
     }
-  }, [apiUrl, apiKey, pcrConfig]);
+  }, [apiUrl, apiKey, authenticatedUserId, pcrConfig]);
 
   async function fetchUser() {
     const access_token = window.localStorage.getItem("access_token");
@@ -1185,16 +1189,16 @@ export function OpenSecretProvider({
   }
 
   async function signOut() {
-    const refresh_token = window.localStorage.getItem("refresh_token");
-    if (refresh_token) {
-      try {
-        await api.fetchLogout(refresh_token);
-      } catch (error) {
-        console.error("Error during logout:", error);
+    await revokeAndClearUserCredentials({
+      expectedUserId: authenticatedUserId,
+      revokeRefreshToken: async (refreshToken) => {
+        try {
+          await api.fetchLogout(refreshToken);
+        } catch (error) {
+          console.error("Error during logout:", error);
+        }
       }
-    }
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
+    });
     clearAttestationSessions();
     // Clear any in-memory API key so no post-logout calls can use it
     setApiKey(undefined);
@@ -1332,8 +1336,8 @@ export function OpenSecretProvider({
     get: api.fetchGet,
     put: api.fetchPut,
     list: api.fetchList,
-    del: api.fetchDelete,
-    delAll: api.fetchDeleteAllKV,
+    del: (key) => api.fetchDelete(key, authenticatedUserId),
+    delAll: () => api.fetchDeleteAllKV(authenticatedUserId),
     refetchUser: fetchUser,
     verifyEmail: api.verifyEmail,
     requestNewVerificationCode: api.requestNewVerificationCode,
@@ -1348,8 +1352,10 @@ export function OpenSecretProvider({
       plaintextSecret: string,
       newPassword: string
     ) => api.confirmPasswordReset(email, alphanumericCode, plaintextSecret, newPassword, clientId),
-    requestAccountDeletion: api.requestAccountDeletion,
-    confirmAccountDeletion: api.confirmAccountDeletion,
+    requestAccountDeletion: (hashedSecret) =>
+      api.requestAccountDeletion(hashedSecret, authenticatedUserId),
+    confirmAccountDeletion: (confirmationCode, plaintextSecret) =>
+      api.confirmAccountDeletion(confirmationCode, plaintextSecret, authenticatedUserId),
     initiateGitHubAuth,
     handleGitHubCallback,
     initiateGoogleAuth,
@@ -1381,35 +1387,37 @@ export function OpenSecretProvider({
     uploadDocumentWithPolling: api.uploadDocumentWithPolling,
     createApiKey: api.createApiKey,
     listApiKeys: api.listApiKeys,
-    deleteApiKey: api.deleteApiKey,
+    deleteApiKey: (name) => api.deleteApiKey(name, authenticatedUserId),
     transcribeAudio: api.transcribeAudio,
     webSearch: api.webSearch,
     webExtract: api.webExtract,
     fetchResponsesList: api.fetchResponsesList,
     fetchResponse: api.fetchResponse,
-    cancelResponse: api.cancelResponse,
-    deleteResponse: api.deleteResponse,
+    cancelResponse: (responseId) => api.cancelResponse(responseId, authenticatedUserId),
+    deleteResponse: (responseId) => api.deleteResponse(responseId, authenticatedUserId),
     createResponse: api.createResponse,
     createConversation: api.createConversation,
     getConversation: api.getConversation,
     updateConversation: api.updateConversation,
-    deleteConversation: api.deleteConversation,
+    deleteConversation: (conversationId) =>
+      api.deleteConversation(conversationId, authenticatedUserId),
     listConversationItems: api.listConversationItems,
     getConversationItem: api.getConversationItem,
     listConversations: api.listConversations,
-    deleteConversations: api.deleteConversations,
-    batchDeleteConversations: api.batchDeleteConversations,
+    deleteConversations: () => api.deleteConversations(authenticatedUserId),
+    batchDeleteConversations: (ids) => api.batchDeleteConversations(ids, authenticatedUserId),
     batchUpdateConversationProject: api.batchUpdateConversationProject,
     createConversationProject: api.createConversationProject,
     listConversationProjects: api.listConversationProjects,
     getConversationProject: api.getConversationProject,
     updateConversationProject: api.updateConversationProject,
-    deleteConversationProject: api.deleteConversationProject,
+    deleteConversationProject: (projectId) =>
+      api.deleteConversationProject(projectId, authenticatedUserId),
     createInstruction: api.createInstruction,
     listInstructions: api.listInstructions,
     getInstruction: api.getInstruction,
     updateInstruction: api.updateInstruction,
-    deleteInstruction: api.deleteInstruction,
+    deleteInstruction: (instructionId) => api.deleteInstruction(instructionId, authenticatedUserId),
     setDefaultInstruction: api.setDefaultInstruction
   };
 

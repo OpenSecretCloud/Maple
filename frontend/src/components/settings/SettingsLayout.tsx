@@ -25,6 +25,7 @@ import { useCompactSettingsLayout } from "@/components/settings/useCompactSettin
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import {
   useSettingsNavigationLock,
   useSettingsNavigationLockState
@@ -35,6 +36,8 @@ import {
   stopAgentRuntimeForUser
 } from "@/services/agentRuntimeService";
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
+import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
+import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
 import { isIOS } from "@/utils/platform";
@@ -132,6 +135,7 @@ function SettingsNavLink({
 
 function SettingsLayoutContent() {
   const os = useOpenSecret();
+  const runtimeStore = useChatRuntimeStore<unknown, unknown>();
   const router = useRouter();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -316,27 +320,47 @@ function SettingsLayoutContent() {
 
     setSignOutError(null);
     setIsSigningOut(true);
+    // Pause every client-only FIFO before awaited account cleanup can yield.
+    // If logout fails, releasing this fence does not orphan an accepted server
+    // response; committed account teardown still cancels the store itself.
+    const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
     let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
     let signedOut = false;
     let nativeAuthCleared = false;
     const userId = os.auth.user?.user.id;
+
+    try {
+      assertChatAccountCredential(userId);
+    } catch (error) {
+      console.error("Account changed before sign out:", error);
+      releaseChatFence();
+      setSignOutError("Your account changed in another window. Refresh Maple before signing out.");
+      setIsSigningOut(false);
+      return;
+    }
 
     // Never sign out while this account may still have Agent tools executing.
     try {
       operationBlock = await stopAgentRuntimeForUser(userId);
     } catch (error) {
       console.error("Error stopping Agent Mode:", error);
+      releaseChatFence();
       setSignOutError("Maple could not stop Agent Mode. Please try logging out again.");
       setIsSigningOut(false);
       return;
     }
 
     try {
+      assertChatAccountCredential(userId);
       // Credential reset is required before logout so the next account cannot
       // inherit this user's local proxy key.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(userId, os.deleteApiKey);
+      await proxyService.stopAndResetProxy(userId, (name) => {
+        assertChatAccountCredential(userId);
+        return os.deleteApiKey(name);
+      });
 
+      assertChatAccountCredential(userId);
       try {
         getBillingService().clearToken();
       } catch (error) {
@@ -346,6 +370,7 @@ function SettingsLayoutContent() {
 
       await clearMapleApiAuthForUser(userId);
       nativeAuthCleared = true;
+      assertChatAccountCredential(userId);
       await os.signOut();
       signedOut = true;
       resetWorkspaceModePreference();
@@ -363,6 +388,7 @@ function SettingsLayoutContent() {
       );
     } finally {
       if (!signedOut) {
+        releaseChatFence();
         if (nativeAuthCleared) {
           try {
             await restoreMapleApiAuthForUser(userId);

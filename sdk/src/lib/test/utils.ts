@@ -11,3 +11,9 @@ export function bytesToHex(bytes: Uint8Array): string {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+
+export function testAccessTokenForSubject(subject: string): string {
+  const encode = (value: object) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${encode({ alg: "ES256K", typ: "JWT" })}.${encode({ sub: subject })}.sig`;
+}

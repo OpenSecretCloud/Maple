@@ -5,6 +5,11 @@ import { getPlatformApiUrl, getPlatformPcrConfig, platformRefreshToken } from ".
 import { apiConfig } from "./apiConfig";
 import { serializePcrConfig, snapshotPcrConfig, type PcrConfig } from "./pcr";
 import { classifyRecovery } from "./recovery";
+import {
+  accessTokenSubject,
+  accountCredentialMismatchError,
+  isAccountCredentialMismatchError
+} from "./credentialIdentity";
 
 interface EncryptedResponse {
   encrypted: string;
@@ -19,6 +24,7 @@ interface ApiResponse<T> {
 interface RequestAuthentication {
   token?: string;
   refreshAccessToken?: () => Promise<string>;
+  assertCurrentToken?: (attemptToken: string | undefined) => void;
 }
 
 interface ActiveAttestation {
@@ -168,6 +174,7 @@ async function performEncryptedApiCall<T, U>(
     );
 
     let token = authentication.token;
+    authentication.assertCurrentToken?.(token);
     let attestation = await dependencies.getAttestation(false, explicitApiUrl, pcrConfig);
     let replayed = false;
 
@@ -186,6 +193,9 @@ async function performEncryptedApiCall<T, U>(
 
     while (true) {
       const session = await requireSession(false);
+      // Attestation and recovery can yield. Bind every transport attempt to
+      // the account that initiated this logical request.
+      authentication.assertCurrentToken?.(token);
       const encryptedData = plaintextBody
         ? dependencies.encryptMessage(session.sessionKey, plaintextBody)
         : undefined;
@@ -200,6 +210,14 @@ async function performEncryptedApiCall<T, U>(
         headers,
         body: encryptedData ? JSON.stringify({ encrypted: encryptedData }) : undefined
       });
+      try {
+        // Do not publish one account's response into a replacement account's
+        // caller state, even when the transport itself succeeded.
+        authentication.assertCurrentToken?.(token);
+      } catch (error) {
+        await discardResponse(response);
+        throw error;
+      }
       const recovery = classifyRecovery(response.status, response.headers);
 
       if (!replayed && recovery === "renew_session") {
@@ -218,7 +236,10 @@ async function performEncryptedApiCall<T, U>(
       if (!replayed && recovery === "refresh_access_token" && authentication.refreshAccessToken) {
         replayed = true;
         await discardResponse(response);
+        // Never consume a replacement account's refresh credential.
+        authentication.assertCurrentToken?.(token);
         token = await authentication.refreshAccessToken();
+        authentication.assertCurrentToken?.(token);
         // The encrypted refresh request can repair a stale session with its
         // own replay budget, so always reload the current session afterward.
         attestation = await dependencies.getAttestation(false, explicitApiUrl, pcrConfig);
@@ -229,29 +250,41 @@ async function performEncryptedApiCall<T, U>(
       if (!response.ok) {
         try {
           const errorBody = (await response.json()) as { message?: string };
+          authentication.assertCurrentToken?.(token);
           result.error =
             errorBody.message || errorMessage || `HTTP error! Status: ${response.status}`;
-        } catch {
+        } catch (error) {
+          // Reading and parsing the body can yield. A credential replacement
+          // must win over the ordinary HTTP fallback rather than being hidden
+          // as a generic request error.
+          authentication.assertCurrentToken?.(token);
+          if (isAccountCredentialMismatchError(error)) throw error;
           result.error = errorMessage || `HTTP error! Status: ${response.status}`;
         }
+        authentication.assertCurrentToken?.(token);
         return result;
       }
 
       try {
         const encryptedResponse = (await response.json()) as EncryptedResponse;
+        authentication.assertCurrentToken?.(token);
         const decryptedResponse = dependencies.decryptMessage(
           session.sessionKey,
           encryptedResponse.encrypted
         );
         result.data = JSON.parse(decryptedResponse) as U;
       } catch (error) {
+        authentication.assertCurrentToken?.(token);
+        if (isAccountCredentialMismatchError(error)) throw error;
         console.error("Error decrypting or parsing response:", error);
         result.status = 500;
         result.error = "Failed to decrypt or parse the response";
       }
+      authentication.assertCurrentToken?.(token);
       return result;
     }
   } catch (error) {
+    if (isAccountCredentialMismatchError(error)) throw error;
     return {
       status: 500,
       error: error instanceof Error ? error.message : "Unknown error occurred"
@@ -269,9 +302,17 @@ export async function authenticatedApiCall<T, U>(
   url: string,
   method: string,
   data: T,
-  errorMessage?: string
+  errorMessage?: string,
+  expectedUserId?: string
 ): Promise<U> {
-  return authenticatedApiCallWithDependencies(url, method, data, errorMessage, defaultDependencies);
+  return authenticatedApiCallWithDependencies(
+    url,
+    method,
+    data,
+    errorMessage,
+    defaultDependencies,
+    expectedUserId
+  );
 }
 
 /** @internal Exported for deterministic transport tests, not from the package entry point. */
@@ -280,11 +321,26 @@ export async function authenticatedApiCallWithDependencies<T, U>(
   method: string,
   data: T,
   errorMessage: string | undefined,
-  dependencies: EncryptedApiDependencies
+  dependencies: EncryptedApiDependencies,
+  expectedUserId?: string
 ): Promise<U> {
   try {
     const accessToken = dependencies.getAccessToken();
     if (!accessToken) throw new Error("No access token available");
+    const expectedSubject = expectedUserId ?? accessTokenSubject(accessToken);
+    if (!expectedSubject || accessTokenSubject(accessToken) !== expectedSubject) {
+      throw accountCredentialMismatchError();
+    }
+
+    const assertCurrentToken = (attemptToken: string | undefined) => {
+      if (
+        accessTokenSubject(attemptToken ?? null) !== expectedSubject ||
+        accessTokenSubject(dependencies.getAccessToken()) !== expectedSubject
+      ) {
+        throw accountCredentialMismatchError();
+      }
+    };
+    assertCurrentToken(accessToken);
 
     const response = await performEncryptedApiCall<T, U>(
       url,
@@ -292,16 +348,22 @@ export async function authenticatedApiCallWithDependencies<T, U>(
       data,
       {
         token: accessToken,
+        assertCurrentToken,
         refreshAccessToken: async () => {
+          assertCurrentToken(accessToken);
           await dependencies.refreshAccessToken(url);
           const refreshedToken = dependencies.getAccessToken();
           if (!refreshedToken) throw new Error("No access token available");
+          assertCurrentToken(refreshedToken);
           return refreshedToken;
         }
       },
       errorMessage,
       dependencies
     );
+    // The inner request resolves through another promise boundary. Re-check
+    // before exposing either its data or its error to the authenticated caller.
+    assertCurrentToken(accessToken);
     return unwrapApiResponse(response, "No data received from the server");
   } catch (error) {
     console.error(error);

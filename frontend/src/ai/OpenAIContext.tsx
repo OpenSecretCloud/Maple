@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { useOpenSecret } from "@opensecret/react";
+import { createAccountBoundChatFetch } from "@/services/chatAccountCredential";
 import { OpenAIContext } from "./OpenAIContextDef";
 
 export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
@@ -8,7 +9,7 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
     throw new Error("VITE_OPEN_SECRET_API_URL must be set");
   }
 
-  const { aiCustomFetch } = useOpenSecret();
+  const { aiCustomFetch, auth } = useOpenSecret();
   const access_token = window.localStorage.getItem("access_token");
 
   // If we're not logged in we can't set up openai
@@ -24,7 +25,11 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
     defaultHeaders: {
       "Accept-Encoding": "identity"
     },
-    fetch: aiCustomFetch,
+    fetch: createAccountBoundChatFetch({
+      expectedUserId: auth.user?.user.id,
+      getAccessToken: () => window.localStorage.getItem("access_token"),
+      fetch: aiCustomFetch
+    }),
     maxRetries: 0 // Disable automatic retries
   });
 
