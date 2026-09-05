@@ -2268,11 +2268,8 @@ mod state_tests {
             this.upsert_session(summary("s1", "Renamed"), cx);
             assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "Renamed");
             this.sidebar.update(cx, |sidebar, _| {
-                sidebar
-                    .project_names_mut()
-                    .insert("/tmp/proj".to_string(), "Nice".to_string());
+                sidebar.set_project_name_for_test("/tmp/proj", "Nice");
             });
-            this.sync_sidebar(cx);
             assert_eq!(
                 this.sidebar.read(cx).rows()[0].project_name.as_ref(),
                 "Nice"
