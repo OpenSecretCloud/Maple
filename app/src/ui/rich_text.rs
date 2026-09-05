@@ -569,7 +569,7 @@ impl Element for RichText {
                         return;
                     }
                     if let Some(focus) = &focus {
-                        window.focus(focus);
+                        window.focus(focus, cx);
                     }
                     let Some(entity) = &entity else {
                         return;

@@ -6,19 +6,25 @@
 
 use std::future::Future;
 
-use gpui::Context;
+use gpui::{Context, Task};
 
 use crate::backend::AgentBackend;
 
 /// Run `future` on the backend runtime and hand its result to `then` on
 /// the UI thread. A cancelled or panicked task becomes an `Err` so the
 /// view always leaves its busy state.
+///
+/// Returns the bridging task instead of detaching it: the backend's
+/// sender holds the task's waker, and this gpui revision asserts a task
+/// is only dropped by the thread that spawned it. Retaining the task on
+/// the owning view keeps the final drop on the UI (or test) thread.
 pub fn call<V, T, F>(
     backend: &AgentBackend,
     future: F,
     cx: &mut Context<V>,
     then: impl FnOnce(&mut V, Result<T, String>, &mut Context<V>) + 'static,
-) where
+) -> Task<()>
+where
     V: 'static,
     T: Send + 'static,
     F: Future<Output = Result<T, String>> + Send + 'static,
@@ -31,5 +37,4 @@ pub fn call<V, T, F>(
         });
         this.update(cx, |this, cx| then(this, result, cx)).ok();
     })
-    .detach();
 }

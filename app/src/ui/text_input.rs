@@ -9,6 +9,7 @@ pub(crate) mod vim_actions;
 use super::{application_vim, spell, theme, widgets};
 use std::collections::VecDeque;
 use std::ops::Range;
+use std::sync::Arc;
 
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, ContentMask, Context, CursorStyle, Element,
@@ -1179,7 +1180,7 @@ impl TextInput {
     ) {
         self.is_selecting = false;
         self.finish_vim_lifecycle(LifecycleEvent::PopupTakeover, cx);
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         self.context_menu = Some(event.position);
         let index = self.index_for_mouse_position(event.position);
         self.spell_menu = self
@@ -1351,7 +1352,8 @@ impl TextInput {
         if let Some(on_paste_image) = self.on_paste_image.take() {
             let image = item.entries().iter().find_map(|entry| match entry {
                 ClipboardEntry::Image(image) => Some(image.clone()),
-                ClipboardEntry::String(_) => None,
+                // File-list entries are not pastable text or pixels.
+                _ => None,
             });
             if let Some(image) = image {
                 on_paste_image(image, window, cx);
@@ -1754,7 +1756,7 @@ struct ShapeCache {
     /// Runs carry the font, color, and underline ranges, so a theme
     /// switch or a new misspelling misses the cache as it should.
     runs: Vec<TextRun>,
-    lines: Vec<WrappedLine>,
+    lines: Arc<Vec<WrappedLine>>,
 }
 
 impl ShapeCache {
@@ -1775,7 +1777,7 @@ impl ShapeCache {
 /// Shaped paragraphs of one input plus the offsets needed to map between
 /// byte indices and pixel positions across newlines and wrap rows.
 struct TextLayout {
-    lines: Vec<WrappedLine>,
+    lines: Arc<Vec<WrappedLine>>,
     line_height: Pixels,
     text: SharedString,
 }
@@ -1792,7 +1794,7 @@ impl TextLayout {
     fn position_for_index(&self, index: usize) -> Option<gpui::Point<Pixels>> {
         let mut y = px(0.);
         let mut start = 0;
-        for line in &self.lines {
+        for line in self.lines.iter() {
             let end = start + line.len();
             if index <= end {
                 let local = line.position_for_index(index - start, self.line_height)?;
@@ -2059,11 +2061,13 @@ impl Element for TextElement {
         let lines = match cached {
             Some(lines) => lines,
             None => {
-                let lines = window
-                    .text_system()
-                    .shape_text(display_text.clone(), font_size, &runs, wrap_width, None)
-                    .map(|lines| lines.into_vec())
-                    .unwrap_or_default();
+                let lines = Arc::new(
+                    window
+                        .text_system()
+                        .shape_text(display_text.clone(), font_size, &runs, wrap_width, None)
+                        .map(|lines| lines.into_vec())
+                        .unwrap_or_default(),
+                );
                 self.input.update(cx, |input, _| {
                     input.shape_cache = Some(ShapeCache {
                         text: display_text.clone(),
@@ -2328,7 +2332,7 @@ impl Element for TextElement {
                 window.paint_quad(quad)
             }
             let mut origin = text_bounds.origin;
-            for line in &layout.lines {
+            for line in layout.lines.iter() {
                 let height = line.size(layout.line_height).height;
                 // A scrolled input shapes every line but paints only the
                 // rows inside the box.
@@ -2434,9 +2438,9 @@ impl Render for TextInput {
                     && this.marked_range.is_none()
                 {
                     if event.keystroke.modifiers.shift {
-                        window.focus_prev();
+                        window.focus_prev(cx);
                     } else {
-                        window.focus_next();
+                        window.focus_next(cx);
                     }
                     cx.stop_propagation();
                 }
@@ -2535,7 +2539,7 @@ mod tests {
             wrap_width: Some(px(200.)),
             font_size: px(14.),
             runs: vec![run(5, None)],
-            lines: Vec::new(),
+            lines: Arc::new(Vec::new()),
         };
         assert!(cache.matches(&text, Some(px(200.)), px(14.), &[run(5, None)]));
         assert!(!cache.matches(&"hellp".into(), Some(px(200.)), px(14.), &[run(5, None)]));
@@ -2557,6 +2561,7 @@ mod tests {
 
     #[gpui::test]
     fn test_typing_undoes_as_one_step(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx));
         input.update(cx, |input, cx| {
             for (offset, letter) in ["h", "i"].iter().enumerate() {
@@ -2573,6 +2578,7 @@ mod tests {
 
     #[gpui::test]
     fn test_a_new_run_starts_its_own_undo_step(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx));
         input.update(cx, |input, cx| {
             input.replace_range(0..0, "a", cx);
@@ -2588,6 +2594,7 @@ mod tests {
 
     #[gpui::test]
     fn test_delete_and_paste_are_their_own_steps(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx));
         input.update(cx, |input, cx| {
             input.set_text("word", cx);
@@ -2606,6 +2613,7 @@ mod tests {
 
     #[gpui::test]
     fn test_an_edit_drops_the_redo_history(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx));
         input.update(cx, |input, cx| {
             input.set_text("one", cx);
@@ -2618,6 +2626,7 @@ mod tests {
 
     #[gpui::test]
     fn test_clear_forgets_the_history(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx));
         input.update(cx, |input, cx| {
             input.set_text("sent message", cx);
@@ -2629,6 +2638,7 @@ mod tests {
 
     #[gpui::test]
     fn test_multiline_text_taller_than_the_box_scrolls(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct Host {
             input: Entity<TextInput>,
         }
@@ -2694,6 +2704,7 @@ mod tests {
 
     #[gpui::test]
     fn test_cursor_moves_never_leave_the_content(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx));
         input.update(cx, |input, cx| {
             input.set_text("héllo", cx);
@@ -2709,6 +2720,7 @@ mod tests {
 
     #[gpui::test]
     fn ordinary_input_keeps_standard_editing_with_vim_bindings_registered(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             crate::desktop::register_key_bindings(cx);
             TextInput::new("", cx)
@@ -2718,7 +2730,7 @@ mod tests {
         });
         cx.simulate_resize(gpui::size(px(500.), px(240.)));
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         cx.simulate_input("hi");
         cx.simulate_keystrokes("left backspace");
@@ -2736,6 +2748,7 @@ mod tests {
 
     #[gpui::test]
     fn vim_off_task_switch_preserves_standard_undo_history(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| TextInput::new("", cx).composer_vim(false));
 
         input.update(cx, |input, cx| {
@@ -2749,6 +2762,7 @@ mod tests {
 
     #[gpui::test]
     fn non_vim_backspace_deletes_the_active_marked_range(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             let mut input = TextInput::new("", cx);
             input.set_text("a", cx);
@@ -2773,6 +2787,7 @@ mod tests {
 
     #[gpui::test]
     fn non_vim_delete_deletes_the_active_marked_range(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             let mut input = TextInput::new("", cx);
             input.set_text("a", cx);
@@ -2797,6 +2812,7 @@ mod tests {
 
     #[gpui::test]
     fn disabled_composer_vim_never_overwrites_the_ordinary_selection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             let mut input = TextInput::new("", cx).composer_vim(false);
             input.set_text("hello world", cx);
@@ -2822,6 +2838,7 @@ mod tests {
 
     #[gpui::test]
     fn ordinary_input_escape_reaches_its_application_focus_handoff(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let leaves = Rc::new(Cell::new(0));
         let leaves_for_handler = leaves.clone();
         let input = cx.new(|cx| {
@@ -2836,7 +2853,7 @@ mod tests {
             input: input.clone(),
         });
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         cx.simulate_keystrokes("escape");
         assert_eq!(leaves.get(), 1);
@@ -2844,6 +2861,7 @@ mod tests {
 
     #[gpui::test]
     fn composer_vim_bindings_dispatch_and_insert_uses_the_input_handler(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             crate::desktop::register_key_bindings(cx);
             let mut input = TextInput::new("", cx).composer_vim(true).multiline(8);
@@ -2855,7 +2873,7 @@ mod tests {
         });
         cx.simulate_resize(gpui::size(px(500.), px(240.)));
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         // Direct text input is a no-op in Normal. The following edits arrive
         // through real, context-resolved GPUI bindings and the normal input
@@ -2886,6 +2904,7 @@ mod tests {
 
     #[gpui::test]
     fn normal_backspace_moves_left_without_editing(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             crate::desktop::register_key_bindings(cx);
             let mut input = TextInput::new("", cx).composer_vim(true);
@@ -2896,7 +2915,7 @@ mod tests {
             input: input.clone(),
         });
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         cx.simulate_keystrokes("backspace");
         cx.update(|_window, app| {
@@ -2908,6 +2927,7 @@ mod tests {
 
     #[gpui::test]
     fn vim_spelling_refreshes_after_edits_and_history_but_not_motions(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             let mut input = TextInput::new("", cx).composer_vim(true).spell_check();
             input.set_text("abc", cx);
@@ -2943,6 +2963,7 @@ mod tests {
 
     #[gpui::test]
     fn composer_normal_escape_notifies_the_application_synchronously(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let leaves = Rc::new(Cell::new(0));
         let leaves_for_handler = leaves.clone();
         let input = cx.new(|cx| {
@@ -2957,7 +2978,7 @@ mod tests {
             input: input.clone(),
         });
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         cx.simulate_keystrokes("escape");
         assert_eq!(leaves.get(), 1);
@@ -2972,6 +2993,7 @@ mod tests {
 
     #[gpui::test]
     fn composer_vim_preserves_maple_enter_behavior(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let submitted = Rc::new(RefCell::new(Vec::<String>::new()));
         let submitted_for_handler = submitted.clone();
         let input = cx.new(|cx| {
@@ -2990,7 +3012,7 @@ mod tests {
         });
         cx.simulate_resize(gpui::size(px(500.), px(240.)));
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         // Normal Enter sends; Shift-Enter is deliberately unavailable.
         cx.simulate_keystrokes("shift-enter enter");
@@ -3013,6 +3035,7 @@ mod tests {
 
     #[gpui::test]
     fn toggling_vim_cannot_reuse_state_across_standard_edits(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             let mut input = TextInput::new("", cx).composer_vim(true);
             input.set_text("abc", cx);

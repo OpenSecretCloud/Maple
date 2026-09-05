@@ -34,6 +34,9 @@ pub struct LoginScreen {
     /// Paste field for the OAuth redirect URL.
     callback_input: Entity<TextInput>,
     oauth: OAuthFlow,
+    /// Backend-call bridges retained for thread-affinity; see
+    /// [`crate::ui::task::call`].
+    bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
     error: Option<String>,
     busy: bool,
 }
@@ -78,6 +81,7 @@ impl LoginScreen {
             });
         });
         Self {
+            bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             email_input: email,
             password_input: password,
@@ -128,11 +132,18 @@ impl LoginScreen {
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
-        crate::ui::task::call(&self.backend, future, cx, |this, result, cx| {
-            this.busy = false;
-            then(this, result, cx);
-            cx.notify();
-        });
+        // Retained for the same thread-affinity reason as ChatScreen's
+        // bridges; see ui::task::call.
+        self.bridged_tasks.borrow_mut().push(crate::ui::task::call(
+            &self.backend,
+            future,
+            cx,
+            |this, result, cx| {
+                this.busy = false;
+                then(this, result, cx);
+                cx.notify();
+            },
+        ));
     }
 
     fn submit_clicked(
@@ -228,7 +239,7 @@ impl Render for LoginScreen {
                         this.email_input.clone()
                     };
                     let handle = target.read(cx).focus_handle(cx);
-                    window.focus(&handle);
+                    window.focus(&handle, cx);
                     cx.stop_propagation();
                 }
             }))

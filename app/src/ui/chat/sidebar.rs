@@ -191,7 +191,7 @@ impl ChatScreen {
     pub(super) fn focus_sidebar_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_sidebar_collapsed(false, cx);
         if let Some(input) = self.search_input.clone() {
-            input.read(cx).focus_handle(cx).focus(window);
+            input.read(cx).focus_handle(cx).focus(window, cx);
         }
         cx.notify();
     }

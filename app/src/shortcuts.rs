@@ -583,6 +583,7 @@ mod tests {
 
     #[gpui::test]
     fn invalid_replacement_preserves_live_generation(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
         cx.update(|app| {
             let mut runtime = ShortcutRuntime::bootstrap(&ShortcutOverrides::new(), app);
             let before = runtime.snapshot();
@@ -598,6 +599,7 @@ mod tests {
 
     #[gpui::test]
     fn replacement_remaps_and_disables_exact_slots(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
         cx.update(|app| {
             let mut runtime = ShortcutRuntime::bootstrap(&ShortcutOverrides::new(), app);
             let mut overrides = ShortcutOverrides::new();
@@ -679,6 +681,7 @@ mod tests {
 
     #[gpui::test]
     fn unknown_slot_does_not_block_known_set_disable_or_reset(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
         cx.update(|app| {
             let mut overrides = ShortcutOverrides::from([(
                 "newer-build.slot".to_owned(),
@@ -779,6 +782,7 @@ mod tests {
 
     #[gpui::test]
     fn ordinary_text_input_remap_removes_the_old_binding(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             let mut overrides = ShortcutOverrides::new();
             overrides.insert("text_input.backspace".into(), Some("ctrl-h".into()));
@@ -791,7 +795,7 @@ mod tests {
             input: input.clone(),
         });
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         cx.simulate_keystrokes("backspace");
         assert_eq!(cx.update(|_window, app| input.read(app).text()), "ab");
@@ -801,6 +805,7 @@ mod tests {
 
     #[gpui::test]
     fn composer_vim_remap_dispatches_the_new_key_only(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
         let input = cx.new(|cx| {
             let mut overrides = ShortcutOverrides::new();
             overrides.insert("composer_vim.normal.delete_chars".into(), Some("q".into()));
@@ -813,7 +818,7 @@ mod tests {
             input: input.clone(),
         });
         let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
-        cx.update(|window, _app| window.focus(&focus));
+        cx.update(|window, app| window.focus(&focus, app));
 
         cx.simulate_keystrokes("x");
         assert_eq!(cx.update(|_window, app| input.read(app).text()), "abc");

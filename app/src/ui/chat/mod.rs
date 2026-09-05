@@ -506,6 +506,9 @@ pub struct ChatScreen {
     transcribing: bool,
     /// Text-to-speech in progress.
     speech: Option<SpeechState>,
+    /// Backend-call bridges retained so their final drop stays on this
+    /// thread; see [`ChatScreen::call`].
+    bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
     /// Bumped on every speak or stop; stale chunks are dropped.
     speech_generation: u64,
     tts_voice: String,
@@ -902,6 +905,7 @@ impl ChatScreen {
             recording_starting: false,
             transcribing: false,
             speech: None,
+            bridged_tasks: std::cell::RefCell::new(Vec::new()),
             speech_generation: 0,
             tts_voice: settings.tts_voice,
             tts_speed: settings.tts_speed,
@@ -918,14 +922,23 @@ impl ChatScreen {
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
         let task = self.backend.spawn(future);
-        cx.spawn(async move |this, cx| {
+        let bridge = cx.spawn(async move |this, cx| {
             let result = task.await.unwrap_or_else(|error| {
                 log::debug!("agent task failed: {error:?}");
                 Err("The agent task was cancelled".to_string())
             });
             this.update(cx, |this, cx| then(this, result, cx)).ok();
-        })
-        .detach();
+        });
+        // Retain the bridge: the backend's sender holds its waker, and
+        // this gpui revision asserts a task is dropped only by the thread
+        // that spawned it. Handles are cheap; the vec stays bounded by
+        // trimming like the finished-run ring. ChatScreen lives on one
+        // thread, so the RefCell cannot race.
+        let mut tasks = self.bridged_tasks.borrow_mut();
+        tasks.push(bridge);
+        if tasks.len() > 64 {
+            drop(tasks.remove(0));
+        }
     }
 
     /// Sign-in finished: boot the runtime, then load the workspace state.
@@ -1194,7 +1207,7 @@ impl ChatScreen {
             multiple: false,
             prompt: None,
         });
-        cx.spawn(async move |this, cx| {
+        let bridge = cx.spawn(async move |this, cx| {
             let picked = receiver.await;
             this.update(cx, |this, cx| {
                 this.root_picker_open = false;
@@ -1211,8 +1224,10 @@ impl ChatScreen {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        });
+        // The portal dialog completes on its own thread; retained so the
+        // bridge dies here (see ChatScreen::call).
+        self.bridged_tasks.borrow_mut().push(bridge);
     }
 
     /// The root changed: update the header label, then read its branch
@@ -2769,7 +2784,7 @@ impl ChatScreen {
             return;
         }
         let handle = composer.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        window.focus(&handle, cx);
         composer.update(cx, |input, cx| {
             input.prepare_for_typing(cx);
             input.replace_text_in_range(None, &text, window, cx)
@@ -4214,7 +4229,7 @@ impl Render for ChatScreen {
         if self.root_menu_focus_pending {
             self.root_menu_focus_pending = false;
             if let Some(handle) = self.root_menu_focus.clone() {
-                window.focus(&handle);
+                window.focus(&handle, cx);
             }
         } else if !self.root_menu_open
             && let Some(handle) = self.root_menu_focus.clone()
@@ -4224,22 +4239,22 @@ impl Render for ChatScreen {
             // to its proxy; Standard mode keeps the legacy composer return.
             if self.application_vim_enabled {
                 if let Some(handle) = self.application_focus.clone() {
-                    window.focus(&handle);
+                    window.focus(&handle, cx);
                 }
             } else if let Some(composer) = self.composer.clone() {
                 let handle = composer.read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             }
         }
         if self.screen_focus_pending {
             self.screen_focus_pending = false;
             if self.application_vim_enabled {
                 if let Some(handle) = self.application_focus.clone() {
-                    window.focus(&handle);
+                    window.focus(&handle, cx);
                 }
             } else if let Some(composer) = self.composer.clone() {
                 let handle = composer.read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             }
         }
         if self.question_focus_pending {
@@ -4247,20 +4262,20 @@ impl Render for ChatScreen {
             if self.application_vim_enabled {
                 self.application_vim.permission_choice = 0;
                 if let Some(handle) = self.application_focus.clone() {
-                    window.focus(&handle);
+                    window.focus(&handle, cx);
                 }
             } else if self.current_question().is_some()
                 && let Some(input) = self.pending_question_input.clone()
             {
                 let handle = input.read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             }
         }
         if self.rename_focus_pending {
             self.rename_focus_pending = false;
             if let Some(input) = self.rename_input.clone() {
                 let handle = input.read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             }
         }
         let confirm_remove = self

@@ -32,7 +32,7 @@ impl ChatScreen {
         self.notice = None;
         self.recording_starting = true;
         let audio = Arc::clone(&self.audio);
-        cx.spawn(async move |this, cx| {
+        let bridge = cx.spawn(async move |this, cx| {
             let result = audio.start_recording().await;
             this.update(cx, |this, cx| {
                 this.recording_starting = false;
@@ -43,8 +43,8 @@ impl ChatScreen {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        });
+        self.bridged_tasks.borrow_mut().push(bridge);
     }
 
     fn finish_recording(&mut self, cx: &mut Context<Self>) {
@@ -54,7 +54,7 @@ impl ChatScreen {
         let audio = Arc::clone(&self.audio);
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        cx.spawn(async move |this, cx| {
+        let bridge = cx.spawn(async move |this, cx| {
             let result = match audio.stop_recording().await {
                 Ok(wav) => {
                     let task_backend = backend.clone();
@@ -77,8 +77,8 @@ impl ChatScreen {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        });
+        self.bridged_tasks.borrow_mut().push(bridge);
     }
 
     /// Append a transcript to the composer, after a space when text is
@@ -145,7 +145,7 @@ impl ChatScreen {
         let user_id = self.user_id.clone();
         let voice = self.tts_voice.clone();
         let speed = self.tts_speed;
-        cx.spawn(async move |this, cx| {
+        let bridge = cx.spawn(async move |this, cx| {
             let is_current = |this: &gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 this.read_with(cx, |this, _| this.speech_generation == generation)
                     .unwrap_or(false)
@@ -200,8 +200,8 @@ impl ChatScreen {
                 }
             })
             .ok();
-        })
-        .detach();
+        });
+        self.bridged_tasks.borrow_mut().push(bridge);
     }
 }
 

@@ -149,7 +149,7 @@ impl ChatScreen {
                 gpui::MouseButton::Right,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                     if let Some(focus) = &this.transcript_focus {
-                        window.focus(focus);
+                        window.focus(focus, cx);
                     }
                     this.transcript_menu = Some(event.position);
                     cx.notify();
@@ -218,15 +218,15 @@ impl ChatScreen {
     fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
         let state = &self.list_state;
         let track = state.viewport_bounds().size.height;
-        let max = state.max_offset_for_scrollbar().height;
+        let max = state.max_offset_for_scrollbar().y;
         if max <= px(1.) || track <= px(0.) {
             return None;
         }
-        let ratio = track / (max + track);
+        let ratio = f32::from(track) / f32::from(max + track);
         let thumb = (track * ratio).max(px(24.));
         let offset = -state.scroll_px_offset_for_scrollbar().y;
         let scrollable = (track - thumb).max(px(0.));
-        let progress = (offset / max).clamp(0., 1.);
+        let progress = (f32::from(offset) / f32::from(max)).clamp(0., 1.);
         Some(ScrollbarGeometry {
             thumb,
             thumb_top: scrollable * progress,
@@ -238,7 +238,7 @@ impl ChatScreen {
     /// Scroll so the thumb top sits at `thumb_top` within the track.
     fn scroll_to_thumb_top(&mut self, thumb_top: gpui::Pixels, geometry: &ScrollbarGeometry) {
         let progress = if geometry.scrollable > px(0.) {
-            (thumb_top / geometry.scrollable).clamp(0., 1.)
+            (f32::from(thumb_top) / f32::from(geometry.scrollable)).clamp(0., 1.)
         } else {
             0.
         };

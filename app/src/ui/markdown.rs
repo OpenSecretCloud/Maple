@@ -612,7 +612,7 @@ pub fn parse(source: &str) -> Document {
                         let language = code_block_language.take();
                         let label = language.as_deref().unwrap_or("code").to_uppercase();
                         blocks.push(Block::Code {
-                            code: SharedString::new(code.trim_end().to_string()),
+                            code: SharedString::new(code.trim_end()),
                             label: SharedString::new(label),
                             in_quote,
                             list_depth: list_counters.len(),
@@ -779,7 +779,7 @@ fn table_element(
                 .collect();
             let weight = weights.get(col_ix).copied().unwrap_or(1);
             let mut cell_div = div()
-                .flex_grow()
+                .flex_grow(1.)
                 .flex_basis(gpui::relative(weight as f32 / total as f32))
                 .min_w(px(0.))
                 .px_2()

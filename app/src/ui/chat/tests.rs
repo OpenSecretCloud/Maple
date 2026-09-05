@@ -74,6 +74,9 @@ mod state_tests {
             crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
         );
+        // This gpui's test scheduler flags activity on other threads unless
+        // parking is allowed; the backend runtime and image encoder run on tokio.
+        cx.executor().allow_parking();
         cx.new(|_cx| {
             let mut screen = ChatScreen::new_inner(backend, "user".to_string());
             screen.selected_session = Some("s1".to_string());
@@ -342,6 +345,9 @@ mod state_tests {
         .unwrap();
         let previous = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        // This gpui's test scheduler flags activity on other threads unless
+        // parking is allowed; the backend runtime and image encoder run on tokio.
+        cx.executor().allow_parking();
         let screen = cx.new(|_cx| {
             ChatScreen::new_inner(
                 std::sync::Arc::new(
@@ -2494,6 +2500,9 @@ mod state_tests {
             }
         }
 
+        // This gpui's test scheduler flags activity on other threads unless
+        // parking is allowed; the backend runtime and image encoder run on tokio.
+        cx.executor().allow_parking();
         let chat = cx.new(|_| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
@@ -2740,7 +2749,7 @@ mod state_tests {
             cx.update(|_window, app| chat.read(app).composer.clone().unwrap().focus_handle(app));
 
         // Focus the transcript the way a text-selection press does.
-        cx.update(|window, _| window.focus(&transcript_focus));
+        cx.update(|window, app| window.focus(&transcript_focus, app));
 
         // Typing routes straight into the composer, first character
         // included; the second arrives through the normal input path.
@@ -2757,7 +2766,7 @@ mod state_tests {
         );
 
         // A modifier chord keeps focus where it is.
-        cx.update(|window, _| window.focus(&transcript_focus));
+        cx.update(|window, app| window.focus(&transcript_focus, app));
         cx.simulate_keystrokes("alt-h");
         cx.update(|_window, app| {
             chat.update(app, |this, cx| {
@@ -2800,6 +2809,9 @@ mod state_tests {
             }
         }
 
+        // This gpui's test scheduler flags activity on other threads unless
+        // parking is allowed; the backend runtime and image encoder run on tokio.
+        cx.executor().allow_parking();
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
@@ -2945,7 +2957,7 @@ mod state_tests {
 
         // With composer Vim disabled, Escape hands focus back to the
         // application proxy instead of being swallowed by TextInput.
-        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.update(|window, app| window.focus(&composer_focus, app));
         cx.simulate_keystrokes("escape");
         assert_eq!(
             cx.update(|window, app| window.focused(app)),
@@ -2963,7 +2975,7 @@ mod state_tests {
         // focus to the application proxy rather than leaving a stale chord
         // highlight behind in the editor.
         composer.update(cx, |input, cx| input.set_vim_enabled(true, cx));
-        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.update(|window, app| window.focus(&composer_focus, app));
         cx.simulate_keystrokes("g a");
         assert_eq!(
             cx.update(|_window, app| chat.read(app).selected_transcript_id().map(str::to_owned)),
@@ -3027,7 +3039,7 @@ mod state_tests {
             this.application_vim.region = crate::ui::chat::navigation::ChatRegion::Sidebar;
             this.notice = None;
         });
-        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.update(|window, app| window.focus(&composer_focus, app));
         cx.simulate_keystrokes("ctrl-w h");
         cx.update(|window, app| {
             let chat = chat.read(app);
@@ -3045,7 +3057,7 @@ mod state_tests {
             this.application_vim.region = crate::ui::chat::navigation::ChatRegion::Sidebar;
             this.notice = None;
         });
-        cx.update(|window, _app| window.focus(&composer_focus));
+        cx.update(|window, app| window.focus(&composer_focus, app));
         cx.simulate_keystrokes("ctrl-w k");
         cx.update(|window, app| {
             let chat = chat.read(app);
@@ -3195,7 +3207,7 @@ mod state_tests {
         cx.simulate_resize(gpui::size(px(1200.), px(800.)));
         let composer_handle =
             cx.update(|_window, app| chat.read(app).composer.clone().unwrap().focus_handle(app));
-        cx.update(|window, _| window.focus(&composer_handle));
+        cx.update(|window, app| window.focus(&composer_handle, app));
 
         cx.simulate_keystrokes("secondary-p");
         assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
