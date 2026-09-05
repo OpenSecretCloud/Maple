@@ -337,12 +337,14 @@ impl Render for LoginScreen {
         }
 
         div()
+            .relative()
             .flex_1()
             .min_h_0()
             .flex()
             .justify_center()
             .items_center()
             .bg(gpui::rgb(theme::bg_app()))
+            .child(crate::ui::titlebar::drag_strip())
             .child(card)
     }
 }

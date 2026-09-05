@@ -12,6 +12,64 @@ use super::theme;
 /// and only one of them is ever on screen (see `super::decorations`).
 pub const WINDOW_TITLE: &str = "Maple - Private AI Chat";
 
+/// On macOS the system title bar is transparent and the app's own top
+/// row sits under it, so the window controls float over the content.
+pub const TRANSPARENT_TITLEBAR: bool = cfg!(target_os = "macos");
+
+/// Where the traffic lights sit when the bar is transparent.
+pub const TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(12.), px(12.));
+
+/// Horizontal room the traffic lights need at the left of the top row.
+pub const TRAFFIC_LIGHT_INSET: Pixels = px(78.);
+
+/// Left padding for a top row: clears the traffic lights when the bar is
+/// transparent, otherwise the ordinary gutter.
+pub fn top_row_inset(gutter: Pixels) -> Pixels {
+    if TRANSPARENT_TITLEBAR {
+        TRAFFIC_LIGHT_INSET
+    } else {
+        gutter
+    }
+}
+
+/// Make an element behave like the title bar it is standing in for: a
+/// press on its empty area drags the window and a double press zooms it,
+/// the way AppKit's bar does. Interactive children stop the press with
+/// `cx.stop_propagation()` so a click on them does not start a drag.
+pub fn drag_region<E>(element: E) -> E
+where
+    E: gpui::InteractiveElement + gpui::StatefulInteractiveElement,
+{
+    if !TRANSPARENT_TITLEBAR {
+        return element;
+    }
+    element
+        .window_control_area(gpui::WindowControlArea::Drag)
+        .on_mouse_down(gpui::MouseButton::Left, |event, window, _cx| {
+            if event.click_count >= 2 {
+                #[cfg(target_os = "macos")]
+                window.titlebar_double_click();
+            } else {
+                window.start_window_move();
+            }
+        })
+}
+
+/// An invisible strip along the top edge for screens with no top row of
+/// their own (login, the restoring placeholder), so the window still
+/// drags there.
+pub fn drag_strip() -> gpui::Stateful<gpui::Div> {
+    drag_region(
+        div()
+            .id("titlebar-drag-strip")
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(BAR_HEIGHT),
+    )
+}
+
 const BAR_HEIGHT: Pixels = px(40.);
 const CONTROL_SIZE: Pixels = px(24.);
 

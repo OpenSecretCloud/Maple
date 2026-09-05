@@ -271,12 +271,14 @@ impl Render for MapleApp {
 /// which places it in the same event-loop turn as the window open.
 fn restoring_view() -> gpui::Div {
     div()
+        .relative()
         .flex_1()
         .min_h_0()
         .flex()
         .justify_center()
         .items_center()
         .bg(gpui::rgb(ui::theme::bg_app()))
+        .child(ui::titlebar::drag_strip())
         .child(
             div()
                 .text_sm()
@@ -394,8 +396,13 @@ pub fn run() {
                         window_bounds: Some(window_bounds),
                         titlebar: Some(gpui::TitlebarOptions {
                             title: Some(ui::titlebar::WINDOW_TITLE.into()),
-                            ..Default::default()
+                            // macOS: the bar is transparent and the app's
+                            // top row stands in for it; see ui::titlebar.
+                            appears_transparent: ui::titlebar::TRANSPARENT_TITLEBAR,
+                            traffic_light_position: ui::titlebar::TRANSPARENT_TITLEBAR
+                                .then_some(ui::titlebar::TRAFFIC_LIGHT_POSITION),
                         }),
+                        app_owns_titlebar_drag: ui::titlebar::TRANSPARENT_TITLEBAR,
                         ..Default::default()
                     },
                     move |_, cx| {

@@ -18,6 +18,7 @@ use crate::ui::icons::{icon, spinner_with_id, wordmark};
 use crate::ui::motion;
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::titlebar;
 use crate::ui::widgets;
 
 /// Strings and element ids one sidebar task row shows, built when the
@@ -1581,18 +1582,19 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .bg(gpui::rgb(theme::bg_sidebar()))
-            .child(
+            .child(titlebar::drag_region(
                 div()
+                    .id("sidebar-top-row")
                     .flex()
                     .items_center()
                     .justify_between()
-                    .pl_4()
+                    .pl(titlebar::top_row_inset(px(16.)))
                     .pr_3()
                     .pt_3()
                     .pb_2()
                     .child(wordmark(px(16.), theme::text_primary()))
                     .child(self.render_sidebar_toggle(cx)),
-            )
+            ))
             .children(self.search_input.clone().map(|input| {
                 let active = !self.sidebar_filter.is_empty();
                 div()

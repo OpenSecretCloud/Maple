@@ -1002,17 +1002,22 @@ impl Render for SettingsScreen {
             .flex()
             .flex_col()
             .bg(gpui::rgb(theme::bg_app()))
-            .child(
+            .child(crate::ui::titlebar::drag_region(
                 div()
+                    .id("settings-header")
                     .flex()
                     .items_center()
                     .gap_3()
-                    .px_4()
+                    .pl(crate::ui::titlebar::top_row_inset(px(16.)))
+                    .pr_4()
                     .py_3()
                     .border_b_1()
                     .border_color(gpui::rgb(theme::border()))
                     .child(
                         widgets::ghost_button("settings-back")
+                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.close(cx);
                             }))
@@ -1038,12 +1043,15 @@ impl Render for SettingsScreen {
                                     .text_color(gpui::rgb(theme::status_error()))
                                     .cursor_pointer()
                             })
+                            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(|_this, _event, _window, cx| {
                                 cx.emit(SignOutRequested);
                             }))
                             .child("Sign out"),
                     ),
-            )
+            ))
             .child(
                 div()
                     .flex_1()
