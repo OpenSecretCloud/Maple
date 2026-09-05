@@ -583,6 +583,17 @@ impl Sidebar {
         self.rebuild_sections();
     }
 
+    /// Other tests persist their fixture ids into the settings file this
+    /// process reads; a fixture starts from nothing persisted.
+    #[cfg(test)]
+    pub(super) fn reset_persisted_for_test(&mut self) {
+        self.pinned_tasks.clear();
+        self.settled_tasks.clear();
+        self.unsettled_tasks.clear();
+        self.project_names.clear();
+        self.rebuild_sections();
+    }
+
     #[cfg(test)]
     pub(super) fn rename_target(&self) -> Option<RenameTarget> {
         self.rename.clone()

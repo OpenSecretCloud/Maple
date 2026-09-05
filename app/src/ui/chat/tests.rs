@@ -79,11 +79,19 @@ mod state_tests {
         // This gpui's test scheduler flags activity on other threads unless
         // parking is allowed; the backend runtime and image encoder run on tokio.
         cx.executor().allow_parking();
-        cx.new(|cx| {
+        let screen = cx.new(|cx| {
             let mut screen = ChatScreen::new_inner(backend, "user".to_string(), cx);
             screen.selected_session = Some("s1".to_string());
             screen
-        })
+        });
+        // Tests that settle or pin persist their fixture ids into the real
+        // settings file, which this fixture just loaded; sections must not
+        // depend on what an earlier test left there.
+        screen.update(cx, |this, cx| {
+            this.sidebar
+                .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+        });
+        screen
     }
 
     fn todo_item(id: &str, todos: serde_json::Value) -> AgentTimelineItem {
