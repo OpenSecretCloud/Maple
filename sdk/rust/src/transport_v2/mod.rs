@@ -1,16 +1,26 @@
-//! Dormant client engine for OpenSecret transport v2.
+//! Private client engine for OpenSecret transport v2.
 //!
-//! Nothing in this module is selected by [`crate::OpenSecretClient`] yet. The
-//! cutover layer will adapt existing public methods onto these primitives in a
-//! later change. Keeping this module private prevents an incomplete transport
-//! from becoming a compatibility surface.
+//! [`crate::OpenSecretClient`] is the stable public adapter. Keeping the wire
+//! primitives private prevents protocol details from becoming an accidental
+//! compatibility surface.
 
-#![allow(dead_code)]
-
+mod auth_bundle;
 mod crypto;
 mod envelope;
+mod network;
+mod runtime;
 mod session;
 mod stream;
+
+pub(crate) use auth_bundle::{
+    decode_auth_bundle, encode_auth_bundle, validate_v2_user_token_pair, ValidatedUserTokenPair,
+};
+pub(crate) use envelope::{
+    CacheNamespaceRoot, Credential, HeaderField, LogicalMethod, LogicalRequest, ResponseMode,
+};
+pub(crate) use network::{TransportV2Client, V2HttpResponse};
+pub(crate) use runtime::ApiKeyScope;
+pub(crate) use session::V2Session;
 
 use thiserror::Error;
 
@@ -70,6 +80,38 @@ pub(super) enum TransportV2Error {
 }
 
 pub(super) type Result<T> = std::result::Result<T, TransportV2Error>;
+
+impl From<TransportV2Error> for crate::error::Error {
+    fn from(error: TransportV2Error) -> Self {
+        match error {
+            TransportV2Error::SessionExpired
+            | TransportV2Error::RequestRecordBudgetExhausted
+            | TransportV2Error::ResponseRecordBudgetExhausted
+            | TransportV2Error::SessionStateUnavailable => Self::Session(error.to_string()),
+            TransportV2Error::InvalidRequest | TransportV2Error::LimitExceeded { .. } => {
+                Self::Configuration(error.to_string())
+            }
+            TransportV2Error::InvalidKeyExchange
+            | TransportV2Error::NonContributoryKeyExchange
+            | TransportV2Error::KeyDerivationFailed => Self::KeyExchange(error.to_string()),
+            TransportV2Error::EncryptionFailed | TransportV2Error::RandomnessUnavailable => {
+                Self::Encryption(error.to_string())
+            }
+            TransportV2Error::AuthenticationFailed
+            | TransportV2Error::RecordTooShort
+            | TransportV2Error::InvalidEncoding
+            | TransportV2Error::InvalidJson
+            | TransportV2Error::InvalidResponse
+            | TransportV2Error::ResponseModeMismatch
+            | TransportV2Error::RequestIdCollision
+            | TransportV2Error::BindingMismatch
+            | TransportV2Error::InvalidStreamFraming
+            | TransportV2Error::InvalidStreamRecord
+            | TransportV2Error::TruncatedStream
+            | TransportV2Error::StreamAlreadyTerminal => Self::InvalidResponse(error.to_string()),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

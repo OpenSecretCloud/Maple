@@ -7,11 +7,9 @@ use axum::{
     response::{IntoResponse, Response},
     Router,
 };
-use maple_proxy::{create_app, Config};
+use maple_proxy::{create_app, Config, TransportV2CacheNamespaceRoot};
 use serde::{Deserialize, Serialize};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -25,7 +23,7 @@ use tower_http::cors::{AllowHeaders, Any, CorsLayer};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const MAPLE_APP_IDENTIFIER: &str = "cloud.opensecret.maple";
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-static LEGACY_CONFIG_MIGRATION_COUNTER: AtomicU64 = AtomicU64::new(0);
+static PROXY_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -69,6 +67,7 @@ pub struct ProxyStatus {
 pub struct ProxyState {
     handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     config: Arc<Mutex<ProxyConfig>>,
+    cache_namespace_root: Arc<Mutex<Option<TransportV2CacheNamespaceRoot>>>,
     running: Arc<Mutex<bool>>,
     lifecycle: Arc<Mutex<()>>,
 }
@@ -78,6 +77,7 @@ impl ProxyState {
         Self {
             handle: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(ProxyConfig::default())),
+            cache_namespace_root: Arc::new(Mutex::new(None)),
             running: Arc::new(Mutex::new(false)),
             lifecycle: Arc::new(Mutex::new(())),
         }
@@ -92,15 +92,52 @@ impl ProxyState {
     }
 }
 
-// On Windows the proxy config lives in the roaming %APPDATA% profile, so a
-// plaintext api_key could sync across machines in a domain/AAD environment.
-// Store it in Windows Credential Manager instead and keep it out of the JSON.
-// The Tauri identifier scopes both the config directory and credential entry,
-// so managed workspace builds cannot read or overwrite production's key. The
-// production identifier remains the legacy service name, requiring no migration.
-// macOS/Linux keep their local plaintext-with-0o600 behavior unchanged.
+// On Windows the proxy config lives in roaming %APPDATA%, so secrets in that
+// JSON could sync across machines in a domain/AAD environment. Keep the
+// existing API-key Credential Manager behavior, but always store the
+// transport-v2 cache root in identifier-scoped LocalAppData. The keyring crate
+// uses enterprise-persistent WinCred entries, which are not device-local. The
+// cache root is therefore never written to Credential Manager or roaming JSON.
+// macOS/Linux atomically persist both secrets in owner-only (0o600) config.
 #[cfg(target_os = "windows")]
 const KEYRING_USER: &str = "proxy_api_key";
+#[cfg(target_os = "windows")]
+const CACHE_ROOT_DEVICE_FILE: &str = "proxy_transport_v2_cache_namespace_root";
+
+/// Atomically replace a secret-bearing file. `NamedTempFile` creates the
+/// temporary file with owner-only mode on Unix; set it explicitly before the
+/// first secret byte is written and persist it within the same directory.
+async fn atomic_write_secret_file(path: &Path, contents: Vec<u8>) -> Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write as _;
+
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("Secret file path has no parent directory"))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            temporary
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        temporary.write_all(&contents)?;
+        temporary.as_file().sync_all()?;
+        let persisted = temporary.persist(&path).map_err(|error| error.error)?;
+        persisted.sync_all()?;
+
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|error| anyhow!("Secret file write task failed: {error}"))?
+}
 
 /// Persist the API key in Windows Credential Manager. An empty key clears the
 /// entry. Returns `Ok(true)` when the key was stored (or cleared), `Ok(false)`
@@ -170,6 +207,59 @@ fn load_api_key(app_handle: &AppHandle) -> Result<Option<String>> {
     }
 }
 
+/// Keep the stable cache root in identifier-scoped LocalAppData rather than
+/// roaming AppData or enterprise-persistent Windows Credential Manager.
+#[cfg(target_os = "windows")]
+async fn cache_namespace_root_device_path(app_handle: &AppHandle) -> Result<PathBuf> {
+    let directory = app_handle
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| anyhow!("Failed to resolve app-local data directory: {error}"))?;
+    tokio::fs::create_dir_all(&directory).await?;
+    Ok(directory.join(CACHE_ROOT_DEVICE_FILE))
+}
+
+#[cfg(target_os = "windows")]
+async fn load_device_cache_namespace_root(
+    app_handle: &AppHandle,
+) -> Result<Option<TransportV2CacheNamespaceRoot>> {
+    let path = cache_namespace_root_device_path(app_handle).await?;
+    let encoded = match tokio::fs::read_to_string(&path).await {
+        Ok(encoded) => encoded,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    TransportV2CacheNamespaceRoot::from_base64(&encoded)
+        .map(Some)
+        .map_err(|_| anyhow!("Invalid device-local proxy transport cache root"))
+}
+
+#[cfg(target_os = "windows")]
+async fn persist_windows_cache_namespace_root(
+    app_handle: &AppHandle,
+    root: &TransportV2CacheNamespaceRoot,
+) -> Result<()> {
+    let path = cache_namespace_root_device_path(app_handle).await?;
+    atomic_write_secret_file(&path, root.to_base64().into_bytes()).await
+}
+
+#[cfg(target_os = "windows")]
+async fn load_windows_cache_namespace_root(
+    app_handle: &AppHandle,
+    legacy_roaming_value: Option<&str>,
+) -> Result<(Option<TransportV2CacheNamespaceRoot>, bool)> {
+    let has_legacy_roaming_value = legacy_roaming_value.is_some();
+    if let Some(root) = load_device_cache_namespace_root(app_handle).await? {
+        return Ok((Some(root), has_legacy_roaming_value));
+    }
+
+    let root = legacy_roaming_value
+        .map(TransportV2CacheNamespaceRoot::from_base64)
+        .transpose()
+        .map_err(|_| anyhow!("Invalid legacy proxy transport cache root"))?;
+    Ok((root, has_legacy_roaming_value))
+}
+
 #[tauri::command]
 pub async fn start_proxy(
     app_handle: AppHandle,
@@ -207,7 +297,12 @@ async fn start_proxy_inner(
         .clone()
         .unwrap_or_else(|| "https://enclave.trymaple.ai".to_string());
 
-    let proxy_config = build_proxy_server_config(&config, backend_url)?;
+    let cache_namespace_root = cache_namespace_root_for_app(&app_handle, state)
+        .await
+        .map_err(|error| format!("Failed to load proxy transport cache state: {error}"))?;
+
+    let proxy_config =
+        build_proxy_server_config(&config, backend_url, cache_namespace_root.clone())?;
 
     // Try to bind to the address first to check if port is available
     let addr = proxy_config
@@ -227,7 +322,7 @@ async fn start_proxy_inner(
     // Starting successfully means the exact credential/configuration is also
     // durable. In particular, do not hide Credential Manager or disk failures
     // behind a running in-memory proxy that will change after restart.
-    save_proxy_config(&app_handle, &config)
+    save_proxy_config(&app_handle, &config, &cache_namespace_root)
         .await
         .map_err(|error| format!("Failed to save proxy config: {error}"))?;
     *state.config.lock().await = config.clone();
@@ -259,9 +354,14 @@ async fn start_proxy_inner(
     })
 }
 
-fn build_proxy_server_config(config: &ProxyConfig, backend_url: String) -> Result<Config, String> {
+fn build_proxy_server_config(
+    config: &ProxyConfig,
+    backend_url: String,
+    cache_namespace_root: TransportV2CacheNamespaceRoot,
+) -> Result<Config, String> {
     let proxy_config = Config::new(config.host.clone(), config.port, backend_url)
         .with_pcr0_environment(configured_pcr0_environment()?)
+        .with_cache_namespace_root(cache_namespace_root)
         .with_debug(false)
         // Maple owns the browser boundary below so it can both list the
         // non-wildcard Authorization header and reject browser origins when
@@ -357,6 +457,9 @@ pub async fn load_proxy_config(
     state: State<'_, ProxyState>,
 ) -> Result<ProxyConfig, String> {
     let _lifecycle_guard = state.lifecycle.lock().await;
+    cache_namespace_root_for_app(&app_handle, &state)
+        .await
+        .map_err(|e| format!("Failed to load proxy transport cache state: {e}"))?;
     load_saved_proxy_config(&app_handle)
         .await
         .map_err(|e| format!("Failed to load proxy config: {e}"))
@@ -369,7 +472,10 @@ pub async fn save_proxy_settings(
     config: ProxyConfig,
 ) -> Result<(), String> {
     let _lifecycle_guard = state.lifecycle.lock().await;
-    save_proxy_config(&app_handle, &config)
+    let cache_namespace_root = cache_namespace_root_for_app(&app_handle, &state)
+        .await
+        .map_err(|e| format!("Failed to load proxy transport cache state: {e}"))?;
+    save_proxy_config(&app_handle, &config, &cache_namespace_root)
         .await
         .map_err(|e| format!("Failed to save proxy config: {e}"))
 }
@@ -382,6 +488,10 @@ pub async fn stop_and_reset_proxy(
     let _lifecycle_guard = state.lifecycle.lock().await;
     stop_proxy_inner(&state).await?;
 
+    let cache_namespace_root = cache_namespace_root_for_app(&app_handle, &state)
+        .await
+        .map_err(|error| format!("Failed to load proxy transport cache state: {error}"))?;
+
     // Clear account-bound state without discarding app/workspace routing such
     // as the managed proxy port or backend URL.
     let mut config = match load_saved_proxy_config(&app_handle).await {
@@ -391,7 +501,7 @@ pub async fn stop_and_reset_proxy(
     config.api_key.clear();
     config.enabled = false;
     config.auto_start = false;
-    save_proxy_config(&app_handle, &config)
+    save_proxy_config(&app_handle, &config, &cache_namespace_root)
         .await
         .map_err(|error| format!("Failed to reset proxy config: {error}"))?;
 
@@ -436,6 +546,10 @@ mod tests {
     use super::*;
     use axum::http::header::CONTENT_TYPE;
 
+    fn test_cache_namespace_root() -> TransportV2CacheNamespaceRoot {
+        TransportV2CacheNamespaceRoot::from_bytes([0x42; 32])
+    }
+
     #[test]
     fn new_and_legacy_unspecified_configs_disable_cors() {
         assert!(!ProxyConfig::default().enable_cors);
@@ -452,6 +566,28 @@ mod tests {
     }
 
     #[test]
+    fn renderer_config_never_serializes_the_transport_cache_root() {
+        let public_json = serde_json::to_value(ProxyConfig::default()).unwrap();
+        assert!(public_json
+            .get("transport_v2_cache_namespace_root")
+            .is_none());
+
+        let persisted_json = serde_json::to_value(persisted_proxy_config(
+            &ProxyConfig::default(),
+            &test_cache_namespace_root(),
+        ))
+        .unwrap();
+        #[cfg(not(target_os = "windows"))]
+        assert!(persisted_json
+            .get("transport_v2_cache_namespace_root")
+            .is_some());
+        #[cfg(target_os = "windows")]
+        assert!(persisted_json
+            .get("transport_v2_cache_namespace_root")
+            .is_none());
+    }
+
+    #[test]
     fn explicit_cors_keeps_browser_access_but_removes_saved_credential_fallback() {
         let config = ProxyConfig {
             api_key: "saved-key".to_string(),
@@ -459,11 +595,19 @@ mod tests {
             ..ProxyConfig::default()
         };
 
-        let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
+        let server_config = build_proxy_server_config(
+            &config,
+            "https://example.invalid".to_string(),
+            test_cache_namespace_root(),
+        )
+        .unwrap();
 
         assert!(!server_config.enable_cors);
         assert!(server_config.default_api_key.is_none());
+        assert_eq!(
+            server_config.cache_namespace_root,
+            Some(test_cache_namespace_root())
+        );
         assert_eq!(
             server_config.pcr0_environment,
             configured_pcr0_environment().unwrap()
@@ -477,8 +621,12 @@ mod tests {
             ..ProxyConfig::default()
         };
 
-        let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
+        let server_config = build_proxy_server_config(
+            &config,
+            "https://example.invalid".to_string(),
+            test_cache_namespace_root(),
+        )
+        .unwrap();
 
         assert!(!server_config.enable_cors);
         assert_eq!(server_config.default_api_key.as_deref(), Some("saved-key"));
@@ -497,8 +645,12 @@ mod tests {
             api_key: "saved-key".to_string(),
             ..ProxyConfig::default()
         };
-        let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
+        let server_config = build_proxy_server_config(
+            &config,
+            "https://example.invalid".to_string(),
+            test_cache_namespace_root(),
+        )
+        .unwrap();
         let app = apply_proxy_access_policy(server_config, config.enable_cors);
         let (base_url, server) = serve_test_app(app).await;
 
@@ -521,8 +673,12 @@ mod tests {
             api_key: "saved-key".to_string(),
             ..ProxyConfig::default()
         };
-        let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
+        let server_config = build_proxy_server_config(
+            &config,
+            "https://example.invalid".to_string(),
+            test_cache_namespace_root(),
+        )
+        .unwrap();
         let app = apply_proxy_access_policy(server_config, config.enable_cors);
         let (base_url, server) = serve_test_app(app).await;
 
@@ -544,8 +700,12 @@ mod tests {
             enable_cors: true,
             ..ProxyConfig::default()
         };
-        let server_config =
-            build_proxy_server_config(&config, "https://example.invalid".to_string()).unwrap();
+        let server_config = build_proxy_server_config(
+            &config,
+            "https://example.invalid".to_string(),
+            test_cache_namespace_root(),
+        )
+        .unwrap();
         let app = apply_proxy_access_policy(server_config, config.enable_cors);
         let (base_url, server) = serve_test_app(app).await;
 
@@ -616,11 +776,53 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn config_migration_test_dir() -> PathBuf {
-        let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let counter = PROXY_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
             "maple-proxy-config-migration-{}-{counter}",
             std::process::id()
         ))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn atomic_secret_write_is_owner_only_from_creation_and_replaces_contents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = config_migration_test_dir();
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let path = root.join("proxy_config.json");
+
+        atomic_write_secret_file(&path, b"first-secret".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"first-secret");
+        assert_eq!(
+            tokio::fs::metadata(&path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        atomic_write_secret_file(&path, b"replacement-secret".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"replacement-secret");
+        assert_eq!(
+            tokio::fs::metadata(&path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let entries = std::fs::read_dir(&root).unwrap().count();
+        assert_eq!(entries, 1, "atomic write left a temporary file behind");
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -920,7 +1122,7 @@ async fn migrate_legacy_proxy_config(legacy_path: &Path, target_path: &Path) -> 
         return Ok(());
     }
 
-    let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let counter = PROXY_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_name = format!(".proxy_config.migrate-{}-{counter}.tmp", std::process::id());
     let temp_path = target_path.with_file_name(temp_name);
 
@@ -1007,7 +1209,7 @@ async fn scrub_legacy_proxy_config(
     config.enabled = false;
     config.auto_start = false;
 
-    let counter = LEGACY_CONFIG_MIGRATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let counter = PROXY_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_name = format!(".proxy_config.scrub-{}-{counter}.tmp", std::process::id());
     let temp_path = path.with_file_name(temp_name);
     let rewrite = async {
@@ -1031,20 +1233,104 @@ async fn scrub_legacy_proxy_config(
     rewrite
 }
 
-async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Result<()> {
-    let path = get_config_path(app_handle).await?;
+#[derive(Clone, Serialize, Deserialize)]
+struct PersistedProxyConfig {
+    #[serde(flatten)]
+    config: ProxyConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport_v2_cache_namespace_root: Option<String>,
+}
 
-    // On Windows, move the API key into Credential Manager and scrub it from
-    // the JSON (the config dir is the roaming profile). Other platforms retain
-    // the existing owner-only JSON behavior.
+struct LoadedProxyConfig {
+    config: ProxyConfig,
+    cache_namespace_root: Option<TransportV2CacheNamespaceRoot>,
+    cache_namespace_root_needs_persistence: bool,
     #[cfg(target_os = "windows")]
-    let json = {
-        let scrubbed = match store_api_key(app_handle, &config.api_key) {
+    roaming_config: ProxyConfig,
+}
+
+fn persisted_proxy_config(
+    config: &ProxyConfig,
+    cache_namespace_root: &TransportV2CacheNamespaceRoot,
+) -> PersistedProxyConfig {
+    #[cfg(target_os = "windows")]
+    let _ = cache_namespace_root;
+    PersistedProxyConfig {
+        config: config.clone(),
+        #[cfg(not(target_os = "windows"))]
+        transport_v2_cache_namespace_root: Some(cache_namespace_root.to_base64()),
+        #[cfg(target_os = "windows")]
+        transport_v2_cache_namespace_root: None,
+    }
+}
+
+async fn cache_namespace_root_for_app(
+    app_handle: &AppHandle,
+    state: &ProxyState,
+) -> Result<TransportV2CacheNamespaceRoot> {
+    if let Some(root) = state.cache_namespace_root.lock().await.as_ref().cloned() {
+        return Ok(root);
+    }
+
+    let loaded = load_saved_proxy_state(app_handle).await?;
+    let (root, generated) = match loaded.cache_namespace_root {
+        Some(root) => (root, false),
+        None => (TransportV2CacheNamespaceRoot::generate()?, true),
+    };
+
+    if generated || loaded.cache_namespace_root_needs_persistence {
+        // Persist before admitting proxy traffic. A process-only root would
+        // silently destroy cache continuity on the next app restart.
+        #[cfg(target_os = "windows")]
+        {
+            persist_windows_cache_namespace_root(app_handle, &root).await?;
+            if loaded.cache_namespace_root_needs_persistence {
+                remove_windows_roaming_cache_namespace_root(app_handle, &loaded.roaming_config)
+                    .await?;
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        save_proxy_config(app_handle, &loaded.config, &root).await?;
+    }
+
+    *state.cache_namespace_root.lock().await = Some(root.clone());
+    Ok(root)
+}
+
+#[cfg(target_os = "windows")]
+async fn remove_windows_roaming_cache_namespace_root(
+    app_handle: &AppHandle,
+    roaming_config: &ProxyConfig,
+) -> Result<()> {
+    let path = get_config_path(app_handle).await?;
+    let persisted = PersistedProxyConfig {
+        config: roaming_config.clone(),
+        transport_v2_cache_namespace_root: None,
+    };
+    atomic_write_secret_file(&path, serde_json::to_vec_pretty(&persisted)?).await
+}
+
+async fn save_proxy_config(
+    app_handle: &AppHandle,
+    config: &ProxyConfig,
+    cache_namespace_root: &TransportV2CacheNamespaceRoot,
+) -> Result<()> {
+    let path = get_config_path(app_handle).await?;
+    let persisted = persisted_proxy_config(config, cache_namespace_root);
+    #[cfg(target_os = "windows")]
+    let mut persisted = persisted;
+
+    // On Windows, keep the API key's existing Credential Manager behavior and
+    // always keep the cache root out of roaming JSON. Root persistence is
+    // independent and already completed before this save path is entered.
+    #[cfg(target_os = "windows")]
+    {
+        persisted.config = match store_api_key(app_handle, &config.api_key) {
             Ok(true) => ProxyConfig {
                 api_key: String::new(),
-                ..config.clone()
+                ..persisted.config
             },
-            Ok(false) => config.clone(),
+            Ok(false) => persisted.config,
             // Clearing the key failed: don't scrub the JSON and report success,
             // since the stale credential survives and would be resurrected on
             // the next load. Propagate so the failure is visible.
@@ -1053,49 +1339,69 @@ async fn save_proxy_config(app_handle: &AppHandle, config: &ProxyConfig) -> Resu
             // in plaintext JSON so it isn't lost.
             Err(e) => {
                 log::warn!("{e}");
-                config.clone()
+                persisted.config
             }
         };
-        serde_json::to_string_pretty(&scrubbed)?
-    };
-    #[cfg(not(target_os = "windows"))]
-    let json = serde_json::to_string_pretty(config)?;
-
-    // Write the config file
-    tokio::fs::write(&path, json).await?;
-
-    // Set restrictive permissions on Unix systems (owner read/write only)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        tokio::fs::set_permissions(&path, perms).await?;
     }
 
-    Ok(())
+    let json = serde_json::to_string_pretty(&persisted)?;
+    atomic_write_secret_file(&path, json.into_bytes()).await
 }
 
 pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConfig> {
+    Ok(load_saved_proxy_state(app_handle).await?.config)
+}
+
+async fn load_saved_proxy_state(app_handle: &AppHandle) -> Result<LoadedProxyConfig> {
     let path = get_config_path(app_handle).await?;
 
-    if !path.exists() {
-        return Ok(ProxyConfig::default());
-    }
+    let persisted = if path.exists() {
+        let json = tokio::fs::read_to_string(path).await?;
+        serde_json::from_str::<PersistedProxyConfig>(&json)?
+    } else {
+        PersistedProxyConfig {
+            config: ProxyConfig::default(),
+            transport_v2_cache_namespace_root: None,
+        }
+    };
+    #[cfg(target_os = "windows")]
+    let mut persisted = persisted;
+    #[cfg(target_os = "windows")]
+    let roaming_config = persisted.config.clone();
 
-    let json = tokio::fs::read_to_string(path).await?;
-    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
-    let mut config: ProxyConfig = serde_json::from_str(&json)?;
-
-    // On Windows, prefer the API key from Credential Manager; fall back to any
-    // plaintext value still in the JSON if it's unavailable.
+    // On Windows, prefer the API key from Credential Manager. The cache root
+    // lives in identifier-scoped LocalAppData; a legacy roaming JSON value is
+    // migrated there and scrubbed on load.
     #[cfg(target_os = "windows")]
     if let Some(key) = load_api_key(app_handle)? {
         if !key.is_empty() {
-            config.api_key = key;
+            persisted.config.api_key = key;
         }
     }
+    #[cfg(target_os = "windows")]
+    let (cache_namespace_root, cache_namespace_root_needs_persistence) =
+        load_windows_cache_namespace_root(
+            app_handle,
+            persisted.transport_v2_cache_namespace_root.as_deref(),
+        )
+        .await?;
+    #[cfg(not(target_os = "windows"))]
+    let cache_namespace_root = persisted
+        .transport_v2_cache_namespace_root
+        .as_deref()
+        .map(TransportV2CacheNamespaceRoot::from_base64)
+        .transpose()
+        .map_err(|error| anyhow!("Invalid persisted proxy transport cache root: {error}"))?;
+    #[cfg(not(target_os = "windows"))]
+    let cache_namespace_root_needs_persistence = false;
 
-    Ok(config)
+    Ok(LoadedProxyConfig {
+        config: persisted.config,
+        cache_namespace_root,
+        cache_namespace_root_needs_persistence,
+        #[cfg(target_os = "windows")]
+        roaming_config,
+    })
 }
 
 // Initialize proxy on app startup if auto_start is enabled
@@ -1104,6 +1410,7 @@ pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
     let _lifecycle_guard = proxy_state.lifecycle.lock().await;
 
     // Load saved config
+    cache_namespace_root_for_app(&app_handle, &proxy_state).await?;
     let config = load_saved_proxy_config(&app_handle).await?;
 
     // Check if auto-start is enabled and we have an API key

@@ -21,7 +21,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opensecret = "3.6.2"
+opensecret = "4.0.0"
 bytes = "1"
 futures = "0.3"
 http = "1"
@@ -96,9 +96,10 @@ use mock attestation; Android also supports the exact emulator alias
 
 `send_inference_request` is the lossless inference API. The caller owns the
 HTTP method, route, query, headers, body bytes, and response parsing; the SDK
-owns attestation, authentication, encryption, retrying an expired session, and
-response decryption. It does not parse or rewrite inference parameters such as
-`stream`:
+owns attestation, authentication, encryption, pre-request session resumption,
+and response decryption. For Chat Completions it reads—but never rewrites—the
+top-level boolean `stream` selector so it can authenticate the correct unary or
+streaming response shape:
 
 ```rust
 use bytes::Bytes;
@@ -132,6 +133,8 @@ The SDK manages transport credentials and framing. Caller-provided `Host`,
 `Authorization`, `x-session-id`, `Content-Length`, `Content-Type`,
 `Content-Encoding`, `Accept-Encoding`, `Content-MD5`, `Digest`, hop-by-hop, and
 `Connection`-listed headers are not forwarded; other headers are preserved.
+Transport v2 never sends an outer `Authorization` header and never
+automatically resends a request after bytes may have reached the enclave.
 
 ## Authentication
 
@@ -177,7 +180,9 @@ let response = client.login_with_id(
 
 ### Token Management
 
-Tokens are automatically stored after login/registration. You can:
+Transport-v2 access and resumption descriptors are automatically stored after
+login/registration. Legacy v1 JWT pairs are intentionally rejected and require
+one fresh login. You can:
 
 ```rust
 // Get one coherent access/refresh pair snapshot
@@ -196,14 +201,19 @@ client.logout().await?;
 
 ## Session Management
 
-Every API call requires an encrypted session:
+Application calls use authority-scoped encrypted sessions:
 
-1. **Attestation Handshake**: Establishes trust and exchanges encryption keys
-2. **Encrypted Communication**: All subsequent calls use the session key
-3. **Token Authentication**: Protected endpoints require valid access tokens
+1. **Attestation Handshake**: A fresh client nonce and configured PCR0 policy
+   are verified before key exchange.
+2. **Encrypted Communication**: Method, path, query, headers, body, credential
+   transition, request ID, and response mode live inside one authenticated
+   request envelope.
+3. **Authority Binding**: Anonymous sessions may become user- or API-key-bound;
+   protected requests and their responses stay on that same session.
+4. **Replay Defense**: Every request carries a random per-session request ID.
 
 ```rust
-// Required before any API calls
+// Optional eager setup; API methods also establish sessions lazily.
 client.perform_attestation_handshake().await?;
 
 // Check session status
@@ -211,6 +221,24 @@ if let Some(session_id) = client.get_session_id()? {
     println!("Active session: {}", session_id);
 }
 ```
+
+The SDK generates a random provider-cache namespace root for each client by
+default. Applications that need cache continuity across restarts should persist
+an independent random 32-byte root and provide it at construction time. Never
+derive it from a user ID or API key:
+
+```rust
+use opensecret::TransportV2CacheNamespaceRoot;
+
+let root = TransportV2CacheNamespaceRoot::generate()?;
+let client = OpenSecretClient::new("https://api.opensecret.com")?
+    .with_cache_namespace_root(root);
+```
+
+Desktop/browser handoff can keep descriptors and the cache root together using
+the opaque, origin-bound `export_transport_v2_auth_bundle` and
+`import_transport_v2_auth_bundle` methods. Callers should store and transport
+the returned string opaquely rather than parsing its internal representation.
 
 ## Error Handling
 

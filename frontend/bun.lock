@@ -6,6 +6,7 @@
       "name": "maple",
       "dependencies": {
         "@opensecret/react": "file:../sdk",
+        "@opensecret/react-v1": "npm:@opensecret/react@3.4.1",
         "@radix-ui/react-alert-dialog": "^1.1.15",
         "@radix-ui/react-checkbox": "^1.3.3",
         "@radix-ui/react-dialog": "^1.1.15",
@@ -248,6 +249,8 @@
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
 
     "@opensecret/react": ["@opensecret/react@file:../sdk", { "dependencies": { "@peculiar/x509": "1.14.3", "@stablelib/base64": "2.0.1", "@stablelib/chacha20poly1305": "2.0.1", "@stablelib/random": "2.0.1", "cbor2": "1.12.0", "tweetnacl": "1.0.3", "zod": "3.25.76" }, "devDependencies": { "@eslint/js": "9.39.5", "@noble/curves": "1.9.7", "@noble/hashes": "1.8.0", "@types/bun": "1.1.13", "@types/react": "19.2.18", "@vitejs/plugin-react": "4.7.0", "ajv": "8.20.0", "eslint": "9.39.5", "eslint-plugin-react-hooks": "5.2.0", "globals": "15.15.0", "openai": "5.23.2", "prettier": "3.9.6", "typescript": "5.6.3", "typescript-eslint": "8.66.0", "vite": "6.4.3", "vite-plugin-dts": "4.5.4" }, "peerDependencies": { "react": "^18.0.0 || ^19.0.0" } }],
+
+    "@opensecret/react-v1": ["@opensecret/react@3.4.1", "", { "dependencies": { "@peculiar/x509": "1.14.3", "@stablelib/base64": "2.0.1", "@stablelib/chacha20poly1305": "2.0.1", "@stablelib/random": "2.0.1", "cbor2": "1.12.0", "tweetnacl": "1.0.3", "zod": "3.25.76" }, "peerDependencies": { "react": "^18.0.0 || ^19.0.0" } }, "sha512-9jcmjIljgw5ufHHV5Q/qFXT+B6bnjupCK1zpzGNuyohEcllwQubcdO+tkpZpCu6NgSJUIoe/XgKamMa+A6aFPw=="],
 
     "@peculiar/asn1-cms": ["@peculiar/asn1-cms@2.8.0", "", { "dependencies": { "@peculiar/asn1-schema": "^2.8.0", "@peculiar/asn1-x509": "^2.8.0", "@peculiar/asn1-x509-attr": "^2.8.0", "asn1js": "^3.0.10", "tslib": "^2.8.1" } }, "sha512-NgekZOrSJFSBFLFoLfwePguAWAx7z1+f2TEsWFUMyiqqfntZ4+S/S5hzqME3q4pCA0iOsFKdwiQ35dwY24eVqA=="],
 
@@ -1344,6 +1347,8 @@
     "@opensecret/react/typescript-eslint": ["typescript-eslint@8.66.0", "", { "dependencies": { "@typescript-eslint/eslint-plugin": "8.66.0", "@typescript-eslint/parser": "8.66.0", "@typescript-eslint/typescript-estree": "8.66.0", "@typescript-eslint/utils": "8.66.0" }, "peerDependencies": { "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0", "typescript": ">=4.8.4 <6.1.0" } }, "sha512-QlEbBPz/RuJ1XUHj29nm3t0F/O/cSlEnntozqPOYHnnTGAXFamnMBu5i9Vn6vhUPHGAjR+Vl+5J8vPN/BMUrJw=="],
 
     "@opensecret/react/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@opensecret/react-v1/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@radix-ui/react-alert-dialog/@radix-ui/react-slot": ["@radix-ui/react-slot@1.2.3", "", { "dependencies": { "@radix-ui/react-compose-refs": "1.1.2" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-aeNmHnBxbi2St0au6VBVC7JXFlhLlOnvIIlePNniyUNAClzmtAUEY8/pBiK3iHjufOlwA+c20/8jngo7xcrg8A=="],
 

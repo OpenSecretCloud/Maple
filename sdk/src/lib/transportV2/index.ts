@@ -34,6 +34,7 @@ export {
   PreparedTransportV2Request,
   TransportV2Session,
   type PrepareTransportV2Request,
+  type SerializedTransportV2SessionState,
   type TransportV2HttpRequest
 } from "./session";
 export { TransportV2Handshake, type TransportV2KeyExchangeRequest } from "./handshake";

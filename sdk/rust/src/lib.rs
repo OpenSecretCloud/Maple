@@ -9,7 +9,10 @@ pub mod session;
 mod transport_v2;
 pub mod types;
 
-pub use client::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
+pub use client::{
+    InferenceRequest, InferenceResponse, NativeOAuthHandoffGrant, NativeOAuthSessionInfo,
+    OpenSecretClient, OpenSecretResponseBody, TransportV2CacheNamespaceRoot,
+};
 pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};
 pub use push::*;

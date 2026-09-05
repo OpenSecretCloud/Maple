@@ -21,7 +21,7 @@ const MAX_STREAM_PLAINTEXT_BYTES: usize = 128 * 1024;
 const MAX_STREAM_ENCRYPTED_BYTES: usize = MAX_STREAM_PLAINTEXT_BYTES + MIN_RECORD_LEN;
 const MAX_STREAM_BASE64_BYTES: usize = 4 * MAX_STREAM_ENCRYPTED_BYTES.div_ceil(3);
 const MAX_STREAM_CARRIER_FRAME_BYTES: usize = b"data: ".len() + MAX_STREAM_BASE64_BYTES + 2;
-const MAX_LOGICAL_STREAM_BYTES: usize = 64 * 1024 * 1024;
+const MAX_LOGICAL_STREAM_BYTES: usize = EnvelopeLimits::RESPONSE.logical_body_bytes;
 
 #[derive(Eq, PartialEq)]
 pub(super) enum StreamEvent {
@@ -205,7 +205,7 @@ impl StreamDecoder {
                 limit: MAX_STREAM_PLAINTEXT_BYTES,
             });
         }
-        let record = StreamRecord::from_json_slice(&plaintext, &EnvelopeLimits::DEFAULT)?;
+        let record = StreamRecord::from_json_slice(&plaintext, &EnvelopeLimits::RESPONSE)?;
         if record.request_id() != &self.request_id || record.sequence() != expected_sequence {
             return Err(TransportV2Error::BindingMismatch);
         }

@@ -8,7 +8,10 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures::{future::BoxFuture, Stream, StreamExt};
-use opensecret::{client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult};
+use opensecret::{
+    client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult,
+    TransportV2CacheNamespaceRoot,
+};
 use std::{
     collections::HashSet,
     io,
@@ -62,6 +65,7 @@ impl CachedClientEntry {
 pub(crate) struct ProxyState {
     config: Config,
     clients: DashMap<String, Arc<CachedClientEntry>>,
+    cache_namespace_root: OnceCell<TransportV2CacheNamespaceRoot>,
     transport_override: Option<Arc<dyn InferenceTransport>>,
 }
 
@@ -70,6 +74,7 @@ impl ProxyState {
         Self {
             config,
             clients: DashMap::new(),
+            cache_namespace_root: OnceCell::new(),
             transport_override: None,
         }
     }
@@ -79,8 +84,23 @@ impl ProxyState {
         Self {
             config,
             clients: DashMap::new(),
+            cache_namespace_root: OnceCell::new(),
             transport_override: Some(transport),
         }
+    }
+
+    async fn cache_namespace_root(&self) -> Result<TransportV2CacheNamespaceRoot, ProxyError> {
+        self.cache_namespace_root
+            .get_or_try_init(|| async {
+                match &self.config.cache_namespace_root {
+                    Some(root) => Ok(root.clone()),
+                    None => TransportV2CacheNamespaceRoot::generate().map_err(|error| {
+                        transport_error_response("Provider-cache namespace setup", &error)
+                    }),
+                }
+            })
+            .await
+            .cloned()
     }
 
     fn client_entry_for_api_key(&self, api_key: &str) -> Arc<CachedClientEntry> {
@@ -110,19 +130,18 @@ impl ProxyState {
         let pcr0_environment = self.config.pcr0_environment;
         let request_timeout = self.config.request_timeout();
         let init_api_key = cache_key.clone();
+        let cache_namespace_root = self.cache_namespace_root().await?;
 
         let client = client_entry
             .cell
             .get_or_try_init(|| async move {
-                debug!(
-                    "Creating OpenSecret client for API key: {}...",
-                    &init_api_key[..8.min(init_api_key.len())]
-                );
+                debug!("Creating OpenSecret API-key client");
                 create_client_with_auth(
                     &backend_url,
                     &init_api_key,
                     pcr0_environment,
                     request_timeout,
+                    cache_namespace_root,
                 )
                 .await
                 .map(Arc::new)
@@ -211,13 +230,15 @@ async fn create_client_with_auth(
     api_key: &str,
     pcr0_environment: opensecret::Pcr0Environment,
     request_timeout: Duration,
+    cache_namespace_root: TransportV2CacheNamespaceRoot,
 ) -> Result<OpenSecretClient, ProxyError> {
     let client = OpenSecretClient::new_with_api_key_and_pcr0_environment(
         backend_url,
         api_key.to_string(),
         pcr0_environment,
     )
-    .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
+    .map_err(|e| transport_error_response("OpenSecret client creation", &e))?
+    .with_cache_namespace_root(cache_namespace_root);
 
     // Perform attestation handshake
     tokio::time::timeout(request_timeout, client.perform_attestation_handshake())
@@ -256,12 +277,7 @@ pub(crate) async fn proxy_openai_request(
     let api_key = extract_api_key(&headers, &state.config.default_api_key)
         .map_err(|e| (StatusCode::UNAUTHORIZED, Json(e)))?;
 
-    debug!(
-        "Proxying {} {} for API key: {}...",
-        method,
-        uri,
-        &api_key[..8.min(api_key.len())]
-    );
+    debug!("Proxying {} {}", method, uri);
 
     let transport = state.transport_for_api_key(&api_key).await?;
     let request = build_upstream_request(method, uri, &headers, body);
@@ -437,6 +453,7 @@ mod tests {
             backend_url: "http://localhost:3000".to_string(),
             pcr0_environment: opensecret::Pcr0Environment::Production,
             default_api_key: None,
+            cache_namespace_root: None,
             debug: false,
             enable_cors: false,
             request_timeout_secs: 300,
@@ -577,6 +594,26 @@ mod tests {
         state.remove_client_entry_if_same("key-a", &entry);
 
         assert!(!state.clients.contains_key("key-a"));
+    }
+
+    #[tokio::test]
+    async fn reuses_one_cache_namespace_root_across_api_key_clients() {
+        let state = ProxyState::new(test_config());
+
+        let first = state.cache_namespace_root().await.unwrap();
+        let second = state.cache_namespace_root().await.unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn uses_the_configured_cache_namespace_root() {
+        let expected = TransportV2CacheNamespaceRoot::from_bytes([0x42; 32]);
+        let mut config = test_config();
+        config.cache_namespace_root = Some(expected.clone());
+        let state = ProxyState::new(config);
+
+        assert_eq!(state.cache_namespace_root().await.unwrap(), expected);
     }
 
     #[tokio::test]
@@ -729,14 +766,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upstream_server_error_status_and_body_are_preserved() {
-        let error_body = Bytes::from_static(b"provider unavailable");
+    async fn authenticated_capacity_exhaustion_is_preserved_without_retry() {
+        let error_body = Bytes::from_static(
+            br#"{"error":{"message":"session exhausted","type":"session_exhausted"}}"#,
+        );
         let transport = Arc::new(MockTransport::new(vec![Ok(raw_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            &[("content-type", "text/plain"), ("retry-after", "2")],
+            &[
+                ("content-type", "application/json"),
+                ("retry-after", "2"),
+                ("x-request-id", "req-capacity"),
+            ],
             vec![error_body.clone()],
         ))]));
-        let response = mock_app(transport)
+        let response = mock_app(Arc::clone(&transport))
             .oneshot(
                 AxumRequest::builder()
                     .method(Method::GET)
@@ -749,9 +792,15 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()[header::RETRY_AFTER], "2");
+        assert_eq!(response.headers()["x-request-id"], "req-capacity");
         assert_eq!(
             to_bytes(response.into_body(), 1024).await.unwrap(),
             error_body
+        );
+        assert_eq!(
+            transport.take_requests().len(),
+            1,
+            "the proxy must forward an authenticated capacity response without retrying"
         );
     }
 

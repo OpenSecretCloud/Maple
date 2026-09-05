@@ -88,12 +88,14 @@ mock.module("@opensecret/react", () => ({
 }));
 
 const { initBillingService } = await import("@/billing/billingService");
+const { markTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
 const { AppleAuthProvider } = await import("./AppleAuthProvider");
 
 const originalGlobals = {
   document: Object.getOwnPropertyDescriptor(globalThis, "document"),
   localStorage: Object.getOwnPropertyDescriptor(globalThis, "localStorage"),
   sessionStorage: Object.getOwnPropertyDescriptor(globalThis, "sessionStorage"),
+  setTimeout: Object.getOwnPropertyDescriptor(globalThis, "setTimeout"),
   window: Object.getOwnPropertyDescriptor(globalThis, "window")
 };
 
@@ -119,6 +121,7 @@ describe("AppleAuthProvider", () => {
   let signInControls: SignInControl[];
   let initiateAppleAuth: ReturnType<typeof mock>;
   let handleAppleCallback: ReturnType<typeof mock>;
+  let mintNativeHandoffGrant: ReturnType<typeof mock>;
   let onError: ReturnType<typeof mock>;
   let onSuccess: ReturnType<typeof mock>;
   let redirectAfterLogin: ReturnType<typeof mock>;
@@ -136,6 +139,10 @@ describe("AppleAuthProvider", () => {
 
     initiateAppleAuth = mock(async () => ({ state: states.shift() ?? "unexpected-state" }));
     handleAppleCallback = mock(async () => {});
+    mintNativeHandoffGrant = mock(async () => ({
+      grant: "header.payload.signature",
+      expires_at: 1_800_000_000
+    }));
     onError = mock(() => {});
     onSuccess = mock(() => {});
     redirectAfterLogin = mock(() => {});
@@ -149,7 +156,8 @@ describe("AppleAuthProvider", () => {
 
     currentOpenSecret = {
       initiateAppleAuth,
-      handleAppleCallback
+      handleAppleCallback,
+      mintNativeHandoffGrant
     };
     initBillingService(currentOpenSecret as never);
 
@@ -174,6 +182,10 @@ describe("AppleAuthProvider", () => {
     setGlobal("document", documentTarget);
     setGlobal("localStorage", localStorage);
     setGlobal("sessionStorage", sessionStorage);
+    setGlobal(
+      "setTimeout",
+      mock(() => 0)
+    );
     setGlobal("window", windowValue);
   });
 
@@ -184,6 +196,7 @@ describe("AppleAuthProvider", () => {
     restoreGlobal("document", originalGlobals.document);
     restoreGlobal("localStorage", originalGlobals.localStorage);
     restoreGlobal("sessionStorage", originalGlobals.sessionStorage);
+    restoreGlobal("setTimeout", originalGlobals.setTimeout);
     restoreGlobal("window", originalGlobals.window);
     console.error = originalConsoleError;
   });
@@ -314,5 +327,25 @@ describe("AppleAuthProvider", () => {
     expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(redirectAfterLogin).toHaveBeenCalledTimes(1);
     expect(redirectAfterLogin).toHaveBeenCalledWith("max");
+    expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+  });
+
+  test("mints the hosted Apple handoff grant for the persisted native session", async () => {
+    const nativeOAuthAttempt = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const nativeSessionId = "abcdef12-2222-3333-4444-555555555555";
+    markTransportV2DesktopOAuth(nativeOAuthAttempt, nativeSessionId);
+
+    await act(async () => {
+      renderer = create(<AppleAuthProvider inviteCode="invite" />);
+    });
+    const attempt = await startAttempt();
+    await act(async () => {
+      attempt.control.resolve({ authorization: { code: "code", state: "state-one" } });
+      await attempt.completion;
+    });
+
+    expect(handleAppleCallback).toHaveBeenCalledWith("code", "state-one", "invite");
+    expect(mintNativeHandoffGrant).toHaveBeenCalledWith(nativeSessionId, nativeOAuthAttempt);
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 });

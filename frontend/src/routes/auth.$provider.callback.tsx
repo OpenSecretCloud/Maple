@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, useRouter, Link } from "@tanstack/react-router";
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,6 +7,13 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  buildTransportV2NativeAuthDeepLink,
+  clearDesktopOAuthTransport,
+  isNativeOAuthRedirect,
+  readTransportV2DesktopOAuthAttempt,
+  readTransportV2DesktopOAuthSession
+} from "@/services/desktopOAuthTransport";
 
 export const Route = createFileRoute("/auth/$provider/callback")({
   component: OAuthCallback
@@ -32,27 +39,26 @@ function OAuthCallback() {
   const [nativeRedirectUrl, setNativeRedirectUrl] = useState<string | null>(null);
   const navigate = useNavigate();
   const router = useRouter();
-  const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
+  const {
+    handleGitHubCallback,
+    handleGoogleCallback,
+    handleAppleCallback,
+    mintNativeHandoffGrant
+  } = useOpenSecret();
   const processedRef = useRef(false);
 
   // Helper functions for the callback process
-  const handleSuccessfulAuth = () => {
+  const handleSuccessfulAuth = useCallback(async () => {
     // Check if this is a Tauri app auth flow (desktop or mobile)
-    const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
-
-    // Clear the flag
-    localStorage.removeItem("redirect-to-native");
+    const isTauriAuth = isNativeOAuthRedirect();
 
     if (isTauriAuth) {
-      // Handle Tauri redirect
-      const accessToken = localStorage.getItem("access_token") || "";
-      const refreshToken = localStorage.getItem("refresh_token");
-
-      let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
-
-      if (refreshToken) {
-        deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+      const nativeOAuthAttemptId = readTransportV2DesktopOAuthAttempt();
+      const nativeSessionId = readTransportV2DesktopOAuthSession();
+      if (!nativeOAuthAttemptId || !nativeSessionId) {
+        throw new Error("Desktop authentication state is missing or expired; please restart login");
       }
+      const { grant } = await mintNativeHandoffGrant(nativeSessionId, nativeOAuthAttemptId);
 
       const selectedPlan = sessionStorage.getItem("selected_plan");
       sessionStorage.removeItem("selected_plan");
@@ -60,9 +66,12 @@ function OAuthCallback() {
       sessionStorage.removeItem("post_auth_redirect");
       const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
-      if (!selectedPlan && safePostAuthRedirect) {
-        deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
-      }
+      const deepLinkUrl = buildTransportV2NativeAuthDeepLink(
+        grant,
+        nativeSessionId,
+        !selectedPlan ? safePostAuthRedirect : null
+      );
+      clearDesktopOAuthTransport();
 
       // Store the URL in state so we can show a manual open button as fallback
       setNativeRedirectUrl(deepLinkUrl);
@@ -95,7 +104,7 @@ function OAuthCallback() {
         navigate({ to: "/" });
       }
     }, 2000);
-  };
+  }, [mintNativeHandoffGrant, navigate, router]);
 
   const handleAuthError = (error: unknown) => {
     console.error(`Authentication callback error:`, error);
@@ -159,7 +168,7 @@ function OAuthCallback() {
           }
 
           // Handle the successful authentication (redirect)
-          handleSuccessfulAuth();
+          await handleSuccessfulAuth();
         } catch (error) {
           // Handle authentication error
           handleAuthError(error);
@@ -173,7 +182,13 @@ function OAuthCallback() {
     };
 
     processCallback();
-  }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider, router]);
+  }, [
+    handleAppleCallback,
+    handleGitHubCallback,
+    handleGoogleCallback,
+    handleSuccessfulAuth,
+    provider
+  ]);
 
   // After auth completes for a native app flow, show a button to open the app
   if (nativeRedirectUrl) {
@@ -195,7 +210,7 @@ function OAuthCallback() {
   }
 
   // If this is a Tauri app auth flow (desktop or mobile), show processing UI
-  if (localStorage.getItem("redirect-to-native") === "true") {
+  if (isNativeOAuthRedirect()) {
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>

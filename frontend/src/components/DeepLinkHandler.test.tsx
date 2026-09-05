@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { beginNativeOAuthAttempt } from "@/services/nativeOAuthAttempt";
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -37,12 +36,33 @@ interface DeepLinkEvent {
 let deepLinkListener: ((event: DeepLinkEvent) => void) | undefined;
 let currentUser: { id: string } | undefined;
 const unlisten = mock(() => {});
+const importAuthBundle = mock(async (bundle: string, apiUrl: string) => {
+  void bundle;
+  void apiUrl;
+});
+const nativeOAuthAttemptId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const nativeSessionId = "abcdef12-2222-3333-4444-555555555555";
+const nativeInvoke = mock(async (command: string) => {
+  if (command === "native_oauth_begin") {
+    return { nativeOAuthAttempt: nativeOAuthAttemptId, sessionId: nativeSessionId };
+  }
+  if (command === "native_oauth_redeem") {
+    return { userId: "user-one", authBundle: "opaque-redeemed-bundle" };
+  }
+  return undefined;
+});
+
+mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
 
 mock.module("@opensecret/react", () => ({
+  exportTransportV2AuthBundle: async () => "test-bundle",
+  importTransportV2AuthBundle: importAuthBundle,
   useOpenSecret: () => ({ auth: { user: currentUser } })
 }));
 
+const realPlatform = await import("@/utils/platform");
 mock.module("@/utils/platform", () => ({
+  ...realPlatform,
   isTauri: () => true
 }));
 
@@ -53,6 +73,7 @@ mock.module("@tauri-apps/api/event", () => ({
   }
 }));
 
+const { beginNativeOAuthAttempt } = await import("@/services/nativeOAuthAttempt");
 const { DeepLinkHandler } = await import("./DeepLinkHandler");
 
 const originalGlobals = {
@@ -82,6 +103,8 @@ describe("DeepLinkHandler native auth callbacks", () => {
     renderer = null;
     storage = new MemoryStorage();
     location = { href: "tauri://localhost/" };
+    importAuthBundle.mockClear();
+    nativeInvoke.mockClear();
 
     Object.defineProperty(globalThis, "localStorage", {
       configurable: true,
@@ -119,68 +142,99 @@ describe("DeepLinkHandler native auth callbacks", () => {
     console.warn = originalConsoleWarn;
   });
 
-  function emitAuthLink(accessToken = "incoming-access", refreshToken = "incoming-refresh"): void {
+  async function emitAuthLink(handoffGrant = "header.payload.signature"): Promise<void> {
     const query = new URLSearchParams({
-      access_token: accessToken,
-      refresh_token: refreshToken,
+      handoff_grant: handoffGrant,
+      native_session_id: nativeSessionId,
       next: "/settings"
     });
-    deepLinkListener?.({ payload: `cloud.opensecret.maple://auth?${query}` });
+    await act(async () => {
+      deepLinkListener?.({ payload: `cloud.opensecret.maple://auth?${query}` });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
   }
 
-  test("preserves an authenticated session and consumes any pending marker", () => {
-    beginNativeOAuthAttempt();
-    storage.setItem("access_token", "current-access");
-    storage.setItem("refresh_token", "current-refresh");
+  async function mirrorNativeAttempt(): Promise<string> {
+    return (await beginNativeOAuthAttempt("https://api.example.test")).nativeOAuthAttempt;
+  }
+
+  test("preserves an authenticated session and consumes any pending marker", async () => {
+    await mirrorNativeAttempt();
     currentUser = { id: "current-user" };
     act(() => renderer?.update(<DeepLinkHandler />));
 
-    emitAuthLink();
+    await emitAuthLink("header.payload.signature");
 
-    expect(storage.getItem("access_token")).toBe("current-access");
-    expect(storage.getItem("refresh_token")).toBe("current-refresh");
+    expect(importAuthBundle).not.toHaveBeenCalled();
     expect(location.href).toBe("tauri://localhost/");
 
-    storage.removeItem("access_token");
-    storage.removeItem("refresh_token");
-    emitAuthLink();
-    expect(storage.getItem("access_token")).toBeNull();
+    currentUser = undefined;
+    act(() => renderer?.update(<DeepLinkHandler />));
+    await emitAuthLink("header.second.signature");
+    expect(importAuthBundle).not.toHaveBeenCalled();
   });
 
-  test("rejects an unsolicited auth callback without a pending marker", () => {
-    emitAuthLink();
+  test("rejects an unsolicited auth callback without a pending marker", async () => {
+    await emitAuthLink();
 
-    expect(storage.getItem("access_token")).toBeNull();
-    expect(storage.getItem("refresh_token")).toBeNull();
+    expect(importAuthBundle).not.toHaveBeenCalled();
     expect(location.href).toBe("tauri://localhost/");
   });
 
-  test("accepts a pending auth callback once and preserves its safe redirect", () => {
-    beginNativeOAuthAttempt();
-    storage.setItem("access_token", "stale-access");
-    storage.setItem("refresh_token", "stale-refresh");
+  test("accepts a pending auth callback once and preserves its safe redirect", async () => {
+    await mirrorNativeAttempt();
 
-    emitAuthLink();
+    await emitAuthLink("header.payload.signature");
 
-    expect(storage.getItem("access_token")).toBe("incoming-access");
-    expect(storage.getItem("refresh_token")).toBe("incoming-refresh");
+    expect(importAuthBundle).toHaveBeenCalledTimes(1);
+    expect(importAuthBundle.mock.calls[0]?.[0]).toBe("opaque-redeemed-bundle");
+    expect(nativeInvoke).toHaveBeenCalledWith("native_oauth_redeem", {
+      request: {
+        handoffGrant: "header.payload.signature",
+        nativeSessionId
+      }
+    });
     expect(location.href).toBe("/settings");
 
-    storage.removeItem("access_token");
-    storage.removeItem("refresh_token");
-    emitAuthLink("replayed-access", "replayed-refresh");
-    expect(storage.getItem("access_token")).toBeNull();
+    location.href = "tauri://localhost/";
+    await emitAuthLink("header.payload.signature");
+    expect(importAuthBundle).toHaveBeenCalledTimes(1);
+    expect(
+      nativeInvoke.mock.calls.filter(([command]) => command === "native_oauth_redeem")
+    ).toHaveLength(1);
+    expect(location.href).toBe("tauri://localhost/");
   });
 
-  test("does not consume the pending marker for a callback missing required tokens", () => {
-    beginNativeOAuthAttempt();
-    deepLinkListener?.({
-      payload: "cloud.opensecret.maple://auth?access_token=incomplete"
+  test("does not consume the pending marker for a callback missing the grant", async () => {
+    await mirrorNativeAttempt();
+    await act(async () => {
+      deepLinkListener?.({
+        payload: "cloud.opensecret.maple://auth"
+      });
+      await Promise.resolve();
     });
 
-    emitAuthLink();
+    await emitAuthLink("header.payload.signature");
 
-    expect(storage.getItem("access_token")).toBe("incoming-access");
-    expect(storage.getItem("refresh_token")).toBe("incoming-refresh");
+    expect(importAuthBundle).toHaveBeenCalledTimes(1);
+    expect(importAuthBundle.mock.calls[0]?.[0]).toBe("opaque-redeemed-bundle");
+  });
+
+  test("does not treat an unrelated custom-scheme host as an auth callback", async () => {
+    await mirrorNativeAttempt();
+    await act(async () => {
+      deepLinkListener?.({
+        payload: "cloud.opensecret.maple://unrelated?handoff_grant=header.payload.signature"
+      });
+      await Promise.resolve();
+    });
+
+    expect(importAuthBundle).not.toHaveBeenCalled();
+    await emitAuthLink("header.payload.signature");
+    expect(importAuthBundle).toHaveBeenCalledTimes(1);
   });
 });

@@ -11,7 +11,7 @@ use goose_providers::images::ImageFormat;
 use goose_providers::model::ModelConfig;
 use goose_providers::request_log::{start_log, LoggerHandleExt};
 use goose_providers::retry::{
-    should_retry, RetryConfig, DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_INITIAL_RETRY_INTERVAL_MS,
+    RetryConfig, DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_INITIAL_RETRY_INTERVAL_MS,
     DEFAULT_MAX_RETRY_INTERVAL_MS,
 };
 use opensecret::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
@@ -37,9 +37,6 @@ const ERROR_CODE_HEADER: &str = "x-opensecret-error-code";
 const ERROR_CONTRACT_VERSION: &[u8] = b"1";
 const SESSION_NOT_FOUND_ERROR_CODE: &[u8] = b"session_not_found";
 
-/// Extra transient inference attempts after the first failure. Goose's 1s × 2^n
-/// backoff, capped at 30s, then covers roughly three minutes of provider blips.
-const TRANSIENT_MAX_RETRIES: usize = 10;
 const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 // Agent Mode forwards the selected catalog ID unchanged for direct model
 // selections. Keep Gemma's provider-specific opt-in scoped to that explicit
@@ -159,8 +156,6 @@ impl MapleInferenceTransport for OpenSecretClient {
 
 pub(crate) struct MapleProvider {
     transport: Arc<dyn MapleInferenceTransport>,
-    #[cfg(test)]
-    test_retry_config: Option<RetryConfig>,
 }
 
 impl MapleProvider {
@@ -168,16 +163,13 @@ impl MapleProvider {
     where
         T: MapleInferenceTransport + 'static,
     {
-        Self {
-            transport,
-            #[cfg(test)]
-            test_retry_config: None,
-        }
+        Self { transport }
     }
 
     #[cfg(test)]
-    fn with_test_retry_config(mut self, retry_config: RetryConfig) -> Self {
-        self.test_retry_config = Some(retry_config);
+    fn with_test_retry_config(self, _retry_config: RetryConfig) -> Self {
+        // Retained only to keep unrelated fixtures concise. Transport v2 has
+        // no retry mode until the SDK can prove a failure happened pre-send.
         self
     }
 
@@ -383,65 +375,39 @@ impl MapleProvider {
         ))
     }
 
-    async fn stream_with_retry(
+    async fn stream_once(
         &self,
         payload_bytes: &[u8],
         cancellation: &CancellationToken,
     ) -> Result<MessageStream, ProviderError> {
-        let config = Provider::retry_config(self);
-        let mut attempts = 0;
-
-        loop {
-            let error = match self.stream_attempt(payload_bytes, cancellation).await {
-                Ok(mut stream) => {
-                    // TODO(upstream): Remove this Maple-specific bridge from Agent Mode once
-                    // Maple's pinned Goose revision provides equivalent first-item handling:
-                    // https://github.com/aaif-goose/goose/issues/10887
-                    // If auxiliary complete() calls still need this protection, scope it to
-                    // that path instead. Recovery after any successful item remains out of
-                    // scope here:
-                    // https://github.com/aaif-goose/goose/issues/10897
-                    let first = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return Err(cancellation_error()),
-                        first = stream.next() => first,
-                    };
-                    match first {
-                        Some(Ok(first)) => {
-                            return Ok(Box::pin(
-                                futures_util::stream::once(ready(Ok(first))).chain(stream),
-                            ));
-                        }
-                        Some(Err(error)) => error,
-                        None => return Ok(stream),
-                    }
-                }
-                Err(error) => error,
-            };
-
-            if !should_retry(&error, &config) || attempts >= config.max_retries() {
+        let mut stream = match self.stream_attempt(payload_bytes, cancellation).await {
+            Ok(stream) => stream,
+            Err(error) => {
                 remember_terminal_run_error(&error);
                 return Err(error);
             }
-            attempts += 1;
-            let delay = match &error {
-                ProviderError::RateLimitExceeded {
-                    retry_delay: Some(provider_delay),
-                    ..
-                } => *provider_delay,
-                _ => config.delay_for_attempt(attempts),
-            };
-            let skip_backoff = std::env::var("GOOSE_PROVIDER_SKIP_BACKOFF")
-                .unwrap_or_default()
-                .parse::<bool>()
-                .unwrap_or(false);
-            if !skip_backoff {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => return Err(cancellation_error()),
-                    _ = tokio::time::sleep(delay) => {}
-                }
+        };
+
+        // Pull the first parsed item before handing the stream to Goose so an
+        // invalid initial record remains a request failure rather than an
+        // apparently successful start. The request may already have reached
+        // the enclave at every failure point after `stream_attempt` begins, so
+        // Maple never repeats it. A future pre-send retry requires an explicit
+        // SDK delivery-state signal rather than inference from error classes.
+        let first = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(cancellation_error()),
+            first = stream.next() => first,
+        };
+        match first {
+            Some(Ok(first)) => Ok(Box::pin(
+                futures_util::stream::once(ready(Ok(first))).chain(stream),
+            )),
+            Some(Err(error)) => {
+                remember_terminal_run_error(&error);
+                Err(error)
             }
+            None => Ok(stream),
         }
     }
 
@@ -463,7 +429,7 @@ impl MapleProvider {
         let cancellation = current_run_cancellation();
 
         let stream = self
-            .stream_with_retry(&payload_bytes, &cancellation)
+            .stream_once(&payload_bytes, &cancellation)
             .await
             .inspect_err(|error| {
                 let _ = request_log.error(error);
@@ -496,16 +462,11 @@ impl Provider for MapleProvider {
     }
 
     fn retry_config(&self) -> RetryConfig {
-        #[cfg(test)]
-        if let Some(config) = &self.test_retry_config {
-            return config.clone();
-        }
-
-        // Retrying deterministic client failures can repeat side effects and
-        // causes the SDK to repeat its own stale-session recovery for a 400. One
-        // shared transient budget covers both setup and pre-first-item failures.
+        // Goose must not wrap Maple's single-send transport in another retry.
+        // The SDK currently exposes no proof that a failed inference remained
+        // pre-send, so every transport failure is treated as ambiguous.
         RetryConfig::new(
-            TRANSIENT_MAX_RETRIES,
+            0,
             DEFAULT_INITIAL_RETRY_INTERVAL_MS,
             DEFAULT_BACKOFF_MULTIPLIER,
             DEFAULT_MAX_RETRY_INTERVAL_MS,
@@ -1000,7 +961,6 @@ mod tests {
         method: String,
         uri: String,
         accept: Option<String>,
-        raw_body: Vec<u8>,
         body: Value,
     }
 
@@ -1082,7 +1042,6 @@ mod tests {
                     .get("accept")
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned),
-                raw_body: body.to_vec(),
                 body: serde_json::from_slice(&body).expect("request body should be JSON"),
             };
             self.requests.lock().expect("request lock").push(captured);
@@ -1282,16 +1241,6 @@ mod tests {
 
     fn pending_success_response() -> InferenceResponse {
         let body: OpenSecretResponseBody = Box::pin(futures_util::stream::pending());
-        let mut response = InferenceResponse::new(body);
-        *response.status_mut() = tauri::http::StatusCode::OK;
-        response
-    }
-
-    fn notifying_malformed_response(error_read: Arc<Notify>) -> InferenceResponse {
-        let body: OpenSecretResponseBody = Box::pin(futures_util::stream::once(async move {
-            error_read.notify_one();
-            Ok(b"data: transient-invalid-stream\n\n".to_vec().into())
-        }));
         let mut response = InferenceResponse::new(body);
         *response.status_mut() = tauri::http::StatusCode::OK;
         response
@@ -1668,7 +1617,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retries_invalid_stream_before_first_item_with_the_same_request() {
+    async fn does_not_retry_an_invalid_stream_before_the_first_item() {
         let transport = Arc::new(FakeTransport::queued(vec![
             malformed_response("transient-invalid-stream"),
             fragmented_success_response(),
@@ -1676,33 +1625,23 @@ mod tests {
         let provider =
             MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
 
-        let stream = provider
+        let result = provider
             .stream(
                 &ModelConfig::new("test-model"),
                 "system",
                 &[Message::user().with_text("hello")],
                 &[],
             )
-            .await
-            .expect("replacement stream should start");
-        let (message, usage) = collect_stream(stream)
-            .await
-            .expect("replacement stream should parse");
-        let text = message
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                MessageContent::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
+            .await;
 
-        assert_eq!(text, "Hello world");
-        assert_eq!(usage.usage.total_tokens, Some(5));
-        let requests = transport.requests.lock().expect("request lock");
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].raw_body, requests[1].raw_body);
-        assert_eq!(requests[0].body, requests[1].body);
+        assert_eq!(
+            result.err(),
+            Some(ProviderError::NetworkError(
+                "Maple's response stream was invalid".to_string()
+            ))
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
@@ -1818,22 +1757,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shares_one_retry_budget_across_status_and_first_item_failures() {
-        let mut responses = vec![response(
-            503,
-            vec![br#"{"error":{"message":"temporarily unavailable"}}"#.to_vec()],
-            None,
-        )];
-        responses.extend(
-            (0..TRANSIENT_MAX_RETRIES)
-                .map(|index| malformed_response(&format!("invalid-stream-{index}"))),
-        );
-        responses.push(fragmented_success_response());
-        let transport = Arc::new(FakeTransport::queued(responses));
+    async fn does_not_retry_a_server_response_that_may_follow_dispatch() {
+        let transport = Arc::new(FakeTransport::queued(vec![
+            response(
+                503,
+                vec![br#"{"error":{"message":"temporarily unavailable"}}"#.to_vec()],
+                None,
+            ),
+            fragmented_success_response(),
+        ]));
         let provider = MapleProvider::new(Arc::clone(&transport));
-        let default_max_retries = Provider::retry_config(&provider).max_retries();
-        assert_eq!(default_max_retries, TRANSIENT_MAX_RETRIES);
-        let provider = provider.with_test_retry_config(fast_retry_config(default_max_retries));
 
         let result = provider
             .stream(
@@ -1844,20 +1777,21 @@ mod tests {
             )
             .await;
         let error = match result {
-            Ok(_) => panic!("the shared retry budget should be exhausted"),
+            Ok(_) => panic!("the server failure should be surfaced"),
             Err(error) => error,
         };
 
         assert_eq!(
             error,
-            ProviderError::NetworkError("Maple's response stream was invalid".to_string())
+            ProviderError::ServerError("Maple's server returned status 503".to_string())
         );
-        assert_eq!(transport.request_count(), TRANSIENT_MAX_RETRIES + 1);
+        assert_eq!(Provider::retry_config(&provider).max_retries(), 0);
+        assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
-    async fn retries_an_incomplete_tool_call_before_it_is_yielded() {
+    async fn does_not_retry_an_incomplete_tool_call_before_it_is_yielded() {
         let interrupted = response_with_items(
             200,
             vec![
@@ -1871,38 +1805,23 @@ mod tests {
         let provider =
             MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(fast_retry_config(3));
 
-        let stream = provider
+        let result = provider
             .stream(
                 &ModelConfig::new("test-model"),
                 "system",
                 &[Message::user().with_text("search")],
                 &[],
             )
-            .await
-            .expect("replacement tool stream should start");
-        let (message, usage) = collect_stream(stream)
-            .await
-            .expect("replacement tool stream should parse");
-        let calls = message
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                MessageContent::ToolRequest(request) => request.tool_call.as_ref().ok(),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+            .await;
 
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "web_search");
         assert_eq!(
-            calls[0]
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("query")),
-            Some(&json!("maple"))
+            result.err(),
+            Some(ProviderError::NetworkError(
+                "Maple's response stream was invalid".to_string()
+            ))
         );
-        assert_eq!(usage.usage.total_tokens, Some(5));
-        assert_eq!(transport.request_count(), 2);
+        assert_eq!(transport.request_count(), 1);
+        assert_eq!(transport.remaining_response_count(), 1);
     }
 
     #[tokio::test]
@@ -2533,35 +2452,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_interrupts_first_item_retry_backoff() {
-        let error_read = Arc::new(Notify::new());
+    async fn first_item_failure_returns_without_retry_backoff() {
         let transport = Arc::new(FakeTransport::queued(vec![
-            notifying_malformed_response(Arc::clone(&error_read)),
+            malformed_response("invalid-first-item"),
             fragmented_success_response(),
         ]));
-        let retry_config = RetryConfig::new(3, 60_000, 1.0, 60_000).transient_only();
-        let provider =
-            MapleProvider::new(Arc::clone(&transport)).with_test_retry_config(retry_config);
+        let provider = MapleProvider::new(Arc::clone(&transport));
         let cancellation = CancellationToken::new();
         let model_config = ModelConfig::new("test-model");
         let messages = [Message::user().with_text("hello")];
-        let stream = with_run_cancellation(
-            cancellation.clone(),
-            provider.stream(&model_config, "system", &messages, &[]),
-        );
-        tokio::pin!(stream);
-
-        tokio::select! {
-            _ = error_read.notified() => {}
-            result = &mut stream => panic!("stream unexpectedly finished before cancellation: {}", result.is_ok()),
-        }
-
-        cancellation.cancel();
-        let result = tokio::time::timeout(Duration::from_secs(1), stream)
-            .await
-            .expect("cancellation should interrupt backoff");
-        assert!(
-            matches!(result, Err(ProviderError::ExecutionError(message)) if message.contains("cancelled"))
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            with_run_cancellation(
+                cancellation,
+                provider.stream(&model_config, "system", &messages, &[]),
+            ),
+        )
+        .await
+        .expect("the first-item error must not enter retry backoff");
+        assert_eq!(
+            result.err(),
+            Some(ProviderError::NetworkError(
+                "Maple's response stream was invalid".to_string()
+            ))
         );
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);

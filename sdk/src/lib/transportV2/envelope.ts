@@ -15,8 +15,10 @@ const KIB = 1024;
 const MIB = KIB * KIB;
 
 export const TRANSPORT_V2_LIMITS = Object.freeze({
-  envelopeBytes: 50 * MIB,
-  logicalBodyBytes: 28 * MIB,
+  requestEnvelopeBytes: 67 * MIB,
+  requestLogicalBodyBytes: 50 * MIB,
+  responseEnvelopeBytes: 50 * MIB,
+  responseLogicalBodyBytes: 28 * MIB,
   pathBytes: 4096,
   queryBytes: 8192,
   headerCount: 64,
@@ -328,7 +330,7 @@ export function serializeRequestEnvelope(envelope: TransportV2RequestEnvelope): 
   const headers = validateAndEncodeHeaders(envelope.request.headers);
   if (
     envelope.request.body &&
-    envelope.request.body.length > TRANSPORT_V2_LIMITS.logicalBodyBytes
+    envelope.request.body.length > TRANSPORT_V2_LIMITS.requestLogicalBodyBytes
   ) {
     throw new TransportV2ProtocolError("Transport v2 body exceeds its size limit.");
   }
@@ -368,14 +370,14 @@ export function serializeRequestEnvelope(envelope: TransportV2RequestEnvelope): 
     }
   };
   const bytes = encodeUtf8(JSON.stringify(wire));
-  if (bytes.length > TRANSPORT_V2_LIMITS.envelopeBytes) {
+  if (bytes.length > TRANSPORT_V2_LIMITS.requestEnvelopeBytes) {
     throw new TransportV2ProtocolError("Transport v2 envelope exceeds its size limit.");
   }
   return bytes;
 }
 
 export function parseUnaryResponseEnvelope(plaintext: Uint8Array): TransportV2UnaryResponse {
-  if (plaintext.length > TRANSPORT_V2_LIMITS.envelopeBytes) {
+  if (plaintext.length > TRANSPORT_V2_LIMITS.responseEnvelopeBytes) {
     throw new TransportV2ProtocolError("Transport v2 response exceeds its size limit.");
   }
   const value = requireExactObject(
@@ -388,12 +390,12 @@ export function parseUnaryResponseEnvelope(plaintext: Uint8Array): TransportV2Un
     requestId: requireRequestId(value.request_id),
     status: requireStatus(value.status, 100, 599),
     headers: parseHeaders(value.headers),
-    body: parseBody(value.body_base64, TRANSPORT_V2_LIMITS.logicalBodyBytes, true)
+    body: parseBody(value.body_base64, TRANSPORT_V2_LIMITS.responseLogicalBodyBytes, true)
   };
 }
 
 export function parseStreamRecord(plaintext: Uint8Array): TransportV2StreamRecord {
-  if (plaintext.length > TRANSPORT_V2_LIMITS.envelopeBytes) {
+  if (plaintext.length > TRANSPORT_V2_LIMITS.responseEnvelopeBytes) {
     throw new TransportV2ProtocolError("Transport v2 stream record exceeds its size limit.");
   }
   const parsed = parseStrictJson(decodeUtf8(plaintext));

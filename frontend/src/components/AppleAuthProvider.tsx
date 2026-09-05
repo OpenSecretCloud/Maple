@@ -7,6 +7,13 @@ import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
 import { getBillingService } from "@/billing/billingService";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  buildTransportV2NativeAuthDeepLink,
+  clearDesktopOAuthTransport,
+  isNativeOAuthRedirect,
+  readTransportV2DesktopOAuthAttempt,
+  readTransportV2DesktopOAuthSession
+} from "@/services/desktopOAuthTransport";
 
 interface AppleAuthProviderProps {
   onSuccess?: () => void;
@@ -133,25 +140,25 @@ export function AppleAuthProvider({
       console.warn("Failed to clear billing token:", billingError);
     }
 
-    const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
+    const isTauriAuth = isNativeOAuthRedirect();
     if (isTauriAuth) {
-      localStorage.removeItem("redirect-to-native");
-
-      const accessToken = localStorage.getItem("access_token") || "";
-      const refreshToken = localStorage.getItem("refresh_token");
-      let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
-
-      if (refreshToken) {
-        deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+      const nativeOAuthAttemptId = readTransportV2DesktopOAuthAttempt();
+      const nativeSessionId = readTransportV2DesktopOAuthSession();
+      if (!nativeOAuthAttemptId || !nativeSessionId) {
+        throw new Error("Desktop authentication state is missing or expired; please restart login");
       }
+      const { grant } = await os.mintNativeHandoffGrant(nativeSessionId, nativeOAuthAttemptId);
 
       const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
       sessionStorage.removeItem("post_auth_redirect");
       const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
-      if (!selectedPlan && safePostAuthRedirect) {
-        deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
-      }
+      const deepLinkUrl = buildTransportV2NativeAuthDeepLink(
+        grant,
+        nativeSessionId,
+        !selectedPlan ? safePostAuthRedirect : null
+      );
+      clearDesktopOAuthTransport();
 
       setTimeout(() => {
         window.location.href = deepLinkUrl;

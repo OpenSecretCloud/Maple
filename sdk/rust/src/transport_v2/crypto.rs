@@ -40,6 +40,7 @@ const STREAM_RESPONSE_RECORD_AAD: &[u8] = b"opensecret/transport-v2/stream-respo
 pub(super) struct SessionMaster([u8; KEY_LEN]);
 
 impl SessionMaster {
+    #[cfg(test)]
     pub(super) const fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
         Self(bytes)
     }
@@ -288,6 +289,7 @@ pub(super) fn decrypt_key_exchange_record(
     })
 }
 
+#[cfg(test)]
 pub(super) fn encode_canonical_base64(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
 }

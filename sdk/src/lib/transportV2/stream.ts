@@ -10,7 +10,7 @@ import { TRANSPORT_V2_LIMITS, type TransportV2StreamRecord, parseStreamRecord } 
 // envelope limit: 64 KiB of decoded headers/chunk bytes plus JSON/base64
 // framing. This ceiling bounds partial-carrier buffering before decryption.
 const MAX_OUTER_STREAM_FRAME_BYTES = 256 * 1024;
-const MAX_LOGICAL_STREAM_BYTES = 64 * 1024 * 1024;
+const MAX_LOGICAL_STREAM_BYTES = TRANSPORT_V2_LIMITS.responseLogicalBodyBytes;
 const FRAME_PREFIX = new TextEncoder().encode("data: ");
 
 export type DecryptStreamRecord = (encrypted: Uint8Array, sequence: number) => Uint8Array;
@@ -148,7 +148,7 @@ export class TransportV2StreamDecoder {
     );
     const encrypted = decodeCanonicalBase64(
       encoded,
-      TRANSPORT_V2_LIMITS.envelopeBytes + MIN_ENCRYPTED_RECORD_BYTES
+      TRANSPORT_V2_LIMITS.responseEnvelopeBytes + MIN_ENCRYPTED_RECORD_BYTES
     );
     let plaintext: Uint8Array | undefined;
     try {

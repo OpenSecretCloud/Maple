@@ -1,7 +1,7 @@
-import React, { createContext, useState, useEffect } from "react";
+import React, { createContext, useState, useEffect, useRef } from "react";
 import * as api from "./api";
 import { createCustomFetch } from "./ai";
-import { clearAttestationSessions, getAttestation } from "./getAttestation";
+import { clearAttestationSessions } from "./getAttestation";
 import type { Model } from "openai/resources/models.js";
 import { authenticate } from "./attestation";
 import {
@@ -13,6 +13,13 @@ import {
 import type { AttestationDocument } from "./attestation";
 import type { LoginResponse, ThirdPartyTokenResponse, DocumentResponse } from "./api";
 import { PcrConfig } from "./pcr";
+import {
+  clearLegacyTransportV1Credentials,
+  readTransportV2Credentials,
+  snapshotTransportV2Auth,
+  subscribeTransportV2AuthInvalidation
+} from "./transportV2/auth";
+import { transportV2Client, type TransportV2SessionInfo } from "./transportV2/client";
 
 const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
 
@@ -46,7 +53,7 @@ export type OpenSecretContextType = {
    * Authenticates a user with email and password.
    *
    * - Calls the login API endpoint with the configured clientId
-   * - Stores access_token and refresh_token in localStorage
+   * - Installs origin-scoped transport v2 resumption descriptors
    * - Updates the auth state with user information
    * - Throws an error if authentication fails
    *
@@ -68,7 +75,7 @@ export type OpenSecretContextType = {
    *
    *
    * - Calls the registration API endpoint
-   * - Stores access_token and refresh_token in localStorage
+   * - Installs origin-scoped transport v2 resumption descriptors
    * - Updates the auth state with new user information
    * - Throws an error if account creation fails
    */
@@ -83,7 +90,7 @@ export type OpenSecretContextType = {
    *
    *
    * - Calls the login API endpoint
-   * - Stores access_token and refresh_token in localStorage
+   * - Installs origin-scoped transport v2 resumption descriptors
    * - Updates the auth state with user information
    * - Throws an error if authentication fails
    */
@@ -98,7 +105,7 @@ export type OpenSecretContextType = {
    *
    *
    * - Calls the registration API endpoint
-   * - Stores access_token and refresh_token in localStorage
+   * - Installs origin-scoped transport v2 resumption descriptors
    * - Updates the auth state with new user information
    * - Throws an error if account creation fails
    */
@@ -110,9 +117,8 @@ export type OpenSecretContextType = {
    * @throws {Error} If logout fails
    *
    *
-   * - Calls the logout API endpoint with the current refresh_token
-   * - Removes access_token, refresh_token from localStorage
-   * - Removes session-related items from sessionStorage
+   * - Presents the resumption credential inside the encrypted logout request
+   * - Clears origin-scoped transport v2 credentials and OAuth continuation state
    * - Resets the auth state to show no user is authenticated
    */
   signOut: () => Promise<void>;
@@ -231,6 +237,12 @@ export type OpenSecretContextType = {
   handleAppleNativeSignIn: (appleUser: api.AppleUser, inviteCode?: string) => Promise<void>;
 
   /**
+   * Mints a short-lived grant bound to a native app's pre-established,
+   * attested transport-v2 session. The native app redeems it separately.
+   */
+  mintNativeHandoffGrant: typeof api.mintNativeHandoffGrant;
+
+  /**
    * Retrieves the user's private key mnemonic phrase
    * @param options - Optional key derivation options
    * @returns A promise resolving to the private key response
@@ -339,7 +351,8 @@ export type OpenSecretContextType = {
    *   defaultHeaders: {
    *     "Accept-Encoding": "identity"
    *   },
-   *   fetch: os.aiCustomFetch
+   *   fetch: os.aiCustomFetch,
+   *   maxRetries: 0
    * });
    * ```
    */
@@ -360,7 +373,11 @@ export type OpenSecretContextType = {
   /**
    * Gets an attested session after enforcing the effective PCR0 trust policy
    */
-  getAttestation: typeof getAttestation;
+  getAttestation: (
+    forceRefresh?: boolean,
+    explicitApiUrl?: string,
+    explicitPcrConfig?: PcrConfig
+  ) => Promise<TransportV2SessionInfo>;
 
   /**
    * Authenticates an attestation document
@@ -936,6 +953,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   initiateAppleAuth: async () => ({ auth_url: "", state: "" }),
   handleAppleCallback: async () => {},
   handleAppleNativeSignIn: async () => {},
+  mintNativeHandoffGrant: api.mintNativeHandoffGrant,
   getPrivateKey: api.fetchPrivateKey,
   getPrivateKeyBytes: api.fetchPrivateKeyBytes,
   getPublicKey: api.fetchPublicKey,
@@ -943,7 +961,9 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   aiCustomFetch: async () => new Response(),
   apiUrl: "",
   pcrConfig: DEFAULT_PCR_CONFIG,
-  getAttestation,
+  getAttestation: async () => {
+    throw new Error("getAttestation called outside of OpenSecretProvider");
+  },
   authenticate,
   parseAttestationForView,
   awsRootCertDer: AWS_ROOT_CERT_DER,
@@ -1036,11 +1056,20 @@ export function OpenSecretProvider({
   });
   const [apiKey, setApiKeyState] = useState<string | undefined>();
   const [aiCustomFetch, setAiCustomFetch] = useState<OpenSecretContextType["aiCustomFetch"]>();
+  const authViewGeneration = useRef(0);
 
   // Validates UUID-with-dashes (v1–v5) and trims input; set undefined to clear
   const setApiKey = (key: string | undefined) => {
+    const install = (next: string | undefined) => {
+      setApiKeyState((previous) => {
+        if (previous && previous !== next) {
+          void transportV2Client.retireApiKey(apiUrl, pcrConfig, previous);
+        }
+        return next;
+      });
+    };
     if (key === undefined) {
-      setApiKeyState(undefined);
+      install(undefined);
       return;
     }
     const trimmed = key.trim();
@@ -1048,10 +1077,10 @@ export function OpenSecretProvider({
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     if (!uuidWithDashes.test(trimmed)) {
       console.warn("setApiKey: provided key does not look like a UUID; clearing apiKey");
-      setApiKeyState(undefined);
+      install(undefined);
       return;
     }
-    setApiKeyState(trimmed);
+    install(trimmed);
   };
 
   useEffect(() => {
@@ -1066,6 +1095,8 @@ export function OpenSecretProvider({
       );
     }
     api.setApiUrl(apiUrl, pcrConfig);
+    // V4 never resumes or transmits the legacy single-key transport session.
+    clearAttestationSessions();
 
     // Configure the apiConfig service with the app URL
     // Using dynamic import to avoid circular dependencies
@@ -1086,9 +1117,10 @@ export function OpenSecretProvider({
   }, [apiUrl, apiKey, pcrConfig]);
 
   async function fetchUser() {
-    const access_token = window.localStorage.getItem("access_token");
-    const refresh_token = window.localStorage.getItem("refresh_token");
-    if (!access_token || !refresh_token) {
+    const viewGeneration = ++authViewGeneration.current;
+    const expected = snapshotTransportV2Auth(apiUrl, "user");
+    if (expected.principalId === null) {
+      clearLegacyTransportV1Credentials();
       setAuth({
         loading: false,
         user: undefined
@@ -1098,12 +1130,29 @@ export function OpenSecretProvider({
 
     try {
       const user = await api.fetchUser();
+      const current = snapshotTransportV2Auth(apiUrl, "user");
+      if (
+        authViewGeneration.current !== viewGeneration ||
+        current.principalId !== expected.principalId ||
+        user.user.id !== current.principalId
+      ) {
+        return;
+      }
       setAuth({
         loading: false,
         user
       });
     } catch (error) {
       console.error("Failed to fetch user:", error);
+      const current = snapshotTransportV2Auth(apiUrl, "user");
+      if (
+        authViewGeneration.current !== viewGeneration ||
+        (current.principalId !== null &&
+          (current.principalId !== expected.principalId ||
+            current.generation !== expected.generation))
+      ) {
+        return;
+      }
       setAuth({
         loading: false,
         user: undefined
@@ -1113,14 +1162,21 @@ export function OpenSecretProvider({
 
   useEffect(() => {
     fetchUser();
-  }, []);
+  }, [apiUrl, pcrConfig]);
+
+  useEffect(
+    () =>
+      subscribeTransportV2AuthInvalidation(apiUrl, "user", () => {
+        authViewGeneration.current += 1;
+        setAuth({ loading: false, user: undefined });
+      }),
+    [apiUrl]
+  );
 
   async function signIn(email: string, password: string) {
     console.log("Signing in");
     try {
-      const { access_token, refresh_token } = await api.fetchLogin(email, password, clientId);
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.fetchLogin(email, password, clientId);
       // Clear API key on new sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1132,15 +1188,7 @@ export function OpenSecretProvider({
 
   async function signUp(email: string, password: string, inviteCode: string, name?: string) {
     try {
-      const { access_token, refresh_token } = await api.fetchSignUp(
-        email,
-        password,
-        inviteCode,
-        clientId,
-        name || null
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.fetchSignUp(email, password, inviteCode, clientId, name || null);
       // Clear API key on new sign-up to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1153,9 +1201,7 @@ export function OpenSecretProvider({
   async function signInGuest(id: string, password: string) {
     console.log("Signing in Guest");
     try {
-      const { access_token, refresh_token } = await api.fetchGuestLogin(id, password, clientId);
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.fetchGuestLogin(id, password, clientId);
       // Clear API key on guest sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1167,17 +1213,11 @@ export function OpenSecretProvider({
 
   async function signUpGuest(password: string, inviteCode: string) {
     try {
-      const { access_token, refresh_token, id } = await api.fetchGuestSignUp(
-        password,
-        inviteCode,
-        clientId
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      const result = await api.fetchGuestSignUp(password, inviteCode, clientId);
       // Clear API key on guest sign-up to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
-      return { access_token, refresh_token, id };
+      return result;
     } catch (error) {
       console.error(error);
       throw error;
@@ -1185,23 +1225,25 @@ export function OpenSecretProvider({
   }
 
   async function signOut() {
-    const refresh_token = window.localStorage.getItem("refresh_token");
-    if (refresh_token) {
-      try {
-        await api.fetchLogout(refresh_token);
-      } catch (error) {
-        console.error("Error during logout:", error);
-      }
-    }
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    clearAttestationSessions();
-    // Clear any in-memory API key so no post-logout calls can use it
+    const credentials = readTransportV2Credentials(apiUrl, "user");
+    const expected = snapshotTransportV2Auth(apiUrl, "user");
+    authViewGeneration.current += 1;
+    setAuth({ loading: false, user: undefined });
+    // Clear any in-memory API key immediately so no post-logout calls can use it.
     setApiKey(undefined);
-    setAuth({
-      loading: false,
-      user: undefined
-    });
+    try {
+      if (credentials) {
+        await api.fetchLogout(credentials.refreshToken);
+      }
+    } catch (error) {
+      console.error("Error during logout:", error);
+    } finally {
+      // Logout is local-first and terminal even if account deletion already
+      // closed the enclave session. Exact-generation CAS preserves a newer
+      // login/import that completed while the best-effort send was pending.
+      transportV2Client.clear(apiUrl, "user", false, expected);
+      clearAttestationSessions();
+    }
   }
 
   const initiateGitHubAuth = async (inviteCode: string) => {
@@ -1215,13 +1257,7 @@ export function OpenSecretProvider({
 
   const handleGitHubCallback = async (code: string, state: string, inviteCode: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleGitHubCallback(
-        code,
-        state,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleGitHubCallback(code, state, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1242,13 +1278,7 @@ export function OpenSecretProvider({
 
   const handleGoogleCallback = async (code: string, state: string, inviteCode: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleGoogleCallback(
-        code,
-        state,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleGoogleCallback(code, state, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1269,13 +1299,7 @@ export function OpenSecretProvider({
 
   const handleAppleCallback = async (code: string, state: string, inviteCode: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleAppleCallback(
-        code,
-        state,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleAppleCallback(code, state, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1287,13 +1311,7 @@ export function OpenSecretProvider({
 
   const handleAppleNativeSignIn = async (appleUser: api.AppleUser, inviteCode?: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleAppleNativeSignIn(
-        appleUser,
-        clientId,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleAppleNativeSignIn(appleUser, clientId, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1305,7 +1323,7 @@ export function OpenSecretProvider({
 
   const getAttestationDocument = async () => {
     const nonce = window.crypto.randomUUID();
-    const response = await fetch(`${apiUrl}/attestation/${nonce}`);
+    const response = await fetch(`${apiUrl}/v2/attestation/${nonce}`);
     if (!response.ok) {
       throw new Error("Failed to fetch attestation document");
     }
@@ -1357,6 +1375,7 @@ export function OpenSecretProvider({
     initiateAppleAuth,
     handleAppleCallback,
     handleAppleNativeSignIn,
+    mintNativeHandoffGrant: api.mintNativeHandoffGrant,
     getPrivateKey: api.fetchPrivateKey,
     getPrivateKeyBytes: api.fetchPrivateKeyBytes,
     getPublicKey: api.fetchPublicKey,
@@ -1364,8 +1383,21 @@ export function OpenSecretProvider({
     aiCustomFetch: aiCustomFetch || (async () => new Response()),
     apiUrl,
     pcrConfig,
-    getAttestation: (forceRefresh, explicitApiUrl, explicitPcrConfig) =>
-      getAttestation(forceRefresh, explicitApiUrl || apiUrl, explicitPcrConfig || pcrConfig),
+    getAttestation: (_forceRefresh, explicitApiUrl, explicitPcrConfig) =>
+      transportV2Client.sessionInfo(
+        explicitApiUrl || apiUrl,
+        explicitPcrConfig || pcrConfig,
+        (() => {
+          const credentials = readTransportV2Credentials(explicitApiUrl || apiUrl, "user");
+          return credentials
+            ? {
+                kind: "user" as const,
+                principalId: credentials.principalId,
+                generation: credentials.generation
+              }
+            : ({ kind: "anonymous", purpose: "public" } as const);
+        })()
+      ),
     authenticate,
     parseAttestationForView,
     awsRootCertDer: AWS_ROOT_CERT_DER,

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import vectors from "../../../testdata/transport-v2-golden-vectors.json";
 import {
   TransportV2ProtocolError,
+  TRANSPORT_V2_LIMITS,
   decodeCanonicalBase64,
   decryptTransportV2Handshake,
   decryptTransportV2Record,
@@ -235,6 +236,44 @@ describe("transport v2 cross-language vectors", () => {
 });
 
 describe("transport v2 dormant session engine", () => {
+  test("accepts the exact 50 MiB logical request boundary and rejects one byte more", () => {
+    const body = new Uint8Array(TRANSPORT_V2_LIMITS.requestLogicalBodyBytes);
+    const envelope = serializeRequestEnvelope({
+      requestId: vectors.request_id_hex,
+      responseMode: "unary",
+      credential: null,
+      cacheNamespaceRoot: null,
+      request: {
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        headers: [],
+        body
+      }
+    });
+    expect(envelope.length).toBeLessThanOrEqual(TRANSPORT_V2_LIMITS.requestEnvelopeBytes);
+    body.fill(0);
+    envelope.fill(0);
+
+    const oversized = new Uint8Array(TRANSPORT_V2_LIMITS.requestLogicalBodyBytes + 1);
+    expect(() =>
+      serializeRequestEnvelope({
+        requestId: vectors.request_id_hex,
+        responseMode: "unary",
+        credential: null,
+        cacheNamespaceRoot: null,
+        request: {
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          headers: [],
+          body: oversized
+        }
+      })
+    ).toThrow("body exceeds its size limit");
+    oversized.fill(0);
+  });
+
   test("rejects an empty attestation nonce before generating key material", () => {
     expect(() => new TransportV2Handshake("")).toThrow("invalid length");
 
@@ -278,10 +317,10 @@ describe("transport v2 dormant session engine", () => {
     const outbound = prepared.takeHttpRequest();
     expect(outbound.path).toBe("/v2/request");
     expect(outbound.headers).toEqual({
-      "content-type": "application/json",
+      "content-type": "application/octet-stream",
       "x-session-id": vectors.session_id
     });
-    expect(outbound.body).not.toContain("/v1/models");
+    expect(new TextDecoder().decode(outbound.body)).not.toContain("/v1/models");
     expect(() => prepared.takeHttpRequest()).toThrow("already been taken");
     expect(() => prepared.createStreamDecoder()).toThrow("did not select streaming");
 
@@ -301,12 +340,10 @@ describe("transport v2 dormant session engine", () => {
     );
     session.dispose();
     expect(session.isDisposed).toBe(true);
-    const response = prepared.decryptUnaryResponse(
-      JSON.stringify({ encrypted: encodeCanonicalBase64(responseRecord) })
-    );
+    const response = prepared.decryptUnaryResponse(responseRecord);
     expect(response.status).toBe(200);
     expect(JSON.parse(new TextDecoder().decode(response.body!))).toEqual({ ok: true });
-    expect(() => prepared.decryptUnaryResponse("{}")).toThrow("already selected");
+    expect(() => prepared.decryptUnaryResponse(new Uint8Array(0))).toThrow("already selected");
   });
 
   test("decodes arbitrary carrier splits and requires ordered authenticated finality", async () => {
@@ -336,7 +373,9 @@ describe("transport v2 dormant session engine", () => {
       vectors.expires_at_unix_seconds - 1
     );
     prepared.takeHttpRequest();
-    expect(() => prepared.decryptUnaryResponse("{}")).toThrow("did not select a unary");
+    expect(() => prepared.decryptUnaryResponse(new Uint8Array(0))).toThrow(
+      "did not select a unary"
+    );
     const decoder = prepared.createStreamDecoder();
     session.dispose();
 
@@ -443,9 +482,7 @@ describe("transport v2 dormant session engine", () => {
     expect(() =>
       session.prepareRequest(unaryInput, afterErrorRandom, vectors.expires_at_unix_seconds - 1)
     ).toThrow("response record budget");
-    const response = prepared.decryptPreStartUnaryError(
-      JSON.stringify({ encrypted: encodeCanonicalBase64(encrypted) })
-    );
+    const response = prepared.decryptPreStartUnaryError(encrypted);
     expect(response.status).toBe(409);
     expect(() => prepared.createStreamDecoder()).toThrow("already selected");
     const afterError = session.prepareRequest(
@@ -646,7 +683,7 @@ describe("transport v2 dormant session engine", () => {
     );
     prepared.dispose();
     expect(() => prepared.takeHttpRequest()).toThrow("already been taken");
-    expect(() => prepared.decryptUnaryResponse("{}")).toThrow("already selected");
+    expect(() => prepared.decryptUnaryResponse(new Uint8Array(0))).toThrow("already selected");
 
     let releases = 0;
     const decoder = new TransportV2StreamDecoder(

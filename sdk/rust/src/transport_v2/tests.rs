@@ -17,9 +17,9 @@ use super::{
     },
     envelope::{
         encode_canonical_opaque_path_segment, CacheNamespaceRoot, Credential, EncodedBytes,
-        EncryptedOuterRecord, EnvelopeLimits, HeaderField, LogicalMethod, LogicalRequest,
-        RequestEnvelope, RequestId, ResponseMode, StreamRecord, UnaryResponseEnvelope, Version2,
-        MAX_OUTER_REQUEST_BYTES, MAX_STREAM_CHUNK_BYTES,
+        EnvelopeLimits, HeaderField, LogicalMethod, LogicalRequest, RequestEnvelope, RequestId,
+        ResponseMode, StreamRecord, UnaryResponseEnvelope, Version2, MAX_OUTER_REQUEST_BYTES,
+        MAX_OUTER_RESPONSE_BYTES, MAX_STREAM_CHUNK_BYTES,
     },
     session::{KeyExchangeCompletion, PreparedKeyExchange, V2Session},
     stream::{max_stream_carrier_frame_bytes_for_test, StreamDecoder, StreamEvent},
@@ -71,7 +71,6 @@ struct DirectionalVector {
 #[derive(Deserialize)]
 struct RecordVector {
     aad_hex: String,
-    nonce_hex: String,
     plaintext_utf8: String,
     plaintext_hex: String,
     record_hex: String,
@@ -402,6 +401,91 @@ fn credentials_and_cache_root_use_exact_non_null_wire_shapes() {
         RequestEnvelope::from_json_slice(&encoded, &EnvelopeLimits::DEFAULT)
             .expect("strict round trip");
     }
+}
+
+#[test]
+fn unary_carrier_limits_admit_exact_logical_boundaries_and_reject_one_byte_more() {
+    let request_limit = EnvelopeLimits::DEFAULT.logical_body_bytes;
+    let session_id = Uuid::nil();
+    let master_bytes = [0x33; 32];
+    let request_id = RequestId::from_bytes([0x34; 16]);
+    let session =
+        V2Session::from_master_for_test(session_id, master_bytes, u64::MAX).expect("session");
+
+    let prepared = session
+        .prepare_request_for_test(
+            (0, request_id),
+            ResponseMode::Unary,
+            None,
+            None,
+            LogicalRequest::new(
+                LogicalMethod::Post,
+                "/v1/chat/completions",
+                None,
+                vec![],
+                Some(vec![0_u8; request_limit]),
+            ),
+        )
+        .expect("exact 50 MiB logical request body");
+    let (outer_request, _) = prepared.into_parts();
+    assert!(outer_request.len() <= MAX_OUTER_REQUEST_BYTES);
+    assert!(outer_request.len() >= MIN_RECORD_LEN);
+    drop(outer_request);
+
+    assert_eq!(
+        LogicalRequest::new(
+            LogicalMethod::Post,
+            "/v1/chat/completions",
+            None,
+            vec![],
+            Some(vec![0_u8; request_limit + 1]),
+        )
+        .validate(&EnvelopeLimits::DEFAULT)
+        .expect_err("request body over 50 MiB"),
+        TransportV2Error::LimitExceeded {
+            field: "logical body",
+            limit: request_limit,
+        }
+    );
+
+    let response_limit = EnvelopeLimits::RESPONSE.logical_body_bytes;
+    let response = UnaryResponseEnvelope {
+        version: Version2,
+        request_id,
+        status: 200,
+        headers: vec![],
+        body_base64: Some(EncodedBytes::from_bytes(vec![0_u8; response_limit])),
+    };
+    response
+        .validate(&EnvelopeLimits::RESPONSE)
+        .expect("exact 28 MiB logical response body");
+    let plaintext = serde_json::to_vec(&response).expect("response JSON");
+    assert!(plaintext.len() <= EnvelopeLimits::RESPONSE.envelope_bytes);
+    let keys = DirectionalKeys::derive(&SessionMaster::from_bytes(master_bytes)).expect("keys");
+    let outer_response = keys
+        .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
+        .expect("raw response record");
+    assert_eq!(outer_response.len(), plaintext.len() + MIN_RECORD_LEN);
+    assert!(outer_response.len() <= MAX_OUTER_RESPONSE_BYTES);
+    drop(outer_response);
+    drop(plaintext);
+    drop(response);
+
+    assert_eq!(
+        UnaryResponseEnvelope {
+            version: Version2,
+            request_id,
+            status: 200,
+            headers: vec![],
+            body_base64: Some(EncodedBytes::from_bytes(vec![0_u8; response_limit + 1])),
+        }
+        .validate(&EnvelopeLimits::RESPONSE)
+        .expect_err("response body over 28 MiB"),
+        TransportV2Error::LimitExceeded {
+            field: "logical body",
+            limit: response_limit,
+        }
+    );
 }
 
 #[test]
@@ -755,9 +839,7 @@ fn prepared_requests_are_exact_session_bound_and_reject_reserved_auto_mode() {
 
     let (outer_body, _) = prepared.into_parts();
     assert!(outer_body.len() <= MAX_OUTER_REQUEST_BYTES);
-    let outer = EncryptedOuterRecord::from_json_slice(&outer_body, MAX_OUTER_REQUEST_BYTES)
-        .expect("strict outer request");
-    assert!(outer.encrypted.len() >= MIN_RECORD_LEN);
+    assert!(outer_body.len() >= MIN_RECORD_LEN);
 }
 
 #[test]
@@ -852,13 +934,8 @@ fn sessions_enforce_request_id_uniqueness_and_request_record_budgets() {
             body_base64: None,
         };
         let plaintext = serde_json::to_vec(&response).expect("response JSON");
-        let record = keys
-            .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
-            .expect("response record");
-        serde_json::to_vec(&EncryptedOuterRecord {
-            encrypted: EncodedBytes::from_bytes(record),
-        })
-        .expect("outer response")
+        keys.encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
+            .expect("response record")
     };
     let (_, first_context) = first.into_parts();
     first_context
@@ -956,10 +1033,7 @@ fn authenticated_stream_pre_start_error_releases_the_unused_terminal_slot() {
     let record = keys
         .encrypt_unary_response_record_for_test(&session_id, &stream_request_id, &plaintext)
         .expect("response record");
-    let outer = serde_json::to_vec(&EncryptedOuterRecord {
-        encrypted: EncodedBytes::from_bytes(record),
-    })
-    .expect("outer response");
+    let outer = record;
     let (_, context) = stream.into_parts();
     context
         .decrypt_stream_pre_start_error_outer(&outer)
@@ -1034,10 +1108,7 @@ fn unary_response_requires_exact_aad_and_inner_request_id() {
     let record = keys
         .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
         .expect("response record");
-    let outer = serde_json::to_vec(&EncryptedOuterRecord {
-        encrypted: EncodedBytes::from_bytes(record),
-    })
-    .expect("outer response");
+    let outer = record;
     let response = response_context(session_id, master_bytes, request_id, ResponseMode::Unary)
         .decrypt_unary_outer(&outer)
         .expect("authenticated unary response");
@@ -1056,10 +1127,7 @@ fn unary_response_requires_exact_aad_and_inner_request_id() {
     let record = keys
         .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
         .expect("response record");
-    let outer = serde_json::to_vec(&EncryptedOuterRecord {
-        encrypted: EncodedBytes::from_bytes(record),
-    })
-    .expect("outer response");
+    let outer = record;
     assert_eq!(
         response_context(session_id, master_bytes, request_id, ResponseMode::Unary)
             .decrypt_unary_outer(&outer)
@@ -1084,13 +1152,8 @@ fn response_context_enforces_mode_and_only_allows_pre_start_stream_errors() {
             body_base64: Some(EncodedBytes::from_bytes(b"redacted-error".to_vec())),
         };
         let plaintext = serde_json::to_vec(&response).expect("response JSON");
-        let record = keys
-            .encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
-            .expect("response record");
-        serde_json::to_vec(&EncryptedOuterRecord {
-            encrypted: EncodedBytes::from_bytes(record),
-        })
-        .expect("outer response")
+        keys.encrypt_unary_response_record_for_test(&session_id, &request_id, &plaintext)
+            .expect("response record")
     };
 
     assert_eq!(

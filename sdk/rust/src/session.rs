@@ -1,26 +1,35 @@
 use crate::error::{Error, Result};
+use crate::transport_v2::V2Session;
 use crate::types::{SessionState, TokenPair};
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct UserAuthEpoch {
+    pub(crate) generation: u64,
+    pub(crate) principal: Option<String>,
+}
+
+#[derive(Clone)]
 pub(crate) struct CredentialSnapshot {
     pub(crate) tokens: Option<TokenPair>,
     pub(crate) api_key: Option<String>,
     pub(crate) generation: u64,
-    pub(crate) token_generation: u64,
-    pub(crate) api_key_generation: u64,
+    pub(crate) auth_epoch: UserAuthEpoch,
+    pub(crate) user_session: Option<Arc<V2Session>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct CredentialState {
     tokens: Option<TokenPair>,
+    token_principal: Option<String>,
+    user_session: Option<Arc<V2Session>>,
     api_key: Option<String>,
     generation: u64,
     token_generation: u64,
-    api_key_generation: u64,
 }
 
+#[derive(Clone)]
 pub struct SessionManager {
     session: Arc<RwLock<Option<SessionState>>>,
     credentials: Arc<RwLock<CredentialState>>,
@@ -40,7 +49,6 @@ impl SessionManager {
             credentials: Arc::new(RwLock::new(CredentialState {
                 api_key: Some(api_key),
                 generation: 1,
-                api_key_generation: 1,
                 ..CredentialState::default()
             })),
         }
@@ -53,7 +61,6 @@ impl SessionManager {
 
         credentials.api_key = Some(api_key);
         credentials.generation = credentials.generation.wrapping_add(1);
-        credentials.api_key_generation = credentials.api_key_generation.wrapping_add(1);
         Ok(())
     }
 
@@ -72,7 +79,6 @@ impl SessionManager {
 
         credentials.api_key = None;
         credentials.generation = credentials.generation.wrapping_add(1);
-        credentials.api_key_generation = credentials.api_key_generation.wrapping_add(1);
         Ok(())
     }
 
@@ -110,6 +116,16 @@ impl SessionManager {
     }
 
     pub fn set_tokens(&self, access_token: String, refresh_token: Option<String>) -> Result<()> {
+        self.replace_user_tokens(access_token, refresh_token, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn replace_user_tokens(
+        &self,
+        access_token: String,
+        refresh_token: Option<String>,
+        principal: Option<String>,
+    ) -> Result<UserAuthEpoch> {
         let mut credentials = self.credentials.write().map_err(|e| {
             Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
         })?;
@@ -118,33 +134,65 @@ impl SessionManager {
             access_token,
             refresh_token,
         });
+        credentials.token_principal = principal;
+        credentials.user_session = None;
         credentials.generation = credentials.generation.wrapping_add(1);
         credentials.token_generation = credentials.token_generation.wrapping_add(1);
 
-        Ok(())
+        Ok(user_auth_epoch(&credentials))
     }
 
-    pub(crate) fn set_tokens_if_generation(
+    pub(crate) fn replace_user_tokens_and_session_if_epoch(
         &self,
-        expected_token_generation: u64,
+        expected: &UserAuthEpoch,
         access_token: String,
         refresh_token: Option<String>,
-    ) -> Result<bool> {
+        principal: String,
+        session: Arc<V2Session>,
+    ) -> Result<Option<UserAuthEpoch>> {
         let mut credentials = self.credentials.write().map_err(|e| {
             Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
         })?;
 
-        if credentials.token_generation != expected_token_generation {
-            return Ok(false);
+        if user_auth_epoch(&credentials) != *expected {
+            return Ok(None);
         }
 
         credentials.tokens = Some(TokenPair {
             access_token,
             refresh_token,
         });
+        credentials.token_principal = Some(principal);
+        credentials.user_session = Some(session);
         credentials.generation = credentials.generation.wrapping_add(1);
         credentials.token_generation = credentials.token_generation.wrapping_add(1);
-        Ok(true)
+        Ok(Some(user_auth_epoch(&credentials)))
+    }
+
+    pub(crate) fn replace_user_tokens_if_epoch(
+        &self,
+        expected: &UserAuthEpoch,
+        access_token: String,
+        refresh_token: Option<String>,
+        principal: String,
+    ) -> Result<Option<UserAuthEpoch>> {
+        let mut credentials = self.credentials.write().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
+        })?;
+
+        if user_auth_epoch(&credentials) != *expected {
+            return Ok(None);
+        }
+
+        credentials.tokens = Some(TokenPair {
+            access_token,
+            refresh_token,
+        });
+        credentials.token_principal = Some(principal);
+        credentials.user_session = None;
+        credentials.generation = credentials.generation.wrapping_add(1);
+        credentials.token_generation = credentials.token_generation.wrapping_add(1);
+        Ok(Some(user_auth_epoch(&credentials)))
     }
 
     pub(crate) fn get_credential_snapshot(&self) -> Result<CredentialSnapshot> {
@@ -152,13 +200,58 @@ impl SessionManager {
             Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
         })?;
 
-        Ok(CredentialSnapshot {
-            tokens: credentials.tokens.clone(),
-            api_key: credentials.api_key.clone(),
-            generation: credentials.generation,
-            token_generation: credentials.token_generation,
-            api_key_generation: credentials.api_key_generation,
-        })
+        Ok(credential_snapshot(&credentials))
+    }
+
+    pub(crate) fn get_credential_snapshot_if_auth_epoch(
+        &self,
+        expected: &UserAuthEpoch,
+    ) -> Result<Option<CredentialSnapshot>> {
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+
+        if user_auth_epoch(&credentials) != *expected {
+            return Ok(None);
+        }
+
+        Ok(Some(credential_snapshot(&credentials)))
+    }
+
+    pub(crate) fn credential_generation_matches(&self, expected: u64) -> Result<bool> {
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+        Ok(credentials.generation == expected)
+    }
+
+    pub(crate) fn get_user_session(&self) -> Result<Option<Arc<V2Session>>> {
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+        Ok(credentials.user_session.clone())
+    }
+
+    pub(crate) fn clear_user_session(&self) -> Result<()> {
+        let mut credentials = self.credentials.write().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
+        })?;
+        credentials.user_session = None;
+        Ok(())
+    }
+
+    pub(crate) fn clear_user_session_if(&self, expected: &Arc<V2Session>) -> Result<()> {
+        let mut credentials = self.credentials.write().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
+        })?;
+        if credentials
+            .user_session
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
+            credentials.user_session = None;
+        }
+        Ok(())
     }
 
     pub fn get_tokens(&self) -> Result<Option<TokenPair>> {
@@ -204,6 +297,8 @@ impl SessionManager {
 
         credentials.generation = credentials.generation.wrapping_add(1);
         credentials.token_generation = credentials.token_generation.wrapping_add(1);
+        credentials.token_principal = None;
+        credentials.user_session = None;
         Ok(())
     }
 
@@ -213,9 +308,26 @@ impl SessionManager {
         })?;
 
         credentials.tokens = None;
+        credentials.token_principal = None;
+        credentials.user_session = None;
         credentials.generation = credentials.generation.wrapping_add(1);
         credentials.token_generation = credentials.token_generation.wrapping_add(1);
         Ok(())
+    }
+
+    pub(crate) fn invalidate_user_auth_if_epoch(&self, expected: &UserAuthEpoch) -> Result<bool> {
+        let mut credentials = self.credentials.write().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
+        })?;
+        if user_auth_epoch(&credentials) != *expected {
+            return Ok(false);
+        }
+        credentials.tokens = None;
+        credentials.token_principal = None;
+        credentials.user_session = None;
+        credentials.generation = credentials.generation.wrapping_add(1);
+        credentials.token_generation = credentials.token_generation.wrapping_add(1);
+        Ok(true)
     }
 
     pub fn clear_all(&self) -> Result<()> {
@@ -224,10 +336,11 @@ impl SessionManager {
             Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
         })?;
         credentials.tokens = None;
+        credentials.token_principal = None;
+        credentials.user_session = None;
         credentials.api_key = None;
         credentials.generation = credentials.generation.wrapping_add(1);
         credentials.token_generation = credentials.token_generation.wrapping_add(1);
-        credentials.api_key_generation = credentials.api_key_generation.wrapping_add(1);
         Ok(())
     }
 
@@ -242,11 +355,29 @@ impl SessionManager {
 
         self.clear_session()?;
         credentials.tokens = None;
+        credentials.token_principal = None;
+        credentials.user_session = None;
         credentials.api_key = None;
         credentials.generation = credentials.generation.wrapping_add(1);
         credentials.token_generation = credentials.token_generation.wrapping_add(1);
-        credentials.api_key_generation = credentials.api_key_generation.wrapping_add(1);
         Ok(true)
+    }
+}
+
+fn credential_snapshot(credentials: &CredentialState) -> CredentialSnapshot {
+    CredentialSnapshot {
+        tokens: credentials.tokens.clone(),
+        api_key: credentials.api_key.clone(),
+        generation: credentials.generation,
+        auth_epoch: user_auth_epoch(credentials),
+        user_session: credentials.user_session.clone(),
+    }
+}
+
+fn user_auth_epoch(credentials: &CredentialState) -> UserAuthEpoch {
+    UserAuthEpoch {
+        generation: credentials.token_generation,
+        principal: credentials.token_principal.clone(),
     }
 }
 
@@ -259,6 +390,13 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn v2_session(marker: u8) -> Arc<V2Session> {
+        Arc::new(
+            V2Session::from_master_for_test(Uuid::from_bytes([marker; 16]), [marker; 32], u64::MAX)
+                .expect("test v2 session"),
+        )
+    }
 
     #[test]
     fn test_session_management() {
@@ -311,5 +449,89 @@ mod tests {
         // Clear tokens
         manager.clear_tokens().unwrap();
         assert!(manager.get_tokens().unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_auth_commit_cannot_overwrite_or_clear_a_new_principal() {
+        let manager = SessionManager::new();
+        let initial = manager.get_credential_snapshot().unwrap().auth_epoch;
+        let old_session = v2_session(0x11);
+        let old_epoch = manager
+            .replace_user_tokens_and_session_if_epoch(
+                &initial,
+                "old-access".to_string(),
+                Some("old-refresh".to_string()),
+                "old-user".to_string(),
+                Arc::clone(&old_session),
+            )
+            .unwrap()
+            .expect("install old auth");
+
+        let new_epoch = manager
+            .replace_user_tokens(
+                "new-access".to_string(),
+                Some("new-refresh".to_string()),
+                Some("new-user".to_string()),
+            )
+            .unwrap();
+        assert!(manager
+            .replace_user_tokens_and_session_if_epoch(
+                &old_epoch,
+                "stale-access".to_string(),
+                Some("stale-refresh".to_string()),
+                "old-user".to_string(),
+                old_session,
+            )
+            .unwrap()
+            .is_none());
+        assert!(!manager.invalidate_user_auth_if_epoch(&old_epoch).unwrap());
+
+        let snapshot = manager.get_credential_snapshot().unwrap();
+        assert_eq!(snapshot.auth_epoch, new_epoch);
+        assert_eq!(snapshot.auth_epoch.principal.as_deref(), Some("new-user"));
+        assert_eq!(
+            snapshot.tokens.expect("new tokens").access_token,
+            "new-access"
+        );
+        assert!(snapshot.user_session.is_none());
+    }
+
+    #[test]
+    fn rejected_refresh_invalidates_only_its_own_auth_lifecycle() {
+        let manager = SessionManager::new();
+        let initial = manager.get_credential_snapshot().unwrap().auth_epoch;
+        let rejected_epoch = manager
+            .replace_user_tokens_and_session_if_epoch(
+                &initial,
+                "access".to_string(),
+                Some("refresh".to_string()),
+                "user".to_string(),
+                v2_session(0x22),
+            )
+            .unwrap()
+            .expect("install rejected auth");
+
+        assert!(manager
+            .invalidate_user_auth_if_epoch(&rejected_epoch)
+            .unwrap());
+        let signed_out = manager.get_credential_snapshot().unwrap();
+        assert!(signed_out.tokens.is_none());
+        assert!(signed_out.auth_epoch.principal.is_none());
+        assert!(signed_out.user_session.is_none());
+
+        let replacement = manager
+            .replace_user_tokens(
+                "replacement-access".to_string(),
+                Some("replacement-refresh".to_string()),
+                Some("replacement-user".to_string()),
+            )
+            .unwrap();
+        assert!(!manager
+            .invalidate_user_auth_if_epoch(&rejected_epoch)
+            .unwrap());
+        assert_eq!(
+            manager.get_credential_snapshot().unwrap().auth_epoch,
+            replacement
+        );
     }
 }

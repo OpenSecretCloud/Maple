@@ -1,4 +1,4 @@
-use crate::open_secret_config::configured_pcr0_environment;
+use crate::open_secret_config::{configured_pcr0_environment, normalize_api_url};
 use opensecret::{
     InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest, WebExtractResponse,
     WebSearchRequest, WebSearchResponse,
@@ -14,21 +14,19 @@ use tokio_util::sync::CancellationToken;
 const AUTH_CHANGED_EVENT: &str = "maple-api-auth-changed";
 const CREDENTIAL_VALIDATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MapleApiAuthRequest {
     pub user_id: String,
     pub api_url: String,
-    pub access_token: String,
-    pub refresh_token: Option<String>,
+    pub auth_bundle: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MapleApiAuthSnapshot {
     pub user_id: String,
-    pub access_token: String,
-    pub refresh_token: Option<String>,
+    pub auth_bundle: String,
     pub native_instance_id: String,
     pub revision: u64,
 }
@@ -38,21 +36,23 @@ pub struct MapleApiAuthSnapshot {
 struct MapleApiAuthChanged {
     user_id: String,
     revision: u64,
+    authenticated: bool,
 }
 
 trait MapleApiAuthEventSink: Send + Sync {
-    fn auth_changed(&self, user_id: &str, revision: u64);
+    fn auth_changed(&self, user_id: &str, revision: u64, authenticated: bool);
 }
 
 struct TauriAuthEventSink(AppHandle);
 
 impl MapleApiAuthEventSink for TauriAuthEventSink {
-    fn auth_changed(&self, user_id: &str, revision: u64) {
+    fn auth_changed(&self, user_id: &str, revision: u64, authenticated: bool) {
         if let Err(error) = self.0.emit(
             AUTH_CHANGED_EVENT,
             MapleApiAuthChanged {
                 user_id: user_id.to_string(),
                 revision,
+                authenticated,
             },
         ) {
             log::warn!("Failed to notify Maple of refreshed API credentials: {error}");
@@ -92,7 +92,7 @@ pub(crate) struct MapleApiAuthLease<'a> {
 struct ClientSnapshot {
     generation: u64,
     client: Arc<OpenSecretClient>,
-    tokens_before: TokenPair,
+    auth_bundle_before: String,
 }
 
 struct CancelOperationOnDrop(CancellationToken);
@@ -101,12 +101,6 @@ impl Drop for CancelOperationOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
     }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct TokenPair {
-    access_token: String,
-    refresh_token: Option<String>,
 }
 
 impl MapleApiSession {
@@ -118,7 +112,7 @@ impl MapleApiSession {
         api_url: String,
         client: Arc<OpenSecretClient>,
     ) -> Result<Self, String> {
-        capture_tokens(&client)?;
+        capture_auth_bundle(&client)?;
         Ok(Self {
             user_id,
             account_scope,
@@ -145,14 +139,14 @@ impl MapleApiSession {
         api_url: String,
         client: Arc<OpenSecretClient>,
     ) -> Result<MapleApiAuthSnapshot, String> {
-        let replacement_tokens = capture_tokens(&client)?;
+        let replacement_bundle = capture_auth_bundle(&client)?;
         let mut inner = self.inner.write().await;
         if !inner.active {
             return Err("Maple API authentication is no longer active".to_string());
         }
 
-        let current_tokens = capture_tokens(&inner.credentials.client)?;
-        if inner.credentials.api_url == api_url && current_tokens == replacement_tokens {
+        let current_bundle = capture_auth_bundle(&inner.credentials.client)?;
+        if inner.credentials.api_url == api_url && current_bundle == replacement_bundle {
             return snapshot_from_inner(&self.user_id, &self.native_instance_id, &inner);
         }
 
@@ -198,14 +192,44 @@ impl MapleApiSession {
         let client = Arc::clone(&inner.credentials.client);
         Ok(ClientSnapshot {
             generation: inner.credentials.generation,
-            tokens_before: capture_tokens(&client)?,
+            auth_bundle_before: capture_auth_bundle(&client)?,
             client,
         })
     }
 
     async fn record_refresh(&self, snapshot: &ClientSnapshot) -> Result<(), String> {
-        let tokens_after = capture_tokens(&snapshot.client)?;
-        if tokens_after == snapshot.tokens_before {
+        self.record_auth_bundle_change(snapshot, capture_auth_bundle(&snapshot.client))
+            .await
+    }
+
+    async fn record_auth_bundle_change(
+        &self,
+        snapshot: &ClientSnapshot,
+        auth_bundle_after: Result<String, String>,
+    ) -> Result<(), String> {
+        let auth_bundle_after = match auth_bundle_after {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                let revision = {
+                    let mut inner = self.inner.write().await;
+                    if !inner.active
+                        || inner.credentials.generation != snapshot.generation
+                        || !Arc::ptr_eq(&inner.credentials.client, &snapshot.client)
+                    {
+                        return Ok(());
+                    }
+                    inner.active = false;
+                    inner.revision = inner
+                        .revision
+                        .checked_add(1)
+                        .ok_or_else(|| "Maple API authentication revision exhausted".to_string())?;
+                    inner.revision
+                };
+                self.event_sink.auth_changed(&self.user_id, revision, false);
+                return Err(error);
+            }
+        };
+        if auth_bundle_after == snapshot.auth_bundle_before {
             return Ok(());
         }
 
@@ -224,7 +248,7 @@ impl MapleApiSession {
             inner.revision
         };
 
-        self.event_sink.auth_changed(&self.user_id, revision);
+        self.event_sink.auth_changed(&self.user_id, revision, true);
         Ok(())
     }
 
@@ -345,23 +369,92 @@ struct TestMapleApiAuthEventSink;
 
 #[cfg(test)]
 impl MapleApiAuthEventSink for TestMapleApiAuthEventSink {
-    fn auth_changed(&self, _user_id: &str, _revision: u64) {}
+    fn auth_changed(&self, _user_id: &str, _revision: u64, _authenticated: bool) {}
 }
 
 #[cfg(test)]
 pub(crate) fn test_maple_api_session(user_id: &str) -> Arc<MapleApiSession> {
     let user_id = normalized_user_id(user_id).unwrap();
     let account_scope = account_scope(&user_id).unwrap();
-    let client = build_client("http://127.0.0.1:1", "test-access-token".to_string(), None).unwrap();
+    let api_url = "http://127.0.0.1:1";
+    let client = build_client(
+        api_url,
+        test_transport_v2_auth_bundle(api_url, &user_id, "test"),
+    )
+    .unwrap();
     Arc::new(
         MapleApiSession::new(
             Arc::new(TestMapleApiAuthEventSink),
             user_id,
             account_scope,
             "test-native-instance".to_string(),
-            "http://127.0.0.1:1".to_string(),
+            api_url.to_string(),
             client,
         )
+        .unwrap(),
+    )
+}
+
+#[cfg(test)]
+fn test_transport_v2_descriptors(user_id: &str, label: &str) -> (String, String) {
+    fn descriptor(audience: &str, kind: &str, subject: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let claims = serde_json::json!({
+            "iss": "urn:opensecret:transport-v2",
+            "aud": audience,
+            "tv": 2,
+            "tk": kind,
+            "pk": "user",
+            "sub": subject,
+            "exp": 2_000_000_000_u64,
+        });
+        format!(
+            "e30.{}.test-signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        )
+    }
+
+    let subject = format!("{user_id}|{label}");
+    (
+        descriptor(
+            "urn:opensecret:internal:transport-v2:user:access-descriptor",
+            "access_descriptor",
+            &subject,
+        ),
+        descriptor(
+            "urn:opensecret:internal:transport-v2:user:resumption",
+            "resumption",
+            &subject,
+        ),
+    )
+}
+
+#[cfg(test)]
+fn test_transport_v2_auth_bundle(api_url: &str, user_id: &str, label: &str) -> String {
+    use base64::{
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+        Engine as _,
+    };
+
+    #[derive(Serialize)]
+    struct TestAuthBundle<'a> {
+        version: u8,
+        api_origin: &'a str,
+        access_token: &'a str,
+        refresh_token: &'a str,
+        cache_namespace_root_base64: String,
+    }
+
+    let (access_token, refresh_token) = test_transport_v2_descriptors(user_id, label);
+    URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&TestAuthBundle {
+            version: 2,
+            api_origin: api_url,
+            access_token: &access_token,
+            refresh_token: &refresh_token,
+            cache_namespace_root_base64: STANDARD.encode([0x42_u8; 32]),
+        })
         .unwrap(),
     )
 }
@@ -421,31 +514,21 @@ fn snapshot_from_inner(
     native_instance_id: &str,
     inner: &MapleApiSessionInner,
 ) -> Result<MapleApiAuthSnapshot, String> {
-    let tokens = capture_tokens(&inner.credentials.client)?;
+    let auth_bundle = capture_auth_bundle(&inner.credentials.client)?;
     Ok(MapleApiAuthSnapshot {
         user_id: user_id.to_string(),
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
+        auth_bundle,
         native_instance_id: native_instance_id.to_string(),
         revision: inner.revision,
     })
 }
 
-fn capture_tokens(client: &OpenSecretClient) -> Result<TokenPair, String> {
-    let tokens = client
-        .get_tokens()
+fn capture_auth_bundle(client: &OpenSecretClient) -> Result<String, String> {
+    client
+        .export_transport_v2_auth_bundle()
         .map_err(map_sdk_error)?
-        .ok_or_else(|| "Maple API access token is missing".to_string())?;
-    let access_token = (!tokens.access_token.trim().is_empty())
-        .then_some(tokens.access_token)
-        .ok_or_else(|| "Maple API access token is missing".to_string())?;
-    let refresh_token = tokens
-        .refresh_token
-        .filter(|token| !token.trim().is_empty());
-    Ok(TokenPair {
-        access_token,
-        refresh_token,
-    })
+        .filter(|bundle| !bundle.trim().is_empty())
+        .ok_or_else(|| "Maple API transport v2 authentication is missing".to_string())
 }
 
 fn map_sdk_error(error: opensecret::Error) -> String {
@@ -470,48 +553,17 @@ fn normalized_user_id(user_id: &str) -> Result<String, String> {
     Ok(user_id)
 }
 
-fn normalize_api_url(api_url: &str) -> Result<String, String> {
-    let mut url =
-        reqwest::Url::parse(api_url.trim()).map_err(|_| "Maple API URL is invalid".to_string())?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| "Maple API URL must include a host".to_string())?;
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return Err("Maple API URL must use HTTPS or a loopback development address".to_string());
+fn build_client(api_url: &str, auth_bundle: String) -> Result<Arc<OpenSecretClient>, String> {
+    if auth_bundle.trim().is_empty() {
+        return Err("Maple API transport v2 authentication is missing".to_string());
     }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("Maple API URL must not contain credentials".to_string());
-    }
-    if url.query().is_some() || url.fragment().is_some() {
-        return Err("Maple API URL must not contain a query or fragment".to_string());
-    }
-    if url.path() != "/" && !url.path().is_empty() {
-        return Err("Maple API URL must not contain a path".to_string());
-    }
-    url.set_path("");
-    Ok(url.as_str().trim_end_matches('/').to_string())
-}
-
-fn build_client(
-    api_url: &str,
-    access_token: String,
-    refresh_token: Option<String>,
-) -> Result<Arc<OpenSecretClient>, String> {
-    if access_token.trim().is_empty() {
-        return Err("Maple API access token is missing".to_string());
-    }
-    let refresh_token = refresh_token.filter(|token| !token.trim().is_empty());
     let client = OpenSecretClient::new_with_pcr0_environment(
         api_url.to_string(),
         configured_pcr0_environment()?,
     )
     .map_err(map_sdk_error)?;
     client
-        .set_tokens(access_token, refresh_token)
+        .import_transport_v2_auth_bundle(&auth_bundle)
         .map_err(map_sdk_error)?;
     Ok(Arc::new(client))
 }
@@ -592,7 +644,7 @@ impl MapleApiAuthState {
         let user_id = normalized_user_id(&request.user_id)?;
         let requested_scope = account_scope(&user_id)?;
         let api_url = normalize_api_url(&request.api_url)?;
-        let client = build_client(&api_url, request.access_token, request.refresh_token)?;
+        let client = build_client(&api_url, request.auth_bundle)?;
         tokio::time::timeout(
             CREDENTIAL_VALIDATION_TIMEOUT,
             self.credential_validator.validate(&client, &user_id),
@@ -685,58 +737,64 @@ pub async fn maple_api_clear_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{
-        extract::{Path, State},
-        http::{header::AUTHORIZATION, HeaderMap, StatusCode},
-        response::{IntoResponse, Response},
-        routing::{get, post},
-        Json, Router,
-    };
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-    use ciborium::value::Value as CborValue;
-    use goose_providers::{base::Provider, conversation::message::Message, model::ModelConfig};
-    use opensecret::types::KeyExchangeRequest;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Notify;
 
     #[derive(Default)]
     struct RecordingEventSink {
-        events: StdMutex<Vec<(String, u64)>>,
+        events: StdMutex<Vec<(String, u64, bool)>>,
     }
 
     impl MapleApiAuthEventSink for RecordingEventSink {
-        fn auth_changed(&self, user_id: &str, revision: u64) {
-            self.events
-                .lock()
-                .expect("event lock")
-                .push((user_id.to_string(), revision));
+        fn auth_changed(&self, user_id: &str, revision: u64, authenticated: bool) {
+            self.events.lock().expect("event lock").push((
+                user_id.to_string(),
+                revision,
+                authenticated,
+            ));
         }
     }
 
-    struct TokenPrefixCredentialValidator;
+    struct DescriptorCredentialValidator;
 
     #[async_trait::async_trait]
-    impl MapleApiCredentialValidator for TokenPrefixCredentialValidator {
+    impl MapleApiCredentialValidator for DescriptorCredentialValidator {
         async fn validate(
             &self,
             client: &OpenSecretClient,
             expected_user_id: &str,
         ) -> Result<(), String> {
-            let tokens = capture_tokens(client)?;
-            let actual_user_id = tokens
+            let tokens = client
+                .get_tokens()
+                .map_err(map_sdk_error)?
+                .ok_or_else(|| "test credential is missing".to_string())?;
+            let payload = tokens
                 .access_token
+                .split('.')
+                .nth(1)
+                .ok_or_else(|| "test descriptor payload is missing".to_string())?;
+            let claims: serde_json::Value = serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(payload)
+                    .map_err(|_| "test descriptor payload is invalid".to_string())?,
+            )
+            .map_err(|_| "test descriptor claims are invalid".to_string())?;
+            let subject = claims
+                .get("sub")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "test descriptor subject is missing".to_string())?;
+            let (actual_user_id, label) = subject
                 .split_once('|')
-                .map(|(user_id, _)| user_id)
                 .ok_or_else(|| "test credential is missing its account prefix".to_string())?;
             if actual_user_id != expected_user_id {
                 return Err("Maple API authentication belongs to a different account".to_string());
             }
-            if tokens.access_token.ends_with("refresh-during-validation") {
+            if label == "refresh-during-validation" {
+                let (access, refresh) =
+                    test_transport_v2_descriptors(expected_user_id, "validated");
                 client
-                    .set_tokens(
-                        format!("{expected_user_id}|validated-access"),
-                        Some(format!("{expected_user_id}|validated-refresh")),
-                    )
+                    .set_tokens(access, Some(refresh))
                     .map_err(map_sdk_error)?;
             }
             Ok(())
@@ -748,175 +806,6 @@ mod tests {
         release: Arc<Notify>,
     }
 
-    #[derive(Clone)]
-    struct RefreshThenStallState {
-        key_pair: Arc<opensecret::crypto::KeyPair>,
-        session_key: [u8; 32],
-        session_id: String,
-        retry_started: Arc<Notify>,
-    }
-
-    struct RefreshThenStallFixture {
-        session: Arc<MapleApiSession>,
-        sink: Arc<RecordingEventSink>,
-        retry_started: Arc<Notify>,
-        server: tokio::task::JoinHandle<()>,
-    }
-
-    fn mock_attestation_document(nonce: &str, server_public_key: &[u8; 32]) -> String {
-        let payload = CborValue::Map(vec![
-            (
-                CborValue::Text("public_key".to_string()),
-                CborValue::Bytes(server_public_key.to_vec()),
-            ),
-            (
-                CborValue::Text("nonce".to_string()),
-                CborValue::Bytes(nonce.as_bytes().to_vec()),
-            ),
-        ]);
-        let mut payload_bytes = Vec::new();
-        ciborium::ser::into_writer(&payload, &mut payload_bytes).unwrap();
-        let cose_sign1 = CborValue::Array(vec![
-            CborValue::Bytes(Vec::new()),
-            CborValue::Map(Vec::new()),
-            CborValue::Bytes(payload_bytes),
-            CborValue::Bytes(Vec::new()),
-        ]);
-        let mut cose_bytes = Vec::new();
-        ciborium::ser::into_writer(&cose_sign1, &mut cose_bytes).unwrap();
-        BASE64.encode(cose_bytes)
-    }
-
-    async fn attestation_handler(
-        State(state): State<RefreshThenStallState>,
-        Path(nonce): Path<String>,
-    ) -> Json<serde_json::Value> {
-        Json(serde_json::json!({
-            "attestation_document": mock_attestation_document(
-                &nonce,
-                state.key_pair.public.as_bytes(),
-            )
-        }))
-    }
-
-    async fn key_exchange_handler(
-        State(state): State<RefreshThenStallState>,
-        Json(request): Json<KeyExchangeRequest>,
-    ) -> Json<serde_json::Value> {
-        let client_public_bytes = BASE64.decode(request.client_public_key).unwrap();
-        let client_public_key = opensecret::crypto::PublicKey::from(
-            <[u8; 32]>::try_from(client_public_bytes.as_slice()).unwrap(),
-        );
-        let shared_secret =
-            opensecret::crypto::derive_shared_secret(&state.key_pair.secret, &client_public_key);
-        let encrypted_session_key = BASE64.encode(
-            opensecret::crypto::encrypt_data(shared_secret.as_bytes(), &state.session_key).unwrap(),
-        );
-        Json(serde_json::json!({
-            "encrypted_session_key": encrypted_session_key,
-            "session_id": state.session_id,
-        }))
-    }
-
-    async fn refresh_handler(
-        State(state): State<RefreshThenStallState>,
-    ) -> Json<serde_json::Value> {
-        let plaintext = serde_json::to_vec(&serde_json::json!({
-            "access_token": "fresh_access",
-            "refresh_token": "fresh_refresh",
-        }))
-        .unwrap();
-        let encrypted = opensecret::crypto::encrypt_data(&state.session_key, &plaintext).unwrap();
-        Json(serde_json::json!({ "encrypted": BASE64.encode(encrypted) }))
-    }
-
-    async fn refresh_then_stall_handler(
-        State(state): State<RefreshThenStallState>,
-        headers: HeaderMap,
-    ) -> Response {
-        match headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-        {
-            Some("Bearer expired_access") => {
-                (StatusCode::UNAUTHORIZED, "expired access token").into_response()
-            }
-            Some("Bearer fresh_access") => {
-                state.retry_started.notify_one();
-                futures_util::future::pending::<Response>().await
-            }
-            _ => (StatusCode::FORBIDDEN, "unexpected credential").into_response(),
-        }
-    }
-
-    async fn refresh_then_stall_fixture() -> RefreshThenStallFixture {
-        let key_pair = Arc::new(opensecret::crypto::generate_key_pair());
-        let retry_started = Arc::new(Notify::new());
-        let state = RefreshThenStallState {
-            key_pair,
-            session_key: [41; 32],
-            session_id: "00000000-0000-0000-0000-000000000041".to_string(),
-            retry_started: Arc::clone(&retry_started),
-        };
-        let app = Router::new()
-            .route("/attestation/{nonce}", get(attestation_handler))
-            .route("/key_exchange", post(key_exchange_handler))
-            .route("/refresh", post(refresh_handler))
-            .route("/v1/chat/completions", post(refresh_then_stall_handler))
-            .route("/v1/web/search", post(refresh_then_stall_handler))
-            .with_state(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let api_url = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-        let client = Arc::new(OpenSecretClient::new(api_url.clone()).unwrap());
-        client
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("old_refresh".to_string()),
-            )
-            .unwrap();
-        client.perform_attestation_handshake().await.unwrap();
-        let sink = Arc::new(RecordingEventSink::default());
-        let session = Arc::new(
-            MapleApiSession::new(
-                sink.clone(),
-                "user-a".to_string(),
-                account_scope("user-a").unwrap(),
-                "native-test-instance".to_string(),
-                api_url,
-                client,
-            )
-            .unwrap(),
-        );
-        RefreshThenStallFixture {
-            session,
-            sink,
-            retry_started,
-            server,
-        }
-    }
-
-    async fn assert_refresh_reconciled(fixture: &RefreshThenStallFixture) {
-        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                let snapshot = fixture.session.auth_snapshot().await.unwrap();
-                if snapshot.revision == 2 {
-                    break snapshot;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("refreshed credentials should be reconciled");
-        assert_eq!(snapshot.access_token, "fresh_access");
-        assert_eq!(snapshot.refresh_token.as_deref(), Some("fresh_refresh"));
-        assert_eq!(
-            fixture.sink.events.lock().expect("event lock").as_slice(),
-            &[("user-a".to_string(), 2)]
-        );
-    }
-
     #[async_trait::async_trait]
     impl MapleApiCredentialValidator for BlockingCredentialValidator {
         async fn validate(
@@ -926,22 +815,22 @@ mod tests {
         ) -> Result<(), String> {
             self.entered.notify_one();
             self.release.notified().await;
-            TokenPrefixCredentialValidator
+            DescriptorCredentialValidator
                 .validate(client, expected_user_id)
                 .await
         }
     }
 
     fn test_state() -> MapleApiAuthState {
-        MapleApiAuthState::with_validator(Arc::new(TokenPrefixCredentialValidator))
+        MapleApiAuthState::with_validator(Arc::new(DescriptorCredentialValidator))
     }
 
-    fn auth_request(user_id: &str, access_token: &str) -> MapleApiAuthRequest {
+    fn auth_request(user_id: &str, label: &str) -> MapleApiAuthRequest {
+        let api_url = "https://enclave.trymaple.ai";
         MapleApiAuthRequest {
             user_id: user_id.to_string(),
-            api_url: "https://enclave.trymaple.ai".to_string(),
-            access_token: format!("{user_id}|{access_token}"),
-            refresh_token: Some(format!("{user_id}|refresh-{access_token}")),
+            api_url: api_url.to_string(),
+            auth_bundle: test_transport_v2_auth_bundle(api_url, user_id, label),
         }
     }
 
@@ -1001,7 +890,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replaced.revision, 2);
-        assert_eq!(replaced.access_token, "user-a|access-two");
+        assert_eq!(
+            replaced.auth_bundle,
+            auth_request("user-a", "access-two").auth_bundle
+        );
         assert!(state
             .set_auth_with_sink(sink.clone(), auth_request("user-b", "other"))
             .await
@@ -1034,15 +926,19 @@ mod tests {
             .set_auth_with_sink(sink.clone(), auth_request("user-a", "access-two"))
             .await
             .unwrap();
+        let (late_access, late_refresh) = test_transport_v2_descriptors("user-a", "late");
         old_snapshot
             .client
-            .set_tokens("late-access".to_string(), Some("late-refresh".to_string()))
+            .set_tokens(late_access, Some(late_refresh))
             .unwrap();
         session.record_refresh(&old_snapshot).await.unwrap();
 
         let current = session.auth_snapshot().await.unwrap();
         assert_eq!(current.revision, 2);
-        assert_eq!(current.access_token, "user-a|access-two");
+        assert_eq!(
+            current.auth_bundle,
+            auth_request("user-a", "access-two").auth_bundle
+        );
         assert!(sink.events.lock().expect("event lock").is_empty());
     }
 
@@ -1080,99 +976,63 @@ mod tests {
 
         let after = session.auth_snapshot().await.unwrap();
         assert_eq!(after.revision, before.revision);
-        assert_eq!(after.access_token, before.access_token);
-        assert_eq!(after.refresh_token, before.refresh_token);
+        assert_eq!(after.auth_bundle, before.auth_bundle);
     }
 
     #[tokio::test]
-    async fn provider_cancellation_after_sdk_refresh_reconciles_rotated_credentials() {
-        let fixture = refresh_then_stall_fixture().await;
-        let provider = crate::agent::provider::MapleProvider::new(Arc::clone(&fixture.session));
-        let cancellation = CancellationToken::new();
-        let task_cancellation = cancellation.clone();
-        let request = tokio::spawn(async move {
-            crate::agent::provider::with_run_cancellation(
-                task_cancellation,
-                provider.stream(
-                    &ModelConfig::new("test-model"),
-                    "system",
-                    &[Message::user().with_text("classify this URL")],
-                    &[],
-                ),
-            )
+    async fn current_generation_refresh_publishes_one_opaque_bundle_revision() {
+        let state = test_state();
+        let sink = Arc::new(RecordingEventSink::default());
+        state
+            .set_auth_with_sink(sink.clone(), auth_request("user-a", "access-one"))
             .await
-        });
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            fixture.retry_started.notified(),
-        )
-        .await
-        .expect("refreshed inference retry should start");
-        cancellation.cancel();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), request)
-            .await
-            .expect("provider cancellation should finish")
             .unwrap();
-        assert!(matches!(
-            result,
-            Err(goose_providers::errors::ProviderError::ExecutionError(message))
-                if message.contains("cancelled")
-        ));
-        assert_refresh_reconciled(&fixture).await;
-        fixture.server.abort();
+        let session = state.session_for("user-a").await.unwrap();
+        let snapshot = session.client_snapshot().await.unwrap();
+        let (access, refresh) = test_transport_v2_descriptors("user-a", "resumed");
+        snapshot.client.set_tokens(access, Some(refresh)).unwrap();
+
+        session.record_refresh(&snapshot).await.unwrap();
+
+        let current = session.auth_snapshot().await.unwrap();
+        assert_eq!(current.revision, 2);
+        assert_eq!(
+            current.auth_bundle,
+            test_transport_v2_auth_bundle("https://enclave.trymaple.ai", "user-a", "resumed")
+        );
+        assert_eq!(
+            sink.events.lock().expect("event lock").as_slice(),
+            &[("user-a".to_string(), 2, true)]
+        );
     }
 
     #[tokio::test]
-    async fn dropped_web_call_after_sdk_refresh_still_reconciles_rotated_credentials() {
-        let fixture = refresh_then_stall_fixture().await;
-        let session = Arc::clone(&fixture.session);
-        let request = tokio::spawn(async move {
-            session
-                .web_search(
-                    WebSearchRequest::new("maple privacy"),
-                    CancellationToken::new(),
-                )
-                .await
-        });
+    async fn current_generation_bundle_loss_invalidates_and_notifies_once() {
+        let state = test_state();
+        let sink = Arc::new(RecordingEventSink::default());
+        state
+            .set_auth_with_sink(sink.clone(), auth_request("user-a", "access-one"))
+            .await
+            .unwrap();
+        let session = state.session_for("user-a").await.unwrap();
+        let snapshot = session.client_snapshot().await.unwrap();
 
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            fixture.retry_started.notified(),
-        )
-        .await
-        .expect("refreshed web retry should start");
-        request.abort();
-        let _ = request.await;
-        assert_refresh_reconciled(&fixture).await;
-        fixture.server.abort();
-    }
+        let error = session
+            .record_auth_bundle_change(&snapshot, Err("credentials rejected".to_string()))
+            .await
+            .expect_err("bundle loss must invalidate the matching native generation");
 
-    #[tokio::test]
-    async fn dropped_classifier_provider_future_after_refresh_still_reconciles_credentials() {
-        let fixture = refresh_then_stall_fixture().await;
-        let provider = crate::agent::provider::MapleProvider::new(Arc::clone(&fixture.session));
-        let request = tokio::spawn(async move {
-            provider
-                .complete(
-                    &ModelConfig::new("llama3-3-70b"),
-                    "classify web permission",
-                    &[Message::user().with_text("untrusted classifier input")],
-                    &[],
-                )
-                .await
-        });
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            fixture.retry_started.notified(),
-        )
-        .await
-        .expect("refreshed classifier retry should start");
-        request.abort();
-        let _ = request.await;
-        assert_refresh_reconciled(&fixture).await;
-        fixture.server.abort();
+        assert_eq!(error, "credentials rejected");
+        assert!(session.auth_snapshot().await.is_err());
+        assert_eq!(
+            sink.events.lock().expect("event lock").as_slice(),
+            &[("user-a".to_string(), 2, false)]
+        );
+        session
+            .record_auth_bundle_change(&snapshot, Err("late duplicate".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(sink.events.lock().expect("event lock").len(), 1);
     }
 
     #[tokio::test]
@@ -1185,12 +1045,12 @@ mod tests {
             .unwrap();
 
         let mut wrong_account = auth_request("user-a", "access-two");
-        wrong_account.access_token = "user-b|access-two".to_string();
-        wrong_account.refresh_token = Some("user-b|refresh-access-two".to_string());
-        let error = state
-            .set_auth_with_sink(sink, wrong_account)
-            .await
-            .expect_err("cross-account replacement must be rejected");
+        wrong_account.auth_bundle =
+            test_transport_v2_auth_bundle("https://enclave.trymaple.ai", "user-b", "access-two");
+        let error = match state.set_auth_with_sink(sink, wrong_account).await {
+            Ok(_) => panic!("cross-account replacement must be rejected"),
+            Err(error) => error,
+        };
 
         assert!(error.contains("different account"));
         let current = state
@@ -1200,12 +1060,15 @@ mod tests {
             .auth_snapshot()
             .await
             .unwrap();
-        assert_eq!(current.access_token, "user-a|access-one");
+        assert_eq!(
+            current.auth_bundle,
+            auth_request("user-a", "access-one").auth_bundle
+        );
         assert_eq!(current.revision, 1);
     }
 
     #[tokio::test]
-    async fn validation_token_rotation_is_returned_to_the_browser_handshake() {
+    async fn validation_descriptor_rotation_is_returned_to_the_browser_handshake() {
         let state = test_state();
         let snapshot = state
             .set_auth_with_sink(
@@ -1215,10 +1078,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(snapshot.access_token, "user-a|validated-access");
         assert_eq!(
-            snapshot.refresh_token.as_deref(),
-            Some("user-a|validated-refresh")
+            snapshot.auth_bundle,
+            test_transport_v2_auth_bundle("https://enclave.trymaple.ai", "user-a", "validated")
         );
         assert!(!snapshot.native_instance_id.is_empty());
     }

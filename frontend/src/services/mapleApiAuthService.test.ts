@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   MapleApiAuthService,
-  type BrowserTokenPair,
   type MapleApiAuthBridge,
   type MapleApiAuthChanged,
   type MapleApiAuthMetadata,
@@ -17,10 +16,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 class FakeAuthBridge implements MapleApiAuthBridge {
-  browserTokens: BrowserTokenPair = {
-    accessToken: "access-one",
-    refreshToken: "refresh-one"
-  };
+  browserBundle = "browser-bundle-one";
   metadata: MapleApiAuthMetadata | null = null;
   nativeSnapshot: MapleApiAuthSnapshot | null = null;
   setCalls = 0;
@@ -40,12 +36,12 @@ class FakeAuthBridge implements MapleApiAuthBridge {
     return "https://enclave.trymaple.ai";
   }
 
-  readTokens(): BrowserTokenPair {
-    return { ...this.browserTokens };
+  async exportAuthBundle(): Promise<string> {
+    return this.browserBundle;
   }
 
-  writeTokens(tokens: BrowserTokenPair): void {
-    this.browserTokens = { ...tokens };
+  async importAuthBundle(bundle: string): Promise<void> {
+    this.browserBundle = bundle;
   }
 
   readMetadata(): MapleApiAuthMetadata | null {
@@ -62,19 +58,14 @@ class FakeAuthBridge implements MapleApiAuthBridge {
       this.commandOrder.push("set:start");
       const request = args.request as {
         userId: string;
-        accessToken: string;
-        refreshToken: string | null;
+        authBundle: string;
       };
       await this.setHook?.();
       const prior = this.nativeSnapshot;
-      const unchanged =
-        prior?.userId === request.userId &&
-        prior.accessToken === request.accessToken &&
-        (prior.refreshToken || null) === request.refreshToken;
+      const unchanged = prior?.userId === request.userId && prior.authBundle === request.authBundle;
       this.nativeSnapshot = {
         userId: request.userId,
-        accessToken: request.accessToken,
-        refreshToken: request.refreshToken,
+        authBundle: request.authBundle,
         nativeInstanceId: "native-instance-1",
         revision: unchanged ? prior.revision : (prior?.revision ?? 0) + 1
       };
@@ -110,12 +101,11 @@ class FakeAuthBridge implements MapleApiAuthBridge {
     await this.handler(event);
   }
 
-  setNativeRefresh(tokens: BrowserTokenPair, revision: number): void {
+  setNativeRefresh(authBundle: string, revision: number): void {
     if (!this.nativeSnapshot) throw new Error("native auth missing");
     this.nativeSnapshot = {
       userId: this.nativeSnapshot.userId,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
+      authBundle,
       nativeInstanceId: this.nativeSnapshot.nativeInstanceId,
       revision
     };
@@ -123,7 +113,7 @@ class FakeAuthBridge implements MapleApiAuthBridge {
 }
 
 describe("MapleApiAuthService", () => {
-  test("installs once and only pushes browser credentials after they change", async () => {
+  test("installs once and only pushes the browser bundle after it changes", async () => {
     const bridge = new FakeAuthBridge();
     const service = new MapleApiAuthService(bridge);
 
@@ -131,31 +121,22 @@ describe("MapleApiAuthService", () => {
     await service.sync("user-a");
     expect(bridge.setCalls).toBe(1);
 
-    bridge.browserTokens = {
-      accessToken: "browser-refreshed",
-      refreshToken: "browser-refresh-token"
-    };
+    bridge.browserBundle = "browser-bundle-refreshed";
     await service.sync("user-a");
     expect(bridge.setCalls).toBe(2);
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-refreshed");
+    expect(bridge.nativeSnapshot?.authBundle).toBe("browser-bundle-refreshed");
     expect(bridge.metadata?.nativeRevision).toBe(2);
   });
 
-  test("reconciles an SDK-refreshed token pair back to the browser", async () => {
+  test("reconciles an SDK-refreshed opaque bundle back to the browser", async () => {
     const bridge = new FakeAuthBridge();
     const service = new MapleApiAuthService(bridge);
     await service.activate("user-a");
 
-    bridge.setNativeRefresh(
-      { accessToken: "native-refreshed", refreshToken: "native-refresh-token" },
-      2
-    );
-    await bridge.emit({ userId: "user-a", revision: 2 });
+    bridge.setNativeRefresh("native-bundle-refreshed", 2);
+    await bridge.emit({ userId: "user-a", revision: 2, authenticated: true });
 
-    expect(bridge.browserTokens).toEqual({
-      accessToken: "native-refreshed",
-      refreshToken: "native-refresh-token"
-    });
+    expect(bridge.browserBundle).toBe("native-bundle-refreshed");
     expect(bridge.metadata?.nativeRevision).toBe(2);
   });
 
@@ -164,17 +145,11 @@ describe("MapleApiAuthService", () => {
     const firstService = new MapleApiAuthService(bridge);
     await firstService.activate("user-a");
 
-    bridge.setNativeRefresh(
-      { accessToken: "native-refreshed", refreshToken: "native-refresh-token" },
-      2
-    );
+    bridge.setNativeRefresh("native-bundle-refreshed", 2);
     const reloadedService = new MapleApiAuthService(bridge);
     await reloadedService.activate("user-a");
 
-    expect(bridge.browserTokens).toEqual({
-      accessToken: "native-refreshed",
-      refreshToken: "native-refresh-token"
-    });
+    expect(bridge.browserBundle).toBe("native-bundle-refreshed");
     expect(bridge.setCalls).toBe(1);
     expect(bridge.metadata?.nativeRevision).toBe(2);
   });
@@ -184,35 +159,29 @@ describe("MapleApiAuthService", () => {
     const service = new MapleApiAuthService(bridge);
     await service.activate("user-a");
 
-    bridge.browserTokens = {
-      accessToken: "browser-won",
-      refreshToken: "browser-won-refresh"
-    };
-    bridge.setNativeRefresh({ accessToken: "late-native", refreshToken: "late-native-refresh" }, 2);
-    await bridge.emit({ userId: "user-a", revision: 2 });
+    bridge.browserBundle = "browser-bundle-won";
+    bridge.setNativeRefresh("late-native-bundle", 2);
+    await bridge.emit({ userId: "user-a", revision: 2, authenticated: true });
 
     expect(bridge.setCalls).toBe(2);
-    expect(bridge.browserTokens.accessToken).toBe("browser-won");
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-won");
+    expect(bridge.browserBundle).toBe("browser-bundle-won");
+    expect(bridge.nativeSnapshot?.authBundle).toBe("browser-bundle-won");
   });
 
   test("a browser refresh during get_auth is reinstalled instead of overwritten", async () => {
     const bridge = new FakeAuthBridge();
     const service = new MapleApiAuthService(bridge);
     await service.activate("user-a");
-    bridge.setNativeRefresh({ accessToken: "native-late", refreshToken: "native-late-refresh" }, 2);
+    bridge.setNativeRefresh("native-bundle-late", 2);
     bridge.getHook = async () => {
       bridge.getHook = null;
-      bridge.browserTokens = {
-        accessToken: "browser-new",
-        refreshToken: "browser-new-refresh"
-      };
+      bridge.browserBundle = "browser-bundle-new";
     };
 
-    await bridge.emit({ userId: "user-a", revision: 2 });
+    await bridge.emit({ userId: "user-a", revision: 2, authenticated: true });
 
-    expect(bridge.browserTokens.accessToken).toBe("browser-new");
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-new");
+    expect(bridge.browserBundle).toBe("browser-bundle-new");
+    expect(bridge.nativeSnapshot?.authBundle).toBe("browser-bundle-new");
     expect(bridge.setCalls).toBe(2);
   });
 
@@ -220,22 +189,16 @@ describe("MapleApiAuthService", () => {
     const bridge = new FakeAuthBridge();
     const service = new MapleApiAuthService(bridge);
     await service.activate("user-a");
-    bridge.browserTokens = {
-      accessToken: "browser-second",
-      refreshToken: "browser-second-refresh"
-    };
+    bridge.browserBundle = "browser-bundle-second";
     bridge.setHook = async () => {
       bridge.setHook = null;
-      bridge.browserTokens = {
-        accessToken: "browser-third",
-        refreshToken: "browser-third-refresh"
-      };
+      bridge.browserBundle = "browser-bundle-third";
     };
 
     await service.sync("user-a");
 
     expect(bridge.setCalls).toBe(3);
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-third");
+    expect(bridge.nativeSnapshot?.authBundle).toBe("browser-bundle-third");
   });
 
   test("serialized clear cannot be undone by a delayed credential install", async () => {
@@ -259,7 +222,7 @@ describe("MapleApiAuthService", () => {
     expect(bridge.metadata).toBeNull();
 
     bridge.setHook = null;
-    bridge.browserTokens = { accessToken: "account-b", refreshToken: "account-b-refresh" };
+    bridge.browserBundle = "account-b-bundle";
     await service.activate("user-b");
     expect(bridge.nativeSnapshot?.userId).toBe("user-b");
   });
@@ -268,13 +231,13 @@ describe("MapleApiAuthService", () => {
     const bridge = new FakeAuthBridge();
     const service = new MapleApiAuthService(bridge);
     await service.activate("user-a");
-    const original = { ...bridge.browserTokens };
+    const original = bridge.browserBundle;
 
     await service.clear("user-a");
-    await bridge.emit({ userId: "user-a", revision: 2 });
+    await bridge.emit({ userId: "user-a", revision: 2, authenticated: true });
 
     expect(bridge.clearCalls).toBe(1);
-    expect(bridge.browserTokens).toEqual(original);
+    expect(bridge.browserBundle).toBe(original);
     expect(bridge.nativeSnapshot).toBeNull();
   });
 
@@ -287,5 +250,51 @@ describe("MapleApiAuthService", () => {
     await service.activate("user-a");
 
     expect(bridge.nativeSnapshot?.userId).toBe("user-a");
+  });
+
+  test("native credential rejection clears matching auth and notifies UI lifecycle", async () => {
+    const bridge = new FakeAuthBridge();
+    const service = new MapleApiAuthService(bridge);
+    const invalidated: string[] = [];
+    service.subscribeInvalidation(({ userId }) => invalidated.push(userId));
+    await service.activate("user-a");
+
+    await bridge.emit({ userId: "user-a", revision: 2, authenticated: false });
+
+    expect(bridge.clearCalls).toBe(1);
+    expect(bridge.nativeSnapshot).toBeNull();
+    expect(bridge.metadata).toBeNull();
+    expect(invalidated).toEqual(["user-a"]);
+    await expect(service.sync("user-a")).rejects.toThrow("authentication changed");
+  });
+
+  test("an invalidation for another account cannot clear the active lifecycle", async () => {
+    const bridge = new FakeAuthBridge();
+    const service = new MapleApiAuthService(bridge);
+    const invalidated: string[] = [];
+    service.subscribeInvalidation(({ userId }) => invalidated.push(userId));
+    await service.activate("user-a");
+
+    await bridge.emit({ userId: "user-b", revision: 2, authenticated: false });
+
+    expect(bridge.clearCalls).toBe(0);
+    expect(bridge.nativeSnapshot?.userId).toBe("user-a");
+    expect(invalidated).toEqual([]);
+  });
+
+  test("native rejection cannot clear a newer browser credential generation", async () => {
+    const bridge = new FakeAuthBridge();
+    const service = new MapleApiAuthService(bridge);
+    const invalidated: string[] = [];
+    service.subscribeInvalidation(({ userId }) => invalidated.push(userId));
+    await service.activate("user-a");
+    bridge.browserBundle = "browser-bundle-newer";
+
+    await bridge.emit({ userId: "user-a", revision: 2, authenticated: false });
+
+    expect(bridge.clearCalls).toBe(0);
+    expect(bridge.setCalls).toBe(2);
+    expect(bridge.nativeSnapshot?.authBundle).toBe("browser-bundle-newer");
+    expect(invalidated).toEqual([]);
   });
 });

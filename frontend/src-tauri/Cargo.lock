@@ -4759,6 +4759,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower-http 0.6.8",
+ "uuid",
  "webpki-roots",
  "windows 0.62.2",
  "zip 8.6.0",
@@ -4766,7 +4767,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5583,7 +5584,7 @@ dependencies = [
 
 [[package]]
 name = "opensecret"
-version = "3.6.2"
+version = "4.0.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
