@@ -1676,7 +1676,11 @@ impl ChatScreen {
                     .gap_1()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .child(icon("search", px(18.), theme::text_faint()))
+                    // Only a fruitless search gets the glass; an empty inbox
+                    // is not something to look for.
+                    .when(reason == SidebarEmpty::NoMatches, |column| {
+                        column.child(icon("search", px(18.), theme::text_faint()))
+                    })
                     .child(div().mt_1().child(title))
                     .child(
                         div()
