@@ -698,8 +698,7 @@ impl SettingsScreen {
         );
         // The root view resolves the palette on its next render and
         // refreshes every view when it changed.
-        crate::ui::theme::set_preference(next);
-        cx.refresh_windows();
+        crate::ui::theme::apply_preference(next, cx);
     }
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
@@ -714,9 +713,12 @@ impl SettingsScreen {
             // Fire a test notification so enabling gives immediate feedback
             // and delivery problems surface right away.
             let enabled_at = chrono::Local::now().format("%H:%M").to_string();
-            crate::notify::notify_desktop(
+            crate::notify::notify(
+                cx,
+                "settings:test",
                 "Desktop notifications on",
                 &format!("You will see alerts like this at {enabled_at}."),
+                &[],
             );
         }
     }

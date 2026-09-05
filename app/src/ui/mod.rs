@@ -7,6 +7,7 @@ pub mod decorations;
 pub mod icons;
 pub mod login;
 pub mod markdown;
+pub mod menus;
 pub mod motion;
 pub mod rich_text;
 pub mod settings;

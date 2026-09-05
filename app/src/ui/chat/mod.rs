@@ -1571,7 +1571,7 @@ impl ChatScreen {
 
     /// Load a task and make it current when its snapshot lands; its
     /// persisted root then becomes the visible project context.
-    fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn select_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
         // The side thread belongs to the task it forked.
         if self.btw.is_some() && self.selected_session.as_deref() != Some(session_id) {
             self.close_side_thread(cx);
@@ -3924,7 +3924,7 @@ impl ChatScreen {
                     .first()
                     .map(|question| question.question.chars().take(140).collect())
                     .unwrap_or_default();
-                self.notify_desktop("Maple has a question", &preview);
+                self.notify_desktop(&session_id, "Maple has a question", &preview, cx);
                 // Questions queue per session; one for a task that is not
                 // on screen shows its card when the user switches there.
                 let shows_now = self.current_question().is_none()
@@ -4047,7 +4047,7 @@ impl ChatScreen {
                     .prompt
                     .clone()
                     .unwrap_or_else(|| format!("Run tool {}?", request.tool_name));
-                self.notify_desktop("Maple needs permission", &prompt);
+                self.notify_desktop(session_id, "Maple needs permission", &prompt, cx);
                 // The request is kept even when its session is not on
                 // screen: the run blocks until it is answered, so the card
                 // must appear when the user opens that session.
@@ -4196,7 +4196,7 @@ impl ChatScreen {
                     .find(|session| session.id == session_id)
                     .map(|session| session.title.clone())
                     .unwrap_or_else(|| "Task".to_string());
-                self.notify_desktop("Maple", &format!("“{title}” finished"));
+                self.notify_desktop(session_id, "Maple", &format!("“{title}” finished"), cx);
                 self.refresh_sidebar_plan(cx);
             }
             AgentRunEvent::QueueChanged(snapshot) => {
@@ -4656,8 +4656,9 @@ impl ChatScreen {
     }
 
     /// Raise a desktop notification when enabled and the window is not
-    /// focused.
-    fn notify_desktop(&self, title: &str, body: &str) {
+    /// focused. `tag` names the task, so a later alert about the same task
+    /// replaces the earlier one instead of stacking.
+    fn notify_desktop(&self, tag: &str, title: &str, body: &str, cx: &gpui::App) {
         if !self.notify_enabled {
             log::info!("desktop notification skipped (disabled): {title}");
             return;
@@ -4667,7 +4668,7 @@ impl ChatScreen {
             return;
         }
         log::info!("desktop notification sent: {title}");
-        crate::notify::notify_desktop(title, &body.replace('\n', " "));
+        crate::notify::notify(cx, format!("task:{tag}"), title, body, &[]);
     }
 
     /// Load the plan card from the Maple billing API. Failures keep the

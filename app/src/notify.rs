@@ -1,9 +1,56 @@
-//! Desktop notifications through the platform's own tool. Every call runs
-//! the command on a separate thread: D-Bus and script launches must not
-//! block the UI thread.
+//! Desktop notifications. gpui posts them through the platform's own
+//! notification center, which gives them the app's icon, action buttons,
+//! replacement by tag, and click-to-focus. That path needs an app bundle
+//! on macOS: `cargo run` is not one, so an unbundled binary falls back to
+//! the platform's command-line tool, run on a separate thread so a D-Bus
+//! or script launch never blocks the UI thread.
 
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use gpui::{App, SharedString, SystemNotification, SystemNotificationAction};
+
+/// Whether the running binary can use the platform notification center.
+/// macOS delivers notifications only for a bundled app; gpui's path
+/// silently drops them otherwise.
+pub fn native_available() -> bool {
+    if cfg!(target_os = "macos") {
+        std::env::current_exe()
+            .map(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"))
+            .unwrap_or(false)
+    } else {
+        true
+    }
+}
+
+/// Show a notification. `tag` identifies it: a later notification with
+/// the same tag replaces the earlier one, and a click reports the tag
+/// back through [`gpui::App::on_system_notification_response`].
+/// `actions` are `(id, label)` buttons where the platform shows them.
+pub fn notify(
+    cx: &App,
+    tag: impl Into<SharedString>,
+    title: &str,
+    body: &str,
+    actions: &[(&str, &str)],
+) {
+    if native_available() {
+        cx.show_system_notification(SystemNotification {
+            tag: tag.into(),
+            title: title.into(),
+            body: body.replace('\n', " ").into(),
+            actions: actions
+                .iter()
+                .map(|(id, label)| SystemNotificationAction {
+                    id: SharedString::from(id.to_string()),
+                    label: SharedString::from(label.to_string()),
+                })
+                .collect(),
+        });
+    } else {
+        notify_desktop(title, body);
+    }
+}
 
 /// Set after the first failed launch so a missing tool logs one warning,
 /// not one per notification.
