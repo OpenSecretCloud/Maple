@@ -12,7 +12,6 @@ use maple_agent::agent::AgentTimelineItem;
 
 use super::ChatScreen;
 use super::commands::ChatCommand;
-use super::sidebar::SidebarEntry;
 use super::transcript::{attachment_refs, has_tool_input};
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 use crate::ui::text_input::vim::VimMode;
@@ -41,9 +40,6 @@ pub(super) struct ApplicationVimState {
     pub(super) count: CountState,
     transcript_by_task: HashMap<String, String>,
     follow_by_task: HashMap<String, bool>,
-    sidebar: Option<SidebarTarget>,
-    sidebar_by_row: Vec<Option<SidebarTarget>>,
-    sidebar_order: Vec<SidebarTarget>,
     pub(super) permission_choice: usize,
 }
 
@@ -56,9 +52,6 @@ impl Default for ApplicationVimState {
             count: CountState::default(),
             transcript_by_task: HashMap::new(),
             follow_by_task: HashMap::new(),
-            sidebar: None,
-            sidebar_by_row: Vec::new(),
-            sidebar_order: Vec::new(),
             permission_choice: 0,
         }
     }
@@ -134,8 +127,6 @@ impl ChatScreen {
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         for input in [
             self.composer.as_ref(),
-            self.search_input.as_ref(),
-            self.rename_input.as_ref(),
             self.pending_question_input.as_ref(),
             self.root_input.as_ref(),
         ]
@@ -148,18 +139,18 @@ impl ChatScreen {
                 input.set_application_vim_enabled(enabled, cx)
             });
         }
+        // The sidebar switches its own inputs and row targets.
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_application_vim_enabled(enabled, cx)
+        });
         if self.application_vim_enabled == enabled {
             return;
         }
         self.application_vim_enabled = enabled;
         if enabled {
-            // Sidebar entries may have changed while the feature was off. Build
-            // the semantic projection only when it becomes observable.
-            self.rebuild_sidebar_application_targets();
-            self.reconcile_sidebar_application_selection();
             if self.navigable_timeline_ids().is_empty() {
                 self.application_vim.set_region(ChatRegion::Sidebar);
-                self.ensure_sidebar_application_selection();
+                self.ensure_sidebar_application_selection(cx);
             } else {
                 self.application_vim.set_region(ChatRegion::Transcript);
                 self.select_transcript_edge(false, true, cx);
@@ -201,7 +192,7 @@ impl ChatScreen {
         if let Some(handle) = &self.application_focus {
             window.focus(handle, cx);
         }
-        self.reveal_application_selection();
+        self.reveal_application_selection(cx);
         cx.notify();
     }
 
@@ -214,16 +205,15 @@ impl ChatScreen {
             return false;
         }
         let focused = window.focused(cx);
-        ![
+        !([
             self.composer.as_ref(),
-            self.search_input.as_ref(),
-            self.rename_input.as_ref(),
             self.pending_question_input.as_ref(),
             self.root_input.as_ref(),
         ]
         .into_iter()
         .flatten()
         .any(|input| Some(input.read(cx).focus_handle(cx)) == focused)
+            || self.sidebar_input_focused(&focused, cx))
     }
 
     pub(super) fn application_vim_push_count(&mut self, digit: u8, cx: &mut Context<Self>) {
@@ -330,7 +320,10 @@ impl ChatScreen {
             }
             return;
         }
-        if self.step_sidebar_popup(direction, count, cx) {
+        if self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.step_popup(direction, count, cx))
+        {
             return;
         }
         if let Some(question) = self.current_question() {
@@ -374,7 +367,10 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if self.sidebar_popup_edge(first, cx) {
+        if self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.popup_edge(first, cx))
+        {
             return;
         }
         if let Some(question) = self.current_question() {
@@ -454,14 +450,14 @@ impl ChatScreen {
         } else {
             self.application_vim.set_region(target);
             if target == ChatRegion::Sidebar {
-                self.ensure_sidebar_application_selection();
+                self.ensure_sidebar_application_selection(cx);
             } else {
                 self.ensure_transcript_application_selection();
             }
             if let Some(handle) = &self.application_focus {
                 window.focus(handle, cx);
             }
-            self.reveal_application_selection();
+            self.reveal_application_selection(cx);
             cx.notify();
         }
         true
@@ -520,14 +516,19 @@ impl ChatScreen {
 
     fn application_vim_ordinary_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused = window.focused(cx);
-        [
-            self.search_input.as_ref(),
-            self.rename_input.as_ref(),
-            self.pending_question_input.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|input| Some(input.read(cx).focus_handle(cx)) == focused)
+        self.pending_question_input
+            .as_ref()
+            .is_some_and(|input| Some(input.read(cx).focus_handle(cx)) == focused)
+            || self.sidebar_input_focused(&focused, cx)
+    }
+
+    /// Whether the sidebar's search or rename field has focus.
+    fn sidebar_input_focused(&self, focused: &Option<gpui::FocusHandle>, cx: &gpui::App) -> bool {
+        self.sidebar
+            .read(cx)
+            .inputs()
+            .iter()
+            .any(|input| Some(input.read(cx).focus_handle(cx)) == *focused)
     }
 
     fn application_vim_disabled_composer_focused(&self, window: &Window, cx: &gpui::App) -> bool {
@@ -543,7 +544,10 @@ impl ChatScreen {
             self.confirm_root_menu(cx);
             return;
         }
-        if self.activate_sidebar_popup(cx) {
+        if self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.activate_popup(cx))
+        {
             return;
         }
         if self.current_question().is_some() {
@@ -572,9 +576,11 @@ impl ChatScreen {
             return;
         }
         match self.application_vim.region {
-            ChatRegion::Sidebar => match self.application_vim.sidebar.clone() {
+            ChatRegion::Sidebar => match self.sidebar.read(cx).vim_selected().cloned() {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
-                Some(SidebarTarget::Projects) => self.toggle_switcher_menu(cx),
+                Some(SidebarTarget::Projects) => self
+                    .sidebar
+                    .update(cx, |sidebar, cx| sidebar.toggle_switcher_menu(cx)),
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
                 None => {}
@@ -605,12 +611,8 @@ impl ChatScreen {
 
     fn set_application_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.application_vim.region == ChatRegion::Sidebar {
-            match self.application_vim.sidebar.clone() {
-                Some(SidebarTarget::Projects) => self.set_switcher_menu_open(expanded, cx),
-                Some(SidebarTarget::Archived) => self.set_archived_expanded(expanded, cx),
-                _ => {}
-            }
-            self.reveal_application_selection();
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.vim_set_expanded(expanded, cx));
             return;
         }
         let Some(item_id) = self.selected_transcript_id().map(str::to_owned) else {
@@ -743,7 +745,7 @@ impl ChatScreen {
         self.application_vim
             .set_transcript(&task_id, ids[index].clone(), follow);
         self.follow_tail(follow);
-        self.reveal_application_selection();
+        self.reveal_application_selection(cx);
         cx.notify();
     }
 
@@ -769,7 +771,7 @@ impl ChatScreen {
         self.application_vim
             .set_transcript(&task_id, item_id.clone(), follow && !first);
         self.follow_tail(follow && !first);
-        self.reveal_application_selection();
+        self.reveal_application_selection(cx);
         cx.notify();
     }
 
@@ -812,7 +814,7 @@ impl ChatScreen {
         self.application_vim
             .set_transcript(&task_id, assistant[index].clone(), false);
         self.follow_tail(false);
-        self.reveal_application_selection();
+        self.reveal_application_selection(cx);
         self.focus_application_vim(window, cx);
     }
 
@@ -889,138 +891,36 @@ impl ChatScreen {
         self.focus_application_vim(window, cx);
     }
 
-    pub(super) fn rebuild_sidebar_application_targets(&mut self) {
-        if !self.application_vim_enabled {
-            return;
-        }
-        self.application_vim.sidebar_by_row = self
-            .sidebar_entries
-            .iter()
-            .map(|entry| match *entry {
-                SidebarEntry::NewTask => Some(SidebarTarget::NewTask),
-                SidebarEntry::ProjectsHeader => Some(SidebarTarget::Projects),
-                SidebarEntry::SectionLabel(_) | SidebarEntry::Empty(_) => None,
-                SidebarEntry::Task(task) => self
-                    .sessions
-                    .get(task.session)
-                    .map(|session| SidebarTarget::Task(session.id.clone())),
-                SidebarEntry::ArchivedHeader => Some(SidebarTarget::Archived),
-            })
-            .collect();
-    }
-
-    fn sidebar_application_targets(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = (usize, &SidebarTarget)> {
-        self.application_vim
-            .sidebar_by_row
-            .iter()
-            .enumerate()
-            .filter_map(|(row, target)| target.as_ref().map(|target| (row, target)))
-    }
-
-    pub(super) fn sidebar_application_target(&self, row: usize) -> Option<&SidebarTarget> {
-        self.application_vim
-            .sidebar_by_row
-            .get(row)
-            .and_then(Option::as_ref)
-    }
-
-    fn sidebar_application_target_row(&self, selected: &SidebarTarget) -> Option<usize> {
-        self.sidebar_application_targets()
-            .find_map(|(row, target)| (target == selected).then_some(row))
-    }
-
-    fn ensure_sidebar_application_selection(&mut self) {
-        if self
-            .application_vim
-            .sidebar
-            .as_ref()
-            .is_some_and(|selected| self.sidebar_application_target_row(selected).is_some())
-        {
-            return;
-        }
-        let selected_task = self.selected_session.as_deref().and_then(|task_id| {
-            self.sidebar_application_targets()
-                .find_map(|(_, target)| match target {
-                    SidebarTarget::Task(candidate) if candidate == task_id => Some(target.clone()),
-                    _ => None,
-                })
-        });
-        self.application_vim.sidebar = selected_task.or_else(|| {
-            self.sidebar_application_targets()
-                .next()
-                .map(|(_, target)| target.clone())
-        });
+    fn ensure_sidebar_application_selection(&mut self, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, _cx| sidebar.vim_ensure_selection());
     }
 
     fn move_sidebar_selection(&mut self, direction: isize, count: usize, cx: &mut Context<Self>) {
-        let targets = &self.application_vim.sidebar_order;
-        if targets.is_empty() {
-            return;
-        }
-        let current = self
-            .application_vim
+        if self
             .sidebar
-            .as_ref()
-            .and_then(|selected| targets.iter().position(|target| target == selected));
-        let index = stepped_index(current, targets.len(), direction, count);
-        let target = targets[index].clone();
-        let row = self.sidebar_application_target_row(&target);
-        self.application_vim.sidebar = Some(target);
-        self.application_vim.set_region(ChatRegion::Sidebar);
-        if let Some(row) = row {
-            self.sidebar_list.scroll_to_reveal_item(row);
+            .update(cx, |sidebar, cx| sidebar.vim_move(direction, count, cx))
+        {
+            self.application_vim.set_region(ChatRegion::Sidebar);
+            cx.notify();
         }
-        cx.notify();
     }
 
     fn select_sidebar_edge(&mut self, first: bool, cx: &mut Context<Self>) {
-        let selected = if first {
-            self.sidebar_application_targets().next()
-        } else {
-            self.sidebar_application_targets().next_back()
+        if self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.vim_edge(first, cx))
+        {
+            self.application_vim.set_region(ChatRegion::Sidebar);
+            cx.notify();
         }
-        .map(|(row, target)| (row, target.clone()));
-        let Some((row, target)) = selected else {
-            return;
-        };
-        self.application_vim.sidebar = Some(target);
-        self.application_vim.set_region(ChatRegion::Sidebar);
-        self.sidebar_list.scroll_to_reveal_item(row);
-        cx.notify();
-    }
-
-    pub(super) fn reconcile_sidebar_application_selection(&mut self) {
-        if !self.application_vim_enabled {
-            return;
-        }
-        let next = self
-            .sidebar_application_targets()
-            .map(|(_, target)| target.clone())
-            .collect::<Vec<_>>();
-        self.application_vim.sidebar = reconcile_stable_selection(
-            self.application_vim.sidebar.as_ref(),
-            &self.application_vim.sidebar_order,
-            &next,
-        )
-        .or_else(|| next.first().cloned());
-        self.application_vim.sidebar_order = next;
     }
 
     #[cfg(test)]
-    pub(super) fn application_vim_projection_is_empty(&self) -> bool {
+    pub(super) fn application_vim_projection_is_empty(&self, cx: &gpui::App) -> bool {
         self.application_vim.transcript_by_task.is_empty()
             && self.application_vim.follow_by_task.is_empty()
-            && self.application_vim.sidebar.is_none()
-            && self.application_vim.sidebar_by_row.is_empty()
-            && self.application_vim.sidebar_order.is_empty()
-    }
-
-    pub(super) fn application_vim_selects_sidebar_row(&self, row: usize) -> bool {
-        self.application_vim_enabled
-            && self.application_vim.region == ChatRegion::Sidebar
-            && self.sidebar_application_target(row) == self.application_vim.sidebar.as_ref()
+            && self.sidebar.read(cx).vim_projection_is_empty()
     }
 
     pub(super) fn select_sidebar_from_pointer(
@@ -1032,23 +932,15 @@ impl ChatScreen {
         if !self.application_vim_enabled {
             return;
         }
-        self.application_vim.sidebar = Some(target);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.vim_select(target, cx));
         self.application_vim.set_region(ChatRegion::Sidebar);
         self.focus_application_vim(window, cx);
     }
 
-    fn reveal_application_selection(&self) {
+    fn reveal_application_selection(&self, cx: &gpui::App) {
         match self.application_vim.region {
-            ChatRegion::Sidebar => {
-                if let Some(row) = self
-                    .application_vim
-                    .sidebar
-                    .as_ref()
-                    .and_then(|target| self.sidebar_application_target_row(target))
-                {
-                    self.sidebar_list.scroll_to_reveal_item(row);
-                }
-            }
+            ChatRegion::Sidebar => self.sidebar.read(cx).vim_reveal(),
             ChatRegion::Transcript => {
                 if let Some(item_id) = self.selected_transcript_id()
                     && let Some(&(row, _)) = self.timeline_index.get(item_id)
@@ -1221,7 +1113,12 @@ fn timeline_item_is_navigable(item: &AgentTimelineItem) -> bool {
     true
 }
 
-fn stepped_index(current: Option<usize>, len: usize, direction: isize, count: usize) -> usize {
+pub(super) fn stepped_index(
+    current: Option<usize>,
+    len: usize,
+    direction: isize,
+    count: usize,
+) -> usize {
     debug_assert!(len > 0);
     match current {
         Some(start) if direction > 0 => start.saturating_add(count).min(len - 1),
@@ -1231,7 +1128,7 @@ fn stepped_index(current: Option<usize>, len: usize, direction: isize, count: us
     }
 }
 
-fn reconcile_stable_selection<T: Clone + Eq>(
+pub(super) fn reconcile_stable_selection<T: Clone + Eq>(
     selected: Option<&T>,
     old_order: &[T],
     next_order: &[T],

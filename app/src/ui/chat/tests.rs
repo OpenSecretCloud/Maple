@@ -1,11 +1,13 @@
 //! Tests for the chat screen.
 
 mod state_tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
+    use crate::ui::chat::sidebar::RenameTarget;
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
@@ -77,8 +79,8 @@ mod state_tests {
         // This gpui's test scheduler flags activity on other threads unless
         // parking is allowed; the backend runtime and image encoder run on tokio.
         cx.executor().allow_parking();
-        cx.new(|_cx| {
-            let mut screen = ChatScreen::new_inner(backend, "user".to_string());
+        cx.new(|cx| {
+            let mut screen = ChatScreen::new_inner(backend, "user".to_string(), cx);
             screen.selected_session = Some("s1".to_string());
             screen
         })
@@ -353,7 +355,7 @@ mod state_tests {
         // This gpui's test scheduler flags activity on other threads unless
         // parking is allowed; the backend runtime and image encoder run on tokio.
         cx.executor().allow_parking();
-        let screen = cx.new(|_cx| {
+        let screen = cx.new(|cx| {
             ChatScreen::new_inner(
                 std::sync::Arc::new(
                     crate::backend::AgentBackend::new(
@@ -363,6 +365,7 @@ mod state_tests {
                     .expect("backend"),
                 ),
                 "user".to_string(),
+                cx,
             )
         });
         match previous {
@@ -380,17 +383,17 @@ mod state_tests {
     fn test_archived_tasks_leave_the_sections(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
-        screen.update(cx, |this, _cx| {
+        screen.update(cx, |this, cx| {
             this.sessions = vec![summary("s1", "Live"), summary("s2", "Old")];
             this.sessions[1].archived = true;
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_active, vec![0]);
-            assert_eq!(this.archived_indices, vec![1]);
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            assert_eq!(this.archived_indices(cx), vec![1]);
 
             this.sessions[0].archived = true;
-            this.rebuild_sidebar_sections();
-            assert!(this.sidebar_active.is_empty());
-            assert_eq!(this.archived_indices, vec![0, 1]);
+            this.sync_sidebar(cx);
+            assert!(this.sidebar_active(cx).is_empty());
+            assert_eq!(this.archived_indices(cx), vec![0, 1]);
         });
     }
 
@@ -561,10 +564,10 @@ mod state_tests {
     fn test_session_upsert_never_duplicates(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
-        screen.update(cx, |this, _cx| {
-            this.upsert_session(summary("s1", "A"));
-            this.upsert_session(summary("s1", "A2"));
-            this.upsert_session(summary("s2", "B"));
+        screen.update(cx, |this, cx| {
+            this.upsert_session(summary("s1", "A"), cx);
+            this.upsert_session(summary("s1", "A2"), cx);
+            this.upsert_session(summary("s2", "B"), cx);
             assert_eq!(this.sessions.len(), 2);
             // New sessions prepend; updates happen in place.
             assert_eq!(this.sessions[0].title, "B");
@@ -701,7 +704,7 @@ mod state_tests {
     fn test_sidebar_filter_hides_non_matching_tasks_and_projects(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
-        screen.update(cx, |this, _| {
+        screen.update(cx, |this, cx| {
             let mut a = summary("s1", "Fix login bug");
             a.project_root = "/work/alpha".to_string();
             let mut b = summary("s2", "Write docs");
@@ -710,25 +713,22 @@ mod state_tests {
             c.project_root = "/work/beta".to_string();
             c.archived = true;
             this.sessions = vec![a, b, c];
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_active.len(), 2);
-            assert_eq!(this.archived_indices, vec![2]);
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx).len(), 2);
+            assert_eq!(this.archived_indices(cx), vec![2]);
 
-            this.sidebar_filter = "login".to_string();
-            this.rebuild_sidebar_sections();
+            this.set_sidebar_filter("login", cx);
             // Only the matching task stays visible.
-            assert_eq!(this.sidebar_active, vec![0]);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
             // Archived rows are searched too.
-            assert_eq!(this.archived_indices, vec![2]);
+            assert_eq!(this.archived_indices(cx), vec![2]);
 
             // A project name matches all of its tasks.
-            this.sidebar_filter = "beta".to_string();
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_active, vec![1]);
+            this.set_sidebar_filter("beta", cx);
+            assert_eq!(this.sidebar_active(cx), vec![1]);
 
-            this.sidebar_filter.clear();
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_active.len(), 2);
+            this.set_sidebar_filter("", cx);
+            assert_eq!(this.sidebar_active(cx).len(), 2);
         });
     }
 
@@ -1703,163 +1703,156 @@ mod state_tests {
         );
     }
 
-    #[test]
-    fn test_switcher_lists_saved_roots_then_fresh_alphabetically() {
-        let _guard = SETTINGS_LOCK.lock();
-        let mut this = ChatScreen::new_inner(
-            std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            ),
-            "user".to_string(),
-        );
-        this.recent_roots = vec!["/z".to_string()];
-        this.sessions = vec![
-            summary_at("s1", "One", "/m"),
-            summary_at("s2", "Two", "/a"),
-            summary_at("s3", "Three", "/m"),
-        ];
-        this.rebuild_sidebar_sections();
-        // Saved roots keep their order; roots only tasks know about append
-        // alphabetically so their position never moves.
-        assert_eq!(this.switcher_root_paths(), vec!["/z", "/a", "/m"]);
+    #[gpui::test]
+    fn test_switcher_lists_saved_roots_then_fresh_alphabetically(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.recent_roots = vec!["/z".to_string()];
+            this.sessions = vec![
+                summary_at("s1", "One", "/m"),
+                summary_at("s2", "Two", "/a"),
+                summary_at("s3", "Three", "/m"),
+            ];
+            this.sync_sidebar(cx);
+            // Saved roots keep their order; roots only tasks know about append
+            // alphabetically so their position never moves.
+            assert_eq!(this.switcher_root_paths(cx), ["/z", "/a", "/m"]);
+        });
     }
 
     /// Tasks split into the inbox sections: pinned tasks first, the
     /// active inbox, then the settled rest, each newest activity first.
-    #[test]
-    fn test_sections_split_pinned_active_and_settled() {
-        let _guard = SETTINGS_LOCK.lock();
-        let mut this = ChatScreen::new_inner(
-            std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            ),
-            "user".to_string(),
-        );
-        let mut idle = summary_at("s1", "Idle", "/a");
-        idle.updated_ms = 10;
-        let mut newer = summary_at("s2", "Newer", "/a");
-        newer.updated_ms = 20;
-        this.sessions = vec![idle, newer];
-        this.pinned_tasks = vec!["s1".to_string()];
-        this.active_runs
-            .insert("s2".to_string(), "run-1".to_string());
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_pinned, vec![0]);
-        assert_eq!(this.sidebar_active, vec![1]);
-        assert_eq!(this.sidebar_settled, Vec::<usize>::new());
+    #[gpui::test]
+    fn test_sections_split_pinned_active_and_settled(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut idle = summary_at("s1", "Idle", "/a");
+            idle.updated_ms = 10;
+            let mut newer = summary_at("s2", "Newer", "/a");
+            newer.updated_ms = 20;
+            this.sessions = vec![idle, newer];
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_pinned_tasks_for_test(vec!["s1".to_string()]);
+            });
+            this.active_runs
+                .insert("s2".to_string(), "run-1".to_string());
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_pinned(cx), vec![0]);
+            assert_eq!(this.sidebar_active(cx), vec![1]);
+            assert_eq!(this.sidebar_settled(cx), Vec::<usize>::new());
 
-        // A task with no live run and no unseen completion is active
-        // until it is settled away by hand; reading it never settles it.
-        this.pinned_tasks.clear();
-        this.active_runs.clear();
-        this.settled_tasks.insert("s1".to_string());
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_active, vec![1]);
-        assert_eq!(this.sidebar_settled, vec![0]);
+            // A task with no live run and no unseen completion is active
+            // until it is settled away by hand; reading it never settles it.
+            this.active_runs.clear();
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_pinned_tasks_for_test(Vec::new());
+                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
+            });
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![1]);
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
 
-        // Sections read newest activity first.
-        let mut older = summary_at("s3", "Older", "/b");
-        older.updated_ms = 5;
-        this.sessions.push(older);
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_active, vec![1, 2]);
-        assert_eq!(this.sidebar_settled, vec![0]);
+            // Sections read newest activity first.
+            let mut older = summary_at("s3", "Older", "/b");
+            older.updated_ms = 5;
+            this.sessions.push(older);
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![1, 2]);
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+        });
     }
 
     /// A new task is a draft until its first message is sent: it stays
     /// out of the sidebar, then joins the active inbox once it lands.
-    #[test]
-    fn test_draft_tasks_stay_out_until_the_first_message() {
-        let _guard = SETTINGS_LOCK.lock();
-        let mut this = ChatScreen::new_inner(
-            std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            ),
-            "user".to_string(),
-        );
-        let mut draft = summary_at("s1", "New task", "/a");
-        draft.message_count = 0;
-        this.sessions = vec![draft, summary_at("s2", "Real task", "/a")];
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_active, vec![1]);
-        assert!(this.sidebar_settled.is_empty());
-        // The draft's project still feeds the switcher.
-        assert_eq!(this.switcher_root_paths(), vec!["/a"]);
+    #[gpui::test]
+    fn test_draft_tasks_stay_out_until_the_first_message(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let mut draft = summary_at("s1", "New task", "/a");
+            draft.message_count = 0;
+            this.sessions = vec![draft, summary_at("s2", "Real task", "/a")];
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![1]);
+            assert!(this.sidebar_settled(cx).is_empty());
+            // The draft's project still feeds the switcher.
+            assert_eq!(this.switcher_root_paths(cx), ["/a"]);
 
-        // The first message moves it into the inbox.
-        this.sessions[0].message_count = 1;
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_active, vec![0, 1]);
+            // The first message moves it into the inbox.
+            this.sessions[0].message_count = 1;
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![0, 1]);
+        });
     }
 
     /// The project filter scopes the sections to one project; the
     /// switcher still lists every known root.
-    #[test]
-    fn test_project_filter_scopes_the_sections() {
-        let _guard = SETTINGS_LOCK.lock();
-        let mut this = ChatScreen::new_inner(
-            std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            ),
-            "user".to_string(),
-        );
-        this.sessions = vec![summary_at("s1", "One", "/a"), summary_at("s2", "Two", "/b")];
-        this.settled_tasks.insert("s1".to_string());
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_settled, vec![0]);
-        assert_eq!(this.sidebar_active, vec![1]);
-        assert_eq!(this.switcher_root_paths(), vec!["/a", "/b"]);
+    #[gpui::test]
+    fn test_project_filter_scopes_the_sections(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary_at("s1", "One", "/a"), summary_at("s2", "Two", "/b")];
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
+            });
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+            assert_eq!(this.sidebar_active(cx), vec![1]);
+            assert_eq!(this.switcher_root_paths(cx), ["/a", "/b"]);
 
-        this.sidebar_project_filter = Some("/b".to_string());
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_settled, Vec::<usize>::new());
-        assert_eq!(this.sidebar_active, vec![1]);
-        // The switcher is not itself filtered.
-        assert_eq!(this.switcher_root_paths(), vec!["/a", "/b"]);
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_project_filter(Some("/b".to_string()), cx);
+            });
+            assert_eq!(this.sidebar_settled(cx), Vec::<usize>::new());
+            assert_eq!(this.sidebar_active(cx), vec![1]);
+            // The switcher is not itself filtered.
+            assert_eq!(this.switcher_root_paths(cx), ["/a", "/b"]);
+        });
     }
 
     /// A manual settle parks a task outside the active inbox until new
     /// activity wakes it; a manual un-settle moves it back.
-    #[test]
-    fn test_settling_a_task_moves_it_out_of_the_inbox() {
-        let _guard = SETTINGS_LOCK.lock();
-        let mut this = ChatScreen::new_inner(
-            std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            ),
-            "user".to_string(),
-        );
-        this.sessions = vec![summary_at("s1", "One", "/a")];
-        this.completed_unread_sessions.insert("s1".to_string());
-        this.settled_tasks.insert("s1".to_string());
-        this.rebuild_sidebar_sections();
-        // The manual settle outranks the unseen completion...
-        assert_eq!(this.sidebar_settled, vec![0]);
-        assert!(this.sidebar_active.is_empty());
-        // ...but a live run is activity: it wakes the task again.
-        this.active_runs
-            .insert("s1".to_string(), "run-1".to_string());
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_active, vec![0]);
+    #[gpui::test]
+    fn test_settling_a_task_moves_it_out_of_the_inbox(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary_at("s1", "One", "/a")];
+            this.completed_unread_sessions.insert("s1".to_string());
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
+            });
+            this.sync_sidebar(cx);
+            // The manual settle outranks the unseen completion...
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+            assert!(this.sidebar_active(cx).is_empty());
+            // ...but a live run is activity: it wakes the task again.
+            this.active_runs
+                .insert("s1".to_string(), "run-1".to_string());
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
 
-        this.active_runs.clear();
-        this.settled_tasks.remove("s1");
-        this.unsettled_tasks.insert("s1".to_string());
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_active, vec![0]);
-        assert!(this.sidebar_settled.is_empty());
-        // Reading the task (no live run, no unseen completion) leaves it
-        // in the active inbox; only an explicit settle moves it out.
-        this.completed_unread_sessions.clear();
-        this.unsettled_tasks.clear();
-        this.rebuild_sidebar_sections();
-        assert_eq!(this.sidebar_active, vec![0]);
-        assert!(this.sidebar_settled.is_empty());
+            this.active_runs.clear();
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_settled_for_test(HashSet::new());
+                sidebar.set_unsettled_for_test(HashSet::from(["s1".to_string()]));
+            });
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            assert!(this.sidebar_settled(cx).is_empty());
+            // Reading the task (no live run, no unseen completion) leaves it
+            // in the active inbox; only an explicit settle moves it out.
+            this.completed_unread_sessions.clear();
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_unsettled_for_test(HashSet::new());
+            });
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            assert!(this.sidebar_settled(cx).is_empty());
+        });
     }
 
     /// The row buttons drive `settle_task` and `unsettle_task` back to
@@ -1871,22 +1864,22 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_active, vec![0]);
-            assert!(this.sidebar_settled.is_empty());
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            assert!(this.sidebar_settled(cx).is_empty());
 
             this.settle_task("s1", cx);
-            assert_eq!(this.sidebar_settled, vec![0]);
-            assert!(this.sidebar_active.is_empty());
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+            assert!(this.sidebar_active(cx).is_empty());
 
             this.unsettle_task("s1", cx);
-            assert_eq!(this.sidebar_active, vec![0]);
-            assert!(this.sidebar_settled.is_empty());
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            assert!(this.sidebar_settled(cx).is_empty());
             // An already-woken task can still be un-settled again.
             this.settle_task("s1", cx);
             this.unsettle_task("s1", cx);
-            assert_eq!(this.sidebar_active, vec![0]);
-            assert!(this.sidebar_settled.is_empty());
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            assert!(this.sidebar_settled(cx).is_empty());
         });
     }
 
@@ -1900,10 +1893,12 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.selected_session = None;
             this.sessions = vec![summary("s1", "One")];
-            this.settled_tasks.insert("s1".to_string());
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_settled, vec![0]);
-            assert!(this.sidebar_active.is_empty());
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
+            });
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+            assert!(this.sidebar_active(cx).is_empty());
 
             this.handle_run_event(
                 "s1",
@@ -1911,7 +1906,7 @@ mod state_tests {
                 maple_agent::agent::AgentRunEvent::Started,
                 cx,
             );
-            assert_eq!(this.sidebar_active, vec![0]);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
 
             this.handle_run_event(
                 "s1",
@@ -1921,9 +1916,9 @@ mod state_tests {
                 ),
                 cx,
             );
-            assert!(this.settled_tasks.is_empty());
-            assert_eq!(this.sidebar_active, vec![0]);
-            assert!(this.sidebar_settled.is_empty());
+            assert!(this.sidebar.read(cx).settled_tasks().is_empty());
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            assert!(this.sidebar_settled(cx).is_empty());
             assert!(this.completed_unread_sessions.contains("s1"));
         });
     }
@@ -1937,18 +1932,20 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.application_vim_enabled = true;
             this.sessions = vec![summary("s1", "One")];
-            this.rebuild_sidebar_sections();
-            this.task_menu = Some("s1".to_string());
+            this.sync_sidebar(cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
             // The first step highlights "Rename task"; Enter runs it.
             assert!(this.step_sidebar_popup(1, 1, cx));
             this.activate_sidebar_popup(cx);
             assert!(matches!(
-                this.rename,
+                this.sidebar.read(cx).rename_target(),
                 Some(RenameTarget::Task(ref target)) if target == "s1"
             ));
             this.cancel_rename(cx);
             // No popup open: stepping reports nothing to do.
-            this.task_menu = None;
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.close_popups(cx));
             assert!(!this.step_sidebar_popup(1, 1, cx));
         });
     }
@@ -1963,14 +1960,15 @@ mod state_tests {
             this.application_vim_enabled = true;
             this.sessions = vec![summary_at("s1", "One", "/a")];
             this.recent_roots = vec!["/b".to_string()];
-            this.rebuild_sidebar_sections();
-            this.switcher_menu_open = true;
+            this.sync_sidebar(cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.set_switcher_menu_open(true, cx));
             // Rows: "All projects", "/b", "/a", "New project…"; a count of
             // two lands on "/b".
             assert!(this.step_sidebar_popup(1, 2, cx));
             this.activate_sidebar_popup(cx);
-            assert_eq!(this.sidebar_project_filter.as_deref(), Some("/b"));
-            assert!(!this.switcher_menu_open);
+            assert_eq!(this.sidebar.read(cx).project_filter(), Some("/b"));
+            assert!(!this.sidebar.read(cx).switcher_menu_open());
         });
     }
 
@@ -1980,11 +1978,13 @@ mod state_tests {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.switcher_menu_open = true;
-            this.task_menu = Some("s1".to_string());
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.set_switcher_menu_open(true, cx));
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
             this.escape(cx);
-            assert!(!this.switcher_menu_open);
-            assert!(this.task_menu.is_none());
+            assert!(!this.sidebar.read(cx).switcher_menu_open());
+            assert!(this.sidebar.read(cx).task_menu().is_none());
         });
     }
 
@@ -2243,24 +2243,32 @@ mod state_tests {
     fn test_sidebar_rows_follow_titles_and_project_names(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
-        screen.update(cx, |this, _cx| {
+        screen.update(cx, |this, cx| {
             this.sessions = vec![summary("s1", "Fix Login")];
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_rows.len(), 1);
-            assert_eq!(this.sidebar_rows[0].search, "fix login");
-            assert_eq!(this.sidebar_rows[0].project_name.as_ref(), "proj");
+            this.sync_sidebar(cx);
+            {
+                let sidebar = this.sidebar.read(cx);
+                assert_eq!(sidebar.rows().len(), 1);
+                assert_eq!(sidebar.rows()[0].search, "fix login");
+                assert_eq!(sidebar.rows()[0].project_name.as_ref(), "proj");
+            }
             // The filter matches the project name case-insensitively.
-            this.sidebar_filter = "PROJ".to_lowercase();
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_active, vec![0]);
-            this.sidebar_filter.clear();
+            this.set_sidebar_filter(&"PROJ".to_lowercase(), cx);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+            this.set_sidebar_filter("", cx);
             // A rename moves the row strings.
-            this.upsert_session(summary("s1", "Renamed"));
-            assert_eq!(this.sidebar_rows[0].title.as_ref(), "Renamed");
-            this.project_names
-                .insert("/tmp/proj".to_string(), "Nice".to_string());
-            this.rebuild_sidebar_sections();
-            assert_eq!(this.sidebar_rows[0].project_name.as_ref(), "Nice");
+            this.upsert_session(summary("s1", "Renamed"), cx);
+            assert_eq!(this.sidebar.read(cx).rows()[0].title.as_ref(), "Renamed");
+            this.sidebar.update(cx, |sidebar, _| {
+                sidebar
+                    .project_names_mut()
+                    .insert("/tmp/proj".to_string(), "Nice".to_string());
+            });
+            this.sync_sidebar(cx);
+            assert_eq!(
+                this.sidebar.read(cx).rows()[0].project_name.as_ref(),
+                "Nice"
+            );
         });
     }
 
@@ -2270,23 +2278,29 @@ mod state_tests {
     fn test_task_stepping_walks_the_whole_list(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
-        screen.update(cx, |this, _cx| {
+        screen.update(cx, |this, cx| {
             let mut other = summary("s3", "C");
             other.project_root = "/work/beta".to_string();
             this.sessions = vec![summary("s1", "A"), summary("s2", "B"), other];
             this.project_root = Some("/tmp/proj".to_string());
-            this.rebuild_sidebar_sections();
+            this.sync_sidebar(cx);
             // The screen fixture selects s1: one step moves to s2, and
             // back stops at the top.
-            assert_eq!(this.task_step_target(1), Some((4, "s2".to_string())));
-            assert_eq!(this.task_step_target(-1), None, "the first task is the top");
+            assert_eq!(this.task_step_target(1, cx), Some((4, "s2".to_string())));
+            assert_eq!(
+                this.task_step_target(-1, cx),
+                None,
+                "the first task is the top"
+            );
             this.selected_session = Some("s2".to_string());
-            assert_eq!(this.task_step_target(1), Some((5, "s3".to_string())));
-            assert_eq!(this.task_step_target(-1), Some((3, "s1".to_string())));
+            this.sync_sidebar_selection(cx);
+            assert_eq!(this.task_step_target(1, cx), Some((5, "s3".to_string())));
+            assert_eq!(this.task_step_target(-1, cx), Some((3, "s1".to_string())));
             // With nothing selected, each direction enters from its end.
             this.selected_session = None;
-            assert_eq!(this.task_step_target(1), Some((3, "s1".to_string())));
-            assert_eq!(this.task_step_target(-1), Some((5, "s3".to_string())));
+            this.sync_sidebar_selection(cx);
+            assert_eq!(this.task_step_target(1, cx), Some((3, "s1".to_string())));
+            assert_eq!(this.task_step_target(-1, cx), Some((5, "s3".to_string())));
         });
     }
 
@@ -2605,39 +2619,39 @@ mod state_tests {
                     .h(px(400.))
                     .flex()
                     .flex_col()
-                    .child(self.chat.update(cx, |chat, cx| chat.render_sidebar(cx)))
+                    .child(self.chat.read(cx).sidebar.clone())
             }
         }
 
         // This gpui's test scheduler flags activity on other threads unless
         // parking is allowed; the backend runtime and image encoder run on tokio.
         cx.executor().allow_parking();
-        let chat = cx.new(|_| {
+        let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
                 crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
                     .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string());
+            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
             this.sessions = (0..200)
                 .map(|n| summary(&format!("s{n}"), &format!("Task {n}")))
                 .collect();
-            this.rebuild_sidebar_sections();
+            this.sync_sidebar(cx);
             this
         });
         let (_host, cx) = cx.add_window_view(|_window, _cx| SidebarHost { chat: chat.clone() });
         cx.simulate_resize(gpui::size(px(300.), px(400.)));
         cx.update(|_window, app| {
-            let chat = chat.read(app);
-            assert_eq!(chat.sidebar_list.item_count(), chat.sidebar_entries.len());
+            let sidebar = chat.read(app).sidebar.read(app);
+            assert_eq!(sidebar.list().item_count(), sidebar.entries().len());
             assert_eq!(
-                chat.sidebar_application_target(0),
+                sidebar.vim_target(0),
                 None,
                 "the sidebar must not build an application-navigation cache while it is off"
             );
-            assert_eq!(chat.sidebar_application_target(1), None);
-            let top = chat.sidebar_list.logical_scroll_top();
+            assert_eq!(sidebar.vim_target(1), None);
+            let top = sidebar.list().logical_scroll_top();
             assert_eq!(top.item_ix, 0);
         });
         // The list scrolls: a wheel moves the logical top down the rows.
@@ -2648,7 +2662,7 @@ mod state_tests {
             ..Default::default()
         });
         cx.update(|_window, app| {
-            let top = chat.read(app).sidebar_list.logical_scroll_top();
+            let top = chat.read(app).sidebar.read(app).list().logical_scroll_top();
             assert!(
                 top.item_ix > 0,
                 "wheel must scroll the sidebar, got {top:?}"
@@ -2663,22 +2677,22 @@ mod state_tests {
         chat.update(cx, |this, cx| {
             this.set_application_vim_enabled(false, cx);
             this.sessions = vec![summary("s1", "Task")];
-            this.rebuild_sidebar_sections();
+            this.sync_sidebar(cx);
             this.replace_timeline(vec![
                 user_item("u1", "question"),
                 item("a1", "message", Some("answer")),
             ]);
 
             assert!(
-                this.application_vim_projection_is_empty(),
+                this.application_vim_projection_is_empty(cx),
                 "loading a timeline and rebuilding the sidebar must not populate disabled navigation state"
             );
 
             this.set_application_vim_enabled(true, cx);
-            assert!(!this.application_vim_projection_is_empty());
+            assert!(!this.application_vim_projection_is_empty(cx));
             this.set_application_vim_enabled(false, cx);
             assert!(
-                this.application_vim_projection_is_empty(),
+                this.application_vim_projection_is_empty(cx),
                 "disabling the feature must release its cached projection"
             );
         });
@@ -2729,7 +2743,7 @@ mod state_tests {
                 crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
                     .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string());
+            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
             this.selected_session = Some("s1".to_string());
             this.application_vim_enabled = application_vim_enabled;
             this.application_focus = application_vim_enabled.then(|| cx.focus_handle());
@@ -2964,7 +2978,7 @@ mod state_tests {
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_inner(backend, "user".to_string());
+            let mut chat = ChatScreen::new_inner(backend, "user".to_string(), cx);
             chat.selected_session = Some("s1".to_string());
             chat.application_vim_enabled = true;
             chat.application_focus = Some(cx.focus_handle());

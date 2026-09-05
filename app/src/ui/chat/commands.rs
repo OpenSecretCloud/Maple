@@ -229,11 +229,10 @@ impl ChatScreen {
 mod tests {
     use std::sync::Arc;
 
-    use gpui::{AppContext, Focusable, IntoElement, Render, TestAppContext, div};
+    use gpui::{AppContext, IntoElement, Render, TestAppContext, div};
 
     use super::*;
     use crate::backend::AgentBackend;
-    use crate::ui::text_input::TextInput;
 
     struct EmptyHost;
 
@@ -247,26 +246,19 @@ mod tests {
         let backend = Arc::new(
             AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).expect("backend"),
         );
-        cx.new(|_cx| ChatScreen::new_inner(backend, "user".to_string()))
+        cx.new(|cx| ChatScreen::new_inner(backend, "user".to_string(), cx))
     }
 
     #[gpui::test]
     fn commands_keep_feature_state_in_its_owners(cx: &mut TestAppContext) {
         let chat = screen(cx);
-        chat.update(cx, |this, cx| {
+        chat.update(cx, |this, _cx| {
             this.sidebar_collapsed = true;
-            this.search_input = Some(cx.new(|cx| TextInput::new("Search", cx)));
         });
 
         let (_host, cx) = cx.add_window_view(|_window, _cx| EmptyHost);
-        let search_focus = cx.update(|_window, app| {
-            chat.read(app)
-                .search_input
-                .as_ref()
-                .expect("search input")
-                .read(app)
-                .focus_handle(app)
-        });
+        let search_focus =
+            cx.update(|_window, app| chat.read(app).sidebar.read(app).search_focus_handle(app));
 
         cx.update(|window, app| {
             chat.update(app, |this, cx| {
@@ -277,9 +269,9 @@ mod tests {
                 assert!(this.sidebar_collapsed);
 
                 this.execute_command(ChatCommand::ToggleArchived, window, cx);
-                assert!(this.archived_expanded);
+                assert!(this.sidebar.read(cx).archived_expanded());
                 this.execute_command(ChatCommand::ToggleArchived, window, cx);
-                assert!(!this.archived_expanded);
+                assert!(!this.sidebar.read(cx).archived_expanded());
             });
             assert_eq!(window.focused(app), Some(search_focus));
         });
