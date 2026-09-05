@@ -163,6 +163,9 @@ pub enum Block {
         rows: Arc<[Arc<[TableCell]>]>,
         /// Per-column alignment from the delimiter row.
         alignments: Arc<[ColumnAlign]>,
+        /// Per-column width weight from the longest cell text, computed
+        /// once here rather than on every frame.
+        column_weights: Arc<[usize]>,
         in_quote: bool,
         list_depth: usize,
     },
@@ -303,6 +306,15 @@ fn resolve_inline(mut paragraph: Paragraph) -> (SharedString, InlineStyles, Link
     (SharedString::new(paragraph.text), Arc::from(styles), links)
 }
 
+/// Byte ranges an inline code span covers, for the monospace face.
+fn mono_ranges(styles: &InlineStyles) -> rich_text::Mono {
+    styles
+        .iter()
+        .filter(|(_, style)| style.code)
+        .map(|(range, _)| range.clone())
+        .collect()
+}
+
 fn text_block(
     paragraph: Paragraph,
     text_size: Option<gpui::Pixels>,
@@ -368,8 +380,11 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                 container.child(wrap_inline(
                     rich_text::paragraph(
                         text.clone(),
-                        highlights,
-                        links.clone(),
+                        rich_text::Inline {
+                            highlights,
+                            links: links.clone(),
+                            mono: mono_ranges(styles),
+                        },
                         *text_size,
                         *weight,
                         ctx.for_block(block_offset),
@@ -385,21 +400,18 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                 in_quote,
                 list_depth,
             } => container.child(wrap_inline(
-                rich_text::code_block(
-                    code.clone(),
-                    label.clone(),
-                    ElementId::NamedInteger(id_name.clone(), index as u64),
-                ),
+                rich_text::code_block(code.clone(), label.clone(), id_name.clone(), index as u64),
                 *in_quote,
                 *list_depth,
             )),
             Block::Table {
                 rows,
                 alignments,
+                column_weights,
                 in_quote,
                 list_depth,
             } => container.child(wrap_inline(
-                table_element(rows, alignments, block_offset, ctx),
+                table_element(rows, alignments, column_weights, block_offset, ctx),
                 *in_quote,
                 *list_depth,
             )),
@@ -671,6 +683,7 @@ pub fn parse(source: &str) -> Document {
                         && !builder.rows.is_empty()
                     {
                         blocks.push(Block::Table {
+                            column_weights: table_weights(&builder.rows),
                             rows: Arc::from(builder.rows),
                             alignments: Arc::from(builder.alignments),
                             in_quote,
@@ -743,18 +756,11 @@ pub fn parse(source: &str) -> Document {
 /// cell from starving the other columns.
 const TABLE_WEIGHT_CAP: usize = 60;
 
-/// Build a table: bordered rows of flex cells. Column widths follow the
-/// longest cell text of each column, so a short column does not take
-/// the same space as a prose column. Each cell is its own selectable
-/// paragraph at `base_offset` plus its cell index.
-fn table_element(
-    rows: &Arc<[Arc<[TableCell]>]>,
-    alignments: &[ColumnAlign],
-    base_offset: usize,
-    ctx: &RenderCtx,
-) -> Div {
+/// Per-column width weights: the longest cell text of each column, so a
+/// short column does not take the same space as a prose column.
+fn table_weights(rows: &[Arc<[TableCell]>]) -> Arc<[usize]> {
     let mut weights: Vec<usize> = Vec::new();
-    for row in rows.iter() {
+    for row in rows {
         for (col_ix, cell) in row.iter().enumerate() {
             if weights.len() <= col_ix {
                 weights.push(1);
@@ -763,10 +769,28 @@ fn table_element(
             weights[col_ix] = weights[col_ix].max(len);
         }
     }
+    Arc::from(weights)
+}
+
+/// Build a table: bordered rows of flex cells sized by `weights`. Each
+/// cell is its own selectable paragraph at `base_offset` plus its cell
+/// index, and the tree exposes rows and cells to assistive technology.
+fn table_element(
+    rows: &Arc<[Arc<[TableCell]>]>,
+    alignments: &[ColumnAlign],
+    weights: &[usize],
+    base_offset: usize,
+    ctx: &RenderCtx,
+) -> gpui::Stateful<Div> {
     let total: usize = weights.iter().sum::<usize>().max(1);
+    let columns = weights.len();
 
     let border = gpui::rgb(theme::border_subtle());
     let mut table = div()
+        .id(ElementId::NamedInteger("table".into(), base_offset as u64))
+        .role(gpui::Role::Table)
+        .aria_row_count(rows.len())
+        .aria_column_count(columns)
         .w_full()
         .my_1()
         .rounded(theme::RADIUS_SM)
@@ -795,6 +819,14 @@ fn table_element(
                 .collect();
             let weight = weights.get(col_ix).copied().unwrap_or(1);
             let mut cell_div = div()
+                .id(ElementId::NamedInteger("cell".into(), ordinal as u64))
+                .role(if header {
+                    gpui::Role::ColumnHeader
+                } else {
+                    gpui::Role::Cell
+                })
+                .aria_row_index(row_ix + 1)
+                .aria_column_index(col_ix + 1)
                 .flex_grow(1.)
                 .flex_basis(gpui::relative(weight as f32 / total as f32))
                 .min_w(px(0.))
@@ -811,8 +843,11 @@ fn table_element(
             }
             line = line.child(cell_div.child(rich_text::paragraph(
                 cell.text.clone(),
-                highlights,
-                cell.links.clone(),
+                rich_text::Inline {
+                    highlights,
+                    links: cell.links.clone(),
+                    mono: mono_ranges(&cell.styles),
+                },
                 None,
                 header.then_some(gpui::FontWeight::SEMIBOLD),
                 ctx.for_block(ordinal),
@@ -826,7 +861,7 @@ fn table_element(
 }
 
 /// Apply list indentation and blockquote chrome to an inner block.
-fn wrap_inline(element: Div, in_quote: bool, list_depth: usize) -> Div {
+fn wrap_inline(element: impl IntoElement, in_quote: bool, list_depth: usize) -> Div {
     let mut outer = div().w_full();
     if list_depth > 1 {
         outer = outer.pl(px(16. * (list_depth - 1) as f32));

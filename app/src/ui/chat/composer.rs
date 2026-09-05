@@ -155,7 +155,9 @@ impl ChatScreen {
                         } else {
                             theme::text_primary()
                         }))
+                        // A path: keep the file name, drop the start.
                         .line_clamp(1)
+                        .text_ellipsis_start()
                         .when(self.root_menu_selected == Some(index), |row| {
                             row.bg(gpui::rgb(theme::bg_input()))
                         })
@@ -358,6 +360,7 @@ impl ChatScreen {
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(gpui::rgb(theme::text_primary()))
                                         .line_clamp(1)
+                                        .text_ellipsis()
                                         .child(display_name),
                                 )
                                 .when(!server.description.is_empty(), |col| {
@@ -479,6 +482,7 @@ impl ChatScreen {
                             .text_xs()
                             .text_color(gpui::rgb(theme::text_muted()))
                             .line_clamp(1)
+                            .text_ellipsis()
                             .child(entry.description.clone()),
                     ),
             );

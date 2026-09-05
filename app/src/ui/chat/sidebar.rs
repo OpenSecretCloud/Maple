@@ -1897,6 +1897,7 @@ impl ChatScreen {
                             .flex_1()
                             .min_w_0()
                             .line_clamp(1)
+                            .text_ellipsis()
                             .child(self.sidebar_scope_label.clone()),
                     )
                     .when(self.switcher_menu_open, |row| {
@@ -1954,7 +1955,14 @@ impl ChatScreen {
                 .on_click(cx.listener(|this, _event, _window, cx| {
                     this.set_sidebar_project_filter(None, cx);
                 }))
-                .child(div().flex_1().min_w_0().line_clamp(1).child("All projects"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .line_clamp(1)
+                        .text_ellipsis()
+                        .child("All projects"),
+                )
                 .when(self.sidebar_project_filter.is_none(), |row| {
                     row.child(icon("check", px(14.), theme::accent()))
                 }),
@@ -1997,6 +2005,7 @@ impl ChatScreen {
                                 .flex_1()
                                 .min_w_0()
                                 .line_clamp(1)
+                                .text_ellipsis()
                                 .child(root.name.clone()),
                         )
                     })
@@ -2140,7 +2149,7 @@ impl ChatScreen {
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(div().line_clamp(1).child(row.title.clone()))
+                        .child(div().line_clamp(1).text_ellipsis().child(row.title.clone()))
                         .child(
                             div()
                                 .text_xs()
@@ -2150,6 +2159,7 @@ impl ChatScreen {
                                     theme::text_muted()
                                 }))
                                 .line_clamp(1)
+                                .text_ellipsis()
                                 .child(row.project_name.clone()),
                         ),
                 )

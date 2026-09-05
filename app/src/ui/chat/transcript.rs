@@ -500,7 +500,7 @@ fn render_thinking(
             px(14.),
             theme::text_muted(),
         ))
-        .child(div().line_clamp(1).child(title));
+        .child(div().line_clamp(1).text_ellipsis_middle().child(title));
     let card = div()
         .px_3()
         .py_2()
@@ -796,6 +796,7 @@ fn render_tool_with_diff(
                         .min_w_0()
                         .text_color(gpui::rgb(color))
                         .line_clamp(1)
+                        .text_ellipsis()
                         .child(line.clone()),
                 ),
         );
@@ -895,6 +896,7 @@ fn render_tool(
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(gpui::rgb(theme::text_primary()))
                         .line_clamp(1)
+                        .text_ellipsis_middle()
                         .child(title),
                 )
                 .when(running, |header| {
