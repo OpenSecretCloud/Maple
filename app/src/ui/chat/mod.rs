@@ -782,7 +782,7 @@ impl ChatScreen {
             application_vim_enabled: settings.application_vim_enabled,
             application_vim: ApplicationVimState::default(),
             application_focus: None,
-            screen_focus_pending: settings.application_vim_enabled,
+            screen_focus_pending: true,
             composer_has_text: false,
             slash_entries: Vec::new(),
             models: Vec::new(),
@@ -4268,6 +4268,13 @@ impl Render for ChatScreen {
                 let handle = composer.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
+        }
+        // A window with no focused element has no dispatch path: menu
+        // items validate as unavailable and shortcuts fall through. The
+        // login screen's fields leaving, or a rename field closing, can
+        // leave it that way; the screen takes focus back.
+        if window.focused(cx).is_none() {
+            self.screen_focus_pending = true;
         }
         if self.screen_focus_pending {
             self.screen_focus_pending = false;
