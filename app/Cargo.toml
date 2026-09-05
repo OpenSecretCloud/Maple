@@ -42,7 +42,7 @@ gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev =
 # The application factory for that gpui revision; it lives one crate over.
 # `font-kit` selects the native text system on macOS; without it this gpui
 # revision draws no text at all.
-gpui-platform = { package = "gpui_platform", version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1", features = ["font-kit"], optional = true }
+gpui-platform = { package = "gpui_platform", version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1", features = ["font-kit", "wayland", "x11"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
 base64 = "0.22"
 tokio = { workspace = true }
