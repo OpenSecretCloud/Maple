@@ -23,6 +23,10 @@
       },
       "mobile": [
         {
+          "scheme": ["cloud.opensecret.maple"],
+          "appLink": false
+        },
+        {
           "scheme": ["https"],
           "host": "trymaple.ai",
           "pathPrefix": ["/payment-success"],
