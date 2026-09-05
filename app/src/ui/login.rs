@@ -42,7 +42,9 @@ impl LoginScreen {
     pub fn new(backend: Arc<AgentBackend>, cx: &mut Context<Self>) -> Self {
         let email = cx.new(|cx| TextInput::new("Email", cx).with_tab_index(0));
         let password = cx.new(|cx| TextInput::new("Password", cx).masked().with_tab_index(1));
-        let callback = cx.new(|cx| TextInput::new("Paste the URL you were redirected to…", cx));
+        let callback = cx.new(|cx| {
+            TextInput::new("Paste the URL you were redirected to…", cx).with_tab_index(0)
+        });
         // Enter handlers receive their own field's text and read the sibling
         // through its entity; neither path leases the focused input.
         let (email_handle, password_handle) = (email.clone(), password.clone());
@@ -213,28 +215,7 @@ impl Render for LoginScreen {
             .border_1()
             .border_color(gpui::rgb(theme::border()))
             .when(busy, |container| container.opacity(0.7))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key.eq_ignore_ascii_case("tab")
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt
-                    && !event.keystroke.modifiers.platform
-                    && matches!(this.oauth, OAuthFlow::Idle)
-                {
-                    // focus_next is unreliable in this gpui release; move
-                    // between the two fields explicitly.
-                    use gpui::Focusable as _;
-                    let focused_on_email = window.focused(cx).as_ref()
-                        == Some(&this.email_input.read(cx).focus_handle(cx));
-                    let target = if focused_on_email {
-                        this.password_input.clone()
-                    } else {
-                        this.email_input.clone()
-                    };
-                    let handle = target.read(cx).focus_handle(cx);
-                    window.focus(&handle, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .tab_group()
             .child(
                 div()
                     .flex()

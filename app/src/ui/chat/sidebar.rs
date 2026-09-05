@@ -1066,19 +1066,27 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Ok(status) = result
+                    && this.trust_prompts
                     && this.project_root.as_deref() == Some(status.path.as_str())
                     && status.available
                     && !status.protected_features.is_empty()
                     && status.decision.is_none()
                 {
                     this.trust_prompt = Some(status);
+                    this.dialog_focus.get_or_insert_with(|| cx.focus_handle());
+                    this.dialog_focus_pending = true;
                     cx.notify();
                 }
             },
         );
     }
 
-    fn set_project_trust(&mut self, path: String, trusted: bool, cx: &mut Context<Self>) {
+    pub(super) fn set_project_trust(
+        &mut self,
+        path: String,
+        trusted: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.trust_saving {
             return;
         }
@@ -1133,18 +1141,46 @@ impl ChatScreen {
         };
         let keep_path = status.path.clone();
         let trust_path = status.path.clone();
+        let key_keep = status.path.clone();
+        let key_trust = status.path.clone();
         div()
             .id("trust-backdrop")
             .absolute()
             .size_full()
             .top_0()
             .left_0()
+            .occlude()
             .bg(theme::scrim())
             .flex()
             .items_center()
             .justify_center()
             .child(
                 div()
+                    .id("trust-card")
+                    .role(gpui::Role::Dialog)
+                    .aria_label(format!("Trust {name}?"))
+                    .when_some(self.dialog_focus.clone(), |card, focus| {
+                        card.track_focus(&focus)
+                    })
+                    .key_context("Dialog")
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, _window, cx| {
+                            if this.trust_saving {
+                                return;
+                            }
+                            match dialog_key(event) {
+                                Some(DialogKey::Confirm) => {
+                                    this.set_project_trust(key_trust.clone(), true, cx);
+                                    cx.stop_propagation();
+                                }
+                                Some(DialogKey::Cancel) => {
+                                    this.set_project_trust(key_keep.clone(), false, cx);
+                                    cx.stop_propagation();
+                                }
+                                None => {}
+                            }
+                        },
+                    ))
                     .w(px(460.))
                     .p_5()
                     .rounded(theme::RADIUS_XL)
@@ -1204,6 +1240,8 @@ impl ChatScreen {
     fn request_remove_root(&mut self, root: &str, cx: &mut Context<Self>) {
         self.project_menu = None;
         self.confirm_remove_root = Some(root.to_string());
+        self.dialog_focus.get_or_insert_with(|| cx.focus_handle());
+        self.dialog_focus_pending = true;
         cx.notify();
     }
 
@@ -1294,6 +1332,7 @@ impl ChatScreen {
             .size_full()
             .top_0()
             .left_0()
+            .occlude()
             .bg(theme::scrim())
             .flex()
             .items_center()
@@ -1305,6 +1344,29 @@ impl ChatScreen {
             .child(
                 div()
                     .id("confirm-remove-card")
+                    .role(gpui::Role::Dialog)
+                    .aria_label(format!("Remove {name}?"))
+                    .when_some(self.dialog_focus.clone(), |card, focus| {
+                        card.track_focus(&focus)
+                    })
+                    .key_context("Dialog")
+                    .on_key_down(
+                        cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _window, cx| match dialog_key(event)
+                            {
+                                Some(DialogKey::Confirm) => {
+                                    this.confirm_remove_root(cx);
+                                    cx.stop_propagation();
+                                }
+                                Some(DialogKey::Cancel) => {
+                                    this.confirm_remove_root = None;
+                                    cx.notify();
+                                    cx.stop_propagation();
+                                }
+                                None => {}
+                            },
+                        ),
+                    )
                     .w(px(420.))
                     .p_5()
                     .rounded(theme::RADIUS_XL)
@@ -2273,4 +2335,24 @@ pub(super) fn root_display_name(root: &str) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string())
+}
+
+/// What a key press means to a modal dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DialogKey {
+    Confirm,
+    Cancel,
+}
+
+/// Enter confirms and Escape cancels; any modifier means neither.
+fn dialog_key(event: &gpui::KeyDownEvent) -> Option<DialogKey> {
+    let modifiers = &event.keystroke.modifiers;
+    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift {
+        return None;
+    }
+    match event.keystroke.key.as_str() {
+        "enter" => Some(DialogKey::Confirm),
+        "escape" => Some(DialogKey::Cancel),
+        _ => None,
+    }
 }

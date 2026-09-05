@@ -299,6 +299,17 @@ pub struct ChatScreen {
     /// Focus for the open project menu, so plain arrow keys reach it
     /// instead of the composer's text handling.
     root_menu_focus: Option<gpui::FocusHandle>,
+    /// Focus for whichever modal dialog is open, so Enter and Escape
+    /// reach it instead of the composer. Created the first time a dialog
+    /// opens: creating it up front shifts the window's focus-id order,
+    /// which the typing-focus test showed gpui is sensitive to.
+    dialog_focus: Option<gpui::FocusHandle>,
+    /// A dialog just opened; the next render moves focus into it.
+    dialog_focus_pending: bool,
+    /// Whether the project-trust question may open its dialog. Tests that
+    /// drive typing turn it off, since the dialog rightly takes focus and
+    /// the machine's home directory decides whether it appears.
+    trust_prompts: bool,
     /// The menu was just opened and still needs the focus.
     root_menu_focus_pending: bool,
     /// Manual path entry for the project selector.
@@ -806,6 +817,9 @@ impl ChatScreen {
             root_menu_open: false,
             root_menu_selected: None,
             root_menu_focus: None,
+            dialog_focus: None,
+            dialog_focus_pending: false,
+            trust_prompts: true,
             root_menu_focus_pending: false,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
@@ -2662,6 +2676,11 @@ impl ChatScreen {
             self.clear_search(cx);
             return;
         }
+        if let Some(status) = self.trust_prompt.as_ref() {
+            let path = status.path.clone();
+            self.set_project_trust(path, false, cx);
+            return;
+        }
         if self.confirm_remove_root.is_some()
             || self.project_menu.is_some()
             || self.switcher_menu_open
@@ -2761,6 +2780,10 @@ impl ChatScreen {
         if self.application_vim_owns_unfocused_typing(window, cx) {
             self.application_vim.count.clear();
             cx.stop_propagation();
+            return;
+        }
+        // A modal dialog owns the keyboard; nothing types past it.
+        if self.trust_prompt.is_some() || self.confirm_remove_root.is_some() {
             return;
         }
         // A focused text input already receives typing.
@@ -4220,6 +4243,12 @@ impl Render for ChatScreen {
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
         self.window_active = window.is_window_active();
+        if self.dialog_focus_pending {
+            self.dialog_focus_pending = false;
+            if let Some(handle) = self.dialog_focus.clone() {
+                window.focus(&handle, cx);
+            }
+        }
         if self.root_menu_focus_pending {
             self.root_menu_focus_pending = false;
             if let Some(handle) = self.root_menu_focus.clone() {
