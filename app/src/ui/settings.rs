@@ -15,8 +15,6 @@ use maple_agent::agent::{
     AgentIntegrationPermissions, AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport,
 };
 
-use gpui::Focusable as _;
-
 use crate::ui::icons::icon;
 use crate::ui::text_input::TextInput;
 
@@ -71,9 +69,6 @@ impl Section {
 }
 
 pub struct SettingsScreen {
-    /// The focus handle the window reported at the start of this render,
-    /// so input frames can show a focus ring.
-    focused_handle: Option<gpui::FocusHandle>,
     /// Backend-call bridges retained for thread-affinity; see
     /// [`crate::ui::task::call`].
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
@@ -232,7 +227,6 @@ impl SettingsScreen {
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
         let this = Self {
-            focused_handle: None,
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             user_id,
@@ -967,19 +961,8 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
     settings.shortcut_overrides = shortcut_overrides;
 }
 
-impl SettingsScreen {
-    /// Whether `input` holds keyboard focus, per the handle captured at the
-    /// start of the current render.
-    fn input_focused(&self, input: &Entity<TextInput>, cx: &App) -> bool {
-        self.focused_handle
-            .as_ref()
-            .is_some_and(|focused| input.read(cx).focus_handle(cx) == *focused)
-    }
-}
-
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.focused_handle = window.focused(cx);
         if self.application_focus_pending {
             self.application_focus_pending = false;
             if self.settings.application_vim_enabled {
@@ -1394,7 +1377,7 @@ impl SettingsScreen {
                         "Customize the shortcuts Maple already ships. This page does not add commands or change what an action can do.",
                     ),
             )
-            .child(widgets::input_frame(self.input_focused(&self.shortcut_search, cx)).text_sm().child(self.shortcut_search.clone()))
+            .child(widgets::input_frame().text_sm().child(self.shortcut_search.clone()))
             .child(
                 div()
                     .text_xs()
@@ -1940,6 +1923,7 @@ impl SettingsScreen {
                             widgets::icon_button(
                                 gpui::SharedString::from(format!("mcp-edit-{name}")),
                                 "pencil",
+                                "Edit",
                                 widgets::ROW_ICON,
                                 theme::text_secondary(),
                             )
@@ -1952,6 +1936,7 @@ impl SettingsScreen {
                             widgets::icon_button(
                                 gpui::SharedString::from(format!("mcp-remove-{name}")),
                                 "trash-2",
+                                "Remove",
                                 widgets::ROW_ICON,
                                 theme::status_error(),
                             )
@@ -2132,11 +2117,7 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_secondary()))
                         .child(label),
                 )
-                .child(
-                    widgets::input_frame(self.input_focused(&input, cx))
-                        .text_sm()
-                        .child(input),
-                )
+                .child(widgets::input_frame().text_sm().child(input))
                 .when(!hint.is_empty(), |col| {
                     col.child(
                         div()

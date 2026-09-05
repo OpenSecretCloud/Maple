@@ -4220,7 +4220,6 @@ impl Render for ChatScreen {
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
         self.window_active = window.is_window_active();
-        let focused = window.focused(cx);
         if self.root_menu_focus_pending {
             self.root_menu_focus_pending = false;
             if let Some(handle) = self.root_menu_focus.clone() {
@@ -4314,7 +4313,6 @@ impl Render for ChatScreen {
                         step,
                         input,
                         &self.question_selected,
-                        focused.as_ref(),
                         cx,
                     ))
                 })
@@ -4472,13 +4470,14 @@ impl Render for ChatScreen {
                                 widgets::icon_button(
                                     "lightbox-close",
                                     "x",
+                                    "Close",
                                     px(16.),
                                     theme::on_accent(),
                                 )
                                 .size_8()
                                 .rounded_full()
                                 .bg(theme::overlay_hover())
-                                .tooltip(widgets::tooltip("Close", Some("Esc"))),
+                                .tooltip(widgets::tooltip_for_action("Close", &ChatEscape)),
                             ),
                         ),
                     "lightbox-reveal",
@@ -4506,7 +4505,10 @@ impl ChatScreen {
                     .cursor_pointer()
             })
             .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            .tooltip(widgets::tooltip("Toggle sidebar", Some("⌘B")))
+            .tooltip(widgets::tooltip_for_action(
+                "Toggle sidebar",
+                &ToggleSidebar,
+            ))
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.execute_command(ChatCommand::ToggleSidebar, window, cx);
             }))

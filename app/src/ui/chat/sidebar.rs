@@ -1566,7 +1566,10 @@ impl ChatScreen {
                                         .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                                         .cursor_pointer()
                                 })
-                                .tooltip(widgets::tooltip("Clear search", Some("Esc")))
+                                .tooltip(widgets::tooltip_for_action(
+                                    "Clear search",
+                                    &super::ChatEscape,
+                                ))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.clear_search(cx);
                                 }))
@@ -1607,7 +1610,10 @@ impl ChatScreen {
                         .cursor_pointer()
                 })
                 .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-                .tooltip(widgets::tooltip("Start a new task", Some("⌘N")))
+                .tooltip(widgets::tooltip_for_action(
+                    "Start a new task",
+                    &super::NewTask,
+                ))
                 .on_click(cx.listener(|this, _event, window, cx| {
                     this.execute_command(ChatCommand::NewTask, window, cx);
                 }))
@@ -2161,7 +2167,10 @@ impl ChatScreen {
                     .cursor_pointer()
             })
             .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            .tooltip(widgets::tooltip("Settings", Some("⌘,")))
+            .tooltip(widgets::tooltip_for_action(
+                "Settings",
+                &super::OpenAppSettings,
+            ))
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.execute_command(ChatCommand::OpenSettings, window, cx);
             }))

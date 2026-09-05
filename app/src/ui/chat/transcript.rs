@@ -22,7 +22,6 @@ use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::widgets;
-use gpui::Focusable as _;
 
 impl ChatScreen {
     pub(super) fn render_transcript(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -1219,13 +1218,8 @@ pub(super) fn render_question_card(
     step: usize,
     input: Option<Entity<TextInput>>,
     selected: &HashMap<usize, usize>,
-    focused: Option<&gpui::FocusHandle>,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
-    let input_focused = input
-        .as_ref()
-        .zip(focused)
-        .is_some_and(|(input, focused)| input.read(cx).focus_handle(cx) == *focused);
     let mut card = div()
         .my_3()
         .mx_auto()
@@ -1356,7 +1350,7 @@ pub(super) fn render_question_card(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(widgets::input_frame(input_focused).flex_1().child(input))
+                .child(widgets::input_frame().flex_1().child(input))
                 .child(
                     widgets::primary_button("question-submit")
                         .py_2()
