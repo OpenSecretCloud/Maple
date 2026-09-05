@@ -400,7 +400,13 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                 in_quote,
                 list_depth,
             } => container.child(wrap_inline(
-                rich_text::code_block(code.clone(), label.clone(), id_name.clone(), index as u64),
+                rich_text::code_block(
+                    code.clone(),
+                    label.clone(),
+                    id_name.clone(),
+                    index as u64,
+                    ctx.view,
+                ),
                 *in_quote,
                 *list_depth,
             )),
