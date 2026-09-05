@@ -340,12 +340,22 @@ impl Sidebar {
     // ---- Inputs from the screen ------------------------------------------
 
     /// Replace the session list. The screen owns the canonical list and
-    /// calls this whenever it changes.
+    /// pushes it on every sync, so a list that did not change is a no-op:
+    /// no rebuild, no repaint.
     pub(super) fn set_sessions(
         &mut self,
         sessions: Vec<AgentSessionSummary>,
         cx: &mut Context<Self>,
     ) {
+        let unchanged = self.sessions.len() == sessions.len()
+            && self
+                .sessions
+                .iter()
+                .zip(&sessions)
+                .all(|(current, next)| session_summary_eq(current, next));
+        if unchanged {
+            return;
+        }
         self.sessions = sessions;
         self.rebuild_sections();
         cx.notify();
@@ -561,8 +571,10 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(super) fn project_names_mut(&mut self) -> &mut HashMap<String, String> {
-        &mut self.project_names
+    pub(super) fn set_project_name_for_test(&mut self, root: &str, name: &str) {
+        self.project_names
+            .insert(root.to_string(), name.to_string());
+        self.rebuild_sections();
     }
 
     #[cfg(test)]
