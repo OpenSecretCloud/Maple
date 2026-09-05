@@ -3,8 +3,8 @@ import { useEffect, useState, useRef } from "react";
 import { useOpenSecret } from "@opensecret/react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { MapleLoadingMark } from "@/components/MapleLoadingMark";
 import { getBillingService } from "@/billing/billingService";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 
@@ -24,6 +24,15 @@ function formatProviderName(provider: string): string {
     default:
       return provider.charAt(0).toUpperCase() + provider.slice(1);
   }
+}
+
+/**
+ * The platform returns 409 `UserExistsNotLinked` here and the SDK turns it into a
+ * sentence. There is no machine-readable code for it yet, so this matches the text
+ * the SDK produces; a dedicated error code on the response would be sturdier.
+ */
+function isEmailAlreadyRegistered(message: string): boolean {
+  return /already exists/i.test(message);
 }
 
 function OAuthCallback() {
@@ -99,6 +108,9 @@ function OAuthCallback() {
 
   const handleAuthError = (error: unknown) => {
     console.error(`Authentication callback error:`, error);
+    // Clear the native-flow flag so the failure renders as an error here, and so a
+    // later web sign-in from this browser is not treated as a Tauri hand-off.
+    localStorage.removeItem("redirect-to-native");
     if (error instanceof Error) {
       setError(error.message);
     } else {
@@ -175,6 +187,54 @@ function OAuthCallback() {
     processCallback();
   }, [handleGitHubCallback, handleGoogleCallback, handleAppleCallback, navigate, provider, router]);
 
+  if (error) {
+    // OpenSecret answers 409 when the email already has an account that this
+    // provider identity is not linked to, and deliberately will not link them on a
+    // matching email. That is a different situation from a failed sign-in, and the
+    // way out is a different sign-in method rather than another attempt.
+    if (isEmailAlreadyRegistered(error)) {
+      return (
+        <Card className="max-w-md mx-auto mt-20">
+          <CardHeader>
+            <CardTitle>This email already has a Maple account</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Your {formattedProvider} account uses an email that is already registered with Maple.
+              Sign in with the method you created that account with &mdash; if it was an email and
+              password, choose{" "}
+              <span className="font-medium text-foreground">Log in with Email</span>.
+            </p>
+            <div className="mt-4 flex justify-center gap-2">
+              <Button asChild>
+                <Link to="/login">Go to log in</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to="/">Back</Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    return (
+      <Card className="max-w-md mx-auto mt-20">
+        <CardHeader>
+          <CardTitle>Authentication Failed</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <AlertDestructive title="Error" description={error} />
+          <div className="mt-4 flex justify-center">
+            <Button asChild>
+              <Link to="/">Try Again</Link>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   // After auth completes for a native app flow, show a button to open the app
   if (nativeRedirectUrl) {
     return (
@@ -204,7 +264,7 @@ function OAuthCallback() {
         <CardContent>
           <p className="mb-4">Completing authentication...</p>
           <div className="flex justify-center">
-            <Loader2 className="h-8 w-8 animate-spin" />
+            <MapleLoadingMark size={44} label="Completing sign-in" />
           </div>
         </CardContent>
       </Card>
@@ -219,25 +279,7 @@ function OAuthCallback() {
           <CardTitle>Processing {formattedProvider} Login</CardTitle>
         </CardHeader>
         <CardContent className="flex justify-center">
-          <Loader2 className="h-8 w-8 animate-spin" />
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (error) {
-    return (
-      <Card className="max-w-md mx-auto mt-20">
-        <CardHeader>
-          <CardTitle>Authentication Failed</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <AlertDestructive title="Error" description={error} />
-          <div className="mt-4 flex justify-center">
-            <Button asChild>
-              <Link to="/">Try Again</Link>
-            </Button>
-          </div>
+          <MapleLoadingMark size={44} label="Completing sign-in" />
         </CardContent>
       </Card>
     );
