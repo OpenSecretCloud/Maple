@@ -3,7 +3,6 @@
 //! frame.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
@@ -47,7 +46,7 @@ impl ChatScreen {
                 return div().into_any_element();
             };
             let chat = chat_entity.read(cx);
-            let element = match chat.timeline.get(ix) {
+            match chat.timeline.get(ix) {
                 Some(item) => {
                     let render_ctx = RenderCtx {
                         selection: selection.clone(),
@@ -64,7 +63,6 @@ impl ChatScreen {
                         render: &render_ctx,
                         speech: chat.speech.as_ref(),
                         speech_available: chat.audio_caps.speech,
-                        streaming: ix + 1 == chat.timeline.len() && chat.is_run_active(),
                         position: (ix + 1, chat.timeline.len()),
                     };
                     let expanded = tool_details != chat.toggled_tools.contains(&item.id);
@@ -102,11 +100,7 @@ impl ChatScreen {
                     }
                 }
                 None => div().into_any_element(),
-            };
-            if chat.markdown_cache.take_stale() {
-                chat_entity.update(cx, |chat, cx| chat.schedule_stream_repaint(cx));
             }
-            element
         })
         .size_full();
         div()
@@ -423,13 +417,9 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .gap_0p5()
             .text_color(gpui::rgb(theme::text_primary()))
             .child(markdown::render_with(
-                &transcript.markdown_cache.get(
-                    &item.id,
-                    MarkdownKind::Body,
-                    revision,
-                    text,
-                    transcript.streaming,
-                ),
+                &transcript
+                    .markdown_cache
+                    .get(&item.id, MarkdownKind::Body, revision, text),
                 ctx,
             ))
             .children(copy.map(|button| {
@@ -528,13 +518,9 @@ fn render_thinking(
             .text_sm()
             .text_color(gpui::rgb(theme::text_secondary()))
             .child(markdown::render_with(
-                &transcript.markdown_cache.get(
-                    &item.id,
-                    MarkdownKind::Body,
-                    revision,
-                    &text,
-                    transcript.streaming,
-                ),
+                &transcript
+                    .markdown_cache
+                    .get(&item.id, MarkdownKind::Body, revision, &text),
                 transcript.render,
             )),
     )
@@ -772,7 +758,7 @@ fn render_tool_with_diff(
     if !details {
         return card;
     }
-    let diff_lines = Rc::clone(&transcript.derived.get(item, revision).diff_lines);
+    let diff_lines = Arc::clone(&transcript.derived.get(item, revision).diff_lines);
     if diff_lines.is_empty() {
         return card;
     }
@@ -967,7 +953,6 @@ fn render_tool(
                     MarkdownKind::ToolOutput,
                     revision,
                     output,
-                    false,
                 ))),
         );
     }

@@ -8,7 +8,7 @@
 //! [`render`] turns it into elements each frame. Parsing is the expensive
 //! part; rendering from blocks is a handful of allocations.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{Div, ElementId, SharedString, div, prelude::*, px};
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -27,7 +27,7 @@ pub struct InlineStyle {
 
 /// Inline style spans of a text block. Stored as flags, not resolved
 /// colors, so a cached document re-renders when the theme changes.
-pub type InlineStyles = Rc<[(std::ops::Range<usize>, InlineStyle)]>;
+pub type InlineStyles = Arc<[(std::ops::Range<usize>, InlineStyle)]>;
 
 impl InlineStyle {
     fn is_plain(self) -> bool {
@@ -160,9 +160,9 @@ pub enum Block {
     },
     Table {
         /// Rows of cells; the first row is the header.
-        rows: Rc<[Rc<[TableCell]>]>,
+        rows: Arc<[Arc<[TableCell]>]>,
         /// Per-column alignment from the delimiter row.
-        alignments: Rc<[ColumnAlign]>,
+        alignments: Arc<[ColumnAlign]>,
         in_quote: bool,
         list_depth: usize,
     },
@@ -190,6 +190,22 @@ pub struct Document {
 }
 
 impl Document {
+    /// The source as one unstyled paragraph: what a row shows while its
+    /// real parse runs in the background.
+    pub fn plain(source: &str) -> Document {
+        Document {
+            blocks: vec![Block::Text {
+                text: SharedString::new(source),
+                styles: Arc::from([]),
+                links: Arc::from([]),
+                text_size: None,
+                weight: None,
+                in_quote: false,
+                list_depth: 0,
+            }],
+        }
+    }
+
     /// Visit every selectable paragraph with the ordinal offset that
     /// [`render_with`] assigns it, so select-all can register the text
     /// of paragraphs that never rendered.
@@ -284,7 +300,7 @@ fn resolve_inline(mut paragraph: Paragraph) -> (SharedString, InlineStyles, Link
         .into_iter()
         .filter(|(range, _)| !range.is_empty())
         .collect();
-    (SharedString::new(paragraph.text), Rc::from(styles), links)
+    (SharedString::new(paragraph.text), Arc::from(styles), links)
 }
 
 fn text_block(
@@ -482,7 +498,7 @@ pub fn parse(source: &str) -> Document {
     // The table being parsed, if any. Cells collect into `paragraph`
     // like ordinary inline text and are taken at each cell end.
     struct TableBuilder {
-        rows: Vec<Rc<[TableCell]>>,
+        rows: Vec<Arc<[TableCell]>>,
         row: Vec<TableCell>,
         alignments: Vec<ColumnAlign>,
     }
@@ -647,7 +663,7 @@ pub fn parse(source: &str) -> Document {
                     if let Some(builder) = table.as_mut() {
                         builder
                             .rows
-                            .push(Rc::from(std::mem::take(&mut builder.row)));
+                            .push(Arc::from(std::mem::take(&mut builder.row)));
                     }
                 }
                 TagEnd::Table => {
@@ -655,8 +671,8 @@ pub fn parse(source: &str) -> Document {
                         && !builder.rows.is_empty()
                     {
                         blocks.push(Block::Table {
-                            rows: Rc::from(builder.rows),
-                            alignments: Rc::from(builder.alignments),
+                            rows: Arc::from(builder.rows),
+                            alignments: Arc::from(builder.alignments),
                             in_quote,
                             list_depth: list_counters.len(),
                         });
@@ -732,7 +748,7 @@ const TABLE_WEIGHT_CAP: usize = 60;
 /// the same space as a prose column. Each cell is its own selectable
 /// paragraph at `base_offset` plus its cell index.
 fn table_element(
-    rows: &Rc<[Rc<[TableCell]>]>,
+    rows: &Arc<[Arc<[TableCell]>]>,
     alignments: &[ColumnAlign],
     base_offset: usize,
     ctx: &RenderCtx,

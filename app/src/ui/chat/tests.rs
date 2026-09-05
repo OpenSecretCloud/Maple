@@ -1,9 +1,9 @@
 //! Tests for the chat screen.
 
 mod state_tests {
-    use std::rc::Rc;
+    use std::sync::Arc;
 
-    use crate::ui::chat::cache::{MAX_DIFF_LINES, ORDINAL_SPACING};
+    use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
@@ -1561,44 +1561,80 @@ mod state_tests {
 
     #[test]
     fn test_markdown_cache_keys_on_revision() {
+        // Unattached: every parse is inline.
         let cache = MarkdownCache::default();
-        let first = cache.get("m", MarkdownKind::Body, 0, "hello", false);
-        assert!(Rc::ptr_eq(
+        let first = cache.get("m", MarkdownKind::Body, 0, "hello");
+        assert!(Arc::ptr_eq(
             &first,
-            &cache.get("m", MarkdownKind::Body, 0, "hello", false)
+            &cache.get("m", MarkdownKind::Body, 0, "hello")
         ));
         // Same length, new revision: parsed again.
-        assert!(!Rc::ptr_eq(
+        assert!(!Arc::ptr_eq(
             &first,
-            &cache.get("m", MarkdownKind::Body, 1, "jello", false)
+            &cache.get("m", MarkdownKind::Body, 1, "jello")
         ));
         // Kinds do not share entries.
-        assert!(!Rc::ptr_eq(
+        assert!(!Arc::ptr_eq(
             &first,
-            &cache.get("m", MarkdownKind::ToolOutput, 0, "hello", false)
+            &cache.get("m", MarkdownKind::ToolOutput, 0, "hello")
         ));
     }
 
-    #[test]
-    fn test_markdown_cache_throttles_a_streaming_parse() {
-        let cache = MarkdownCache::default();
-        let first = cache.get("m", MarkdownKind::Body, 0, "hel", true);
-        assert!(!cache.take_stale());
-        // A chunk right behind the parse is served the old document and
-        // flags the repaint the caller owes.
-        let again = cache.get("m", MarkdownKind::Body, 1, "hello", true);
-        assert!(Rc::ptr_eq(&first, &again));
-        assert!(cache.take_stale());
-        assert!(!cache.take_stale());
-        // Without the throttle (the run ended) it parses at once.
-        let fresh = cache.get("m", MarkdownKind::Body, 1, "hello", false);
-        assert!(!Rc::ptr_eq(&first, &fresh));
-        assert!(!cache.take_stale());
-        // Once the interval passed, a streaming parse goes through.
-        std::thread::sleep(STREAM_PARSE_INTERVAL);
-        let later = cache.get("m", MarkdownKind::Body, 2, "hello!", true);
-        assert!(!Rc::ptr_eq(&fresh, &later));
-        assert!(!cache.take_stale());
+    #[gpui::test]
+    fn test_markdown_cache_parses_long_sources_in_the_background(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        // The helper builds an unattached screen; attach so parses spawn.
+        screen.update(cx, |this, cx| {
+            this.markdown_cache
+                .attach(cx.entity().downgrade(), cx.to_async());
+        });
+        let long = "**bold** ".repeat(INLINE_PARSE_LIMIT / 4);
+        let longer = format!("{long} more");
+        let (provisional, coalesced) = screen.update(cx, |this, _cx| {
+            // A short cold source parses inline and is final at once.
+            this.markdown_cache.get("s", MarkdownKind::Body, 0, "hello");
+            assert!(
+                this.markdown_cache
+                    .is_current("s", MarkdownKind::Body, 0, 5)
+            );
+            // A long cold source shows its raw text while the parse runs.
+            let provisional = this.markdown_cache.get("m", MarkdownKind::Body, 0, &long);
+            assert_eq!(provisional.blocks.len(), 1);
+            assert!(
+                this.markdown_cache
+                    .is_current("m", MarkdownKind::Body, 0, long.len())
+            );
+            // A chunk that lands mid-parse is served the same document
+            // instead of starting a second parse.
+            let coalesced = this.markdown_cache.get("m", MarkdownKind::Body, 1, &longer);
+            (provisional, coalesced)
+        });
+        assert!(Arc::ptr_eq(&provisional, &coalesced));
+        cx.run_until_parked();
+        screen.update(cx, |this, _cx| {
+            // The parse landed for the source it started with; the newer
+            // source parses on the next render, which asks again.
+            assert!(
+                this.markdown_cache
+                    .is_current("m", MarkdownKind::Body, 0, long.len())
+            );
+            let parsed = this.markdown_cache.get("m", MarkdownKind::Body, 0, &long);
+            assert!(!Arc::ptr_eq(&provisional, &parsed));
+            assert!(!parsed.blocks.is_empty());
+            let next = this.markdown_cache.get("m", MarkdownKind::Body, 1, &longer);
+            assert!(
+                Arc::ptr_eq(&parsed, &next),
+                "the previous document stays up while the next parse runs"
+            );
+        });
+        cx.run_until_parked();
+        screen.update(cx, |this, _cx| {
+            assert!(
+                this.markdown_cache
+                    .is_current("m", MarkdownKind::Body, 1, longer.len())
+            );
+        });
     }
 
     #[test]

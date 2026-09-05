@@ -18,6 +18,7 @@ use maple_agent::agent::{
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
 use crate::ui::icons::{icon, spinner, wordmark};
+use crate::ui::markdown;
 use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
@@ -38,7 +39,7 @@ mod summaries;
 mod tests;
 mod transcript;
 
-use self::cache::{DerivedCache, MarkdownCache, MarkdownKind, STREAM_PARSE_INTERVAL};
+use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
 use self::commands::ChatCommand;
 use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
@@ -172,9 +173,6 @@ struct TranscriptCtx<'a> {
     speech: Option<&'a SpeechState>,
     /// The account can use text-to-speech.
     speech_available: bool,
-    /// The item is the newest one of a running turn: its body parse is
-    /// rate-limited while chunks stream in.
-    streaming: bool,
     /// One-based position of the row and the row count, for
     /// assistive technology ("message 4 of 17").
     position: (usize, usize),
@@ -375,13 +373,13 @@ pub struct ChatScreen {
     /// Parsed markdown per timeline item (keyed by item id and revision),
     /// so visible messages are parsed once, not every frame.
     markdown_cache: MarkdownCache,
-    /// A deferred repaint for a throttled stream parse is already on its
-    /// way; one at a time is enough.
-    stream_repaint_pending: std::cell::Cell<bool>,
     /// Whether a notice auto-dismiss timer is in flight.
     notice_dismiss_pending: std::cell::Cell<bool>,
     /// Per-item display strings, rebuilt when the item's revision moves.
     derived: DerivedCache,
+    /// Background parses of the newest rows after a timeline load, so
+    /// the first scroll finds them ready. A newer load replaces it.
+    markdown_warmup: Option<gpui::Task<()>>,
     /// Item id to `(index in timeline, revision)`; the revision counts
     /// applied updates so caches can tell a changed item from a stable one.
     timeline_index: HashMap<String, (usize, u64)>,
@@ -555,6 +553,7 @@ impl ChatScreen {
         let weak = cx.entity().downgrade();
         let mut this = Self::new_inner(backend, user_id);
         this.attach_composer(weak.clone(), cx);
+        this.markdown_cache.attach(weak.clone(), cx.to_async());
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
         this.transcript_focus = Some(cx.focus_handle());
         this.root_menu_focus = Some(cx.focus_handle());
@@ -832,9 +831,9 @@ impl ChatScreen {
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
             markdown_cache: MarkdownCache::default(),
-            stream_repaint_pending: std::cell::Cell::new(false),
             notice_dismiss_pending: std::cell::Cell::new(false),
             derived: DerivedCache::default(),
+            markdown_warmup: None,
             timeline_index: HashMap::new(),
             sidebar_rows: Vec::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
@@ -1681,6 +1680,7 @@ impl ChatScreen {
                     LoadMode::Reload => {
                         this.tool_summaries.extend(summaries);
                         this.replace_timeline(detail.timeline);
+                        this.warm_markdown(cx);
                         this.load_attachment_images(cx);
                         this.summarize_loaded_tools(cx);
                         cx.notify();
@@ -2506,23 +2506,71 @@ impl ChatScreen {
         .detach();
     }
 
-    /// A throttled parse left the newest message one chunk behind: paint
-    /// again once the interval has passed so the last chunk shows even
-    /// when no further event arrives.
-    fn schedule_stream_repaint(&self, cx: &mut Context<Self>) {
-        if self.stream_repaint_pending.replace(true) {
+    /// A markdown parse landed: show it, and let the row measure again
+    /// since its height changed.
+    fn markdown_parsed(
+        &mut self,
+        kind: MarkdownKind,
+        id: &str,
+        revision: u64,
+        len: usize,
+        document: markdown::Document,
+        cx: &mut Context<Self>,
+    ) {
+        self.markdown_cache
+            .install(kind, id, revision, len, document);
+        if let Some((ix, _)) = self.timeline_index.get(id) {
+            self.list_state.remeasure_items(*ix..*ix + 1);
+        }
+        cx.notify();
+    }
+
+    /// Parse the newest long messages in the background after a timeline
+    /// load, newest first, so opening a task does not parse on the first
+    /// scroll. Short ones parse inline when shown, which is cheaper than
+    /// a round trip.
+    fn warm_markdown(&mut self, cx: &mut Context<Self>) {
+        const WARM_ROWS: usize = 32;
+        let sources: Vec<(String, u64, String)> = self
+            .timeline
+            .iter()
+            .rev()
+            .take(WARM_ROWS)
+            .filter(|item| item.item_type == "message")
+            .filter_map(|item| {
+                let text = item.text.as_deref()?;
+                let revision = self.timeline_index.get(&item.id).map_or(0, |(_, rev)| *rev);
+                let wanted = text.len() > INLINE_PARSE_LIMIT
+                    && !self.markdown_cache.is_current(
+                        &item.id,
+                        MarkdownKind::Body,
+                        revision,
+                        text.len(),
+                    );
+                wanted.then(|| (item.id.clone(), revision, text.to_string()))
+            })
+            .collect();
+        if sources.is_empty() {
+            self.markdown_warmup = None;
             return;
         }
-        cx.spawn(async move |entity, cx| {
-            cx.background_executor().timer(STREAM_PARSE_INTERVAL).await;
-            entity
-                .update(cx, |this, cx| {
-                    this.stream_repaint_pending.set(false);
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
+        self.markdown_warmup = Some(cx.spawn(async move |this, cx| {
+            for (id, revision, source) in sources {
+                let len = source.len();
+                let document =
+                    cx.background_executor()
+                        .spawn_with_priority(gpui::Priority::Low, async move {
+                            markdown::parse(&source)
+                        })
+                        .await;
+                let landed = this.update(cx, |this, cx| {
+                    this.markdown_parsed(MarkdownKind::Body, &id, revision, len, document, cx);
+                });
+                if landed.is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     fn is_run_active(&self) -> bool {
@@ -2836,7 +2884,7 @@ impl ChatScreen {
                 }
                 let document =
                     self.markdown_cache
-                        .get(&item.id, MarkdownKind::Body, revision, text, false);
+                        .get(&item.id, MarkdownKind::Body, revision, text);
                 document.for_each_selectable(|offset, text| {
                     selection.register(base + offset, text);
                 });

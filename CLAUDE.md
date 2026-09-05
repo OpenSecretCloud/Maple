@@ -65,6 +65,10 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
   scroll (regression test: `test_streaming_chunk_keeps_wheel_scrolling_up`).
 - Never block the UI thread. File dialogs, file reads, and SQLite go
   through `tokio::task::spawn_blocking` or `AgentBackend::spawn`.
+- Markdown parses off the UI thread. `MarkdownCache::get` returns the
+  previous document (or the raw text) while a background parse runs and
+  `ChatScreen::markdown_parsed` installs the result; only a short cold
+  source parses inline. Never call `markdown::parse` from a render path.
 - Batch events. The backend pump drains the channel and applies a batch
   in one update; `apply_service_event` returns whether anything visible
   changed so a batch with no visible change does not re-render.

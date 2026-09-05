@@ -642,17 +642,9 @@ impl ChatScreen {
             // Finished turns never change; only the last one is re-parsed.
             let revision = if index == last { btw.revision } else { 0 };
             let key = format!("btw-answer-{index}");
-            let streaming = index == last && btw.pending;
-            let document = self.markdown_cache.get(
-                &key,
-                MarkdownKind::Body,
-                revision,
-                &turn.answer,
-                streaming,
-            );
-            if self.markdown_cache.take_stale() {
-                self.schedule_stream_repaint(cx);
-            }
+            let document =
+                self.markdown_cache
+                    .get(&key, MarkdownKind::Body, revision, &turn.answer);
             // Same shape as the transcript: the question is a right-aligned
             // bubble, the answer is plain text on the left.
             body = body.child(

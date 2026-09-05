@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     App, Div, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior,
@@ -25,10 +25,10 @@ use super::widgets;
 
 /// Styled runs of a paragraph, shared between the parsed block and the
 /// element rendered from it each frame.
-pub type Highlights = Rc<[(Range<usize>, HighlightStyleT)]>;
+pub type Highlights = Arc<[(Range<usize>, HighlightStyleT)]>;
 
 /// Clickable link ranges with destinations, shared like [`Highlights`].
-pub type Links = Rc<[(Range<usize>, String)]>;
+pub type Links = Arc<[(Range<usize>, String)]>;
 
 /// Registry entries kept on each side of the selection when it overflows.
 const REGISTRY_CAP: usize = 8192;
@@ -718,7 +718,7 @@ pub fn paragraph(
 
 /// Plain (unstyled) selectable text, used for user message bubbles.
 pub fn plain_paragraph(text: SharedString, ordinal: Option<u64>, ctx: &RenderCtx) -> Div {
-    paragraph(text, Rc::new([]), Rc::new([]), None, None, ordinal, ctx)
+    paragraph(text, Arc::new([]), Arc::new([]), None, None, ordinal, ctx)
 }
 
 /// Code block with a language label and a copy button. `label` is the
