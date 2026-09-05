@@ -270,9 +270,6 @@ pub struct ChatScreen {
     /// Task being opened whose snapshot has not landed yet, so the pane
     /// can say so instead of showing the previous task.
     loading_session: Option<String>,
-    /// Scrollbar thumb drag in progress: pointer y and thumb top at the
-    /// start, both in window pixels.
-    scrollbar_drag: Option<(gpui::Pixels, gpui::Pixels)>,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
     /// Virtualized sidebar list; its own state so the transcript's
@@ -802,7 +799,6 @@ impl ChatScreen {
             notice: None,
             booting: true,
             loading_session: None,
-            scrollbar_drag: None,
             list_state: transcript_list_state(),
             sidebar_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
             sidebar_entries: Vec::new(),

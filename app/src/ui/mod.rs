@@ -10,6 +10,7 @@ pub mod markdown;
 pub mod menus;
 pub mod motion;
 pub mod rich_text;
+pub mod scrollbar;
 pub mod settings;
 pub mod spell;
 pub mod task;

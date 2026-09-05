@@ -1649,10 +1649,15 @@ impl ChatScreen {
                     .role(gpui::Role::ListBox)
                     .aria_label("Tasks")
                     .aria_orientation(gpui::Orientation::Vertical)
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .pt_6()
-                    .child(list),
+                    .child(list)
+                    .child(crate::ui::scrollbar::scrollbar(
+                        "sidebar-scrollbar",
+                        self.sidebar_list.clone(),
+                    )),
             )
             .child(self.render_sidebar_footer(cx))
     }

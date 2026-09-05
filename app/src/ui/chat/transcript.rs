@@ -122,21 +122,6 @@ impl ChatScreen {
             .flex()
             .flex_col()
             .min_h_0()
-            .on_mouse_move(
-                cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
-                    if this.scrollbar_drag.is_some() {
-                        this.scrollbar_drag_moved(event.position, cx);
-                    }
-                }),
-            )
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.scrollbar_drag_ended(cx)),
-            )
-            .on_mouse_up_out(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.scrollbar_drag_ended(cx)),
-            )
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -161,7 +146,10 @@ impl ChatScreen {
                     .pb_4()
                     .child(list),
             )
-            .child(self.render_scrollbar(cx))
+            .child(crate::ui::scrollbar::scrollbar(
+                "transcript-scrollbar",
+                self.list_state.clone(),
+            ))
             .when(show_jump, |container| {
                 container.child(self.render_jump_to_latest(cx))
             })
@@ -204,131 +192,6 @@ impl ChatScreen {
                 "jump-to-latest-reveal",
             ))
     }
-
-    /// Geometry of the scrollbar for the current list layout: track
-    /// height, thumb height, thumb top, and the scrollable content range.
-    fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
-        let state = &self.list_state;
-        let track = state.viewport_bounds().size.height;
-        let max = state.max_offset_for_scrollbar().y;
-        if max <= px(1.) || track <= px(0.) {
-            return None;
-        }
-        let ratio = f32::from(track) / f32::from(max + track);
-        let thumb = (track * ratio).max(px(24.));
-        let offset = -state.scroll_px_offset_for_scrollbar().y;
-        let scrollable = (track - thumb).max(px(0.));
-        let progress = (f32::from(offset) / f32::from(max)).clamp(0., 1.);
-        Some(ScrollbarGeometry {
-            thumb,
-            thumb_top: scrollable * progress,
-            scrollable,
-            max,
-        })
-    }
-
-    /// Scroll so the thumb top sits at `thumb_top` within the track.
-    fn scroll_to_thumb_top(&mut self, thumb_top: gpui::Pixels, geometry: &ScrollbarGeometry) {
-        let progress = if geometry.scrollable > px(0.) {
-            (f32::from(thumb_top) / f32::from(geometry.scrollable)).clamp(0., 1.)
-        } else {
-            0.
-        };
-        self.list_state
-            .set_offset_from_scrollbar(gpui::point(px(0.), -(geometry.max * progress)));
-    }
-
-    /// Scrollbar overlay driven by the virtualized list state. The thumb
-    /// drags, the track jumps on click, and both widen under the pointer.
-    fn render_scrollbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(geometry) = self.scrollbar_geometry() else {
-            return div().into_any_element();
-        };
-        let dragging = self.scrollbar_drag.is_some();
-        let thumb_top = geometry.thumb_top;
-        let track_geometry = geometry.clone();
-        div()
-            .id("transcript-scrollbar")
-            .absolute()
-            .top(px(0.))
-            .right(px(0.))
-            .bottom(px(0.))
-            .w(px(12.))
-            .flex()
-            .flex_col()
-            .items_end()
-            .pr(px(2.))
-            .group("scrollbar")
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
-                    // A press on the track (not the thumb) centres the thumb
-                    // on the pointer. The list viewport shares the track's
-                    // top edge.
-                    let top = this.list_state.viewport_bounds().origin.y;
-                    let local = event.position.y - top;
-                    let target = local - track_geometry.thumb / 2.;
-                    this.scroll_to_thumb_top(target, &track_geometry);
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .id("transcript-thumb")
-                    .mt(thumb_top)
-                    .h(geometry.thumb)
-                    .w(px(6.))
-                    .rounded_full()
-                    .bg(theme::scrollbar_thumb())
-                    .when(dragging, |thumb| {
-                        thumb.w(px(9.)).bg(theme::scrollbar_thumb_active())
-                    })
-                    .group_hover("scrollbar", |style| style.w(px(9.)))
-                    .hover(|style| style.bg(theme::scrollbar_thumb_active()))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
-                            cx.stop_propagation();
-                            this.scrollbar_drag = Some((event.position.y, thumb_top));
-                            this.list_state.scrollbar_drag_started();
-                            cx.notify();
-                        }),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// Pointer moved while the thumb is held: scroll to follow it.
-    pub(super) fn scrollbar_drag_moved(
-        &mut self,
-        position: gpui::Point<gpui::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some((start_y, start_top)) = self.scrollbar_drag else {
-            return;
-        };
-        let Some(geometry) = self.scrollbar_geometry() else {
-            return;
-        };
-        self.scroll_to_thumb_top(start_top + (position.y - start_y), &geometry);
-        cx.notify();
-    }
-
-    /// The thumb was released.
-    pub(super) fn scrollbar_drag_ended(&mut self, cx: &mut Context<Self>) {
-        if self.scrollbar_drag.take().is_some() {
-            self.list_state.scrollbar_drag_ended();
-            cx.notify();
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ScrollbarGeometry {
-    thumb: gpui::Pixels,
-    thumb_top: gpui::Pixels,
-    scrollable: gpui::Pixels,
-    max: gpui::Pixels,
 }
 
 pub(super) fn render_timeline_item(

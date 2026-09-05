@@ -1061,7 +1061,18 @@ impl Render for SettingsScreen {
                     .flex()
                     .flex_row()
                     .child(self.render_nav(cx))
-                    .child(self.render_pane(cx)),
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.render_pane(cx))
+                            .child(crate::ui::scrollbar::scrollbar(
+                                "settings-scrollbar",
+                                self.pane_scroll.clone(),
+                            )),
+                    ),
             )
     }
 }
@@ -1127,8 +1138,7 @@ impl SettingsScreen {
             .id("settings-pane")
             .role(gpui::Role::TabPanel)
             .aria_label(self.section.label())
-            .flex_1()
-            .min_w_0()
+            .w_full()
             .max_w(px(960.))
             .h_full()
             .flex()
