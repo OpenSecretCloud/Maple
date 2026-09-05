@@ -4456,7 +4456,7 @@ impl Render for ChatScreen {
                                     div()
                                         .absolute()
                                         .top_2()
-                                        .left_3()
+                                        .left(crate::ui::titlebar::top_row_inset(px(12.)))
                                         .flex()
                                         .items_center()
                                         .gap_2()
@@ -4534,6 +4534,10 @@ impl ChatScreen {
                     .cursor_pointer()
             })
             .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+            // Inside a drag region: a press here is a click, not a drag.
+            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
             .tooltip(widgets::tooltip_for_action(
                 "Toggle sidebar",
                 &ToggleSidebar,
