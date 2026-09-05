@@ -5,7 +5,7 @@
 //! shortcut-customization layer can later replace the bindings without
 //! changing editor behavior.
 
-use gpui::{Context, Div, InteractiveElement, actions};
+use gpui::{Context, InteractiveElement, actions};
 
 use super::TextInput;
 use super::vim::{
@@ -73,7 +73,7 @@ pub const INSERT_CONTEXT: &str = "TextInput && input_role == composer && editor_
 /// Attach every composer-Vim action at the TextInput boundary. Keeping this
 /// list behind one call site makes the optional editor layer straightforward
 /// to remove without disturbing ordinary text-input actions.
-pub(super) fn attach_actions(element: Div, cx: &mut Context<TextInput>) -> Div {
+pub(super) fn attach_actions<E: InteractiveElement>(element: E, cx: &mut Context<TextInput>) -> E {
     element
         .on_action(cx.listener(TextInput::vim_motion))
         .on_action(cx.listener(TextInput::vim_begin_operator))

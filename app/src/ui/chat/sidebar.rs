@@ -1646,6 +1646,9 @@ impl ChatScreen {
             .child(
                 div()
                     .id("session-list")
+                    .role(gpui::Role::ListBox)
+                    .aria_label("Tasks")
+                    .aria_orientation(gpui::Orientation::Vertical)
                     .flex_1()
                     .min_h_0()
                     .pt_6()
@@ -1660,6 +1663,8 @@ impl ChatScreen {
         let entry = match self.sidebar_entries.get(ix).copied() {
             Some(SidebarEntry::NewTask) => div()
                 .id("new-task")
+                .role(gpui::Role::Button)
+                .aria_label("New task")
                 .w_full()
                 .mb_3()
                 .px_4()
@@ -1688,7 +1693,9 @@ impl ChatScreen {
                 .into_any_element(),
             Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(cx),
             Some(SidebarEntry::Task(task)) => {
-                let row = self.render_task_row(task, selected, cx);
+                let application_selected =
+                    self.application_vim_enabled && self.application_vim_selects_sidebar_row(ix);
+                let row = self.render_task_row(task, selected, application_selected, cx);
                 // The last row of a section carries the gap before the next
                 // section.
                 let last_of_section = !task.archived
@@ -1779,6 +1786,9 @@ impl ChatScreen {
                 let count = self.archived_indices.len();
                 div()
                     .id("archived-toggle")
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Archived tasks, {count}"))
+                    .aria_expanded(expanded)
                     .mt_5()
                     .w_full()
                     .flex()
@@ -1854,6 +1864,9 @@ impl ChatScreen {
             .child(
                 div()
                     .id("projects-header")
+                    .role(gpui::Role::Button)
+                    .aria_label("Projects")
+                    .aria_expanded(self.switcher_menu_open)
                     .flex()
                     .items_center()
                     .gap_1p5()
@@ -2059,6 +2072,7 @@ impl ChatScreen {
         &self,
         task: SidebarTaskEntry,
         selected: Option<&str>,
+        application_selected: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let SidebarTaskEntry {
@@ -2084,6 +2098,12 @@ impl ChatScreen {
             .relative()
             .w_full()
             .id(row.element_id.clone())
+            .role(gpui::Role::ListBoxOption)
+            .accessibility_id(row.id.to_string())
+            .aria_label(row.title.clone())
+            .aria_description(row.project_name.clone())
+            .aria_selected(is_selected)
+            .when(application_selected, |row| row.aria_active_descendant())
             .group(row.group.clone())
             .flex()
             .items_center()
@@ -2270,6 +2290,8 @@ pub(super) fn row_action(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
         .flex_none()
         .size_5()
         .flex()
@@ -2298,6 +2320,7 @@ fn popup_menu_row(
 ) -> gpui::Stateful<Div> {
     div()
         .id(item.id)
+        .role(gpui::Role::MenuItem)
         .flex()
         .items_center()
         .gap_2()

@@ -175,6 +175,9 @@ struct TranscriptCtx<'a> {
     /// The item is the newest one of a running turn: its body parse is
     /// rate-limited while chunks stream in.
     streaming: bool,
+    /// One-based position of the row and the row count, for
+    /// assistive technology ("message 4 of 17").
+    position: (usize, usize),
 }
 
 /// Text-to-speech progress for one message.

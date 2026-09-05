@@ -65,6 +65,7 @@ impl ChatScreen {
                         speech: chat.speech.as_ref(),
                         speech_available: chat.audio_caps.speech,
                         streaming: ix + 1 == chat.timeline.len() && chat.is_run_active(),
+                        position: (ix + 1, chat.timeline.len()),
                     };
                     let expanded = tool_details != chat.toggled_tools.contains(&item.id);
                     let revision = chat
@@ -110,6 +111,8 @@ impl ChatScreen {
         .size_full();
         div()
             .id("transcript")
+            .role(gpui::Role::Log)
+            .aria_label("Conversation")
             .key_context("Transcript")
             .when_some(self.transcript_focus.clone(), |div, focus| {
                 div.track_focus(&focus)
@@ -333,7 +336,16 @@ pub(super) fn render_timeline_item(
     revision: u64,
     expanded: bool,
     transcript: &TranscriptCtx,
-) -> Div {
+) -> gpui::AnyElement {
+    let item_id = item.id.clone();
+    let (role, label): (Option<gpui::Role>, Option<&'static str>) = match item.item_type.as_str() {
+        "message" if item.role.as_deref() == Some("user") => {
+            (Some(gpui::Role::Article), Some("You"))
+        }
+        "message" => (Some(gpui::Role::Article), Some("Maple")),
+        "error" => (Some(gpui::Role::Alert), None),
+        _ => (None, None),
+    };
     let item = match item.item_type.as_str() {
         "message" => render_message(item, revision, transcript),
         "thinking" | "reasoning" => render_thinking(item, revision, expanded, transcript),
@@ -342,7 +354,7 @@ pub(super) fn render_timeline_item(
             // ("todo write", "ask user") and vary by detail suffix.
             if has_tool_input(item, "todos") {
                 // The pinned plan card above the composer shows the list.
-                return div();
+                return div().into_any_element();
             } else if has_tool_input(item, "edits")
                 || (has_tool_input(item, "content") && has_tool_input(item, "path"))
             {
@@ -356,8 +368,23 @@ pub(super) fn render_timeline_item(
         _ => render_system(item),
     };
     // Per-item spacing (instead of a container gap) keeps non-renderable
-    // items from producing phantom gaps.
-    div().pb_2().child(item)
+    // items from producing phantom gaps. Rows a screen reader should
+    // announce get a role, a sender, and their position in the
+    // conversation; the others stay plain containers.
+    let row = div().pb_2().child(item);
+    match role {
+        Some(role) => {
+            let (position, count) = transcript.position;
+            row.id(SharedString::from(format!("timeline-row-{item_id}")))
+                .role(role)
+                .when_some(label, |row, label| row.aria_label(label))
+                .accessibility_id(item_id)
+                .aria_position_in_set(position)
+                .aria_size_of_set(count)
+                .into_any_element()
+        }
+        None => row.into_any_element(),
+    }
 }
 
 /// Attachment `(id, name)` pairs stored on a user message.
@@ -592,6 +619,9 @@ fn render_thinking(
             "thinking-toggle-{}",
             item.id
         )))
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label(title.clone())
+        .aria_expanded(expanded)
         .flex()
         .items_center()
         .gap_1()
@@ -981,6 +1011,9 @@ fn render_tool(
     });
     let card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
+        .role(gpui::Role::DisclosureTriangle)
+        .aria_label(title.clone())
+        .aria_expanded(details)
         .flex()
         .flex_col()
         .gap_1()
@@ -1387,9 +1420,12 @@ pub(super) fn render_question_card(
 /// Pulsing dots shown between send and the first streamed content. They
 /// breathe on the shared low-rate clock, so waiting costs the same as a
 /// spinner rather than a full-rate animation.
-pub(super) fn render_waiting_indicator() -> Div {
+pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
     const CYCLE: std::time::Duration = std::time::Duration::from_millis(1400);
     div()
+        .id("waiting-indicator")
+        .role(gpui::Role::Status)
+        .aria_label("Maple is thinking")
         .flex()
         .items_center()
         .gap_2()

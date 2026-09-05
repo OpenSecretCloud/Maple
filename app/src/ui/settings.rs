@@ -1067,8 +1067,12 @@ impl Render for SettingsScreen {
 }
 
 impl SettingsScreen {
-    fn render_nav(&self, cx: &mut Context<Self>) -> Div {
+    fn render_nav(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
+            .id("settings-nav")
+            .role(gpui::Role::TabList)
+            .aria_label("Settings sections")
+            .aria_orientation(gpui::Orientation::Vertical)
             .w(gpui::px(220.))
             .h_full()
             .flex()
@@ -1086,6 +1090,10 @@ impl SettingsScreen {
                         "settings-nav-{}",
                         section.label()
                     )))
+                    .role(gpui::Role::Tab)
+                    .aria_label(section.label())
+                    .aria_selected(selected)
+                    .when(application_selected, |row| row.aria_active_descendant())
                     .px_3()
                     .py_2()
                     .rounded(theme::RADIUS_SM)
@@ -1117,6 +1125,8 @@ impl SettingsScreen {
     fn render_pane(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let mut pane = div()
             .id("settings-pane")
+            .role(gpui::Role::TabPanel)
+            .aria_label(self.section.label())
             .flex_1()
             .min_w_0()
             .max_w(px(960.))
