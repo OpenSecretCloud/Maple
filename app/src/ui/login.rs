@@ -134,16 +134,12 @@ impl LoginScreen {
     {
         // Retained for the same thread-affinity reason as ChatScreen's
         // bridges; see ui::task::call.
-        self.bridged_tasks.borrow_mut().push(crate::ui::task::call(
-            &self.backend,
-            future,
-            cx,
-            |this, result, cx| {
-                this.busy = false;
-                then(this, result, cx);
-                cx.notify();
-            },
-        ));
+        let bridge = crate::ui::task::call(&self.backend, future, cx, |this, result, cx| {
+            this.busy = false;
+            then(this, result, cx);
+            cx.notify();
+        });
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     fn submit_clicked(

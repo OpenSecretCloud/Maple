@@ -931,14 +931,9 @@ impl ChatScreen {
         });
         // Retain the bridge: the backend's sender holds its waker, and
         // this gpui revision asserts a task is dropped only by the thread
-        // that spawned it. Handles are cheap; the vec stays bounded by
-        // trimming like the finished-run ring. ChatScreen lives on one
-        // thread, so the RefCell cannot race.
-        let mut tasks = self.bridged_tasks.borrow_mut();
-        tasks.push(bridge);
-        if tasks.len() > 64 {
-            drop(tasks.remove(0));
-        }
+        // that spawned it. ChatScreen lives on one thread, so the RefCell
+        // cannot race.
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     /// Sign-in finished: boot the runtime, then load the workspace state.
@@ -1227,7 +1222,7 @@ impl ChatScreen {
         });
         // The portal dialog completes on its own thread; retained so the
         // bridge dies here (see ChatScreen::call).
-        self.bridged_tasks.borrow_mut().push(bridge);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     /// The root changed: update the header label, then read its branch

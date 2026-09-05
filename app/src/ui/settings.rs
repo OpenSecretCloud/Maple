@@ -296,12 +296,8 @@ impl SettingsScreen {
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
-        self.bridged_tasks.borrow_mut().push(crate::ui::task::call(
-            &self.backend,
-            future,
-            cx,
-            then,
-        ));
+        let bridge = crate::ui::task::call(&self.backend, future, cx, then);
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
 
     fn load_mcp_servers(&self, cx: &mut Context<Self>) {
@@ -729,6 +725,12 @@ impl SettingsScreen {
                 &format!("You will see alerts like this at {enabled_at}."),
             );
         }
+    }
+
+    fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
+        let next = !self.settings.reduce_motion;
+        self.edit_setting(move |settings| settings.reduce_motion = next, cx);
+        cx.set_reduce_motion(next);
     }
 
     fn cycle_tts_voice(&mut self, cx: &mut Context<Self>) {
@@ -1193,6 +1195,18 @@ impl SettingsScreen {
                             self.settings.desktop_notifications,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_desktop_notifications(cx);
+                            }),
+                        ),
+                    ))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ReduceMotion),
+                        toggle_row(
+                            "Reduce motion",
+                            "Hold spinners and pulsing dots still and skip reveal \
+                             animations.",
+                            self.settings.reduce_motion,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_reduce_motion(cx);
                             }),
                         ),
                     ))

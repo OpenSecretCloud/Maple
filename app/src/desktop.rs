@@ -369,6 +369,7 @@ pub fn run() {
                 cx,
             );
             ui::theme::set_preference(ui::theme::Preference::parse(&startup_settings.theme));
+            cx.set_reduce_motion(startup_settings.reduce_motion);
             let saved = startup_settings
                 .window
                 .map(crate::settings::WindowState::clamped);
