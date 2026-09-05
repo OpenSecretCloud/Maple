@@ -183,7 +183,7 @@ impl ChatScreen {
                 .set_region(self.application_vim.return_from_composer);
         }
         if let Some(handle) = &self.application_focus {
-            window.focus(handle);
+            window.focus(handle, cx);
         }
         cx.notify();
     }
@@ -199,7 +199,7 @@ impl ChatScreen {
         self.application_vim
             .set_region(self.application_vim.return_from_composer);
         if let Some(handle) = &self.application_focus {
-            window.focus(handle);
+            window.focus(handle, cx);
         }
         self.reveal_application_selection();
         cx.notify();
@@ -459,7 +459,7 @@ impl ChatScreen {
                 self.ensure_transcript_application_selection();
             }
             if let Some(handle) = &self.application_focus {
-                window.focus(handle);
+                window.focus(handle, cx);
             }
             self.reveal_application_selection();
             cx.notify();
@@ -476,7 +476,7 @@ impl ChatScreen {
         }
         self.application_vim.set_region(ChatRegion::Composer);
         let handle = composer.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        window.focus(&handle, cx);
         cx.notify();
     }
 
@@ -500,7 +500,7 @@ impl ChatScreen {
         }
         self.application_vim.set_region(ChatRegion::Composer);
         let handle = composer.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        window.focus(&handle, cx);
         cx.notify();
     }
 
@@ -562,7 +562,7 @@ impl ChatScreen {
                 // submits through TextInput's existing callback; j/k followed
                 // by Enter retains the direct option-submit path.
                 let handle = input.read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
                 cx.notify();
             }
             return;

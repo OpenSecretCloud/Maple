@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, Pixels, Render, Window, WindowBounds, WindowOptions,
-    actions, div, prelude::*, px, size,
+    App, Bounds, Context, Entity, Pixels, Render, Window, WindowBounds, WindowOptions, actions,
+    div, prelude::*, px, size,
 };
 
 actions!(maple_app, [QuitApp]);
@@ -350,7 +350,7 @@ pub fn run() {
     );
     log::debug!("startup: backend ready at {} ms", crate::startup_elapsed());
 
-    Application::new()
+    gpui_platform::application()
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
             log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
@@ -500,12 +500,9 @@ pub fn run() {
                             break;
                         }
                     }
-                    if root
-                        .update(cx, |app, cx| app.handle_service_events(batch, cx))
-                        .is_err()
-                    {
-                        break;
-                    }
+                    // This gpui's entity update is infallible; the pump ends
+                    // with the channel instead.
+                    root.update(cx, |app, cx| app.handle_service_events(batch, cx));
                 }
             })
             .detach();

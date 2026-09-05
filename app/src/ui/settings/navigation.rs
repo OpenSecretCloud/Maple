@@ -331,7 +331,7 @@ impl SettingsScreen {
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);
-                window.focus(&handle);
+                window.focus(&handle, cx);
             }
             Some(SettingsTarget::PromptSave) => self.save_prompt(cx),
             Some(SettingsTarget::PromptReset) => self.reset_prompt(cx),
@@ -366,13 +366,13 @@ impl SettingsScreen {
             self.select_section(Section::Shortcuts, cx);
         }
         let handle = self.shortcut_search.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        window.focus(&handle, cx);
         cx.notify();
     }
 
     fn application_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.application_text_input_focused(window, cx) {
-            window.focus(&self.application_focus);
+            window.focus(&self.application_focus, cx);
             cx.notify();
             return;
         }
@@ -621,6 +621,7 @@ mod tests {
 
     #[gpui::test]
     fn integration_targets_follow_the_visible_control_order(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
             crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
@@ -706,6 +707,7 @@ mod tests {
 
     #[gpui::test]
     fn application_vim_off_keeps_settings_projection_empty(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
             crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
                 .expect("backend"),
@@ -766,6 +768,7 @@ mod tests {
 
     #[gpui::test]
     fn settings_reveal_waits_for_the_selected_row_render(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct SettingsHost {
             settings: Entity<SettingsScreen>,
         }
@@ -830,6 +833,7 @@ mod tests {
 
     #[gpui::test]
     fn disabling_application_vim_keeps_settings_focus_attached(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         struct SettingsHost {
             settings: Entity<SettingsScreen>,
         }

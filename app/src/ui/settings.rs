@@ -74,6 +74,9 @@ pub struct SettingsScreen {
     /// The focus handle the window reported at the start of this render,
     /// so input frames can show a focus ring.
     focused_handle: Option<gpui::FocusHandle>,
+    /// Backend-call bridges retained for thread-affinity; see
+    /// [`crate::ui::task::call`].
+    bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
     backend: Arc<AgentBackend>,
     user_id: String,
     settings: AppSettings,
@@ -199,7 +202,9 @@ impl SettingsScreen {
                 .multiline(16)
                 .spell_check()
                 .application_vim(application_vim_enabled)
-                .on_application_escape(move |window, _cx| window.focus(&prompt_application_focus));
+                .on_application_escape(move |window, cx| {
+                    window.focus(&prompt_application_focus, cx)
+                });
             input.set_text(&prompt_text, cx);
             input
         });
@@ -208,7 +213,9 @@ impl SettingsScreen {
             TextInput::new("Search by command, context, or shortcut…", cx)
                 .with_tab_index(2)
                 .application_vim(application_vim_enabled)
-                .on_application_escape(move |window, _cx| window.focus(&search_application_focus))
+                .on_application_escape(move |window, cx| {
+                    window.focus(&search_application_focus, cx)
+                })
         });
         cx.observe(&shortcut_search, |this, search, cx| {
             this.shortcut_query = search.read(cx).text().trim().to_lowercase();
@@ -226,6 +233,7 @@ impl SettingsScreen {
         let application_focus_pending = settings.application_vim_enabled;
         let this = Self {
             focused_handle: None,
+            bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
@@ -288,7 +296,12 @@ impl SettingsScreen {
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
-        crate::ui::task::call(&self.backend, future, cx, then);
+        self.bridged_tasks.borrow_mut().push(crate::ui::task::call(
+            &self.backend,
+            future,
+            cx,
+            then,
+        ));
     }
 
     fn load_mcp_servers(&self, cx: &mut Context<Self>) {
@@ -497,8 +510,8 @@ impl SettingsScreen {
                 let mut input = TextInput::new(placeholder, cx)
                     .with_tab_index(index)
                     .application_vim(application_vim_enabled)
-                    .on_application_escape(move |window, _cx| {
-                        window.focus(&field_application_focus)
+                    .on_application_escape(move |window, cx| {
+                        window.focus(&field_application_focus, cx)
                     });
                 if !value.is_empty() {
                     input.set_text(&value, cx);
@@ -968,7 +981,7 @@ impl Render for SettingsScreen {
         if self.application_focus_pending {
             self.application_focus_pending = false;
             if self.settings.application_vim_enabled {
-                window.focus(&self.application_focus);
+                window.focus(&self.application_focus, cx);
             }
         }
         if self.application_reveal_pending {

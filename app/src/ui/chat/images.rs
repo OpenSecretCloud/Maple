@@ -130,7 +130,7 @@ impl ChatScreen {
             multiple: true,
             prompt: None,
         });
-        cx.spawn(async move |this, cx| {
+        let bridge = cx.spawn(async move |this, cx| {
             let picked = receiver.await;
             this.update(cx, |this, cx| {
                 this.image_picking = false;
@@ -146,8 +146,8 @@ impl ChatScreen {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        });
+        self.bridged_tasks.borrow_mut().push(bridge);
     }
 
     /// Stage images dropped onto the composer. Files that are not PNG,
