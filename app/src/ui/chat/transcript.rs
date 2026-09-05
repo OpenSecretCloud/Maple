@@ -41,7 +41,7 @@ impl ChatScreen {
         // Only the visible items (plus a small overdraw) are built each
         // frame; the list measures and caches the rest. Everything else is
         // read through the entity so nothing is cloned per frame.
-        let list = gpui::list(self.list_state.clone(), move |ix, _window, cx| {
+        let list = gpui::list(self.list_state.clone(), move |ix, window, cx| {
             let Some(chat_entity) = entity.upgrade() else {
                 return div().into_any_element();
             };
@@ -53,6 +53,7 @@ impl ChatScreen {
                         base_ordinal: Some(chat.markdown_cache.ordinal_for(&item.id)),
                         focus: transcript_focus.clone(),
                         id_seed: item.id.clone(),
+                        view: Some(window.current_view()),
                     };
                     let transcript = TranscriptCtx {
                         markdown_cache: &chat.markdown_cache,
@@ -264,11 +265,13 @@ fn copy_message_button(
     item_id: &str,
     group: &SharedString,
     text: SharedString,
+    view: Option<gpui::EntityId>,
 ) -> gpui::Stateful<Div> {
     widgets::copy_button(
         SharedString::from(format!("copy-message-{item_id}")),
         text,
         Some(group),
+        view,
     )
 }
 
@@ -306,14 +309,15 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
     // The display text is already shaped and cached for this revision;
     // the buttons share it instead of copying the message per frame.
     let display = transcript.derived.get(item, revision).text.clone();
-    let copy =
-        (!text.trim().is_empty()).then(|| copy_message_button(&item.id, &group, display.clone()));
+    let copy = (!text.trim().is_empty())
+        .then(|| copy_message_button(&item.id, &group, display.clone(), transcript.render.view));
     if is_user {
         let user_ctx = RenderCtx {
             selection: ctx.selection.clone(),
             base_ordinal: ctx.base_ordinal.map(|base| base + 2048),
             focus: ctx.focus.clone(),
             id_seed: format!("{}#user", ctx.id_seed),
+            view: ctx.view,
         };
         let ordinal = user_ctx.base_ordinal;
         div()

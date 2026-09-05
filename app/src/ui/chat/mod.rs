@@ -29,6 +29,7 @@ use crate::ui::widgets;
 mod cache;
 mod commands;
 mod composer;
+mod dialogs;
 mod images;
 mod navigation;
 mod queue;
@@ -43,9 +44,9 @@ use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind}
 use self::commands::ChatCommand;
 use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
 use self::navigation::ApplicationVimState;
-use self::sidebar::{
-    SidebarEntry, SidebarRow, SwitcherRoot, root_display_name, session_summary_eq,
-};
+#[cfg(test)]
+use self::sidebar::SessionActivity;
+use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
 use self::transcript::{
     ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_permission_card,
     render_question_card, render_waiting_indicator,
@@ -85,9 +86,6 @@ pub struct LoggedOut;
 /// Emitted when the user opens app settings from the chat header.
 pub struct OpenSettings;
 
-/// Menu item callback with access to the chat screen.
-type MenuAction = Box<dyn Fn(&mut ChatScreen, &mut Context<ChatScreen>)>;
-
 /// A queued message pulled into the composer; it keeps its place in the
 /// queue until the edit is sent or discarded.
 #[derive(Debug, Clone)]
@@ -118,22 +116,6 @@ const COMPOSER_PLACEHOLDER: &str = "Ask Maple to work in this folder…";
 const SIDE_THREAD_PLACEHOLDER: &str = "Ask a side question (Esc to leave the thread)…";
 const QUEUE_EDIT_PLACEHOLDER: &str =
     "Edit the queued message, then send to keep its place. Escape discards.";
-
-/// What an inline sidebar rename edits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RenameTarget {
-    Task(String),
-    Project(String),
-}
-
-/// Derived sidebar presentation for one task or an aggregate of tasks.
-/// Running takes precedence over a prior unread completion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionActivity {
-    Running,
-    CompletedUnread,
-}
-
 /// Sent prompts kept for Up/Down recall.
 const PROMPT_HISTORY_LIMIT: usize = 50;
 /// Gap between two repaints of the subagent card, which shows a live
@@ -189,6 +171,8 @@ pub(crate) struct SpeechState {
 pub struct ChatScreen {
     backend: Arc<AgentBackend>,
     user_id: String,
+    /// The task list; its own entity so it renders only when it changes.
+    sidebar: Entity<Sidebar>,
     sessions: Vec<AgentSessionSummary>,
     selected_session: Option<String>,
     timeline: Vec<AgentTimelineItem>,
@@ -250,12 +234,6 @@ pub struct ChatScreen {
     models_menu_open: bool,
     /// Approval-mode dropdown open state, anchored under the composer.
     mode_menu_open: bool,
-    /// Sidebar task ids the user pinned, in pin order.
-    pinned_tasks: Vec<String>,
-    /// Sidebar task ids the user settled away from the active inbox.
-    settled_tasks: std::collections::HashSet<String>,
-    /// Sidebar task ids the user moved back into the active inbox.
-    unsettled_tasks: std::collections::HashSet<String>,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Mirrors `window.is_window_active()` from the last render; refreshed
@@ -270,11 +248,6 @@ pub struct ChatScreen {
     loading_session: Option<String>,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
-    /// Virtualized sidebar list; its own state so the transcript's
-    /// bottom pinning is never disturbed by sidebar scrolling.
-    sidebar_list: gpui::ListState,
-    /// Rows of the sidebar list, in display order.
-    sidebar_entries: Vec<SidebarEntry>,
     /// Set when the transcript should jump to its newest content on the
     /// next render (session switch or send); streaming follows only while
     /// the view is already at the bottom.
@@ -383,37 +356,8 @@ pub struct ChatScreen {
     /// Item id to `(index in timeline, revision)`; the revision counts
     /// applied updates so caches can tell a changed item from a stable one.
     timeline_index: HashMap<String, (usize, u64)>,
-    /// Per-session sidebar strings, parallel to `sessions`.
-    sidebar_rows: Vec<SidebarRow>,
     /// Title of the selected task, shown in the header.
     selected_title: SharedString,
-    /// Sidebar rows per section, newest activity first: pinned tasks,
-    /// the active inbox, and the settled rest.
-    sidebar_pinned: Vec<usize>,
-    sidebar_active: Vec<usize>,
-    sidebar_settled: Vec<usize>,
-    /// Roots the project switcher lists.
-    switcher_roots: Vec<SwitcherRoot>,
-    /// Display label of the scope the task list shows.
-    sidebar_scope_label: SharedString,
-    /// Project the sidebar is scoped to, if any.
-    sidebar_project_filter: Option<String>,
-    /// Project switcher menu open in the sidebar.
-    switcher_menu_open: bool,
-    /// Application-Vim row highlight of the open popup menu.
-    sidebar_menu_selected: Option<usize>,
-    /// Overflow menu of one task row, by task id.
-    task_menu: Option<String>,
-    /// Indices into `sessions` of archived tasks, newest first.
-    archived_indices: Vec<usize>,
-    /// Archived section open in the sidebar.
-    archived_expanded: bool,
-    /// Settled section open in the sidebar.
-    settled_expanded: bool,
-    /// Active section open in the sidebar.
-    active_expanded: bool,
-    /// Pinned section open in the sidebar.
-    pinned_expanded: bool,
     /// Guards against a slow session load overwriting a newer selection.
     selection_generation: u64,
     /// Same guard for mid-run history reloads. Separate from the selection
@@ -450,27 +394,17 @@ pub struct ChatScreen {
     question_step_answers: HashMap<usize, Vec<String>>,
     /// Full-size image shown over the chat until dismissed.
     lightbox: Option<Arc<gpui::Image>>,
-    /// Display names for project roots, from settings.
-    project_names: HashMap<String, String>,
     /// Sent prompts, oldest first, for Up/Down recall in the composer.
     prompt_history: Vec<String>,
     /// Position in `prompt_history` while browsing; `None` when typing.
     history_index: Option<usize>,
     /// The unsent draft saved when browsing started.
     history_draft: String,
-    /// Inline rename in progress in the sidebar.
-    rename: Option<RenameTarget>,
-    rename_input: Option<Entity<TextInput>>,
-    rename_focus_pending: bool,
-    /// Root whose overflow menu is open.
-    project_menu: Option<String>,
     /// Root waiting for the user to confirm removal.
     confirm_remove_root: Option<String>,
     /// Project that has skills or guidance and no trust decision yet.
     trust_prompt: Option<AgentProjectTrustStatus>,
     trust_saving: bool,
-    /// Trust status of the project whose overflow menu is open.
-    menu_trust: Option<AgentProjectTrustStatus>,
     /// Messages waiting behind the selected session's active run.
     queue: Vec<AgentQueuedMessage>,
     /// First line of each queued message, for the chips.
@@ -479,9 +413,6 @@ pub struct ChatScreen {
     update: Option<crate::update::UpdateInfo>,
     queue_busy: bool,
     queue_edit: Option<QueueEdit>,
-    /// Sidebar task filter, lower-cased; empty shows everything.
-    sidebar_filter: String,
-    search_input: Option<Entity<TextInput>>,
     /// Slash commands from the installed skills of the current project root.
     slash_commands: Vec<AgentSlashCommand>,
     /// Highlighted row in the open slash palette, if any.
@@ -551,28 +482,13 @@ impl ChatScreen {
     /// fixture state mid-interaction.
     fn new_mounted(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
-        let mut this = Self::new_inner(backend, user_id);
+        let mut this = Self::new_inner(backend, user_id, cx);
         this.attach_composer(weak.clone(), cx);
         this.markdown_cache.attach(weak.clone(), cx.to_async());
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
         this.transcript_focus = Some(cx.focus_handle());
         this.root_menu_focus = Some(cx.focus_handle());
         this.application_focus = Some(cx.focus_handle());
-        let application_vim_enabled = this.application_vim_enabled;
-        let search_chat = weak.clone();
-        let search = cx.new(move |cx| {
-            TextInput::new("Search tasks", cx)
-                .with_tab_index(2)
-                .application_vim(application_vim_enabled)
-                .on_application_escape(move |window, cx| {
-                    if let Some(chat) = search_chat.upgrade() {
-                        chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
-                    }
-                })
-        });
-        cx.observe(&search, |this, input, cx| this.search_changed(&input, cx))
-            .detach();
-        this.search_input = Some(search);
         this.initialize_application_vim_surface();
         this
     }
@@ -584,6 +500,156 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) -> Self {
         Self::new_mounted(backend, user_id, cx)
+    }
+
+    /// What the sidebar asked for. Events arrive after the sidebar's own
+    /// update finished, so answering them may update it again.
+    fn on_sidebar_event(
+        &mut self,
+        _sidebar: Entity<Sidebar>,
+        event: &SidebarEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event.clone() {
+            SidebarEvent::Select(id) => self.select_session(&id, cx),
+            SidebarEvent::SessionChanged(session) => {
+                self.upsert_session(session, cx);
+                cx.notify();
+            }
+            SidebarEvent::SetArchived {
+                session_id,
+                archived,
+            } => self.set_session_archived(&session_id, archived, cx),
+            SidebarEvent::RemoveRoot(root) => self.request_remove_root(&root, cx),
+            SidebarEvent::SetTrust { path, trusted } => self.set_project_trust(path, trusted, cx),
+            SidebarEvent::ChooseProject => self.choose_root_dialog(cx),
+            SidebarEvent::Notice(message) => {
+                self.notice = Some(message);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Push everything the sidebar shows: sessions, the selection, which
+    /// tasks run or finished unread, and the recent roots. Called when
+    /// any of them changed; the sidebar rebuilds only what moved.
+    fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
+        let sessions = self.sessions.clone();
+        let selected = self.selected_session.clone();
+        let running: HashSet<String> = self.active_runs.keys().cloned().collect();
+        let unread = self.completed_unread_sessions.clone();
+        let roots = self.recent_roots.clone();
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_sessions(sessions, cx);
+            sidebar.set_selected(selected, cx);
+            sidebar.set_activity(running, unread, cx);
+            sidebar.set_recent_roots(roots, cx);
+        });
+        self.refresh_selected_title();
+    }
+
+    fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected_session.clone();
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_selected(selected, cx));
+        self.refresh_selected_title();
+    }
+
+    pub(super) fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        if self.sidebar_collapsed == collapsed {
+            return;
+        }
+        self.sidebar_collapsed = collapsed;
+        cx.notify();
+    }
+
+    pub(super) fn toggle_sidebar_visibility(&mut self, cx: &mut Context<Self>) {
+        self.set_sidebar_collapsed(!self.sidebar_collapsed, cx);
+    }
+
+    pub(super) fn toggle_archived_visibility(&mut self, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.toggle_archived_visibility(cx));
+    }
+
+    pub(super) fn focus_sidebar_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_sidebar_collapsed(false, cx);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.focus_search(window, cx));
+        cx.notify();
+    }
+
+    pub(super) fn toggle_task_pin(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.toggle_task_pin(session_id, cx));
+    }
+
+    #[cfg(test)]
+    fn sidebar_active(&self, cx: &gpui::App) -> Vec<usize> {
+        self.sidebar.read(cx).active_rows().to_vec()
+    }
+
+    #[cfg(test)]
+    fn sidebar_settled(&self, cx: &gpui::App) -> Vec<usize> {
+        self.sidebar.read(cx).settled_rows().to_vec()
+    }
+
+    #[cfg(test)]
+    fn sidebar_pinned(&self, cx: &gpui::App) -> Vec<usize> {
+        self.sidebar.read(cx).pinned_rows().to_vec()
+    }
+
+    #[cfg(test)]
+    fn archived_indices(&self, cx: &gpui::App) -> Vec<usize> {
+        self.sidebar.read(cx).archived_rows().to_vec()
+    }
+
+    #[cfg(test)]
+    fn switcher_root_paths(&self, cx: &gpui::App) -> Vec<String> {
+        self.sidebar
+            .read(cx)
+            .switcher_root_paths()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn set_sidebar_filter(&mut self, filter: &str, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_filter_for_test(filter);
+            cx.notify();
+        });
+    }
+
+    #[cfg(test)]
+    fn settle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.settle_task(session_id, cx));
+    }
+
+    #[cfg(test)]
+    fn unsettle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.unsettle_task(session_id, cx));
+    }
+
+    #[cfg(test)]
+    fn step_sidebar_popup(&mut self, delta: isize, count: usize, cx: &mut Context<Self>) -> bool {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.step_popup(delta, count, cx))
+    }
+
+    #[cfg(test)]
+    fn activate_sidebar_popup(&mut self, cx: &mut Context<Self>) -> bool {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.activate_popup(cx))
+    }
+
+    #[cfg(test)]
+    pub(super) fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.cancel_rename(cx));
     }
 
     /// Create and wire the composer; called by the real constructor.
@@ -751,15 +817,28 @@ impl ChatScreen {
     }
 
     /// Test seam: pure state without composer wiring or runtime start.
-    pub(crate) fn new_inner(backend: Arc<AgentBackend>, user_id: String) -> Self {
-        Self::new_inner_with_placeholder(backend, user_id)
+    pub(crate) fn new_inner(
+        backend: Arc<AgentBackend>,
+        user_id: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_inner_with_placeholder(backend, user_id, cx)
     }
 
-    fn new_inner_with_placeholder(backend: Arc<AgentBackend>, user_id: String) -> Self {
+    fn new_inner_with_placeholder(
+        backend: Arc<AgentBackend>,
+        user_id: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let settings = crate::settings::load_settings();
+        let weak = cx.entity().downgrade();
+        let sidebar =
+            cx.new(|cx| Sidebar::new(backend.clone(), user_id.clone(), weak, &settings, cx));
+        cx.subscribe(&sidebar, Self::on_sidebar_event).detach();
         Self {
             backend,
             user_id,
+            sidebar,
             sessions: Vec::new(),
             selected_session: None,
             timeline: Vec::new(),
@@ -788,9 +867,6 @@ impl ChatScreen {
             selected_model: None,
             models_menu_open: false,
             mode_menu_open: false,
-            pinned_tasks: settings.pinned_tasks.clone(),
-            settled_tasks: settings.settled_tasks.iter().cloned().collect(),
-            unsettled_tasks: settings.unsettled_tasks.iter().cloned().collect(),
             notify_enabled: settings.desktop_notifications,
             window_active: true,
             sidebar_plan: None,
@@ -799,8 +875,6 @@ impl ChatScreen {
             booting: true,
             loading_session: None,
             list_state: transcript_list_state(),
-            sidebar_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
-            sidebar_entries: Vec::new(),
             tool_details: settings.tool_details,
             // An unset or unknown value in either place means "use the
             // saved default", so only a known mode counts as an override.
@@ -835,22 +909,7 @@ impl ChatScreen {
             derived: DerivedCache::default(),
             markdown_warmup: None,
             timeline_index: HashMap::new(),
-            sidebar_rows: Vec::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
-            sidebar_pinned: Vec::new(),
-            sidebar_active: Vec::new(),
-            sidebar_settled: Vec::new(),
-            switcher_roots: Vec::new(),
-            sidebar_scope_label: "All projects".into(),
-            sidebar_project_filter: None,
-            switcher_menu_open: false,
-            sidebar_menu_selected: None,
-            task_menu: None,
-            archived_indices: Vec::new(),
-            archived_expanded: false,
-            settled_expanded: true,
-            active_expanded: true,
-            pinned_expanded: true,
             root_input: None,
             root_selecting: false,
             project_label: SharedString::from("Choose folder"),
@@ -873,24 +932,16 @@ impl ChatScreen {
             question_step: 0,
             question_step_answers: HashMap::new(),
             lightbox: None,
-            project_names: settings.project_names.clone(),
             prompt_history: Vec::new(),
             history_index: None,
             history_draft: String::new(),
-            rename: None,
-            rename_input: None,
-            rename_focus_pending: false,
-            project_menu: None,
             confirm_remove_root: None,
             trust_prompt: None,
             trust_saving: false,
-            menu_trust: None,
             queue: Vec::new(),
             queue_previews: Vec::new(),
             queue_busy: false,
             queue_edit: None,
-            sidebar_filter: String::new(),
-            search_input: None,
             update: None,
             slash_commands: Vec::new(),
             slash_selected: None,
@@ -990,7 +1041,7 @@ impl ChatScreen {
                         this.check_project_trust(cx);
                         this.recent_roots = boot.recent_roots;
                         this.sessions = boot.sessions;
-                        this.rebuild_sidebar_sections();
+                        this.sync_sidebar(cx);
                         // A click that landed before this callback wins.
                         if let Some(detail) =
                             boot.latest.filter(|_| this.selected_session.is_none())
@@ -999,7 +1050,7 @@ impl ChatScreen {
                                 .into_iter()
                                 .map(|(id, summary)| (id, SharedString::from(summary)))
                                 .collect();
-                            this.upsert_session(detail.session.clone());
+                            this.upsert_session(detail.session.clone(), cx);
                             this.set_active_session(detail.session, detail.timeline, summaries, cx);
                             this.queue = detail.queue.items;
                         }
@@ -1087,7 +1138,7 @@ impl ChatScreen {
             cx,
             |this, result, cx| {
                 if let Ok(roots) = result {
-                    this.apply_recent_roots(roots);
+                    this.apply_recent_roots(roots, cx);
                 }
                 cx.notify();
             },
@@ -1095,9 +1146,13 @@ impl ChatScreen {
     }
 
     /// Take the recent-root list the service returned, newest first.
-    fn apply_recent_roots(&mut self, roots: Vec<maple_agent::agent::RecentProjectRoot>) {
+    fn apply_recent_roots(
+        &mut self,
+        roots: Vec<maple_agent::agent::RecentProjectRoot>,
+        cx: &mut Context<Self>,
+    ) {
         self.recent_roots = roots.into_iter().map(|root| root.path).collect();
-        self.rebuild_sidebar_sections();
+        self.sync_sidebar(cx);
     }
 
     /// Select the project context for new tasks without disturbing work that
@@ -1131,7 +1186,7 @@ impl ChatScreen {
                 this.root_selecting = false;
                 match result {
                     Ok(registration) => {
-                        this.apply_recent_roots(registration.roots);
+                        this.apply_recent_roots(registration.roots, cx);
                         if this.selection_generation != selection_generation {
                             // Registration still succeeded, so the project
                             // stays listed without overriding the newer
@@ -1164,7 +1219,7 @@ impl ChatScreen {
             cx,
             |this, result, cx| match result {
                 Ok(registration) => {
-                    this.apply_recent_roots(registration.roots);
+                    this.apply_recent_roots(registration.roots, cx);
                     cx.notify();
                 }
                 Err(error) => log::warn!("Cannot persist project root: {error}"),
@@ -1193,7 +1248,7 @@ impl ChatScreen {
         self.project_root_changed(cx);
         self.check_project_trust(cx);
         self.refresh_slash_commands(cx);
-        self.rebuild_sidebar_sections();
+        self.sync_sidebar(cx);
         true
     }
 
@@ -1463,7 +1518,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.sessions = sessions;
-        self.rebuild_sidebar_sections();
+        self.sync_sidebar(cx);
         if self.selected_session.is_some() || self.selection_generation != generation {
             return;
         }
@@ -1532,7 +1587,7 @@ impl ChatScreen {
         // The SessionCreated event may arrive before this callback; upsert so
         // the sidebar never shows the task twice, even when its navigation is
         // no longer current.
-        self.upsert_session(session.clone());
+        self.upsert_session(session.clone(), cx);
         if self.selection_generation == selection_generation {
             self.begin_navigation();
             self.set_active_session(session, Vec::new(), HashMap::new(), cx);
@@ -1546,7 +1601,7 @@ impl ChatScreen {
         // a newer task or project choice. If the project choice left the view
         // empty while the one-create-at-a-time fence was held, let it settle
         // now that another task may be created.
-        self.rebuild_sidebar_sections();
+        self.sync_sidebar(cx);
         if self.selected_session.is_none() {
             self.refresh_sessions(cx);
         }
@@ -1673,7 +1728,7 @@ impl ChatScreen {
                     .collect();
                 match mode {
                     LoadMode::Select => {
-                        this.upsert_session(detail.session.clone());
+                        this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
                         this.queue = detail.queue.items;
                     }
@@ -2034,7 +2089,7 @@ impl ChatScreen {
         // Release the hold while the previous session id is still selected.
         self.abandon_queue_edit(cx);
         self.selected_session = None;
-        self.refresh_selected_title();
+        self.sync_sidebar_selection(cx);
         self.set_queue(Vec::new());
         self.replace_timeline(Vec::new());
         self.reset_transcript_view(cx);
@@ -2092,6 +2147,7 @@ impl ChatScreen {
         // the active inbox.
         self.completed_unread_sessions.remove(&session.id);
         self.selected_session = Some(session.id);
+        self.sync_sidebar(cx);
         let previous_root = self.project_root.clone();
         if self.set_project_context(Some(project_root.clone()), cx) && previous_root.is_some() {
             // Working in another project makes it the default for new
@@ -2274,7 +2330,7 @@ impl ChatScreen {
             move |this, result, cx| {
                 match result {
                     Ok(session) => {
-                        this.upsert_session(session);
+                        this.upsert_session(session, cx);
                     }
                     Err(message) => {
                         if this.selected_session.as_deref() == Some(session_id.as_str()) {
@@ -2579,6 +2635,7 @@ impl ChatScreen {
             .is_some_and(|session| self.active_runs.contains_key(session))
     }
 
+    #[cfg(test)]
     fn session_activity(&self, session_id: &str) -> Option<SessionActivity> {
         if self.active_runs.contains_key(session_id) {
             Some(SessionActivity::Running)
@@ -2637,52 +2694,17 @@ impl ChatScreen {
     /// Alt-Up / Alt-Down: open the task before or after the selected one
     /// in the order the sidebar shows them.
     fn step_task(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some((row, id)) = self.task_step_target(delta) else {
+        let Some((row, id)) = self.task_step_target(delta, cx) else {
             return;
         };
-        self.sidebar_list.scroll_to_reveal_item(row);
+        self.sidebar.read(cx).reveal_row(row);
         self.select_session(&id, cx);
     }
 
     /// The task `delta` rows away from the selected one, as the sidebar
-    /// row it sits on and its id. Stepping walks the flat sidebar list
-    /// and stops at its ends.
-    fn task_step_target(&self, delta: isize) -> Option<(usize, String)> {
-        let rows: Vec<(usize, usize)> = self
-            .sidebar_entries
-            .iter()
-            .enumerate()
-            .filter_map(|(row, entry)| match entry {
-                SidebarEntry::Task(task) if !task.archived => Some((row, task.session)),
-                _ => None,
-            })
-            .collect();
-        if rows.is_empty() {
-            return None;
-        }
-        let selected = self.selected_session.as_deref();
-        let current = selected.and_then(|id| {
-            rows.iter().position(|(_, session)| {
-                self.sessions
-                    .get(*session)
-                    .is_some_and(|summary| summary.id == id)
-            })
-        });
-        let target = match current {
-            Some(position) => {
-                let next = position as isize + delta;
-                if next < 0 || next as usize >= rows.len() {
-                    return None;
-                }
-                next as usize
-            }
-            // Nothing selected: enter the list from the end it comes from.
-            None if delta > 0 => 0,
-            None => rows.len() - 1,
-        };
-        let (row, session) = rows[target];
-        let id = self.sessions.get(session)?.id.clone();
-        Some((row, id))
+    /// row it sits on and its id.
+    fn task_step_target(&self, delta: isize, cx: &gpui::App) -> Option<(usize, String)> {
+        self.sidebar.read(cx).step_target(delta)
     }
 
     /// Ctrl-1 to Ctrl-9: answer the question card with the numbered
@@ -2707,8 +2729,10 @@ impl ChatScreen {
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
-        if self.rename.is_some() {
-            self.cancel_rename(cx);
+        if self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.cancel_rename(cx))
+        {
             return;
         }
         if self.queue_edit.is_some() {
@@ -2719,8 +2743,10 @@ impl ChatScreen {
             self.close_side_thread(cx);
             return;
         }
-        if !self.sidebar_filter.is_empty() {
-            self.clear_search(cx);
+        if self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.clear_search(cx))
+        {
             return;
         }
         if let Some(status) = self.trust_prompt.as_ref() {
@@ -2728,15 +2754,11 @@ impl ChatScreen {
             self.set_project_trust(path, false, cx);
             return;
         }
-        if self.confirm_remove_root.is_some()
-            || self.project_menu.is_some()
-            || self.switcher_menu_open
-            || self.task_menu.is_some()
-        {
+        let popups = self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.close_popups(cx));
+        if self.confirm_remove_root.is_some() || popups {
             self.confirm_remove_root = None;
-            self.project_menu = None;
-            self.switcher_menu_open = false;
-            self.task_menu = None;
             cx.notify();
             return;
         }
@@ -2835,15 +2857,11 @@ impl ChatScreen {
         }
         // A focused text input already receives typing.
         let focused = window.focused(cx);
-        let typing_here = [
-            self.composer.as_ref(),
-            self.search_input.as_ref(),
-            self.rename_input.as_ref(),
-            self.pending_question_input.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|input| Some(input.read(cx).focus_handle(cx)) == focused);
+        let typing_here = [self.composer.clone(), self.pending_question_input.clone()]
+            .into_iter()
+            .flatten()
+            .chain(self.sidebar.read(cx).inputs())
+            .any(|input| Some(input.read(cx).focus_handle(cx)) == focused);
         if typing_here {
             return;
         }
@@ -3348,7 +3366,7 @@ impl ChatScreen {
                     // Finished event already retired it.
                     if !this.finished_runs.contains(&run_id) {
                         this.active_runs.insert(session_id.clone(), run_id);
-                        this.rebuild_sidebar_sections();
+                        this.sync_sidebar(cx);
                     }
                 }
                 Err(message) => {
@@ -3803,7 +3821,7 @@ impl ChatScreen {
     }
 
     /// Insert or replace a session row; returns whether anything changed.
-    fn upsert_session(&mut self, session: AgentSessionSummary) -> bool {
+    fn upsert_session(&mut self, session: AgentSessionSummary, cx: &mut Context<Self>) -> bool {
         // An archived row shows no indicator; drop a marker it may carry.
         if session.archived {
             self.completed_unread_sessions.remove(&session.id);
@@ -3823,7 +3841,7 @@ impl ChatScreen {
         } else {
             self.sessions.insert(0, session);
         }
-        self.rebuild_sidebar_sections();
+        self.sync_sidebar(cx);
         true
     }
 
@@ -3937,13 +3955,13 @@ impl ChatScreen {
                 self.active_runs = status.active_runs;
                 // Run membership decides the inbox sections: a task woken
                 // from elsewhere moves the moment the snapshot lands.
-                self.rebuild_sidebar_sections();
+                self.sync_sidebar(cx);
             }
             AgentServiceEvent::SessionCreated(session) => {
-                return self.upsert_session(session);
+                return self.upsert_session(session, cx);
             }
             AgentServiceEvent::SessionUpdated { session, .. } => {
-                return self.upsert_session(session);
+                return self.upsert_session(session, cx);
             }
             AgentServiceEvent::TimelineItem {
                 session_id, item, ..
@@ -4056,13 +4074,13 @@ impl ChatScreen {
         use maple_agent::agent::AgentRunEvent;
         match event {
             AgentRunEvent::SessionUpdated(session) => {
-                return self.upsert_session(session);
+                return self.upsert_session(session, cx);
             }
             AgentRunEvent::Started => {
                 self.active_runs
                     .insert(session_id.to_string(), run_id.to_string());
                 // The sections read `active_runs`; keep them in step.
-                self.rebuild_sidebar_sections();
+                self.sync_sidebar(cx);
                 self.start_usage_poller(session_id.to_string(), cx);
                 self.refresh_context_usage(cx);
             }
@@ -4196,11 +4214,12 @@ impl ChatScreen {
                             .insert(session_id.to_string());
                         // A fresh completion is new activity: it wakes a
                         // task the user settled away earlier.
-                        self.settled_tasks.remove(session_id);
+                        self.sidebar
+                            .update(cx, |sidebar, cx| sidebar.wake_task(session_id, cx));
                     }
                     // Waking or retiring a run moves a task between
                     // sections; the entries must follow the same frame.
-                    self.rebuild_sidebar_sections();
+                    self.sync_sidebar(cx);
                     // A subagent the run was waiting for ended with it. A
                     // background one works on and is collected by a later
                     // turn, so its row stays.
@@ -4290,6 +4309,10 @@ impl Render for ChatScreen {
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
         self.window_active = window.is_window_active();
+        let vim_in_sidebar = self.application_vim_enabled
+            && self.application_vim.region == self::navigation::ChatRegion::Sidebar;
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_vim_active(vim_in_sidebar, cx));
         if self.dialog_focus_pending {
             self.dialog_focus_pending = false;
             if let Some(handle) = self.dialog_focus.clone() {
@@ -4344,13 +4367,6 @@ impl Render for ChatScreen {
             } else if self.current_question().is_some()
                 && let Some(input) = self.pending_question_input.clone()
             {
-                let handle = input.read(cx).focus_handle(cx);
-                window.focus(&handle, cx);
-            }
-        }
-        if self.rename_focus_pending {
-            self.rename_focus_pending = false;
-            if let Some(input) = self.rename_input.clone() {
                 let handle = input.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
@@ -4496,7 +4512,18 @@ impl Render for ChatScreen {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .when(!collapsed, |row| row.child(self.render_sidebar(cx)))
+                    .when(!collapsed, |row| {
+                        // Cached: the sidebar's subtree is reused until the
+                        // sidebar entity is notified, whatever this screen does.
+                        row.child(
+                            self.sidebar.clone().cached(
+                                gpui::StyleRefinement::default()
+                                    .w(SIDEBAR_WIDTH)
+                                    .h_full()
+                                    .flex_none(),
+                            ),
+                        )
+                    })
                     .child(
                         div()
                             .relative()
@@ -4704,8 +4731,7 @@ impl ChatScreen {
                     .iter()
                     .position(|session| session.id == selected)
             })
-            .and_then(|index| self.sidebar_rows.get(index))
-            .map(|row| row.title.clone())
+            .map(|index| SharedString::from(self.sessions[index].title.clone()))
             .unwrap_or_else(|| DEFAULT_TASK_TITLE.into());
     }
 

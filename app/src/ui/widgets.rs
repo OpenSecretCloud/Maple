@@ -444,6 +444,14 @@ impl Render for Tooltip {
 
 // ---- Copy feedback --------------------------------------------------------
 
+/// Redraw `view`, or the whole window when the button has no view.
+fn repaint(view: Option<gpui::EntityId>, window: &mut Window, cx: &mut App) {
+    match view {
+        Some(view) => cx.notify(view),
+        None => window.refresh(),
+    }
+}
+
 /// How long a copy button reads "Copied".
 const COPIED_FOR: Duration = Duration::from_millis(1400);
 
@@ -469,6 +477,7 @@ pub fn copy_button(
     id: impl Into<ElementId>,
     text: SharedString,
     reveal: Option<&SharedString>,
+    view: Option<gpui::EntityId>,
 ) -> Stateful<Div> {
     let id = id.into();
     let copied = copied_recently(&id);
@@ -506,12 +515,14 @@ pub fn copy_button(
             cx.stop_propagation();
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
             COPIED.with(|slot| *slot.borrow_mut() = Some((click_id.clone(), Instant::now())));
-            window.refresh();
+            // Repaint the view that owns the button; a whole-window refresh
+            // would throw away every cached view in it.
+            repaint(view, window, cx);
             // One more paint after the label reverts; no polling between.
             window
                 .spawn(cx, async move |cx| {
                     cx.background_executor().timer(COPIED_FOR).await;
-                    cx.update(|window, _| window.refresh()).ok();
+                    cx.update(|window, cx| repaint(view, window, cx)).ok();
                 })
                 .detach();
         })

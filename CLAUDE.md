@@ -76,5 +76,16 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
   Prefer pushed events over timers.
 - Reuse handles: entities (`cx.new`), SQLite connections, and shaped text
   are created once and cached, not per frame or per call.
+- Panels are entities embedded with `Entity::cached`, so a notify on the
+  screen does not rebuild them (the sidebar is `ui/chat/sidebar.rs`).
+  A cached view must never read the screen entity during render (that
+  is a re-entrant borrow and a dependency that defeats the cache): the
+  screen pushes what the panel shows through setters, and the panel
+  answers through `cx.emit` events or, when a click needs the window,
+  through a plain closure holding a `WeakEntity` of the screen. Never
+  call the screen from a `cx.listener` on a panel: listeners run inside
+  the panel's update, and the screen may update the panel back. Caching
+  needs a definite size; a content-sized box (the composer) cannot be a
+  cached view. Avoid `Window::refresh`; it discards every cached view.
 - Release builds use fat LTO and one codegen unit. Use release builds
   for any performance check; the dev profile is `opt-level = 1`.

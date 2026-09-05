@@ -360,6 +360,9 @@ pub struct RenderCtx {
     pub focus: Option<FocusHandle>,
     /// Unique element-id seed for the message being rendered.
     pub id_seed: String,
+    /// The view whose render this is, so a copy button can ask for one
+    /// repaint of that view instead of refreshing the whole window.
+    pub view: Option<gpui::EntityId>,
 }
 
 impl RenderCtx {
@@ -754,6 +757,7 @@ pub fn code_block(
     label: SharedString,
     id_name: SharedString,
     index: u64,
+    view: Option<gpui::EntityId>,
 ) -> Div {
     let copy_code = code.clone();
     let copy_id = ElementId::NamedInteger(id_name.clone(), index);
@@ -781,7 +785,7 @@ pub fn code_block(
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child(label),
                 )
-                .child(widgets::copy_button(copy_id, copy_code, None)),
+                .child(widgets::copy_button(copy_id, copy_code, None, view)),
         )
         .child(
             // Long lines scroll sideways instead of wrapping; a vertical
