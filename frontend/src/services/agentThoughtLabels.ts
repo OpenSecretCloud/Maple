@@ -18,7 +18,6 @@ export const AGENT_THOUGHT_LABEL_PROVISIONAL_DEADLINE_MS = 3_000;
 export const AGENT_THOUGHT_LABEL_MAX_CONCURRENT_PROVISIONAL_REQUESTS = 2;
 
 const AGENT_THOUGHT_LABEL_MODEL = "llama3-3-70b";
-const AGENT_THOUGHT_LABEL_MAX_TOKENS = 64;
 const AGENT_THOUGHT_LABEL_TEMPERATURE = 0;
 const AGENT_THOUGHT_LABEL_STREAMING_PREMATURE_VERBS = [
   "Answering",
@@ -436,7 +435,6 @@ export async function requestAgentThoughtLabel(
         { role: "user", content: input }
       ],
       temperature: AGENT_THOUGHT_LABEL_TEMPERATURE,
-      max_tokens: AGENT_THOUGHT_LABEL_MAX_TOKENS,
       stream: false
     };
     const response = await client.chat.completions.create(requestBody, { signal });

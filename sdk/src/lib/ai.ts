@@ -13,6 +13,94 @@ export interface CustomFetchOptions {
   pcrConfig?: PcrConfig;
 }
 
+const INFERENCE_CAPACITY_ERROR_MESSAGE = "Inference capacity is temporarily unavailable.";
+const INFERENCE_CAPACITY_CONTRACT_HEADER = "x-opensecret-error-contract";
+const INFERENCE_CAPACITY_CODE_HEADER = "x-opensecret-error-code";
+const INFERENCE_CAPACITY_REPLAY_HEADER = "x-opensecret-client-replay";
+const INFERENCE_CAPACITY_CONTRACT_VERSION = "1";
+const INFERENCE_CAPACITY_ERROR_CODE = "inference_capacity";
+const INFERENCE_CAPACITY_REPLAY_SAFE = "safe";
+const DEFAULT_INFERENCE_CAPACITY_RETRY_DELAY_MS = 1_000;
+const MAX_INFERENCE_CAPACITY_RETRY_DELAY_SECS = 60n;
+/** Client-only header consumed by createCustomFetch and never forwarded upstream. */
+export const OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER = "x-opensecret-client-inference-send-limit";
+
+export class OpenSecretInferenceCapacityError extends Error {
+  readonly status: 429 | 503;
+  /** Null means the server delay exceeds Maple's bounded automatic-replay window. */
+  readonly retryDelayMs: number | null;
+  /** Number of inference HTTP sends consumed before this terminal response. */
+  readonly inferenceSendCount: number;
+
+  constructor(status: 429 | 503, retryDelayMs: number | null, inferenceSendCount = 1) {
+    super(INFERENCE_CAPACITY_ERROR_MESSAGE);
+    this.name = "OpenSecretInferenceCapacityError";
+    this.status = status;
+    this.retryDelayMs = retryDelayMs;
+    this.inferenceSendCount = inferenceSendCount;
+  }
+}
+
+/** Finds the SDK-owned capacity error through wrappers such as OpenAI APIConnectionError. */
+export function findOpenSecretInferenceCapacityError(
+  error: unknown
+): OpenSecretInferenceCapacityError | null {
+  const seen = new Set<unknown>();
+  let current = error;
+
+  for (let depth = 0; depth < 8 && current !== null && current !== undefined; depth += 1) {
+    if (current instanceof OpenSecretInferenceCapacityError) return current;
+    if (typeof current !== "object" || seen.has(current)) return null;
+    seen.add(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+
+  return null;
+}
+
+function retryDelayFromCapacityHeaders(headers: Headers): number | null {
+  const retryAfter = headers.get("retry-after");
+  if (retryAfter === null || !/^(0|[1-9]\d*)$/.test(retryAfter)) {
+    return DEFAULT_INFERENCE_CAPACITY_RETRY_DELAY_MS;
+  }
+
+  const seconds = BigInt(retryAfter);
+  if (seconds > MAX_INFERENCE_CAPACITY_RETRY_DELAY_SECS) return null;
+  return Number(seconds) * 1_000;
+}
+
+function inferenceCapacityError(
+  response: Response,
+  inferenceSendCount: number
+): OpenSecretInferenceCapacityError | null {
+  if (response.status !== 429 && response.status !== 503) return null;
+  if (
+    response.headers.get(INFERENCE_CAPACITY_CONTRACT_HEADER) !==
+      INFERENCE_CAPACITY_CONTRACT_VERSION ||
+    response.headers.get(INFERENCE_CAPACITY_CODE_HEADER) !== INFERENCE_CAPACITY_ERROR_CODE ||
+    response.headers.get(INFERENCE_CAPACITY_REPLAY_HEADER) !== INFERENCE_CAPACITY_REPLAY_SAFE
+  ) {
+    return null;
+  }
+
+  return new OpenSecretInferenceCapacityError(
+    response.status,
+    retryDelayFromCapacityHeaders(response.headers),
+    inferenceSendCount
+  );
+}
+
+function takeInferenceSendLimit(headers: Headers): {
+  maxSends: number;
+  explicitlyBounded: boolean;
+} {
+  const rawLimit = headers.get(OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER);
+  headers.delete(OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER);
+  if (rawLimit === "1") return { maxSends: 1, explicitlyBounded: true };
+  if (rawLimit === "2") return { maxSends: 2, explicitlyBounded: true };
+  return { maxSends: 2, explicitlyBounded: false };
+}
+
 interface ActiveAttestation {
   sessionKey: Uint8Array;
   sessionId: string;
@@ -220,7 +308,13 @@ export function createCustomFetchWithDependencies(
       // already-prepared plaintext request under a different token.
       let authHeader = getAuthHeader();
       const request = await snapshotRequest(requestUrl, init);
+      const { maxSends: maxInferenceSends, explicitlyBounded } = takeInferenceSendLimit(
+        request.headers
+      );
+      if (explicitlyBounded) request.options.redirect = "manual";
       throwIfAborted(request.signal);
+
+      let inferenceSendCount = 0;
 
       const makeRequest = async (attestation: ActiveAttestation) => {
         const headers = new Headers(request.headers);
@@ -243,6 +337,7 @@ export function createCustomFetchWithDependencies(
           headers.set("Content-Type", "application/json");
         }
 
+        inferenceSendCount += 1;
         return {
           attestation,
           response: await dependencies.fetch(request.url, requestOptions)
@@ -265,8 +360,8 @@ export function createCustomFetchWithDependencies(
         const recovery = classifyRecovery(attempt.response.status, attempt.response.headers);
 
         if (recovery === "refresh_access_token" && !usesApiKey && !replayed) {
-          replayed = true;
-          await discardResponse(attempt.response);
+          const canReplay = inferenceSendCount < maxInferenceSends;
+          if (canReplay) await discardResponse(attempt.response);
           throwIfAborted(request.signal);
           console.warn("Unauthorized, refreshing access token");
           await dependencies.refreshToken();
@@ -282,16 +377,26 @@ export function createCustomFetchWithDependencies(
               attestationIdentity.pcrConfig
             )
           );
+          if (!canReplay) {
+            finalAttempt = attempt;
+            break;
+          }
+          replayed = true;
           continue;
         }
 
         if (recovery === "renew_session" && !replayed) {
-          replayed = true;
-          await discardResponse(attempt.response);
+          const canReplay = inferenceSendCount < maxInferenceSends;
+          if (canReplay) await discardResponse(attempt.response);
           throwIfAborted(request.signal);
           console.warn("Bad Request, renewing attestation and retrying once");
           attestation = await renewAttestation(attempt.attestation.sessionId, attestationIdentity);
           throwIfAborted(request.signal);
+          if (!canReplay) {
+            finalAttempt = attempt;
+            break;
+          }
+          replayed = true;
           continue;
         }
 
@@ -301,6 +406,12 @@ export function createCustomFetchWithDependencies(
 
       const { response } = finalAttempt;
       const { sessionKey } = finalAttempt.attestation;
+
+      const capacityError = inferenceCapacityError(response, inferenceSendCount);
+      if (capacityError) {
+        await discardResponse(response);
+        throw capacityError;
+      }
 
       if (!response.ok) {
         const errorText = await response.text();

@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { createCustomFetchWithDependencies, type CustomFetchDependencies } from "../ai";
+import OpenAI from "openai";
+import {
+  createCustomFetchWithDependencies,
+  findOpenSecretInferenceCapacityError,
+  OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER,
+  OpenSecretInferenceCapacityError,
+  type CustomFetchDependencies
+} from "../ai";
 import { getApiPcrConfig, getApiUrl, setApiUrl } from "../api";
 import type { Attestation } from "../getAttestation";
 import type { PcrConfig } from "../pcr";
@@ -43,6 +50,31 @@ function contractError(status: number, body: string, code?: string): Response {
   const headers = new Headers({ [ERROR_CONTRACT_HEADER]: "1" });
   if (code) headers.set(ERROR_CODE_HEADER, code);
   return new Response(body, { status, headers });
+}
+
+function capacityContractError(
+  status: number,
+  options?: {
+    contract?: string | null;
+    code?: string | null;
+    replay?: string | null;
+    retryAfter?: string | null;
+  }
+): Response {
+  const headers = new Headers();
+  if (options?.contract !== null) {
+    headers.set("x-opensecret-error-contract", options?.contract ?? "1");
+  }
+  if (options?.code !== null) {
+    headers.set("x-opensecret-error-code", options?.code ?? "inference_capacity");
+  }
+  if (options?.replay !== null) {
+    headers.set("x-opensecret-client-replay", options?.replay ?? "safe");
+  }
+  if (options?.retryAfter !== undefined && options.retryAfter !== null) {
+    headers.set("retry-after", options.retryAfter);
+  }
+  return new Response("private upstream capacity detail", { status, headers });
 }
 
 function dependencies(overrides: Partial<CustomFetchDependencies>): CustomFetchDependencies {
@@ -95,6 +127,271 @@ async function withRequestBodyUnavailable<T>(callback: () => Promise<T>): Promis
     globalThis.Request = OriginalRequest;
   }
 }
+
+describe("createCustomFetch inference-capacity contract", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  for (const status of [429, 503] as const) {
+    test(`classifies exact ${status} without consuming or exposing its body`, async () => {
+      let bodyRead = false;
+      let bodyCancelled = false;
+      const capacityResponse = capacityContractError(status, { retryAfter: "7" });
+      const responseBody = capacityResponse.body;
+      if (!responseBody) throw new Error("capacity test response must have a body");
+      const cancelBody = responseBody.cancel.bind(responseBody);
+      responseBody.cancel = async (reason?: unknown) => {
+        bodyCancelled = true;
+        return cancelBody(reason);
+      };
+      capacityResponse.text = async () => {
+        bodyRead = true;
+        return "private upstream capacity detail";
+      };
+      const customFetch = createCustomFetchWithDependencies(
+        { apiKey: "test-api-key" },
+        dependencies({
+          fetch: async () => capacityResponse
+        })
+      );
+
+      let error: unknown;
+      try {
+        await customFetch("https://example.test/v1/responses", {
+          method: "POST",
+          body: '{"prompt":"hello"}'
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(OpenSecretInferenceCapacityError);
+      expect(error).toMatchObject({
+        name: "OpenSecretInferenceCapacityError",
+        message: "Inference capacity is temporarily unavailable.",
+        status,
+        retryDelayMs: 7_000,
+        inferenceSendCount: 1
+      });
+      expect(String(error)).not.toContain("private upstream");
+      expect(bodyRead).toBe(false);
+      expect(bodyCancelled).toBe(true);
+    });
+  }
+
+  test("uses strict bounded delta-seconds retry hints", async () => {
+    const cases: Array<[string | undefined, number | null]> = [
+      [undefined, 1_000],
+      ["0", 0],
+      ["7", 7_000],
+      ["60", 60_000],
+      ["61", null],
+      ["01", 1_000],
+      ["-1", 1_000],
+      ["1.5", 1_000],
+      ["1e2", 1_000],
+      ["Wed, 21 Oct 2015 07:28:00 GMT", 1_000],
+      ["7, 9", 1_000],
+      ["999999999999999999999999999999999999999999", null]
+    ];
+
+    for (const [retryAfter, expectedDelay] of cases) {
+      const customFetch = createCustomFetchWithDependencies(
+        { apiKey: "test-api-key" },
+        dependencies({
+          fetch: async () => capacityContractError(503, { retryAfter })
+        })
+      );
+
+      let error: unknown;
+      try {
+        await customFetch("https://example.test/v1/responses");
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(OpenSecretInferenceCapacityError);
+      expect((error as OpenSecretInferenceCapacityError).retryDelayMs).toBe(expectedDelay);
+    }
+  });
+
+  test("rejects missing, future, duplicated, and status-mismatched required headers", async () => {
+    const invalid = [
+      capacityContractError(429, { contract: null }),
+      capacityContractError(429, { contract: "2" }),
+      capacityContractError(429, { contract: "1, 1" }),
+      capacityContractError(429, { code: null }),
+      capacityContractError(429, { code: "inference_capacity_v2" }),
+      capacityContractError(429, { code: "inference_capacity, inference_capacity" }),
+      capacityContractError(429, { replay: null }),
+      capacityContractError(429, { replay: "true" }),
+      capacityContractError(429, { replay: "safe, safe" }),
+      capacityContractError(529),
+      capacityContractError(500)
+    ];
+
+    const duplicateContract = capacityContractError(503);
+    duplicateContract.headers.append("x-opensecret-error-contract", "1");
+    invalid.push(duplicateContract);
+    const duplicateCode = capacityContractError(503);
+    duplicateCode.headers.append("x-opensecret-error-code", "inference_capacity");
+    invalid.push(duplicateCode);
+    const duplicateReplay = capacityContractError(503);
+    duplicateReplay.headers.append("x-opensecret-client-replay", "safe");
+    invalid.push(duplicateReplay);
+
+    for (const response of invalid) {
+      const customFetch = createCustomFetchWithDependencies(
+        { apiKey: "test-api-key" },
+        dependencies({ fetch: async () => response.clone() })
+      );
+
+      let error: unknown;
+      try {
+        await customFetch("https://example.test/v1/responses");
+      } catch (caught) {
+        error = caught;
+      }
+      expect(findOpenSecretInferenceCapacityError(error)).toBeNull();
+      expect(String(error)).toContain(`Request failed with status ${response.status}`);
+    }
+  });
+
+  test("finds only the SDK-owned typed error through a bounded cause chain", () => {
+    const capacity = new OpenSecretInferenceCapacityError(503, 1_000);
+    const wrapped = new Error("outer", { cause: new Error("middle", { cause: capacity }) });
+    expect(findOpenSecretInferenceCapacityError(wrapped)).toBe(capacity);
+    expect(
+      findOpenSecretInferenceCapacityError({
+        name: "OpenSecretInferenceCapacityError",
+        status: 503,
+        retryDelayMs: 1_000
+      })
+    ).toBeNull();
+
+    const cycle: { cause?: unknown } = {};
+    cycle.cause = cycle;
+    expect(findOpenSecretInferenceCapacityError(cycle)).toBeNull();
+  });
+
+  test("survives the real OpenAI wrapper with its transport retries disabled", async () => {
+    let sends = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        fetch: async () => {
+          sends += 1;
+          return capacityContractError(503, { retryAfter: "0" });
+        }
+      })
+    );
+    const openai = new OpenAI({
+      apiKey: "not-a-real-api-key",
+      baseURL: "https://example.test/v1/",
+      dangerouslyAllowBrowser: true,
+      fetch: customFetch,
+      maxRetries: 0
+    });
+
+    let error: unknown;
+    try {
+      await openai.responses.create({ model: "kimi-k3", input: "hello" });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(sends).toBe(1);
+    expect(error).toMatchObject({ name: "Error" });
+    const capacity = findOpenSecretInferenceCapacityError(error);
+    expect(capacity).toBeInstanceOf(OpenSecretInferenceCapacityError);
+    expect(capacity).toMatchObject({ status: 503, retryDelayMs: 0 });
+    expect((error as { cause?: unknown }).cause).toBe(capacity);
+  });
+
+  test("shares a two-send ceiling across stale-session repair and capacity", async () => {
+    let currentAttestation = staleAttestation;
+    let forcedAttestations = 0;
+    let sends = 0;
+    const forwardedLimits: Array<string | null> = [];
+    const redirects: Array<RequestRedirect | undefined> = [];
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        getAttestation: async (forceRefresh) => {
+          if (forceRefresh) {
+            forcedAttestations += 1;
+            currentAttestation = freshAttestation;
+          }
+          return currentAttestation;
+        },
+        fetch: async (_input, init) => {
+          sends += 1;
+          forwardedLimits.push(
+            new Headers(init?.headers).get(OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER)
+          );
+          redirects.push(init?.redirect);
+          if (recordRequest(init).sessionId === staleAttestation.sessionId) {
+            return contractError(400, "stale session", "session_not_found");
+          }
+          return capacityContractError(503, { retryAfter: "0" });
+        }
+      })
+    );
+
+    let error: unknown;
+    try {
+      await customFetch("https://example.test/v1/responses", {
+        headers: { [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: "2" }
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(findOpenSecretInferenceCapacityError(error)).toMatchObject({
+      status: 503,
+      retryDelayMs: 0,
+      inferenceSendCount: 2
+    });
+    expect(sends).toBe(2);
+    expect(forcedAttestations).toBe(1);
+    expect(forwardedLimits).toEqual([null, null]);
+    expect(redirects).toEqual(["manual", "manual"]);
+  });
+
+  test("repairs a stale session but does not exceed a one-send ceiling", async () => {
+    let currentAttestation = staleAttestation;
+    let forcedAttestations = 0;
+    let sends = 0;
+    const customFetch = createCustomFetchWithDependencies(
+      { apiKey: "test-api-key" },
+      dependencies({
+        getAttestation: async (forceRefresh) => {
+          if (forceRefresh) {
+            forcedAttestations += 1;
+            currentAttestation = freshAttestation;
+          }
+          return currentAttestation;
+        },
+        fetch: async () => {
+          sends += 1;
+          if (sends === 1) return contractError(400, "stale session", "session_not_found");
+          return Response.json({ encrypted: '2:{"unexpected":true}' });
+        }
+      })
+    );
+
+    await expect(
+      customFetch("https://example.test/v1/responses", {
+        headers: { [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: "1" }
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    expect(sends).toBe(1);
+    expect(forcedAttestations).toBe(1);
+    expect(currentAttestation).toBe(freshAttestation);
+  });
+});
 
 describe("createCustomFetch stale-session recovery", () => {
   beforeEach(() => {

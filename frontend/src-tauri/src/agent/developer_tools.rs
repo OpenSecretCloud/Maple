@@ -61,7 +61,6 @@ const IMAGE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const IMAGE_DESCRIPTION_TIMEOUT: Duration = Duration::from_secs(60);
 const IMAGE_DESCRIPTION_MODEL: &str = "gemma4-31b";
 const IMAGE_DESCRIPTION_TEMPERATURE: f32 = 0.0;
-const IMAGE_DESCRIPTION_MAX_TOKENS: i32 = 2_048;
 const IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS: usize = 12_000;
 pub(super) const EXTERNAL_MCP_TOOL_NAME: &str = "external_mcp";
 const IMAGE_DESCRIPTION_SYSTEM_PROMPT: &str = r#"You are the visual perception helper for a coding agent that cannot inspect images directly.
@@ -746,7 +745,7 @@ async fn describe_image_for_text_model(
     model_config.reasoning = Some(false);
     let model_config = model_config
         .with_temperature(Some(IMAGE_DESCRIPTION_TEMPERATURE))
-        .with_max_tokens(Some(IMAGE_DESCRIPTION_MAX_TOKENS));
+        .with_max_tokens(None);
 
     let prompt = contextual_image_prompt(source, image_context);
     let messages = [Message::user()
@@ -3152,7 +3151,7 @@ mod tests {
         model_config.reasoning = Some(false);
         let model_config = model_config
             .with_temperature(Some(IMAGE_DESCRIPTION_TEMPERATURE))
-            .with_max_tokens(Some(IMAGE_DESCRIPTION_MAX_TOKENS));
+            .with_max_tokens(None);
         let messages = [Message::user()
             .with_text(contextual_image_prompt(
                 "icon.png",
@@ -3174,7 +3173,8 @@ mod tests {
         let payload = captured.lock().unwrap().take().unwrap();
         assert_eq!(payload["model"], IMAGE_DESCRIPTION_MODEL);
         assert_eq!(payload["temperature"], IMAGE_DESCRIPTION_TEMPERATURE);
-        assert_eq!(payload["max_tokens"], IMAGE_DESCRIPTION_MAX_TOKENS);
+        assert!(payload.get("max_tokens").is_none());
+        assert!(payload.get("max_completion_tokens").is_none());
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["include_reasoning"], false);
         assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);

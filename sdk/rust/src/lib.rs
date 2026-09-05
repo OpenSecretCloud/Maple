@@ -8,7 +8,10 @@ pub mod push;
 pub mod session;
 pub mod types;
 
-pub use client::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
+pub use client::{
+    InferenceRequest, InferenceResponse, InferenceSendBudget, OpenSecretClient,
+    OpenSecretResponseBody,
+};
 pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};
 pub use push::*;

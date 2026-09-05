@@ -112,7 +112,6 @@ const SESSION_TITLE_GENERATION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(1_500);
 const SESSION_TITLE_MODEL: &str = "llama3-3-70b";
 const SESSION_TITLE_TEMPERATURE: f32 = 0.7;
-const SESSION_TITLE_MAX_TOKENS: i32 = 15;
 const SESSION_TITLE_MAX_INPUT_CHARS: usize = 500;
 const SESSION_TITLE_SYSTEM_PROMPT: &str = "You are a helpful assistant that generates concise, meaningful titles (3-5 words) for chat conversations based on the user's first message. Return only the title without quotes or explanations.";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
@@ -1785,7 +1784,7 @@ async fn generate_agent_session_title(
     model_config.reasoning = Some(false);
     let model_config = model_config
         .with_temperature(Some(SESSION_TITLE_TEMPERATURE))
-        .with_max_tokens(Some(SESSION_TITLE_MAX_TOKENS));
+        .with_max_tokens(None);
     let bounded_prompt = first_prompt
         .chars()
         .take(SESSION_TITLE_MAX_INPUT_CHARS)
@@ -6763,6 +6762,7 @@ fn maple_model_config(
     // Maple's authoritative catalog value is per session. Explicitly clear any
     // process-global Goose context override when metadata is unavailable.
     model_config.context_limit = context_limit.filter(|limit| *limit > 0);
+    provider::clear_output_token_limits(&mut model_config);
     Ok(model_config)
 }
 
@@ -6796,11 +6796,12 @@ async fn install_maple_provider_config<T>(
     agent: &Arc<Agent>,
     transport: &Arc<T>,
     session_id: &str,
-    model_config: goose_providers::model::ModelConfig,
+    mut model_config: goose_providers::model::ModelConfig,
 ) -> Result<(), String>
 where
     T: provider::MapleInferenceTransport + 'static,
 {
+    provider::clear_output_token_limits(&mut model_config);
     let provider = Arc::new(MapleProvider::new(Arc::clone(transport)));
     agent
         .update_provider(provider, model_config, session_id)
@@ -10187,6 +10188,7 @@ mod tests {
         async fn send_inference_request(
             self: Arc<Self>,
             _request: opensecret::InferenceRequest,
+            _send_budget: opensecret::InferenceSendBudget,
             _cancel_token: CancellationToken,
         ) -> opensecret::Result<opensecret::InferenceResponse> {
             Err(opensecret::Error::Other(
@@ -10208,6 +10210,7 @@ mod tests {
         async fn send_inference_request(
             self: Arc<Self>,
             _request: opensecret::InferenceRequest,
+            _send_budget: opensecret::InferenceSendBudget,
             _cancel_token: CancellationToken,
         ) -> opensecret::Result<opensecret::InferenceResponse> {
             match self.0 {
@@ -11879,7 +11882,12 @@ mod tests {
             .unwrap();
         let persisted_model_config = goose_providers::model::ModelConfig::new("gemma-3-27b")
             .with_context_limit(Some(64_321))
-            .with_temperature(Some(0.42));
+            .with_temperature(Some(0.42))
+            .with_max_tokens(Some(4_096))
+            .with_merged_request_params(HashMap::from([
+                ("max_output_tokens".to_string(), json!(4_096)),
+                ("include_reasoning".to_string(), json!(false)),
+            ]));
         session_manager
             .update(&session.id)
             .provider_name(MAPLE_PROVIDER_NAME)
@@ -11931,6 +11939,11 @@ mod tests {
                 .and_then(|model| model.temperature),
             Some(0.42)
         );
+        let restored_config = persisted.model_config.as_ref().unwrap();
+        assert_eq!(restored_config.max_tokens, None);
+        let restored_params = restored_config.request_params.as_ref().unwrap();
+        assert!(!restored_params.contains_key("max_output_tokens"));
+        assert_eq!(restored_params["include_reasoning"], false);
 
         drop(manager_result);
         drop(agent_manager);
@@ -13202,6 +13215,19 @@ mod tests {
                 .context_limit,
             None
         );
+    }
+
+    #[test]
+    fn maple_model_config_omits_goose_canonical_output_limits() {
+        let canonical =
+            ModelConfig::new("deepseek-v4-flash").with_canonical_limits(MAPLE_PROVIDER_NAME);
+        assert!(canonical.max_tokens.is_some());
+
+        let config =
+            maple_model_config("deepseek-v4-flash", Some(1_048_576)).expect("Maple model config");
+        assert_eq!(config.model_name, "deepseek-v4-flash");
+        assert_eq!(config.context_limit, Some(1_048_576));
+        assert_eq!(config.max_tokens, None);
     }
 
     #[test]
@@ -17554,7 +17580,7 @@ mod tests {
             .expect("the provider should capture one title request");
         assert_eq!(capture.model_name, SESSION_TITLE_MODEL);
         assert_eq!(capture.temperature, Some(SESSION_TITLE_TEMPERATURE));
-        assert_eq!(capture.max_tokens, Some(SESSION_TITLE_MAX_TOKENS));
+        assert_eq!(capture.max_tokens, None);
         assert_eq!(capture.reasoning, Some(false));
         assert!(!capture.request_params_present);
         assert_eq!(capture.system, SESSION_TITLE_SYSTEM_PROMPT);

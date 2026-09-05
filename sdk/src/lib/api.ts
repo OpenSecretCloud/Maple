@@ -2045,7 +2045,7 @@ export type ResponsesCreateRequest = {
  *
  * NOTE: Prefer using the OpenAI client directly for conversation operations:
  * ```typescript
- * const openai = new OpenAI({ fetch: customFetch });
+ * const openai = new OpenAI({ fetch: customFetch, maxRetries: 0 });
  * const conversation = await openai.conversations.create({
  *   metadata: { title: "Product Support", category: "technical" }
  * });
