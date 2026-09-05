@@ -1588,9 +1588,11 @@ impl ChatScreen {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .pl(titlebar::top_row_inset(px(16.)))
+                    .pl_4()
                     .pr_3()
-                    .pt_3()
+                    // The wordmark row sits under the traffic lights, not
+                    // beside them; the space above it is still the bar.
+                    .pt(titlebar::top_row_top(px(12.)))
                     .pb_2()
                     .child(wordmark(px(16.), theme::text_primary()))
                     .child(self.render_sidebar_toggle(cx)),

@@ -22,11 +22,25 @@ pub const TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(12.), px(
 /// Horizontal room the traffic lights need at the left of the top row.
 pub const TRAFFIC_LIGHT_INSET: Pixels = px(78.);
 
+/// Vertical room the traffic lights take at the top of a column, for a
+/// row that sits under them instead of beside them.
+pub const TRAFFIC_LIGHT_ROW: Pixels = px(36.);
+
 /// Left padding for a top row: clears the traffic lights when the bar is
 /// transparent, otherwise the ordinary gutter.
 pub fn top_row_inset(gutter: Pixels) -> Pixels {
     if TRANSPARENT_TITLEBAR {
         TRAFFIC_LIGHT_INSET
+    } else {
+        gutter
+    }
+}
+
+/// Top padding for a row placed under the traffic lights: clears them
+/// when the bar is transparent, otherwise the ordinary gutter.
+pub fn top_row_top(gutter: Pixels) -> Pixels {
+    if TRANSPARENT_TITLEBAR {
+        TRAFFIC_LIGHT_ROW
     } else {
         gutter
     }
