@@ -388,6 +388,22 @@ impl MapleApiSession {
         response.map_err(map_account_error)
     }
 
+    /// Change the password. The backend rotates the token pair; the SDK
+    /// stores it and `record_refresh` publishes it to the persistence sink.
+    pub async fn change_password(
+        &self,
+        current_password: String,
+        new_password: String,
+    ) -> Result<(), MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot
+            .client
+            .change_password(current_password, new_password)
+            .await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_account_error)
+    }
+
     /// Tell the server about the sign-out (`POST /logout`), as the web SDK
     /// does. The backend does not revoke the refresh token yet; this is so
     /// it can once it does. The session keeps its credentials object; the

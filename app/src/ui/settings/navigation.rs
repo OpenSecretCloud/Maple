@@ -78,6 +78,7 @@ impl SettingsScreen {
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
+        inputs.extend(self.account.password.inputs());
         if let Some(editor) = &self.mcp_editor {
             inputs.extend([
                 editor.name.clone(),
@@ -333,7 +334,9 @@ impl SettingsScreen {
         }
         match self.application_vim.target.clone() {
             Some(SettingsTarget::General(target)) => self.activate_general_target(target, cx),
-            Some(SettingsTarget::Account(target)) => self.activate_account_target(target, cx),
+            Some(SettingsTarget::Account(target)) => {
+                self.activate_account_target(target, window, cx)
+            }
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);

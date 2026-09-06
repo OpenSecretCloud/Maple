@@ -239,7 +239,7 @@ impl SettingsScreen {
             theme: theme::Preference::parse(&settings.theme),
             settings,
             section,
-            account: AccountState::new(),
+            account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             usage: None,
             plan: None,
             mcp_servers: None,

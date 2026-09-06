@@ -916,6 +916,30 @@ impl AgentBackend {
             .map_err(|error| account_error_message(error, "Could not send the verification email"))
     }
 
+    /// Change the account password. The rotated token pair is persisted
+    /// through the auth sink before this returns.
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        current_password: String,
+        new_password: String,
+    ) -> Result<(), String> {
+        if current_password.is_empty() {
+            return Err("Enter your current password".to_string());
+        }
+        validate_new_password(&new_password)?;
+        let session = self.session_for(user_id).await?;
+        session
+            .change_password(current_password, new_password)
+            .await
+            .map_err(|error| match error {
+                // The route answers 401 for a wrong current password; a
+                // dead session would have failed the session lookup first.
+                MapleAccountError::Unauthorized => "The current password is incorrect".to_string(),
+                other => account_error_message(other, "Could not change the password"),
+            })
+    }
+
     /// Plan usage for the sidebar card from the Maple billing API. Returns
     /// `None` when the subscription has no token meter.
     pub async fn plan_usage(
@@ -1878,6 +1902,19 @@ fn decode_query_value(value: &str) -> String {
     percent_encoding::percent_decode_str(&spaced)
         .decode_utf8_lossy()
         .into_owned()
+}
+
+/// Minimum password length, the same rule as Maple's web forms.
+pub const MIN_PASSWORD_LENGTH: usize = 8;
+
+/// The web app's password rule: at least eight characters.
+pub fn validate_new_password(password: &str) -> Result<(), String> {
+    if password.chars().count() < MIN_PASSWORD_LENGTH {
+        return Err(format!(
+            "Use at least {MIN_PASSWORD_LENGTH} characters for the new password"
+        ));
+    }
+    Ok(())
 }
 
 /// A user-facing message for an account call that failed. Backend detail

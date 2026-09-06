@@ -1,11 +1,12 @@
 //! The Account section: who is signed in, email verification, and
 //! sign-out. Later sections (password, deletion) build on this state.
 
-use gpui::{Context, Div, div, prelude::*, px};
+use gpui::{Context, Div, Entity, Focusable, div, prelude::*, px};
 
 use super::{SettingsScreen, SettingsTarget, SignOutRequested, info_row, section_title};
 use crate::backend::{MapleAccount, MapleLoginMethod};
 use crate::ui::icons::icon;
+use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::widgets;
 
@@ -13,6 +14,10 @@ use crate::ui::widgets;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AccountTarget {
     ResendVerification,
+    PasswordCurrent,
+    PasswordNew,
+    PasswordConfirm,
+    PasswordSave,
     SignOut,
 }
 
@@ -22,16 +27,63 @@ pub(super) struct AccountState {
     pub(super) load_error: Option<String>,
     pub(super) verification_notice: Option<String>,
     pub(super) verification_busy: bool,
+    pub(super) password: PasswordForm,
+}
+
+/// The change-password form. Fields are cleared after a successful change.
+pub(super) struct PasswordForm {
+    pub(super) current: Entity<TextInput>,
+    pub(super) new: Entity<TextInput>,
+    pub(super) confirm: Entity<TextInput>,
+    pub(super) busy: bool,
+    /// (succeeded, message) after the last attempt.
+    pub(super) notice: Option<(bool, String)>,
+}
+
+impl PasswordForm {
+    pub(super) fn inputs(&self) -> [Entity<TextInput>; 3] {
+        [self.current.clone(), self.new.clone(), self.confirm.clone()]
+    }
 }
 
 impl AccountState {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(
+        application_vim_enabled: bool,
+        application_focus: gpui::FocusHandle,
+        cx: &mut Context<SettingsScreen>,
+    ) -> Self {
+        let field = |placeholder: &str, tab_index: isize, cx: &mut Context<SettingsScreen>| {
+            let focus = application_focus.clone();
+            cx.new(move |cx| {
+                TextInput::new(placeholder, cx)
+                    .masked()
+                    .with_tab_index(tab_index)
+                    .application_vim(application_vim_enabled)
+                    .on_application_escape(move |window, cx| window.focus(&focus, cx))
+            })
+        };
+        let password = PasswordForm {
+            current: field("Current password", 10, cx),
+            new: field("New password", 11, cx),
+            confirm: field("Confirm new password", 12, cx),
+            busy: false,
+            notice: None,
+        };
         Self {
             info: None,
             load_error: None,
             verification_notice: None,
             verification_busy: false,
+            password,
         }
+    }
+
+    /// Whether the password form is on screen: only accounts that sign in
+    /// with a password can change one.
+    fn has_password(&self) -> bool {
+        self.info
+            .as_ref()
+            .is_some_and(|info| info.login_method.has_password())
     }
 
     /// Whether the Resend control is on screen.
@@ -70,6 +122,17 @@ impl SettingsScreen {
         if self.account.can_resend_verification() {
             targets.push(SettingsTarget::Account(AccountTarget::ResendVerification));
         }
+        if self.account.has_password() {
+            targets.extend(
+                [
+                    AccountTarget::PasswordCurrent,
+                    AccountTarget::PasswordNew,
+                    AccountTarget::PasswordConfirm,
+                    AccountTarget::PasswordSave,
+                ]
+                .map(SettingsTarget::Account),
+            );
+        }
         targets.push(SettingsTarget::Account(AccountTarget::SignOut));
         targets
     }
@@ -77,12 +140,62 @@ impl SettingsScreen {
     pub(super) fn activate_account_target(
         &mut self,
         target: AccountTarget,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        let focus_input =
+            |input: &Entity<TextInput>, window: &mut gpui::Window, cx: &mut Context<Self>| {
+                let handle = input.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            };
         match target {
             AccountTarget::ResendVerification => self.resend_verification(cx),
+            AccountTarget::PasswordCurrent => {
+                focus_input(&self.account.password.current, window, cx)
+            }
+            AccountTarget::PasswordNew => focus_input(&self.account.password.new, window, cx),
+            AccountTarget::PasswordConfirm => {
+                focus_input(&self.account.password.confirm, window, cx)
+            }
+            AccountTarget::PasswordSave => self.submit_password_change(cx),
             AccountTarget::SignOut => cx.emit(SignOutRequested),
         }
+    }
+
+    pub(super) fn submit_password_change(&mut self, cx: &mut Context<Self>) {
+        if self.account.password.busy {
+            return;
+        }
+        let current = self.account.password.current.read(cx).text();
+        let new = self.account.password.new.read(cx).text();
+        let confirm = self.account.password.confirm.read(cx).text();
+        if let Err(message) = password_form_check(&current, &new, &confirm) {
+            self.account.password.notice = Some((false, message));
+            cx.notify();
+            return;
+        }
+        self.account.password.busy = true;
+        self.account.password.notice = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.change_password(&user_id, current, new).await },
+            cx,
+            |this, result, cx| {
+                this.account.password.busy = false;
+                this.account.password.notice = Some(match result {
+                    Ok(()) => {
+                        for input in this.account.password.inputs() {
+                            input.update(cx, |input, cx| input.clear(cx));
+                        }
+                        (true, "Password changed.".to_string())
+                    }
+                    Err(message) => (false, message),
+                });
+                cx.notify();
+            },
+        );
     }
 
     pub(super) fn resend_verification(&mut self, cx: &mut Context<Self>) {
@@ -145,32 +258,107 @@ impl SettingsScreen {
                 "Sign-in method",
                 info.login_method.label().to_string(),
             ))
-            .child(info_row("Member since", member_since(&info.created_at)))
-            .child(
-                self.application_target(
-                    || SettingsTarget::Account(AccountTarget::SignOut),
-                    widgets::card_row()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_4()
-                        .child(super::setting_copy(
-                            "Sign out",
-                            "Ends this session on this device. Your tasks stay in your \
+            .child(info_row("Member since", member_since(&info.created_at)));
+        if info.login_method.has_password() {
+            pane = pane.child(self.render_password_form(cx));
+        }
+        pane = pane.child(
+            self.application_target(
+                || SettingsTarget::Account(AccountTarget::SignOut),
+                widgets::card_row()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(super::setting_copy(
+                        "Sign out",
+                        "Ends this session on this device. Your tasks stay in your \
                          account.",
-                        ))
-                        .child(
-                            widgets::secondary_button("account-sign-out")
-                                .flex_none()
-                                .py_1p5()
-                                .on_click(cx.listener(|_this, _event, _window, cx| {
-                                    cx.emit(SignOutRequested);
-                                }))
-                                .child("Sign out"),
-                        ),
-                ),
-            );
+                    ))
+                    .child(
+                        widgets::secondary_button("account-sign-out")
+                            .flex_none()
+                            .py_1p5()
+                            .on_click(cx.listener(|_this, _event, _window, cx| {
+                                cx.emit(SignOutRequested);
+                            }))
+                            .child("Sign out"),
+                    ),
+            ),
+        );
         pane
+    }
+
+    fn render_password_form(&self, cx: &mut Context<Self>) -> Div {
+        let form = &self.account.password;
+        let busy = form.busy;
+        let field = |target: AccountTarget, label: &str, input: &Entity<TextInput>| {
+            self.application_target(
+                move || SettingsTarget::Account(target),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child(label.to_string()),
+                    )
+                    .child(widgets::input_frame().child(input.clone())),
+            )
+        };
+        let mut card = widgets::card_row()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(super::setting_copy(
+                "Change password",
+                "Use at least 8 characters. Other devices stay signed in.",
+            ))
+            .child(field(
+                AccountTarget::PasswordCurrent,
+                "Current password",
+                &form.current,
+            ))
+            .child(field(AccountTarget::PasswordNew, "New password", &form.new))
+            .child(field(
+                AccountTarget::PasswordConfirm,
+                "Confirm new password",
+                &form.confirm,
+            ));
+        if let Some((ok, message)) = &form.notice {
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(if *ok {
+                        theme::status_success()
+                    } else {
+                        theme::status_error()
+                    }))
+                    .child(message.clone()),
+            );
+        }
+        card.child(
+            div().flex().justify_end().child(
+                self.application_target(
+                    || SettingsTarget::Account(AccountTarget::PasswordSave),
+                    widgets::primary_button("account-password-save")
+                        .py_1p5()
+                        .when(busy, |el| el.opacity(0.6))
+                        .when(!busy, |el| {
+                            el.on_click(cx.listener(|this, _event, _window, cx| {
+                                this.submit_password_change(cx);
+                            }))
+                        })
+                        .child(if busy {
+                            "Changing…"
+                        } else {
+                            "Change password"
+                        }),
+                ),
+            ),
+        )
     }
 
     fn render_email_row(
@@ -267,6 +455,22 @@ fn guest_id_row(user_id: &str, cx: &mut Context<SettingsScreen>) -> gpui::AnyEle
         .into_any_element()
 }
 
+/// Client-side checks before the backend call; the messages match the
+/// web app's form validation.
+pub(super) fn password_form_check(current: &str, new: &str, confirm: &str) -> Result<(), String> {
+    if current.is_empty() {
+        return Err("Enter your current password".to_string());
+    }
+    crate::backend::validate_new_password(new)?;
+    if new != confirm {
+        return Err("The new passwords do not match".to_string());
+    }
+    if new == current {
+        return Err("The new password must differ from the current one".to_string());
+    }
+    Ok(())
+}
+
 fn status_badge(label: &'static str, color: u32) -> Div {
     div()
         .flex()
@@ -314,9 +518,19 @@ mod tests {
     }
 
     #[test]
+    fn password_form_checks_mirror_the_web_rules() {
+        assert!(password_form_check("", "longenough", "longenough").is_err());
+        assert!(password_form_check("old", "short", "short").is_err());
+        assert!(password_form_check("old", "longenough", "different1").is_err());
+        assert!(password_form_check("longenough", "longenough", "longenough").is_err());
+        assert!(password_form_check("old", "longenough", "longenough").is_ok());
+    }
+
+    #[test]
     fn resend_is_offered_only_for_an_unverified_email() {
-        let mut state = AccountState::new();
-        assert!(!state.can_resend_verification());
+        fn resendable(info: &MapleAccount) -> bool {
+            info.email.is_some() && !info.email_verified
+        }
         let mut info = MapleAccount {
             user_id: "u".into(),
             email: Some("a@b.c".into()),
@@ -325,14 +539,11 @@ mod tests {
             login_method: MapleLoginMethod::Email,
             created_at: String::new(),
         };
-        state.info = Some(info.clone());
-        assert!(state.can_resend_verification());
+        assert!(resendable(&info));
         info.email_verified = true;
-        state.info = Some(info.clone());
-        assert!(!state.can_resend_verification());
+        assert!(!resendable(&info));
         info.email = None;
         info.email_verified = false;
-        state.info = Some(info);
-        assert!(!state.can_resend_verification());
+        assert!(!resendable(&info));
     }
 }
