@@ -1,5 +1,5 @@
 //! Settings screen: left navigation with content panes, following Maple's
-//! settings layout. Sections: General (defaults), System prompt,
+//! settings layout. Sections: General (defaults), Account, System prompt,
 //! Integrations, Keyboard Shortcuts, Usage, About.
 
 use std::collections::HashSet;
@@ -27,7 +27,9 @@ use crate::shortcuts::{
 use crate::ui::theme;
 use crate::ui::widgets;
 
+mod account;
 mod navigation;
+use self::account::AccountState;
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
 /// Emitted when the user leaves settings.
@@ -39,6 +41,7 @@ pub struct SignOutRequested;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
+    Account,
     Shortcuts,
     Prompt,
     Integrations,
@@ -50,6 +53,7 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Account => "Account",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
@@ -58,8 +62,9 @@ impl Section {
         }
     }
 
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::General,
+        Self::Account,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -78,6 +83,7 @@ pub struct SettingsScreen {
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
     section: Section,
+    account: AccountState,
     usage: Option<UsageSummary>,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
@@ -233,6 +239,7 @@ impl SettingsScreen {
             theme: theme::Preference::parse(&settings.theme),
             settings,
             section,
+            account: AccountState::new(),
             usage: None,
             plan: None,
             mcp_servers: None,
@@ -259,6 +266,7 @@ impl SettingsScreen {
             pane_scroll,
             application_anchor,
         };
+        this.load_account(cx);
         this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
@@ -1282,6 +1290,9 @@ impl SettingsScreen {
                             }),
                         ),
                     ));
+            }
+            Section::Account => {
+                pane = pane.child(self.render_account_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));

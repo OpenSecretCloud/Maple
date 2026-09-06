@@ -7,6 +7,7 @@
 
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
+use super::account::AccountTarget;
 use super::{
     Section, SettingsScreen, integration_can_setup, integration_can_toggle, integration_is_visible,
 };
@@ -36,6 +37,7 @@ pub(super) enum GeneralTarget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum SettingsTarget {
     General(GeneralTarget),
+    Account(AccountTarget),
     Shortcut(String),
     PromptEditor,
     PromptSave,
@@ -129,6 +131,7 @@ impl SettingsScreen {
             .into_iter()
             .map(SettingsTarget::General)
             .collect(),
+            Section::Account => self.account_targets(),
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -330,6 +333,7 @@ impl SettingsScreen {
         }
         match self.application_vim.target.clone() {
             Some(SettingsTarget::General(target)) => self.activate_general_target(target, cx),
+            Some(SettingsTarget::Account(target)) => self.activate_account_target(target, cx),
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);

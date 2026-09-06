@@ -22,6 +22,117 @@ pub struct MapleApiAuthRequest {
     pub refresh_token: Option<String>,
 }
 
+/// Account profile as reported by the backend (`GET /protected/user`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapleAccount {
+    pub user_id: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub email_verified: bool,
+    pub login_method: MapleLoginMethod,
+    /// RFC 3339 creation time.
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapleLoginMethod {
+    Email,
+    Github,
+    Google,
+    Apple,
+    Guest,
+}
+
+impl MapleLoginMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Email => "Email",
+            Self::Github => "GitHub",
+            Self::Google => "Google",
+            Self::Apple => "Apple",
+            Self::Guest => "Anonymous",
+        }
+    }
+
+    /// Whether the account has a password the backend can change or check.
+    pub fn has_password(self) -> bool {
+        matches!(self, Self::Email | Self::Guest)
+    }
+}
+
+impl From<opensecret::LoginMethod> for MapleLoginMethod {
+    fn from(method: opensecret::LoginMethod) -> Self {
+        match method {
+            opensecret::LoginMethod::Email => Self::Email,
+            opensecret::LoginMethod::Github => Self::Github,
+            opensecret::LoginMethod::Google => Self::Google,
+            opensecret::LoginMethod::Apple => Self::Apple,
+            opensecret::LoginMethod::Guest => Self::Guest,
+        }
+    }
+}
+
+impl From<opensecret::AppUser> for MapleAccount {
+    fn from(user: opensecret::AppUser) -> Self {
+        Self {
+            user_id: user.id.to_string(),
+            email: user.email,
+            name: user.name,
+            email_verified: user.email_verified,
+            login_method: user.login_method.into(),
+            created_at: user.created_at.to_rfc3339(),
+        }
+    }
+}
+
+/// An account-management call that failed. The HTTP status is kept so the
+/// UI can name the cause (a wrong password, a duplicate key name) without
+/// echoing backend detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MapleAccountError {
+    /// The session was refused; the caller should treat it as signed out.
+    Unauthorized,
+    /// The backend rejected the request with this status.
+    Status(u16),
+    /// Transport, attestation, or session failure.
+    Other(String),
+}
+
+impl std::fmt::Display for MapleAccountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => f.write_str(AUTH_REJECTED_MESSAGE),
+            Self::Status(status) => write!(f, "Maple API request failed ({status})"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for MapleAccountError {
+    fn from(message: String) -> Self {
+        if is_auth_rejection(&message) {
+            Self::Unauthorized
+        } else {
+            Self::Other(message)
+        }
+    }
+}
+
+fn map_account_error(error: opensecret::Error) -> MapleAccountError {
+    log::warn!(
+        "OpenSecret SDK account operation failed ({})",
+        crate::agent::provider::opensecret_error_category(&error)
+    );
+    match error {
+        opensecret::Error::Authentication(_)
+        | opensecret::Error::Api {
+            status: 401 | 403, ..
+        } => MapleAccountError::Unauthorized,
+        opensecret::Error::Api { status, .. } => MapleAccountError::Status(status),
+        _ => MapleAccountError::Other("Maple API request failed".to_string()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MapleApiAuthSnapshot {
@@ -259,6 +370,34 @@ impl MapleApiSession {
             .await;
         self.record_refresh(&snapshot).await?;
         Ok(response.map_err(map_sdk_error)?.token)
+    }
+
+    /// The account profile behind this session.
+    pub async fn account(&self) -> Result<MapleAccount, MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.get_user().await;
+        self.record_refresh(&snapshot).await?;
+        Ok(response.map_err(map_account_error)?.user.into())
+    }
+
+    /// Ask the backend to email a fresh verification code.
+    pub async fn request_verification_email(&self) -> Result<(), MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.request_new_verification_code().await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_account_error)
+    }
+
+    /// Tell the server about the sign-out (`POST /logout`), as the web SDK
+    /// does. The backend does not revoke the refresh token yet; this is so
+    /// it can once it does. The session keeps its credentials object; the
+    /// caller invalidates it afterwards. Callers treat failure as best
+    /// effort: the local sign-out proceeds anyway.
+    pub async fn logout(&self) -> Result<(), MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        // No `record_refresh`: the SDK clears its tokens on success, and a
+        // rotation published now would resurrect credentials being dropped.
+        snapshot.client.logout().await.map_err(map_account_error)
     }
 
     pub(crate) async fn model_ids(&self) -> Result<Vec<String>, String> {

@@ -55,6 +55,10 @@ pub struct PendingPermission {
     pub arguments: Arc<str>,
 }
 
+// Re-exported for the settings screens; a headless build has no reader.
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
+pub use maple_agent::maple_api::{MapleAccount, MapleAccountError, MapleLoginMethod};
+
 /// The signed-in account identity.
 #[derive(Debug, Clone)]
 pub struct AuthSession {
@@ -757,6 +761,20 @@ impl AgentBackend {
             .then(|| self.load_persisted_auth())
             .flatten();
 
+        // Report the sign-out to the server first, best effort: an offline
+        // sign-out must still complete locally, and the session is
+        // invalidated below whatever the server said. (The backend's
+        // logout route does not revoke the refresh token yet.)
+        if auth_snapshot.is_some()
+            && let Ok(session) = self.auth.session_for(user_id).await
+        {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), session.logout()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => log::debug!("server logout failed: {error}"),
+                Err(_) => log::debug!("server logout timed out"),
+            }
+        }
+
         let result = self.auth.clear_auth(user_id).await;
         if result.is_ok() {
             if let Some(snapshot) = auth_snapshot.as_ref() {
@@ -878,6 +896,24 @@ impl AgentBackend {
             Some(response.refresh_token),
         )
         .await
+    }
+
+    /// The signed-in account's profile from the backend.
+    pub async fn account(&self, user_id: &str) -> Result<MapleAccount, String> {
+        let session = self.session_for(user_id).await?;
+        session
+            .account()
+            .await
+            .map_err(|error| account_error_message(error, "Could not load the account"))
+    }
+
+    /// Email a fresh verification code to the account's address.
+    pub async fn request_verification_email(&self, user_id: &str) -> Result<(), String> {
+        let session = self.session_for(user_id).await?;
+        session
+            .request_verification_email()
+            .await
+            .map_err(|error| account_error_message(error, "Could not send the verification email"))
     }
 
     /// Plan usage for the sidebar card from the Maple billing API. Returns
@@ -1842,6 +1878,24 @@ fn decode_query_value(value: &str) -> String {
     percent_encoding::percent_decode_str(&spaced)
         .decode_utf8_lossy()
         .into_owned()
+}
+
+/// A user-facing message for an account call that failed. Backend detail
+/// stays in the log; the status alone picks the wording.
+fn account_error_message(error: MapleAccountError, fallback: &str) -> String {
+    match error {
+        MapleAccountError::Unauthorized => {
+            maple_agent::maple_api::AUTH_REJECTED_MESSAGE.to_string()
+        }
+        MapleAccountError::Status(status) => {
+            log::debug!("account request failed with status {status}");
+            format!("{fallback}. Try again.")
+        }
+        MapleAccountError::Other(message) => {
+            log::debug!("account request failed: {message}");
+            format!("{fallback}. Check your connection and try again.")
+        }
+    }
 }
 
 #[cfg(test)]
