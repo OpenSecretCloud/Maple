@@ -25,7 +25,6 @@ mod ui;
 #[cfg(feature = "desktop")]
 mod update;
 
-#[cfg(feature = "acp")]
 use backend::AgentBackend;
 use clap::{Args, Parser, Subcommand};
 
@@ -70,6 +69,17 @@ enum Mode {
     },
     /// Serve an OpenAI-compatible HTTP endpoint in front of Maple.
     Proxy(ProxyArgs),
+    /// Sign in with email and password and save the session for `acp`.
+    Login(LoginArgs),
+}
+
+/// Settings for `maple-gpui login`. The password is always prompted for
+/// so it never lands in shell history or a process listing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Args)]
+struct LoginArgs {
+    /// Account email; prompted for when omitted.
+    #[arg(long)]
+    email: Option<String>,
 }
 
 /// Settings for `maple-gpui proxy`, from flags with environment fallbacks.
@@ -172,6 +182,14 @@ fn main() {
                 }
             }
         }
+        Some(Mode::Login(args)) => {
+            init_logging(LogOutput::FileOnly);
+            if let Err(error) = run_login(args) {
+                log::error!("{error}");
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         None => {
             #[cfg(feature = "desktop")]
             desktop::run();
@@ -271,6 +289,53 @@ fn run_acp() -> Result<(), String> {
     backend.run_acp_stdio(&user_id)
 }
 
+/// `maple-gpui login`: sign in from a terminal. The saved session is the
+/// same one the desktop app writes, so `maple-gpui acp` can run on a
+/// machine that never opened the window.
+fn run_login(args: LoginArgs) -> Result<(), String> {
+    let backend = AgentBackend::new(configured_api_url(), String::new())?;
+    if let Some(user_id) = backend.saved_user_id() {
+        eprintln!("A Maple sign-in is already saved; signing in again replaces it.");
+        log::info!("login replaces the saved session for account {user_id}");
+    }
+    let email = match args.email {
+        Some(email) => email,
+        None => prompt_line("Email: ")?,
+    };
+    let password = rpassword::prompt_password("Password: ")
+        .map_err(|error| format!("Could not read the password: {error}"))?;
+    let session = backend
+        .runtime_handle()
+        .block_on(backend.login(email, password))?;
+    let account = backend
+        .runtime_handle()
+        .block_on(backend.account(&session.user_id))
+        .ok();
+    match account.and_then(|account| account.email) {
+        Some(email) => eprintln!("Signed in as {email}."),
+        None => eprintln!("Signed in."),
+    }
+    eprintln!("`maple-gpui acp` and the desktop app will use this sign-in.");
+    Ok(())
+}
+
+/// One trimmed line from the terminal, with `prompt` shown first.
+fn prompt_line(prompt: &str) -> Result<String, String> {
+    use std::io::{BufRead, Write};
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|error| format!("Could not read from the terminal: {error}"))?;
+    let line = line.trim().to_string();
+    if line.is_empty() {
+        return Err("No input; nothing was changed.".to_string());
+    }
+    Ok(line)
+}
+
 /// Log to stderr and to `<data dir>/logs/maple-gpui.log` so a freeze or
 /// crash leaves evidence on disk. `RUST_LOG` still controls the level;
 /// the default is `info`. Panics are logged as well.
@@ -278,8 +343,8 @@ fn run_acp() -> Result<(), String> {
 enum LogOutput {
     /// Log file plus stderr, with `RUST_LOG` honored. The desktop default.
     FileAndStderr,
-    /// Log file only, with the default filter. For stdio protocol modes.
-    #[cfg(feature = "acp")]
+    /// Log file only, with the default filter. For stdio protocol modes
+    /// and the login prompt, whose terminal must stay clean.
     FileOnly,
 }
 
@@ -298,7 +363,6 @@ fn init_logging(output: LogOutput) {
         LogOutput::FileAndStderr => env_logger::Builder::from_env(
             env_logger::Env::default().default_filter_or(DEFAULT_FILTER),
         ),
-        #[cfg(feature = "acp")]
         LogOutput::FileOnly => {
             let mut builder = env_logger::Builder::new();
             builder.parse_filters(DEFAULT_FILTER);
@@ -356,12 +420,27 @@ impl std::io::Write for TeeWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Mode};
+    use super::{Cli, LoginArgs, Mode};
     use clap::Parser;
 
     fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
         Cli::try_parse_from(std::iter::once("maple-gpui").chain(args.iter().copied()))
             .map(|cli| cli.mode)
+    }
+
+    #[test]
+    fn login_takes_an_optional_email_and_never_a_password() {
+        assert_eq!(
+            parse(&["login"]).unwrap(),
+            Some(Mode::Login(LoginArgs { email: None }))
+        );
+        assert_eq!(
+            parse(&["login", "--email", "a@b.c"]).unwrap(),
+            Some(Mode::Login(LoginArgs {
+                email: Some("a@b.c".into())
+            }))
+        );
+        assert!(parse(&["login", "--password", "x"]).is_err());
     }
 
     #[test]

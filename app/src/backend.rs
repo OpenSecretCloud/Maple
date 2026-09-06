@@ -55,6 +55,12 @@ pub struct PendingPermission {
     pub arguments: Arc<str>,
 }
 
+// Re-exported for the settings screens; a headless build has no reader.
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
+pub use maple_agent::maple_api::{
+    MapleAccount, MapleAccountError, MapleApiKey, MapleApiKeyCreated, MapleLoginMethod,
+};
+
 /// The signed-in account identity.
 #[derive(Debug, Clone)]
 pub struct AuthSession {
@@ -572,6 +578,11 @@ impl AgentBackend {
         &self.api_url
     }
 
+    /// The backend runtime, for command-line modes that block on one call.
+    pub fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self.runtime.handle().clone()
+    }
+
     /// Run a backend future on the backend runtime. The returned handle is a
     /// plain future, so the UI executor can await it without owning Tokio.
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
@@ -750,12 +761,33 @@ impl AgentBackend {
     /// Sign out completely: invalidate the live session first, then remove
     /// only the persisted credentials that this sign-out observed.
     pub async fn logout_and_clear(&self, user_id: &str) -> Result<(), String> {
+        self.clear_session(user_id, true).await
+    }
+
+    /// Drop the live session and the persisted record. `revoke` also sends
+    /// `POST /logout`; a deleted account has no session left to report.
+    async fn clear_session(&self, user_id: &str, revoke: bool) -> Result<(), String> {
         self.wait_for_restore().await;
         let auth_snapshot = self.auth.auth_snapshot_for(user_id).await.ok();
         let persisted_without_session = auth_snapshot
             .is_none()
             .then(|| self.load_persisted_auth())
             .flatten();
+
+        // Report the sign-out to the server first, best effort: an offline
+        // sign-out must still complete locally, and the session is
+        // invalidated below whatever the server said. (The backend's
+        // logout route does not revoke the refresh token yet.)
+        if revoke
+            && auth_snapshot.is_some()
+            && let Ok(session) = self.auth.session_for(user_id).await
+        {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), session.logout()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => log::debug!("server logout failed: {error}"),
+                Err(_) => log::debug!("server logout timed out"),
+            }
+        }
 
         let result = self.auth.clear_auth(user_id).await;
         if result.is_ok() {
@@ -880,12 +912,200 @@ impl AgentBackend {
         .await
     }
 
+    /// The signed-in account's profile from the backend.
+    pub async fn account(&self, user_id: &str) -> Result<MapleAccount, String> {
+        let session = self.session_for(user_id).await?;
+        session
+            .account()
+            .await
+            .map_err(|error| account_error_message(error, "Could not load the account"))
+    }
+
+    /// Email a fresh verification code to the account's address.
+    pub async fn request_verification_email(&self, user_id: &str) -> Result<(), String> {
+        let session = self.session_for(user_id).await?;
+        session
+            .request_verification_email()
+            .await
+            .map_err(|error| account_error_message(error, "Could not send the verification email"))
+    }
+
+    /// Change the account password. The rotated token pair is persisted
+    /// through the auth sink before this returns.
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        current_password: String,
+        new_password: String,
+    ) -> Result<(), String> {
+        if current_password.is_empty() {
+            return Err("Enter your current password".to_string());
+        }
+        validate_new_password(&new_password)?;
+        let session = self.session_for(user_id).await?;
+        session
+            .change_password(current_password, new_password)
+            .await
+            .map_err(|error| match error {
+                // The route answers 401 for a wrong current password; a
+                // dead session would have failed the session lookup first.
+                MapleAccountError::Unauthorized => "The current password is incorrect".to_string(),
+                other => account_error_message(other, "Could not change the password"),
+            })
+    }
+
+    /// Start deleting the account: the server emails a confirmation code.
+    /// Returns the client-held secret the confirmation step must present.
+    pub async fn request_account_deletion(&self, user_id: &str) -> Result<String, String> {
+        let session = self.session_for(user_id).await?;
+        let (plaintext, hashed) = maple_agent::maple_api::new_confirmation_secret();
+        session
+            .request_account_deletion(hashed)
+            .await
+            .map_err(|error| account_error_message(error, "Could not start account deletion"))?;
+        Ok(plaintext)
+    }
+
+    /// Delete the account for good. The agent runtime stops first, then
+    /// the server deletes the account, then the local credentials go. A
+    /// server failure leaves the session usable.
+    pub async fn confirm_account_deletion(
+        &self,
+        user_id: &str,
+        confirmation_code: String,
+        plaintext_secret: String,
+    ) -> Result<(), String> {
+        let code = confirmation_code.trim().to_string();
+        if code.is_empty() {
+            return Err("Enter the confirmation code from the email".to_string());
+        }
+        let session = self.session_for(user_id).await?;
+        self.stop_runtime(user_id).await?;
+        session
+            .confirm_account_deletion(code, plaintext_secret)
+            .await
+            .map_err(|error| match error {
+                MapleAccountError::Status(400) => {
+                    "That confirmation code is wrong or has expired".to_string()
+                }
+                other => account_error_message(other, "Could not delete the account"),
+            })?;
+        if let Err(error) = self.clear_session(user_id, false).await {
+            log::warn!("local sign-out after account deletion failed: {error}");
+        }
+        Ok(())
+    }
+
+    /// The account's API keys, newest first.
+    pub async fn list_api_keys(&self, user_id: &str) -> Result<Vec<MapleApiKey>, String> {
+        let session = self.session_for(user_id).await?;
+        let mut keys = session
+            .list_api_keys()
+            .await
+            .map_err(|error| api_key_error_message(error, "Could not load the API keys"))?;
+        keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(keys)
+    }
+
+    /// Create an API key named `name`. The key value in the result is the
+    /// only copy; the server never returns it again.
+    pub async fn create_api_key(
+        &self,
+        user_id: &str,
+        name: String,
+    ) -> Result<MapleApiKeyCreated, String> {
+        let name = validate_api_key_name(&name)?;
+        let session = self.session_for(user_id).await?;
+        session
+            .create_api_key(name)
+            .await
+            .map_err(|error| api_key_error_message(error, "Could not create the API key"))
+    }
+
+    pub async fn delete_api_key(&self, user_id: &str, name: &str) -> Result<(), String> {
+        let session = self.session_for(user_id).await?;
+        session
+            .delete_api_key(name)
+            .await
+            .map_err(|error| api_key_error_message(error, "Could not delete the API key"))
+    }
+
     /// Plan usage for the sidebar card from the Maple billing API. Returns
     /// `None` when the subscription has no token meter.
     pub async fn plan_usage(
         &self,
         user_id: &str,
     ) -> Result<Option<crate::billing::PlanUsage>, String> {
+        let status = self.billing_status(user_id).await?;
+        let plan = crate::billing::PlanUsage::from_status(&status, chrono::Local::now());
+        log::debug!("plan usage: {plan:?}");
+        Ok(plan)
+    }
+
+    /// The full subscription status for the Billing section.
+    pub async fn billing_status(
+        &self,
+        user_id: &str,
+    ) -> Result<crate::billing::BillingStatus, String> {
+        self.billing_call(user_id, |billing, token| async move {
+            billing.subscription_status(&token).await
+        })
+        .await
+    }
+
+    /// The plans on sale. Public on the billing API, no token needed.
+    pub async fn billing_products(&self) -> Result<Vec<crate::billing::Product>, String> {
+        tokio::time::timeout(std::time::Duration::from_secs(20), self.billing.products())
+            .await
+            .unwrap_or_else(|_| {
+                Err(crate::billing::BillingError::Other(
+                    "billing request timed out".to_string(),
+                ))
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    /// Open the Stripe customer portal in the system browser.
+    pub async fn open_billing_portal(&self, user_id: &str) -> Result<(), String> {
+        let url = self
+            .billing_call(user_id, |billing, token| async move {
+                billing
+                    .portal_url(&token, crate::billing::PORTAL_RETURN_URL)
+                    .await
+            })
+            .await
+            .map_err(|error| billing_failure(error, "Could not open the subscription portal"))?;
+        open_in_browser(&url, "the subscription portal")
+    }
+
+    /// Start a Stripe checkout for `product_id` in the system browser. The
+    /// account email is sent when there is one; guests check out without.
+    pub async fn start_checkout(&self, user_id: &str, product_id: String) -> Result<(), String> {
+        let email = self.account(user_id).await?.email.unwrap_or_default();
+        let request = Arc::new(crate::billing::CheckoutRequest {
+            email,
+            product_id,
+            success_url: crate::billing::CHECKOUT_SUCCESS_URL.to_string(),
+            cancel_url: crate::billing::CHECKOUT_CANCEL_URL.to_string(),
+            quantity: None,
+        });
+        let url = self
+            .billing_call(user_id, |billing, token| {
+                let request = Arc::clone(&request);
+                async move { billing.checkout_url(&token, &request).await }
+            })
+            .await
+            .map_err(|error| billing_failure(error, "Could not start checkout"))?;
+        open_in_browser(&url, "checkout")
+    }
+
+    /// Run one billing request with the cached token, minting a token
+    /// first when there is none and once more after a 401.
+    async fn billing_call<T, F, Fut>(&self, user_id: &str, request: F) -> Result<T, String>
+    where
+        F: Fn(crate::billing::BillingClient, String) -> Fut,
+        Fut: Future<Output = Result<T, crate::billing::BillingError>>,
+    {
         use crate::billing::BillingError;
         let session = self.session_for(user_id).await?;
         let cached = self.billing_tokens.lock().await.get(user_id).cloned();
@@ -893,39 +1113,37 @@ impl AgentBackend {
             Some(token) => token,
             None => self.mint_billing_token(&session, user_id).await?,
         };
-        let mut result = self.subscription_status(&token).await;
+        let mut result = self
+            .timed_billing(request(self.billing.clone(), token))
+            .await;
         if matches!(result, Err(BillingError::Unauthorized)) {
             // The cached token expired or was revoked: mint one and retry once.
             token = self.mint_billing_token(&session, user_id).await?;
-            result = self.subscription_status(&token).await;
+            result = self
+                .timed_billing(request(self.billing.clone(), token))
+                .await;
         }
-        let status = match result {
-            Ok(status) => status,
+        match result {
+            Ok(value) => Ok(value),
             Err(BillingError::Unauthorized) => {
                 self.billing_tokens.lock().await.remove(user_id);
-                return Err(BillingError::Unauthorized.to_string());
+                Err(BillingError::Unauthorized.to_string())
             }
-            Err(BillingError::Other(error)) => return Err(error),
-        };
-        let plan = crate::billing::PlanUsage::from_status(&status, chrono::Local::now());
-        log::debug!("plan usage: {plan:?}");
-        Ok(plan)
+            Err(BillingError::Other(error)) => Err(error),
+        }
     }
 
-    async fn subscription_status(
+    async fn timed_billing<T>(
         &self,
-        token: &str,
-    ) -> Result<crate::billing::BillingStatus, crate::billing::BillingError> {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            self.billing.subscription_status(token),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(crate::billing::BillingError::Other(
-                "billing request timed out".to_string(),
-            ))
-        })
+        request: impl Future<Output = Result<T, crate::billing::BillingError>>,
+    ) -> Result<T, crate::billing::BillingError> {
+        tokio::time::timeout(std::time::Duration::from_secs(20), request)
+            .await
+            .unwrap_or_else(|_| {
+                Err(crate::billing::BillingError::Other(
+                    "billing request timed out".to_string(),
+                ))
+            })
     }
 
     async fn mint_billing_token(
@@ -1842,6 +2060,86 @@ fn decode_query_value(value: &str) -> String {
     percent_encoding::percent_decode_str(&spaced)
         .decode_utf8_lossy()
         .into_owned()
+}
+
+/// A user-facing message for a failed billing action; the server detail
+/// goes to the log, not the screen.
+fn billing_failure(error: String, fallback: &str) -> String {
+    log::warn!("{fallback}: {error}");
+    format!("{fallback}. Try again, or use the pricing page on the web.")
+}
+
+/// Hand a billing URL to the system browser. Only `https` URLs are opened:
+/// the billing API is trusted, but a bad deploy must not launch anything
+/// else through the browser handler.
+pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        log::warn!("refusing to open a non-https {what} URL");
+        return Err(format!("Could not open {what}: unexpected link"));
+    }
+    webbrowser::open(url).map_err(|error| {
+        log::warn!("failed to open {what} in the browser: {error}");
+        format!("Could not open {what} in your browser")
+    })
+}
+
+/// The server's API key name rule: 1 to 50 characters after trimming.
+pub const MAX_API_KEY_NAME_LENGTH: usize = 50;
+
+pub fn validate_api_key_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the key a name".to_string());
+    }
+    if name.chars().count() > MAX_API_KEY_NAME_LENGTH {
+        return Err(format!(
+            "Use at most {MAX_API_KEY_NAME_LENGTH} characters for the key name"
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// API key errors by status, matching the web app's wording.
+fn api_key_error_message(error: MapleAccountError, fallback: &str) -> String {
+    match error {
+        MapleAccountError::Unauthorized => "API keys need a Pro, Max, or Team plan".to_string(),
+        MapleAccountError::Status(409) => "A key with that name already exists".to_string(),
+        MapleAccountError::Status(400) => "That key name is not allowed".to_string(),
+        MapleAccountError::Status(404) => "That key no longer exists".to_string(),
+        MapleAccountError::Status(429) => "You have reached the API key limit".to_string(),
+        other => account_error_message(other, fallback),
+    }
+}
+
+/// Minimum password length, the same rule as Maple's web forms.
+pub const MIN_PASSWORD_LENGTH: usize = 8;
+
+/// The web app's password rule: at least eight characters.
+pub fn validate_new_password(password: &str) -> Result<(), String> {
+    if password.chars().count() < MIN_PASSWORD_LENGTH {
+        return Err(format!(
+            "Use at least {MIN_PASSWORD_LENGTH} characters for the new password"
+        ));
+    }
+    Ok(())
+}
+
+/// A user-facing message for an account call that failed. Backend detail
+/// stays in the log; the status alone picks the wording.
+fn account_error_message(error: MapleAccountError, fallback: &str) -> String {
+    match error {
+        MapleAccountError::Unauthorized => {
+            maple_agent::maple_api::AUTH_REJECTED_MESSAGE.to_string()
+        }
+        MapleAccountError::Status(status) => {
+            log::debug!("account request failed with status {status}");
+            format!("{fallback}. Try again.")
+        }
+        MapleAccountError::Other(message) => {
+            log::debug!("account request failed: {message}");
+            format!("{fallback}. Check your connection and try again.")
+        }
+    }
 }
 
 #[cfg(test)]

@@ -16,8 +16,8 @@ use crate::ui;
 use crate::ui::chat::{ChatScreen, LoggedOut};
 use crate::ui::login::{LoginScreen, LoginSucceeded};
 use crate::ui::settings::{
-    Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange, ShortcutSettingsRequested,
-    SignOutRequested,
+    AccountDeleted, Section, SettingsClosed, SettingsScreen, ShortcutSettingsChange,
+    ShortcutSettingsRequested, SignOutRequested,
 };
 use crate::ui::titlebar::TitleBar;
 
@@ -165,6 +165,16 @@ impl MapleApp {
                 if let Some(chat) = app.parked_chat.take() {
                     chat.update(cx, |chat, cx| chat.sign_out(cx));
                 }
+                app.show_login(cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &screen,
+            |app: &mut MapleApp, _emitter, _event: &AccountDeleted, cx| {
+                // The runtime stopped and the credentials went before the
+                // event; the parked chat has nothing left to sign out of.
+                app.parked_chat = None;
                 app.show_login(cx);
             },
         )

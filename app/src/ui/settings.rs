@@ -1,5 +1,5 @@
 //! Settings screen: left navigation with content panes, following Maple's
-//! settings layout. Sections: General (defaults), System prompt,
+//! settings layout. Sections: General (defaults), Account, System prompt,
 //! Integrations, Keyboard Shortcuts, Usage, About.
 
 use std::collections::HashSet;
@@ -27,7 +27,13 @@ use crate::shortcuts::{
 use crate::ui::theme;
 use crate::ui::widgets;
 
+mod account;
+mod api_keys;
+mod billing;
 mod navigation;
+use self::account::AccountState;
+use self::api_keys::ApiKeysState;
+use self::billing::BillingState;
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
 /// Emitted when the user leaves settings.
@@ -36,9 +42,16 @@ pub struct SettingsClosed(pub AppSettings);
 /// Emitted when the user clicks Sign out in the settings header.
 pub struct SignOutRequested;
 
+/// Emitted after the server confirmed the account is deleted and the
+/// local session is gone; the app returns to the login form.
+pub struct AccountDeleted;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
+    Account,
+    Billing,
+    ApiKeys,
     Shortcuts,
     Prompt,
     Integrations,
@@ -50,6 +63,9 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Account => "Account",
+            Self::Billing => "Billing",
+            Self::ApiKeys => "API keys",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
@@ -58,8 +74,11 @@ impl Section {
         }
     }
 
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 9] = [
         Self::General,
+        Self::Account,
+        Self::Billing,
+        Self::ApiKeys,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -78,6 +97,9 @@ pub struct SettingsScreen {
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
     section: Section,
+    account: AccountState,
+    billing: BillingState,
+    api_keys: ApiKeysState,
     usage: Option<UsageSummary>,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
@@ -176,6 +198,7 @@ pub struct OpenSettingsSection(pub Section);
 
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
+impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
 impl SettingsScreen {
@@ -233,6 +256,9 @@ impl SettingsScreen {
             theme: theme::Preference::parse(&settings.theme),
             settings,
             section,
+            account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
+            billing: BillingState::new(),
+            api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
             usage: None,
             plan: None,
             mcp_servers: None,
@@ -259,6 +285,9 @@ impl SettingsScreen {
             pane_scroll,
             application_anchor,
         };
+        this.load_account(cx);
+        this.load_billing(cx);
+        this.load_api_keys(cx);
         this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
@@ -1282,6 +1311,15 @@ impl SettingsScreen {
                             }),
                         ),
                     ));
+            }
+            Section::Account => {
+                pane = pane.child(self.render_account_pane(cx));
+            }
+            Section::Billing => {
+                pane = pane.child(self.render_billing_pane(cx));
+            }
+            Section::ApiKeys => {
+                pane = pane.child(self.render_api_keys_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));
