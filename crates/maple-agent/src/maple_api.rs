@@ -85,6 +85,22 @@ impl From<opensecret::AppUser> for MapleAccount {
     }
 }
 
+/// One API key as listed by the backend; the key value is never listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapleApiKey {
+    pub name: String,
+    /// RFC 3339 creation time.
+    pub created_at: String,
+}
+
+/// A freshly created API key. `key` is shown once and never again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapleApiKeyCreated {
+    pub name: String,
+    pub key: String,
+    pub created_at: String,
+}
+
 /// An account-management call that failed. The HTTP status is kept so the
 /// UI can name the cause (a wrong password, a duplicate key name) without
 /// echoing backend detail.
@@ -445,6 +461,44 @@ impl MapleApiSession {
             .confirm_account_deletion(confirmation_code, plaintext_secret)
             .await
             .map_err(map_account_error)
+    }
+
+    /// API keys on the account, as the server lists them.
+    pub async fn list_api_keys(&self) -> Result<Vec<MapleApiKey>, MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.list_api_keys().await;
+        self.record_refresh(&snapshot).await?;
+        Ok(response
+            .map_err(map_account_error)?
+            .into_iter()
+            .map(|key| MapleApiKey {
+                name: key.name,
+                created_at: key.created_at.to_rfc3339(),
+            })
+            .collect())
+    }
+
+    /// Create an API key. The returned key value is the only copy.
+    pub async fn create_api_key(
+        &self,
+        name: String,
+    ) -> Result<MapleApiKeyCreated, MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.create_api_key(name).await;
+        self.record_refresh(&snapshot).await?;
+        let created = response.map_err(map_account_error)?;
+        Ok(MapleApiKeyCreated {
+            name: created.name,
+            key: created.key,
+            created_at: created.created_at.to_rfc3339(),
+        })
+    }
+
+    pub async fn delete_api_key(&self, name: &str) -> Result<(), MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot.client.delete_api_key(name).await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_account_error)
     }
 
     /// Tell the server about the sign-out (`POST /logout`), as the web SDK

@@ -28,9 +28,11 @@ use crate::ui::theme;
 use crate::ui::widgets;
 
 mod account;
+mod api_keys;
 mod billing;
 mod navigation;
 use self::account::AccountState;
+use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
@@ -49,6 +51,7 @@ pub enum Section {
     General,
     Account,
     Billing,
+    ApiKeys,
     Shortcuts,
     Prompt,
     Integrations,
@@ -62,6 +65,7 @@ impl Section {
             Self::General => "General",
             Self::Account => "Account",
             Self::Billing => "Billing",
+            Self::ApiKeys => "API keys",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
@@ -70,10 +74,11 @@ impl Section {
         }
     }
 
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::General,
         Self::Account,
         Self::Billing,
+        Self::ApiKeys,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -94,6 +99,7 @@ pub struct SettingsScreen {
     section: Section,
     account: AccountState,
     billing: BillingState,
+    api_keys: ApiKeysState,
     usage: Option<UsageSummary>,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
@@ -252,6 +258,7 @@ impl SettingsScreen {
             section,
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(),
+            api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
             usage: None,
             plan: None,
             mcp_servers: None,
@@ -280,6 +287,7 @@ impl SettingsScreen {
         };
         this.load_account(cx);
         this.load_billing(cx);
+        this.load_api_keys(cx);
         this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
@@ -1309,6 +1317,9 @@ impl SettingsScreen {
             }
             Section::Billing => {
                 pane = pane.child(self.render_billing_pane(cx));
+            }
+            Section::ApiKeys => {
+                pane = pane.child(self.render_api_keys_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));

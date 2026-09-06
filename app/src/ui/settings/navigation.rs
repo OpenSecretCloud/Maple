@@ -8,6 +8,7 @@
 use gpui::{Context, Focusable, IntoElement, StatefulInteractiveElement, Window, div, prelude::*};
 
 use super::account::AccountTarget;
+use super::api_keys::ApiKeysTarget;
 use super::billing::BillingTarget;
 use super::{
     Section, SettingsScreen, integration_can_setup, integration_can_toggle, integration_is_visible,
@@ -40,6 +41,7 @@ pub(super) enum SettingsTarget {
     General(GeneralTarget),
     Account(AccountTarget),
     Billing(BillingTarget),
+    ApiKeys(ApiKeysTarget),
     Shortcut(String),
     PromptEditor,
     PromptSave,
@@ -81,6 +83,7 @@ impl SettingsScreen {
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
         inputs.extend(self.account.inputs());
+        inputs.push(self.api_keys.name.clone());
         if let Some(editor) = &self.mcp_editor {
             inputs.extend([
                 editor.name.clone(),
@@ -136,6 +139,7 @@ impl SettingsScreen {
             .collect(),
             Section::Account => self.account_targets(),
             Section::Billing => self.billing_targets(),
+            Section::ApiKeys => self.api_keys_targets(),
             Section::Shortcuts => self
                 .shortcut_list_cache
                 .visible_indices
@@ -341,6 +345,9 @@ impl SettingsScreen {
                 self.activate_account_target(target, window, cx)
             }
             Some(SettingsTarget::Billing(target)) => self.activate_billing_target(target, cx),
+            Some(SettingsTarget::ApiKeys(target)) => {
+                self.activate_api_keys_target(target, window, cx)
+            }
             Some(SettingsTarget::Shortcut(slot_id)) => self.begin_shortcut_recording(slot_id, cx),
             Some(SettingsTarget::PromptEditor) => {
                 let handle = self.prompt_editor.read(cx).focus_handle(cx);

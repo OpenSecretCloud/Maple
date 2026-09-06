@@ -57,7 +57,9 @@ pub struct PendingPermission {
 
 // Re-exported for the settings screens; a headless build has no reader.
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
-pub use maple_agent::maple_api::{MapleAccount, MapleAccountError, MapleLoginMethod};
+pub use maple_agent::maple_api::{
+    MapleAccount, MapleAccountError, MapleApiKey, MapleApiKeyCreated, MapleLoginMethod,
+};
 
 /// The signed-in account identity.
 #[derive(Debug, Clone)]
@@ -987,6 +989,40 @@ impl AgentBackend {
             log::warn!("local sign-out after account deletion failed: {error}");
         }
         Ok(())
+    }
+
+    /// The account's API keys, newest first.
+    pub async fn list_api_keys(&self, user_id: &str) -> Result<Vec<MapleApiKey>, String> {
+        let session = self.session_for(user_id).await?;
+        let mut keys = session
+            .list_api_keys()
+            .await
+            .map_err(|error| api_key_error_message(error, "Could not load the API keys"))?;
+        keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(keys)
+    }
+
+    /// Create an API key named `name`. The key value in the result is the
+    /// only copy; the server never returns it again.
+    pub async fn create_api_key(
+        &self,
+        user_id: &str,
+        name: String,
+    ) -> Result<MapleApiKeyCreated, String> {
+        let name = validate_api_key_name(&name)?;
+        let session = self.session_for(user_id).await?;
+        session
+            .create_api_key(name)
+            .await
+            .map_err(|error| api_key_error_message(error, "Could not create the API key"))
+    }
+
+    pub async fn delete_api_key(&self, user_id: &str, name: &str) -> Result<(), String> {
+        let session = self.session_for(user_id).await?;
+        session
+            .delete_api_key(name)
+            .await
+            .map_err(|error| api_key_error_message(error, "Could not delete the API key"))
     }
 
     /// Plan usage for the sidebar card from the Maple billing API. Returns
@@ -2040,6 +2076,34 @@ pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
         log::warn!("failed to open {what} in the browser: {error}");
         format!("Could not open {what} in your browser")
     })
+}
+
+/// The server's API key name rule: 1 to 50 characters after trimming.
+pub const MAX_API_KEY_NAME_LENGTH: usize = 50;
+
+pub fn validate_api_key_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the key a name".to_string());
+    }
+    if name.chars().count() > MAX_API_KEY_NAME_LENGTH {
+        return Err(format!(
+            "Use at most {MAX_API_KEY_NAME_LENGTH} characters for the key name"
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// API key errors by status, matching the web app's wording.
+fn api_key_error_message(error: MapleAccountError, fallback: &str) -> String {
+    match error {
+        MapleAccountError::Unauthorized => "API keys need a Pro, Max, or Team plan".to_string(),
+        MapleAccountError::Status(409) => "A key with that name already exists".to_string(),
+        MapleAccountError::Status(400) => "That key name is not allowed".to_string(),
+        MapleAccountError::Status(404) => "That key no longer exists".to_string(),
+        MapleAccountError::Status(429) => "You have reached the API key limit".to_string(),
+        other => account_error_message(other, fallback),
+    }
 }
 
 /// Minimum password length, the same rule as Maple's web forms.
