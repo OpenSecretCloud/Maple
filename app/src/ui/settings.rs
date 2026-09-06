@@ -28,8 +28,10 @@ use crate::ui::theme;
 use crate::ui::widgets;
 
 mod account;
+mod billing;
 mod navigation;
 use self::account::AccountState;
+use self::billing::BillingState;
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
 /// Emitted when the user leaves settings.
@@ -46,6 +48,7 @@ pub struct AccountDeleted;
 pub enum Section {
     General,
     Account,
+    Billing,
     Shortcuts,
     Prompt,
     Integrations,
@@ -58,6 +61,7 @@ impl Section {
         match self {
             Self::General => "General",
             Self::Account => "Account",
+            Self::Billing => "Billing",
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
@@ -66,9 +70,10 @@ impl Section {
         }
     }
 
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::General,
         Self::Account,
+        Self::Billing,
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
@@ -88,6 +93,7 @@ pub struct SettingsScreen {
     theme: theme::Preference,
     section: Section,
     account: AccountState,
+    billing: BillingState,
     usage: Option<UsageSummary>,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
@@ -245,6 +251,7 @@ impl SettingsScreen {
             settings,
             section,
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
+            billing: BillingState::new(),
             usage: None,
             plan: None,
             mcp_servers: None,
@@ -272,6 +279,7 @@ impl SettingsScreen {
             application_anchor,
         };
         this.load_account(cx);
+        this.load_billing(cx);
         this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
@@ -1298,6 +1306,9 @@ impl SettingsScreen {
             }
             Section::Account => {
                 pane = pane.child(self.render_account_pane(cx));
+            }
+            Section::Billing => {
+                pane = pane.child(self.render_billing_pane(cx));
             }
             Section::Shortcuts => {
                 pane = pane.child(self.render_shortcuts_pane(cx));

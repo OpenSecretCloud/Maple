@@ -995,6 +995,76 @@ impl AgentBackend {
         &self,
         user_id: &str,
     ) -> Result<Option<crate::billing::PlanUsage>, String> {
+        let status = self.billing_status(user_id).await?;
+        let plan = crate::billing::PlanUsage::from_status(&status, chrono::Local::now());
+        log::debug!("plan usage: {plan:?}");
+        Ok(plan)
+    }
+
+    /// The full subscription status for the Billing section.
+    pub async fn billing_status(
+        &self,
+        user_id: &str,
+    ) -> Result<crate::billing::BillingStatus, String> {
+        self.billing_call(user_id, |billing, token| async move {
+            billing.subscription_status(&token).await
+        })
+        .await
+    }
+
+    /// The plans on sale. Public on the billing API, no token needed.
+    pub async fn billing_products(&self) -> Result<Vec<crate::billing::Product>, String> {
+        tokio::time::timeout(std::time::Duration::from_secs(20), self.billing.products())
+            .await
+            .unwrap_or_else(|_| {
+                Err(crate::billing::BillingError::Other(
+                    "billing request timed out".to_string(),
+                ))
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    /// Open the Stripe customer portal in the system browser.
+    pub async fn open_billing_portal(&self, user_id: &str) -> Result<(), String> {
+        let url = self
+            .billing_call(user_id, |billing, token| async move {
+                billing
+                    .portal_url(&token, crate::billing::PORTAL_RETURN_URL)
+                    .await
+            })
+            .await
+            .map_err(|error| billing_failure(error, "Could not open the subscription portal"))?;
+        open_in_browser(&url, "the subscription portal")
+    }
+
+    /// Start a Stripe checkout for `product_id` in the system browser. The
+    /// account email is sent when there is one; guests check out without.
+    pub async fn start_checkout(&self, user_id: &str, product_id: String) -> Result<(), String> {
+        let email = self.account(user_id).await?.email.unwrap_or_default();
+        let request = Arc::new(crate::billing::CheckoutRequest {
+            email,
+            product_id,
+            success_url: crate::billing::CHECKOUT_SUCCESS_URL.to_string(),
+            cancel_url: crate::billing::CHECKOUT_CANCEL_URL.to_string(),
+            quantity: None,
+        });
+        let url = self
+            .billing_call(user_id, |billing, token| {
+                let request = Arc::clone(&request);
+                async move { billing.checkout_url(&token, &request).await }
+            })
+            .await
+            .map_err(|error| billing_failure(error, "Could not start checkout"))?;
+        open_in_browser(&url, "checkout")
+    }
+
+    /// Run one billing request with the cached token, minting a token
+    /// first when there is none and once more after a 401.
+    async fn billing_call<T, F, Fut>(&self, user_id: &str, request: F) -> Result<T, String>
+    where
+        F: Fn(crate::billing::BillingClient, String) -> Fut,
+        Fut: Future<Output = Result<T, crate::billing::BillingError>>,
+    {
         use crate::billing::BillingError;
         let session = self.session_for(user_id).await?;
         let cached = self.billing_tokens.lock().await.get(user_id).cloned();
@@ -1002,39 +1072,37 @@ impl AgentBackend {
             Some(token) => token,
             None => self.mint_billing_token(&session, user_id).await?,
         };
-        let mut result = self.subscription_status(&token).await;
+        let mut result = self
+            .timed_billing(request(self.billing.clone(), token))
+            .await;
         if matches!(result, Err(BillingError::Unauthorized)) {
             // The cached token expired or was revoked: mint one and retry once.
             token = self.mint_billing_token(&session, user_id).await?;
-            result = self.subscription_status(&token).await;
+            result = self
+                .timed_billing(request(self.billing.clone(), token))
+                .await;
         }
-        let status = match result {
-            Ok(status) => status,
+        match result {
+            Ok(value) => Ok(value),
             Err(BillingError::Unauthorized) => {
                 self.billing_tokens.lock().await.remove(user_id);
-                return Err(BillingError::Unauthorized.to_string());
+                Err(BillingError::Unauthorized.to_string())
             }
-            Err(BillingError::Other(error)) => return Err(error),
-        };
-        let plan = crate::billing::PlanUsage::from_status(&status, chrono::Local::now());
-        log::debug!("plan usage: {plan:?}");
-        Ok(plan)
+            Err(BillingError::Other(error)) => Err(error),
+        }
     }
 
-    async fn subscription_status(
+    async fn timed_billing<T>(
         &self,
-        token: &str,
-    ) -> Result<crate::billing::BillingStatus, crate::billing::BillingError> {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            self.billing.subscription_status(token),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(crate::billing::BillingError::Other(
-                "billing request timed out".to_string(),
-            ))
-        })
+        request: impl Future<Output = Result<T, crate::billing::BillingError>>,
+    ) -> Result<T, crate::billing::BillingError> {
+        tokio::time::timeout(std::time::Duration::from_secs(20), request)
+            .await
+            .unwrap_or_else(|_| {
+                Err(crate::billing::BillingError::Other(
+                    "billing request timed out".to_string(),
+                ))
+            })
     }
 
     async fn mint_billing_token(
@@ -1951,6 +2019,27 @@ fn decode_query_value(value: &str) -> String {
     percent_encoding::percent_decode_str(&spaced)
         .decode_utf8_lossy()
         .into_owned()
+}
+
+/// A user-facing message for a failed billing action; the server detail
+/// goes to the log, not the screen.
+fn billing_failure(error: String, fallback: &str) -> String {
+    log::warn!("{fallback}: {error}");
+    format!("{fallback}. Try again, or use the pricing page on the web.")
+}
+
+/// Hand a billing URL to the system browser. Only `https` URLs are opened:
+/// the billing API is trusted, but a bad deploy must not launch anything
+/// else through the browser handler.
+pub fn open_in_browser(url: &str, what: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        log::warn!("refusing to open a non-https {what} URL");
+        return Err(format!("Could not open {what}: unexpected link"));
+    }
+    webbrowser::open(url).map_err(|error| {
+        log::warn!("failed to open {what} in the browser: {error}");
+        format!("Could not open {what} in your browser")
+    })
 }
 
 /// Minimum password length, the same rule as Maple's web forms.
