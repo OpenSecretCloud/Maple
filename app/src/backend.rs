@@ -754,6 +754,12 @@ impl AgentBackend {
     /// Sign out completely: invalidate the live session first, then remove
     /// only the persisted credentials that this sign-out observed.
     pub async fn logout_and_clear(&self, user_id: &str) -> Result<(), String> {
+        self.clear_session(user_id, true).await
+    }
+
+    /// Drop the live session and the persisted record. `revoke` also sends
+    /// `POST /logout`; a deleted account has no session left to report.
+    async fn clear_session(&self, user_id: &str, revoke: bool) -> Result<(), String> {
         self.wait_for_restore().await;
         let auth_snapshot = self.auth.auth_snapshot_for(user_id).await.ok();
         let persisted_without_session = auth_snapshot
@@ -765,7 +771,8 @@ impl AgentBackend {
         // sign-out must still complete locally, and the session is
         // invalidated below whatever the server said. (The backend's
         // logout route does not revoke the refresh token yet.)
-        if auth_snapshot.is_some()
+        if revoke
+            && auth_snapshot.is_some()
             && let Ok(session) = self.auth.session_for(user_id).await
         {
             match tokio::time::timeout(std::time::Duration::from_secs(5), session.logout()).await {
@@ -938,6 +945,48 @@ impl AgentBackend {
                 MapleAccountError::Unauthorized => "The current password is incorrect".to_string(),
                 other => account_error_message(other, "Could not change the password"),
             })
+    }
+
+    /// Start deleting the account: the server emails a confirmation code.
+    /// Returns the client-held secret the confirmation step must present.
+    pub async fn request_account_deletion(&self, user_id: &str) -> Result<String, String> {
+        let session = self.session_for(user_id).await?;
+        let (plaintext, hashed) = maple_agent::maple_api::new_confirmation_secret();
+        session
+            .request_account_deletion(hashed)
+            .await
+            .map_err(|error| account_error_message(error, "Could not start account deletion"))?;
+        Ok(plaintext)
+    }
+
+    /// Delete the account for good. The agent runtime stops first, then
+    /// the server deletes the account, then the local credentials go. A
+    /// server failure leaves the session usable.
+    pub async fn confirm_account_deletion(
+        &self,
+        user_id: &str,
+        confirmation_code: String,
+        plaintext_secret: String,
+    ) -> Result<(), String> {
+        let code = confirmation_code.trim().to_string();
+        if code.is_empty() {
+            return Err("Enter the confirmation code from the email".to_string());
+        }
+        let session = self.session_for(user_id).await?;
+        self.stop_runtime(user_id).await?;
+        session
+            .confirm_account_deletion(code, plaintext_secret)
+            .await
+            .map_err(|error| match error {
+                MapleAccountError::Status(400) => {
+                    "That confirmation code is wrong or has expired".to_string()
+                }
+                other => account_error_message(other, "Could not delete the account"),
+            })?;
+        if let Err(error) = self.clear_session(user_id, false).await {
+            log::warn!("local sign-out after account deletion failed: {error}");
+        }
+        Ok(())
     }
 
     /// Plan usage for the sidebar card from the Maple billing API. Returns

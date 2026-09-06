@@ -3,7 +3,9 @@
 
 use gpui::{Context, Div, Entity, Focusable, div, prelude::*, px};
 
-use super::{SettingsScreen, SettingsTarget, SignOutRequested, info_row, section_title};
+use super::{
+    AccountDeleted, SettingsScreen, SettingsTarget, SignOutRequested, info_row, section_title,
+};
 use crate::backend::{MapleAccount, MapleLoginMethod};
 use crate::ui::icons::icon;
 use crate::ui::text_input::TextInput;
@@ -19,6 +21,12 @@ pub(super) enum AccountTarget {
     PasswordConfirm,
     PasswordSave,
     SignOut,
+    DeleteStart,
+    DeleteAcknowledge,
+    DeleteRequestCode,
+    DeleteCode,
+    DeleteConfirm,
+    DeleteCancel,
 }
 
 pub(super) struct AccountState {
@@ -28,7 +36,28 @@ pub(super) struct AccountState {
     pub(super) verification_notice: Option<String>,
     pub(super) verification_busy: bool,
     pub(super) password: PasswordForm,
+    pub(super) delete: DeleteFlow,
+    /// Typed acknowledgement ("DELETE") and the emailed code.
+    pub(super) delete_ack: Entity<TextInput>,
+    pub(super) delete_code: Entity<TextInput>,
+    pub(super) delete_busy: bool,
+    pub(super) delete_error: Option<String>,
 }
+
+/// Where the two-step account deletion stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum DeleteFlow {
+    Idle,
+    /// The user opened the danger zone and must type DELETE.
+    Acknowledging,
+    /// A code was emailed; `secret` is the client half the server checks.
+    CodeSent {
+        secret: String,
+    },
+}
+
+/// The word the user types to unlock the deletion request.
+pub(super) const DELETE_ACKNOWLEDGEMENT: &str = "DELETE";
 
 /// The change-password form. Fields are cleared after a successful change.
 pub(super) struct PasswordForm {
@@ -43,6 +72,16 @@ pub(super) struct PasswordForm {
 impl PasswordForm {
     pub(super) fn inputs(&self) -> [Entity<TextInput>; 3] {
         [self.current.clone(), self.new.clone(), self.confirm.clone()]
+    }
+}
+
+impl AccountState {
+    /// Every text input this section owns, for Application Vim wiring.
+    pub(super) fn inputs(&self) -> Vec<Entity<TextInput>> {
+        let mut inputs = self.password.inputs().to_vec();
+        inputs.push(self.delete_ack.clone());
+        inputs.push(self.delete_code.clone());
+        inputs
     }
 }
 
@@ -69,12 +108,26 @@ impl AccountState {
             busy: false,
             notice: None,
         };
+        let plain = |placeholder: &str, tab_index: isize, cx: &mut Context<SettingsScreen>| {
+            let focus = application_focus.clone();
+            cx.new(move |cx| {
+                TextInput::new(placeholder, cx)
+                    .with_tab_index(tab_index)
+                    .application_vim(application_vim_enabled)
+                    .on_application_escape(move |window, cx| window.focus(&focus, cx))
+            })
+        };
         Self {
             info: None,
             load_error: None,
             verification_notice: None,
             verification_busy: false,
             password,
+            delete: DeleteFlow::Idle,
+            delete_ack: plain("Type DELETE to continue", 13, cx),
+            delete_code: plain("Confirmation code", 14, cx),
+            delete_busy: false,
+            delete_error: None,
         }
     }
 
@@ -134,6 +187,22 @@ impl SettingsScreen {
             );
         }
         targets.push(SettingsTarget::Account(AccountTarget::SignOut));
+        if self.account.info.is_some() {
+            let delete = match self.account.delete {
+                DeleteFlow::Idle => vec![AccountTarget::DeleteStart],
+                DeleteFlow::Acknowledging => vec![
+                    AccountTarget::DeleteAcknowledge,
+                    AccountTarget::DeleteRequestCode,
+                    AccountTarget::DeleteCancel,
+                ],
+                DeleteFlow::CodeSent { .. } => vec![
+                    AccountTarget::DeleteCode,
+                    AccountTarget::DeleteConfirm,
+                    AccountTarget::DeleteCancel,
+                ],
+            };
+            targets.extend(delete.into_iter().map(SettingsTarget::Account));
+        }
         targets
     }
 
@@ -159,7 +228,110 @@ impl SettingsScreen {
             }
             AccountTarget::PasswordSave => self.submit_password_change(cx),
             AccountTarget::SignOut => cx.emit(SignOutRequested),
+            AccountTarget::DeleteStart => self.begin_account_deletion(cx),
+            AccountTarget::DeleteAcknowledge => focus_input(&self.account.delete_ack, window, cx),
+            AccountTarget::DeleteRequestCode => self.request_account_deletion(cx),
+            AccountTarget::DeleteCode => focus_input(&self.account.delete_code, window, cx),
+            AccountTarget::DeleteConfirm => self.confirm_account_deletion(cx),
+            AccountTarget::DeleteCancel => self.cancel_account_deletion(cx),
         }
+    }
+
+    pub(super) fn begin_account_deletion(&mut self, cx: &mut Context<Self>) {
+        if self.account.delete != DeleteFlow::Idle {
+            return;
+        }
+        self.account.delete = DeleteFlow::Acknowledging;
+        self.account.delete_error = None;
+        self.reconcile_application_vim_target();
+        cx.notify();
+    }
+
+    pub(super) fn cancel_account_deletion(&mut self, cx: &mut Context<Self>) {
+        if self.account.delete_busy {
+            return;
+        }
+        self.account.delete = DeleteFlow::Idle;
+        self.account.delete_error = None;
+        self.account
+            .delete_ack
+            .update(cx, |input, cx| input.clear(cx));
+        self.account
+            .delete_code
+            .update(cx, |input, cx| input.clear(cx));
+        self.reconcile_application_vim_target();
+        cx.notify();
+    }
+
+    /// Step one: the user typed DELETE; ask the server to email a code.
+    pub(super) fn request_account_deletion(&mut self, cx: &mut Context<Self>) {
+        if self.account.delete_busy || self.account.delete != DeleteFlow::Acknowledging {
+            return;
+        }
+        let typed = self.account.delete_ack.read(cx).text();
+        if typed.trim() != DELETE_ACKNOWLEDGEMENT {
+            self.account.delete_error = Some(format!("Type {DELETE_ACKNOWLEDGEMENT} to confirm"));
+            cx.notify();
+            return;
+        }
+        self.account.delete_busy = true;
+        self.account.delete_error = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.request_account_deletion(&user_id).await },
+            cx,
+            |this, result, cx| {
+                this.account.delete_busy = false;
+                match result {
+                    Ok(secret) => this.account.delete = DeleteFlow::CodeSent { secret },
+                    Err(message) => this.account.delete_error = Some(message),
+                }
+                this.reconcile_application_vim_target();
+                cx.notify();
+            },
+        );
+    }
+
+    /// Step two: the emailed code plus the client secret delete the
+    /// account. On success the screen reports it and the app signs out.
+    pub(super) fn confirm_account_deletion(&mut self, cx: &mut Context<Self>) {
+        let DeleteFlow::CodeSent { secret } = &self.account.delete else {
+            return;
+        };
+        if self.account.delete_busy {
+            return;
+        }
+        let secret = secret.clone();
+        let code = self.account.delete_code.read(cx).text();
+        if code.trim().is_empty() {
+            self.account.delete_error =
+                Some("Enter the confirmation code from the email".to_string());
+            cx.notify();
+            return;
+        }
+        self.account.delete_busy = true;
+        self.account.delete_error = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move {
+                backend
+                    .confirm_account_deletion(&user_id, code, secret)
+                    .await
+            },
+            cx,
+            |this, result, cx| {
+                this.account.delete_busy = false;
+                match result {
+                    Ok(()) => cx.emit(AccountDeleted),
+                    Err(message) => this.account.delete_error = Some(message),
+                }
+                cx.notify();
+            },
+        );
     }
 
     pub(super) fn submit_password_change(&mut self, cx: &mut Context<Self>) {
@@ -286,7 +458,139 @@ impl SettingsScreen {
                     ),
             ),
         );
-        pane
+        pane.child(section_title("Danger zone"))
+            .child(self.render_delete_account(cx))
+    }
+
+    fn render_delete_account(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.account.delete_busy;
+        let mut card = widgets::card_row()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .border_color(gpui::rgb(theme::status_error()));
+        let field = |target: AccountTarget, input: &Entity<TextInput>| {
+            self.application_target(
+                move || SettingsTarget::Account(target),
+                widgets::input_frame().child(input.clone()),
+            )
+        };
+        let button = |id: &'static str, label: String, danger: bool, target: AccountTarget| {
+            let base = if danger {
+                widgets::danger_button(id)
+            } else {
+                widgets::secondary_button(id)
+            };
+            self.application_target(
+                move || SettingsTarget::Account(target),
+                base.py_1p5()
+                    .when(busy, |el| el.opacity(0.6))
+                    .when(!busy, |el| {
+                        el.on_click(cx.listener(move |this, _event, window, cx| {
+                            this.activate_account_target(target, window, cx);
+                        }))
+                    })
+                    .child(label),
+            )
+        };
+        match &self.account.delete {
+            DeleteFlow::Idle => {
+                card = card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .child(super::setting_copy(
+                            "Delete account",
+                            "Permanently deletes your account, tasks, and encrypted data. \
+                             This cannot be undone.",
+                        ))
+                        .child(button(
+                            "account-delete-start",
+                            "Delete account…".to_string(),
+                            true,
+                            AccountTarget::DeleteStart,
+                        )),
+                );
+            }
+            DeleteFlow::Acknowledging => {
+                card = card
+                    .child(super::setting_copy(
+                        "Delete account",
+                        "This permanently deletes your account, tasks, and encrypted data. \
+                         Type DELETE, then we email you a confirmation code.",
+                    ))
+                    .child(field(
+                        AccountTarget::DeleteAcknowledge,
+                        &self.account.delete_ack,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(button(
+                                "account-delete-cancel",
+                                "Cancel".to_string(),
+                                false,
+                                AccountTarget::DeleteCancel,
+                            ))
+                            .child(button(
+                                "account-delete-request",
+                                if busy {
+                                    "Sending…"
+                                } else {
+                                    "Send confirmation code"
+                                }
+                                .to_string(),
+                                true,
+                                AccountTarget::DeleteRequestCode,
+                            )),
+                    );
+            }
+            DeleteFlow::CodeSent { .. } => {
+                card = card
+                    .child(super::setting_copy(
+                        "Confirm deletion",
+                        "We emailed you a confirmation code. Enter it to delete the account. \
+                         The code expires after 24 hours.",
+                    ))
+                    .child(field(AccountTarget::DeleteCode, &self.account.delete_code))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(button(
+                                "account-delete-cancel",
+                                "Cancel".to_string(),
+                                false,
+                                AccountTarget::DeleteCancel,
+                            ))
+                            .child(button(
+                                "account-delete-confirm",
+                                if busy {
+                                    "Deleting…"
+                                } else {
+                                    "Delete my account"
+                                }
+                                .to_string(),
+                                true,
+                                AccountTarget::DeleteConfirm,
+                            )),
+                    );
+            }
+        }
+        if let Some(message) = &self.account.delete_error {
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::status_error()))
+                    .child(message.clone()),
+            );
+        }
+        card
     }
 
     fn render_password_form(&self, cx: &mut Context<Self>) -> Div {

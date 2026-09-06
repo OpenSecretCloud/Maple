@@ -38,6 +38,10 @@ pub struct SettingsClosed(pub AppSettings);
 /// Emitted when the user clicks Sign out in the settings header.
 pub struct SignOutRequested;
 
+/// Emitted after the server confirmed the account is deleted and the
+/// local session is gone; the app returns to the login form.
+pub struct AccountDeleted;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
@@ -182,6 +186,7 @@ pub struct OpenSettingsSection(pub Section);
 
 impl EventEmitter<SettingsClosed> for SettingsScreen {}
 impl EventEmitter<SignOutRequested> for SettingsScreen {}
+impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
 impl SettingsScreen {

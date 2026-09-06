@@ -118,6 +118,18 @@ impl From<String> for MapleAccountError {
     }
 }
 
+/// A fresh client-held secret for the two-step deletion and reset flows:
+/// `(plaintext, sha256 hex)`. Only the hash goes to the server up front.
+pub fn new_confirmation_secret() -> (String, String) {
+    use rand::RngCore;
+    use sha2::{Digest, Sha256};
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let plaintext: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let hashed = format!("{:x}", Sha256::digest(plaintext.as_bytes()));
+    (plaintext, hashed)
+}
+
 fn map_account_error(error: opensecret::Error) -> MapleAccountError {
     log::warn!(
         "OpenSecret SDK account operation failed ({})",
@@ -402,6 +414,37 @@ impl MapleApiSession {
             .await;
         self.record_refresh(&snapshot).await?;
         response.map_err(map_account_error)
+    }
+
+    /// Start account deletion: the backend emails a confirmation code.
+    /// `hashed_secret` is the SHA-256 hex of a client-held secret that
+    /// [`Self::confirm_account_deletion`] presents in plain text.
+    pub async fn request_account_deletion(
+        &self,
+        hashed_secret: String,
+    ) -> Result<(), MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        let response = snapshot
+            .client
+            .request_account_deletion(hashed_secret)
+            .await;
+        self.record_refresh(&snapshot).await?;
+        response.map_err(map_account_error)
+    }
+
+    /// Finish account deletion with the emailed code. The account is gone
+    /// on success; the caller drops the session without a server logout.
+    pub async fn confirm_account_deletion(
+        &self,
+        confirmation_code: String,
+        plaintext_secret: String,
+    ) -> Result<(), MapleAccountError> {
+        let snapshot = self.client_snapshot().await?;
+        snapshot
+            .client
+            .confirm_account_deletion(confirmation_code, plaintext_secret)
+            .await
+            .map_err(map_account_error)
     }
 
     /// Tell the server about the sign-out (`POST /logout`), as the web SDK

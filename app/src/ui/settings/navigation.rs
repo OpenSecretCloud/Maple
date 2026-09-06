@@ -78,7 +78,7 @@ impl SettingsScreen {
 
     pub(super) fn set_application_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let mut inputs = vec![self.prompt_editor.clone(), self.shortcut_search.clone()];
-        inputs.extend(self.account.password.inputs());
+        inputs.extend(self.account.inputs());
         if let Some(editor) = &self.mcp_editor {
             inputs.extend([
                 editor.name.clone(),
