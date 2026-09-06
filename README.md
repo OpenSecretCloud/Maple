@@ -299,8 +299,17 @@ just clean-local # this checkout's Cargo artifacts only (keeps the shared cache)
 maple-gpui                 Open the desktop app.
 maple-gpui acp             Serve the Agent Client Protocol on stdio.
 maple-gpui proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
+maple-gpui login           Sign in with email and password from a terminal.
 maple-gpui --version       Print the version.
 ```
+
+### `maple-gpui login`
+
+Prompts for the account email (or takes `--email`) and the password, signs
+in, and saves the session the same way the desktop app does. Use it on a
+machine that never opens the window so `maple-gpui acp` has a sign-in. The
+password is always prompted for; there is no flag for it. OAuth sign-in is
+desktop-only for now.
 
 ### `maple-gpui acp`
 

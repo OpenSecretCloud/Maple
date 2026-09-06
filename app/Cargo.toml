@@ -62,6 +62,8 @@ spellbook = { version = "0.4", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
+# Hidden password prompt for `maple-gpui login`.
+rpassword = "7"
 maple-proxy = { version = "0.3.2", optional = true }
 reqwest = { workspace = true, features = ["json"] }
 percent-encoding = "2"

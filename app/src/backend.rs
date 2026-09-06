@@ -578,6 +578,11 @@ impl AgentBackend {
         &self.api_url
     }
 
+    /// The backend runtime, for command-line modes that block on one call.
+    pub fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self.runtime.handle().clone()
+    }
+
     /// Run a backend future on the backend runtime. The returned handle is a
     /// plain future, so the UI executor can await it without owning Tokio.
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
