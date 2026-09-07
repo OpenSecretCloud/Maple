@@ -34,6 +34,7 @@ sha2 = "0.10"
 base64 = "0.22"
 ring = "0.17"  # For certificate validation
 hex = "0.4"  # For debug output
+zeroize = { version = "1.8", features = ["derive"] }
 
 # X.509 and certificate handling
 x509-parser = "0.16"
