@@ -33,12 +33,29 @@ commit, external effect, and authority provided by the user.
   and repairs minor, major, and `latest` aliases without rebuilding an existing
   exact image. Version `0.3.3` is the explicit unbackfilled migration baseline.
   The container remains separately versioned at
-  `ghcr.io/opensecretcloud/maple-proxy`.
+  `ghcr.io/mapleprivacylabs/maple-proxy`.
 - GitHub Release creation does not itself submit the release IPA or AAB to
   Apple App Store review or Google Play.
 
 Never push or merge `master`, create a release, retry a workflow, upload to a
 store, submit for review, or alter a rollout merely to see whether it works.
+
+## Repository-transfer checkpoint
+
+After the transfer to `MaplePrivacyLabs/Maple`, merge the prepared canonical
+repository metadata before creating a new release. Keep the existing updater
+Worker serving its deployed metadata until the first normal new-org release.
+Do not manually republish retained v3.3.10 updater metadata: its asset URLs use
+`OpenSecretCloud/Maple`, while the publisher and new Worker correctly require
+the current canonical owner. The next release generates new-owner URLs without
+changing the legacy updater fallback compiled into existing clients.
+
+The first eligible proxy container publication creates
+`ghcr.io/mapleprivacylabs/maple-proxy`. GitHub creates new packages privately;
+make that package public in its settings, retain Maple Actions write access,
+and rerun only the proxy publisher if anonymous verification stops there. Do
+not create another release, change proxy versions, or overwrite exact tags to
+repair package visibility. Existing old-namespace images receive no updates.
 
 ## Prepare the version
 
@@ -50,7 +67,7 @@ store, submit for review, or alter a rollout merely to see whether it works.
    git fetch origin master
    git merge-base --is-ancestor origin/master HEAD
    current_version="$(nix develop --no-update-lock-file .#ci -c just get-version | tail -n 1)"
-   released_version="$(gh api repos/OpenSecretCloud/Maple/releases/latest --jq '.tag_name | ltrimstr("v")')"
+   released_version="$(gh api repos/MaplePrivacyLabs/Maple/releases/latest --jq '.tag_name | ltrimstr("v")')"
    printf 'current=%s released=%s\n' "$current_version" "$released_version"
    ```
 
@@ -112,7 +129,7 @@ crates.io or GHCR publish.
 Preview GitHub's generated notes:
 
 ```bash
-gh api --method POST repos/OpenSecretCloud/Maple/releases/generate-notes \
+gh api --method POST repos/MaplePrivacyLabs/Maple/releases/generate-notes \
   -f tag_name="$tag" \
   -f target_commitish="$head_sha" \
   -f previous_tag_name="$previous_tag" | jq -r '.name, .body'
@@ -134,7 +151,7 @@ Create the GitHub Release exactly once. This creates the tag in the same flow:
 
 ```bash
 gh release create "$tag" \
-  --repo OpenSecretCloud/Maple \
+  --repo MaplePrivacyLabs/Maple \
   --target "$head_sha" \
   --title "$tag" \
   --notes-file "$notes_file"
@@ -148,12 +165,12 @@ release and workflow resolve to `head_sha`.
 Find and watch the new `Release` run:
 
 ```bash
-gh run list --repo OpenSecretCloud/Maple --workflow Release --event release \
+gh run list --repo MaplePrivacyLabs/Maple --workflow Release --event release \
   --commit "$head_sha" --limit 10 \
   --json databaseId,displayTitle,headSha,status,conclusion,url
 
 gh run watch RELEASE_RUN_ID \
-  --repo OpenSecretCloud/Maple --exit-status --compact
+  --repo MaplePrivacyLabs/Maple --exit-status --compact
 ```
 
 Stay with every platform build, signature/canonical proof, artifact upload,
@@ -166,17 +183,17 @@ After `Release` succeeds, inspect the two required publication handoffs. Do
 not rerun the core Release to repair either sibling:
 
 ```bash
-gh run list --repo OpenSecretCloud/Maple --workflow 'Publish updater metadata' \
+gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish updater metadata' \
   --commit "$head_sha" --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 
 pages_workflow='Promote Pages production'
-pages_enabled="$(gh variable list --repo OpenSecretCloud/Maple --json name,value \
+pages_enabled="$(gh variable list --repo MaplePrivacyLabs/Maple --json name,value \
   --jq '.[] | select(.name == "MAPLE_PAGES_PRODUCTION_ENABLED") | .value')" || exit 1
 if [ "$pages_enabled" = true ]; then
   pages_workflow='Publish Pages'
 fi
-gh run list --repo OpenSecretCloud/Maple --workflow "$pages_workflow" \
+gh run list --repo MaplePrivacyLabs/Maple --workflow "$pages_workflow" \
   --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```
@@ -192,7 +209,7 @@ the unbackfilled `0.3.3` baseline. Retry it with manual dispatch; never create a
 proxy tag or Release and never rerun the core Release to repair it:
 
 ```bash
-gh run list --repo OpenSecretCloud/Maple --workflow 'Publish proxy container' \
+gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish proxy container' \
   --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```
@@ -209,14 +226,14 @@ Report and repair sibling failures without altering completed release artifacts.
 Confirm the production ref in either mode:
 
 ```bash
-pages_sha="$(gh api repos/OpenSecretCloud/Maple/git/ref/heads/pages-production --jq .object.sha)"
+pages_sha="$(gh api repos/MaplePrivacyLabs/Maple/git/ref/heads/pages-production --jq .object.sha)"
 [[ "$pages_sha" == "$head_sha" ]]
 ```
 
 In legacy mode only, inspect Cloudflare's exact-commit check:
 
 ```bash
-gh api "repos/OpenSecretCloud/Maple/commits/$head_sha/check-runs" --jq '
+gh api "repos/MaplePrivacyLabs/Maple/commits/$head_sha/check-runs" --jq '
   [.check_runs[]
    | select(.name == "Cloudflare Pages")
    | select(.app.name == "Cloudflare Workers and Pages")
@@ -240,13 +257,13 @@ recreate a Release or rerun the core release merely to repair Pages.
 On failure, read the failed logs before acting:
 
 ```bash
-gh run view RELEASE_RUN_ID --repo OpenSecretCloud/Maple --log-failed
+gh run view RELEASE_RUN_ID --repo MaplePrivacyLabs/Maple --log-failed
 ```
 
 Retry only a terminal failure proven to be transient infrastructure trouble:
 
 ```bash
-gh run rerun RELEASE_RUN_ID --repo OpenSecretCloud/Maple --failed
+gh run rerun RELEASE_RUN_ID --repo MaplePrivacyLabs/Maple --failed
 ```
 
 Do not classify version/proof mismatches, deterministic builds, signing
@@ -258,11 +275,11 @@ or recreate a published release without separate explicit direction.
 Verify the published release and its assets:
 
 ```bash
-gh release view "$tag" --repo OpenSecretCloud/Maple \
+gh release view "$tag" --repo MaplePrivacyLabs/Maple \
   --json tagName,name,isDraft,isPrerelease,publishedAt,targetCommitish,url,assets
 
 mkdir -p artifacts
-gh release download "$tag" --repo OpenSecretCloud/Maple --dir artifacts
+gh release download "$tag" --repo MaplePrivacyLabs/Maple --dir artifacts
 nix develop --no-update-lock-file .#ci -c \
   ./scripts/ci/verify-release-artifacts.sh artifacts proxy
 ```
@@ -303,7 +320,7 @@ trigger a release retry, or be reported as a Maple release failure. Inspect it
 only when Zapstore status is specifically useful:
 
 ```bash
-gh run list --repo OpenSecretCloud/Maple --workflow 'Publish to Zapstore' \
+gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish to Zapstore' \
   --commit "$head_sha" --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly expected_repo="OpenSecretCloud/Maple"
-readonly remote_url="https://github.com/OpenSecretCloud/Maple.git"
+readonly expected_repo="MaplePrivacyLabs/Maple"
+readonly remote_url="https://github.com/MaplePrivacyLabs/Maple.git"
 
 fail() {
   printf 'release preflight: %s\n' "$*" >&2

@@ -28,8 +28,8 @@ After that release, verify the assets are present and use the stable download
 URLs, for example:
 
 ```bash
-curl -LO https://github.com/OpenSecretCloud/Maple/releases/latest/download/maple-proxy-linux-x86_64.tar.gz
-curl -LO https://github.com/OpenSecretCloud/Maple/releases/latest/download/maple-proxy-release-final.sha256
+curl -LO https://github.com/MaplePrivacyLabs/Maple/releases/latest/download/maple-proxy-linux-x86_64.tar.gz
+curl -LO https://github.com/MaplePrivacyLabs/Maple/releases/latest/download/maple-proxy-release-final.sha256
 sha256sum --check --ignore-missing maple-proxy-release-final.sha256
 ```
 
@@ -37,7 +37,7 @@ There is no separate proxy GitHub Release or proxy release tag. To build from
 source now:
 
 ```bash
-git clone https://github.com/OpenSecretCloud/Maple.git
+git clone https://github.com/MaplePrivacyLabs/Maple.git
 cd Maple/proxy
 cargo build --locked --release
 ```
@@ -289,24 +289,34 @@ cargo run --locked
 
 ### Pre-built Image
 
-The currently published GHCR `latest` image is the independently released
-standalone proxy 0.3.2. The first Maple-owned publication deliberately does not
-backfill the in-tree 0.3.3 version. After the next proxy version change ships in
-a successful stable Maple Release, the release-following publisher updates the
-same `ghcr.io/opensecretcloud/maple-proxy` package automatically.
+New container publications use `ghcr.io/mapleprivacylabs/maple-proxy` after the
+Maple repository transfer. The release-following publisher builds the eligible
+proxy version from a successful stable Maple Release and verifies its exact tag,
+platforms, provenance, and aliases. The first publication in this namespace must
+complete and the package must be public before the commands below will work.
+GitHub creates new packages privately. Once the first image exists, set the new
+package to public in GitHub package settings, retain Maple Actions write access,
+and rerun only the container publisher if anonymous verification was blocked.
+The retry verifies an existing exact version rather than overwriting it.
 
-To run the legacy image deliberately:
+The old `ghcr.io/opensecretcloud/maple-proxy` package remains available at its
+existing versions but receives no new publications. Existing deployments must
+change their image URL to receive future updates; registry image names do not
+follow the repository transfer redirect. Version `0.3.3` remains the explicit
+unbackfilled baseline. The next prepared proxy version is `0.3.4`.
+
+After the first new-namespace publication is verified:
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/opensecretcloud/maple-proxy:latest
+docker pull ghcr.io/mapleprivacylabs/maple-proxy:latest
 
 # Run with your API key
 docker run -p 8080:8080 \
   -e MAPLE_BACKEND_URL=https://enclave.trymaple.ai \
   -e MAPLE_REQUEST_TIMEOUT_SECS=300 \
   -e MAPLE_STREAM_IDLE_TIMEOUT_SECS=300 \
-  ghcr.io/opensecretcloud/maple-proxy:latest
+  ghcr.io/mapleprivacylabs/maple-proxy:latest
 ```
 
 ### Build from Source
@@ -324,7 +334,7 @@ just docker-run
 1. **Option A: Use the published image from GHCR**
 ```bash
 # In your docker-compose.yml, use:
-image: ghcr.io/opensecretcloud/maple-proxy:latest
+image: ghcr.io/mapleprivacylabs/maple-proxy:latest
 ```
 
 2. **Option B: Build your own image**
@@ -412,7 +422,7 @@ environment:
 
 ### Docker Images & CI/CD
 
-The source lives under [`proxy/`](https://github.com/OpenSecretCloud/Maple/tree/master/proxy)
+The source lives under [`proxy/`](https://github.com/MaplePrivacyLabs/Maple/tree/master/proxy)
 in the Maple repository. Root, path-scoped workflows run locked Rust checks,
 supply-chain policy, and non-publishing AMD64/ARM64 container builds for proxy
 changes. After every successful stable Maple Release, a separate serialized
@@ -423,8 +433,10 @@ later version publishes native AMD64/ARM64 images with per-platform provenance,
 verifies their exact build digests and release labels, then reconciles the minor,
 major, and `latest` aliases. Existing exact versions are verified without being
 overwritten, and manual dispatch safely retries verification or alias repair.
-Maple must have Actions write access to the existing organization-scoped GHCR
-package; local recipes intentionally cannot publish to it.
+The transferred Maple repository publishes with its `GITHUB_TOKEN` in the
+`MaplePrivacyLabs` organization. No old-organization package token is needed.
+The package must grant Maple Actions write access and be public for anonymous
+verification; local recipes intentionally cannot publish to it.
 
 `proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
 `frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency

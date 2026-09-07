@@ -5,7 +5,7 @@ description: Develop and debug ordinary non-Agent-Mode Maple features and fixes 
 
 # Develop Maple
 
-Work from the `OpenSecretCloud/Maple` repository root. Treat `justfile`, `frontend/package.json`, `flake.nix`, `scripts/ci/`, and `.github/workflows/` as the command sources of truth. Check them again when they disagree with prose documentation.
+Work from the `MaplePrivacyLabs/Maple` repository root. Treat `justfile`, `frontend/package.json`, `flake.nix`, `scripts/ci/`, and `.github/workflows/` as the command sources of truth. Check them again when they disagree with prose documentation.
 
 ## Route Specialized Work
 

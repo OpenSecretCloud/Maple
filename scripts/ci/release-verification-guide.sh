@@ -25,7 +25,7 @@ if [ ! -d "${artifacts_dir}" ]; then
   exit 1
 fi
 
-repo="${GITHUB_REPOSITORY:-OpenSecretCloud/Maple}"
+repo="${GITHUB_REPOSITORY:-MaplePrivacyLabs/Maple}"
 release_tag="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 if [ -z "${release_tag}" ]; then
   echo "RELEASE_TAG or GITHUB_REF_NAME is required." >&2

@@ -612,7 +612,7 @@ function Verify() {
           <p className="text-sm text-[hsl(var(--marketing-text-muted))] text-center mt-8">
             Both our{" "}
             <a
-              href="https://github.com/OpenSecretCloud/Maple"
+              href="https://github.com/MaplePrivacyLabs/Maple"
               target="_blank"
               rel="noopener noreferrer"
               className="text-foreground hover:text-foreground/80 underline"
@@ -665,7 +665,7 @@ function Verify() {
           <p className="text-sm text-[hsl(var(--marketing-text-muted))] text-center mt-8">
             Our code is open source:{" "}
             <a
-              href="https://github.com/OpenSecretCloud/Maple"
+              href="https://github.com/MaplePrivacyLabs/Maple"
               target="_blank"
               rel="noopener noreferrer"
               className="text-foreground hover:text-foreground/80 underline"

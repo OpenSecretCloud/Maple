@@ -4,7 +4,7 @@ version = "3.3.11"
 description = "Maple AI"
 authors = ["tony@trymaple.ai"]
 license = "MIT"
-repository = "https://github.com/OpenSecretCloud/Maple"
+repository = "https://github.com/MaplePrivacyLabs/Maple"
 edition = "2021"
 rust-version = "1.94.1"
 
