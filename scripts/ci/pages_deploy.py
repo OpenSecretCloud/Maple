@@ -88,11 +88,12 @@ class API:
         require(len(body) <= 8 * 1024 * 1024, "API response exceeds limit")
         return json.loads(body)
 
-    def download(self, path, destination, limit=MAX_DOWNLOAD, expected_size=None, expected_digest=None):
+    def download(self, path, destination, limit=MAX_DOWNLOAD, expected_size=None, expected_digest=None,
+                 accept="application/octet-stream"):
         # Only the constructed GitHub API endpoint receives Authorization.
         # GitHub asset redirects are signed URLs; never forward the token to them.
         try:
-            response = self.request(path, accept="application/octet-stream")
+            response = self.request(path, accept=accept)
         except HTTPError as error:
             require(error.code in {301, 302, 303, 307, 308}, "Artifact download rejected")
             url = error.headers.get("Location", "")
@@ -242,7 +243,7 @@ def prepare(gh, event, target, state):
     if target == "preview":
         zipped = state / "artifact.zip"
         gh.api.download(gh.root + f"/actions/artifacts/{plan['artifact_id']}/zip", zipped,
-                        expected_digest=plan["artifact_digest"])
+                        expected_digest=plan["artifact_digest"], accept="application/vnd.github+json")
         manifest = read_preview_zip(zipped, plan["sha"], plan["run_id"], plan["run_attempt"], archive)
         archive_digest = manifest["archive_sha256"]
     else:

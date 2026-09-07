@@ -274,9 +274,17 @@ class ProcessAndTransportTests(unittest.TestCase):
         api.opener = Opener()
         with tempfile.TemporaryDirectory() as tmp:
             api.download("/repos/owner/repo/actions/artifacts/12/zip", Path(tmp) / "a.zip",
-                         expected_size=7, expected_digest=hashlib.sha256(b"archive").hexdigest())
+                         expected_size=7, expected_digest=hashlib.sha256(b"archive").hexdigest(),
+                         accept="application/vnd.github+json")
         self.assertEqual(requests[0].get_header("Authorization"), "Bearer fake-gh-canary")
+        self.assertEqual(requests[0].get_header("Accept"), "application/vnd.github+json")
         self.assertIsNone(requests[1].get_header("Authorization"))
+
+    def test_release_asset_requests_binary_representation(self):
+        api = pages.API("https://api.github.com", "fake-gh-canary")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(api, "request", return_value=io.BytesIO(b"archive")) as request:
+            api.download("/repos/owner/repo/releases/assets/12", Path(tmp) / "archive")
+        request.assert_called_once_with("/repos/owner/repo/releases/assets/12", accept="application/octet-stream")
 
     def test_preview_waits_for_deploy_success_not_an_earlier_stage(self):
         result = {"deployment_id": "a" * 36, "url": "https://12345678.maple-ca8.pages.dev"}
