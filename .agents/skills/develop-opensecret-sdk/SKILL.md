@@ -5,7 +5,7 @@ description: Develop and review the OpenSecret TypeScript/React and Rust SDKs un
 
 # Develop the OpenSecret SDK
 
-Work from `OpenSecretCloud/Maple/sdk`. Read the repository-root `AGENTS.md`,
+Work from `MaplePrivacyLabs/Maple/sdk`. Read the repository-root `AGENTS.md`,
 `sdk/README.md`, the affected implementation and tests, and the root
 `.github/workflows/sdk-*.yml` files relevant to the change.
 

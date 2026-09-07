@@ -5,7 +5,7 @@ description: Develop and review the maple-proxy Rust crate, binary, container, a
 
 # Develop Maple Proxy
 
-Work from the `OpenSecretCloud/Maple` repository root; the component source is
+Work from the `MaplePrivacyLabs/Maple` repository root; the component source is
 under `proxy/`. Read the repository-root `AGENTS.md`, `proxy/README.md`,
 affected source and tests, and the root
 `.github/workflows/proxy-*.yml` files relevant to the change.
@@ -108,11 +108,11 @@ Release, `.github/workflows/proxy-publish.yml` independently compares that
 release's proxy version with the previous stable Maple Release. Unchanged
 versions skip, including the unbackfilled 0.3.3 baseline. A strictly newer,
 previously unpublished version automatically publishes Linux AMD64/ARM64 to
-`ghcr.io/opensecretcloud/maple-proxy` with exact, minor, major, and `latest`
+`ghcr.io/mapleprivacylabs/maple-proxy` with exact, minor, major, and `latest`
 tags. The workflow is serialized, rejects rollback and stale releases, verifies
-the public manifest, and supports manual retry from `master`. Maple's Actions
-repository must retain write access to that existing organization-scoped GHCR
-package. Treat any namespace, trigger, version policy, or package-access change
+the public manifest, and supports manual retry from `master`. The transferred Maple repository uses its `GITHUB_TOKEN` to publish in
+`MaplePrivacyLabs`; the new package must be public and grant Maple Actions write
+access. Existing old-namespace images remain available but receive no updates. Treat any namespace, trigger, version policy, or package-access change
 as a separate production-authority decision.
 
 ## Report

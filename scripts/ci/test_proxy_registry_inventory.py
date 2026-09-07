@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Regression coverage for an empty namespace versus unavailable package access."""
+
+import contextlib
+import copy
+import io
+import json
+import os
+import sys
+import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError, URLError
+
+import proxy_registry_inventory as inventory
+
+TOKEN = "FAKE_WORKFLOW_TOKEN_NOT_A_CREDENTIAL"
+REGISTRY_TOKEN = "FAKE_ANONYMOUS_PULL_TOKEN"
+PACKAGE = {
+    "name": inventory.PACKAGE,
+    "package_type": "container",
+    "visibility": "public",
+    "owner": {"id": inventory.OWNER_ID, "login": inventory.OWNER},
+    "repository": {"id": inventory.REPOSITORY_ID, "full_name": inventory.REPOSITORY},
+}
+
+
+class FakeGet:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __call__(self, url, token=None):
+        self.calls.append((url, token))
+        if not self.responses:
+            raise AssertionError("Unexpected extra request")
+        result = self.responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+class ProxyRegistryInventoryTests(unittest.TestCase):
+    def public_responses(self, tags=None):
+        return (
+            inventory.Response(200, copy.deepcopy(PACKAGE)),
+            inventory.Response(200, {"token": REGISTRY_TOKEN}),
+            inventory.Response(200, {"name": inventory.IMAGE, "tags": ["0.3.4", "latest"] if tags is None else tags}),
+        )
+
+    def test_missing_package_requires_authenticated_metadata_and_listing(self):
+        get = FakeGet(inventory.Response(404), inventory.Response(200, []))
+        self.assertEqual(inventory.inventory(TOKEN, get=get), {"name": inventory.IMAGE, "tags": []})
+        self.assertEqual(len(get.calls), 2)
+        self.assertTrue(all(url.startswith(inventory.API + "/") and token == TOKEN for url, token in get.calls))
+
+    def test_metadata_auth_network_and_service_errors_are_not_empty(self):
+        for status in (301, 400, 401, 403, 429, 500, 502, 503):
+            with self.subTest(status=status):
+                get = FakeGet(inventory.Response(status))
+                with self.assertRaises(inventory.InventoryError):
+                    inventory.inventory(TOKEN, get=get)
+                self.assertEqual(len(get.calls), 1)
+        with self.assertRaises(inventory.InventoryError):
+            inventory.inventory(TOKEN, get=FakeGet(inventory.InventoryError("Package inventory request failed")))
+
+    def test_metadata_404_does_not_mask_unauthorized_or_failed_listing(self):
+        for status in (301, 401, 403, 404, 429, 500):
+            with self.subTest(status=status), self.assertRaises(inventory.InventoryError):
+                inventory.inventory(TOKEN, get=FakeGet(inventory.Response(404), inventory.Response(status)))
+        for data in ({}, None, [{"name": inventory.PACKAGE}], [{"name": "MAPLE-PROXY"}], ["invalid"], [{}]):
+            with self.subTest(data=data), self.assertRaises(inventory.InventoryError):
+                inventory.inventory(TOKEN, get=FakeGet(inventory.Response(404), inventory.Response(200, data)))
+
+    def test_missing_package_checks_all_readable_package_pages(self):
+        get = FakeGet(
+            inventory.Response(404),
+            inventory.Response(200, [{"name": "other"}], '<https://attacker.invalid/>; rel="next"'),
+            inventory.Response(200, [{"name": inventory.PACKAGE}]),
+        )
+        with self.assertRaises(inventory.InventoryError):
+            inventory.inventory(TOKEN, get=get)
+        self.assertEqual(get.calls[-1], (f"{inventory.API}/orgs/{inventory.OWNER}/packages?package_type=container&per_page=100&page=2", TOKEN))
+
+    def test_malformed_or_unbounded_package_pagination_fails(self):
+        for link in ('invalid', '<https://api.github.com/>; rel="unknown"', 'secret\n::error::injected'):
+            with self.subTest(link=link), self.assertRaises(inventory.InventoryError):
+                inventory.inventory(TOKEN, get=FakeGet(inventory.Response(404), inventory.Response(200, [], link)))
+        responses = [inventory.Response(404)] + [inventory.Response(200, [], '<https://api.github.com/>; rel="next"')] * 100
+        with self.assertRaisesRegex(inventory.InventoryError, "pagination limit"):
+            inventory.inventory(TOKEN, get=FakeGet(*responses))
+
+    def test_public_package_keeps_real_tags_and_uses_anonymous_registry_access(self):
+        get = FakeGet(*self.public_responses())
+        self.assertEqual(inventory.inventory(TOKEN, get=get), {"name": inventory.IMAGE, "tags": ["0.3.4", "latest"]})
+        self.assertEqual(get.calls[0], (inventory.PACKAGE_URL, TOKEN))
+        self.assertEqual(get.calls[1], (f"{inventory.REGISTRY}/token?scope=repository:{inventory.IMAGE}:pull", None))
+        self.assertEqual(get.calls[2], (f"{inventory.REGISTRY}/v2/{inventory.IMAGE}/tags/list?n=10000", REGISTRY_TOKEN))
+
+    def test_private_package_requires_operator_visibility_change(self):
+        for visibility in ("private", "internal", None):
+            with self.subTest(visibility=visibility):
+                package = copy.deepcopy(PACKAGE)
+                package["visibility"] = visibility
+                get = FakeGet(inventory.Response(200, package))
+                with self.assertRaisesRegex(inventory.InventoryError, "must be made public"):
+                    inventory.inventory(TOKEN, get=get)
+                self.assertEqual(len(get.calls), 1)
+
+    def test_existing_package_must_belong_to_expected_owner_and_repository(self):
+        for field, value in (
+            ("name", "other"), ("package_type", "npm"),
+            ("owner", {"id": 1, "login": inventory.OWNER}),
+            ("owner", {"id": inventory.OWNER_ID, "login": "Other"}),
+            ("repository", {"id": 1, "full_name": inventory.REPOSITORY}),
+            ("repository", {"id": inventory.REPOSITORY_ID, "full_name": "Other/Maple"}),
+            ("repository", None), ("repository", "invalid"),
+        ):
+            with self.subTest(field=field, value=value):
+                package = copy.deepcopy(PACKAGE)
+                package[field] = value
+                with self.assertRaises(inventory.InventoryError):
+                    inventory.inventory(TOKEN, get=FakeGet(inventory.Response(200, package)))
+
+    def test_final_visibility_gate_requires_an_existing_public_package(self):
+        with self.assertRaises(inventory.InventoryError):
+            inventory.inventory(TOKEN, public_only=True, get=FakeGet(inventory.Response(404)))
+        get = FakeGet(inventory.Response(200, PACKAGE))
+        self.assertEqual(inventory.inventory(TOKEN, public_only=True, get=get), {"name": inventory.IMAGE, "visibility": "public"})
+        self.assertEqual(len(get.calls), 1)
+
+    def test_anonymous_auth_and_tags_failures_never_become_an_empty_inventory(self):
+        for status in (301, 401, 403, 404, 429, 500):
+            for index in (1, 2):
+                with self.subTest(status=status, request=index):
+                    responses = list(self.public_responses())[:index] + [inventory.Response(status)]
+                    with self.assertRaises(inventory.InventoryError):
+                        inventory.inventory(TOKEN, get=FakeGet(*responses))
+
+    def test_invalid_registry_tokens_and_inventory_cannot_inject_outputs(self):
+        for token in (None, "", "bad\n::error::injected", "x" * 16385):
+            with self.subTest(token=token), self.assertRaises(inventory.InventoryError):
+                inventory.inventory(TOKEN, get=FakeGet(inventory.Response(200, PACKAGE), inventory.Response(200, {"token": token})))
+        for tags in (None, {}, ["bad\n::error::injected"], ["0.3.4", "0.3.4"], [1], ["/bad"], ["a" * 129]):
+            with self.subTest(tags=tags):
+                responses = list(self.public_responses())
+                responses[2] = inventory.Response(200, {"name": inventory.IMAGE, "tags": tags})
+                with self.assertRaises(inventory.InventoryError):
+                    inventory.inventory(TOKEN, get=FakeGet(*responses))
+
+    def test_partial_registry_inventory_is_rejected(self):
+        responses = list(self.public_responses())
+        responses[2] = inventory.Response(200, {"name": inventory.IMAGE, "tags": ["0.3.4"]}, 'next; rel="next"')
+        with self.assertRaises(inventory.InventoryError):
+            inventory.inventory(TOKEN, get=FakeGet(*responses))
+
+    def test_transport_errors_are_sanitized_and_http_status_is_preserved(self):
+        for error in (URLError(TOKEN), OSError(TOKEN)):
+            with self.subTest(error=type(error).__name__), patch.object(inventory, "build_opener") as opener:
+                opener.return_value.open.side_effect = error
+                with self.assertRaises(inventory.InventoryError) as result:
+                    inventory.get_json(inventory.PACKAGE_URL, TOKEN)
+                self.assertNotIn(TOKEN, str(result.exception))
+        with patch.object(inventory, "build_opener") as opener:
+            opener.return_value.open.side_effect = HTTPError(inventory.PACKAGE_URL, 403, TOKEN, {}, io.BytesIO(TOKEN.encode()))
+            self.assertEqual(inventory.get_json(inventory.PACKAGE_URL, TOKEN), inventory.Response(403))
+
+    def test_invalid_or_oversized_response_is_sanitized(self):
+        for payload, limit in ((TOKEN.encode(), 4096), (b" " * 10, 4)):
+            response = io.BytesIO(payload)
+            response.status = 200
+            response.headers = {}
+            with self.subTest(limit=limit), patch.object(inventory, "MAX_JSON_BYTES", limit), patch.object(inventory, "build_opener") as opener:
+                opener.return_value.open.return_value = response
+                with self.assertRaises(inventory.InventoryError) as result:
+                    inventory.get_json(inventory.PACKAGE_URL, TOKEN)
+                self.assertNotIn(TOKEN, str(result.exception))
+
+    def test_http_redirects_never_forward_the_workflow_token(self):
+        handler = inventory.NoRedirect()
+        self.assertIsNone(handler.redirect_request(None, None, 302, None, None, "https://attacker.invalid"))
+
+    def test_wrong_workflow_repository_fails_before_any_request(self):
+        environment = {
+            "GITHUB_REPOSITORY": inventory.REPOSITORY,
+            "GITHUB_REPOSITORY_ID": str(inventory.REPOSITORY_ID),
+            "GITHUB_REPOSITORY_OWNER_ID": str(inventory.OWNER_ID),
+            "IMAGE_NAME": inventory.IMAGE,
+            "REGISTRY": "ghcr.io",
+            "GH_TOKEN": TOKEN,
+        }
+        for key in environment.keys() - {"GH_TOKEN"}:
+            invalid = dict(environment, **{key: "invalid"})
+            captured = io.StringIO()
+            with self.subTest(key=key), patch.dict(os.environ, invalid, clear=True), patch.object(sys, "argv", ["inventory"]), patch.object(inventory, "inventory") as operation, contextlib.redirect_stderr(captured):
+                self.assertEqual(inventory.main(), 1)
+                operation.assert_not_called()
+                self.assertNotIn(TOKEN, captured.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -12,13 +12,13 @@ import {
 
 describe("repository metadata", () => {
   test("builds the current Maple GitHub URLs from the shared repository identity", () => {
-    expect(GITHUB_REPOSITORY).toBe("OpenSecretCloud/Maple");
-    expect(GITHUB_REPOSITORY_URL).toBe("https://github.com/OpenSecretCloud/Maple");
+    expect(GITHUB_REPOSITORY).toBe("MaplePrivacyLabs/Maple");
+    expect(GITHUB_REPOSITORY_URL).toBe("https://github.com/MaplePrivacyLabs/Maple");
     expect(GITHUB_RELEASES_API_URL).toBe(
-      "https://api.github.com/repos/OpenSecretCloud/Maple/releases/latest"
+      "https://api.github.com/repos/MaplePrivacyLabs/Maple/releases/latest"
     );
     expect(GITHUB_RELEASES_LATEST_URL).toBe(
-      "https://github.com/OpenSecretCloud/Maple/releases/latest"
+      "https://github.com/MaplePrivacyLabs/Maple/releases/latest"
     );
   });
 });
@@ -117,7 +117,7 @@ describe("getLatestDownloadInfo", () => {
           tag_name: "v9.9.9",
           name: "v9.9.9",
           published_at: "2026-08-23T00:00:00Z",
-          html_url: "https://github.com/OpenSecretCloud/Maple/releases/tag/v9.9.9",
+          html_url: "https://github.com/MaplePrivacyLabs/Maple/releases/tag/v9.9.9",
           assets: [
             {
               name: "Maple_9.9.9_universal.dmg",
@@ -144,7 +144,7 @@ describe("getLatestDownloadInfo", () => {
         linuxRpm: GITHUB_RELEASES_LATEST_URL,
         androidApk: GITHUB_RELEASES_LATEST_URL
       },
-      releaseUrl: "https://github.com/OpenSecretCloud/Maple/releases/tag/v9.9.9"
+      releaseUrl: "https://github.com/MaplePrivacyLabs/Maple/releases/tag/v9.9.9"
     });
   });
 

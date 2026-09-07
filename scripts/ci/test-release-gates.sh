@@ -471,10 +471,10 @@ check(
     proxy_container_publish.get("env")
     == {
         "REGISTRY": "ghcr.io",
-        "IMAGE_NAME": "opensecretcloud/maple-proxy",
+        "IMAGE_NAME": "mapleprivacylabs/maple-proxy",
         "UNBACKFILLED_PROXY_BASELINE": "0.3.3",
     },
-    "Proxy container publisher must preserve the existing GHCR package",
+    "Proxy container publisher must use the canonical MaplePrivacyLabs GHCR package",
 )
 
 container_jobs = proxy_container_publish.get("jobs", {})
@@ -485,12 +485,20 @@ check(
 prepare = container_jobs["prepare"]
 prepare_if = str(prepare.get("if", ""))
 for required_gate in (
+    "github.repository == 'MaplePrivacyLabs/Maple'",
+    "github.repository_id == '923138240'",
+    "github.repository_owner_id == '322649754'",
+    "github.ref == 'refs/heads/master'",
     "workflow_run.conclusion == 'success'",
     "workflow_run.event == 'release'",
     "workflow_run.path == '.github/workflows/release.yml'",
     "workflow_run.head_repository.full_name == github.repository",
 ):
     check(required_gate in prepare_if, f"Proxy container publisher is missing gate: {required_gate}")
+check(
+    prepare.get("permissions") == {"contents": "read", "packages": "read"},
+    "Proxy preparation must read package metadata without package write permission",
+)
 prepare_runs = "\n".join(str(step.get("run", "")) for step in prepare.get("steps", []))
 for required_control in (
     "repos/${REPOSITORY}/releases/latest",
@@ -500,6 +508,7 @@ for required_control in (
     "proxy container runtime inputs changed without a proxy version bump",
     '"${UNBACKFILLED_PROXY_BASELINE}"',
     "plan-proxy-container-publish.sh",
+    "python3 -I scripts/ci/proxy_registry_inventory.py",
 ):
     check(required_control in prepare_runs, f"Proxy publication plan is missing control: {required_control}")
 prepare_checkouts = [
@@ -595,6 +604,7 @@ check(
 finalize_runs = "\n".join(str(step.get("run", "")) for step in container_finalize.get("steps", []))
 for required_control in (
     "inspect-proxy-container-manifest.sh",
+    "python3 -I scripts/ci/proxy_registry_inventory.py --require-public",
     "published exact tag does not match the current proxy runtime inputs",
     'for tag in "${PROXY_MINOR}" "${PROXY_MAJOR}" latest',
     "docker buildx imagetools create",
@@ -618,5 +628,8 @@ pass "proxy release artifact verifier accepts only the complete native asset set
 
 bash "${script_dir}/test-plan-proxy-container-publish.sh" >/dev/null
 pass "proxy container publish planner preserves immutable versions and recovery"
+
+python3 "${script_dir}/test_proxy_registry_inventory.py" >/dev/null
+pass "proxy registry inventory distinguishes initial creation from failed access"
 
 printf '1..%d\n' "${passed}"

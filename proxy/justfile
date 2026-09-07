@@ -240,8 +240,8 @@ docker-clean:
 # Pull from GitHub Container Registry
 ghcr-pull tag="latest":
     @echo "📥 Pulling from GitHub Container Registry..."
-    @{{container}} pull ghcr.io/opensecretcloud/maple-proxy:{{tag}}
-    @echo "✅ Pulled ghcr.io/opensecretcloud/maple-proxy:{{tag}}"
+    @{{container}} pull ghcr.io/mapleprivacylabs/maple-proxy:{{tag}}
+    @echo "✅ Pulled ghcr.io/mapleprivacylabs/maple-proxy:{{tag}}"
 
 # Compatibility alias for the complete repository check.
 check-all: check

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -194,6 +195,82 @@ class ProvenanceTests(unittest.TestCase):
         self.values[self.root + "/git/ref/heads/pages-production"]["object"]["sha"] = SHA
         self.event = {}
         self.assertEqual(self.production()["previous_sha"], SHA)
+
+    def transferred_release_values(self):
+        self.setup_release()
+        self.values[self.root + "/git/ref/heads/pages-production"]["object"]["sha"] = SHA
+        for key in ("repository", "head_repository"):
+            self.run[key].update(full_name=self.repo, owner={"id": 185423582})
+        for asset in self.release["assets"]:
+            asset["browser_download_url"] = (
+                f"https://github.com/{self.repo}/releases/download/v3.3.10/{asset['name']}"
+            )
+        new_repo = "MaplePrivacyLabs/Maple"
+        new_root = "/repos/" + new_repo
+        moved = {key.replace(self.root, new_root, 1): value for key, value in self.values.items()}
+        moved[new_root] = {"id": REPO_ID, "default_branch": "master", "full_name": new_repo,
+                           "owner": {"id": 322649754}}
+        return new_repo, moved
+
+    def test_manual_production_prepare_after_owner_transfer_uses_retained_release(self):
+        new_repo, moved = self.transferred_release_values()
+        archive = io.BytesIO()
+        contents = b"<html>Retained production release</html>"
+        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+            member = tarfile.TarInfo("index.html")
+            member.size = len(contents)
+            bundle.addfile(member, io.BytesIO(contents))
+        archive_bytes = archive.getvalue()
+        archive_digest = hashlib.sha256(archive_bytes).hexdigest()
+        checksum = f"{archive_digest}  maple-web-dist.tar.gz\n".encode()
+        new_root = "/repos/" + new_repo
+        downloads = {}
+        for asset, body in zip(self.release["assets"], (archive_bytes, checksum)):
+            asset.update(size=len(body), digest="sha256:" + hashlib.sha256(body).hexdigest())
+            downloads[f"{new_root}/releases/assets/{asset['id']}"] = body
+
+        def request(path, method="GET", data=None, accept="application/vnd.github+json"):
+            self.assertEqual(method, "GET")
+            self.assertIsNone(data)
+            self.assertTrue(path.startswith(new_root))
+            if path in downloads:
+                self.assertEqual(accept, "application/octet-stream")
+                return io.BytesIO(downloads[path])
+            return io.BytesIO(json.dumps(moved[path]).encode())
+
+        api = pages.API("https://api.github.com", "fake-transfer-canary")
+        gh = pages.GitHub(api, new_repo, REPO_ID)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(api, "request", side_effect=request) as read:
+            state = Path(tmp) / "prepared"
+            plan = pages.prepare(gh, {}, "production", state)
+            self.assertEqual((plan["target"], plan["profile"], plan["sha"], plan["previous_sha"]),
+                             ("production", "release", SHA, SHA))
+            self.assertEqual((plan["release_id"], plan["run_id"], plan["run_attempt"]), (900, 100, 2))
+            self.assertEqual((state / "assets/index.html").read_bytes(), contents)
+            saved = json.loads((state / "plan.json").read_text())
+            self.assertEqual(saved["files"], {"index.html": hashlib.sha256(contents).hexdigest()})
+            self.assertEqual([call.args[0] for call in read.call_args_list if call.args[0] in downloads],
+                             list(downloads))
+
+    def test_transferred_production_rejects_wrong_or_missing_repository_ids_before_download(self):
+        new_repo, moved = self.transferred_release_values()
+        new_root = "/repos/" + new_repo
+        for location in ("current", "repository", "head_repository"):
+            for missing in (False, True):
+                with self.subTest(location=location, missing=missing):
+                    values = copy.deepcopy(moved)
+                    identity = (values[new_root] if location == "current"
+                                else values[new_root + "/actions/runs/100"][location])
+                    if missing:
+                        del identity["id"]
+                    else:
+                        identity["id"] = 99
+                    api = MemoryAPI(values)
+                    api.download = Mock(side_effect=AssertionError("Untrusted release must not be downloaded"))
+                    gh = pages.GitHub(api, new_repo, REPO_ID)
+                    with tempfile.TemporaryDirectory() as tmp, self.assertRaises((pages.Rejected, KeyError)):
+                        pages.prepare(gh, {}, "production", Path(tmp) / "prepared")
+                    api.download.assert_not_called()
 
     def test_draft_prerelease_and_malformed_tag_rejected(self):
         self.setup_release()

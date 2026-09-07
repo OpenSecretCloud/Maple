@@ -20,7 +20,7 @@ RUN cargo build --locked --release --bin maple-proxy
 # Runtime stage - minimal image for production
 FROM docker.io/debian:bookworm-slim AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/OpenSecretCloud/Maple"
+LABEL org.opencontainers.image.source="https://github.com/MaplePrivacyLabs/Maple"
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \

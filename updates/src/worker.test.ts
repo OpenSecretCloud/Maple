@@ -61,7 +61,7 @@ function envReturning(response: Response, requests: Request[] = []): Env {
 
 describe("latest.json validation", () => {
   test("uses the shared Maple GitHub repository identity", () => {
-    expect(GITHUB_REPOSITORY).toBe("OpenSecretCloud/Maple");
+    expect(GITHUB_REPOSITORY).toBe("MaplePrivacyLabs/Maple");
   });
 
   test("accepts the Maple release schema", () => {
@@ -88,7 +88,7 @@ describe("latest.json validation", () => {
 
     const nonDefaultPort = validRelease();
     nonDefaultPort.platforms["windows-x86_64"].url =
-      "https://github.com:8443/OpenSecretCloud/Maple/releases/download/v3.3.8/Maple_3.3.8_x64-setup.exe";
+      "https://github.com:8443/MaplePrivacyLabs/Maple/releases/download/v3.3.8/Maple_3.3.8_x64-setup.exe";
     expect(isLatestRelease(nonDefaultPort)).toBe(false);
   });
 

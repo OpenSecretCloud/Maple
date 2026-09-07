@@ -18,21 +18,28 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: opensecretcloud/maple-proxy
+  IMAGE_NAME: mapleprivacylabs/maple-proxy
   UNBACKFILLED_PROXY_BASELINE: 0.3.3
 
 jobs:
   prepare:
     name: Validate proxy publication
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.repository_id == '923138240' &&
+      github.repository_owner_id == '322649754' &&
+      github.ref == 'refs/heads/master' &&
+      ((github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'release' &&
         github.event.workflow_run.path == '.github/workflows/release.yml' &&
-        github.event.workflow_run.head_repository.full_name == github.repository)
+        github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       reconcile: ${{ steps.plan.outputs.reconcile }}
@@ -157,13 +164,9 @@ jobs:
             esac
           fi
 
-          registry_token="$(
-            curl --fail --silent --show-error \
-              "https://${REGISTRY}/token?scope=repository:${IMAGE_NAME}:pull" | jq -er '.token'
-          )"
-          curl --fail --silent --show-error \
-            --header "Authorization: Bearer ${registry_token}" \
-            "https://${REGISTRY}/v2/${IMAGE_NAME}/tags/list?n=10000" \
+          # Only authenticated package metadata can confirm initial creation.
+          # Anonymous denial/network errors must never mean an empty registry.
+          python3 -I scripts/ci/proxy_registry_inventory.py \
             >"${RUNNER_TEMP}/proxy-tags.json"
 
           plan="${RUNNER_TEMP}/proxy-publish-plan"
@@ -452,6 +455,10 @@ jobs:
           }
 
           assert_release_is_current
+          # GitHub creates a new container package as private. An operator must
+          # make it public before anonymous verification or alias publication.
+          # This workflow never changes package visibility on the user's behalf.
+          python3 -I scripts/ci/proxy_registry_inventory.py --require-public >/dev/null
           image="${REGISTRY}/${IMAGE_NAME}"
           source_digest_dir=""
           if [ "${PUBLISHED_NOW}" = "true" ]; then
