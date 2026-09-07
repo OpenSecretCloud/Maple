@@ -1,0 +1,122 @@
+name: Publish Pages
+
+on:
+  workflow_run:
+    workflows: ["Pages preview build", "Release"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Publish development preview
+    if: >-
+      vars.MAPLE_PAGES_PREVIEW_ENABLED == 'true' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/pages-preview-build.yml' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'pull_request' ||
+        (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'master'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: pages-preview-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    environment:
+      name: pages-preview
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      deployments: write
+    steps:
+      # workflow_run uses the default branch SHA. Never checkout or execute the
+      # triggering PR's scripts, dependencies, workflow, or deployment config here.
+      - name: Checkout trusted publisher
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Install trusted deployment dependencies
+        working-directory: updates
+        run: nix develop --no-update-lock-file ..#pages -c bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify and prepare the preview artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_deploy.py
+          prepare --target preview --state "$RUNNER_TEMP/maple-pages"
+
+      - name: Deploy the verified preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_deploy.py
+          deploy --state "$RUNNER_TEMP/maple-pages"
+
+  production:
+    name: Publish current stable release
+    if: >-
+      vars.MAPLE_PAGES_PRODUCTION_ENABLED == 'true' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+        (github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'release' &&
+          github.event.workflow_run.path == '.github/workflows/release.yml' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      # Shared with the legacy promoter so rollout cannot run two production writers.
+      group: pages-production
+      cancel-in-progress: false
+    environment:
+      name: pages-production
+      url: https://trymaple.ai
+    permissions:
+      contents: write
+      actions: read
+      deployments: write
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Install trusted deployment dependencies
+        working-directory: updates
+        run: nix develop --no-update-lock-file ..#pages -c bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify and prepare the stable release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_deploy.py
+          prepare --target production --state "$RUNNER_TEMP/maple-pages"
+
+      - name: Deploy the verified stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_deploy.py
+          deploy --state "$RUNNER_TEMP/maple-pages"
