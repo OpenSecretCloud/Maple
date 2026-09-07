@@ -141,6 +141,14 @@ That is deployment-state evidence, not an authenticated application smoke test.
 Access-protected previews require a permitted browser; an automated HTTP 403
 alone does not establish a broken application.
 
+Both publisher jobs keep their protected environments but set
+`environment.deployment: false`. This prevents GitHub's automatic job-completion
+record for the publisher's master checkout from superseding the deployment
+reported for the actual artifact SHA. The explicit deployment status owns the
+production/preview URL. Branch policies, reviewers, wait timers, and secrets still
+apply; custom deployment-protection GitHub Apps are incompatible with this mode
+and make the job fail. See [GitHub's environment-without-deployment rules](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments#using-environments-without-deployments).
+
 GitHub and Cloudflare do not provide an atomic transaction here. If the source
 changes during upload, or later ref/status reporting fails, the new deployment
 can already be active even though the workflow fails. Inspect Cloudflare's actual

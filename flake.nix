@@ -686,7 +686,15 @@
             cd "$src"
             # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
             # Release-gate tests assert that the only intended value is queue: max.
-            actionlint -ignore 'unexpected key "queue" for "concurrency" section' ./*.yml
+            for workflow in ./*.yml; do
+              if [ "$workflow" = ./pages-publish.yml ]; then
+                # It also predates environment.deployment. Pages tests require
+                # false on both publisher jobs; keep this exception file-scoped.
+                actionlint -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
+              else
+                actionlint -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
+              fi
+            done
             touch "$out"
           '';
 

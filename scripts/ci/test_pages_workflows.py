@@ -170,7 +170,12 @@ class PagesWorkflowTests(unittest.TestCase):
         for target, job in publish["jobs"].items():
             with self.subTest(target=target):
                 self.assertNotIn("env", job)
-                self.assertEqual(job["environment"]["name"], f"pages-{target}")
+                # GitHub's automatic job deployment uses the publisher checkout
+                # SHA and can inactivate the explicit artifact-SHA deployment.
+                self.assertEqual(
+                    job["environment"],
+                    {"name": f"pages-{target}", "deployment": False},
+                )
                 steps = job["steps"]
                 deploy = steps[-1]
                 self.assertEqual(
