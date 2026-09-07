@@ -27,6 +27,8 @@ jobs:
       cancel-in-progress: false
     environment:
       name: pages-preview
+      # The publisher reports the artifact SHA, not this job's master checkout SHA.
+      deployment: false
     permissions:
       contents: read
       actions: read
@@ -84,7 +86,8 @@ jobs:
       cancel-in-progress: false
     environment:
       name: pages-production
-      url: https://trymaple.ai
+      # Keep job completion from superseding the verified release deployment.
+      deployment: false
     permissions:
       contents: write
       actions: read

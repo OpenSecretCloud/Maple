@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,6 +29,32 @@ class MemoryAPI:
         if method != "GET":
             raise AssertionError("Selection must never mutate GitHub")
         return copy.deepcopy(self.values[path])
+
+
+class DeploymentReportingTests(unittest.TestCase):
+    def test_reports_artifact_sha_when_publisher_checks_out_newer_master(self):
+        for target, branch, environment in (
+            ("production", "pages-production", "pages-production"),
+            ("preview", "master", "pages-master"),
+        ):
+            with self.subTest(target=target):
+                gh = Mock()
+                gh.write.return_value = {"id": 123}
+                plan = {"target": target, "branch": branch, "sha": SHA}
+                result = {"url": "https://12345678.maple-ca8.pages.dev"}
+                with patch.dict(os.environ, {"GITHUB_SHA": OTHER_SHA}):
+                    pages.report(gh, plan, result)
+                self.assertEqual(gh.write.call_count, 2)
+                creation, success = gh.write.call_args_list
+                self.assertEqual(creation.args[0], "/deployments")
+                self.assertEqual(creation.args[1]["ref"], SHA)
+                self.assertEqual(creation.args[1]["environment"], environment)
+                self.assertEqual(success.args[0], "/deployments/123/statuses")
+                self.assertEqual(success.args[1]["state"], "success")
+                self.assertEqual(
+                    success.args[1]["environment_url"],
+                    "https://trymaple.ai" if target == "production" else result["url"],
+                )
 
 
 class ProvenanceTests(unittest.TestCase):
