@@ -629,6 +629,17 @@
               packages = shellPackages;
               shellHook = pathShellHook shellPackages + commonShellHook + linuxShellHook;
             };
+
+          # Trusted Pages publishing uploads static artifacts. It needs no app
+          # toolchain, native setup hooks, or credentials while installing Wrangler.
+          pages =
+            let
+              shellPackages = with pkgs; [ bun nodejs python3 cacert git ];
+            in
+            mkShellForHost {
+              packages = shellPackages;
+              shellHook = pathShellHook shellPackages;
+            };
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
           desktop-linux =
@@ -685,6 +696,15 @@
           } ''
             cd "$src"
             python3 scripts/ci/test_change_detection.py
+            touch "$out"
+          '';
+
+          pages = pkgs.runCommand "maple-pages-deployment-check" {
+            nativeBuildInputs = with pkgs; [ python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 -I -m unittest discover -s scripts/ci -p 'test_pages_*.py'
             touch "$out"
           '';
 

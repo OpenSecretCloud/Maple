@@ -212,6 +212,12 @@ new in-repository dependency makes one component an app build input, update the
 classifier and its table-driven tests in the same change that wires the
 dependency.
 
+For Pages publishing, read [the deployment guide](docs/pages-deployments.md).
+Keep preview builds unprivileged, preserve development/production build profiles,
+and run credential-bearing publication only from trusted master. The new Pages
+publisher is opt-in; deployment flags, protected environments, and native CF
+build controls are separate operator prerequisites, not consequences of merging.
+
 PR artifact scripts deliberately ignore local `.env*` files and compile fixed
 PR endpoints. They prove PR packaging, not a configured local-backend runtime.
 For the latter, preserve the checkout's `frontend/.env.local`, use

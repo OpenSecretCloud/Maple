@@ -417,6 +417,7 @@ check("environment" not in pages_job, "Pages production promotion must not requi
 
 pages_if = str(pages_job.get("if", ""))
 for required_gate in (
+    "vars.MAPLE_PAGES_PRODUCTION_ENABLED != 'true'",
     "workflow_run.conclusion == 'success'",
     "workflow_run.event == 'release'",
     "workflow_run.path == '.github/workflows/release.yml'",

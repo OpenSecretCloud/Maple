@@ -19,12 +19,13 @@ jobs:
   promote:
     name: Advance pages-production
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'workflow_run' &&
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'release' &&
-        github.event.workflow_run.path == '.github/workflows/release.yml' &&
-        github.event.workflow_run.head_repository.full_name == github.repository)
+      vars.MAPLE_PAGES_PRODUCTION_ENABLED != 'true' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+        (github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'release' &&
+          github.event.workflow_run.path == '.github/workflows/release.yml' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

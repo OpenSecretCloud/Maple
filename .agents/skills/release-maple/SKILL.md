@@ -15,9 +15,14 @@ commit, external effect, and authority provided by the user.
   frontend, and Rust workflows. The iOS master workflow uploads its verified
   IPA to TestFlight automatically.
 - Creating a GitHub Release starts the cross-platform release workflow. A
-  successful release workflow starts separate updater-metadata, Pages
-  production-branch, and best-effort Zapstore workflows. These sibling
-  workflows never gate or change the outcome of the core Maple release.
+  successful release workflow starts separate updater-metadata, Pages, and
+  best-effort Zapstore workflows. These siblings never gate or change the core
+  Maple release. Pages has staged modes: `Promote Pages production` advances the
+  branch for native Cloudflare builds by default; when repository variable
+  `MAPLE_PAGES_PRODUCTION_ENABLED=true`, `Publish Pages` uploads the verified
+  existing release web artifact instead. Read
+  [the Pages deployment guide](../../../docs/pages-deployments.md) before changing
+  its mode, protected environments, or Cloudflare build controls.
 - The same Maple GitHub Release receives four native `maple-proxy` archives and
   their checksum manifest. Never create a separate proxy Release or proxy tag;
   `/releases/latest` must continue to identify the Maple application release.
@@ -165,10 +170,20 @@ gh run list --repo OpenSecretCloud/Maple --workflow 'Publish updater metadata' \
   --commit "$head_sha" --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 
-gh run list --repo OpenSecretCloud/Maple --workflow 'Promote Pages production' \
-  --commit "$head_sha" --limit 10 \
+pages_workflow='Promote Pages production'
+pages_enabled="$(gh variable list --repo OpenSecretCloud/Maple --json name,value \
+  --jq '.[] | select(.name == "MAPLE_PAGES_PRODUCTION_ENABLED") | .value')" || exit 1
+if [ "$pages_enabled" = true ]; then
+  pages_workflow='Publish Pages'
+fi
+gh run list --repo OpenSecretCloud/Maple --workflow "$pages_workflow" \
+  --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```
+
+The publisher executes trusted master, which can be newer than the release.
+Inspect its production job's validated source SHA instead of filtering runs by
+the workflow checkout SHA; preview publication uses the same workflow name.
 
 Also inspect the independent proxy-container publisher. It should either prove
 the expected immutable proxy version, public AMD64/ARM64 manifest, per-platform
@@ -183,20 +198,24 @@ gh run list --repo OpenSecretCloud/Maple --workflow 'Publish proxy container' \
 ```
 
 The updater workflow must publish the verified `latest.json` before reporting
-the desktop updater control plane current. The Pages workflow advances the
-machine-owned `pages-production` ref to the exact stable release SHA; its
-success proves the ref mutation, not Cloudflare's external build or live-site
-result. Verify the corresponding Cloudflare Pages check/deployment separately
-before reporting Maple web production current. A failure in either sibling is
-reported and repaired in that workflow without changing the completed release
-artifacts.
+the desktop updater control plane current. In legacy Pages mode, a successful
+promoter proves only the `pages-production` ref mutation; verify Cloudflare's
+separate build result. In owned-publisher mode, require the `production` job in
+`Publish Pages` to succeed: it validates the release asset, uploads without a
+rebuild, checks CF stage/commit/active canonical deployment, and then advances
+the ref without force. Neither result proves browser login/chat or configuration.
+Report and repair sibling failures without altering completed release artifacts.
 
-Confirm the production ref and inspect Cloudflare's exact-commit check:
+Confirm the production ref in either mode:
 
 ```bash
 pages_sha="$(gh api repos/OpenSecretCloud/Maple/git/ref/heads/pages-production --jq .object.sha)"
 [[ "$pages_sha" == "$head_sha" ]]
+```
 
+In legacy mode only, inspect Cloudflare's exact-commit check:
+
+```bash
 gh api "repos/OpenSecretCloud/Maple/commits/$head_sha/check-runs" --jq '
   [.check_runs[]
    | select(.name == "Cloudflare Pages")
@@ -204,13 +223,19 @@ gh api "repos/OpenSecretCloud/Maple/commits/$head_sha/check-runs" --jq '
    | {status, conclusion, started_at, completed_at, details_url}]'
 ```
 
-Require a completed successful Cloudflare Pages check corresponding to the
-production-branch promotion, not merely an older preview check on the same
-commit. Inspect its `details_url` when the commit has multiple Pages checks.
-A raw `curl` from an automated VM may be denied by Cloudflare edge policy; a
-Cloudflare-owned successful production check is deployment proof, while an
-allowed-browser smoke is separate live-application evidence. Record either
-boundary instead of turning an edge-policy 403 into a release failure.
+Require the successful Cloudflare check for the production-branch promotion,
+not an older preview check on the same commit. In owned-publisher mode, inspect
+the `Publish Pages` production job summary and GitHub deployment instead; the
+old Cloudflare App check is no longer produced by this path. The summary names
+the deployment ID and SHA. A failed post-upload freshness/ref/status check can
+leave a new CF deployment already active: inspect actual canonical state before
+retrying, and follow the deployment guide's hold/rollback procedure.
+
+A raw `curl` from an automated VM may be denied by edge policy. An allowed-browser
+smoke is separate application evidence; do not turn an edge-policy 403 into a
+release failure. Once owned publishing is enabled, manually dispatch
+`Publish Pages` from master to retry the current verified stable release; never
+recreate a Release or rerun the core release merely to repair Pages.
 
 On failure, read the failed logs before acting:
 
