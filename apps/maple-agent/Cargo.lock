@@ -5875,6 +5875,7 @@ dependencies = [
  "rodio",
  "rpassword",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "spellbook",
@@ -5888,9 +5889,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce86619142c6c60420edf577c4fe41df6e1d3bb3a63429da130b6ccab81cec72"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -6974,7 +6973,6 @@ dependencies = [
 [[package]]
 name = "opensecret"
 version = "3.6.2"
-source = "git+https://github.com/benthecarman/Maple?branch=opensecret-git#0efc1bbb463d2d51aabcc9d1c3638e37094abe94"
 dependencies = [
  "aes-gcm",
  "anyhow",

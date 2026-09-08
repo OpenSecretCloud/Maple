@@ -3737,26 +3737,7 @@ impl AgentRuntimeHandle {
                 return Ok(None);
             }
         };
-        let mut concrete_id = model_id.to_string();
-        for alias in &catalog.aliases {
-            if alias.id == model_id {
-                if let Some(vision) = alias.capabilities.as_ref().and_then(|c| c.vision) {
-                    return Ok(Some(vision));
-                }
-                if let Some(target) = alias.target_model.as_deref()
-                    && !target.trim().is_empty()
-                {
-                    concrete_id = target.to_string();
-                }
-                break;
-            }
-        }
-        Ok(catalog
-            .data
-            .iter()
-            .find(|model| model.id == concrete_id)
-            .and_then(|model| model.capabilities.as_ref())
-            .and_then(|capabilities| capabilities.vision))
+        Ok(catalog_supports_vision(&catalog, model_id))
     }
 
     pub async fn load_session(&self, session_id: String) -> Result<AgentSessionDetail, String> {
@@ -4579,6 +4560,34 @@ const MODEL_CATALOG_TTL_MS: u64 = 10 * 60 * 1000;
 /// Guards the background revalidation so concurrent readers in one process
 /// trigger at most one refresh.
 static MODEL_CATALOG_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Resolve the catalog's vision flag without inventing one when metadata is absent.
+/// An explicit alias capability (including false) overrides its target model.
+fn catalog_supports_vision(
+    catalog: &opensecret::ModelCatalogResponse,
+    model_id: &str,
+) -> Option<bool> {
+    let mut concrete_id = model_id;
+    for alias in &catalog.aliases {
+        if alias.id == model_id {
+            if let Some(vision) = alias.capabilities.as_ref().map(|c| c.vision) {
+                return Some(vision);
+            }
+            if let Some(target) = alias.target_model.as_deref()
+                && !target.trim().is_empty()
+            {
+                concrete_id = target;
+            }
+            break;
+        }
+    }
+    catalog
+        .data
+        .iter()
+        .find(|model| model.id == concrete_id)
+        .and_then(|model| model.capabilities.as_ref())
+        .map(|capabilities| capabilities.vision)
+}
 
 fn model_catalog_cache_path(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
     Ok(agent_config_dir(paths, user_id)
@@ -13473,6 +13482,62 @@ mod tests {
             select_mcp_servers(&configured, Some(&["optional".to_string()])).unwrap()[0].name,
             "optional"
         );
+    }
+
+    #[test]
+    fn catalog_vision_preserves_explicit_alias_capabilities() {
+        let catalog = serde_json::from_value(json!({
+            "object": "list",
+            "data": [{"id": "vision-model", "capabilities": {"vision": true}}],
+            "aliases": [
+                {"id": "explicit-no", "target_model": "vision-model", "capabilities": {"vision": false}},
+                {"id": "explicit-yes", "target_model": "missing-model", "capabilities": {"vision": true}},
+                {"id": "default-no", "target_model": "vision-model", "capabilities": {}}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            catalog_supports_vision(&catalog, "explicit-no"),
+            Some(false)
+        );
+        assert_eq!(
+            catalog_supports_vision(&catalog, "explicit-yes"),
+            Some(true)
+        );
+        assert_eq!(catalog_supports_vision(&catalog, "default-no"), Some(false));
+    }
+
+    #[test]
+    fn catalog_vision_falls_back_only_when_alias_capabilities_are_absent() {
+        let catalog = serde_json::from_value(json!({
+            "object": "list",
+            "data": [
+                {"id": "vision-model", "capabilities": {"vision": true}},
+                {"id": "text-model", "capabilities": {"vision": false}},
+                {"id": "unknown-model"}
+            ],
+            "aliases": [
+                {"id": "vision-alias", "target_model": "vision-model"},
+                {"id": "text-alias", "target_model": "text-model", "capabilities": null},
+                {"id": "unknown-alias", "target_model": "unknown-model"},
+                {"id": "missing-alias", "target_model": "missing-model"},
+                {"id": "empty-alias", "target_model": " "}
+            ]
+        }))
+        .unwrap();
+        for (id, expected) in [
+            ("vision-model", Some(true)),
+            ("vision-alias", Some(true)),
+            ("text-model", Some(false)),
+            ("text-alias", Some(false)),
+            ("unknown-model", None),
+            ("unknown-alias", None),
+            ("missing-alias", None),
+            ("empty-alias", None),
+            ("nonexistent", None),
+        ] {
+            assert_eq!(catalog_supports_vision(&catalog, id), expected, "{id}");
+        }
     }
 
     #[test]

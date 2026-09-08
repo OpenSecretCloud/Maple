@@ -1,6 +1,7 @@
-# maple-gpui
+# Maple Agent (GPUI prototype)
 
-Native Maple desktop app. It rebuilds Maple Agent Mode in
+Maple’s desktop-v2 prototype lives in `apps/maple-agent/` in this monorepo.
+Its internal Cargo package and executable remain named `maple-gpui`. It rebuilds Maple Agent Mode in
 [gpui](https://crates.io/crates/gpui) on top of the Maple agent runtime
 ported from the Tauri app.
 
@@ -32,7 +33,8 @@ event stream. The UI talks to that facade only. This mirrors Maple's own
 edge-adapter pattern, so a future process split replaces the facade without
 touching UI code.
 
-The runtime was copied from `Maple/frontend/src-tauri/src` (`agent.rs`,
+The runtime was originally copied from Research’s Tauri source (now
+`apps/maple-research/frontend/src-tauri/src`) (`agent.rs`,
 `agent/*`, `maple_api.rs`, `open_secret_config.rs`) and changed only to
 remove Tauri:
 
@@ -41,7 +43,8 @@ remove Tauri:
   sink are injectable traits
 - public visibility opened on the service surface the app consumes
 
-Goose is pinned to the same aaif-goose fork revision as Maple.
+Goose is pinned to the aaif-goose fork revision recorded in this component’s
+Cargo manifests and lockfile; Research has an independent dependency graph.
 
 ## Features
 
@@ -194,27 +197,33 @@ missing entries keep their shipped key and `null` disables that exact binding
 slot. Maple validates the complete candidate map before replacing the live one,
 so a malformed override cannot leave ordinary text editing half-installed.
 
-## Prerequisites
-
-- Rust stable (edition 2024; 1.94 or newer)
-- Linux: `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libfontconfig-dev`,
-  `libfreetype-dev`, `libclang-dev`, `cmake`, ALSA headers for the
-  microphone and playback, and a Vulkan loader. Debian/Ubuntu:
-
-  ```sh
-  sudo apt install libxkbcommon-dev libxkbcommon-x11-dev \
-       libfontconfig-dev libfreetype-dev libclang-dev cmake \
-       libasound2-dev mesa-vulkan-drivers
-  ```
-
-- macOS and Windows: the Rust toolchain only.
-
 ## Build and run
 
+Use this component’s pinned Nix environment on macOS or Linux. Commands in
+this README run from the component directory unless stated otherwise:
+
 ```sh
-cargo run -p maple-gpui              # desktop app, dev profile
-cargo build --release -p maple-gpui  # release binary in target/release
+cd apps/maple-agent              # from the Maple repository root
+nix develop --no-update-lock-file
+just build                      # debug binary in target/debug
+just run                        # desktop app
+just release                    # local release build only
 ```
+
+The root also offers `just agent-check`, `just agent-build`, and
+`just agent-dev`. Native development on macOS requires full Xcode at
+`/Applications/Xcode.app`; Linux libraries come from Nix. Windows CI uses the
+same Rust version resolved by the component’s pinned `flake.lock`, with
+Cargo commands from this directory.
+
+For an OpenSecret managed workspace, run its `bin/maple-agent` launcher
+instead of launching the binary directly. It sources private
+`env/maple-agent.sh`, selects the workspace’s local or hosted backend and
+billing configuration, and isolates config/data under
+`state/maple-agent/{config,data}`. The launcher clears inherited API keys and
+disables update discovery. Agent and the standalone proxy share one reserved
+proxy port: choose one process to own it. A registered legacy GPUI checkout
+keeps its own `bin/maple-gpui` launcher and separate state.
 
 On macOS, use `just debug-app` when testing features that depend on privacy
 permissions. It stages the debug binary in a stable, development-only `.app`
@@ -225,7 +234,10 @@ not require a Developer ID or produce a release artifact. The default ad hoc
 identity changes when Maple is rebuilt, so macOS may require the development
 app's privacy grants again. Set `MAPLE_DEBUG_CODESIGN_IDENTITY` to the name or
 SHA-1 hash of an Apple Development identity in the local keychain when more
-stable grants across rebuilds are useful.
+stable grants across rebuilds are useful. `MAPLE_DEBUG_BUNDLE_ID` can select
+a dotted development bundle identifier; the managed Agent environment sets
+a unique workspace identity. Source that environment before `just debug-app`
+and launch the exact generated bundle. Stop only the process you started.
 
 ### Nix
 
@@ -233,8 +245,8 @@ The flake provides a release package and a development shell with the latest
 stable Rust toolchain pinned by `flake.lock`:
 
 ```sh
-nix build
-nix develop
+nix build --no-update-lock-file
+nix develop --no-update-lock-file
 ```
 
 On Apple Silicon macOS, the pure `nix build` package enables GPUI's runtime
@@ -245,7 +257,7 @@ component and build in the development shell:
 
 ```sh
 xcodebuild -downloadComponent MetalToolchain
-nix develop --command cargo build --release -p maple-gpui --locked
+nix develop --no-update-lock-file -c cargo build --release -p maple-gpui --locked
 ```
 
 The development shell uses `/Applications/Xcode.app`. Linux builds use the
@@ -281,8 +293,7 @@ just clean-local
 Release builds use fat LTO and one codegen unit. Use a release build for any
 performance check; the dev profile is `opt-level = 1`.
 
-The `justfile` has recipes for the common tasks. Install
-[just](https://github.com/casey/just) and run `just` to list them:
+The pinned shell includes `just`. Run `just` to list component recipes:
 
 ```sh
 just ci          # all the checks that CI runs
@@ -367,7 +378,7 @@ All settings are environment variables. None are required.
 | `MAPLE_PERMISSION_MODE` | `smart_approve` or `auto`. Overrides the saved setting. | Saved setting |
 | `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
 | `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
-| `MAPLE_UPDATE_REPO` | GitHub `owner/repo` whose releases the launch check reads. | `benthecarman/maple-gpui` |
+| `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
 | `RUST_LOG` | Log filter. | `info,goose=warn` |
 
@@ -410,22 +421,39 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-CI runs the same three commands on Linux, macOS, and Windows. It also
-builds and tests the headless feature sets and a Linux release build.
-`just ci` runs the whole set locally. A `v*` tag builds release binaries
-for all three platforms and attaches them to a GitHub release.
+Root `.github/workflows/agent-ci.yml` selects this component when Agent or
+its shared Rust dependencies change. It builds and tests Linux, macOS, and
+Windows; Linux additionally runs the feature-matrix lint/headless checks and
+a release build. `just ci` is the full local format, lint, build and test gate;
+`just release` separately validates the optimized binary. PR jobs have no
+signing or publishing credentials. See the root agent guide for shared checks.
 
-## Before a release
+## Update and release boundary
 
-- `app/src/update.rs` has the default release repository
-  (`DEFAULT_REPO`). Point it at the repository that publishes the
-  binaries, or set `MAPLE_UPDATE_REPO` at run time.
+The launch check accepts only stable `maple-agent-vX.Y.Z` releases and selects
+the highest semantic version across a bounded, complete scan of release pages.
+Research `vX.Y.Z` releases, drafts and prereleases are ignored. A failed or
+incomplete scan produces no update banner. The app only links to a canonical
+GitHub release page; it does not download or install binaries.
 
-## Dependencies to watch
+The namespace is reserved for a future Agent distribution workflow. This
+import does not activate a publisher or create releases. Future Agent releases
+must set `make_latest: false` so Research’s global GitHub latest pointer remains
+unchanged. Review packaging, signing and distribution separately before using
+the namespace. Local `just release` and `just dist` only build local files.
 
-`Cargo.toml` patches `opensecret` to a git branch that adds a root workspace
-manifest around the in-tree Rust SDK, so the `get_model_catalog()` method is
-reachable. Drop the patch when the SDK publishes that method to crates.io.
+## Shared dependencies and provenance
+
+The component consumes the existing in-tree `opensecret` SDK at `../../sdk/rust`
+and `maple-proxy` at `../../proxy` through workspace dependencies. The SDK fork
+patch is removed; no SDK rename or registry publication is needed for local
+builds. Keep the component lockfile and Nix source fileset aligned with these
+path dependencies. The pure package includes the required SDK attestation
+assets as well as Rust source.
+
+See [import provenance and follow-up work](../../docs/maple-agent-import.md).
+This component preserves the original GPUI history; its old nested workflows
+are replaced by root monorepo CI.
 
 ## License
 

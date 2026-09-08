@@ -10,6 +10,12 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 requested_bundle_dir="${MAPLE_DEBUG_APP_PATH:-$repo_root/target/debug/Maple GPUI Dev.app}"
 binary_source="$repo_root/target/debug/maple-gpui"
 codesign_identity="${MAPLE_DEBUG_CODESIGN_IDENTITY:--}"
+bundle_id="${MAPLE_DEBUG_BUNDLE_ID:-cloud.opensecret.maple.gpui.dev}"
+
+if [[ ! "$bundle_id" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+    echo "MAPLE_DEBUG_BUNDLE_ID must be a dotted bundle identifier" >&2
+    exit 1
+fi
 
 if [[ ! -x "$binary_source" ]]; then
     echo "debug binary not found at $binary_source; run 'just build' first" >&2
@@ -48,6 +54,7 @@ binary_destination="$contents_dir/MacOS/maple-gpui"
 
 mkdir -p "$contents_dir/MacOS" "$frameworks_dir"
 cp "$repo_root/app/macos/Info.plist" "$contents_dir/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$contents_dir/Info.plist"
 cp "$binary_source" "$binary_destination"
 chmod 0755 "$binary_destination"
 
@@ -91,7 +98,7 @@ done < <(/usr/bin/find "$frameworks_dir" -type f -name '*.dylib' -print0)
 # identity uses no keychain certificate and remains separate from release
 # signing; developers can opt into a stable Apple Development identity.
 /usr/bin/codesign --force --sign "$codesign_identity" --timestamp=none \
-  --identifier cloud.opensecret.maple.gpui.dev \
+  --identifier "$bundle_id" \
   "$staged_bundle"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$staged_bundle"
 

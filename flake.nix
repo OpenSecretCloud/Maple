@@ -704,6 +704,17 @@
           } ''
             cd "$src"
             python3 scripts/ci/test_change_detection.py
+            python3 scripts/ci/test_agent_change_detection.py
+            touch "$out"
+          '';
+
+          agent-workflows = pkgs.runCommand "maple-agent-workflow-check" {
+            nativeBuildInputs = with pkgs; [ bash git python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_agent_workflows.py
+            python3 scripts/ci/test_agent_rust_deps.py
             touch "$out"
           '';
 

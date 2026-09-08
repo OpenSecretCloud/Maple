@@ -1,6 +1,6 @@
 # Maple
 
-Maple is a monorepo for the Maple client, its OpenSecret SDKs, local proxy, and
+Maple is a monorepo for the Maple applications, their OpenSecret SDKs, local proxy, and
 updater service. The existing web, desktop, and mobile client lives under
 [`apps/maple-research/`](apps/maple-research/README.md), including Research chat
 and desktop Agent Mode. Its directory name does not change the shipped Maple
@@ -11,6 +11,7 @@ application identity.
 | Path | Responsibility |
 | --- | --- |
 | [`apps/maple-research/`](apps/maple-research/README.md) | React/Vite frontend and Tauri desktop/mobile application, app documentation, and distribution configuration |
+| [`apps/maple-agent/`](apps/maple-agent/README.md) | GPUI desktop-v2 prototype, ACP agent, and CLI proxy; independent from the shipped Research app |
 | [`sdk/`](sdk/README.md) | OpenSecret TypeScript/React and Rust SDKs, consumed in tree by Maple |
 | [`proxy/`](proxy/README.md) | Standalone OpenAI-compatible proxy, also consumed by desktop Maple |
 | [`services/updates/`](services/updates/README.md) | Desktop updater Worker and verified release-metadata publishing |
@@ -19,8 +20,9 @@ application identity.
 
 [OpenSecret](https://github.com/OpenSecretCloud/opensecret) remains the external
 backend for confidential authentication, inference, conversations, and related
-APIs. The planned `services/opensecret/` backend and `apps/maple-agent/` GPUI app
-imports have not happened yet.
+APIs. Its planned import under `services/opensecret/` has not happened yet.
+The GPUI import history and upstream follow-up branches are recorded in
+[the Agent migration note](docs/maple-agent-import.md).
 
 ## Development
 
@@ -33,6 +35,7 @@ just install
 just                    # List recipes
 just dev                # Research web development
 just desktop-dev        # Research Tauri application, including Agent Mode
+just agent-dev          # GPUI Agent app, using its own pinned component shell
 ```
 
 Follow the [Research setup guide](apps/maple-research/README.md#quick-start) to

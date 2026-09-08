@@ -19,6 +19,9 @@ futures-util = "0.3"
 once_cell = "1.18.0"
 http = "1"
 reqwest = { version = "0.13", features = ["stream"] }
+# Shared monorepo crates retain their independent package names and versions.
+opensecret = { version = "3.6.2", path = "../../sdk/rust" }
+maple-proxy = { version = "0.3.4", path = "../../proxy" }
 
 [profile.dev]
 opt-level = 1
@@ -27,11 +30,3 @@ opt-level = 1
 lto = "fat"
 codegen-units = 1
 strip = true
-
-[patch.crates-io]
-# Interim: OpenSecretCloud/Maple#852 adds get_model_catalog() to the
-# in-tree Rust SDK. A git dep cannot target the sdk/rust subdirectory,
-# so the opensecret-git branch adds a root workspace manifest that makes
-# the member resolvable. Drop this patch when the SDK publishes to
-# crates.io with the catalog method.
-opensecret = { git = "https://github.com/benthecarman/Maple", branch = "opensecret-git" }

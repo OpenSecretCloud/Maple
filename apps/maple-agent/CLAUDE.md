@@ -1,4 +1,8 @@
-# maple-gpui
+# Maple Agent (GPUI)
+
+GPUI desktop-v2 prototype for Maple, under `apps/maple-agent/`.
+Read the repository-root `AGENTS.md` and `$develop-maple-agent` as well.
+Commands below run from this component directory through its pinned Nix shell.
 
 GPUI desktop app for Maple. Workspace crates: `app` (binary `maple-gpui`),
 `crates/maple-agent`, `crates/maple-billing`. See `README.md` for the
@@ -28,9 +32,11 @@ just clean     # this checkout's target/ and dist/ only
 Raw `cargo clean` would delete the shared cache; use `just clean` or
 `just clean-local`.
 
-To stop a running app, use `pkill -x maple-gpui` (exact process name).
-`pkill -f` with the binary path also matches the shell that runs the
-command and kills it.
+Stop only the exact process launched for this checkout, through its originating
+terminal or recorded PID after verifying the full executable path. Multiple
+workspaces can run `maple-gpui`; a process name is not ownership. Managed
+workspaces provide `bin/maple-agent` with separate config/data roots and a
+shared proxy-port reservation. Never start two proxies on that reservation.
 
 ## Logs and freezes
 
@@ -41,7 +47,7 @@ there too. Tail it with `tail -f ~/.local/share/maple-gpui/logs/maple-gpui.log`.
 If the app freezes, dump all thread backtraces while it is still hung:
 
 ```sh
-gdb -p "$(pgrep -x maple-gpui)" -batch -ex "thread apply all bt" > /tmp/maple-hang.txt 2>&1
+gdb -p VERIFIED_PID -batch -ex "thread apply all bt" > /tmp/maple-hang.txt 2>&1
 ```
 
 The default release profile strips symbols. `just release-debug` builds a

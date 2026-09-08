@@ -13,6 +13,7 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'release' &&
+      startsWith(github.event.workflow_run.head_branch, 'v') &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     steps:

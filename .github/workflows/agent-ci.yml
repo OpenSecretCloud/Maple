@@ -1,0 +1,159 @@
+name: Maple Agent CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# PR code, including forks, executes only on fresh hosted runners with a
+# read-only token. No signing, release publication, environment, or deployment
+# credentials belong in this workflow.
+permissions:
+  contents: read
+
+concurrency:
+  group: maple-agent-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUSTFLAGS: -D warnings
+
+defaults:
+  run:
+    shell: bash
+    working-directory: apps/maple-agent
+
+jobs:
+  changes:
+    name: Select Agent checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      agent: ${{ steps.classify.outputs.agent }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: classify
+        working-directory: .
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          enable_agent() { echo 'agent=true' >> "$GITHUB_OUTPUT"; }
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) separator='...' ;;
+            push)
+              separator='..'
+              if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+                enable_agent
+                exit 0
+              fi
+              ;;
+            *) enable_agent; exit 0 ;;
+          esac
+          if ! git cat-file -e "${BASE_SHA}^{commit}" || ! git cat-file -e "${HEAD_SHA}^{commit}"; then
+            enable_agent
+            exit 0
+          fi
+          changed_paths="$(mktemp)"
+          trap 'rm -f "$changed_paths"' EXIT
+          if ! git diff --no-renames --name-only -z "${BASE_SHA}${separator}${HEAD_SHA}" > "$changed_paths"; then
+            enable_agent
+          elif ! python3 scripts/ci/agent_change_detection.py < "$changed_paths" >> "$GITHUB_OUTPUT"; then
+            enable_agent
+          fi
+
+  desktop:
+    name: Agent (${{ matrix.os }})
+    needs: changes
+    # A failed selector must never silently omit validation.
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest-8-cores, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Nix environment
+        if: runner.os != 'Windows'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Install pinned Windows Rust
+        if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
+        with:
+          # Matches the component's frozen rust-overlay input.
+          toolchain: 1.98.0
+
+      - name: Cache Agent Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "false"
+          key: maple-agent-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix', 'apps/maple-agent/rust-toolchain.toml') }}
+          # PR jobs can read a trusted cache; only master pushes save one.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: Verify the canonical SDK and proxy dependency graph
+        run: |
+          metadata="$(mktemp)"
+          trap 'rm -f "$metadata"' EXIT
+          if [ "$RUNNER_OS" = Windows ]; then
+            cargo metadata --locked --format-version 1 > "$metadata"
+          else
+            nix develop --no-update-lock-file . -c cargo metadata --locked --format-version 1 > "$metadata"
+          fi
+          python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
+
+      - name: Format, lint, build, and test Linux feature matrix
+        if: runner.os == 'Linux'
+        run: nix develop --no-update-lock-file . -c just ci
+
+      - name: Build macOS workspace and test targets
+        if: runner.os == 'macOS'
+        run: nix develop --no-update-lock-file . -c cargo build --workspace --all-targets --locked
+
+      - name: Package and smoke macOS debug app
+        if: runner.os == 'macOS'
+        run: nix develop --no-update-lock-file . -c ./scripts/macos-debug-app.sh
+
+      - name: Test macOS workspace
+        if: runner.os == 'macOS'
+        run: nix develop --no-update-lock-file . -c cargo test --workspace --locked
+
+      - name: Build and test Windows workspace
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --workspace --all-targets --locked
+          cargo test --workspace --locked
+
+      - name: Build Linux release binary
+        if: runner.os == 'Linux'
+        run: nix develop --no-update-lock-file . -c just release
+
+      # This is an unsigned CI build, never a GitHub Release or an updater feed.
+      - name: Upload Linux CI binary
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-agent-linux-x86_64-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/maple-agent/target/release/maple-gpui
+          if-no-files-found: error
+          retention-days: 5

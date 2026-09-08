@@ -68,21 +68,36 @@
             version = "0.1.0";
 
             src = pkgs.lib.fileset.toSource {
-              root = ./.;
+              root = ../..;
               fileset = pkgs.lib.fileset.unions [
                 ./Cargo.lock
                 ./Cargo.toml
                 ./app
                 ./crates
+                ../../sdk/rust/Cargo.toml
+                ../../sdk/rust/src
+                ../../sdk/rust/assets
+                ../../proxy/Cargo.toml
+                ../../proxy/src
               ];
             };
+
+            # Keep the source tree rooted at Maple so sibling path dependencies
+            # resolve identically in a pure package and a development checkout.
+            cargoRoot = "apps/maple-agent";
+            buildAndTestSubdir = "apps/maple-agent";
 
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
+                "collections-0.1.0" = "sha256-d2GVmZgvJzLk1pbNtPedw0V09+ANZFORZjTSLVxw7jc=";
+                "proptest-1.10.0" = "sha256-p5NTcHhruI8QQvANACg8AMRVNmuvGxs2NLit+/8PaWo=";
+                "wasm_thread-0.3.3" = "sha256-+lRLCIk0S6Y5ORYjDKsYYHia2FtoSoh+rWkQh7mnPBE=";
+                "xim-ctext-0.3.0" = "sha256-pRT4Sz1JU9ros47/7pmIW9kosWOGMOItcnNd+VrvnpE=";
+                "zed-font-kit-0.14.1-zed" = "sha256-KXygi0olNQi5yM8eaJVykNDtbPMDjT+cWPBF8UrtXR4=";
+                "zed-scap-0.0.8-zed" = "sha256-BihiQHlal/eRsktyf0GI3aSWsUCW7WcICMsC2Xvb7kw=";
                 "cua-driver-sdk-0.23.2" = "sha256-aGfd+5Xh0eykliUJTJx+leVtc3ahmiXTHGbqJKrzcck=";
                 "goose-1.47.0" = "sha256-STodRA8jEWr5pmOxOKlNGzmg5h8s4GWZWtOYqfaJTLM=";
-                "opensecret-3.6.2" = "sha256-v1vBeVj5xrRQovm9oKmEkMSmUtcHE+4M7SJO8LYsYOs=";
               };
             };
 
@@ -124,7 +139,7 @@
 
             meta = {
               description = "Native Maple desktop app built with GPUI";
-              homepage = "https://github.com/benthecarman/maple-gpui";
+              homepage = "https://github.com/MaplePrivacyLabs/Maple/tree/master/apps/maple-agent";
               license = pkgs.lib.licenses.mit;
               mainProgram = "maple-gpui";
               platforms = supportedSystems;
@@ -177,6 +192,7 @@
               cmake
               pkg-config
               rustToolchain
+              just
             ] ++ pkgs.lib.optionals isDarwin [ xcrun ];
 
             buildInputs =

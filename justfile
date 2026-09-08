@@ -210,3 +210,14 @@ release version:
     git commit -m "chore: bump version to {{version}}"
     git tag -a "v{{version}}" -m "Release v{{version}}"
     echo "Release v{{version}} created! Don't forget to push tags: git push && git push --tags"
+
+# GPUI Agent uses its own pinned toolchain and component working directory.
+agent-check:
+    cd apps/maple-agent && nix develop --no-update-lock-file -c just ci
+
+agent-build:
+    cd apps/maple-agent && nix develop --no-update-lock-file -c just build
+
+# For managed workspaces, use their bin/maple-agent launcher to load isolated state.
+agent-dev *ARGS:
+    cd apps/maple-agent && nix develop --no-update-lock-file -c just run {{ARGS}}

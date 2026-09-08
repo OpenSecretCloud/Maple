@@ -25,8 +25,8 @@ reqwest = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose", default-features = false }
 goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose-providers", default-features = false }
-opensecret = "3.6.2"
-maple-proxy = "0.3.2"
+opensecret = { workspace = true }
+maple-proxy = { workspace = true }
 rand = "0.8.6"
 rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
 httpdate = "1"
