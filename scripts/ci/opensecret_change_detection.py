@@ -19,6 +19,8 @@ PCR_INPUTS = frozenset({
     "pcrPreview.json", "pcrPreviewHistory.json", "pcr_verify.js", "pcr_sign.js",
     "scripts/pcr_compatibility.py", "scripts/test_pcr_compatibility.py",
 })
+# Shell test inputs consumed directly by the component flake, not Cargo.
+NIX_TEST_INPUTS = frozenset({"tests/entrypoint_entropy_preflight.sh"})
 BACKEND_INERT_PREFIXES = ("docs/", ".agents/", ".github/")
 SHARED_INPUTS = frozenset({
     ".gitmodules",
@@ -63,6 +65,8 @@ def classify_path(path: str) -> frozenset[str]:
             return ALL_OUTPUTS
         if relative.startswith(("src/", ".cargo/")) or relative == "build.rs":
             return frozenset({"rust", "nix", "integration"})
+        if relative in NIX_TEST_INPUTS:
+            return frozenset({"nix"})
         if relative.startswith(("tests/", "migrations/")):
             return frozenset({"rust", "integration"})
         if relative == ".env.sample":
