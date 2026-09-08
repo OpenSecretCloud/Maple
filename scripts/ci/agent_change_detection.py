@@ -41,7 +41,7 @@ KNOWN_INDEPENDENT_PREFIXES = (
     "services/",
 )
 KNOWN_INDEPENDENT_FILES = frozenset(
-    {"AGENTS.md", "README.md", "LICENSE", ".gitignore", ".dockerignore",
+    {"AGENTS.md", "README.md", "LICENSE", ".gitignore", ".gitmodules", ".dockerignore",
      ".repo_ignore", "repo.meta.json", "justfile", "setup-hooks.sh"}
 )
 

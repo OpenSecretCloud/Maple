@@ -41,7 +41,7 @@ Use for pure React, TypeScript, CSS, state, and browser behavior with no native 
 
 SDK work under `sdk/` has its own component checks. Load
 `$develop-opensecret-sdk`, run the applicable TypeScript or Rust SDK checks,
-and add the pinned local OpenSecret integration when the public protocol or
+and add the in-tree OpenSecret integration when the public protocol or
 backend compatibility changes. Maple's frontend consumes `file:../../../sdk`;
 desktop Maple and `proxy/` consume `sdk/rust` through local path dependencies.
 Rust SDK runtime changes therefore require proxy checks and desktop Maple
@@ -254,8 +254,8 @@ test -e apps/maple-research/frontend/.env.local || cp apps/maple-research/fronte
 
 Never replace an existing `apps/maple-research/frontend/.env.local`; it may be externally managed
 or contain checkout-specific endpoints and application identity. Start the
-selected OpenSecret backend by
-[its public repository guide](https://github.com/OpenSecretCloud/opensecret),
+OpenSecret backend under `services/opensecret/` by
+[its component guide](../../../services/opensecret/README.md),
 including required migrations, then launch Maple from this checkout with:
 
 ```bash

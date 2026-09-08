@@ -1,6 +1,6 @@
 ---
 name: develop-opensecret-sdk
-description: Develop and review the OpenSecret TypeScript/React and Rust SDKs under Maple's sdk directory. Use for SDK API, authentication, attestation, encrypted transport, tests, the pinned OpenSecret integration revision, package contents, versions, or an explicitly authorized npm or crates.io publishing handoff; use develop-maple for application-only work.
+description: Develop and review the OpenSecret TypeScript/React and Rust SDKs under Maple's sdk directory. Use for SDK API, authentication, attestation, encrypted transport, tests, in-tree OpenSecret integration, package contents, versions, or an explicitly authorized npm or crates.io publishing handoff; use develop-maple for application-only work.
 ---
 
 # Develop the OpenSecret SDK
@@ -31,8 +31,9 @@ attestation, encrypted sessions, typed contracts, authentication state, and
 safe transport adaptation. Maple owns application presentation and local
 device behavior.
 
-For a public contract change, inspect the exact OpenSecret backend revision and
-both SDK implementations when they expose the affected behavior. Preserve
+For a public contract change, inspect `services/opensecret/` at the same
+monorepo revision and both SDK implementations when they expose the affected
+behavior. Preserve
 old-client/new-server and new-client/old-server compatibility where clients can
 update independently. Do not weaken HTTPS, PCR validation, attestation, key
 exchange, randomness, retry safety, or sanitized errors to accommodate a
@@ -64,14 +65,16 @@ nix develop --no-update-lock-file -c bash -lc '
 Run focused tests while iterating, then match the root path-scoped workflows:
 `sdk-typescript.yml`, `sdk-rust.yml`, and `sdk-supply-chain.yml` as applicable.
 When the change reaches backend behavior, authentication, or the encrypted wire
-contract, also match `sdk-integration.yml`. It checks out the full commit SHA in
-`opensecret-integration-revision`, starts disposable PostgreSQL and OpenSecret,
-and tests both SDK implementations without a hosted development server.
+contract, also match `sdk-integration.yml`. It starts disposable PostgreSQL and
+the in-tree `services/opensecret/` backend from the same checkout, then tests
+both SDK implementations without a hosted development server. Inspect backend
+changes and run its component validation when the compatibility contract reaches
+them; there is no separate integration revision to advance.
 
-Advance `opensecret-integration-revision` only to an inspected OpenSecret commit
-whose compatibility the change intends to establish. Provider-spending tests
-remain opt-in through `RUN_LIVE_AI=1` and require explicit credential, egress,
-and cost authorization.
+Provider-spending tests remain opt-in through `RUN_LIVE_AI=1` and require
+explicit credential, egress, and cost authorization. The SDKs retain their
+existing signed-PCR URLs until a separately verified canonical URL cutover;
+the backend import alone does not change installed clients' trust sources.
 
 Before handoff, inspect package boundaries as applicable:
 

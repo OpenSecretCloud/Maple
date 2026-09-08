@@ -1,0 +1,15 @@
+diff --git a/include/aws/io/private/socket_impl.h b/include/aws/io/private/socket_impl.h
+index f59f13d..577f4ac 100644
+--- a/include/aws/io/private/socket_impl.h
++++ b/include/aws/io/private/socket_impl.h
+@@ -8,6 +8,9 @@
+ #include <aws/io/io.h>
+ #include <aws/io/socket.h>
+-
++#if defined(__linux__) && defined(USE_VSOCK)
++#    include <linux/vm_sockets.h>
++#endif
++
+ /* These are hacks for working around headers and functions we need for IO work but aren't directly includable or
+    linkable. these are purposely not exported. These functions only get called internally. The awkward aws_ prefixes are
+    just in case someone includes this header somewhere they were able to get these definitions included. */

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Change OpenSecret Provider"
+  short_description: "Modify routing with provider parity evidence"
+  default_prompt: "Use $change-opensecret-provider to implement or validate this provider change."

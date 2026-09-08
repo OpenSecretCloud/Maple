@@ -1,0 +1,10 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e2114a4..050b0d1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -116 +116 @@ if (NOT WIN32)
+-            DESTINATION "${LIBRARY_DIRECTORY}/${PROJECT_NAME}/cmake/${TARGET_DIR}"
++            DESTINATION "${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/cmake/${TARGET_DIR}"
+@@ -125 +125 @@ if (NOT WIN32)
+-            DESTINATION "${LIBRARY_DIRECTORY}/${PROJECT_NAME}/cmake/"
++            DESTINATION "${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/cmake/"

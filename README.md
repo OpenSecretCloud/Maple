@@ -1,7 +1,7 @@
 # Maple
 
-Maple is a monorepo for the Maple applications, their OpenSecret SDKs, local proxy, and
-updater service. The existing web, desktop, and mobile client lives under
+Maple is a monorepo for the Maple applications, their OpenSecret SDKs, local proxy,
+OpenSecret backend, and updater service. The existing web, desktop, and mobile client lives under
 [`apps/maple-research/`](apps/maple-research/README.md), including Research chat
 and desktop Agent Mode. Its directory name does not change the shipped Maple
 application identity.
@@ -15,13 +15,15 @@ application identity.
 | [`sdk/`](sdk/README.md) | OpenSecret TypeScript/React and Rust SDKs, consumed in tree by Maple |
 | [`proxy/`](proxy/README.md) | Standalone OpenAI-compatible proxy, also consumed by desktop Maple |
 | [`services/updates/`](services/updates/README.md) | Desktop updater Worker and verified release-metadata publishing |
+| [`services/opensecret/`](services/opensecret/README.md) | Confidential authentication, inference, conversations, and related backend APIs; local Nitro tooling and signed PCR files |
 | [`docs/`](docs/) | Shared deployment documentation |
 | [`scripts/`](scripts/) and [`.github/workflows/`](.github/workflows/) | Shared validation and release entry points |
 
-[OpenSecret](https://github.com/OpenSecretCloud/opensecret) remains the external
-backend for confidential authentication, inference, conversations, and related
-APIs. Its planned import under `services/opensecret/` has not happened yet.
-The GPUI import history and upstream follow-up branches are recorded in
+The backend import and legacy PCR publication contract are recorded in
+[the backend migration note](docs/opensecret-import.md). The original
+[OpenSecret repository](https://github.com/OpenSecretCloud/opensecret) remains
+available for installed clients' signed PCR histories. The GPUI import history
+and upstream follow-up branches are recorded in
 [the Agent migration note](docs/maple-agent-import.md).
 
 ## Development
@@ -44,6 +46,10 @@ Preserve existing configuration and externally managed workspace resources.
 All `VITE_*` values are public client configuration and must never contain secrets.
 Root `justfile`, `flake.nix`, `.agents/`, and CI scripts remain shared entry points;
 use each component's guide for its direct Bun or Cargo commands.
+OpenSecret retains its own pinned Nix shell and Rust package: enter
+`services/opensecret/` before running its commands, and follow its
+[setup guide](services/opensecret/README.md#local-quick-start) for stateful
+PostgreSQL and environment hooks.
 
 ## Validation and releases
 
@@ -58,6 +64,10 @@ GitHub Release starts cross-platform packaging and downstream publication. Use
 [the release procedure](.agents/skills/release-maple/SKILL.md) only for authorized
 release work. The [Pages guide](docs/pages-deployments.md) documents preview and
 production deployment profiles and controls.
+OpenSecret's root CI workflows validate code and in-tree SDK compatibility;
+they do not publish EIFs or deploy the TEE service. Backend deployment and
+[manual signed-PCR publication](services/opensecret/docs/pcr-compatibility.md)
+remain explicit operator actions.
 
 Keep changes focused, preserve compatibility at public and installed-client
 boundaries, and report the exact checks and runtime paths exercised before

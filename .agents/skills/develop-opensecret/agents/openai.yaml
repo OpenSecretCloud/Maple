@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop OpenSecret"
+  short_description: "Implement backend changes in the right layer"
+  default_prompt: "Use $develop-opensecret to plan and implement this OpenSecret backend change."

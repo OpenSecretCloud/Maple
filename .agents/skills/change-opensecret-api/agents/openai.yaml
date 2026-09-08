@@ -1,0 +1,4 @@
+interface:
+  display_name: "Change OpenSecret API"
+  short_description: "Evolve encrypted and OpenAI-compatible APIs"
+  default_prompt: "Use $change-opensecret-api to evolve this OpenSecret API contract safely."

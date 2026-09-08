@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review OpenSecret Security"
+  short_description: "Review backend trust and crypto boundaries"
+  default_prompt: "Use $review-opensecret-security to review this backend change for security regressions."

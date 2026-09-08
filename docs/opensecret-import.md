@@ -1,0 +1,91 @@
+# OpenSecret backend import
+
+OpenSecret lives in `services/opensecret/`, retaining its Rust package, Nix
+toolchain, operator recipes, submodule revisions, and PCR filenames. This is a
+source and development-workflow migration. Building and deploying the TEE
+service remains an operator-controlled process.
+
+## Preserved source boundary
+
+The source is `OpenSecretCloud/opensecret` master at
+`22809e0b7e12f4c238cf9e116d65348c7c2826fb`, captured September 8, 2026.
+It contains 905 reachable commits.
+
+The unmodified import commit is
+`5aa24fc9dd29e20c10c4f28a055fda5c07257ef7`. Its first parent is Maple master
+`86757e9248e6bb46adc388bfac3c881f9d7069df`; its second parent is the source
+commit above. The imported subtree exactly equals the original root tree,
+`89bc0ccc1398aea4f4ece3f373a4a96d2cfd8019`. Monorepo adaptations follow this
+separate commit.
+
+Use a normal merge commit for the import PR. Squashing or rebasing away the
+import merge discards the preserved source ancestry.
+
+Only source master is imported. Existing OpenSecret pull requests and branches
+remain in the old repository for separate review and replay under the new
+prefix; this import does not merge or close them.
+
+The root `.gitmodules` registers the unchanged backend gitlinks:
+
+| Component path | Imported revision |
+| --- | --- |
+| `services/opensecret/nitro-toolkit` | `dcfea5f66c3f0aea232b649da2ce3661be54cc14` |
+| `services/opensecret/privatemode-public` | `4b72dcbbd58940835b5ba32502c1e247721b9584` |
+
+Initialize them with `git submodule update --init --recursive`. Backend Cargo,
+Nix, and existing `just` recipes run from `services/opensecret/`. Its flake and
+lockfile stay separate from the client build environments. Root backend
+shortcuts are `just opensecret-check` and `just opensecret-pcr-check`.
+
+## CI and local development
+
+Root workflows replace the backend's inactive nested workflows. Backend CI
+checks Rust, the ordinary Nix package/checks, dependency policy, and signed-PCR
+compatibility. The SDK integration lane starts the backend from this same
+checkout against a disposable database; it no longer fetches an external
+backend revision. This advances that lane from the former pinned commit
+`d26eb6bd54d50cc8e6b2967f647a94c61da913da` to the imported source.
+
+PR jobs have read-only credentials and use hosted runners. Backend CI has no
+EIF publisher, signing credentials, OIDC permission, or deployment step. PCR
+file changes have their own validation lane. Backend-only changes do not
+select Research or Agent application packaging.
+
+The companion OpenSecret Workspaces change supports Maple-only compositions
+through `services/opensecret/`. An explicitly included standalone `opensecret`
+checkout continues to own the backend for existing mixed workspaces. Use the
+manager's environment and lifecycle commands; do not move its generated
+configuration by hand. See the [component guide](../services/opensecret/AGENTS.md)
+and root `$develop-opensecret` / `$validate-opensecret` skills.
+
+## Signed PCR compatibility and cutover
+
+The four imported files are byte-for-byte unchanged:
+`pcrDev.json`, `pcrDevHistory.json`, `pcrProd.json`, and `pcrProdHistory.json`.
+Each captured history contains 145 entries. All 290 PCR0 signatures verify
+against the public key pinned by both SDKs. PCR1/PCR2 are present in the JSON
+but are not covered by those signatures; this import preserves that format.
+
+Keep `OpenSecretCloud/opensecret` at its current name, public, writable, and
+unarchived. Installed clients still request its raw history URLs. Retain the
+old source and outstanding branches until a separate retirement decision;
+removing that code is unnecessary for manual compatibility publication.
+
+After this import merges:
+
+1. Verify the new master raw URLs for all four files return the expected bytes
+   without redirects, and validate their signatures.
+2. Use the [manual PCR compatibility procedure](../services/opensecret/docs/pcr-compatibility.md)
+   for subsequent authorized backend releases. Commit the reviewed signed
+   files in Maple, prepare an exact-byte copy into the legacy repository, and
+   verify both published locations before deploying an EIF that needs them.
+3. Switch SDK PCR history URLs in a separate change after step 1. Preserve the
+   existing signed-PCR format, pinned public key, and redirect policy.
+4. Update internal developer workspaces and deployment-builder checkouts to
+   the imported component deliberately. Existing operator hosts are not
+   migrated by merging this PR.
+
+GitHub does not sign PCR entries, publish EIFs, or deploy OpenSecret here. The
+copy helper does not commit or push. SDK package renaming/publishing, Sigstore,
+and the legacy compatibility sunset remain separate decisions. There is no
+automatic expiry of the legacy files.

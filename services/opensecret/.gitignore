@@ -1,0 +1,57 @@
+/debug
+/target
+/build
+/result
+/.local/
+/*.tar
+/*/*.tar
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# direnv
+.envrc
+.direnv/
+
+# Local Postgres data
+.pgdata/
+
+# IDE files
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Rust
+**/*.rs.bk
+
+# Clippy compile errors keep generating this
+/rustc-ice-*
+
+# Continuum local files
+continuum-manifests/
+contrast/
+manifests/
+
+# AI Prompts
+.prompts/
+.claude/
+.factory/
+
+# PCR signing keys (files only, no directories needed)
+**/pcr_*.pem
+**/pcr_*.key
+**/pcr_*.der
+**/pcr_*.b64
+**/pcr_private*
+**/pcr_public*
+__pycache__/
+
+thirdparty/
+
+# Internal documentation (sensitive infrastructure details)
+internal_docs/

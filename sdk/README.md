@@ -85,16 +85,18 @@ bun run build
 bun test --timeout 30000
 ```
 
-Integration tests read the variables documented in `.env.example`. Monorepo CI
-checks out the exact OpenSecret commit pinned in
-`opensecret-integration-revision`, migrates disposable PostgreSQL, starts that
-backend on loopback, and creates disposable SDK fixtures. It does not depend on
-the hosted development service or stored test-account credentials.
+Integration tests read the variables documented in `.env.example`. Monorepo
+[`sdk-integration.yml`](../.github/workflows/sdk-integration.yml) migrates
+disposable PostgreSQL, starts the in-tree `services/opensecret/` backend from
+the same checkout on loopback, and creates disposable SDK fixtures. It does
+not depend on the hosted development service or stored test-account credentials.
 
 Tests that spend model/provider capacity are opt-in with `RUN_LIVE_AI=1` and
-are not part of the deterministic pull-request gate. When intentionally
-advancing the integration backend, update the pinned full commit SHA and let
-the local integration workflow prove both SDK implementations against it.
+are not part of the deterministic pull-request gate. Backend contract changes
+and SDK changes are validated together against that checkout; released clients
+and independently deployed backend versions still need compatibility review.
+The SDKs' existing signed-PCR URLs remain unchanged until a separate verified
+cutover. See the [backend compatibility procedure](../services/opensecret/docs/pcr-compatibility.md).
 
 Inspect the publishable npm artifact with:
 
