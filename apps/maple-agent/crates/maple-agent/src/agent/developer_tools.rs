@@ -1072,6 +1072,9 @@ async fn execute_bounded_shell(
         let _ = terminate_shell_process(&mut child).await;
     }
 
+    #[cfg(all(test, unix))]
+    tests::pause_before_shell_output_drain(exit_code).await;
+
     let drain_timeout = tokio::time::sleep(SHELL_OUTPUT_DRAIN_TIMEOUT);
     tokio::pin!(drain_timeout);
     let capture_result = tokio::select! {
@@ -2561,6 +2564,27 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(1);
+
+    #[cfg(unix)]
+    struct ShellOutputDrainHook {
+        parent_exited: tokio::sync::oneshot::Sender<Option<i32>>,
+        resume: tokio::sync::oneshot::Receiver<()>,
+    }
+
+    #[cfg(unix)]
+    tokio::task_local! {
+        static SHELL_OUTPUT_DRAIN_HOOK: std::cell::RefCell<Option<ShellOutputDrainHook>>;
+    }
+
+    // Scope this hook to the tested shell future, leaving concurrent shell tests
+    // untouched. It pauses before the drain deadline starts, after parent wait.
+    #[cfg(unix)]
+    pub(super) async fn pause_before_shell_output_drain(exit_code: Option<i32>) {
+        if let Ok(Some(hook)) = SHELL_OUTPUT_DRAIN_HOOK.try_with(|hook| hook.borrow_mut().take()) {
+            let _ = hook.parent_exited.send(exit_code);
+            let _ = hook.resume.await;
+        }
+    }
 
     struct TestWebTransport;
 
@@ -4263,36 +4287,117 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn revocation_after_parent_exit_interrupts_output_drain() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        struct FixtureProcessGroup(Option<libc::pid_t>);
+
+        impl Drop for FixtureProcessGroup {
+            fn drop(&mut self) {
+                if let Some(pgid) = self.0 {
+                    // Only the verified group created by this fixture. This also
+                    // cleans up if the termination assertion fails after return.
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                }
+            }
+        }
+
         let temp = TestDir::new();
-        let sentinel = temp.path().join("draining-descendant-survived");
+        let fifo = temp.path().join("drain.fifo");
+        let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+        let initial_reader = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        let writer = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
         let shared_context = test_tool_context(BTreeMap::new(), BTreeSet::new(), false);
         let tool_context = shared_context.snapshot();
-        let revocation = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            shared_context.revoke();
-        });
+        let (parent_exited, parent_exit) = tokio::sync::oneshot::channel();
+        let (resume, resumed) = tokio::sync::oneshot::channel();
+        let hook = ShellOutputDrainHook {
+            parent_exited,
+            resume: resumed,
+        };
+        let login_path = std::env::var("PATH").ok();
 
-        let result = run_bounded_shell(
-            ShellParams {
-                command: format!("(sleep 1; printf survived > '{}') &", sentinel.display()),
-                timeout_secs: Some(3),
-            },
-            None,
-            std::env::var("PATH").ok().as_deref(),
-            None,
-            &tool_context,
-            CancellationToken::new(),
-        )
-        .await;
-        revocation.await.unwrap();
+        // The descendant holds stdout/stderr open and blocks on the FIFO; it
+        // cannot finish normally while we retain the writer without sending data.
+        // No relative sleep decides whether revocation "won" against its work.
+        let execution = SHELL_OUTPUT_DRAIN_HOOK.scope(
+            std::cell::RefCell::new(Some(hook)),
+            run_bounded_shell(
+                ShellParams {
+                    command: r#"/bin/sh -c 'exec 3< drain.fifo; printf "drain-ready\n"; printf ready > child-ready; IFS= read -r release <&3; printf survived > child-survived' &
+printf '%s %s\n' "$$" "$!" > shell-pids"#.to_string(),
+                    timeout_secs: Some(0),
+                },
+                Some(temp.path()),
+                login_path.as_deref(),
+                None,
+                &tool_context,
+                CancellationToken::new(),
+            ),
+        );
+        let revoke_after_parent_exit = async {
+            assert_eq!(parent_exit.await.unwrap(), Some(0));
+            while !temp.path().join("child-ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let pids = fs::read_to_string(temp.path().join("shell-pids")).unwrap();
+            let pids: Vec<libc::pid_t> = pids
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect();
+            assert_eq!(pids.len(), 2);
+            let (parent, descendant) = (pids[0], pids[1]);
+            assert!(parent > 0 && descendant > 0);
+            assert_eq!(unsafe { libc::getpgid(descendant) }, parent);
+            let group = FixtureProcessGroup(Some(parent));
+            assert_eq!(unsafe { libc::kill(parent, 0) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+            drop(initial_reader);
+            shared_context.revoke();
+            resume.send(()).unwrap();
+            group
+        };
+
+        // Join inline: a panic or timeout before the handshake drops the armed
+        // shell future instead of detaching a spawned task or a blocked child.
+        let (result, mut group) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(execution, revoke_after_parent_exit)
+        })
+        .await
+        .expect("shell fixture must reach post-parent-exit revocation and terminate");
 
         assert_eq!(result.is_error, Some(true));
         assert!(text(&result).contains("Command cancelled"));
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(output.stdout, "drain-ready\n");
         assert!(
-            !sentinel.exists(),
-            "revocation during output drain left a same-group descendant running"
+            !output.output_truncated,
+            "descendant kept output pipes open"
         );
+        assert!(output.output_collection_error.is_none());
+        let error = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .expect_err("revoked descendant still has its FIFO reader open");
+        assert_eq!(error.raw_os_error(), Some(libc::ENXIO));
+        assert!(!temp.path().join("child-survived").exists());
+        group.0 = None;
+        drop(writer);
     }
 
     #[cfg(unix)]
