@@ -32,6 +32,12 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
                 self.assertEqual(research_routes(path), frozenset())
                 self.assertFalse(affects_agent(path))
 
+    def test_backend_flake_shell_test_selects_nix_without_rust_or_app_builds(self):
+        path = "services/opensecret/tests/entrypoint_entropy_preflight.sh"
+        self.assert_routes([path], "nix")
+        self.assertEqual(research_routes(path), frozenset())
+        self.assertFalse(affects_agent(path))
+
     def test_backend_nix_only_inputs_and_dependency_policy_keep_independent_checks(self):
         for relative in ("nix/kernel-upstream.nix", "entrypoint.sh", "continuum-proxy",
                          "nitro-toolkit", "nitro-toolkit/init/main.c", "privatemode-public"):
