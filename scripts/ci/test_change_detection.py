@@ -25,6 +25,26 @@ class ChangeDetectionTests(unittest.TestCase):
         self.assert_routes(["services/updates/src/index.ts"])
         self.assert_routes([".githooks/pre-commit", "justfile", "apps/maple-research/zapstore.yaml"])
 
+    def test_agent_component_does_not_trigger_research_packaging(self) -> None:
+        for path in (
+            "apps/maple-agent/app/src/main.rs",
+            "apps/maple-agent/crates/maple-agent/src/agent.rs",
+            "apps/maple-agent/Cargo.toml",
+            "apps/maple-agent/Cargo.lock",
+            "apps/maple-agent/flake.nix",
+            "apps/maple-agent/flake.lock",
+            "apps/maple-agent/README.md",
+            ".github/workflows/agent-ci.yml",
+            "scripts/ci/agent_change_detection.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path])
+        # A mixed PR still selects the lanes needed by a shared crate change.
+        self.assert_routes(
+            ["apps/maple-agent/app/src/main.rs", "sdk/rust/src/client.rs"],
+            "macos", "linux", "windows",
+        )
+
     def test_in_tree_rust_runtime_inputs_mark_desktop_lanes(self) -> None:
         for path in (
             "proxy/Cargo.toml",

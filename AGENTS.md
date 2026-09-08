@@ -9,6 +9,9 @@ current source and tests take precedence over historical design documents.
 - `apps/maple-research/`: the existing React/Vite/Tauri Maple application,
   including desktop Agent Mode. Read its [guide](apps/maple-research/AGENTS.md)
   for runtime placement, native security, and exact-app validation.
+- `apps/maple-agent/`: GPUI desktop-v2 prototype, ACP and proxy CLI. Read its
+  [guide](apps/maple-agent/AGENTS.md) and `$develop-maple-agent`. Its runtime and
+  update discovery are separate from Research and its existing Agent Mode.
 - `sdk/`: TypeScript/React and Rust OpenSecret SDKs. Read
   `$develop-opensecret-sdk` and the SDK documentation.
 - `proxy/`: the separate OpenAI-compatible relay, also consumed by the desktop
@@ -19,8 +22,8 @@ current source and tests take precedence over historical design documents.
   `justfile`, and `repo.meta.json`: shared documentation, tooling, CI, and
   repository identity. Keep active workflows and discoverable skills at root.
 
-`apps/maple-agent/` and `services/opensecret/` are planned imports, not current
-components. OpenSecret's backend remains in its own repository. Do not infer a
+`services/opensecret/` is a planned import. OpenSecret's backend remains in
+its own repository. Do not infer a
 new runtime or deployment mechanism from a proposed directory layout.
 
 ## Start safely
@@ -102,6 +105,7 @@ release work, and report the tag and commit before publishing.
 ## Skills
 
 - `$develop-maple`: Research setup and ordinary web/desktop/mobile development.
+- `$develop-maple-agent`: GPUI Agent app, runtime, component CI and isolated launch.
 - `$develop-opensecret-sdk`: SDK implementation, backend compatibility,
   package-boundary validation, and publishing handoff.
 - `$develop-maple-proxy`: proxy behavior, native/container builds, app dependency

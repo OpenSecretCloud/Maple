@@ -1,0 +1,14 @@
+[package]
+name = "maple-billing"
+description = "HTTP client for the Maple billing API"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

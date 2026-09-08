@@ -10,6 +10,9 @@ permissions:
 jobs:
   classify-app-release:
     name: Classify Maple app release
+    # Other components have namespaced tags; only Research owns bare v* tags.
+    # The existing classifier still enforces the exact vX.Y.Z format.
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
