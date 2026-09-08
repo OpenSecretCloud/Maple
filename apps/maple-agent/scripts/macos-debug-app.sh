@@ -54,7 +54,7 @@ binary_destination="$contents_dir/MacOS/maple-gpui"
 
 mkdir -p "$contents_dir/MacOS" "$frameworks_dir"
 cp "$repo_root/app/macos/Info.plist" "$contents_dir/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$contents_dir/Info.plist"
+python3 "$repo_root/scripts/macos-debug-plist.py" "$contents_dir/Info.plist"
 cp "$binary_source" "$binary_destination"
 chmod 0755 "$binary_destination"
 

@@ -38,8 +38,8 @@ changes must select Agent as well as the Research consumer; component-only
 changes must not unnecessarily select Research packaging. Maintain the root
 selectors, their tests, and `.github/workflows/agent-ci.yml` together.
 
-Nix's pure source fileset is rooted at the monorepo and includes the sibling
-SDK/proxy source and SDK assets. Validate it when adding a new local dependency
+Linux Nix packages use a pure source fileset rooted at the monorepo, including
+the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency
 or build-time file. Never bypass a missing dependency hash by enabling an
 unlocked or credential-bearing fetch.
 
@@ -53,8 +53,10 @@ credentials into source or silently use the legacy GPUI state directory.
 
 For macOS app-identity checks, source the managed environment and run
 `just debug-app` inside the component Nix shell, then launch the exact printed
-bundle path. The default signing identity is ad hoc; this proves local package
-startup, not official distribution signing or TCC grants. Track and stop only
+bundle path. Managed debug bundles record only public service configuration
+and both XDG roots in `LSEnvironment`, so GUI launches preserve isolation;
+Missing roots fail packaging. The default signing identity is ad hoc; this
+proves local package startup, not official distribution signing or TCC grants. Track and stop only
 the process started by the current task. Never kill all `maple-gpui` processes.
 
 Shared Cargo intermediates belong to other worktrees too. Preserve inherited

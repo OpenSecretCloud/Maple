@@ -238,30 +238,36 @@ stable grants across rebuilds are useful. `MAPLE_DEBUG_BUNDLE_ID` can select
 a dotted development bundle identifier; the managed Agent environment sets
 a unique workspace identity. Source that environment before `just debug-app`
 and launch the exact generated bundle. Stop only the process you started.
+For the managed Agent identity, packaging records only the workspace's public
+service configuration and both XDG roots in the local bundle's `LSEnvironment`.
+This preserves isolation when Finder or a GUI driver launches the bundle without
+the shell environment. Update checks are disabled and inherited proxy keys are
+cleared. No other environment values or credentials are copied into the bundle.
 
 ### Nix
 
-The flake provides a release package and a development shell with the latest
-stable Rust toolchain pinned by `flake.lock`:
+The component lockfile pins Rust and platform dependencies. Linux exposes a
+pure release package and a development shell:
 
 ```sh
 nix build --no-update-lock-file
 nix develop --no-update-lock-file
 ```
 
-On Apple Silicon macOS, the pure `nix build` package enables GPUI's runtime
-Metal shader compilation because Apple does not redistribute the `metal`
-compiler with the macOS SDK. To precompile the shaders with the Metal toolchain
-from the standard Xcode installation instead, install the optional Xcode
-component and build in the development shell:
+On Apple Silicon macOS, use the Nix development shell with full Xcode at
+`/Applications/Xcode.app`. If Xcode lacks its optional Metal compiler, install
+that component before building:
 
 ```sh
 xcodebuild -downloadComponent MetalToolchain
-nix develop --no-update-lock-file -c cargo build --release -p maple-gpui --locked
+nix develop --no-update-lock-file -c just build
+nix develop --no-update-lock-file -c just debug-app
 ```
 
-The development shell uses `/Applications/Xcode.app`. Linux builds use the
-Nix-provided ALSA, font, keyboard, Wayland, and Vulkan dependencies.
+A pure Darwin package is not exposed: the pinned Nix Swift/SDK combination
+cannot build the CUA bridges with the SDK required for recording. The supported
+macOS path uses Xcode's Swift and Metal toolchains and is also used by CI.
+Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries.
 
 ### Shared Rust build cache
 

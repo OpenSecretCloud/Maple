@@ -715,6 +715,7 @@
             cd "$src"
             python3 scripts/ci/test_agent_workflows.py
             python3 scripts/ci/test_agent_rust_deps.py
+            python3 scripts/ci/test_agent_debug_plist.py
             touch "$out"
           '';
 

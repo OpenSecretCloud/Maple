@@ -28,6 +28,8 @@ the import merge would discard the preserved upstream ancestry.
   contract. Package renaming and registry publishing remain separate work.
 - Keep the GPUI component's Cargo/Nix environment and internal `maple-gpui`
   binary name. Root commands, CI, and agent guidance route to the component.
+  Linux exposes pure Nix packages; macOS uses the Nix development shell plus
+  full Xcode, because the pinned pure Swift/SDK combination cannot build CUA.
 - Root CI replaces the inactive nested workflows. PR builds use read-only
   tokens and no signing/deployment credentials. Shared Rust runtime changes
   select both consuming applications.

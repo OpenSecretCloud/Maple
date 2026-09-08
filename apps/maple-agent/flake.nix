@@ -22,10 +22,17 @@
         "aarch64-linux"
         "x86_64-linux"
       ];
+      # The pinned Swift compiler cannot compile the macOS CUA bridges with
+      # the SDK required for recording. macOS builds use the Xcode dev shell.
+      packageSystems = [
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      forPackageSystems = nixpkgs.lib.genAttrs packageSystems;
     in
     {
-      packages = forAllSystems (
+      packages = forPackageSystems (
         system:
         let
           pkgs = import nixpkgs {
@@ -42,7 +49,6 @@
             cargo = rustToolchain;
             rustc = rustToolchain;
           };
-          isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           linuxRuntimeInputs = with pkgs; [
             libxcb
             libxkbcommon
@@ -111,18 +117,10 @@
               [ pkgs.libiconv ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
 
-            # Apple's Metal compiler is not part of the redistributable SDK.
-            # The pure Darwin package embeds the shader source and compiles it
-            # at runtime. The dev shell below uses Xcode to precompile shaders.
-            cargoBuildFlags =
-              [
-                "-p"
-                "maple-gpui"
-              ]
-              ++ pkgs.lib.optionals isDarwin [
-                "--features"
-                "gpui/runtime_shaders"
-              ];
+            cargoBuildFlags = [
+              "-p"
+              "maple-gpui"
+            ];
 
             # The upstream CI runs the complete workspace and feature matrix.
             # Keep the package derivation focused on producing the release binary.
@@ -142,7 +140,7 @@
               homepage = "https://github.com/MaplePrivacyLabs/Maple/tree/master/apps/maple-agent";
               license = pkgs.lib.licenses.mit;
               mainProgram = "maple-gpui";
-              platforms = supportedSystems;
+              platforms = packageSystems;
             };
           };
         }
@@ -193,6 +191,7 @@
               pkg-config
               rustToolchain
               just
+              python3
             ] ++ pkgs.lib.optionals isDarwin [ xcrun ];
 
             buildInputs =
