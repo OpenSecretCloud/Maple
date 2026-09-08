@@ -1473,8 +1473,8 @@ describe("createCustomFetch stale-session recovery", () => {
       pcr0DevValues: ["2a".repeat(48)],
       remoteAttestation: false,
       remoteAttestationUrls: {
-        prod: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrProdHistory.json",
-        dev: "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrDevHistory.json"
+        prod: "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json",
+        dev: "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrDevHistory.json"
       }
     };
     const calls: Array<[boolean | undefined, string | undefined, PcrConfig | undefined]> = [];

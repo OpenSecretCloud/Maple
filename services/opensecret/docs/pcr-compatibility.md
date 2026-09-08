@@ -34,17 +34,18 @@ repository move or redirect is not a substitute: current TypeScript and Rust
 SDK history fetches reject redirects. Existing clients continue to use the old
 URLs; they do not discover the monorepo layout automatically.
 
-After the import is merged, verify the new public history URLs return HTTP 200
-directly and exactly match the reviewed monorepo files before changing SDK
-defaults in a follow-up:
+The in-tree TypeScript and Rust SDK defaults use these canonical histories:
 
-- [New development history](https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrDevHistory.json)
-- [New production history](https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json)
+- [Canonical development history](https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrDevHistory.json)
+- [Canonical production history](https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json)
 
-SDK URL changes are independent of registry renaming or publishing. Until that
-follow-up is merged, SDK source defaults still use the old URLs. Do not remove
-the legacy history or set a calendar cutoff as a consequence of this import.
-An eventual cutoff needs an explicit client compatibility decision.
+Both locations must return HTTP 200 directly and match the reviewed files;
+use the verification procedure below for every authorized measurement update.
+SDK URL changes are independent of registry renaming or publishing. Older
+published SDKs and installed clients retain their existing URLs until upgraded.
+Do not remove the legacy history or set a calendar cutoff as a consequence of
+the source cutover. An eventual cutoff needs an explicit client compatibility
+decision.
 
 ## Validate an authorized measurement update
 

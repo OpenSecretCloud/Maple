@@ -73,9 +73,12 @@ changes and run its component validation when the compatibility contract reaches
 them; there is no separate integration revision to advance.
 
 Provider-spending tests remain opt-in through `RUN_LIVE_AI=1` and require
-explicit credential, egress, and cost authorization. The SDKs retain their
-existing signed-PCR URLs until a separately verified canonical URL cutover;
-the backend import alone does not change installed clients' trust sources.
+explicit credential, egress, and cost authorization. Both SDKs use signed-PCR
+histories under `MaplePrivacyLabs/Maple/master/services/opensecret/`, with the
+existing verification key and separate development/production policies. Keep
+the legacy `OpenSecretCloud/opensecret` histories available for older clients
+through the backend's manual compatibility procedure. Source changes do not
+publish SDKs or update installed clients.
 
 Before handoff, inspect package boundaries as applicable:
 
