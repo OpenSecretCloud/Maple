@@ -4,6 +4,7 @@ import { DiscordIcon } from "./icons/DiscordIcon";
 import { MARKETING_DOWNLOADS_URL } from "@/config/domains";
 import { openExternalUrl } from "@/utils/openUrl";
 import { isTauri } from "@/utils/platform";
+import { GITHUB_REPOSITORY_URL } from "@/utils/githubRelease";
 
 export function Footer() {
   const isTauriPlatform = isTauri();
@@ -29,7 +30,7 @@ export function Footer() {
                 <Twitter className="h-5 w-5" />
               </a>
               <a
-                href="https://github.com/OpenSecretCloud"
+                href={GITHUB_REPOSITORY_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="dark:hover:text-[hsl(var(--blue))] hover:text-[hsl(var(--purple))] transition-colors"
