@@ -1,0 +1,88 @@
+[package]
+name = "opensecret"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7.5", features = ["macros", "multipart"] }
+axum-macros = { version = "0.4.1" }
+password-auth = "1.0.0"
+bip39 = { version = "2.0.0" }
+bip85_extended = "1.1.0"
+bitcoin = { version = "0.32.2", default-features = false, features = ["std", "serde", "secp-recovery", "rand"] }
+aws-nitro-enclaves-nsm-api = "0.3.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_bytes = "0.11"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.5.2", features = ["cors"] }
+tower = { version = "0.5", features = ["util"] }
+thiserror = "1.0.63"
+async-trait = "0.1.81"
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+jwt-compact = { version = "0.9.0-beta.1", features = ["es256k"] }
+diesel = { version = "=2.3.10", features = [
+    "postgres",
+    "postgres_backend",
+    "r2d2",
+    "chrono",
+    "numeric",
+    "uuid",
+    "serde_json",
+] }
+diesel-derive-enum = { version = "2.1.0", features = ["postgres"] }
+chrono = { version = "0.4.26", features = ["serde"] }
+dotenv = "0.15.0"
+aes-gcm = "0.10.1"
+aes-siv = "0.7"
+hmac = "0.12.1"
+hkdf = "0.12.4"
+generic-array = "0.14"
+cbc = "0.1.2"
+secp256k1 = { version = "0.29.0", features = ["rand"] }
+http-body = "1.0"
+reqwest = { version = "0.13.4", default-features = false, features = ["form", "gzip", "http2", "json", "query", "rustls-no-provider", "stream"] }
+futures = "0.3.30"
+uuid = { version = "1.10.0", features = ["v4", "serde"] }
+tokio-stream = "0.1"
+async-stream = "0.3"
+bytes = "1.0"
+clru = "=0.6.3"
+sha2 = { version = "0.10", default-features = false }
+hex = "0.4.3"
+base64 = "0.22.1"
+vsock = "0.5.1"
+resend-rs = "0.9.1"
+x25519-dalek = { version = "2.0.1", features = ["zeroize"] }
+rand_core = "0.6"
+serde_cbor = "0.11"
+x509-parser = "0.15"
+yasna = "0.5"
+rcgen = { version = "0.13.1", features = ["crypto"] }
+chacha20poly1305 = "0.10.1"
+getrandom = "0.2.15"
+oauth2 = { version = "5.0.0", default-features = false, features = ["reqwest", "rustls-tls"] }
+url = "2.5.2"
+bigdecimal = { version = "0.4.5", features = ["serde"] }
+aws-config = "1.8.0"
+aws-sdk-sqs = { version = "1.90.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-types = "1.3.3"
+backoff = { version = "0.4.0", features = ["tokio"] }
+validator = { version = "0.20.0", features = ["derive"] }
+regex = "1.9.0"
+lazy_static = "1.4.0"
+subtle = "2.6.1"
+zeroize = { version = "1.8", features = ["derive"] }
+tiktoken-rs = "0.5"
+once_cell = "1.19"
+pulldown-cmark = { version = "0.13.0", default-features = false }
+pulldown-cmark-to-cmark = "22.0.0"
+tinfoil = { git = "https://github.com/tinfoilsh/tinfoil-rs", tag = "v0.2.0" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+openssl = "0.10.78"
+syn = { version = "2", features = ["full", "visit"] }
+proptest = { version = "=1.6.0", default-features = false, features = ["std"] }

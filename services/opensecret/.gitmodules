@@ -1,0 +1,6 @@
+[submodule "nitro-toolkit"]
+	path = nitro-toolkit
+	url = https://github.com/OpenSecretCloud/nitro-toolkit.git
+[submodule "privatemode-public"]
+	path = privatemode-public
+	url = https://github.com/edgelesssys/privatemode-public.git

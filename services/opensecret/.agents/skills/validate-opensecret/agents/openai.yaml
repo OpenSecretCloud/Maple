@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validate OpenSecret"
+  short_description: "Run backend checks and evidence-based smokes"
+  default_prompt: "Use $validate-opensecret to validate this backend change at the right depth."
