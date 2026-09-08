@@ -2950,11 +2950,15 @@ mod tests {
 
     #[test]
     fn permission_request_without_prompt_previews_the_arguments() {
+        let path = std::env::temp_dir().join("notes.md");
+        assert!(path.is_absolute(), "the approval fixture must be absolute");
+        let path = path.to_string_lossy().into_owned();
+        let title = format!("edit: {path}");
         let request = AgentPermissionRequest {
             request_id: "request-2".to_string(),
             tool_name: "edit".to_string(),
             arguments: serde_json::Map::from_iter([
-                ("path".to_string(), serde_json::json!("/tmp/notes.md")),
+                ("path".to_string(), serde_json::json!(path)),
                 (
                     "edits".to_string(),
                     serde_json::json!([{ "oldText": "foo", "newText": "bar" }]),
@@ -2966,7 +2970,7 @@ mod tests {
             id: "permission-request-2".to_string(),
             item_type: "permission".to_string(),
             role: Some("system".to_string()),
-            title: Some("edit: /tmp/notes.md".to_string()),
+            title: Some(title.clone()),
             text: None,
             status: Some("pending".to_string()),
             input: Some(serde_json::Value::Object(request.arguments.clone())),
@@ -2980,14 +2984,14 @@ mod tests {
             acp_permission_options(),
         );
         let encoded = serde_json::to_value(permission).unwrap();
-        assert_eq!(encoded["toolCall"]["title"], "edit: /tmp/notes.md");
+        assert_eq!(encoded["toolCall"]["title"], title);
         // Edit approvals render as diffs, the shape ACP clients show inline.
         assert_eq!(encoded["toolCall"]["content"][0]["type"], "diff");
-        assert_eq!(encoded["toolCall"]["content"][0]["path"], "/tmp/notes.md");
+        assert_eq!(encoded["toolCall"]["content"][0]["path"], path);
         assert_eq!(encoded["toolCall"]["content"][0]["oldText"], "foo");
         assert_eq!(encoded["toolCall"]["content"][0]["newText"], "bar");
         // The card links to the file it approves.
-        assert_eq!(encoded["toolCall"]["locations"][0]["path"], "/tmp/notes.md");
+        assert_eq!(encoded["toolCall"]["locations"][0]["path"], path);
 
         // One approval card must not flood the caller with a huge edit.
         let long = "x".repeat(20_000);
@@ -2995,7 +2999,7 @@ mod tests {
             request_id: "request-3".to_string(),
             tool_name: "edit".to_string(),
             arguments: serde_json::Map::from_iter([
-                ("path".to_string(), serde_json::json!("/tmp/notes.md")),
+                ("path".to_string(), serde_json::json!(path)),
                 (
                     "edits".to_string(),
                     serde_json::json!([{ "newText": long }]),
