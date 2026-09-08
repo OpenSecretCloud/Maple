@@ -43,7 +43,8 @@ remove Tauri:
   sink are injectable traits
 - public visibility opened on the service surface the app consumes
 
-Goose is pinned to the aaif-goose fork revision recorded in this component’s
+Goose is pinned to an aaif-goose fork with Maple’s native-client integration and
+opt-in ordered tool scheduling. Its exact revision is recorded in this component’s
 Cargo manifests and lockfile; Research has an independent dependency graph.
 
 ## Features
