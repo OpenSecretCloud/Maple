@@ -20,7 +20,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 1. BILLING & PAYMENTS (`frontend/src/billing/billingApi.ts`) ✅ COMPLETED
+## 1. BILLING & PAYMENTS (`apps/maple-research/frontend/src/billing/billingApi.ts`) ✅ COMPLETED
 
 ### Instance 1: Portal Return URL (Line 102) ✅
 - **Current iOS Behavior:** Uses `https://trymaple.ai` as return URL instead of `tauri://localhost`
@@ -60,7 +60,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 2. PROXY SERVICE (`frontend/src/services/proxyService.ts`) ✅ COMPLETED
+## 2. PROXY SERVICE (`apps/maple-research/frontend/src/services/proxyService.ts`) ✅ COMPLETED
 
 ### Instance 1: Desktop Platform Check (Lines 99-106) ✅
 - **Current Behavior:** Returns true only for `macos`, `windows`, `linux`
@@ -71,7 +71,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 3. AUTHENTICATION (`frontend/src/routes/login.tsx` & `signup.tsx`) ✅ COMPLETED
+## 3. AUTHENTICATION (`apps/maple-research/frontend/src/routes/login.tsx` & `signup.tsx`) ✅ COMPLETED
 
 ### Instance 1: Platform Detection ✅
 - **Current iOS Behavior:** Sets `isIOS` state when `platform === "ios"`
@@ -147,7 +147,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 4. PRICING PAGE (`frontend/src/routes/pricing.tsx`) ✅ COMPLETED
+## 4. PRICING PAGE (`apps/maple-research/frontend/src/routes/pricing.tsx`) ✅ COMPLETED
 
 ### Instance 1: Platform Detection ✅
 - **Current iOS Behavior:** Sets `isIOS` state
@@ -249,7 +249,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 5. ACCOUNT MENU (`frontend/src/components/AccountMenu.tsx`) ✅ COMPLETED
+## 5. ACCOUNT MENU (`apps/maple-research/frontend/src/components/AccountMenu.tsx`) ✅ COMPLETED
 
 ### Instance 1: API Management Visibility (Lines 276-281) ✅
 - **Current iOS Behavior:** Hides API Management menu item
@@ -285,7 +285,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 6. TEAM INVITES (`frontend/src/components/team/TeamInviteDialog.tsx`) ✅ COMPLETED
+## 6. TEAM INVITES (`apps/maple-research/frontend/src/components/team/TeamInviteDialog.tsx`) ✅ COMPLETED
 
 ### Instance 1: Billing Portal (Lines 48-55) ✅
 - **Current iOS Behavior:** Uses `plugin:opener|open_url` for external browser
@@ -308,7 +308,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 7. MARKETING (`frontend/src/components/Marketing.tsx`) ✅ COMPLETED
+## 7. MARKETING (`apps/maple-research/frontend/src/components/Marketing.tsx`) ✅ COMPLETED
 
 ### Instance 1: Platform Detection ✅
 - **Current iOS Behavior:** Sets `isIOS` state when `platform === "ios"`
@@ -344,7 +344,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 8. API CREDITS (`frontend/src/components/apikeys/ApiCreditsSection.tsx`) ✅ COMPLETED
+## 8. API CREDITS (`apps/maple-research/frontend/src/components/apikeys/ApiCreditsSection.tsx`) ✅ COMPLETED
 
 ### Instance 1: Payment URLs (Lines 98-112) ✅
 - **Current iOS Behavior:** Uses Universal Links for payment callbacks
@@ -377,7 +377,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 9. CHAT BOX (`frontend/src/components/ChatBox.tsx`) ✅ COMPLETED
+## 9. CHAT BOX (`apps/maple-research/frontend/src/components/ChatBox.tsx`) ✅ COMPLETED
 
 ### Instance 1: Document Processing (Line 410) ✅
 - **Current Behavior:** Tauri environments support PDF processing
@@ -401,7 +401,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 10. PROXY CONFIGURATION (`frontend/src/components/apikeys/ProxyConfigSection.tsx`) ✅ COMPLETED
+## 10. PROXY CONFIGURATION (`apps/maple-research/frontend/src/components/apikeys/ProxyConfigSection.tsx`) ✅ COMPLETED
 
 ### Instance 1: Component Visibility (Lines 28-40) ✅
 - **Current Behavior:** Only shows on desktop platforms
@@ -423,7 +423,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 11. API KEY DASHBOARD (`frontend/src/components/apikeys/ApiKeyDashboard.tsx`) ✅ COMPLETED
+## 11. API KEY DASHBOARD (`apps/maple-research/frontend/src/components/apikeys/ApiKeyDashboard.tsx`) ✅ COMPLETED
 
 ### Instance 1: Proxy Tab Visibility (Lines 215-230) ✅
 - **Current Behavior:** Shows proxy tab only on desktop
@@ -455,7 +455,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 12. AUTH CALLBACK (`frontend/src/routes/auth.$provider.callback.tsx`) ✅ COMPLETED
+## 12. AUTH CALLBACK (`apps/maple-research/frontend/src/routes/auth.$provider.callback.tsx`) ✅ COMPLETED
 
 ### Instance 1: Native App Redirect (Lines 38-59) ✅
 - **Current Behavior:** Checks `redirect-to-native` flag for deep linking
@@ -478,7 +478,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 13. APPLE AUTH PROVIDER (`frontend/src/components/AppleAuthProvider.tsx`) ✅ COMPLETED
+## 13. APPLE AUTH PROVIDER (`apps/maple-research/frontend/src/components/AppleAuthProvider.tsx`) ✅ COMPLETED
 
 ### Instance 1: Component Rendering (Lines 95, 393) ✅
 - **Current Behavior:** Returns null for ALL Tauri environments (`window.location.protocol === "tauri:"`)
@@ -512,7 +512,7 @@ if (await isMobile()) { /* Both iOS and Android */ }
 
 ---
 
-## 14. DEEP LINK HANDLER (`frontend/src/components/DeepLinkHandler.tsx`) ✅ COMPLETED
+## 14. DEEP LINK HANDLER (`apps/maple-research/frontend/src/components/DeepLinkHandler.tsx`) ✅ COMPLETED
 
 ### Instance 1: Deep Link Events (Lines 31-84) ✅
 - **Current Behavior:** Sets up listeners in Tauri environments
@@ -546,7 +546,7 @@ Deep linking is critical for handling OAuth callbacks, payment redirects, and te
 ### Current iOS Configuration
 
 #### 1. Universal Links (HTTPS Links)
-**File**: `/frontend/src-tauri/gen/apple/maple_iOS/maple_iOS.entitlements`
+**File**: `/apps/maple-research/frontend/src-tauri/gen/apple/maple_iOS/maple_iOS.entitlements`
 ```xml
 <key>com.apple.developer.associated-domains</key>
 <array>
@@ -559,7 +559,7 @@ Deep linking is critical for handling OAuth callbacks, payment redirects, and te
 - This file tells iOS which paths should open in the app
 
 #### 2. Custom URL Scheme
-**File**: `/frontend/src-tauri/gen/apple/maple_iOS/Info.plist`
+**File**: `/apps/maple-research/frontend/src-tauri/gen/apple/maple_iOS/Info.plist`
 ```xml
 <key>CFBundleURLTypes</key>
 <array>
@@ -575,7 +575,7 @@ Deep linking is critical for handling OAuth callbacks, payment redirects, and te
 ```
 
 #### 3. Tauri Configuration
-**File**: `/frontend/src-tauri/tauri.conf.json`
+**File**: `/apps/maple-research/frontend/src-tauri/tauri.conf.json`
 ```json
 "deep-link": {
   "desktop": {
@@ -775,7 +775,7 @@ keytool -genkey -v \
 
 ### Step 2: Configure Tauri for Signing ✅ COMPLETED
 
-Create `frontend/src-tauri/gen/android/keystore.properties`:
+Create `apps/maple-research/frontend/src-tauri/gen/android/keystore.properties`:
 ```properties
 password=your-keystore-password
 keyAlias=upload
@@ -809,8 +809,8 @@ bun tauri android build -- --aab
 ```
 
 Output locations:
-- **APK**: `frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
-- **AAB**: `frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab`
+- **APK**: `apps/maple-research/frontend/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
+- **AAB**: `apps/maple-research/frontend/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab`
 
 **Status**: ✅ Successfully built signed APK and AAB, installed on physical device
 
@@ -842,7 +842,7 @@ If using Google Play App Signing:
 
 ### Step 5: Create assetlinks.json for Deep Linking ✅ COMPLETED
 
-The checked-in `frontend/public/.well-known/assetlinks.json` is the source of
+The checked-in `apps/maple-research/frontend/public/.well-known/assetlinks.json` is the source of
 truth for the configured package and signing fingerprints.
 
 **Status**: ✅ Deployed to https://trymaple.ai/.well-known/assetlinks.json
@@ -932,7 +932,7 @@ Store in GitHub Secrets:
 ```yaml
 - name: Setup Android signing
   run: |
-    cd frontend/src-tauri/gen/android
+    cd apps/maple-research/frontend/src-tauri/gen/android
     echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
     echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" > keystore.properties
     echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" >> keystore.properties

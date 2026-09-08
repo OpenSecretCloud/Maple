@@ -14,7 +14,7 @@ This happens when the Xcode project file incorrectly lists `arm64-sim` as an arc
 
 This solution configures the project to only build for ARM64, which works for real devices and Apple Silicon Mac simulators. This is simpler and avoids x86_64 compatibility issues.
 
-1. **Edit the Xcode project file** (`frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj`):
+1. **Edit the Xcode project file** (`apps/maple-research/frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj`):
 
    Find and replace all occurrences of:
    ```

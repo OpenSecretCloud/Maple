@@ -3,8 +3,10 @@
 import copy
 import functools
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -87,6 +89,10 @@ class PagesWorkflowTests(unittest.TestCase):
                 set(old_build["on"][event]["paths"])
                 <= set(preview["on"][event]["paths"])
             )
+        legacy_paths = preview["on"]["pull_request"]["paths"]
+        self.assertIn("frontend/**", legacy_paths)
+        self.assertIn("!frontend/src-tauri/**", legacy_paths)
+        self.assertLess(legacy_paths.index("frontend/**"), legacy_paths.index("!frontend/src-tauri/**"))
         build_steps = [
             step for step in preview["jobs"]["build-preview"]["steps"]
             if "./scripts/ci/web.sh" in step.get("run", "")
@@ -110,8 +116,8 @@ class PagesWorkflowTests(unittest.TestCase):
         self.assertEqual(
             upload["path"].splitlines(),
             [
-                "frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz",
-                "frontend/src-tauri/target/reproducibility/pages-artifact.json",
+                "${{ steps.artifact.outputs.directory }}/maple-web-dist.tar.gz",
+                "${{ steps.artifact.outputs.directory }}/pages-artifact.json",
             ],
         )
         self.assertEqual(upload["if-no-files-found"], "error")
@@ -130,6 +136,38 @@ class PagesWorkflowTests(unittest.TestCase):
             '--run-id "$GITHUB_RUN_ID"', '--run-attempt "$GITHUB_RUN_ATTEMPT"',
         ):
             self.assertIn(argument, descriptions[0])
+
+    def test_preview_artifact_selection_supports_both_layouts_and_rejects_ambiguity(self):
+        steps = workflow("pages-preview-build.yml")["jobs"]["build-preview"]["steps"]
+        description = next(step for step in steps if step.get("id") == "artifact")
+        modern = "apps/maple-research/frontend/src-tauri/target/reproducibility"
+        legacy = "frontend/src-tauri/target/reproducibility"
+        for directories, expected in (((modern,), modern), ((legacy,), legacy),
+                                      ((modern, legacy), None), ((), None)):
+            with self.subTest(directories=directories), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for directory in directories:
+                    archive = root / directory / "maple-web-dist.tar.gz"
+                    archive.parent.mkdir(parents=True)
+                    archive.write_bytes(b"fixture")
+                # The selection is shell logic; artifact validation has its own tests.
+                binaries = root / "bin"
+                binaries.mkdir()
+                nix = binaries / "nix"
+                nix.write_text("#!/bin/sh\nexit 0\n")
+                nix.chmod(0o755)
+                output = root / "output"
+                environment = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                               "GITHUB_WORKSPACE": tmp, "GITHUB_OUTPUT": str(output),
+                               "SOURCE_SHA": "a" * 40, "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2"}
+                result = subprocess.run(["bash", "-c", description["run"]], cwd=root,
+                                        env=environment, capture_output=True, text=True)
+                if expected is None:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), f"directory={expected}\n")
 
     def test_publisher_uses_only_trusted_checkout_and_dependencies(self):
         publish = workflow("pages-publish.yml")
@@ -155,10 +193,10 @@ class PagesWorkflowTests(unittest.TestCase):
                 self.assertEqual(actions, ["actions/checkout", "DeterminateSystems/nix-installer-action"])
                 installs = [step for step in job["steps"] if "bun install" in step.get("run", "")]
                 self.assertEqual(len(installs), 1)
-                self.assertEqual(installs[0]["working-directory"], "updates")
+                self.assertEqual(installs[0]["working-directory"], "services/updates")
                 self.assertEqual(
                     installs[0]["run"],
-                    "nix develop --no-update-lock-file ..#pages -c bun install --frozen-lockfile --ignore-scripts",
+                    "nix develop --no-update-lock-file ../..#pages -c bun install --frozen-lockfile --ignore-scripts",
                 )
                 for step in job["steps"]:
                     self.assertNotIn("${{", step.get("run", ""))

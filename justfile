@@ -1,5 +1,5 @@
-# Load environment variables from frontend/.env.local
-set dotenv-path := "frontend/.env.local"
+# Load environment variables from apps/maple-research/frontend/.env.local
+set dotenv-path := "apps/maple-research/frontend/.env.local"
 set dotenv-required := false
 
 # List available commands
@@ -12,28 +12,28 @@ install:
 
 # Start the frontend development server
 dev:
-    cd frontend && bun run dev
+    cd apps/maple-research/frontend && bun run dev
 
 build:
-    cd frontend && bun run build
+    cd apps/maple-research/frontend && bun run build
 
 format:
-    cd frontend && bun run format
+    cd apps/maple-research/frontend && bun run format
 
 lint:
-    cd frontend && bun run lint
+    cd apps/maple-research/frontend && bun run lint
 
 # Run Tauri iOS development build (default simulator) without the Rust file watcher
 ios-dev: _verify-rust-lock
-    cd frontend && bun run tauri ios dev --no-watch
+    cd apps/maple-research/frontend && bun run tauri ios dev --no-watch
 
 # Run Tauri iOS development build on specific simulator (e.g., "iPhone 16 Pro iOS 26")
 ios-dev-sim simulator: _verify-rust-lock
-    cd frontend && bun run tauri ios dev --no-watch '{{simulator}}'
+    cd apps/maple-research/frontend && bun run tauri ios dev --no-watch '{{simulator}}'
 
 # Run Tauri iOS development build on physical device (e.g., "Your iPhone")
 ios-dev-device device: _verify-rust-lock
-    cd frontend && bun run tauri ios dev --no-watch --device '{{device}}'
+    cd apps/maple-research/frontend && bun run tauri ios dev --no-watch --device '{{device}}'
 
 # Build and verify ONNX Runtime for iOS (device + simulator) - used by PDF OCR
 ios-build-onnxruntime:
@@ -41,13 +41,13 @@ ios-build-onnxruntime:
 
 # Setup cargo config for iOS ONNX Runtime (run after building ONNX Runtime)
 ios-setup-cargo-config:
-    cd frontend/src-tauri && ./scripts/setup-ios-cargo-config.sh
+    cd apps/maple-research/frontend/src-tauri && ./scripts/setup-ios-cargo-config.sh
 
 # Fix arm64-sim Xcode architecture issue (run if you get arm64-sim errors)
 ios-fix-arch:
     #!/usr/bin/env bash
     set -euo pipefail
-    cd frontend/src-tauri/gen/apple
+    cd apps/maple-research/frontend/src-tauri/gen/apple
     echo "Fixing arm64-sim architecture issue..."
     perl -i -0pe 's/ARCHS = \(\s*arm64,\s*"arm64-sim",\s*\);/ARCHS = arm64;/g' maple.xcodeproj/project.pbxproj
     sed -i '' 's/VALID_ARCHS = "arm64  arm64-sim";/VALID_ARCHS = arm64;/g' maple.xcodeproj/project.pbxproj
@@ -57,61 +57,61 @@ ios-fix-arch:
 
 # Build Tauri Android release
 android-build: _verify-rust-lock
-    cd frontend/src-tauri && ./scripts/provide-android-onnxruntime.sh
-    cd frontend && bun run tauri android build
+    cd apps/maple-research/frontend/src-tauri && ./scripts/provide-android-onnxruntime.sh
+    cd apps/maple-research/frontend && bun run tauri android build
 
 # Build Tauri desktop release
 desktop-build: _verify-rust-lock
-    cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
+    cd apps/maple-research/frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
 
 # Run Tauri desktop development build without the Rust file watcher, using workspace-local config when available
 desktop-dev: _verify-rust-lock
-    cd frontend && if [ -f ../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch --config ../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch; fi
+    cd apps/maple-research/frontend && if [ -f ../../../.local/tauri-workspace.json ]; then src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch --config ../../../.local/tauri-workspace.json; else src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri dev --no-watch; fi
 
 # Build Tauri desktop debug
 desktop-build-debug: _verify-rust-lock
-    cd frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
+    cd apps/maple-research/frontend && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
 
 # Build an unsigned debug desktop package with the required local Tauri overlay
 desktop-build-debug-overlay: _verify-rust-lock
     #!/usr/bin/env bash
     set -euo pipefail
     test -f .local/tauri-workspace.json || { echo "missing .local/tauri-workspace.json" >&2; exit 1; }
-    cd frontend
-    src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug --no-sign --config ../.local/tauri-workspace.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
+    cd apps/maple-research/frontend
+    src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug --no-sign --config ../../../.local/tauri-workspace.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 # Build Tauri desktop release (with CC unset for compatibility)
 desktop-build-no-cc: _verify-rust-lock
-    cd frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
+    cd apps/maple-research/frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build
 
 # Build Tauri desktop debug (with CC unset for compatibility)
 desktop-build-debug-no-cc: _verify-rust-lock
-    cd frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
+    cd apps/maple-research/frontend && unset CC && src-tauri/scripts/run-with-desktop-onnxruntime.sh bun tauri build --debug
 
 # Format Rust code
 rust-fmt:
-    cd frontend/src-tauri && cargo fmt
+    cd apps/maple-research/frontend/src-tauri && cargo fmt
 
 # Fail before Tauri can build if Cargo.toml and Cargo.lock disagree.
 _verify-rust-lock:
-    cd frontend/src-tauri && cargo metadata --locked --format-version 1 >/dev/null
+    cd apps/maple-research/frontend/src-tauri && cargo metadata --locked --format-version 1 >/dev/null
 
 # Check Rust code compiles
 rust-check:
-    cd frontend/src-tauri && cargo check --locked
+    cd apps/maple-research/frontend/src-tauri && cargo check --locked
 
 # Run Clippy lints on Rust code
 rust-clippy:
-    cd frontend/src-tauri && cargo clippy --locked
+    cd apps/maple-research/frontend/src-tauri && cargo clippy --locked
 
 # Run all Rust checks (fmt check + clippy)
 rust-lint:
-    cd frontend/src-tauri && cargo fmt --check && cargo clippy --locked -- -D warnings
+    cd apps/maple-research/frontend/src-tauri && cargo fmt --check && cargo clippy --locked -- -D warnings
 
 # Remove only this checkout's final Cargo artifacts. Raw `cargo clean` also
 # removes CARGO_BUILD_BUILD_DIR, which may be shared by multiple workspaces.
 clean-local:
-    cd frontend/src-tauri && CARGO_BUILD_BUILD_DIR=target cargo clean
+    cd apps/maple-research/frontend/src-tauri && CARGO_BUILD_BUILD_DIR=target cargo clean
 
 # Update version across all required files
 update-version version:
@@ -125,7 +125,7 @@ update-version version:
     
     # Android versionCode is not user-visible. It only has to increase for
     # every uploaded Play Store build and must stay <= 2100000000.
-    current_android_version_code=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
+    current_android_version_code=$(jq -r '.bundle.android.versionCode' apps/maple-research/frontend/src-tauri/tauri.conf.json)
     android_version_code=$((current_android_version_code + 1))
     if [ "$android_version_code" -gt 2100000000 ]; then
         echo "Error: Android versionCode $android_version_code exceeds Google Play maximum 2100000000."
@@ -138,13 +138,13 @@ update-version version:
     
     # Run cargo check to update Cargo.lock
     echo "Running cargo check to update Cargo.lock..."
-    cd frontend/src-tauri && cargo check
+    cd apps/maple-research/frontend/src-tauri && cargo check
     
     echo "Version updated to {{version}} with Android versionCode $android_version_code in all files!"
 
 # Get current version from package.json
 get-version:
-    @jq -r '.version' frontend/package.json
+    @jq -r '.version' apps/maple-research/frontend/package.json
 
 # Bump version by patch (0.0.1)
 bump-patch:
@@ -185,7 +185,7 @@ update-android-counter:
     set -euo pipefail
     
     # Get current versionCode from tauri.conf.json
-    current_code=$(jq -r '.bundle.android.versionCode' frontend/src-tauri/tauri.conf.json)
+    current_code=$(jq -r '.bundle.android.versionCode' apps/maple-research/frontend/src-tauri/tauri.conf.json)
     
     # Increment by one. This value is internal to Android/Play Store and is not user-visible.
     new_code=$((current_code + 1))
@@ -199,7 +199,7 @@ update-android-counter:
     echo "Updating Android versionCode: $current_code -> $new_code"
     
     # Update tauri.conf.json Android versionCode
-    sed -i "s/\"versionCode\": $current_code/\"versionCode\": $new_code/" frontend/src-tauri/tauri.conf.json
+    sed -i "s/\"versionCode\": $current_code/\"versionCode\": $new_code/" apps/maple-research/frontend/src-tauri/tauri.conf.json
     
     echo "Android versionCode updated to $new_code"
 

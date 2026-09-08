@@ -14,8 +14,8 @@ package boundaries remain independently versioned and publishable:
 
 - `src/` builds `@opensecret/react` for browser and React consumers.
 - `rust/` builds the `opensecret` crate for native consumers.
-- `frontend/package.json` is authoritative for whether Maple's browser client
-  consumes a published TypeScript version or the in-tree `file:../sdk` package.
+- `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
+  consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
 - desktop Maple and `proxy/` consume the in-tree Rust crate through versioned
   path dependencies. iOS and Android do not compile those desktop-only
   consumers.

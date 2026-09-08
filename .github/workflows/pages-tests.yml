@@ -11,8 +11,8 @@ on:
       - "scripts/ci/test_pages_*.py"
       - "scripts/ci/_common.sh"
       - "scripts/ci/web.sh"
-      - "updates/package.json"
-      - "updates/bun.lock"
+      - "services/updates/package.json"
+      - "services/updates/bun.lock"
       - "flake.nix"
       - "flake.lock"
   push:
@@ -23,8 +23,8 @@ on:
       - "scripts/ci/test_pages_*.py"
       - "scripts/ci/_common.sh"
       - "scripts/ci/web.sh"
-      - "updates/package.json"
-      - "updates/bun.lock"
+      - "services/updates/package.json"
+      - "services/updates/bun.lock"
       - "flake.nix"
       - "flake.lock"
 

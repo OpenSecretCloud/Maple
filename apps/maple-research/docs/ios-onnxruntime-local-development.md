@@ -27,7 +27,7 @@ just ios-build-onnxruntime
 
 This builds and hash-verifies ONNX Runtime for both device and simulator, then generates the Cargo config. A valid cached artifact is reused; a stale or differently built artifact fails verification and is rebuilt.
 
-The output will be in `frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/`.
+The output will be in `apps/maple-research/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/`.
 
 ### 2. Regenerate Cargo Config (if needed)
 
@@ -37,7 +37,7 @@ If you move the project or need to regenerate the cargo config:
 just ios-setup-cargo-config
 ```
 
-This creates `frontend/src-tauri/.cargo/config.toml` with the correct absolute paths for your machine.
+This creates `apps/maple-research/frontend/src-tauri/.cargo/config.toml` with the correct absolute paths for your machine.
 
 ### 3. Fix arm64-sim Xcode Issue (if needed)
 
@@ -75,7 +75,7 @@ Note: If you have a device connected (even wirelessly), `just ios-dev` may deplo
 
 ### Vite Server Not Reachable
 
-The iOS simulator needs to connect to your development server. Ensure `frontend/vite.config.ts` has:
+The iOS simulator needs to connect to your development server. Ensure `apps/maple-research/frontend/vite.config.ts` has:
 
 ```typescript
 server: {
@@ -126,7 +126,7 @@ This is fixed by adding `CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=NEVER` to the cmake f
 
 After building, you'll have:
 ```
-frontend/src-tauri/
+apps/maple-research/frontend/src-tauri/
 ├── onnxruntime-build/          # Build directory (can be deleted after build)
 │   └── onnxruntime/            # ONNX Runtime source
 └── onnxruntime-ios/            # Output directory
@@ -156,10 +156,10 @@ To free disk space after testing:
 
 ```bash
 # Remove build directory (keeps the built xcframework)
-rm -rf frontend/src-tauri/onnxruntime-build
+rm -rf apps/maple-research/frontend/src-tauri/onnxruntime-build
 
 # Remove everything (requires rebuilding)
-rm -rf frontend/src-tauri/onnxruntime-build frontend/src-tauri/onnxruntime-ios
+rm -rf apps/maple-research/frontend/src-tauri/onnxruntime-build apps/maple-research/frontend/src-tauri/onnxruntime-ios
 ```
 
 ## Related Documentation

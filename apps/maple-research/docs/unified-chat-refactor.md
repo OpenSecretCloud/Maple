@@ -13,9 +13,9 @@ This document describes the initial refactor of Maple's chat interface in prepar
 The existing chat architecture had several pain points:
 
 1. **Scattered State Management**: Chat state was distributed across multiple components and routes:
-   - `frontend/src/routes/index.tsx` - Home page with ChatBox
-   - `frontend/src/routes/_auth.chat.$chatId.tsx` - Individual chat route
-   - `frontend/src/components/ChatBox.tsx` - Shared chat input component
+   - `apps/maple-research/frontend/src/routes/index.tsx` - Home page with ChatBox
+   - `apps/maple-research/frontend/src/routes/_auth.chat.$chatId.tsx` - Individual chat route
+   - `apps/maple-research/frontend/src/components/ChatBox.tsx` - Shared chat input component
    - Complex prop drilling and state synchronization between these components
 
 2. **Complex Routing Logic**: The system required careful coordination between routes, with state being passed through navigation params, leading to:
@@ -35,7 +35,7 @@ The existing chat architecture had several pain points:
 We created a single `UnifiedChat` component that contains all chat functionality:
 
 ```typescript
-// frontend/src/components/UnifiedChat.tsx
+// apps/maple-research/frontend/src/components/UnifiedChat.tsx
 export function UnifiedChat() {
   // ALL chat state lives here
   const [messages, setMessages] = useState<Message[]>([]);
@@ -90,13 +90,13 @@ We maintained backward compatibility:
 ### File Structure
 
 **New Files**:
-- `frontend/src/components/UnifiedChat.tsx` - The unified chat component
+- `apps/maple-research/frontend/src/components/UnifiedChat.tsx` - The unified chat component
 - Historical backup of the original index (the backup file is no longer part of
   the repository)
 
 **Modified Files**:
-- `frontend/src/routes/index.tsx` - Simplified to show Marketing or UnifiedChat based on auth
-- `frontend/src/components/Sidebar.tsx` - Updated "New Chat" to clear conversation_id
+- `apps/maple-research/frontend/src/routes/index.tsx` - Simplified to show Marketing or UnifiedChat based on auth
+- `apps/maple-research/frontend/src/components/Sidebar.tsx` - Updated "New Chat" to clear conversation_id
 
 ### State Management
 

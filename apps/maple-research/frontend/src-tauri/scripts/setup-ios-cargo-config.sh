@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
-REPO_ROOT="$(cd "${TAURI_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${TAURI_DIR}/../../../.." && pwd)"
 CARGO_DIR="${TAURI_DIR}/.cargo"
 CONFIG_FILE="${CARGO_DIR}/config.toml"
 XCFRAMEWORK_DIR="${TAURI_DIR}/onnxruntime-ios/onnxruntime.xcframework"

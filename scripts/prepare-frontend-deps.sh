@@ -9,5 +9,5 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 "${repo_root}/scripts/prepare-typescript-sdk.sh"
 
-cd "${repo_root}/frontend"
+cd "${repo_root}/apps/maple-research/frontend"
 bun --no-env-file install --frozen-lockfile --ignore-scripts

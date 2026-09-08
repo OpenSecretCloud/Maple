@@ -254,7 +254,7 @@ def prepare(gh, event, target, state):
                             expected_size=asset["size"], expected_digest=asset["digest"])
         archive_digest = plan["archive"]["digest"]
         checksum = (state / "web.sha256").read_text()
-        require(re.fullmatch(re.escape(archive_digest) + r"  (?:frontend/src-tauri/target/reproducibility/)?maple-web-dist\.tar\.gz\n?", checksum),
+        require(re.fullmatch(re.escape(archive_digest) + r"  (?:(?:apps/maple-research/)?frontend/src-tauri/target/reproducibility/)?maple-web-dist\.tar\.gz\n?", checksum),
                 "Release checksum manifest mismatch")
     files = extract_static(archive, state / "assets", archive_digest)
     (state / "plan.json").write_text(json.dumps({"selection": plan, "archive_digest": archive_digest, "files": files}))
@@ -303,7 +303,7 @@ def require_clean_wrangler_ancestors(workdir):
 
 def run_wrangler(plan, assets, account, token, workdir):
     root = Path(__file__).resolve().parents[2]
-    executable = root / "updates/node_modules/wrangler/bin/wrangler.js"
+    executable = root / "services/updates/node_modules/wrangler/bin/wrangler.js"
     require(executable.is_file(), "Pinned Wrangler is not installed")
     node = shutil.which("node")
     require(node is not None, "Pinned Node runtime is not available")

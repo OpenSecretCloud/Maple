@@ -708,7 +708,7 @@
           '';
 
           pages = pkgs.runCommand "maple-pages-deployment-check" {
-            nativeBuildInputs = with pkgs; [ python3 yq-go ];
+            nativeBuildInputs = with pkgs; [ bash python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"

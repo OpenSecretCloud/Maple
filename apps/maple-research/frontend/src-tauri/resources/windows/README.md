@@ -49,7 +49,7 @@ before the Tauri build. Those scripts use:
 
 - SHA-verified ONNX Runtime from `scripts/provide-windows-onnxruntime.sh`.
 - A SHA-verified, versioned Microsoft `VC_redist.x64.exe` URL pinned in
-  `frontend/src-tauri/scripts/onnxruntime-pins.sh`.
+  `apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh`.
 - A SHA-verified WiX CLI NuGet package, used only to extract the VC++ redist
   bootstrapper payload reproducibly.
 
@@ -68,11 +68,11 @@ first (it exports `ORT_DYLIB_PATH`), then run the same staging helper:
 
 ```powershell
 $env:MAPLE_WINDOWS_VC_REDIST_VERSION = "14.44.35211"
-$env:MAPLE_WINDOWS_VC_REDIST_URL = "<pinned URL from frontend/src-tauri/scripts/onnxruntime-pins.sh>"
-$env:MAPLE_WINDOWS_VC_REDIST_SHA256 = "<pinned SHA-256 from frontend/src-tauri/scripts/onnxruntime-pins.sh>"
-.\frontend\src-tauri\scripts\stage-windows-runtime-dlls.ps1 `
+$env:MAPLE_WINDOWS_VC_REDIST_URL = "<pinned URL from apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh>"
+$env:MAPLE_WINDOWS_VC_REDIST_SHA256 = "<pinned SHA-256 from apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh>"
+.\apps\maple-research\frontend\src-tauri\scripts\stage-windows-runtime-dlls.ps1 `
   -OrtDllPath "$env:ORT_DYLIB_PATH" `
-  -Destination .\frontend\src-tauri\resources\windows
+  -Destination .\apps\maple-research\frontend\src-tauri\resources\windows
 ```
 
 The hook reads these files at makensis compile time, so they must be present

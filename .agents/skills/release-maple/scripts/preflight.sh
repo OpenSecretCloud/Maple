@@ -32,8 +32,8 @@ head_sha="$(git rev-parse HEAD)"
 remote_sha="$(git rev-parse refs/remotes/origin/master)"
 [[ "${head_sha}" == "${remote_sha}" ]] || fail "HEAD ${head_sha} does not match origin/master ${remote_sha}"
 
-package_version="$(jq -er .version frontend/package.json)"
-tauri_version="$(jq -er .version frontend/src-tauri/tauri.conf.json)"
+package_version="$(jq -er .version apps/maple-research/frontend/package.json)"
+tauri_version="$(jq -er .version apps/maple-research/frontend/src-tauri/tauri.conf.json)"
 cargo_version="$(awk '
   /^\[package\]$/ { in_package = 1; next }
   /^\[/ && in_package { exit }
@@ -44,7 +44,7 @@ cargo_version="$(awk '
     print value
     exit
   }
-' frontend/src-tauri/Cargo.toml)"
+' apps/maple-research/frontend/src-tauri/Cargo.toml)"
 
 [[ -n "${cargo_version}" ]] || fail "could not read Cargo package version"
 [[ "${package_version}" == "${tauri_version}" ]] || fail "package.json ${package_version} != tauri.conf.json ${tauri_version}"
@@ -58,11 +58,20 @@ previous_tag="$(gh api "repos/${repo}/releases/latest" --jq .tag_name)"
 [[ -n "${previous_tag}" ]] || fail "could not determine the latest published release"
 [[ "${tag}" != "${previous_tag}" ]] || fail "${tag} is already the latest published release"
 
-previous_version="$(gh api \
+# Releases cut before the Research move retain their original manifest path.
+# Prefer the current layout; a historical tag may only contain frontend/.
+if ! previous_package_json="$(gh api \
   --method GET \
   -H 'Accept: application/vnd.github.raw+json' \
-  "repos/${repo}/contents/frontend/package.json" \
-  -f ref="${previous_tag}" | jq -er .version)"
+  "repos/${repo}/contents/apps/maple-research/frontend/package.json" \
+  -f ref="${previous_tag}" 2>/dev/null)"; then
+  previous_package_json="$(gh api \
+    --method GET \
+    -H 'Accept: application/vnd.github.raw+json' \
+    "repos/${repo}/contents/frontend/package.json" \
+    -f ref="${previous_tag}")" || fail "could not read the previous release manifest"
+fi
+previous_version="$(printf '%s' "${previous_package_json}" | jq -er .version)"
 
 python3 - "${previous_version}" "${package_version}" <<'PY'
 import re

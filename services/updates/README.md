@@ -23,7 +23,7 @@ in a later phase. Do not use a local Wrangler login for production deployment.
 
 ## Development
 
-Use Maple's pinned Nix shell and the lockfile in this directory:
+From the repository root, use Maple's pinned Nix shell and this service's lockfile:
 
 ```sh
 nix develop --no-update-lock-file .#ci -c ./scripts/ci/updates.sh
@@ -32,7 +32,7 @@ nix develop --no-update-lock-file .#ci -c ./scripts/ci/updates.sh
 For local iteration:
 
 ```sh
-cd updates
+cd services/updates
 bun install --frozen-lockfile --ignore-scripts
 bun run test
 bun run dev

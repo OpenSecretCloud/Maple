@@ -1,10 +1,10 @@
 # Dependencies
 node_modules/
-frontend/node_modules/
+apps/maple-research/frontend/node_modules/
 
 # Build outputs
-/frontend/dist/
-/frontend/build/
+/apps/maple-research/frontend/dist/
+/apps/maple-research/frontend/build/
 
 # Environment variables
 .env
@@ -51,17 +51,17 @@ __pycache__/
 
 
 # Logs
-frontend/logs
-frontend/*.log
-frontend/npm-debug.log*
-frontend/yarn-debug.log*
-frontend/yarn-error.log*
-frontend/pnpm-debug.log*
-frontend/lerna-debug.log*
+apps/maple-research/frontend/logs
+apps/maple-research/frontend/*.log
+apps/maple-research/frontend/npm-debug.log*
+apps/maple-research/frontend/yarn-debug.log*
+apps/maple-research/frontend/yarn-error.log*
+apps/maple-research/frontend/pnpm-debug.log*
+apps/maple-research/frontend/lerna-debug.log*
 
-frontend/dist
-frontend/dist-ssr
-frontend/*.local
+apps/maple-research/frontend/dist
+apps/maple-research/frontend/dist-ssr
+apps/maple-research/frontend/*.local
 
 # Editor directories and files
 .vscode/*
@@ -87,4 +87,4 @@ frontend/*.local
 .repo_ignore
 
 # iOS build backups
-frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj.backup
+apps/maple-research/frontend/src-tauri/gen/apple/maple.xcodeproj/project.pbxproj.backup

@@ -111,7 +111,7 @@ case "$(host_os)" in
 
     bun tauri build --target universal-apple-darwin --no-sign --config "${unsigned_config}"
     unsigned_app="${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos/Maple.app"
-    unsigned_hash="$(print_canonical_apple_bundle_hash "${unsigned_app}" "frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/Maple.app" | tee "${repro_dir}/desktop-release-macos-unsigned.sha256" | awk '{ print $2 }')"
+    unsigned_hash="$(print_canonical_apple_bundle_hash "${unsigned_app}" "apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/Maple.app" | tee "${repro_dir}/desktop-release-macos-unsigned.sha256" | awk '{ print $2 }')"
     cat "${repro_dir}/desktop-release-macos-unsigned.sha256"
 
     remove_build_tree "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/dmg"
@@ -120,7 +120,7 @@ case "$(host_os)" in
     bun tauri build --target universal-apple-darwin --config "${signed_config}"
 
     signed_app="${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos/Maple.app"
-    signed_canonical_hash="$(print_canonical_apple_bundle_hash "${signed_app}" "frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/Maple.app" | tee "${repro_dir}/desktop-release-macos-signed-canonical.sha256" | awk '{ print $2 }')"
+    signed_canonical_hash="$(print_canonical_apple_bundle_hash "${signed_app}" "apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/Maple.app" | tee "${repro_dir}/desktop-release-macos-signed-canonical.sha256" | awk '{ print $2 }')"
     cat "${repro_dir}/desktop-release-macos-signed-canonical.sha256"
 
     if [ "${signed_canonical_hash}" != "${unsigned_hash}" ]; then

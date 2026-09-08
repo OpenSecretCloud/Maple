@@ -13,24 +13,26 @@ NATIVE_PLATFORMS = frozenset({"macos", "linux", "windows", "ios", "android"})
 DESKTOP_PLATFORMS = frozenset({"macos", "linux", "windows"})
 ALL_OUTPUTS = frozenset(OUTPUTS)
 
-INERT_ROOT_FILES = frozenset(
+INERT_FILES = frozenset(
     {
         ".gitignore",
         ".dockerignore",
         ".repo_ignore",
         "AGENTS.md",
-        "deny.toml",
+        "apps/maple-research/AGENTS.md",
+        "apps/maple-research/README.md",
+        "apps/maple-research/deny.toml",
         "justfile",
         "LICENSE",
         "README.md",
         "repo.meta.json",
         "setup-hooks.sh",
-        "zapstore.yaml",
+        "apps/maple-research/zapstore.yaml",
     }
 )
-INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "updates/")
-PURE_FRONTEND_PREFIXES = ("frontend/public/", "frontend/src/")
-PURE_FRONTEND_FILES = frozenset({"frontend/icon.svg", "frontend/index.html"})
+INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "services/updates/")
+PURE_FRONTEND_PREFIXES = ("apps/maple-research/frontend/public/", "apps/maple-research/frontend/src/")
+PURE_FRONTEND_FILES = frozenset({"apps/maple-research/frontend/icon.svg", "apps/maple-research/frontend/index.html"})
 SDK_FRONTEND_PREFIXES = ("sdk/src/",)
 SDK_TEST_PREFIXES = ("sdk/src/lib/test/",)
 SDK_FRONTEND_FILES = frozenset(
@@ -80,9 +82,9 @@ IOS_ONNX_INPUTS = frozenset(
         "flake.nix",
         "scripts/ci/_common.sh",
         "scripts/ci/ios-onnxruntime.sh",
-        "frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh",
-        "frontend/src-tauri/scripts/canonicalize-static-archive.py",
-        "frontend/src-tauri/scripts/onnxruntime-pins.sh",
+        "apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh",
+        "apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py",
+        "apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh",
     }
 )
 
@@ -121,17 +123,17 @@ CI_SCRIPT_ROUTES = {
 
 def _native_path_routes(path: str) -> frozenset[str]:
     android_prefixes = (
-        "frontend/src-tauri/gen/android/",
-        "frontend/src-tauri/icons/android/",
-        "frontend/src-tauri/capabilities/mobile-android.json",
+        "apps/maple-research/frontend/src-tauri/gen/android/",
+        "apps/maple-research/frontend/src-tauri/icons/android/",
+        "apps/maple-research/frontend/src-tauri/capabilities/mobile-android.json",
     )
     ios_prefixes = (
-        "frontend/src-tauri/gen/apple/",
-        "frontend/src-tauri/icons/ios/",
-        "frontend/src-tauri/onnxruntime-ios/",
-        "frontend/src-tauri/capabilities/mobile-ios.json",
+        "apps/maple-research/frontend/src-tauri/gen/apple/",
+        "apps/maple-research/frontend/src-tauri/icons/ios/",
+        "apps/maple-research/frontend/src-tauri/onnxruntime-ios/",
+        "apps/maple-research/frontend/src-tauri/capabilities/mobile-ios.json",
     )
-    windows_prefixes = ("frontend/src-tauri/resources/windows/",)
+    windows_prefixes = ("apps/maple-research/frontend/src-tauri/resources/windows/",)
 
     if path.startswith(android_prefixes):
         return frozenset({"android"})
@@ -141,17 +143,17 @@ def _native_path_routes(path: str) -> frozenset[str]:
         return frozenset({"windows"})
 
     if path in {
-        "frontend/src-tauri/Entitlements.plist",
-        "frontend/src-tauri/Info.plist",
-        "frontend/src-tauri/apple-sign-in-info.md",
+        "apps/maple-research/frontend/src-tauri/Entitlements.plist",
+        "apps/maple-research/frontend/src-tauri/Info.plist",
+        "apps/maple-research/frontend/src-tauri/apple-sign-in-info.md",
     }:
         return frozenset({"macos", "ios"})
-    if path == "frontend/src-tauri/tauri.macos.conf.json":
+    if path == "apps/maple-research/frontend/src-tauri/tauri.macos.conf.json":
         return frozenset({"macos"})
-    if path == "frontend/src-tauri/tauri.windows.conf.json":
+    if path == "apps/maple-research/frontend/src-tauri/tauri.windows.conf.json":
         return frozenset({"windows"})
 
-    if path.startswith("frontend/src-tauri/scripts/"):
+    if path.startswith("apps/maple-research/frontend/src-tauri/scripts/"):
         filename = path.rsplit("/", 1)[-1]
         if "android" in filename:
             return frozenset({"android"})
@@ -180,7 +182,7 @@ def classify_path(path: str) -> frozenset[str]:
 
     if not path or path.startswith("/") or ".." in path.split("/"):
         return ALL_OUTPUTS
-    if path in INERT_ROOT_FILES or path.startswith(INERT_PREFIXES):
+    if path in INERT_FILES or path.startswith(INERT_PREFIXES):
         return frozenset()
     if path.startswith(SDK_TEST_PREFIXES):
         return frozenset()
@@ -204,9 +206,9 @@ def classify_path(path: str) -> frozenset[str]:
         return DESKTOP_PLATFORMS
     if path in PURE_FRONTEND_FILES or path.startswith(PURE_FRONTEND_PREFIXES):
         return frozenset({"frontend"})
-    if path.startswith("frontend/src-tauri/"):
+    if path.startswith("apps/maple-research/frontend/src-tauri/"):
         return _native_path_routes(path)
-    if path.startswith("frontend/"):
+    if path.startswith("apps/maple-research/frontend/"):
         # Dependency and build-configuration changes can affect every packaged app.
         return frozenset({"frontend", *NATIVE_PLATFORMS})
     if path in {"flake.lock", "flake.nix"}:

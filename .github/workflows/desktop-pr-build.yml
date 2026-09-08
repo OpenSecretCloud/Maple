@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/Library/Caches/Mozilla.sccache
-          key: ${{ runner.os }}-sccache-macos-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-macos-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-macos-
             ${{ runner.os }}-sccache-
@@ -65,10 +65,10 @@ jobs:
         with:
           name: maple-macos-universal-pr
           path: |
-            frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
-            frontend/src-tauri/target/reproducibility/maple-macos-app.tar.gz
-            frontend/src-tauri/target/reproducibility/desktop-pr-macos-*.sha256
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-macos-app.tar.gz
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-macos-*.sha256
           retention-days: 5
 
   build-linux:
@@ -89,7 +89,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-linux-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-linux-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-linux-
             ${{ runner.os }}-sccache-
@@ -120,14 +120,14 @@ jobs:
         with:
           name: maple-linux-pr
           path: |
-            frontend/src-tauri/target/release/bundle/appimage/*.AppImage
-            frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig
-            frontend/src-tauri/target/release/bundle/deb/*.deb
-            frontend/src-tauri/target/release/bundle/deb/*.deb.sig
-            frontend/src-tauri/target/release/bundle/rpm/*.rpm
-            frontend/src-tauri/target/release/bundle/rpm/*.rpm.sig
-            frontend/src-tauri/target/reproducibility/desktop-pr-linux-fake-updater.pub
-            frontend/src-tauri/target/reproducibility/desktop-pr-linux-*.sha256
+            apps/maple-research/frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/maple-research/frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            apps/maple-research/frontend/src-tauri/target/release/bundle/deb/*.deb
+            apps/maple-research/frontend/src-tauri/target/release/bundle/deb/*.deb.sig
+            apps/maple-research/frontend/src-tauri/target/release/bundle/rpm/*.rpm
+            apps/maple-research/frontend/src-tauri/target/release/bundle/rpm/*.rpm.sig
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-linux-fake-updater.pub
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-linux-*.sha256
           retention-days: 5
 
   build-windows:
@@ -174,7 +174,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~\AppData\Local\Mozilla\sccache
-          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-
 
@@ -191,10 +191,10 @@ jobs:
         with:
           name: maple-windows-x64-pr
           path: |
-            frontend/src-tauri/target/release/bundle/nsis/*.exe
-            frontend/src-tauri/target/release/maple.exe
-            frontend/src-tauri/resources/windows/*.dll
-            frontend/src-tauri/target/reproducibility/desktop-pr-windows-*.sha256
+            apps/maple-research/frontend/src-tauri/target/release/bundle/nsis/*.exe
+            apps/maple-research/frontend/src-tauri/target/release/maple.exe
+            apps/maple-research/frontend/src-tauri/resources/windows/*.dll
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-windows-*.sha256
           retention-days: 5
 
   verify-windows-artifacts:

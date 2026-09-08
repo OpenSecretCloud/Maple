@@ -114,7 +114,7 @@ jobs:
             ] | all)
           ' release-metadata/latest.json >/dev/null
 
-          cp release-metadata/latest.json updates/public/latest.json
+          cp release-metadata/latest.json services/updates/public/latest.json
           echo "publish=true" >>"${GITHUB_OUTPUT}"
           {
             echo "RELEASE_ID=${release_id}"
@@ -124,7 +124,7 @@ jobs:
 
           nix develop --no-update-lock-file .#ci -c ./scripts/ci/updates.sh
           nix develop --no-update-lock-file .#ci -c bash -lc \
-            'cd updates && bun run validate:latest public/latest.json'
+            'cd services/updates && bun run validate:latest public/latest.json'
 
       - name: Deploy and verify the public endpoint
         if: steps.release.outputs.publish == 'true'
@@ -156,7 +156,7 @@ jobs:
           unset GH_TOKEN
 
           nix develop --no-update-lock-file .#ci -c bash -lc \
-            "cd updates && bun run deploy -- --strict \
+            "cd services/updates && bun run deploy -- --strict \
               --tag 'release-${RELEASE_TAG#v}' \
               --message 'Publish ${RELEASE_TAG} from GitHub Release ${RELEASE_ID}'"
 
@@ -181,7 +181,7 @@ jobs:
               --header 'cache-control: no-cache' \
               --output "${served_metadata}" \
               "${endpoint}?deploy=${GITHUB_SHA}" && \
-              cmp --silent updates/public/latest.json "${served_metadata}"; then
+              cmp --silent services/updates/public/latest.json "${served_metadata}"; then
               echo "Published ${RELEASE_TAG} at ${endpoint}."
               exit 0
             fi

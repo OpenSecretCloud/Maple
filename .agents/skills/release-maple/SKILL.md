@@ -86,7 +86,7 @@ repair package visibility. Existing old-namespace images receive no updates.
    ```
 
 5. Review all manifest, Apple project, Android version-code, and
-   `frontend/src-tauri/Cargo.lock` changes. Run the applicable Maple validation
+   `apps/maple-research/frontend/src-tauri/Cargo.lock` changes. Run the applicable Maple validation
    gates and submit the isolated bump through normal review when authorized.
    Do not use `just release`; it creates a local tag before the reviewed GitHub
    flow.

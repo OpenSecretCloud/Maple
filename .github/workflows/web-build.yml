@@ -8,8 +8,8 @@ on:
     branches: [ master ]
     paths:
       - ".github/workflows/web-build.yml"
-      - "frontend/**"
-      - "!frontend/src-tauri/**"
+      - "apps/maple-research/frontend/**"
+      - "!apps/maple-research/frontend/src-tauri/**"
       - "sdk/src/**"
       - "!sdk/src/lib/test/**"
       - "sdk/bun.lock"
@@ -28,8 +28,8 @@ on:
     branches: [ master ]
     paths:
       - ".github/workflows/web-build.yml"
-      - "frontend/**"
-      - "!frontend/src-tauri/**"
+      - "apps/maple-research/frontend/**"
+      - "!apps/maple-research/frontend/src-tauri/**"
       - "sdk/src/**"
       - "!sdk/src/lib/test/**"
       - "sdk/bun.lock"
@@ -64,7 +64,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock', 'sdk/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('apps/maple-research/frontend/bun.lock', 'sdk/bun.lock') }}
 
       - name: Build web artifact
         run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
@@ -76,8 +76,8 @@ jobs:
         with:
           name: maple-web
           path: |
-            frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz
-            frontend/src-tauri/target/reproducibility/web-final.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz
+            apps/maple-research/frontend/src-tauri/target/reproducibility/web-final.sha256
           retention-days: 5
 
   build-web-master:
@@ -103,7 +103,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock', 'sdk/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('apps/maple-research/frontend/bun.lock', 'sdk/bun.lock') }}
 
       - name: Build web artifact
         run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
@@ -111,22 +111,22 @@ jobs:
           MAPLE_WEB_ENVIRONMENT: release
 
       - name: Collect web checksums
-        run: cat frontend/src-tauri/target/reproducibility/web-final.sha256
+        run: cat apps/maple-research/frontend/src-tauri/target/reproducibility/web-final.sha256
 
       - name: Attest web artifact
         # Keep uploads/verifiers running if GitHub token policy rejects artifact attestation.
         continue-on-error: true
         uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
         with:
-          subject-checksums: frontend/src-tauri/target/reproducibility/web-final.sha256
+          subject-checksums: apps/maple-research/frontend/src-tauri/target/reproducibility/web-final.sha256
 
       - name: Upload web artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
         with:
           name: maple-web
           path: |
-            frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz
-            frontend/src-tauri/target/reproducibility/web-final.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz
+            apps/maple-research/frontend/src-tauri/target/reproducibility/web-final.sha256
           retention-days: 5
 
   verify-web-master-artifact:

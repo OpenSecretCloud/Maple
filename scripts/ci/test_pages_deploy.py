@@ -212,7 +212,7 @@ class ProvenanceTests(unittest.TestCase):
                            "owner": {"id": 322649754}}
         return new_repo, moved
 
-    def test_manual_production_prepare_after_owner_transfer_uses_retained_release(self):
+    def assert_production_prepare_checksum_path(self, checksum_path, rejected=False):
         new_repo, moved = self.transferred_release_values()
         archive = io.BytesIO()
         contents = b"<html>Retained production release</html>"
@@ -222,7 +222,7 @@ class ProvenanceTests(unittest.TestCase):
             bundle.addfile(member, io.BytesIO(contents))
         archive_bytes = archive.getvalue()
         archive_digest = hashlib.sha256(archive_bytes).hexdigest()
-        checksum = f"{archive_digest}  maple-web-dist.tar.gz\n".encode()
+        checksum = f"{archive_digest}  {checksum_path}\n".encode()
         new_root = "/repos/" + new_repo
         downloads = {}
         for asset, body in zip(self.release["assets"], (archive_bytes, checksum)):
@@ -242,6 +242,11 @@ class ProvenanceTests(unittest.TestCase):
         gh = pages.GitHub(api, new_repo, REPO_ID)
         with tempfile.TemporaryDirectory() as tmp, patch.object(api, "request", side_effect=request) as read:
             state = Path(tmp) / "prepared"
+            if rejected:
+                with self.assertRaises(pages.Rejected):
+                    pages.prepare(gh, {}, "production", state)
+                self.assertFalse((state / "assets").exists())
+                return
             plan = pages.prepare(gh, {}, "production", state)
             self.assertEqual((plan["target"], plan["profile"], plan["sha"], plan["previous_sha"]),
                              ("production", "release", SHA, SHA))
@@ -251,6 +256,26 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(saved["files"], {"index.html": hashlib.sha256(contents).hexdigest()})
             self.assertEqual([call.args[0] for call in read.call_args_list if call.args[0] in downloads],
                              list(downloads))
+
+    def test_production_prepare_accepts_retained_and_relocated_release_checksums(self):
+        for path in (
+            "maple-web-dist.tar.gz",
+            "frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz",
+            "apps/maple-research/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz",
+        ):
+            with self.subTest(path=path):
+                self.assert_production_prepare_checksum_path(path)
+
+    def test_production_prepare_rejects_other_checksum_paths_before_extraction(self):
+        for path in (
+            "apps/other/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz",
+            "apps/maple-research/frontend/../src-tauri/target/reproducibility/maple-web-dist.tar.gz",
+            "/apps/maple-research/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz",
+            "apps/maple-research/frontend/src-tauri/target/reproducibility/other.tar.gz",
+            "maple-web-dist.tar.gz\n" + "0" * 64 + "  extra.tar.gz",
+        ):
+            with self.subTest(path=path):
+                self.assert_production_prepare_checksum_path(path, rejected=True)
 
     def test_transferred_production_rejects_wrong_or_missing_repository_ids_before_download(self):
         new_repo, moved = self.transferred_release_values()

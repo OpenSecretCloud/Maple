@@ -1,4 +1,4 @@
-import repositoryMetadata from "../../repo.meta.json";
+import repositoryMetadata from "../../../repo.meta.json";
 
 const LATEST_JSON_PATH = "/latest.json";
 const MAX_LATEST_JSON_BYTES = 64 * 1024;

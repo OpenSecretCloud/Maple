@@ -8,7 +8,7 @@ trap 'rm -f "${metadata_file}"' EXIT
 cd "${repo_root}"
 cargo metadata \
   --locked \
-  --manifest-path frontend/src-tauri/Cargo.toml \
+  --manifest-path apps/maple-research/frontend/src-tauri/Cargo.toml \
   --format-version 1 > "${metadata_file}"
 
 jq -e --arg root "${repo_root}" '

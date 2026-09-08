@@ -12,7 +12,7 @@ else
   repo_root="$(cd "${script_dir}/../.." && pwd -P)"
 fi
 
-frontend_dir="${repo_root}/frontend"
+frontend_dir="${repo_root}/apps/maple-research/frontend"
 tauri_dir="${frontend_dir}/src-tauri"
 
 release_tag="${1:-${RELEASE_TAG:-${GITHUB_REF_NAME:-}}}"
@@ -36,14 +36,14 @@ if [ -z "${cargo_version}" ]; then
 fi
 
 if [ "${package_version}" != "${tauri_version}" ]; then
-  echo "frontend/package.json version does not match frontend/src-tauri/tauri.conf.json." >&2
+  echo "apps/maple-research/frontend/package.json version does not match apps/maple-research/frontend/src-tauri/tauri.conf.json." >&2
   echo "package=${package_version}" >&2
   echo "tauri=${tauri_version}" >&2
   exit 1
 fi
 
 if [ "${package_version}" != "${cargo_version}" ]; then
-  echo "frontend/package.json version does not match frontend/src-tauri/Cargo.toml." >&2
+  echo "apps/maple-research/frontend/package.json version does not match apps/maple-research/frontend/src-tauri/Cargo.toml." >&2
   echo "package=${package_version}" >&2
   echo "cargo=${cargo_version}" >&2
   exit 1

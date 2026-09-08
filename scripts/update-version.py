@@ -28,42 +28,42 @@ def main() -> None:
         raise SystemExit(f"Invalid Android version code: {android_version_code}")
 
     replace_once(
-        ROOT / "frontend/package.json",
+        ROOT / "apps/maple-research/frontend/package.json",
         r'("version": ")[^"]*(")',
         rf"\g<1>{version}\g<2>",
     )
     replace_once(
-        ROOT / "frontend/src-tauri/tauri.conf.json",
+        ROOT / "apps/maple-research/frontend/src-tauri/tauri.conf.json",
         r'("version": ")[^"]*(")',
         rf"\g<1>{version}\g<2>",
     )
     replace_once(
-        ROOT / "frontend/src-tauri/tauri.conf.json",
+        ROOT / "apps/maple-research/frontend/src-tauri/tauri.conf.json",
         r'("versionCode": )\d+',
         rf"\g<1>{android_version_code}",
     )
     replace_once(
-        ROOT / "frontend/src-tauri/Cargo.toml",
+        ROOT / "apps/maple-research/frontend/src-tauri/Cargo.toml",
         r'^(version = ")[^"]*(")$',
         rf"\g<1>{version}\g<2>",
     )
     replace_once(
-        ROOT / "frontend/src-tauri/gen/apple/project.yml",
+        ROOT / "apps/maple-research/frontend/src-tauri/gen/apple/project.yml",
         r'^(\s*CFBundleShortVersionString: ).*$',
         rf"\g<1>{version}",
     )
     replace_once(
-        ROOT / "frontend/src-tauri/gen/apple/project.yml",
+        ROOT / "apps/maple-research/frontend/src-tauri/gen/apple/project.yml",
         r'^(\s*CFBundleVersion: ).*$',
         rf"\g<1>{version}",
     )
     replace_once(
-        ROOT / "frontend/src-tauri/gen/apple/maple_iOS/Info.plist",
+        ROOT / "apps/maple-research/frontend/src-tauri/gen/apple/maple_iOS/Info.plist",
         r'(<key>CFBundleShortVersionString</key>\s*<string>)[^<]*(</string>)',
         rf"\g<1>{version}\g<2>",
     )
     replace_once(
-        ROOT / "frontend/src-tauri/gen/apple/maple_iOS/Info.plist",
+        ROOT / "apps/maple-research/frontend/src-tauri/gen/apple/maple_iOS/Info.plist",
         r'(<key>CFBundleVersion</key>\s*<string>)[^<]*(</string>)',
         rf"\g<1>{version}\g<2>",
     )

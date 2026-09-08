@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/Library/Caches/Mozilla.sccache
-          key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-macos-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-macos-release-
             ${{ runner.os }}-sccache-macos-
@@ -76,8 +76,8 @@ jobs:
         run: |
           nix develop --no-update-lock-file .#ci -c ./scripts/ci/attestation-manifest.sh \
             desktop-macos-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-macos-final.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-macos-*.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-macos-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-macos-*.sha256
           cat desktop-macos-artifacts.sha256
 
       - name: Attest macOS release artifacts
@@ -93,11 +93,11 @@ jobs:
         with:
           name: maple-macos-universal
           path: |
-            frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
-            frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
-            frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
-            frontend/src-tauri/target/reproducibility/*.sha256
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            apps/maple-research/frontend/src-tauri/target/reproducibility/*.sha256
           if-no-files-found: warn
           retention-days: 5
 
@@ -119,7 +119,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-linux-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-linux-release-
             ${{ runner.os }}-sccache-linux-
@@ -153,8 +153,8 @@ jobs:
         run: |
           nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/attestation-manifest.sh \
             desktop-linux-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-linux-final.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-linux-*.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-linux-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-linux-*.sha256
           cat desktop-linux-artifacts.sha256
 
       - name: Attest Linux release artifacts
@@ -169,13 +169,13 @@ jobs:
         with:
           name: maple-linux
           path: |
-            frontend/src-tauri/target/release/bundle/appimage/*.AppImage
-            frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig
-            frontend/src-tauri/target/release/bundle/deb/*.deb
-            frontend/src-tauri/target/release/bundle/deb/*.deb.sig
-            frontend/src-tauri/target/release/bundle/rpm/*.rpm
-            frontend/src-tauri/target/release/bundle/rpm/*.rpm.sig
-            frontend/src-tauri/target/reproducibility/*.sha256
+            apps/maple-research/frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/maple-research/frontend/src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            apps/maple-research/frontend/src-tauri/target/release/bundle/deb/*.deb
+            apps/maple-research/frontend/src-tauri/target/release/bundle/deb/*.deb.sig
+            apps/maple-research/frontend/src-tauri/target/release/bundle/rpm/*.rpm
+            apps/maple-research/frontend/src-tauri/target/release/bundle/rpm/*.rpm.sig
+            apps/maple-research/frontend/src-tauri/target/reproducibility/*.sha256
           retention-days: 5
 
   verify-linux-desktop-artifacts:
@@ -277,7 +277,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~\AppData\Local\Mozilla\sccache
-          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-
 
@@ -332,9 +332,9 @@ jobs:
         run: |
           ./scripts/ci/attestation-manifest.sh \
             desktop-windows-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-windows-final.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-windows-signed-canonical.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-windows-runtime-dlls.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-windows-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-windows-signed-canonical.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-windows-runtime-dlls.sha256
           cat desktop-windows-artifacts.sha256
 
       - name: Attest Windows release artifacts
@@ -349,7 +349,7 @@ jobs:
           path: |
             ${{ env.MAPLE_WINDOWS_SETUP_EXE_REL }}
             ${{ env.MAPLE_WINDOWS_SETUP_EXE_REL }}.sig
-            frontend/src-tauri/target/reproducibility/desktop-release-windows-*.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-windows-*.sha256
           retention-days: 5
 
   verify-windows-desktop-artifacts:

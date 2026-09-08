@@ -83,7 +83,7 @@ scrub_host_metadata_files "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app"
 repro_dir="${TAURI_DIR}/target/reproducibility"
 mkdir -p "${repro_dir}"
 {
-  print_tree_hash "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app" "frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app"
-  print_canonical_ios_app_hash "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app" "frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app"
+  print_tree_hash "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app" "apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app"
+  print_canonical_ios_app_hash "${TAURI_DIR}/gen/apple/build/arm64-sim/Maple.app" "apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app"
 } | tee "${repro_dir}/ios-pr-final.sha256"
 verify_frontend_dist_unchanged

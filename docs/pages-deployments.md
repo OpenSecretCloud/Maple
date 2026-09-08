@@ -71,7 +71,7 @@ files, traversal, duplicates, ambiguous spelling, hidden paths (except the root
 `_redirects`. Only static files are extracted, including a required `index.html`.
 The publisher rechecks their hashes immediately before upload.
 
-Pinned Wrangler dependencies are installed from trusted `updates/bun.lock`
+Pinned Wrangler dependencies are installed from trusted `services/updates/bun.lock`
 with lifecycle scripts disabled, before CF credentials enter the final step.
 Wrangler runs outside the checkout and artifact tree, with no artifact bundling,
 an isolated home, and an allowlisted child environment. It receives CF credentials

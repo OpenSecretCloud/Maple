@@ -54,28 +54,28 @@ If a proposed change cannot be justified as a pure design/chrome/presentation im
 
 - PR metadata and full changed-file list for PR #465
 - PR diffs for:
-  - `frontend/src/index.css`
-  - `frontend/tailwind.config.js`
-  - `frontend/index.html`
-  - `frontend/src/app.tsx`
-  - `frontend/src/contexts/ThemeContext.tsx`
-  - `frontend/src/components/Sidebar.tsx`
-  - `frontend/src/components/ChatHistoryList.tsx`
-  - `frontend/src/components/UnifiedChat.tsx`
-  - `frontend/src/components/AccountMenu.tsx`
-  - `frontend/src/components/AccountDialog.tsx`
-  - `frontend/src/components/CreditUsage.tsx`
-  - `frontend/src/components/ModelSelector.tsx`
-  - `frontend/src/components/markdown.tsx`
+  - `apps/maple-research/frontend/src/index.css`
+  - `apps/maple-research/frontend/tailwind.config.js`
+  - `apps/maple-research/frontend/index.html`
+  - `apps/maple-research/frontend/src/app.tsx`
+  - `apps/maple-research/frontend/src/contexts/ThemeContext.tsx`
+  - `apps/maple-research/frontend/src/components/Sidebar.tsx`
+  - `apps/maple-research/frontend/src/components/ChatHistoryList.tsx`
+  - `apps/maple-research/frontend/src/components/UnifiedChat.tsx`
+  - `apps/maple-research/frontend/src/components/AccountMenu.tsx`
+  - `apps/maple-research/frontend/src/components/AccountDialog.tsx`
+  - `apps/maple-research/frontend/src/components/CreditUsage.tsx`
+  - `apps/maple-research/frontend/src/components/ModelSelector.tsx`
+  - `apps/maple-research/frontend/src/components/markdown.tsx`
   - product-reachable dialogs and account/team/API dashboard surfaces
-  - `frontend/src/routes/_auth.chat.$chatId.tsx`
+  - `apps/maple-research/frontend/src/routes/_auth.chat.$chatId.tsx`
 
 ### 2.2 Current product inputs
 
-- `frontend/src/routes/index.tsx`
-- `frontend/src/components/ProjectDetailView.tsx`
-- `frontend/src/state/LocalStateContext.tsx`
-- `frontend/src/state/LocalStateContextDef.ts`
+- `apps/maple-research/frontend/src/routes/index.tsx`
+- `apps/maple-research/frontend/src/components/ProjectDetailView.tsx`
+- `apps/maple-research/frontend/src/state/LocalStateContext.tsx`
+- `apps/maple-research/frontend/src/state/LocalStateContextDef.ts`
 - current implementations of the same product-side files above
 
 ---
@@ -86,23 +86,23 @@ If a proposed change cannot be justified as a pure design/chrome/presentation im
 
 These are the surfaces the redesign PR should actively target.
 
-- Authenticated home shell in `frontend/src/routes/index.tsx`
-- `frontend/src/components/UnifiedChat.tsx`
-- `frontend/src/components/Sidebar.tsx`
-- `frontend/src/components/ChatHistoryList.tsx`
-- `frontend/src/components/AccountMenu.tsx`
-- `frontend/src/components/AccountDialog.tsx`
-- `frontend/src/components/CreditUsage.tsx`
-- `frontend/src/components/ModelSelector.tsx`
-- `frontend/src/components/markdown.tsx`
-- `frontend/src/routes/_auth.chat.$chatId.tsx` (archived chat viewer)
+- Authenticated home shell in `apps/maple-research/frontend/src/routes/index.tsx`
+- `apps/maple-research/frontend/src/components/UnifiedChat.tsx`
+- `apps/maple-research/frontend/src/components/Sidebar.tsx`
+- `apps/maple-research/frontend/src/components/ChatHistoryList.tsx`
+- `apps/maple-research/frontend/src/components/AccountMenu.tsx`
+- `apps/maple-research/frontend/src/components/AccountDialog.tsx`
+- `apps/maple-research/frontend/src/components/CreditUsage.tsx`
+- `apps/maple-research/frontend/src/components/ModelSelector.tsx`
+- `apps/maple-research/frontend/src/components/markdown.tsx`
+- `apps/maple-research/frontend/src/routes/_auth.chat.$chatId.tsx` (archived chat viewer)
 - Shared product foundations used by those surfaces:
-  - `frontend/src/index.css`
-  - `frontend/src/chat.css`
-  - `frontend/tailwind.config.js`
-  - `frontend/index.html`
-  - `frontend/src/app.tsx`
-  - `frontend/src/contexts/ThemeContext.tsx`
+  - `apps/maple-research/frontend/src/index.css`
+  - `apps/maple-research/frontend/src/chat.css`
+  - `apps/maple-research/frontend/tailwind.config.js`
+  - `apps/maple-research/frontend/index.html`
+  - `apps/maple-research/frontend/src/app.tsx`
+  - `apps/maple-research/frontend/src/contexts/ThemeContext.tsx`
   - relevant shadcn primitives
 
 ## 3.2 Product-reachable dialogs and secondary surfaces in scope
@@ -120,21 +120,21 @@ These are reachable from the logged-in product and should receive redesign polis
 - `GuestPaymentWarningDialog`
 - `RecordingOverlay`
 - Team/API/account dashboards reachable from the account menu:
-  - `frontend/src/components/apikeys/ApiCreditsSection.tsx`
-  - `frontend/src/components/apikeys/ApiKeyDashboard.tsx`
-  - `frontend/src/components/apikeys/ApiKeysList.tsx`
-  - `frontend/src/components/apikeys/CreateApiKeyDialog.tsx`
-  - `frontend/src/components/apikeys/ProxyConfigSection.tsx`
-  - `frontend/src/components/team/TeamDashboard.tsx`
-  - `frontend/src/components/team/TeamInviteDialog.tsx`
-  - `frontend/src/components/team/TeamMembersList.tsx`
+  - `apps/maple-research/frontend/src/components/apikeys/ApiCreditsSection.tsx`
+  - `apps/maple-research/frontend/src/components/apikeys/ApiKeyDashboard.tsx`
+  - `apps/maple-research/frontend/src/components/apikeys/ApiKeysList.tsx`
+  - `apps/maple-research/frontend/src/components/apikeys/CreateApiKeyDialog.tsx`
+  - `apps/maple-research/frontend/src/components/apikeys/ProxyConfigSection.tsx`
+  - `apps/maple-research/frontend/src/components/team/TeamDashboard.tsx`
+  - `apps/maple-research/frontend/src/components/team/TeamInviteDialog.tsx`
+  - `apps/maple-research/frontend/src/components/team/TeamMembersList.tsx`
 
 ## 3.3 Compatibility surfaces
 
 These are part of the authenticated product flow and must not regress, but the designer PR does **not** provide enough direct design direction to justify a full rewrite.
 
-- `frontend/src/components/ProjectDetailView.tsx`
-- `frontend/src/components/ConversationProjectPicker.tsx`
+- `apps/maple-research/frontend/src/components/ProjectDetailView.tsx`
+- `apps/maple-research/frontend/src/components/ConversationProjectPicker.tsx`
 - Project creation/rename/delete/move dialogs
 - Existing project-focused route behavior (`project_id` search param flow)
 
@@ -150,35 +150,35 @@ Ignore these PR #465 areas when building the new product redesign PR.
 
 ### Marketing / logged-out shell
 
-- `frontend/src/components/Marketing.tsx`
-- `frontend/src/components/MarketingSiteHome.tsx`
-- `frontend/src/components/TopNav.tsx`
-- `frontend/src/components/Footer.tsx`
-- `frontend/src/components/ComparisonChart.tsx`
-- `frontend/src/components/VerticalLandingMock.tsx`
+- `apps/maple-research/frontend/src/components/Marketing.tsx`
+- `apps/maple-research/frontend/src/components/MarketingSiteHome.tsx`
+- `apps/maple-research/frontend/src/components/TopNav.tsx`
+- `apps/maple-research/frontend/src/components/Footer.tsx`
+- `apps/maple-research/frontend/src/components/ComparisonChart.tsx`
+- `apps/maple-research/frontend/src/components/VerticalLandingMock.tsx`
 
 ### Marketing/helper/public routes
 
-- `frontend/src/routes/about.tsx`
-- `frontend/src/routes/agent.tsx`
-- `frontend/src/routes/downloads.tsx`
-- `frontend/src/routes/pricing.tsx`
-- `frontend/src/routes/proof.tsx`
-- `frontend/src/routes/redeem.tsx`
-- `frontend/src/routes/research.tsx`
-- all `frontend/src/routes/solutions*.tsx`
-- `frontend/src/routes/teams.tsx`
-- `frontend/src/routes/team.invite.$inviteId.tsx`
-- `frontend/src/config/pricingConfig.tsx`
+- `apps/maple-research/frontend/src/routes/about.tsx`
+- `apps/maple-research/frontend/src/routes/agent.tsx`
+- `apps/maple-research/frontend/src/routes/downloads.tsx`
+- `apps/maple-research/frontend/src/routes/pricing.tsx`
+- `apps/maple-research/frontend/src/routes/proof.tsx`
+- `apps/maple-research/frontend/src/routes/redeem.tsx`
+- `apps/maple-research/frontend/src/routes/research.tsx`
+- all `apps/maple-research/frontend/src/routes/solutions*.tsx`
+- `apps/maple-research/frontend/src/routes/teams.tsx`
+- `apps/maple-research/frontend/src/routes/team.invite.$inviteId.tsx`
+- `apps/maple-research/frontend/src/config/pricingConfig.tsx`
 
 ### Helper/signup surfaces outside the authenticated product flow
 
-- `frontend/src/components/GuestCredentialsDialog.tsx`
-- `frontend/src/components/GuestSignupWarningDialog.tsx`
+- `apps/maple-research/frontend/src/components/GuestCredentialsDialog.tsx`
+- `apps/maple-research/frontend/src/components/GuestSignupWarningDialog.tsx`
 
 ### Generated / debug / not to be hand-copied
 
-- `frontend/src/routeTree.gen.ts`
+- `apps/maple-research/frontend/src/routeTree.gen.ts`
 
 ---
 
@@ -408,7 +408,7 @@ Adopt class-based theming.
 
 The PR direction is correct, but the implementation needs two fixes.
 
-1. **Prevent FOUC.** Add an inline script in `frontend/index.html` `<head>` (before any stylesheets) that synchronously applies the theme class:
+1. **Prevent FOUC.** Add an inline script in `apps/maple-research/frontend/index.html` `<head>` (before any stylesheets) that synchronously applies the theme class:
 
 ```html
 <script>
@@ -456,7 +456,7 @@ Final implementation should **self-host `Manrope`** and serve it from Maple's ow
 
 Recommended production approach:
 
-- add checked-in font assets (prefer WOFF2) under `frontend/public/fonts/` or equivalent
+- add checked-in font assets (prefer WOFF2) under `apps/maple-research/frontend/public/fonts/` or equivalent
 - load them with `@font-face` in `index.css`
 - optionally preload the most important weights in `index.html`
 - use `font-display: swap`
@@ -1629,8 +1629,8 @@ If Rust is untouched, Rust validators are not required.
 
 ## 13.1 Carry over directly or near-directly
 
-- `frontend/src/components/MapleWordmark.tsx`
-- `frontend/public/m-avatar.svg`
+- `apps/maple-research/frontend/src/components/MapleWordmark.tsx`
+- `apps/maple-research/frontend/public/m-avatar.svg`
 - theme/token additions in `index.css`
 - Tailwind semantic mappings in `tailwind.config.js`
 - `ThemeProvider` concept in `src/contexts/ThemeContext.tsx` (with fixes)

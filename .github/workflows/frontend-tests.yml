@@ -8,8 +8,8 @@ on:
     branches: [ master ]
     paths:
       - ".github/workflows/frontend-tests.yml"
-      - "frontend/**"
-      - "!frontend/src-tauri/**"
+      - "apps/maple-research/frontend/**"
+      - "!apps/maple-research/frontend/src-tauri/**"
       - "sdk/src/**"
       - "!sdk/src/lib/test/**"
       - "sdk/bun.lock"
@@ -28,8 +28,8 @@ on:
     branches: [ master ]
     paths:
       - ".github/workflows/frontend-tests.yml"
-      - "frontend/**"
-      - "!frontend/src-tauri/**"
+      - "apps/maple-research/frontend/**"
+      - "!apps/maple-research/frontend/src-tauri/**"
       - "sdk/src/**"
       - "!sdk/src/lib/test/**"
       - "sdk/bun.lock"
@@ -63,7 +63,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock', 'sdk/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('apps/maple-research/frontend/bun.lock', 'sdk/bun.lock') }}
 
       - name: Run frontend checks
         run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh
