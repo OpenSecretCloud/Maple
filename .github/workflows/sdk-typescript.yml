@@ -60,6 +60,7 @@ jobs:
       - name: Run credential-free TypeScript SDK checks
         run: |
           nix develop --no-update-lock-file ./sdk -c bash -lc '
+            set -euo pipefail
             cd sdk
             bun install --frozen-lockfile --ignore-scripts
             bun audit --audit-level=high

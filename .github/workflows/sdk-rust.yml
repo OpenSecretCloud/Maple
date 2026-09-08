@@ -49,6 +49,7 @@ jobs:
       - name: Run credential-free Rust SDK checks
         run: |
           nix develop --no-update-lock-file ./sdk -c bash -lc '
+            set -euo pipefail
             cd sdk/rust
             cargo fmt --all -- --check
             cargo clippy --locked --all-targets --all-features -- -D warnings
