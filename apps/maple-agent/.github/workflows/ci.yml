@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # No debuginfo in CI: it is most of the dependency artifact size and
+  # nothing here reads it.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev \
+            libfreetype-dev libclang-dev cmake libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy headless (no desktop feature)
+        run: cargo clippy -p maple-gpui --all-targets --locked --no-default-features --features acp,proxy -- -D warnings
+      - name: Clippy single modes
+        run: |
+          cargo clippy -p maple-gpui --locked --no-default-features --features acp -- -D warnings
+          cargo clippy -p maple-gpui --locked --no-default-features --features proxy -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev \
+            libfreetype-dev libclang-dev cmake libasound2-dev mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo build --workspace --all-targets --locked
+      - name: Package macOS debug app
+        if: runner.os == 'macOS'
+        run: ./scripts/macos-debug-app.sh
+      - run: cargo test --workspace --locked
+      - name: Test headless (no desktop feature)
+        if: runner.os == 'Linux'
+        run: cargo test -p maple-gpui --locked --no-default-features --features acp,proxy
+
+  release-build:
+    name: Release build (Linux)
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev \
+            libfreetype-dev libclang-dev cmake libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo build --release -p maple-gpui --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-gpui-linux-x86_64-${{ github.sha }}
+          path: target/release/maple-gpui
+          if-no-files-found: error

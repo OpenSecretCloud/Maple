@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/maple-agent", "crates/maple-billing", "app"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+tokio = { version = "1.0", features = ["io-std", "io-util", "net", "process", "sync", "rt-multi-thread", "macros", "time"] }
+tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
+anyhow = "1.0"
+async-trait = "0.1"
+futures-util = "0.3"
+once_cell = "1.18.0"
+http = "1"
+reqwest = { version = "0.13", features = ["stream"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[patch.crates-io]
+# Interim: OpenSecretCloud/Maple#852 adds get_model_catalog() to the
+# in-tree Rust SDK. A git dep cannot target the sdk/rust subdirectory,
+# so the opensecret-git branch adds a root workspace manifest that makes
+# the member resolvable. Drop this patch when the SDK publishes to
+# crates.io with the catalog method.
+opensecret = { git = "https://github.com/benthecarman/Maple", branch = "opensecret-git" }

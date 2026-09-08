@@ -1,0 +1,91 @@
+# maple-gpui
+
+GPUI desktop app for Maple. Workspace crates: `app` (binary `maple-gpui`),
+`crates/maple-agent`, `crates/maple-billing`. See `README.md` for the
+layout, prerequisites, and command line modes.
+
+## Build, test, run
+
+`just` lists the recipes. `just ci` runs the same checks as CI (format,
+clippy with `-D warnings` for every feature set, tests). Run it before a
+commit.
+
+Build and test through `just` or `nix develop` so this checkout shares
+Cargo intermediates with other maple-gpui worktrees
+(`CARGO_BUILD_BUILD_DIR` under `~/.cache/cargo-build/maple-gpui/`). Do
+not set a per-worktree `CARGO_TARGET_DIR` or
+`MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR` unless asked. Raw `cargo`
+outside those environments rebuilds gpui into this checkout's `target/`.
+
+```sh
+just build     # debug binary
+just run       # debug binary with RUST_LOG=warn,maple_gpui=debug
+just release   # release binary (fat LTO, one codegen unit)
+just headless  # acp and proxy modes only, no window
+just clean     # this checkout's target/ and dist/ only
+```
+
+Raw `cargo clean` would delete the shared cache; use `just clean` or
+`just clean-local`.
+
+To stop a running app, use `pkill -x maple-gpui` (exact process name).
+`pkill -f` with the binary path also matches the shell that runs the
+command and kills it.
+
+## Logs and freezes
+
+The app logs to stderr and to `~/.local/share/maple-gpui/logs/maple-gpui.log`
+(level `info` by default; `RUST_LOG=debug` for more). Panics are logged
+there too. Tail it with `tail -f ~/.local/share/maple-gpui/logs/maple-gpui.log`.
+
+If the app freezes, dump all thread backtraces while it is still hung:
+
+```sh
+gdb -p "$(pgrep -x maple-gpui)" -batch -ex "thread apply all bt" > /tmp/maple-hang.txt 2>&1
+```
+
+The default release profile strips symbols. `just release-debug` builds a
+release binary that keeps line tables for usable backtraces.
+
+## Performance
+
+This app must feel instant. Treat frame time and UI-thread stalls as bugs.
+
+- Render functions run on every `cx.notify()`. Do not parse, sort, group,
+  or clone collections inside `render_*`. Precompute when state changes
+  (see `rebuild_project_groups`, `MarkdownCache`) and read it in render.
+- The transcript renders through `gpui::list` with `ListState`. Keep it
+  that way: never emit all timeline items as plain children. When an item
+  changes in place, call `list_state.remeasure_items(ix..ix + 1)`: it
+  keeps the row's last height as a hint and leaves the scroll anchor
+  alone. Reserve `splice` for items arriving or leaving; a splice drops
+  the measurement and moves the scroll anchor to the spliced row. The
+  list follows its own tail (`FollowMode::Tail`); call `scroll_to_end`
+  to pin it and `pause_following_tail` to hold it, never a render-time
+  scroll (regression test: `test_streaming_chunk_keeps_wheel_scrolling_up`).
+- Never block the UI thread. File dialogs, file reads, and SQLite go
+  through `tokio::task::spawn_blocking` or `AgentBackend::spawn`.
+- Markdown parses off the UI thread. `MarkdownCache::get` returns the
+  previous document (or the raw text) while a background parse runs and
+  `ChatScreen::markdown_parsed` installs the result; only a short cold
+  source parses inline. Never call `markdown::parse` from a render path.
+- Batch events. The backend pump drains the channel and applies a batch
+  in one update; `apply_service_event` returns whether anything visible
+  changed so a batch with no visible change does not re-render.
+- Poll only when needed, and only `cx.notify()` when a value changed.
+  Prefer pushed events over timers.
+- Reuse handles: entities (`cx.new`), SQLite connections, and shaped text
+  are created once and cached, not per frame or per call.
+- Panels are entities embedded with `Entity::cached`, so a notify on the
+  screen does not rebuild them (the sidebar is `ui/chat/sidebar.rs`).
+  A cached view must never read the screen entity during render (that
+  is a re-entrant borrow and a dependency that defeats the cache): the
+  screen pushes what the panel shows through setters, and the panel
+  answers through `cx.emit` events or, when a click needs the window,
+  through a plain closure holding a `WeakEntity` of the screen. Never
+  call the screen from a `cx.listener` on a panel: listeners run inside
+  the panel's update, and the screen may update the panel back. Caching
+  needs a definite size; a content-sized box (the composer) cannot be a
+  cached view. Avoid `Window::refresh`; it discards every cached view.
+- Release builds use fat LTO and one codegen unit. Use release builds
+  for any performance check; the dev profile is `opt-level = 1`.

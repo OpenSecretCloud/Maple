@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # No debuginfo in CI: it is most of the dependency artifact size and
+  # nothing here reads it.
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: maple-gpui
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: maple-gpui
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary: maple-gpui
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: maple-gpui.exe
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev \
+            libfreetype-dev libclang-dev cmake libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo build --release -p maple-gpui --locked --target ${{ matrix.target }}
+      - name: Stage artifact
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="maple-gpui-${version}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${name}${{ runner.os == 'Windows' && '.exe' || '' }}"
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            certutil -hashfile "${name}.exe" SHA256 | sed -n 2p | tr -d ' \r' | sed "s/$/  ${name}.exe/" > "${name}.exe.sha256"
+          else
+            shasum -a 256 "${name}" > "${name}.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

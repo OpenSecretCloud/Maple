@@ -1,0 +1,69 @@
+[package]
+name = "maple-agent"
+description = "Transport-neutral Maple agent runtime: Goose-backed sessions, provider, tools, permissions"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = ["acp"]
+# The Agent Client Protocol server (`maple_agent::acp`).
+acp = ["dep:agent-client-protocol"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+once_cell = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose-providers", default-features = false }
+opensecret = "3.6.2"
+maple-proxy = "0.3.2"
+rand = "0.8.6"
+rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+httpdate = "1"
+process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+tempfile = "3"
+icu_properties = "2.1.1"
+sha2 = "0.10"
+agent-client-protocol = { version = "=2.0.0", optional = true, default-features = false, features = ["unstable_elicitation", "unstable_end_turn_token_usage"] }
+base64 = "0.22"
+bytes = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# CUA's native SDK is not published to crates.io yet. Pin the exact source
+# commit that applies the Xcode 26.5 linker compatibility and embedded-host
+# main-thread restoration fixes directly on top of the 0.23.2 release so
+# Maple's embedded runtime remains reproducible.
+cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "4c17c70aa920f238bcccc4f1b13375d87ef0c478", package = "cua-driver-sdk" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Ask the session bus whether the GNOME compositor helper is loaded. It is
+# already in the dependency tree through the SDK, so this adds no build cost.
+zbus = { version = "5.19", default-features = false, features = ["blocking-api", "tokio"] }
+# The same pinned revision supplies the Linux backend: AT-SPI over D-Bus for
+# the accessibility tree, the desktop portal for screenshots, and libei for
+# input. `portal-input` is pure Rust plus libxkbcommon, which the Linux build
+# already links, so it stays on by default. PipeWire per-window capture needs
+# libpipewire and libspa headers at build time and is deliberately left off;
+# full-screen portal screenshots do not need it.
+cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "4c17c70aa920f238bcccc4f1b13375d87ef0c478", package = "cua-driver-sdk", features = ["portal-input"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+axum = "0.8"
+ciborium = "0.2"
