@@ -186,7 +186,9 @@ test("validates PCR0 from only the selected production history by default", asyn
     async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      expect(url).toContain("pcrProdHistory.json");
+      expect(url).toBe(
+        "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json"
+      );
       return createMockResponse([
         {
           PCR0: VERIFIED_PCR0,
@@ -216,7 +218,9 @@ test("validates PCR0 from only the selected development history", async () => {
     async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      expect(url).toContain("pcrDevHistory.json");
+      expect(url).toBe(
+        "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrDevHistory.json"
+      );
       return createMockResponse([
         {
           PCR0: VERIFIED_PCR0,

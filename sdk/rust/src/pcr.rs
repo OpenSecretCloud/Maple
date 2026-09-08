@@ -23,9 +23,9 @@ const PCR_HISTORY_VERIFICATION_KEY_B64: &str =
     "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEHiUY9kFWK1GqBGzczohhwEwElXzgWLDZa9R6wBx3JOBocgSt9+UIzZlJbPDjYeGBfDUXh7Z62BG2vVsh2NgclLB5S7A2ucBBtb1wd8vSQHP8jpdPhZX1slauPgbnROIP";
 
 pub const OFFICIAL_PRODUCTION_PCR_HISTORY_URL: &str =
-    "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrProdHistory.json";
+    "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrProdHistory.json";
 pub const OFFICIAL_DEVELOPMENT_PCR_HISTORY_URL: &str =
-    "https://raw.githubusercontent.com/OpenSecretCloud/opensecret/master/pcrDevHistory.json";
+    "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrDevHistory.json";
 
 const OFFICIAL_PRODUCTION_PCR0S: &[&str] = &[
     "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b",

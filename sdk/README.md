@@ -30,7 +30,8 @@ for external users.
 
 For non-local endpoints, both SDKs require HTTPS, verify AWS Nitro attestation,
 and enforce an environment-scoped PCR0 trust policy before completing key
-exchange. Official PCR0 histories are signed and bundled with the SDKs.
+exchange. The SDKs bundle environment-specific PCR0 trust roots and the
+verification key used to authenticate signed remote history entries.
 
 Mock attestation is limited to exact loopback development endpoints (plus the
 documented Android emulator alias in the Rust SDK). Do not weaken attestation,
@@ -95,8 +96,14 @@ Tests that spend model/provider capacity are opt-in with `RUN_LIVE_AI=1` and
 are not part of the deterministic pull-request gate. Backend contract changes
 and SDK changes are validated together against that checkout; released clients
 and independently deployed backend versions still need compatibility review.
-The SDKs' existing signed-PCR URLs remain unchanged until a separate verified
-cutover. See the [backend compatibility procedure](../services/opensecret/docs/pcr-compatibility.md).
+Both SDKs fetch their selected environment's signed PCR history from
+`MaplePrivacyLabs/Maple/master/services/opensecret/`: `pcrProdHistory.json` for
+production and `pcrDevHistory.json` for development. The existing verification
+key, embedded roots, custom history URL overrides, and redirect rejection are
+unchanged. Older published SDKs and installed clients still use the legacy
+`OpenSecretCloud/opensecret` URLs, which remain a manual compatibility mirror.
+Changing source defaults does not update those clients or publish an SDK. See
+the [backend compatibility procedure](../services/opensecret/docs/pcr-compatibility.md).
 
 Inspect the publishable npm artifact with:
 
