@@ -5849,6 +5849,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "maple-code-mode"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "log",
+ "process-wrap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "maple-gpui"
 version = "0.1.0"
 dependencies = [
