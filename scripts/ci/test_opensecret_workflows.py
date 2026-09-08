@@ -4,8 +4,10 @@ import functools
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -161,6 +163,73 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                 self.assertIn("always() && !cancelled()", condition)
                 self.assertIn("needs.changes.result != 'success'", condition)
                 self.assertIn(f"needs.changes.outputs.{output} != 'false'", condition)
+
+
+class SdkWorkflowFailurePropagationTests(unittest.TestCase):
+    CHECKS = (
+        ("sdk-typescript.yml", "sdk-typescript", (
+            "bun install", "bun audit", "bun run format:check", "bun run build", "bun test",
+        )),
+        ("sdk-rust.yml", "sdk-rust", (
+            "cargo fmt", "cargo clippy", "cargo test", "cargo doc",
+        )),
+    )
+
+    def run_checks(self, name, job, failure=""):
+        steps = [step["run"] for step in workflow(name)["jobs"][job]["steps"] if "run" in step]
+        # Execute the actual nested shell body, without letting an outer -e or
+        # host login profile accidentally supply the workflow's missing guard.
+        self.assertEqual(len(steps), 1)
+        command = shlex.split(steps[0])
+        self.assertEqual(command[:-1], [
+            "nix", "develop", "--no-update-lock-file", "./sdk", "-c", "bash", "-lc",
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "sdk/rust").mkdir(parents=True)
+            binaries = root / "bin"
+            binaries.mkdir()
+            trace = root / "commands"
+            for tool in ("bun", "cargo"):
+                stub = binaries / tool
+                stub.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, sys\n"
+                    "from pathlib import Path\n"
+                    "command = ' '.join([Path(sys.argv[0]).name, *sys.argv[1:]])\n"
+                    "with open(os.environ['SDK_CHECK_TRACE'], 'a') as trace:\n"
+                    "    trace.write(command + '\\n')\n"
+                    "failure = os.environ['SDK_CHECK_FAILURE']\n"
+                    "sys.exit(42 if failure and command.startswith(failure) else 0)\n"
+                )
+                stub.chmod(0o755)
+            result = subprocess.run(
+                [shutil.which("bash"), "--noprofile", "--norc", "-c", command[-1]],
+                cwd=root,
+                env={"PATH": str(binaries), "HOME": temporary,
+                     "SDK_CHECK_TRACE": str(trace), "SDK_CHECK_FAILURE": failure},
+                capture_output=True, text=True,
+            )
+            return result, trace.read_text().splitlines() if trace.exists() else []
+
+    def test_each_failed_sdk_check_stops_the_workflow(self):
+        for name, job, checks in self.CHECKS:
+            for index, failure in enumerate(checks):
+                with self.subTest(workflow=name, failure=failure):
+                    result, commands = self.run_checks(name, job, failure)
+                    self.assertEqual(result.returncode, 42, result.stderr)
+                    self.assertEqual(len(commands), index + 1, commands)
+                    for command, expected in zip(commands, checks):
+                        self.assertTrue(command.startswith(expected), command)
+
+    def test_successful_sdk_checks_all_execute(self):
+        for name, job, checks in self.CHECKS:
+            with self.subTest(workflow=name):
+                result, commands = self.run_checks(name, job)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(commands), len(checks), commands)
+                for command, expected in zip(commands, checks):
+                    self.assertTrue(command.startswith(expected), command)
 
 
 class OpenSecretDiffSelectionTests(unittest.TestCase):

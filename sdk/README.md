@@ -135,6 +135,7 @@ Run the Rust validation from the `sdk/` directory:
 
 ```sh
 nix develop --no-update-lock-file -c bash -lc '
+  set -euo pipefail
   cd rust
   cargo fmt --all -- --check
   cargo clippy --locked --all-targets --all-features -- -D warnings
