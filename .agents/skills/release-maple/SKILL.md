@@ -42,8 +42,8 @@ store, submit for review, or alter a rollout merely to see whether it works.
 
 ## Repository-transfer checkpoint
 
-After the transfer to `MaplePrivacyLabs/Maple`, merge the prepared canonical
-repository metadata before creating a new release. Keep the existing updater
+Before creating a new release, verify that `repo.meta.json` identifies
+`MaplePrivacyLabs/Maple` as the canonical repository. Keep the existing updater
 Worker serving its deployed metadata until the first normal new-org release.
 Do not manually republish retained v3.3.10 updater metadata: its asset URLs use
 `OpenSecretCloud/Maple`, while the publisher and new Worker correctly require
