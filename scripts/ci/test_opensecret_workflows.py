@@ -36,6 +36,22 @@ def strings(value):
 
 
 class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
+    def test_nix_jobs_fetch_complete_backend_and_submodule_history(self):
+        # checkout's fetch-depth applies to submodule update too. Nix's Git
+        # fetcher cannot calculate revCount for a shallow recursive input.
+        for workflow_name, job_names in (
+            ("opensecret-ci.yml", ("rust", "nix", "pcr")),
+            ("sdk-integration.yml", ("sdk-integration",)),
+        ):
+            for job_name in job_names:
+                with self.subTest(workflow=workflow_name, job=job_name):
+                    steps = workflow(workflow_name)["jobs"][job_name]["steps"]
+                    checkouts = [step["with"] for step in steps
+                                 if step.get("uses", "").startswith("actions/checkout@")]
+                    self.assertEqual(len(checkouts), 1)
+                    self.assertEqual(checkouts[0]["submodules"], "recursive")
+                    self.assertEqual(checkouts[0].get("fetch-depth"), 0)
+
     def test_fork_jobs_are_hosted_read_only_and_credential_free(self):
         for name in ("opensecret-ci.yml", "opensecret-change-detection.yml", "sdk-integration.yml"):
             config = workflow(name)
