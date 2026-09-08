@@ -439,7 +439,7 @@ The package must grant Maple Actions write access and be public for anonymous
 verification; local recipes intentionally cannot publish to it.
 
 `proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
-`frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency
+`apps/maple-research/frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency
 changes must keep the path graph and all affected locks coherent. Docker builds
 must use the Maple repository root as context so both `proxy/` and `sdk/rust/`
 are available. GitHub Release archives, crates.io, and GHCR are three separate

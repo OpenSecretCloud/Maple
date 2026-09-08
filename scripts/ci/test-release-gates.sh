@@ -37,18 +37,18 @@ make_fixture() {
   local release_tag="$3"
   local cargo_version="${4:-${app_version}}"
 
-  mkdir -p "${directory}/frontend/src-tauri"
-  printf '{"version":"%s"}\n' "${app_version}" > "${directory}/frontend/package.json"
-  printf '{"version":"%s"}\n' "${app_version}" > "${directory}/frontend/src-tauri/tauri.conf.json"
+  mkdir -p "${directory}/apps/maple-research/frontend/src-tauri"
+  printf '{"version":"%s"}\n' "${app_version}" > "${directory}/apps/maple-research/frontend/package.json"
+  printf '{"version":"%s"}\n' "${app_version}" > "${directory}/apps/maple-research/frontend/src-tauri/tauri.conf.json"
   printf '[package]\nname = "maple-fixture"\nversion = "%s"\n\n[dependencies]\n' "${cargo_version}" \
-    > "${directory}/frontend/src-tauri/Cargo.toml"
+    > "${directory}/apps/maple-research/frontend/src-tauri/Cargo.toml"
   git -C "${directory}" init -q -b master
   git -C "${directory}" config user.name "Maple release gate tests"
   git -C "${directory}" config user.email "release-gates@example.invalid"
   git -C "${directory}" add \
-    frontend/package.json \
-    frontend/src-tauri/Cargo.toml \
-    frontend/src-tauri/tauri.conf.json
+    apps/maple-research/frontend/package.json \
+    apps/maple-research/frontend/src-tauri/Cargo.toml \
+    apps/maple-research/frontend/src-tauri/tauri.conf.json
   git -C "${directory}" commit -q -m "fixture"
   git -C "${directory}" tag -a "${release_tag}" -m "${release_tag}"
 }
@@ -163,10 +163,12 @@ release_json="${temp_root}/release.json"
 pages_production_json="${temp_root}/pages-production.json"
 proxy_rust_json="${temp_root}/proxy-rust.json"
 proxy_publish_json="${temp_root}/proxy-publish.json"
+zapstore_json="${temp_root}/zapstore-publish.json"
 yq -o=json '.' "${repo_root}/.github/workflows/release.yml" > "${release_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/pages-production.yml" > "${pages_production_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/proxy-rust.yml" > "${proxy_rust_json}"
 yq -o=json '.' "${repo_root}/.github/workflows/proxy-publish.yml" > "${proxy_publish_json}"
+yq -o=json '.' "${repo_root}/.github/workflows/zapstore-publish.yml" > "${zapstore_json}"
 
 if rg -n --glob '*.yml' --glob '*.yaml' \
   'gh[[:space:]]+release[[:space:]]+create|softprops/action-gh-release' \
@@ -182,7 +184,7 @@ if rg -n 'ghcr-(push|build-push|login)' "${repo_root}/proxy/justfile"; then
 fi
 pass "proxy container publication has one GitHub Actions writer"
 
-python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" "${proxy_publish_json}" <<'PY'
+python3 - "${release_json}" "${pages_production_json}" "${proxy_rust_json}" "${proxy_publish_json}" "${zapstore_json}" <<'PY'
 import json
 import re
 import sys
@@ -217,6 +219,24 @@ def secret_names(value):
             found.add("*")
     return found
 
+
+with open(sys.argv[5], encoding="utf-8") as handle:
+    zapstore = json.load(handle)
+zapstore_steps = zapstore["jobs"]["publish"]["steps"]
+checkout = next(step for step in zapstore_steps if str(step.get("uses", "")).startswith("actions/checkout@"))
+check(
+    checkout["with"]["sparse-checkout"].splitlines() == [
+        "apps/maple-research/zapstore.yaml",
+        "apps/maple-research/frontend/src-tauri/icons/icon.png",
+    ],
+    "Zapstore must checkout the Research config and its relative icon",
+)
+download = next(step for step in zapstore_steps if step.get("name") == "Download APK from release")
+check("--dir apps/maple-research" in download["run"],
+      "Zapstore APK must be downloaded beside the config for config-relative release_source")
+publish = next(step for step in zapstore_steps if step.get("name") == "Publish to Zapstore")
+check("apps/maple-research/zapstore.yaml 2>&1" in publish["run"],
+      "Zapstore must publish with the relocated config")
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     release = json.load(handle)
@@ -622,6 +642,9 @@ check(
 
 PY
 pass "workflow release-gate topology is fail closed with isolated downstream publishers"
+
+bash "${script_dir}/test-windows-runtime-manifest.sh" >/dev/null
+pass "Windows runtime proofs accept coherent retained and relocated paths"
 
 bash "${script_dir}/test-proxy-release-artifacts.sh" >/dev/null
 pass "proxy release artifact verifier accepts only the complete native asset set"

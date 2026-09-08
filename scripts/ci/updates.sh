@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 print_source_provenance
 export WRANGLER_SEND_METRICS=false
-cd "${REPO_ROOT}/updates"
+cd "${REPO_ROOT}/services/updates"
 
 bun install --frozen-lockfile --ignore-scripts
 bun run check

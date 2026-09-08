@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-FRONTEND_DIR="${REPO_ROOT}/frontend"
+FRONTEND_DIR="${REPO_ROOT}/apps/maple-research/frontend"
 TAURI_DIR="${FRONTEND_DIR}/src-tauri"
 
 source "${TAURI_DIR}/scripts/onnxruntime-pins.sh"
@@ -2564,7 +2564,7 @@ build_frontend_dist() {
   scrub_host_metadata_files "${FRONTEND_DIR}/dist"
   MAPLE_FRONTEND_DIST_TREE_SHA256="$(tree_hash_digest "${FRONTEND_DIR}/dist")"
   export MAPLE_FRONTEND_DIST_TREE_SHA256
-  printf 'sha256-tree  %s  %s\n' "${MAPLE_FRONTEND_DIST_TREE_SHA256}" "frontend/dist"
+  printf 'sha256-tree  %s  %s\n' "${MAPLE_FRONTEND_DIST_TREE_SHA256}" "apps/maple-research/frontend/dist"
 }
 
 verify_frontend_dist_unchanged() {
@@ -2577,13 +2577,13 @@ verify_frontend_dist_unchanged() {
 
   digest="$(tree_hash_digest "${FRONTEND_DIR}/dist")"
   if [ -n "${MAPLE_FRONTEND_DIST_TREE_SHA256:-}" ] && [ "${digest}" != "${MAPLE_FRONTEND_DIST_TREE_SHA256}" ]; then
-    echo "frontend/dist changed during native packaging." >&2
+    echo "apps/maple-research/frontend/dist changed during native packaging." >&2
     echo "before=${MAPLE_FRONTEND_DIST_TREE_SHA256}" >&2
     echo "after=${digest}" >&2
     return 1
   fi
 
-  printf 'sha256-tree  %s  %s\n' "${digest}" "frontend/dist"
+  printf 'sha256-tree  %s  %s\n' "${digest}" "apps/maple-research/frontend/dist"
 }
 
 ios_onnxruntime_xcframework_dir() {
@@ -2721,7 +2721,7 @@ print_ios_onnxruntime_hashes() {
     "${xcframework}/ios-arm64/libonnxruntime.a" \
     "${xcframework}/ios-arm64-simulator/libonnxruntime.a" \
     "$(ios_onnxruntime_manifest_file)"
-  print_tree_hash "${xcframework}" "frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework"
+  print_tree_hash "${xcframework}" "apps/maple-research/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework"
 }
 
 write_ios_onnxruntime_reproducibility_manifest() {

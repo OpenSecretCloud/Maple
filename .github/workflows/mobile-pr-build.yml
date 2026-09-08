@@ -51,7 +51,7 @@ jobs:
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # was v1
         with:
-          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-
@@ -60,8 +60,8 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: |
-            frontend/src-tauri/onnxruntime-ios
-          key: pr-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'frontend/src-tauri/scripts/canonicalize-static-archive.py', 'frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+            apps/maple-research/frontend/src-tauri/onnxruntime-ios
+          key: pr-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
           restore-keys: |
             pr-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
@@ -80,6 +80,6 @@ jobs:
         with:
           name: maple-ios-simulator-pr
           path: |
-            frontend/src-tauri/gen/apple/build/**/*.app
-            frontend/src-tauri/target/reproducibility/ios-*.sha256
+            apps/maple-research/frontend/src-tauri/gen/apple/build/**/*.app
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-*.sha256
           retention-days: 5

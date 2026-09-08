@@ -137,7 +137,7 @@ This would fix the immediate issue but keep the coupling between display and API
 
 ## Files Changed
 
-- `/frontend/src/components/UnifiedChat.tsx` - Main refactor
+- `/apps/maple-research/frontend/src/components/UnifiedChat.tsx` - Main refactor
   - Type definitions (lines 75-102)
   - convertItemsToMessages (lines 114-120)
   - MessageList rendering (lines 492+)

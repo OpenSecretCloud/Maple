@@ -11,9 +11,9 @@ Default to read-only investigation when asked to review, audit, diagnose, or thr
 
 ## Establish the Review Baseline
 
-1. Read `AGENTS.md`, the requested diff or files, nearby tests, and applicable docs.
+1. Read root `AGENTS.md` and `apps/maple-research/AGENTS.md`, the requested diff or files, nearby tests, and applicable docs.
 2. Record `git status --short --branch`, `git rev-parse HEAD`, the comparison base, and whether the checkout has unrelated changes. Never clean or rewrite them.
-3. Re-check current command and dependency sources: `justfile`, `frontend/package.json`, `frontend/src-tauri/Cargo.toml`, lockfiles, `scripts/ci/`, and `.github/workflows/`.
+3. Re-check current command and dependency sources: `justfile`, `apps/maple-research/frontend/package.json`, `apps/maple-research/frontend/src-tauri/Cargo.toml`, lockfiles, `scripts/ci/`, and `.github/workflows/`.
 4. Identify whether the request is:
 
    - a read-only audit of current behavior;
@@ -52,7 +52,7 @@ Omit speculative findings that cannot survive this structure. Record important
 unknowns as task-local unverified boundaries. Keep findings in the current
 task's review output or another destination the user explicitly authorizes.
 Keep only durable security standards and review methodology in this skill and
-`AGENTS.md`.
+`apps/maple-research/AGENTS.md`.
 
 ## Map the Trust Boundaries
 
@@ -78,12 +78,12 @@ Treat renderer input, model output, MCP output, ACP input, remote content, persi
 
 Inspect these source areas when authentication, user state, native providers, logout, deletion, or account switching is relevant:
 
-- `frontend/src/services/mapleApiAuthService.ts`
-- `frontend/src/services/agentAuthLifecycle.ts`
-- `frontend/src/services/agentOperationFence.ts`
-- `frontend/src/services/agentRuntimeService.ts`
-- `frontend/src-tauri/src/maple_api.rs`
-- `frontend/src/components/RootRuntimeLayout.tsx`
+- `apps/maple-research/frontend/src/services/mapleApiAuthService.ts`
+- `apps/maple-research/frontend/src/services/agentAuthLifecycle.ts`
+- `apps/maple-research/frontend/src/services/agentOperationFence.ts`
+- `apps/maple-research/frontend/src/services/agentRuntimeService.ts`
+- `apps/maple-research/frontend/src-tauri/src/maple_api.rs`
+- `apps/maple-research/frontend/src/components/RootRuntimeLayout.tsx`
 - every logout, guest-upgrade, verification, and account-deletion path
 
 Require these invariants:
@@ -123,9 +123,9 @@ Never include real tokens, passwords, prompts, private paths, encrypted user see
 
 Inspect:
 
-- `frontend/src-tauri/src/lib.rs`
-- `frontend/src-tauri/tauri.conf.json`
-- `frontend/src-tauri/capabilities/*.json`
+- `apps/maple-research/frontend/src-tauri/src/lib.rs`
+- `apps/maple-research/frontend/src-tauri/tauri.conf.json`
+- `apps/maple-research/frontend/src-tauri/capabilities/*.json`
 - every added or changed `#[tauri::command]`
 - every intended platform-specific `generate_handler!` registration and its
   `cfg` gates
@@ -169,13 +169,13 @@ Treat untrusted Markdown and external URLs as a renderer boundary. Preserve sani
 
 Read the current implementation and docs together:
 
-- `frontend/src-tauri/src/agent.rs`
-- `frontend/src-tauri/src/agent/`
-- `frontend/src-tauri/src/agent_acp.rs`
-- `frontend/src-tauri/src/agent_host.rs`
-- `frontend/src-tauri/src/agent_tauri.rs`
-- `docs/agent-mode-mcp.md`
-- `docs/agent-mode-acp.md`
+- `apps/maple-research/frontend/src-tauri/src/agent.rs`
+- `apps/maple-research/frontend/src-tauri/src/agent/`
+- `apps/maple-research/frontend/src-tauri/src/agent_acp.rs`
+- `apps/maple-research/frontend/src-tauri/src/agent_host.rs`
+- `apps/maple-research/frontend/src-tauri/src/agent_tauri.rs`
+- `apps/maple-research/docs/agent-mode-mcp.md`
+- `apps/maple-research/docs/agent-mode-acp.md`
 
 Keep these concepts separate:
 
@@ -221,7 +221,7 @@ assuming intentional execution authority violates the design.
 
 Inspect `proxy/src/{config,lib,main,proxy}.rs`,
 `proxy/{Cargo.toml,.env.example,Dockerfile,docker-compose.yml,justfile}`,
-`frontend/src-tauri/src/proxy.rs`, `frontend/src/services/proxyService.ts`, the
+`apps/maple-research/frontend/src-tauri/src/proxy.rs`, `apps/maple-research/frontend/src/services/proxyService.ts`, the
 settings UI, all startup/logout callers, and tests as one boundary. Keep the
 reusable HTTP proxy's request and authentication rules distinct from Maple's
 account-scoped Tauri lifecycle. The standalone crate, binary, and container do
@@ -261,9 +261,9 @@ Treat non-loopback service exposure as a separate feature requiring explicit aut
 Inspect both sides of every flow:
 
 - OAuth initiation and SDK callback handling;
-- `frontend/src/routes/auth.$provider.callback.tsx`;
-- `frontend/src/components/AppleAuthProvider.tsx`;
-- `frontend/src/components/DeepLinkHandler.tsx`;
+- `apps/maple-research/frontend/src/routes/auth.$provider.callback.tsx`;
+- `apps/maple-research/frontend/src/components/AppleAuthProvider.tsx`;
+- `apps/maple-research/frontend/src/components/DeepLinkHandler.tsx`;
 - native deep-link registration, forwarding, and single-instance handling.
 
 Require exact scheme, authority, path, provider, parameter, and redirect validation. Bind completion atomically to a pending native-generated state, provider, PKCE verifier, expiry, and one-time use. Reject unsolicited, duplicate, stale, malformed, or cross-provider callbacks.
@@ -276,11 +276,11 @@ Validate internal redirects independently and reject absolute, scheme-relative, 
 
 Inspect the browser and native OpenSecret clients independently:
 
-- `frontend/src/app.tsx`
-- `frontend/src/ai/OpenAIContext.tsx`
-- `frontend/src/services/mapleApiAuthService.ts`
-- `frontend/src-tauri/src/maple_api.rs`
-- `frontend/src-tauri/src/agent/provider.rs`
+- `apps/maple-research/frontend/src/app.tsx`
+- `apps/maple-research/frontend/src/ai/OpenAIContext.tsx`
+- `apps/maple-research/frontend/src/services/mapleApiAuthService.ts`
+- `apps/maple-research/frontend/src-tauri/src/maple_api.rs`
+- `apps/maple-research/frontend/src-tauri/src/agent/provider.rs`
 - `sdk/src/` and `sdk/rust/` when the SDK implementation or public protocol is
   in scope
 - the pinned JavaScript and Rust OpenSecret SDK versions and lockfiles
@@ -289,7 +289,7 @@ Preserve the OpenSecret SDK's encrypted and attested transport. Do not replace `
 
 Review development and production enclave URLs and PCR/attestation allowlists together. Reject an endpoint that is not HTTPS unless it is an explicit loopback development address. Reject URL credentials and unexpected paths, queries, or fragments at the native authority boundary. Treat source-configured PCR values as policy, not proof that a live enclave currently matches; perform live attestation before making deployment claims.
 
-The SDK source is in this repository. The browser uses `file:../sdk`, while
+The SDK source is in this repository. The browser uses `file:../../../sdk`, while
 desktop Maple and `proxy/` use versioned path dependencies on `sdk/rust`.
 Review source changes and resolved application dependencies as distinct
 boundaries, and verify the local Cargo graph before claiming coverage. Do not assume

@@ -5,7 +5,7 @@ description: Develop and debug ordinary non-Agent-Mode Maple features and fixes 
 
 # Develop Maple
 
-Work from the `MaplePrivacyLabs/Maple` repository root. Treat `justfile`, `frontend/package.json`, `flake.nix`, `scripts/ci/`, and `.github/workflows/` as the command sources of truth. Check them again when they disagree with prose documentation.
+Work from the `MaplePrivacyLabs/Maple` repository root. Treat `justfile`, `apps/maple-research/frontend/package.json`, `flake.nix`, `scripts/ci/`, and `.github/workflows/` as the command sources of truth. Check them again when they disagree with prose documentation.
 
 ## Route Specialized Work
 
@@ -26,7 +26,7 @@ Keep the current task scoped when one of these skills is unnecessary. Do not cla
 1. Inspect `git status --short --branch`, the current branch, and recent history.
 2. Preserve all existing changes. Never reset, overwrite, or reformat unrelated work.
 3. For newly requested isolated work, base it on current `origin/master` unless the user specifies another base. Do not switch branches over a dirty checkout.
-4. Read root `AGENTS.md`, relevant docs, nearby implementation, tests, and current dependency/API versions before designing the change.
+4. Read root `AGENTS.md`, `apps/maple-research/AGENTS.md`, relevant docs, nearby implementation, tests, and current dependency/API versions before designing the change.
 5. State the intended behavior and the smallest affected boundary before editing.
 
 Do not commit, push, open a PR, merge, tag, publish, or release unless the user explicitly requests that action.
@@ -46,7 +46,7 @@ The flake pins Bun, Rust, and platform tooling. Use Bun for frontend dependencie
 Configure a local API without committing secrets:
 
 ```bash
-test -e frontend/.env.local || cp frontend/.env.example frontend/.env.local
+test -e apps/maple-research/frontend/.env.local || cp apps/maple-research/frontend/.env.example apps/maple-research/frontend/.env.local
 ```
 
 Set `VITE_OPEN_SECRET_API_URL` to the OpenSecret API under test. Set the billing or feature-flag API URLs only when exercising those integrations. Keep `.env.local` untracked, never put secrets in `VITE_*` values, and do not overwrite an existing developer configuration.
@@ -76,16 +76,16 @@ through their public API URLs; do not depend on their source trees.
 
 ## Follow the Existing Architecture
 
-- Put React, routes, contexts, and browser-facing services under `frontend/src/`.
-- Put privileged/native behavior under `frontend/src-tauri/src/` and expose the narrowest typed Tauri command or event needed by the UI.
-- Use `@opensecret/react` and the existing OpenSecret client paths for authentication, encryption, and API calls. Read `frontend/package.json` to determine whether the application consumes a published version or the in-tree `file:../sdk` package; do not infer that boundary from prose. Do not duplicate protocol or cryptographic logic in components.
+- Put React, routes, contexts, and browser-facing services under `apps/maple-research/frontend/src/`.
+- Put privileged/native behavior under `apps/maple-research/frontend/src-tauri/src/` and expose the narrowest typed Tauri command or event needed by the UI.
+- Use `@opensecret/react` and the existing OpenSecret client paths for authentication, encryption, and API calls. Read `apps/maple-research/frontend/package.json` to determine whether the application consumes a published version or the in-tree `file:../../../sdk` package; do not infer that boundary from prose. Do not duplicate protocol or cryptographic logic in components.
 - Follow nearby state ownership, cancellation, error, and cleanup patterns. Preserve account isolation and handle logout, navigation, retries, and stale async completion explicitly.
 - Treat all network, file, deep-link, shell, tool, and Tauri-command inputs as untrusted. Validate again at the enforcing boundary.
 - Keep feature flags as rollout/UI controls, never authorization controls.
 - Preserve accessibility semantics, keyboard behavior, focus handling, loading states, and actionable errors.
-- Do not edit `frontend/src/routeTree.gen.ts` manually; let TanStack Router regenerate it.
+- Do not edit `apps/maple-research/frontend/src/routeTree.gen.ts` manually; let TanStack Router regenerate it.
 - Treat generated mobile projects and platform patches as intentional source. Change them only when the platform behavior requires it and verify the relevant target.
-- Update `frontend/bun.lock` or `frontend/src-tauri/Cargo.lock` with dependency
+- Update `apps/maple-research/frontend/bun.lock` or `apps/maple-research/frontend/src-tauri/Cargo.lock` with dependency
   changes. Explain new dependencies and avoid broad upgrades during an
   unrelated fix.
 - Never log plaintext prompts, decrypted content, tokens, session keys, credentials, or sensitive file contents.
@@ -107,7 +107,7 @@ just ios-dev-sim "iPhone 16 Pro"
 # or: just ios-dev-device "Device Name"
 ```
 
-Run direct `bun` and `bun tauri` commands from `frontend/`, not the repository root. Prefer `just desktop-dev` over raw `bun tauri dev` because the recipe provisions the platform ONNX Runtime.
+Run direct `bun` and `bun tauri` commands from `apps/maple-research/frontend/`, not the repository root. Prefer `just desktop-dev` over raw `bun tauri dev` because the recipe provisions the platform ONNX Runtime.
 
 During implementation:
 
@@ -121,7 +121,7 @@ During implementation:
 For frontend changes:
 
 ```bash
-cd frontend
+cd apps/maple-research/frontend
 bun --no-env-file test path/to/test.ts
 bun run format:check
 bun run lint
@@ -133,7 +133,7 @@ bun run build
 For Rust/Tauri changes:
 
 ```bash
-cd frontend/src-tauri
+cd apps/maple-research/frontend/src-tauri
 cargo fmt --check
 ./scripts/run-with-desktop-onnxruntime.sh cargo clippy --locked -- -D warnings
 ./scripts/run-with-desktop-onnxruntime.sh cargo test --locked --all-targets

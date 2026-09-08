@@ -20,7 +20,7 @@ and tests.
 - repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
   and supply-chain validation for this directory.
 
-Maple's frontend consumes this TypeScript package through `file:../sdk`.
+Maple's frontend consumes this TypeScript package through `file:../../../sdk`.
 Desktop Maple and `proxy/` consume `sdk/rust` through versioned path
 dependencies; iOS and Android exclude those desktop-only Rust consumers.
 Published npm and crates.io packages remain independent compatibility surfaces

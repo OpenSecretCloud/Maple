@@ -5,9 +5,9 @@ description: Develop and debug Maple Agent Mode across its React UI, Tauri comma
 
 # Change Maple Agent Mode
 
-Work from the Maple repository root. Read root `AGENTS.md`, the current source, nearby tests, and relevant docs before editing. Treat `frontend/src-tauri/Cargo.toml`, `frontend/src-tauri/Cargo.lock`, the implementation, and test suite as authoritative when historical prose disagrees.
+Work from the Maple repository root. Read root `AGENTS.md` and `apps/maple-research/AGENTS.md`, the current source, nearby tests, and relevant docs before editing. Treat `apps/maple-research/frontend/src-tauri/Cargo.toml`, `apps/maple-research/frontend/src-tauri/Cargo.lock`, the implementation, and test suite as authoritative when historical prose disagrees.
 
-Root `AGENTS.md` owns repository setup and ordinary conventions. Use
+Root `AGENTS.md` owns shared policy; `apps/maple-research/AGENTS.md` owns app setup and runtime conventions. Use
 `$validate-maple` for complete CI-equivalent, packaged, or cross-platform
 validation, and `$review-maple-security` when a change touches credentials,
 authorization, privileged tools, process execution, local IPC, or another
@@ -31,22 +31,22 @@ Maple locally persists Agent tasks, project configuration, MCP snapshots, and Go
 
 Use these seams:
 
-- `frontend/src/components/AgentMode.tsx` and `frontend/src/components/agent/`: presentation, interaction state, accessible controls, and projection of native events. Do not enforce security only here.
-- `frontend/src/services/agentRuntimeService.ts`: typed Tauri commands/events, user-operation fencing, and logout/account-transition coordination.
-- `frontend/src/services/mapleApiAuthService.ts`: browser/native credential reconciliation. Do not copy this logic into components.
-- `frontend/src-tauri/src/agent_tauri.rs`: the stable Desktop command and event adapter. Keep it thin.
-- `frontend/src-tauri/src/agent_host.rs`: operations spanning the core runtime and ACP, including stop, restart, clear, exit, and update shutdown.
-- `frontend/src-tauri/src/agent.rs`: transport-neutral Agent domain state, account handles, Goose/session orchestration, persistence, run ownership, timelines, MCP and skills attachment, and permission routing. Do not import Tauri or ACP protocol types into this core.
-- `frontend/src-tauri/src/agent/provider.rs`: Goose-provider request construction, encrypted inference transport, streaming, bounded error handling, retry policy, and cancellation.
-- `frontend/src-tauri/src/maple_api.rs`: account-scoped native OpenSecret SDK sessions, backend identity validation, atomic credential replacement, and refresh reconciliation.
+- `apps/maple-research/frontend/src/components/AgentMode.tsx` and `apps/maple-research/frontend/src/components/agent/`: presentation, interaction state, accessible controls, and projection of native events. Do not enforce security only here.
+- `apps/maple-research/frontend/src/services/agentRuntimeService.ts`: typed Tauri commands/events, user-operation fencing, and logout/account-transition coordination.
+- `apps/maple-research/frontend/src/services/mapleApiAuthService.ts`: browser/native credential reconciliation. Do not copy this logic into components.
+- `apps/maple-research/frontend/src-tauri/src/agent_tauri.rs`: the stable Desktop command and event adapter. Keep it thin.
+- `apps/maple-research/frontend/src-tauri/src/agent_host.rs`: operations spanning the core runtime and ACP, including stop, restart, clear, exit, and update shutdown.
+- `apps/maple-research/frontend/src-tauri/src/agent.rs`: transport-neutral Agent domain state, account handles, Goose/session orchestration, persistence, run ownership, timelines, MCP and skills attachment, and permission routing. Do not import Tauri or ACP protocol types into this core.
+- `apps/maple-research/frontend/src-tauri/src/agent/provider.rs`: Goose-provider request construction, encrypted inference transport, streaming, bounded error handling, retry policy, and cancellation.
+- `apps/maple-research/frontend/src-tauri/src/maple_api.rs`: account-scoped native OpenSecret SDK sessions, backend identity validation, atomic credential replacement, and refresh reconciliation.
 - `sdk/rust/`: source for the OpenSecret Rust SDK consumed by Maple's desktop
-  application through the path dependency in `frontend/src-tauri/Cargo.toml`.
+  application through the path dependency in `apps/maple-research/frontend/src-tauri/Cargo.toml`.
   Rust SDK runtime changes therefore reach Agent Mode desktop builds; verify
   the local dependency graph rather than treating the in-tree source as inert.
-- `frontend/src-tauri/src/agent/developer_tools.rs`: Maple's privileged read, write, edit, image, shell, and backend web-tool implementations. Add privileged tools here rather than exposing an unmediated Goose tool path.
-- `frontend/src-tauri/src/agent/{shell_permission,web_permission,tool_context,web_tools}.rs`: automatic policy, secret-bearing execution context, public-URL admission, provenance, and output bounds.
-- `frontend/src-tauri/src/agent/system_prompt.rs`: the narrowly rebranded copy of the pinned Goose system prompt.
-- `frontend/src-tauri/src/agent_acp.rs`: ACP framing, Unix socket ownership, connection/session leases, caller-owned permissions, and adapter-specific environment allowlists.
+- `apps/maple-research/frontend/src-tauri/src/agent/developer_tools.rs`: Maple's privileged read, write, edit, image, shell, and backend web-tool implementations. Add privileged tools here rather than exposing an unmediated Goose tool path.
+- `apps/maple-research/frontend/src-tauri/src/agent/{shell_permission,web_permission,tool_context,web_tools}.rs`: automatic policy, secret-bearing execution context, public-URL admission, provenance, and output bounds.
+- `apps/maple-research/frontend/src-tauri/src/agent/system_prompt.rs`: the narrowly rebranded copy of the pinned Goose system prompt.
+- `apps/maple-research/frontend/src-tauri/src/agent_acp.rs`: ACP framing, Unix socket ownership, connection/session leases, caller-owned permissions, and adapter-specific environment allowlists.
 
 Put behavior in OpenSecret instead when it must be authoritative against a modified client, shared by multiple clients, durable across devices, or part of the public API, authentication, confidential-compute, model, provider, search, or extraction contract. Coordinate the open-source backend and the in-tree SDK under `sdk/` rather than emulating missing enforcement in Maple.
 
@@ -115,9 +115,9 @@ Put behavior in OpenSecret instead when it must be authoritative against a modif
 7. Inspect the final diff for secret logging, unbounded data, bypassed permissions, detached tasks, stale completion, cross-account access, and behavior that belongs in OpenSecret.
 
 For a Goose bump, obtain the exact revision from
-`frontend/src-tauri/Cargo.toml`, inspect that revision in a real git checkout,
-update `frontend/src-tauri/Cargo.lock`, and compare
-`frontend/src-tauri/src/agent/system_prompt.rs` byte-for-byte with the pinned
+`apps/maple-research/frontend/src-tauri/Cargo.toml`, inspect that revision in a real git checkout,
+update `apps/maple-research/frontend/src-tauri/Cargo.lock`, and compare
+`apps/maple-research/frontend/src-tauri/src/agent/system_prompt.rs` byte-for-byte with the pinned
 Goose `crates/goose/src/prompts/system.md`. Only Maple's two identity lines may
 differ. Re-run the prompt-drift test and every affected provider, permission,
 tool, MCP, session, and lifecycle test. Do not reason from an unversioned source
@@ -129,7 +129,7 @@ Run the smallest relevant frontend set without Bun's automatic dotenv loading:
 
 ```bash
 nix develop --no-update-lock-file .#ci -c bash -c \
-  'cd frontend && bun --no-env-file test ./src/components/AgentMode.test.ts'
+  'cd apps/maple-research/frontend && bun --no-env-file test ./src/components/AgentMode.test.ts'
 ```
 
 Add only the service tests matching the changed boundary, such as runtime/auth
@@ -140,7 +140,7 @@ Run Rust tests by affected module while iterating:
 
 ```bash
 nix develop --no-update-lock-file .#ci -c bash -c \
-  'cd frontend/src-tauri && cargo test --locked "agent::provider::tests::"'
+  'cd apps/maple-research/frontend/src-tauri && cargo test --locked "agent::provider::tests::"'
 ```
 
 Replace the example filter with the affected module and add adjacent filters
@@ -155,7 +155,7 @@ Use a local open-source OpenSecret backend or an explicitly configured
 development API. Use a disposable account and non-sensitive fixtures. In a
 standalone checkout, if remote rollout has not enabled Agent Mode for that
 account, set `VITE_FORCE_FEATURE_FLAGS=agent_mode` in the untracked
-`frontend/.env.local` and restart the frontend server. Do not edit an
+`apps/maple-research/frontend/.env.local` and restart the frontend server. Do not edit an
 externally managed environment file; use its owning environment's configuration
 path or report the scenario unavailable.
 
@@ -211,8 +211,8 @@ logout, app exit, authentication, and account isolation.
 
 After the applicable baseline coverage, add boundary-specific proof:
 
-- MCP: follow `docs/agent-mode-mcp.md` with its pinned Everything-server fixture over each affected transport; verify the unique marker through request, arguments, result, answer, disable, and failure paths.
-- ACP: follow `docs/agent-mode-acp.md`, but re-check the live Cargo pin and implementation first. Verify socket ownership, allowed-root rejection, caller-only permission routing, disconnect/cancel cleanup, and bounded overflow behavior with the actual client in scope.
+- MCP: follow `apps/maple-research/docs/agent-mode-mcp.md` with its pinned Everything-server fixture over each affected transport; verify the unique marker through request, arguments, result, answer, disable, and failure paths.
+- ACP: follow `apps/maple-research/docs/agent-mode-acp.md`, but re-check the live Cargo pin and implementation first. Verify socket ownership, allowed-root rejection, caller-only permission routing, disconnect/cancel cleanup, and bounded overflow behavior with the actual client in scope.
 - Provider or streaming: exercise first-byte failure, partial stream, cancellation, context-limit failure, and reload without exposing decrypted bodies.
 - Auth or lifecycle: exercise token refresh, logout during a run, account switch, restart, and app exit while inspecting only sanitized logs and exact owned processes.
 - Skills or project trust: test trusted and untrusted canonical roots, restart, removal, and account isolation.

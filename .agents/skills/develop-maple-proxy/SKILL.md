@@ -17,8 +17,8 @@ boundaries:
 - `proxy/Cargo.toml` consumes the in-tree OpenSecret Rust SDK at `../sdk/rust`
   with a registry version retained for Cargo publishing.
 - desktop Maple consumes `../../proxy` and `../../sdk/rust` from
-  `frontend/src-tauri/Cargo.toml`; iOS and Android do not compile the proxy.
-- `frontend/src-tauri/src/proxy.rs` owns Maple's account-scoped listener,
+  `apps/maple-research/frontend/src-tauri/Cargo.toml`; iOS and Android do not compile the proxy.
+- `apps/maple-research/frontend/src-tauri/src/proxy.rs` owns Maple's account-scoped listener,
   configuration, key storage, and lifecycle around the library. Do not move
   that application behavior into the reusable crate incidentally.
 

@@ -1264,7 +1264,7 @@ This implementation guide was developed by analyzing multiple sources across the
 
 ### 2. OpenSecret SDK Implementation
 - **Source**: the public OpenSecret SDK version pinned by
-  `frontend/package.json`
+  `apps/maple-research/frontend/package.json`
 - **Key Files**:
   - `src/lib/api.ts` - Core API functions including conversations/responses endpoints
   - `src/lib/ai.ts` - Custom fetch wrapper with encryption support
@@ -1279,10 +1279,10 @@ This implementation guide was developed by analyzing multiple sources across the
 ### 3. Current Maple Project Structure
 - **Directory**: this repository root
 - **Key Files**:
-  - `frontend/src/components/UnifiedChat.tsx` - Current monolithic chat component
-  - `frontend/src/components/Sidebar.tsx` - Existing sidebar using localStorage
-  - `docs/unified-chat-refactor.md` - Original refactor documentation
-  - `frontend/package.json` - Shows current dependencies (OpenAI v4.56.1)
+  - `apps/maple-research/frontend/src/components/UnifiedChat.tsx` - Current monolithic chat component
+  - `apps/maple-research/frontend/src/components/Sidebar.tsx` - Existing sidebar using localStorage
+  - `apps/maple-research/docs/unified-chat-refactor.md` - Original refactor documentation
+  - `apps/maple-research/frontend/package.json` - Shows current dependencies (OpenAI v4.56.1)
 - **Key Insights**:
   - Monolithic component design philosophy
   - Query parameter-based routing (no navigation)

@@ -9,9 +9,9 @@ Prove the behavior that changed. Treat automated checks, successful builds, and 
 
 ## Establish scope and identity
 
-1. Read `AGENTS.md`, the relevant source, nearby tests, and the applicable workflow or script before choosing commands.
+1. Read root `AGENTS.md` and `apps/maple-research/AGENTS.md`, the relevant source, nearby tests, and the applicable workflow or script before choosing commands.
 2. Inspect `git status`, the diff, and the base commit. Preserve unrelated user changes.
-3. Classify risk by behavior, not file path. Code under `frontend/src/` can invoke Tauri commands and require native validation even though PR change detection may classify it as web-only.
+3. Classify risk by behavior, not file path. Code under `apps/maple-research/frontend/src/` can invoke Tauri commands and require native validation even though PR change detection may classify it as web-only.
 4. Identify every boundary the change crosses: browser, Tauri IPC, Rust, local process, filesystem, keyring, OpenSecret API, configurable billing or feature-flag API endpoint, operating system, or packaged resource.
 5. Record the untested boundaries before running checks. Add proof as it is obtained.
 
@@ -42,7 +42,7 @@ Use for pure React, TypeScript, CSS, state, and browser behavior with no native 
 SDK work under `sdk/` has its own component checks. Load
 `$develop-opensecret-sdk`, run the applicable TypeScript or Rust SDK checks,
 and add the pinned local OpenSecret integration when the public protocol or
-backend compatibility changes. Maple's frontend consumes `file:../sdk`;
+backend compatibility changes. Maple's frontend consumes `file:../../../sdk`;
 desktop Maple and `proxy/` consume `sdk/rust` through local path dependencies.
 Rust SDK runtime changes therefore require proxy checks and desktop Maple
 coverage, while SDK tests/docs/examples and standalone lockfile changes remain
@@ -108,7 +108,7 @@ Run commands from the repository root unless the command changes directory expli
 
 ```bash
 nix develop --no-update-lock-file .#ci -c bash -lc \
-  'cd frontend && bun --no-env-file test ./src/path/to/changed.test.ts'
+  'cd apps/maple-research/frontend && bun --no-env-file test ./src/path/to/changed.test.ts'
 ```
 
 Use `--no-env-file` to disable Bun's automatic dotenv loading. Variables
@@ -120,7 +120,7 @@ already exported by the calling shell still apply.
 nix develop --no-update-lock-file .#ci -c ./scripts/ci/frontend.sh
 ```
 
-This script installs locked frontend dependencies and runs formatting, linting, typechecking, and Bun tests. It removes `frontend/node_modules` and ignores local `.env*` files while it runs. Commit or preserve relevant local work before invoking it. It does **not** build the application.
+This script installs locked frontend dependencies and runs formatting, linting, typechecking, and Bun tests. It removes `apps/maple-research/frontend/node_modules` and ignores local `.env*` files while it runs. Commit or preserve relevant local work before invoking it. It does **not** build the application.
 
 ### Web production build
 
@@ -130,13 +130,13 @@ MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/
 
 Use `pr` for contributor validation. Record the compiled OpenSecret, billing, and feature-flag endpoint configuration when those endpoints affect the scenario. A successful web build proves bundling, not browser behavior.
 
-To claim browser smoke for that artifact, serve the resulting `frontend/dist`
+To claim browser smoke for that artifact, serve the resulting `apps/maple-research/frontend/dist`
 with the checked-in preview command, then open that preview rather than the
 development server:
 
 ```bash
 nix develop --no-update-lock-file .#ci -c bash -lc \
-  'cd frontend && bun --no-env-file run preview'
+  'cd apps/maple-research/frontend && bun --no-env-file run preview'
 ```
 
 Record the preview origin, server PID and checkout, compiled endpoints, browser
@@ -202,7 +202,7 @@ Use these commands to mirror PR artifact builds. Then launch and smoke the resul
 These scripts deliberately hide local `.env*` files and compile fixed PR
 endpoint profiles. Their artifacts are PR packaging evidence; they do not prove
 that Maple works with the OpenSecret backend configured in
-`frontend/.env.local`.
+`apps/maple-research/frontend/.env.local`.
 
 ### macOS desktop
 
@@ -249,10 +249,10 @@ Preserve existing configuration. Create a local environment file only when it
 is absent:
 
 ```bash
-test -e frontend/.env.local || cp frontend/.env.example frontend/.env.local
+test -e apps/maple-research/frontend/.env.local || cp apps/maple-research/frontend/.env.example apps/maple-research/frontend/.env.local
 ```
 
-Never replace an existing `frontend/.env.local`; it may be externally managed
+Never replace an existing `apps/maple-research/frontend/.env.local`; it may be externally managed
 or contain checkout-specific endpoints and application identity. Start the
 selected OpenSecret backend by
 [its public repository guide](https://github.com/OpenSecretCloud/opensecret),
@@ -333,7 +333,7 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
   `$change-maple-agent-mode` for the proportional lifecycle matrix.
 - Confirm process and listener ownership before and after cancellation, logout,
   account switch, and app exit when those long-lived boundaries are affected.
-- For MCP, follow `docs/agent-mode-mcp.md`: use the pinned Everything server, send a unique marker, verify server request, arguments, result, and final answer, then disable or stop the server and verify a clear failure.
+- For MCP, follow `apps/maple-research/docs/agent-mode-mcp.md`: use the pinned Everything server, send a unique marker, verify server request, arguments, result, and final answer, then disable or stop the server and verify a clear failure.
 - Verify that stale sessions cannot cross account boundaries when session or
   account ownership changed.
 - Before local-proxy smoke, choose and verify an unused checkout-specific
@@ -355,7 +355,7 @@ Choose only scenarios relevant to the change, but cross every changed boundary.
 
 - Test a text PDF, scanned PDF, mixed PDF, malformed or locked input, and applicable size/page limits.
 - Exercise cold and warm model-cache paths when OCR behavior changes.
-- Run the ignored model-backed test only when its external model prerequisites are available, following `docs/pdf-ocr.md`; label it separately from the default Rust suite.
+- Run the ignored model-backed test only when its external model prerequisites are available, following `apps/maple-research/docs/pdf-ocr.md`; label it separately from the default Rust suite.
 - Verify cancellation and recovery from extraction failures through the exact app.
 
 ### Deep links and native services

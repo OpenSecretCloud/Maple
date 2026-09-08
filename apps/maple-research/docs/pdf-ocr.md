@@ -59,7 +59,7 @@ The MVP also caps each source image at 24 million pixels before PDFOxide decodes
 Provision the desktop runtime first, then run the ignored release-profile test with a real scanned PDF and the verified model pack:
 
 ```sh
-cd frontend/src-tauri
+cd apps/maple-research/frontend/src-tauri
 ./scripts/provide-macos-onnxruntime.sh # use the platform-equivalent provider
 
 ORT_DYLIB_PATH=/absolute/path/from/the/provider \

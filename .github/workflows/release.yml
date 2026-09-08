@@ -176,7 +176,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ${{ startsWith(matrix.platform, 'macos') && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
-          key: ${{ runner.os }}-sccache-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-release-
             ${{ runner.os }}-sccache-
@@ -215,8 +215,8 @@ jobs:
         run: |
           nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c ./scripts/ci/attestation-manifest.sh \
             desktop-release-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-final.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-*.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-${{ matrix.artifact_prefix }}-*.sha256
           cat desktop-release-artifacts.sha256
 
       - name: Attest desktop release artifacts
@@ -235,7 +235,7 @@ jobs:
           files=()
           while IFS= read -r -d '' file; do
             files+=("${file}")
-          done < <(find frontend/src-tauri/target -type f \( \
+          done < <(find apps/maple-research/frontend/src-tauri/target -type f \( \
             -name '*.dmg' -o \
             -name '*.app.tar.gz' -o \
             -name '*.app.tar.gz.sig' -o \
@@ -305,7 +305,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~\AppData\Local\Mozilla\sccache
-          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-windows-v0.16.0-rust-1.94.1-
 
@@ -360,9 +360,9 @@ jobs:
         run: |
           ./scripts/ci/attestation-manifest.sh \
             windows-release-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-windows-final.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-windows-signed-canonical.sha256 \
-            frontend/src-tauri/target/reproducibility/desktop-release-windows-runtime-dlls.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-windows-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-windows-signed-canonical.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-release-windows-runtime-dlls.sha256
           cat windows-release-artifacts.sha256
 
       - name: Attest Windows release artifacts
@@ -380,7 +380,7 @@ jobs:
           files=("${MAPLE_WINDOWS_SETUP_EXE_REL}" "${MAPLE_WINDOWS_SETUP_EXE_REL}.sig")
           while IFS= read -r -d '' file; do
             files+=("${file}")
-          done < <(find frontend/src-tauri -type f \( \
+          done < <(find apps/maple-research/frontend/src-tauri -type f \( \
             -path '*/target/reproducibility/desktop-release-windows-*.sha256' \
           \) -print0 | LC_ALL=C sort -z)
 
@@ -415,7 +415,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock', 'sdk/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('apps/maple-research/frontend/bun.lock', 'sdk/bun.lock') }}
 
       - name: Cache Gradle
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
@@ -423,7 +423,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('frontend/src-tauri/gen/android/**/*.gradle*', 'frontend/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles('apps/maple-research/frontend/src-tauri/gen/android/**/*.gradle*', 'apps/maple-research/frontend/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
@@ -431,7 +431,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-android-release-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-android-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-android-release-
             ${{ runner.os }}-sccache-
@@ -451,8 +451,8 @@ jobs:
         run: |
           nix develop --no-update-lock-file .#android -c ./scripts/ci/attestation-manifest.sh \
             android-release-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/android-release-final.sha256 \
-            frontend/src-tauri/target/reproducibility/android-release-*.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/android-release-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/android-release-*.sha256
           cat android-release-artifacts.sha256
 
       - name: Attest Android release artifacts
@@ -471,7 +471,7 @@ jobs:
           files=()
           while IFS= read -r -d '' file; do
             files+=("${file}")
-          done < <(find frontend/src-tauri -type f \( \
+          done < <(find apps/maple-research/frontend/src-tauri -type f \( \
             -name '*.apk' -o \
             -name '*.aab' -o \
             -path '*/reproducibility/android-release-*.sha256' \
@@ -529,7 +529,7 @@ jobs:
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # was v1
         with:
-          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('frontend/src-tauri/Cargo.lock') }}
+          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
             xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-
@@ -538,8 +538,8 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: |
-            frontend/src-tauri/onnxruntime-ios
-          key: release-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'frontend/src-tauri/scripts/canonicalize-static-archive.py', 'frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+            apps/maple-research/frontend/src-tauri/onnxruntime-ios
+          key: release-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
           restore-keys: |
             release-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
 
@@ -561,10 +561,10 @@ jobs:
         run: |
           nix develop --no-update-lock-file .#apple -c ./scripts/ci/attestation-manifest.sh \
             ios-release-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/ios-release-final.sha256 \
-            frontend/src-tauri/target/reproducibility/ios-release-*.sha256 \
-            frontend/src-tauri/target/reproducibility/ios-release-*.txt \
-            frontend/src-tauri/target/reproducibility/ios-onnxruntime-*.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-release-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-release-*.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-release-*.txt \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-onnxruntime-*.sha256
           cat ios-release-artifacts.sha256
 
       - name: Attest iOS release artifacts
@@ -583,7 +583,7 @@ jobs:
           files=()
           while IFS= read -r -d '' file; do
             files+=("${file}")
-          done < <(find frontend/src-tauri -type f \( \
+          done < <(find apps/maple-research/frontend/src-tauri -type f \( \
             -name '*.ipa' -o \
             -path '*/reproducibility/ios-release-*.sha256' -o \
             -path '*/reproducibility/ios-release-*.txt' -o \
@@ -621,7 +621,7 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock', 'sdk/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('apps/maple-research/frontend/bun.lock', 'sdk/bun.lock') }}
 
       - name: Build web artifact
         run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
@@ -629,14 +629,14 @@ jobs:
           MAPLE_WEB_ENVIRONMENT: release
 
       - name: Collect web release checksums
-        run: cat frontend/src-tauri/target/reproducibility/web-final.sha256
+        run: cat apps/maple-research/frontend/src-tauri/target/reproducibility/web-final.sha256
 
       - name: Attest web release artifact
         # Keep release uploads running if GitHub token policy rejects artifact attestation.
         continue-on-error: true
         uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # was v4
         with:
-          subject-checksums: frontend/src-tauri/target/reproducibility/web-final.sha256
+          subject-checksums: apps/maple-research/frontend/src-tauri/target/reproducibility/web-final.sha256
 
       - name: Upload web release artifact
         env:
@@ -645,8 +645,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "${RELEASE_TAG}" \
-            frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz \
-            frontend/src-tauri/target/reproducibility/web-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-web-dist.tar.gz \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/web-final.sha256 \
             --clobber
 
   build-proxy:
@@ -976,7 +976,7 @@ jobs:
         run: |
           nix develop --no-update-lock-file .#ci -c ./scripts/ci/attestation-manifest.sh \
             latest-json-artifacts.sha256 \
-            frontend/src-tauri/target/reproducibility/latest-json-final.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/latest-json-final.sha256
           cat latest-json-artifacts.sha256
 
       - name: Attest latest.json
@@ -993,7 +993,7 @@ jobs:
         run: |
           gh release upload "${RELEASE_TAG}" \
             latest.json \
-            frontend/src-tauri/target/reproducibility/latest-json-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/latest-json-final.sha256 \
             --clobber
 
   verify-release-artifacts:

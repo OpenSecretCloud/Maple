@@ -36,7 +36,7 @@ if ! command -v bun >/dev/null 2>&1; then
     NEEDS_TOOLCHAIN=1
 fi
 
-if echo "$STAGED_FILES" | grep -Eq '^frontend/src-tauri/.*\.(rs|toml|lock)$' \
+if echo "$STAGED_FILES" | grep -Eq '^apps/maple-research/frontend/src-tauri/.*\.(rs|toml|lock)$' \
     && ! command -v cargo >/dev/null 2>&1; then
     NEEDS_TOOLCHAIN=1
 fi
@@ -60,14 +60,14 @@ if [ "$NEEDS_TOOLCHAIN" -eq 1 ]; then
 fi
 
 # Navigate to frontend directory from repo root
-cd "$REPO_ROOT/frontend" || exit 1
+cd "$REPO_ROOT/apps/maple-research/frontend" || exit 1
 
 # Run prettier check
 echo "Checking code formatting with Prettier..."
 if ! bun run format:check; then
     echo ""
     echo "Error: Code formatting issues found! Please run 'bun run format' to fix formatting issues."
-    echo "Run 'cd frontend && bun run format:check' to see the formatting issues."
+    echo "Run 'cd apps/maple-research/frontend && bun run format:check' to see the formatting issues."
     exit 1
 fi
 
@@ -76,7 +76,7 @@ echo "Running bun build..."
 if ! bun run build; then
     echo ""
     echo "Error: Build failed! Please fix the build errors before committing."
-    echo "Run 'cd frontend && bun run build' to see the errors."
+    echo "Run 'cd apps/maple-research/frontend && bun run build' to see the errors."
     exit 1
 fi
 
@@ -85,18 +85,18 @@ echo "Running bun test..."
 if ! bun run test; then
     echo ""
     echo "Error: Unit tests failed! Please fix failing tests before committing."
-    echo "Run 'cd frontend && bun run test' to see the failures."
+    echo "Run 'cd apps/maple-research/frontend && bun run test' to see the failures."
     exit 1
 fi
 
 # Run Rust unit tests only when relevant Rust/Tauri files are staged
-if echo "$STAGED_FILES" | grep -Eq '^frontend/src-tauri/.*\.(rs|toml|lock)$'; then
+if echo "$STAGED_FILES" | grep -Eq '^apps/maple-research/frontend/src-tauri/.*\.(rs|toml|lock)$'; then
     echo "Running Rust unit tests..."
-    cd "$REPO_ROOT/frontend/src-tauri" || exit 1
+    cd "$REPO_ROOT/apps/maple-research/frontend/src-tauri" || exit 1
     if ! cargo test --locked --all-targets; then
         echo ""
         echo "Error: Rust tests failed! Please fix the test failures before committing."
-        echo "Run 'cd frontend/src-tauri && cargo test --locked --all-targets' to see the errors."
+        echo "Run 'cd apps/maple-research/frontend/src-tauri && cargo test --locked --all-targets' to see the errors."
         exit 1
     fi
 else

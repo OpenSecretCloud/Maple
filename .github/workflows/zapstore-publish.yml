@@ -20,8 +20,8 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: |
-            zapstore.yaml
-            frontend/src-tauri/icons/icon.png
+            apps/maple-research/zapstore.yaml
+            apps/maple-research/frontend/src-tauri/icons/icon.png
 
       - name: Download APK from release
         env:
@@ -35,7 +35,7 @@ jobs:
           echo "Downloading APK from release $RELEASE_TAG"
           gh release download "$RELEASE_TAG" \
             --pattern "app-universal-release.apk" \
-            --dir .
+            --dir apps/maple-research
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # was v5
@@ -119,7 +119,7 @@ jobs:
             zsp publish \
               --quiet \
               --commit "$COMMIT_SHA" \
-              zapstore.yaml 2>&1
+              apps/maple-research/zapstore.yaml 2>&1
           )"
           status=$?
           set -e

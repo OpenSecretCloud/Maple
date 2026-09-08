@@ -3,7 +3,7 @@
  * installable assets the same way the Maple marketing site does.
  */
 
-import repositoryMetadata from "../../../repo.meta.json";
+import repositoryMetadata from "../../../../../repo.meta.json";
 
 export const GITHUB_REPOSITORY = `${repositoryMetadata.github.owner}/${repositoryMetadata.github.repository}`;
 export const GITHUB_REPOSITORY_URL = `https://github.com/${GITHUB_REPOSITORY}`;
