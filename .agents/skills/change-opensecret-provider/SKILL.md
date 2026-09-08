@@ -10,6 +10,10 @@ capabilities; OpenSecret owns provider selection, credentials, transport,
 provider-model translation, request policy, response normalization, and usage
 attribution.
 
+Read the monorepo-root `AGENTS.md` and `services/opensecret/AGENTS.md`. Source
+and documentation paths below are relative to `services/opensecret/`; run
+backend commands there through its pinned Nix shell.
+
 ## Trace the live provider path
 
 Derive the current graph from source instead of copying provider or model

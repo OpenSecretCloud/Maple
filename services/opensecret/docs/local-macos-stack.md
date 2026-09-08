@@ -2,6 +2,9 @@
 
 This runbook covers OpenSecret with the native Continuum proxy and the
 in-process Tinfoil Rust SDK. It is separate from Linux/Nitro deployment.
+Run backend commands from `services/opensecret/` in the Maple monorepo. Preserve
+generated environment files, ports, and process ownership when a workspace
+manager already provides this stack; use that manager's lifecycle commands.
 
 ```text
 Continuum proxy   http://127.0.0.1:8092
@@ -15,12 +18,12 @@ OpenSecret process; there is no local Tinfoil sidecar or port.
 ## One-time setup
 
 ```sh
-git submodule update --init --recursive
+git -C ../.. submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
 install -d -m 700 .local/secrets
 touch .local/secrets/tinfoil_api_key .local/secrets/continuum_api_key
 chmod 600 .local/secrets/tinfoil_api_key .local/secrets/continuum_api_key
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c just build-local-proxies-macos
+  nix develop --no-write-lock-file '.?submodules=1' -c just build-local-proxies-macos
 ```
 
 Populate the credential files without printing their contents. The generated
@@ -41,13 +44,13 @@ Terminal 1:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c just run-continuum-proxy-macos
+  nix develop --no-write-lock-file '.?submodules=1' -c just run-continuum-proxy-macos
 ```
 
 Terminal 2:
 
 ```sh
-nix develop --no-update-lock-file -c just run-local-backend-macos
+nix develop --no-update-lock-file '.?submodules=1' -c just run-local-backend-macos
 ```
 
 Local backend logs are line-buffered on stdout. Follow that terminal, or the
@@ -57,7 +60,8 @@ The backend recipe selects the loopback Continuum base and reads the Tinfoil
 credential. Any other custom provider base is a credential boundary; derive
 URL and header behavior from current source before supplying credentials.
 
-In Maple, set its ignored local configuration to:
+In Maple, set `apps/maple-research/frontend/.env.local` (relative to the
+monorepo root) to use this backend, preserving other existing configuration:
 
 ```dotenv
 VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000

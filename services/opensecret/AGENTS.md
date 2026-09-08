@@ -1,8 +1,10 @@
 # OpenSecret agent guide
 
-This file applies to the whole repository. It contains durable project rules;
-task procedures live in `.agents/skills/`. Load the matching skill before doing
-specialized work.
+This file applies to `services/opensecret/` within the Maple monorepo, alongside
+the [root guide](../../AGENTS.md). It contains durable project rules; task
+procedures live in the root [`.agents/skills/`](../../.agents/skills/). Load the
+matching skill before doing specialized work. Paths below are relative to this
+component unless explicitly labeled as monorepo-root paths.
 
 ## Work safely
 
@@ -10,8 +12,9 @@ specialized work.
    editing. Preserve unrelated changes. For new work, prefer current
    `origin/master` unless the task names another base.
 2. Inspect submodule status during review. Initialize dependencies with
-   `git submodule update --init --recursive` when building, testing, or working
-   in their contents. Use the pinned Nix toolchain; do not install substitute
+   `git submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public`
+   from the monorepo root when building, testing, or working in their contents.
+   Use the component's pinned Nix toolchain; do not install substitute
    system toolchains merely to bypass the repository environment.
 3. Remember that `nix develop` has stateful PostgreSQL, `.env`, and Linux
    container hooks. Use `docs/dev-shell.md` for controls and give concurrent
@@ -23,8 +26,9 @@ specialized work.
    environment variables. Never commit `.env`, `.pgdata/`, `.local/`, provider
    captures, decrypted traffic, or secrets.
 
-This repository is one Rust package and binary, not a Cargo workspace. Run
-Cargo commands from the repository root.
+This component is one Rust package and binary, not a Cargo workspace. Run its
+Cargo, Nix, and `just` commands from `services/opensecret/`, using its own
+`flake.nix`, `flake.lock`, and `rust-toolchain.toml`.
 
 ## Ownership
 
@@ -137,15 +141,19 @@ or skipped tests, configured external services, and every unverified layer.
 ## Operator authority
 
 EIF/PCR parity is a release and deployment gate, not an ordinary development
-or pull-request gate. GitHub Actions still builds the development EIF on
-pull requests, but skips PCR comparison there. Master pushes and
-`workflow_dispatch` still verify PCR values against the checked-in
-references. Do not update PCR references as part of ordinary pull-request
-work. Treat an EIF build failure separately from PCR mismatch.
+or pull-request gate. The monorepo-root `opensecret-ci.yml` validates Rust,
+Nix checks and the default backend binary, and dependency policy;
+`sdk-integration.yml` exercises both in-tree SDKs against this backend.
+GitHub Actions does not build or publish EIFs or deploy the TEE service.
+Do not update PCR references as part of ordinary pull-request work. Treat an
+EIF build failure separately from PCR mismatch.
 
 Before publishing or deploying an authorized dev or prod EIF, build it on the
 supported Linux/ARM64 release builder, intentionally review its measurements,
 and complete the authorized reference, history, signing, and comparison work.
+Follow [manual PCR compatibility](docs/pcr-compatibility.md) to validate and
+copy the same signed files to `OpenSecretCloud/opensecret` for installed clients.
+Keep its existing raw URLs and the current SDK verification key intact.
 
 Require explicit authorization for changing PCR references or histories, KMS
 or IAM policy, shared or remote migrations, copying artifacts to hosts,

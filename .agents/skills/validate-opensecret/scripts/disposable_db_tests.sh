@@ -22,7 +22,12 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
+maple_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
+repo_root="$maple_root/services/opensecret"
+if [ ! -f "$repo_root/Cargo.toml" ] || [ ! -d "$repo_root/migrations" ]; then
+  printf 'OpenSecret component is missing at %s\n' "$repo_root" >&2
+  exit 1
+fi
 cd "$repo_root"
 
 for required_command in initdb pg_ctl psql createdb diesel cargo python3 openssl; do

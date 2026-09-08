@@ -18,13 +18,17 @@ current source and tests take precedence over historical design documents.
   app. Read `$develop-maple-proxy` and the proxy documentation.
 - `services/updates/`: the updater Worker. Preserve its deployed identity,
   public endpoints, installed-client compatibility, and verified metadata flow.
+- `services/opensecret/`: the OpenSecret Rust backend, including its pinned
+  toolchain, local operator recipes, and signed PCR files. Read its
+  [guide](services/opensecret/AGENTS.md) and `$develop-opensecret`.
 - `docs/`, `scripts/`, `.github/`, `.agents/`, `flake.nix`, `flake.lock`,
   `justfile`, and `repo.meta.json`: shared documentation, tooling, CI, and
   repository identity. Keep active workflows and discoverable skills at root.
 
-`services/opensecret/` is a planned import. OpenSecret's backend remains in
-its own repository. Do not infer a
-new runtime or deployment mechanism from a proposed directory layout.
+The backend import does not change TEE deployment or introduce EIF publication
+through GitHub Actions. Preserve the manual signed-PCR compatibility procedure
+in [the backend guide](services/opensecret/docs/pcr-compatibility.md) and the
+existing `OpenSecretCloud/opensecret` raw URLs used by installed clients.
 
 ## Start safely
 
@@ -88,6 +92,9 @@ runtime inputs affect Research frontend builds; Rust SDK and proxy runtime
 inputs affect desktop builds. Tests, docs, container-only inputs, and standalone
 component lockfiles retain their independent lanes. Update the classifier and
 its table-driven tests when the dependency graph or component layout changes.
+The backend has its own root `opensecret-ci.yml` workflow and change selector;
+`sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
+same checkout. Backend changes do not imply Research or Agent packaging.
 
 For Pages, read [the deployment guide](docs/pages-deployments.md). Preserve
 unprivileged preview builds and separate development/production profiles.
@@ -108,6 +115,11 @@ release work, and report the tag and commit before publishing.
 - `$develop-maple-agent`: GPUI Agent app, runtime, component CI and isolated launch.
 - `$develop-opensecret-sdk`: SDK implementation, backend compatibility,
   package-boundary validation, and publishing handoff.
+- `$develop-opensecret`: backend setup, local stack, migrations, and ownership.
+- `$change-opensecret-api`: backend HTTP and encrypted client contracts.
+- `$change-opensecret-provider`: provider routing, transport, and usage.
+- `$validate-opensecret`: backend Rust, database, client, and artifact evidence.
+- `$review-opensecret-security`: backend trust boundaries and evidence claims.
 - `$develop-maple-proxy`: proxy behavior, native/container builds, app dependency
   boundaries, and publishing handoff.
 - `$validate-maple`: CI parity, exact-app/full-stack smoke, and evidence reporting.

@@ -1,5 +1,8 @@
 # Development shell
 
+Run these commands from `services/opensecret/` in the Maple monorepo. The
+component retains its own `flake.nix`, `flake.lock`, and Rust toolchain.
+
 `nix develop` provides the pinned toolchain and manages optional local state.
 Before starting a cluster, its hook checks `localhost:$PGPORT`; if a server
 responds, that listener is reused even when it does not belong to this
@@ -21,7 +24,7 @@ For a pure check, disable every stateful hook and avoid changing the lockfile:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c cargo fmt --all -- --check
+  nix develop --no-write-lock-file '.?submodules=1' -c cargo fmt --all -- --check
 ```
 
 For concurrent live checkouts, choose distinct `PGDATA`, `PGSOCKETS`, `PGPORT`,

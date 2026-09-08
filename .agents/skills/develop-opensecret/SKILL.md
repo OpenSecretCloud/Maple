@@ -7,23 +7,30 @@ description: Set up and run the open-source OpenSecret Rust backend. Use when st
 
 ## Start safely
 
-Read `AGENTS.md`, inspect the worktree, and preserve unrelated changes. For new
-work, prefer current `origin/master` unless the task names another base.
-Initialize public submodules before building:
+Read the monorepo-root `AGENTS.md` and `services/opensecret/AGENTS.md`, inspect
+the worktree, and preserve unrelated changes. For new work, prefer current
+`origin/master` unless the task names another base. From the monorepo root,
+initialize public submodules and enter the backend component before building:
 
 ```sh
-git submodule update --init --recursive
+git submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
+cd services/opensecret
 ```
 
-Use the pinned Nix environment and run Cargo from the repository root; this is
-one Rust package. Keep deployment, shared migration, PCR mutation, signing, and
+Subsequent paths and commands in this skill are relative to
+`services/opensecret/` unless labeled otherwise. Use its pinned Nix environment
+and run Cargo from that component; it is one Rust package. Keep deployment,
+shared migration, PCR mutation, signing, and
 remote-enclave operations outside routine development unless the user
-authorizes the exact action and environment.
+authorizes the exact action and environment. Root `opensecret-ci.yml` and
+`sdk-integration.yml` own backend validation; they do not build or publish EIFs
+or deploy the TEE service. Follow `docs/pcr-compatibility.md` for the manual
+signed-PCR publication contract.
 
 ## Enter the toolchain deliberately
 
 ```sh
-OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file
+OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1'
 ```
 
 The shell may reuse a PostgreSQL listener, start `.pgdata`, and create `.env`
@@ -38,7 +45,7 @@ database.
 Run SQL migrations before starting the backend:
 
 ```sh
-OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file -c just diesel-migration-run-local
+OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1' -c just diesel-migration-run-local
 ```
 
 `src/migrations.rs` is application-data migration logic, not the Diesel runner.
@@ -46,7 +53,7 @@ For a schema change, create a new reversible migration and let Diesel regenerate
 `src/models/schema.rs`:
 
 ```sh
-OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file -c \
+OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1' -c \
   just diesel-migration-generate add_user_preferences
 ```
 
@@ -66,8 +73,10 @@ their URLs and backend-only credentials only when the task exercises their
 public outcomes; do not pull their server implementations into this setup.
 
 Plain `curl` is suitable for health probes, not protected-route proof. Use the
-SDK under a selected Maple checkout's `sdk/` directory or the corresponding
-pinned Maple application client for authenticated encrypted smoke tests.
+SDK in the monorepo-root `sdk/` directory or the corresponding Maple application
+client for authenticated encrypted smoke tests. Preserve externally managed
+environment files, service ports, and processes; use the owning workspace
+manager's lifecycle commands when it provides this stack.
 
 ## Follow ownership
 

@@ -9,6 +9,11 @@ Review the current source and diff as evidence. This skill defines a method; it
 does not catalogue current findings. Default to read-only review and implement
 changes only when the user asks.
 
+Read both the monorepo-root guide and `services/opensecret/AGENTS.md`. Backend
+source and documentation paths below are relative to `services/opensecret/`;
+Git comparison commands apply to the whole monorepo. Run backend validation
+commands from the component through its pinned Nix shell.
+
 ## Establish the comparison
 
 1. Read `AGENTS.md`, relevant source, tests, migrations, and public docs.
@@ -102,12 +107,11 @@ Apply these OpenSecret-specific invariants:
   Safe metadata is bounded and allowlisted.
 - A changed ciphertext format needs explicit versioning, compatibility,
   rollback, and access to the owning key; ordinary startup lacks user keys.
-- Shared protocol changes require coordinated review of the SDK source under a
-  selected Maple checkout's `sdk/` directory and the dependency actually
-  resolved by each affected Maple application path. Treat
-  `frontend/package.json` as authoritative for the TypeScript client; the Rust
-  client remains on its published crate until the coordinated proxy/Rust
-  switch.
+- Shared protocol changes require coordinated review of the monorepo-root
+  `sdk/` source and the dependency actually resolved by each affected Maple
+  application path. Treat `apps/maple-research/frontend/package.json` as
+  authoritative for the TypeScript client; Research desktop, the proxy, and
+  the GPUI prototype consume `sdk/rust` through versioned path dependencies.
 
 Use `$change-opensecret-api` or `$change-opensecret-provider` for the detailed
 contract procedure rather than duplicating it here.
@@ -127,9 +131,10 @@ Load `$validate-opensecret` and run the tiers reached by the diff. Report local,
 database, provider, client, build/artifact, and live evidence separately.
 
 Local artifact builds and read-only PCR comparison are validation when in
-scope. A green pull-request EIF build is not PCR evidence; GitHub Actions
-skips PCR comparison on pull requests and still verifies on master and
-`workflow_dispatch`. Require explicit authorization for PCR
+scope. Root backend CI validates Rust, Nix checks/default binary, and SDK
+compatibility; it does not build or publish EIFs or deploy the TEE service.
+Use `docs/pcr-compatibility.md` for manual signed-PCR validation and legacy
+publication. Require explicit authorization for PCR
 reference/history mutation, signing, KMS/IAM changes, shared or remote
 migrations, artifact transfer, enclave or remote-service lifecycle, secret
 writes, staging, deployment, or release actions. Inspect recipes before

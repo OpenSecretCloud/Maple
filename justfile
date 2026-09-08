@@ -221,3 +221,11 @@ agent-build:
 # For managed workspaces, use their bin/maple-agent launcher to load isolated state.
 agent-dev *ARGS:
     cd apps/maple-agent && nix develop --no-update-lock-file -c just run {{ARGS}}
+
+# Backend checks use its separate pinned toolchain, with stateful shell hooks off.
+opensecret-check:
+    cd services/opensecret && OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file -c bash -c 'set -euo pipefail; cargo fmt --check; cargo clippy --locked --all-targets --all-features -- -D warnings; cargo test --locked --all-features'
+
+# Offline validation only; does not build an EIF, sign, copy, or publish files.
+opensecret-pcr-check:
+    cd services/opensecret && OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file -c python3 scripts/pcr_compatibility.py check .

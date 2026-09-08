@@ -7,8 +7,12 @@ description: Validate OpenSecret changes with focused Rust tests, exact Rust CI 
 
 ## Select evidence from the diff
 
-Read `AGENTS.md`, inspect the complete worktree, and select the union of the
-applicable tiers. A higher tier supplements rather than replaces lower tiers.
+Read the monorepo-root `AGENTS.md` and `services/opensecret/AGENTS.md`, inspect
+the complete worktree, and select the union of the applicable tiers. A higher
+tier supplements rather than replaces lower tiers. Run commands from
+`services/opensecret/` through its own pinned Nix shell unless a command
+explicitly enters the monorepo root; backend paths below use that component
+as their base.
 
 | Change | Required evidence |
 | --- | --- |
@@ -30,7 +34,7 @@ Disable stateful shell hooks for pure checks. For example:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c \
+  nix develop --no-write-lock-file '.?submodules=1' -c \
   cargo test --locked --all-features provider_client::tests
 ```
 
@@ -40,21 +44,21 @@ not completion evidence.
 ## Tier 1: reproduce Rust CI
 
 Initialize submodules when building or testing, then run the exact inner gates
-from `.github/workflows/rust.yml` through the pinned, side-effect-disabled Nix
-environment:
+from monorepo-root `.github/workflows/opensecret-ci.yml` through the pinned,
+side-effect-disabled component Nix environment:
 
 ```sh
-git submodule update --init --recursive
+git -C ../.. submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
 
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c cargo fmt --all -- --check
+  nix develop --no-write-lock-file '.?submodules=1' -c cargo fmt --all -- --check
 
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c env RUSTFLAGS='-D warnings' \
+  nix develop --no-write-lock-file '.?submodules=1' -c env RUSTFLAGS='-D warnings' \
   cargo clippy --locked --all-targets --all-features -- -D warnings
 
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c env RUSTFLAGS='-D warnings' \
+  nix develop --no-write-lock-file '.?submodules=1' -c env RUSTFLAGS='-D warnings' \
   cargo test --locked --all-features
 ```
 
@@ -66,7 +70,7 @@ lockfile, and warning policy.
 ## Tier 2: prove migrations and database-backed tests
 
 For persistence changes that do not add a migration, run the bundled helper
-from the repository root. It disables the default shell hooks, creates an
+from the backend component. It disables the default shell hooks, creates an
 isolated loopback PostgreSQL cluster and database, verifies their identity and
 empty schema, runs the full migration chain, discovers the selected ignored-test
 counts, runs each subset serially with visible output, fails on a skip or count
@@ -74,8 +78,8 @@ mismatch, and cleans only its guarded temporary data directory:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c bash \
-  ./.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh
+  nix develop --no-write-lock-file '.?submodules=1' -c bash \
+  ../../.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh
 ```
 
 When the diff adds a new, unreleased latest reversible migration, use
@@ -84,8 +88,8 @@ latest down/up cycle inside that disposable lifecycle:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c bash \
-  ./.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh --redo-latest
+  nix develop --no-write-lock-file '.?submodules=1' -c bash \
+  ../../.agents/skills/validate-opensecret/scripts/disposable_db_tests.sh --redo-latest
 ```
 
 The helper proves an empty-database migration and the selected local synthetic
@@ -107,7 +111,7 @@ source and run:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c cargo test --locked --all-features \
+  nix develop --no-write-lock-file '.?submodules=1' -c cargo test --locked --all-features \
   provider_client::tests::live_tinfoil_models_and_completions_match_the_legacy_api_contract \
   -- --ignored --exact
 ```
@@ -130,8 +134,8 @@ The first is process liveness; the second checks Tinfoil model connectivity.
 Neither proves PostgreSQL, auth, encryption, persistence, routing, billing,
 flags, or a user flow.
 
-Exercise protected routes through the SDK under a selected Maple checkout's
-`sdk/` directory or through the corresponding pinned Maple application client:
+Exercise protected routes through the monorepo-root `sdk/` directory or through
+the corresponding Maple application client:
 
 1. Start an isolated migrated backend with the authorized external services.
 2. Exercise the exact changed success and failure paths with route-appropriate
@@ -141,15 +145,15 @@ Exercise protected routes through the SDK under a selected Maple checkout's
    usage when promised, and one terminal condition.
 5. Inspect bounded logs for accidental sensitive content.
 
-In the selected Maple revision, follow its checked-in `AGENTS.md` and matching
-SDK or application validation skill when present. Otherwise derive commands
-from that revision's repository-native docs and build metadata. Read
-`frontend/package.json` to determine whether the browser client consumes a
-published TypeScript version or the in-tree `file:../sdk` package. The native
-path remains on the Rust crate pinned in `frontend/src-tauri/Cargo.toml` until
-the coordinated proxy/Rust switch. Test browser Research and native Agent paths
-independently when both consume the change. An unavailable client checkout
-leaves that layer unverified.
+Follow the matching SDK and application validation skills. The monorepo-root
+`apps/maple-research/frontend/package.json` resolves the browser's in-tree
+`file:../../../sdk` dependency. Research desktop, the proxy, and the GPUI
+prototype consume `sdk/rust` through versioned path dependencies in their
+component `Cargo.toml` files. Root `sdk-integration.yml` runs both SDKs against
+the backend in the same checkout with disposable PostgreSQL and loopback
+configuration. That deterministic gate does not prove an application or live
+provider flow. Test browser Research and affected native paths independently;
+an unavailable client runtime leaves that layer unverified.
 
 Configure billing or feature-flag API URLs/keys only when their public backend
 outcome is in scope. Treat them as external HTTP dependencies and test the
@@ -160,20 +164,18 @@ changed success, denial, timeout, and unavailable behavior.
 For current-host flake or packaging changes:
 
 ```sh
-nix flake show --all-systems --no-write-lock-file
-nix flake check --no-write-lock-file --print-build-logs
-nix build --no-link --no-write-lock-file .#default
+nix flake show --all-systems --no-write-lock-file '.?submodules=1'
+nix flake check --no-write-lock-file --print-build-logs '.?submodules=1'
+nix build --no-link --no-write-lock-file '.?submodules=1#default'
 ```
 
 EIF construction, PCR comparison, and reference/history updates are
-release-only work. The Nix Reproducible Builds workflow builds the
-development EIF on pull requests but skips PCR comparison there. Master
-pushes and `workflow_dispatch` still compare against checked-in
-references. Ordinary pull-request completion does not update PCR
-references. If a master or release build succeeds and then fails only
-PCR comparison, treat that as deferred release work and do not copy or
-sign CI values just to make the job green. Treat an EIF build failure
-separately.
+release-only work. Root backend CI runs applicable Nix checks and builds the
+default backend binary; it does not build or publish EIFs or deploy the TEE
+service. Ordinary pull-request completion does not update PCR references.
+Do not copy or sign values just to clear a validation failure; distinguish an
+EIF build failure from a PCR mismatch. Use `docs/pcr-compatibility.md` for the
+offline signed-history validation and manual legacy-publication procedure.
 
 Immediately before an authorized dev or prod publish/deployment, use the
 supported Linux/ARM64 release builder and the operator runbook in

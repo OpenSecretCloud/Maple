@@ -9,6 +9,11 @@ Treat OpenSecret, released SDKs, and affected Maple paths as one versioned
 protocol. Preserve existing public behavior unless the task deliberately
 changes it.
 
+Read the monorepo-root `AGENTS.md` and `services/opensecret/AGENTS.md`. Backend
+source paths below are relative to `services/opensecret/`; run backend commands
+there through its pinned Nix shell. Consumer paths in the coordination section
+are relative to the monorepo root.
+
 Normative rules in this skill govern new or changed code; they do not certify
 untouched paths. Re-confirm current behavior from source and tests. If an
 unrelated path conflicts with a rule, keep that observation task-local and do
@@ -85,13 +90,12 @@ at those points.
 
 ## Coordinate pinned consumers
 
-Resolve one current Maple checkout: the OpenSecret SDK source is under its
-`sdk/` directory, while the Maple application consumers remain under
-`frontend/`. Search from the Maple root without hiding errors and follow its
-checked-in `AGENTS.md` and applicable skills. If a Maple checkout or an affected
-consumer is unavailable, report compatibility as unverified rather than
-falling back to the retired standalone SDK repository or claiming there are no
-consumers.
+Use the same Maple checkout: SDK source lives under `sdk/`, Research consumers
+under `apps/maple-research/frontend/`, and the GPUI prototype under
+`apps/maple-agent/`. Search from the monorepo root without hiding errors and
+follow each component's guide and applicable skills. If an affected consumer
+cannot be exercised, report compatibility as unverified rather than falling
+back to the retired standalone SDK repository or claiming there are no consumers.
 
 Maple's browser Research path uses Responses/Conversations through the
 TypeScript client, while native Agent Mode uses chat completions through the
@@ -100,11 +104,11 @@ not one shared wire-field edit. Trace request construction, provider handoff,
 persistence, and usage in each affected path.
 
 Use the SDK source and application dependency resolutions recorded by the
-selected Maple revision. `frontend/package.json` is authoritative for whether
-the browser client consumes a published TypeScript version or the in-tree
-`file:../sdk` package. The native client continues to consume the published
-Rust crate pinned in `frontend/src-tauri/Cargo.toml` until the proxy and Rust
-consumers switch together. Update SDK types, custom-fetch adaptation, native
+selected Maple revision. `apps/maple-research/frontend/package.json` is
+authoritative for the browser client's in-tree `file:../../../sdk` dependency.
+Research desktop, the proxy, and the GPUI prototype consume `sdk/rust` through
+versioned path dependencies in their component `Cargo.toml` files. Update SDK
+types, custom-fetch adaptation, native
 transport allowlists, call sites, mocks, and fixtures only where the contract
 reaches them. Test old-client/new-server and new-client/old-server behavior.
 Prefer server-first rollout for compatible additions; use an explicit

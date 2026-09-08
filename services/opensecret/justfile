@@ -613,6 +613,11 @@ generate-pcr-keys:
     # Generate the keys using the Node.js script
     ./pcr_sign.js generate-keys
 
+# Validate checked-in references and histories against the SDK's pinned public key.
+# Read-only: no EIF build, signing key, publication, or deployment is involved.
+check-pcr-compatibility:
+    python3 scripts/pcr_compatibility.py check .
+
 # Verify signatures in a PCR history file using the SIGNING_PUBLIC_KEY environment variable
 verify-pcr-history env:
     #!/usr/bin/env bash

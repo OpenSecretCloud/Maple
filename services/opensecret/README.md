@@ -1,7 +1,8 @@
 # OpenSecret
 
 OpenSecret is the open-source Rust backend for confidential AI applications
-such as [Maple](https://github.com/OpenSecretCloud/Maple). It owns
+such as [Maple](https://github.com/MaplePrivacyLabs/Maple). Its source lives in
+`services/opensecret/` within the Maple monorepo. It owns
 authentication, encrypted client sessions and persistence, provider routing,
 usage accounting, and OpenAI-shaped/Responses APIs carried inside the
 OpenSecret encrypted transport.
@@ -13,8 +14,9 @@ deployed environment.
 
 ## Local quick start
 
-The Nix flake pins the Rust toolchain, PostgreSQL, Diesel, native libraries, and
-provider dependencies.
+The component's own Nix flake pins the Rust toolchain, PostgreSQL, Diesel,
+native libraries, and provider dependencies. Run the following setup from the
+monorepo root; subsequent backend commands run from `services/opensecret/`.
 
 Before running migrations, confirm that the PostgreSQL listener and database
 belong to this checkout. The development shell may reuse any listener answering
@@ -24,8 +26,9 @@ container setup changes user-level state unless disabled. See
 [`docs/dev-shell.md`](docs/dev-shell.md) for controls.
 
 ```sh
-git submodule update --init --recursive
-OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file
+git submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
+cd services/opensecret
+OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1'
 just diesel-migration-run-local
 ```
 
@@ -54,7 +57,7 @@ health probes.
 
 Contributor and coding-agent standards live in [`AGENTS.md`](AGENTS.md).
 Task-specific development, API, provider, security, and validation workflows
-live under [`.agents/skills/`](.agents/skills/).
+live under the monorepo-root [`.agents/skills/`](../../.agents/skills/).
 
 ## Validation
 
@@ -64,17 +67,17 @@ services:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c cargo fmt --all -- --check
+  nix develop --no-write-lock-file '.?submodules=1' -c cargo fmt --all -- --check
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c env RUSTFLAGS='-D warnings' \
+  nix develop --no-write-lock-file '.?submodules=1' -c env RUSTFLAGS='-D warnings' \
   cargo clippy --locked --all-targets --all-features -- -D warnings
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
-  nix develop --no-write-lock-file -c env RUSTFLAGS='-D warnings' \
+  nix develop --no-write-lock-file '.?submodules=1' -c env RUSTFLAGS='-D warnings' \
   cargo test --locked --all-features
 ```
 
 Default CI does not run ignored database or live-provider tests. Use the
-[`validate-opensecret`](.agents/skills/validate-opensecret/SKILL.md) workflow
+[`validate-opensecret`](../../.agents/skills/validate-opensecret/SKILL.md) workflow
 for disposable PostgreSQL tests, authorized provider checks, encrypted-client
 smoke tests, Nix checks, and release-only EIF/PCR evidence. Report those layers
 separately.
@@ -85,13 +88,21 @@ The supported EIF outputs are `eif-dev`, `eif-preview`, and `eif-prod`, built
 with the repository's Nix flake on the appropriate Linux/ARM environment. Build,
 PCR comparison, deployment, and live trust verification are distinct evidence.
 
-Routine pull requests do not require EIF/PCR parity. The Nix Reproducible
-Builds workflow still builds the development EIF on pull requests, but skips
-PCR comparison there. Master pushes and manual `workflow_dispatch` still
-verify PCR values against the checked-in references. Before an authorized
-dev or prod publish/deployment, use the supported Linux/ARM64 release
-builder to review and deliberately update/verify the target measurements;
-never update checked-in PCRs solely to clear ordinary pull-request CI.
+The monorepo-root [`opensecret-ci.yml`](../../.github/workflows/opensecret-ci.yml)
+validates Rust, Nix checks and the default backend binary, and dependency policy.
+[`sdk-integration.yml`](../../.github/workflows/sdk-integration.yml) exercises
+both SDKs against the backend in the same checkout. These workflows do not
+build or publish EIFs or deploy the TEE service. Before an authorized dev or
+prod publish/deployment, use the supported Linux/ARM64 release builder to review
+and deliberately update/verify the target measurements; never update checked-in
+PCRs solely to clear ordinary pull-request CI.
+
+The PCR files retain their existing names and signed format. Follow
+[`docs/pcr-compatibility.md`](docs/pcr-compatibility.md) for validation and manual
+publication of identical bytes to the legacy `OpenSecretCloud/opensecret`
+repository. Its existing raw URLs keep installed clients working; SDK URL
+changes require a separate, verified cutover after the new canonical files
+are available on Maple's master branch.
 
 See [`docs/nitro-deploy.md`](docs/nitro-deploy.md) for operator procedures.
 Changing PCR references or KMS policy, copying artifacts, starting or stopping

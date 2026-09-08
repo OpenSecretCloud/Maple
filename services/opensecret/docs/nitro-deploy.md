@@ -1,5 +1,11 @@
 # Deploy on Nitro
 
+This operator runbook remains manual. Run repository-local build and `just`
+commands from `services/opensecret/` in the Maple monorepo using its pinned Nix
+flake. The root GitHub workflows do not build or publish EIFs or deploy this
+service. For authorized signed-PCR updates and legacy client compatibility,
+follow [the PCR publication procedure](pcr-compatibility.md).
+
 ## Log into AWS CLI 
 
 This should be after creating an IAM profile with admin access. 

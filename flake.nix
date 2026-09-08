@@ -705,6 +705,26 @@
             cd "$src"
             python3 scripts/ci/test_change_detection.py
             python3 scripts/ci/test_agent_change_detection.py
+            python3 scripts/ci/test_opensecret_change_detection.py
+            touch "$out"
+          '';
+
+          opensecret-workflows = pkgs.runCommand "maple-opensecret-workflow-check" {
+            nativeBuildInputs = with pkgs; [ bash git python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_opensecret_workflows.py
+            touch "$out"
+          '';
+
+          pcr-compatibility = pkgs.runCommand "maple-pcr-compatibility-check" {
+            nativeBuildInputs = [ pkgs.git (pkgs.python3.withPackages (ps: [ ps.cryptography ])) ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 services/opensecret/scripts/test_pcr_compatibility.py
+            python3 services/opensecret/scripts/pcr_compatibility.py check services/opensecret
             touch "$out"
           '';
 
