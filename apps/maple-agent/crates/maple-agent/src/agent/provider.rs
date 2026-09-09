@@ -14,7 +14,7 @@ use goose_providers::retry::{
     DEFAULT_BACKOFF_MULTIPLIER, DEFAULT_INITIAL_RETRY_INTERVAL_MS, DEFAULT_MAX_RETRY_INTERVAL_MS,
     RetryConfig, should_retry,
 };
-use opensecret::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
+use maple_sdk::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
 use rmcp::model::Tool;
 use serde_json::{Value, json};
 use std::cell::Cell;
@@ -134,7 +134,7 @@ pub(crate) trait MapleInferenceTransport: Send + Sync {
         self: Arc<Self>,
         request: InferenceRequest,
         cancel_token: CancellationToken,
-    ) -> opensecret::Result<InferenceResponse>;
+    ) -> maple_sdk::Result<InferenceResponse>;
 }
 
 /// A direct SDK client is also a valid transport. Maple's account-scoped auth
@@ -146,11 +146,11 @@ impl MapleInferenceTransport for OpenSecretClient {
         self: Arc<Self>,
         request: InferenceRequest,
         cancel_token: CancellationToken,
-    ) -> opensecret::Result<InferenceResponse> {
+    ) -> maple_sdk::Result<InferenceResponse> {
         tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
-                Err(opensecret::Error::Other("Inference request was cancelled".to_string()))
+                Err(maple_sdk::Error::Other("Inference request was cancelled".to_string()))
             }
             response = OpenSecretClient::send_inference_request(&self, request) => response,
         }
@@ -899,7 +899,7 @@ fn is_context_length_exceeded_message(text: &str) -> bool {
     mentions_prompt_input_tokens && mentions_limit && mentions_overflow
 }
 
-fn map_opensecret_error(error: opensecret::Error) -> ProviderError {
+fn map_opensecret_error(error: maple_sdk::Error) -> ProviderError {
     log::warn!(
         "OpenSecret inference transport failed ({})",
         opensecret_error_category(&error)
@@ -907,50 +907,50 @@ fn map_opensecret_error(error: opensecret::Error) -> ProviderError {
     map_opensecret_error_kind(error)
 }
 
-fn map_opensecret_error_kind(error: opensecret::Error) -> ProviderError {
+fn map_opensecret_error_kind(error: maple_sdk::Error) -> ProviderError {
     match error {
-        opensecret::Error::Authentication(_) | opensecret::Error::Api { status: 401, .. } => {
+        maple_sdk::Error::Authentication(_) | maple_sdk::Error::Api { status: 401, .. } => {
             ProviderError::Authentication(AUTHENTICATION_ERROR_MESSAGE.to_string())
         }
-        opensecret::Error::Api {
+        maple_sdk::Error::Api {
             status: 402,
             message: _,
         } => ProviderError::CreditsExhausted {
             details: "Maple credits are exhausted".to_string(),
             top_up_url: None,
         },
-        opensecret::Error::Api {
+        maple_sdk::Error::Api {
             status: 413,
             message: _,
         } => ProviderError::ContextLengthExceeded(
             "The Maple request exceeds the model's context window".to_string(),
         ),
-        opensecret::Error::Api {
+        maple_sdk::Error::Api {
             status: 400,
             message,
         } if is_context_length_exceeded_message(&message) => ProviderError::ContextLengthExceeded(
             "The Maple request exceeds the model's context window".to_string(),
         ),
-        opensecret::Error::Api {
+        maple_sdk::Error::Api {
             status: 429,
             message: _,
         } => ProviderError::RateLimitExceeded {
             details: "Maple rate limit exceeded".to_string(),
             retry_delay: None,
         },
-        opensecret::Error::Api { status, message: _ } if (500..=599).contains(&status) => {
+        maple_sdk::Error::Api { status, message: _ } if (500..=599).contains(&status) => {
             ProviderError::ServerError(format!("Maple's server returned status {status}"))
         }
-        opensecret::Error::Api {
+        maple_sdk::Error::Api {
             status: 404,
             message: _,
         } => ProviderError::EndpointNotFound(
             "The Maple inference endpoint was not found".to_string(),
         ),
-        opensecret::Error::Api { status, message: _ } => {
+        maple_sdk::Error::Api { status, message: _ } => {
             ProviderError::RequestFailed(format!("Maple request failed with status {status}"))
         }
-        opensecret::Error::Http(error) => {
+        maple_sdk::Error::Http(error) => {
             if error.is_timeout() {
                 ProviderError::NetworkError("The Maple request timed out".to_string())
             } else if error.is_connect() {
@@ -959,30 +959,30 @@ fn map_opensecret_error_kind(error: opensecret::Error) -> ProviderError {
                 ProviderError::NetworkError("The Maple network request failed".to_string())
             }
         }
-        opensecret::Error::AttestationVerificationFailed(_) => {
+        maple_sdk::Error::AttestationVerificationFailed(_) => {
             ProviderError::ExecutionError(ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string())
         }
-        opensecret::Error::Session(_)
-        | opensecret::Error::KeyExchange(_)
-        | opensecret::Error::Encryption(_)
-        | opensecret::Error::Decryption(_)
-        | opensecret::Error::InvalidResponse(_)
-        | opensecret::Error::Crypto(_)
-        | opensecret::Error::Cbor(_)
-        | opensecret::Error::Io(_)
-        | opensecret::Error::Utf8(_)
-        | opensecret::Error::Base64Decode(_) => {
+        maple_sdk::Error::Session(_)
+        | maple_sdk::Error::KeyExchange(_)
+        | maple_sdk::Error::Encryption(_)
+        | maple_sdk::Error::Decryption(_)
+        | maple_sdk::Error::InvalidResponse(_)
+        | maple_sdk::Error::Crypto(_)
+        | maple_sdk::Error::Cbor(_)
+        | maple_sdk::Error::Io(_)
+        | maple_sdk::Error::Utf8(_)
+        | maple_sdk::Error::Base64Decode(_) => {
             ProviderError::ExecutionError(SECURE_CONNECTION_ERROR_MESSAGE.to_string())
         }
-        opensecret::Error::Serialization(_)
-        | opensecret::Error::Configuration(_)
-        | opensecret::Error::Other(_) => ProviderError::ExecutionError(
+        maple_sdk::Error::Serialization(_)
+        | maple_sdk::Error::Configuration(_)
+        | maple_sdk::Error::Other(_) => ProviderError::ExecutionError(
             "Maple could not prepare the encrypted request".to_string(),
         ),
     }
 }
 
-fn map_response_stream_error(error: opensecret::Error) -> std::io::Error {
+fn map_response_stream_error(error: maple_sdk::Error) -> std::io::Error {
     log::warn!(
         "Failed to read encrypted Maple response stream ({})",
         opensecret_error_category(&error)
@@ -1006,25 +1006,25 @@ fn secure_connection_stream_error(error: &anyhow::Error) -> Option<ProviderError
     })
 }
 
-pub(crate) fn opensecret_error_category(error: &opensecret::Error) -> &'static str {
+pub(crate) fn opensecret_error_category(error: &maple_sdk::Error) -> &'static str {
     match error {
-        opensecret::Error::Http(_) => "http",
-        opensecret::Error::Serialization(_) => "serialization",
-        opensecret::Error::Cbor(_) => "cbor",
-        opensecret::Error::Crypto(_) => "crypto",
-        opensecret::Error::AttestationVerificationFailed(_) => "attestation",
-        opensecret::Error::Session(_) => "session",
-        opensecret::Error::KeyExchange(_) => "key_exchange",
-        opensecret::Error::Encryption(_) => "encryption",
-        opensecret::Error::Decryption(_) => "decryption",
-        opensecret::Error::Authentication(_) => "authentication",
-        opensecret::Error::InvalidResponse(_) => "invalid_response",
-        opensecret::Error::Api { .. } => "api",
-        opensecret::Error::Configuration(_) => "configuration",
-        opensecret::Error::Io(_) => "io",
-        opensecret::Error::Utf8(_) => "utf8",
-        opensecret::Error::Base64Decode(_) => "base64",
-        opensecret::Error::Other(_) => "other",
+        maple_sdk::Error::Http(_) => "http",
+        maple_sdk::Error::Serialization(_) => "serialization",
+        maple_sdk::Error::Cbor(_) => "cbor",
+        maple_sdk::Error::Crypto(_) => "crypto",
+        maple_sdk::Error::AttestationVerificationFailed(_) => "attestation",
+        maple_sdk::Error::Session(_) => "session",
+        maple_sdk::Error::KeyExchange(_) => "key_exchange",
+        maple_sdk::Error::Encryption(_) => "encryption",
+        maple_sdk::Error::Decryption(_) => "decryption",
+        maple_sdk::Error::Authentication(_) => "authentication",
+        maple_sdk::Error::InvalidResponse(_) => "invalid_response",
+        maple_sdk::Error::Api { .. } => "api",
+        maple_sdk::Error::Configuration(_) => "configuration",
+        maple_sdk::Error::Io(_) => "io",
+        maple_sdk::Error::Utf8(_) => "utf8",
+        maple_sdk::Error::Base64Decode(_) => "base64",
+        maple_sdk::Error::Other(_) => "other",
     }
 }
 
@@ -1049,7 +1049,7 @@ mod tests {
 
     struct FakeTransport {
         requests: Mutex<Vec<CapturedRequest>>,
-        responses: Mutex<VecDeque<opensecret::Result<InferenceResponse>>>,
+        responses: Mutex<VecDeque<maple_sdk::Result<InferenceResponse>>>,
         request_notify: Notify,
     }
 
@@ -1061,9 +1061,9 @@ mod tests {
             self: Arc<Self>,
             _request: InferenceRequest,
             cancel_token: CancellationToken,
-        ) -> opensecret::Result<InferenceResponse> {
+        ) -> maple_sdk::Result<InferenceResponse> {
             cancel_token.cancelled().await;
-            Err(opensecret::Error::Other(
+            Err(maple_sdk::Error::Other(
                 "Pending transport was cancelled".to_string(),
             ))
         }
@@ -1082,7 +1082,7 @@ mod tests {
             Self::with_results(responses.into_iter().map(Ok).collect())
         }
 
-        fn with_results(responses: Vec<opensecret::Result<InferenceResponse>>) -> Self {
+        fn with_results(responses: Vec<maple_sdk::Result<InferenceResponse>>) -> Self {
             Self {
                 requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses.into()),
@@ -1115,7 +1115,7 @@ mod tests {
             self: Arc<Self>,
             request: InferenceRequest,
             _cancel_token: CancellationToken,
-        ) -> opensecret::Result<InferenceResponse> {
+        ) -> maple_sdk::Result<InferenceResponse> {
             let (parts, body) = request.into_parts();
             let captured = CapturedRequest {
                 method: parts.method.to_string(),
@@ -1140,7 +1140,7 @@ mod tests {
 
     fn response_with_items(
         status: u16,
-        items: Vec<opensecret::Result<Vec<u8>>>,
+        items: Vec<maple_sdk::Result<Vec<u8>>>,
         retry_after: Option<&str>,
     ) -> InferenceResponse {
         let body: OpenSecretResponseBody = Box::pin(futures_util::stream::iter(
@@ -1881,7 +1881,7 @@ mod tests {
             200,
             vec![
                 Ok(first_chunk),
-                Err(opensecret::Error::InvalidResponse(
+                Err(maple_sdk::Error::InvalidResponse(
                     "private post-item stream failure".to_string(),
                 )),
             ],
@@ -1941,7 +1941,7 @@ mod tests {
             200,
             vec![
                 Ok(usage_chunk),
-                Err(opensecret::Error::InvalidResponse(
+                Err(maple_sdk::Error::InvalidResponse(
                     "private post-usage stream failure".to_string(),
                 )),
             ],
@@ -2099,7 +2099,7 @@ mod tests {
             200,
             vec![
                 Ok(complete_tool_call_event()),
-                Err(opensecret::Error::InvalidResponse(
+                Err(maple_sdk::Error::InvalidResponse(
                     "private completed tool stream failure".to_string(),
                 )),
             ],
@@ -2255,7 +2255,7 @@ mod tests {
         let retry_config = fast_retry_config(3);
         let errors = [
             map_http_error(http::StatusCode::FORBIDDEN, None),
-            map_opensecret_error(opensecret::Error::Api {
+            map_opensecret_error(maple_sdk::Error::Api {
                 status: 403,
                 message: "private plan detail".to_string(),
             }),
@@ -2323,18 +2323,18 @@ mod tests {
     fn secure_connection_sdk_errors_are_fixed_and_non_transient() {
         let retry_config = fast_retry_config(3);
         let errors = vec![
-            opensecret::Error::Session("private session detail".to_string()),
-            opensecret::Error::KeyExchange("private key detail".to_string()),
-            opensecret::Error::Encryption("private encryption detail".to_string()),
-            opensecret::Error::Decryption("private decryption detail".to_string()),
-            opensecret::Error::InvalidResponse("private response detail".to_string()),
-            opensecret::Error::Crypto("private crypto detail".to_string()),
-            opensecret::Error::Cbor("private cbor detail".to_string()),
-            opensecret::Error::Io(std::io::Error::other("private io detail")),
-            opensecret::Error::Utf8(
+            maple_sdk::Error::Session("private session detail".to_string()),
+            maple_sdk::Error::KeyExchange("private key detail".to_string()),
+            maple_sdk::Error::Encryption("private encryption detail".to_string()),
+            maple_sdk::Error::Decryption("private decryption detail".to_string()),
+            maple_sdk::Error::InvalidResponse("private response detail".to_string()),
+            maple_sdk::Error::Crypto("private crypto detail".to_string()),
+            maple_sdk::Error::Cbor("private cbor detail".to_string()),
+            maple_sdk::Error::Io(std::io::Error::other("private io detail")),
+            maple_sdk::Error::Utf8(
                 String::from_utf8(vec![0xff]).expect_err("invalid UTF-8 fixture"),
             ),
-            opensecret::Error::Base64Decode(base64::DecodeError::InvalidByte(0, b'%')),
+            maple_sdk::Error::Base64Decode(base64::DecodeError::InvalidByte(0, b'%')),
         ];
 
         for error in errors {
@@ -2413,7 +2413,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_attestation_failure_is_one_send_and_is_latched_for_the_run() {
         let transport = Arc::new(FakeTransport::with_results(vec![
-            Err(opensecret::Error::AttestationVerificationFailed(
+            Err(maple_sdk::Error::AttestationVerificationFailed(
                 "private attestation detail".to_string(),
             )),
             Ok(fragmented_success_response()),
@@ -2450,7 +2450,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_secure_connection_failure_is_one_send_and_is_latched_for_the_run() {
         let transport = Arc::new(FakeTransport::with_results(vec![
-            Err(opensecret::Error::Session(
+            Err(maple_sdk::Error::Session(
                 "private exhausted session detail".to_string(),
             )),
             Ok(fragmented_success_response()),
@@ -2488,7 +2488,7 @@ mod tests {
     async fn terminal_secure_stream_failure_is_one_send_and_is_latched_for_the_run() {
         let failed = response_with_items(
             200,
-            vec![Err(opensecret::Error::Decryption(
+            vec![Err(maple_sdk::Error::Decryption(
                 "private lazy decryption detail".to_string(),
             ))],
             None,
@@ -2542,7 +2542,7 @@ mod tests {
             assert!(!error.to_string().contains(PRIVATE_DETAIL));
             assert!(!format!("{error:?}").contains(PRIVATE_DETAIL));
 
-            let sdk_error = map_opensecret_error(opensecret::Error::Api {
+            let sdk_error = map_opensecret_error(maple_sdk::Error::Api {
                 status,
                 message: PRIVATE_DETAIL.to_string(),
             });
@@ -2553,7 +2553,7 @@ mod tests {
 
     #[test]
     fn sdk_context_error_is_classified_without_exposing_provider_message() {
-        let error = map_opensecret_error(opensecret::Error::Api {
+        let error = map_opensecret_error(maple_sdk::Error::Api {
             status: 400,
             message: "maximum context length exceeded; private token counts".to_string(),
         });

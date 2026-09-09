@@ -33,7 +33,14 @@ export default defineConfig({
     derPlugin(),
     dts({
       rollupTypes: true,
-      tsconfigPath: "tsconfig.build.json"
+      tsconfigPath: "tsconfig.build.json",
+      afterBuild() {
+        // NodeNext requires a CommonJS declaration file for the require export.
+        fs.copyFileSync(
+          path.resolve(__dirname, "dist/index.d.ts"),
+          path.resolve(__dirname, "dist/index.d.cts")
+        );
+      }
     })
   ],
   // Add .der to assetsInclude to ensure it's processed
@@ -47,8 +54,8 @@ export default defineConfig({
   build: {
     lib: {
       entry: path.resolve(__dirname, "src/lib/index.ts"),
-      name: "OpenSecretReact",
-      fileName: (format) => `opensecret-react.${format}.js`
+      name: "MapleSDK",
+      fileName: (format) => `maple-sdk.${format}.${format === "umd" ? "cjs" : "js"}`
     },
     rollupOptions: {
       // Externalize React along with its internals

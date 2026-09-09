@@ -1,9 +1,9 @@
 ---
 name: develop-opensecret-sdk
-description: Develop and review the OpenSecret TypeScript/React and Rust SDKs under Maple's sdk directory. Use for SDK API, authentication, attestation, encrypted transport, tests, in-tree OpenSecret integration, package contents, versions, or an explicitly authorized npm or crates.io publishing handoff; use develop-maple for application-only work.
+description: Develop and review the Maple TypeScript/React and Rust SDKs under Maple's sdk directory. Use for SDK API, authentication, attestation, encrypted transport, tests, in-tree OpenSecret integration, package contents, versions, or an explicitly authorized npm or crates.io publishing handoff; use develop-maple for application-only work.
 ---
 
-# Develop the OpenSecret SDK
+# Develop the Maple SDK
 
 Work from `MaplePrivacyLabs/Maple/sdk`. Read the repository-root `AGENTS.md`,
 `sdk/README.md`, the affected implementation and tests, and the root
@@ -12,8 +12,8 @@ Work from `MaplePrivacyLabs/Maple/sdk`. Read the repository-root `AGENTS.md`,
 The SDK source is part of the Maple repository, but its TypeScript and Rust
 package boundaries remain independently versioned and publishable:
 
-- `src/` builds `@opensecret/react` for browser and React consumers.
-- `rust/` builds the `opensecret` crate for native consumers.
+- `src/` builds `@mapleai/sdk` for browser and React consumers.
+- `rust/` builds the `maple-sdk` crate (imported as `maple_sdk`) for native consumers.
 - `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
   consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
 - desktop Maple and `proxy/` consume the in-tree Rust crate through versioned

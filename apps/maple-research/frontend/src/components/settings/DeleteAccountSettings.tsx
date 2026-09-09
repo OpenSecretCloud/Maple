@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Link, useBlocker } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { generateSecureSecret, hashSecret, useOpenSecret } from "@opensecret/react";
+import { generateSecureSecret, hashSecret, useOpenSecret } from "@mapleai/sdk";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { shouldWarnBeforeAccountDeletion } from "@/billing/billingAccess";
 import { getBillingService } from "@/billing/billingService";

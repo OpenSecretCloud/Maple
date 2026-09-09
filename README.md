@@ -1,6 +1,6 @@
 # Maple
 
-Maple is a monorepo for the Maple applications, their OpenSecret SDKs, local proxy,
+Maple is a monorepo for the Maple applications, Maple SDKs, local proxy,
 OpenSecret backend, and updater service. The existing web, desktop, and mobile client lives under
 [`apps/maple-research/`](apps/maple-research/README.md), including Research chat
 and desktop Agent Mode. Its directory name does not change the shipped Maple
@@ -12,7 +12,7 @@ application identity.
 | --- | --- |
 | [`apps/maple-research/`](apps/maple-research/README.md) | React/Vite frontend and Tauri desktop/mobile application, app documentation, and distribution configuration |
 | [`apps/maple-agent/`](apps/maple-agent/README.md) | GPUI desktop-v2 prototype, ACP agent, and CLI proxy; independent from the shipped Research app |
-| [`sdk/`](sdk/README.md) | OpenSecret TypeScript/React and Rust SDKs, consumed in tree by Maple |
+| [`sdk/`](sdk/README.md) | Maple TypeScript/React and Rust SDKs, consumed in tree by Maple |
 | [`proxy/`](proxy/README.md) | Standalone OpenAI-compatible proxy, also consumed by desktop Maple |
 | [`services/updates/`](services/updates/README.md) | Desktop updater Worker and verified release-metadata publishing |
 | [`services/opensecret/`](services/opensecret/README.md) | Confidential authentication, inference, conversations, and related backend APIs; local Nitro tooling and signed PCR files |

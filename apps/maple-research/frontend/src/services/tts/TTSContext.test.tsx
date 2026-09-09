@@ -7,7 +7,7 @@ const aiCustomFetch = mock(async () => {
   throw new Error("Free-plan TTS should not reach the backend");
 });
 
-mock.module("@opensecret/react", () => ({
+mock.module("@mapleai/sdk", () => ({
   useOpenSecret: () => ({
     aiCustomFetch,
     apiUrl: "https://enclave.example"

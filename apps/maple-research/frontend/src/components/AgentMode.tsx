@@ -8,7 +8,7 @@ import {
   useRef,
   useState
 } from "react";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { useOpenAI } from "@/ai/useOpenAi";
 import {
   AlertCircle,

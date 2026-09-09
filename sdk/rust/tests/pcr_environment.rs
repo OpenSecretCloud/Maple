@@ -1,7 +1,7 @@
 mod common;
 
 use common::parse_pcr0_environment;
-use opensecret::Pcr0Environment;
+use maple_sdk::Pcr0Environment;
 
 #[test]
 fn pcr_environment_defaults_to_production() {

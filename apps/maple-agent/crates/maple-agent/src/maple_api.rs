@@ -1,5 +1,5 @@
 use crate::open_secret_config::configured_pcr0_environment;
-use opensecret::{
+use maple_sdk::{
     InferenceRequest, InferenceResponse, OpenSecretClient, WebExtractRequest, WebExtractResponse,
     WebSearchRequest, WebSearchResponse,
 };
@@ -60,20 +60,20 @@ impl MapleLoginMethod {
     }
 }
 
-impl From<opensecret::LoginMethod> for MapleLoginMethod {
-    fn from(method: opensecret::LoginMethod) -> Self {
+impl From<maple_sdk::LoginMethod> for MapleLoginMethod {
+    fn from(method: maple_sdk::LoginMethod) -> Self {
         match method {
-            opensecret::LoginMethod::Email => Self::Email,
-            opensecret::LoginMethod::Github => Self::Github,
-            opensecret::LoginMethod::Google => Self::Google,
-            opensecret::LoginMethod::Apple => Self::Apple,
-            opensecret::LoginMethod::Guest => Self::Guest,
+            maple_sdk::LoginMethod::Email => Self::Email,
+            maple_sdk::LoginMethod::Github => Self::Github,
+            maple_sdk::LoginMethod::Google => Self::Google,
+            maple_sdk::LoginMethod::Apple => Self::Apple,
+            maple_sdk::LoginMethod::Guest => Self::Guest,
         }
     }
 }
 
-impl From<opensecret::AppUser> for MapleAccount {
-    fn from(user: opensecret::AppUser) -> Self {
+impl From<maple_sdk::AppUser> for MapleAccount {
+    fn from(user: maple_sdk::AppUser) -> Self {
         Self {
             user_id: user.id.to_string(),
             email: user.email,
@@ -146,17 +146,17 @@ pub fn new_confirmation_secret() -> (String, String) {
     (plaintext, hashed)
 }
 
-fn map_account_error(error: opensecret::Error) -> MapleAccountError {
+fn map_account_error(error: maple_sdk::Error) -> MapleAccountError {
     log::warn!(
         "OpenSecret SDK account operation failed ({})",
         crate::agent::provider::opensecret_error_category(&error)
     );
     match error {
-        opensecret::Error::Authentication(_)
-        | opensecret::Error::Api {
+        maple_sdk::Error::Authentication(_)
+        | maple_sdk::Error::Api {
             status: 401 | 403, ..
         } => MapleAccountError::Unauthorized,
-        opensecret::Error::Api { status, .. } => MapleAccountError::Status(status),
+        maple_sdk::Error::Api { status, .. } => MapleAccountError::Status(status),
         _ => MapleAccountError::Other("Maple API request failed".to_string()),
     }
 }
@@ -521,7 +521,7 @@ impl MapleApiSession {
         Ok(response.data.into_iter().map(|model| model.id).collect())
     }
 
-    pub(crate) async fn model_catalog(&self) -> Result<opensecret::ModelCatalogResponse, String> {
+    pub(crate) async fn model_catalog(&self) -> Result<maple_sdk::ModelCatalogResponse, String> {
         let snapshot = self.client_snapshot().await?;
         let response = snapshot.client.get_model_catalog().await;
         self.record_refresh(&snapshot).await?;
@@ -581,11 +581,11 @@ impl MapleApiSession {
         self: Arc<Self>,
         request: InferenceRequest,
         cancel_token: CancellationToken,
-    ) -> Result<InferenceResponse, opensecret::Error> {
+    ) -> Result<InferenceResponse, maple_sdk::Error> {
         let snapshot = self
             .client_snapshot()
             .await
-            .map_err(opensecret::Error::Authentication)?;
+            .map_err(maple_sdk::Error::Authentication)?;
         let operation_cancel = cancel_token.child_token();
         let _cancel_on_drop = CancelOperationOnDrop(operation_cancel.clone());
         let session = Arc::clone(&self);
@@ -593,7 +593,7 @@ impl MapleApiSession {
             let response = tokio::select! {
                 biased;
                 _ = operation_cancel.cancelled() => {
-                    Err(opensecret::Error::Other("Inference request was cancelled".to_string()))
+                    Err(maple_sdk::Error::Other("Inference request was cancelled".to_string()))
                 }
                 response = snapshot.client.send_inference_request(request) => response,
             };
@@ -609,11 +609,11 @@ impl MapleApiSession {
         self: Arc<Self>,
         request: WebSearchRequest,
         cancel_token: CancellationToken,
-    ) -> Result<WebSearchResponse, opensecret::Error> {
+    ) -> Result<WebSearchResponse, maple_sdk::Error> {
         let snapshot = self
             .client_snapshot()
             .await
-            .map_err(opensecret::Error::Authentication)?;
+            .map_err(maple_sdk::Error::Authentication)?;
         let operation_cancel = cancel_token.child_token();
         let _cancel_on_drop = CancelOperationOnDrop(operation_cancel.clone());
         let session = Arc::clone(&self);
@@ -621,7 +621,7 @@ impl MapleApiSession {
             let response = tokio::select! {
                 biased;
                 _ = operation_cancel.cancelled() => {
-                    Err(opensecret::Error::Other("Web search was cancelled".to_string()))
+                    Err(maple_sdk::Error::Other("Web search was cancelled".to_string()))
                 }
                 response = snapshot.client.web_search(request) => response,
             };
@@ -637,11 +637,11 @@ impl MapleApiSession {
         self: Arc<Self>,
         request: WebExtractRequest,
         cancel_token: CancellationToken,
-    ) -> Result<WebExtractResponse, opensecret::Error> {
+    ) -> Result<WebExtractResponse, maple_sdk::Error> {
         let snapshot = self
             .client_snapshot()
             .await
-            .map_err(opensecret::Error::Authentication)?;
+            .map_err(maple_sdk::Error::Authentication)?;
         let operation_cancel = cancel_token.child_token();
         let _cancel_on_drop = CancelOperationOnDrop(operation_cancel.clone());
         let session = Arc::clone(&self);
@@ -649,7 +649,7 @@ impl MapleApiSession {
             let response = tokio::select! {
                 biased;
                 _ = operation_cancel.cancelled() => {
-                    Err(opensecret::Error::Other("Web extraction was cancelled".to_string()))
+                    Err(maple_sdk::Error::Other("Web extraction was cancelled".to_string()))
                 }
                 response = snapshot.client.web_extract(request) => response,
             };
@@ -688,9 +688,9 @@ pub(crate) fn test_maple_api_session(user_id: &str) -> Arc<MapleApiSession> {
     )
 }
 
-fn map_operation_join_error(error: tokio::task::JoinError) -> opensecret::Error {
+fn map_operation_join_error(error: tokio::task::JoinError) -> maple_sdk::Error {
     log::warn!("Maple API operation task failed: {error}");
-    opensecret::Error::Other("Maple API operation failed".to_string())
+    maple_sdk::Error::Other("Maple API operation failed".to_string())
 }
 
 #[async_trait::async_trait]
@@ -699,13 +699,13 @@ pub(crate) trait MapleWebTransport: Send + Sync {
         self: Arc<Self>,
         request: WebSearchRequest,
         cancel_token: CancellationToken,
-    ) -> opensecret::Result<WebSearchResponse>;
+    ) -> maple_sdk::Result<WebSearchResponse>;
 
     async fn web_extract(
         self: Arc<Self>,
         request: WebExtractRequest,
         cancel_token: CancellationToken,
-    ) -> opensecret::Result<WebExtractResponse>;
+    ) -> maple_sdk::Result<WebExtractResponse>;
 }
 
 #[async_trait::async_trait]
@@ -714,7 +714,7 @@ impl MapleWebTransport for MapleApiSession {
         self: Arc<Self>,
         request: WebSearchRequest,
         cancel_token: CancellationToken,
-    ) -> opensecret::Result<WebSearchResponse> {
+    ) -> maple_sdk::Result<WebSearchResponse> {
         MapleApiSession::web_search(self, request, cancel_token).await
     }
 
@@ -722,7 +722,7 @@ impl MapleWebTransport for MapleApiSession {
         self: Arc<Self>,
         request: WebExtractRequest,
         cancel_token: CancellationToken,
-    ) -> opensecret::Result<WebExtractResponse> {
+    ) -> maple_sdk::Result<WebExtractResponse> {
         MapleApiSession::web_extract(self, request, cancel_token).await
     }
 }
@@ -733,7 +733,7 @@ impl crate::agent::provider::MapleInferenceTransport for MapleApiSession {
         self: Arc<Self>,
         request: InferenceRequest,
         cancel_token: CancellationToken,
-    ) -> opensecret::Result<InferenceResponse> {
+    ) -> maple_sdk::Result<InferenceResponse> {
         MapleApiSession::send_inference_request(self, request, cancel_token).await
     }
 }
@@ -785,14 +785,14 @@ pub fn is_auth_rejection(message: &str) -> bool {
     message == AUTH_REJECTED_MESSAGE || message == AUTH_WRONG_ACCOUNT_MESSAGE
 }
 
-fn map_sdk_error(error: opensecret::Error) -> String {
+fn map_sdk_error(error: maple_sdk::Error) -> String {
     log::warn!(
         "OpenSecret SDK authentication operation failed ({})",
         crate::agent::provider::opensecret_error_category(&error)
     );
     match error {
-        opensecret::Error::Authentication(_)
-        | opensecret::Error::Api {
+        maple_sdk::Error::Authentication(_)
+        | maple_sdk::Error::Api {
             status: 401 | 403, ..
         } => AUTH_REJECTED_MESSAGE.to_string(),
         _ => "Maple API authentication failed".to_string(),
@@ -1046,15 +1046,15 @@ mod tests {
 
     #[test]
     fn only_refused_credentials_count_as_rejection() {
-        let rejected = map_sdk_error(opensecret::Error::Authentication("bad token".into()));
+        let rejected = map_sdk_error(maple_sdk::Error::Authentication("bad token".into()));
         assert!(is_auth_rejection(&rejected));
-        let forbidden = map_sdk_error(opensecret::Error::Api {
+        let forbidden = map_sdk_error(maple_sdk::Error::Api {
             status: 401,
             message: "expired".into(),
         });
         assert!(is_auth_rejection(&forbidden));
         assert!(is_auth_rejection(AUTH_WRONG_ACCOUNT_MESSAGE));
-        let outage = map_sdk_error(opensecret::Error::Api {
+        let outage = map_sdk_error(maple_sdk::Error::Api {
             status: 503,
             message: "down".into(),
         });
@@ -1073,7 +1073,7 @@ mod tests {
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
     use ciborium::value::Value as CborValue;
     use goose_providers::{base::Provider, conversation::message::Message, model::ModelConfig};
-    use opensecret::types::KeyExchangeRequest;
+    use maple_sdk::types::KeyExchangeRequest;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Notify;
 
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[derive(Clone)]
     struct RefreshThenStallState {
-        key_pair: Arc<opensecret::crypto::KeyPair>,
+        key_pair: Arc<maple_sdk::crypto::KeyPair>,
         session_key: [u8; 32],
         session_id: String,
         retry_started: Arc<Notify>,
@@ -1187,13 +1187,13 @@ mod tests {
         Json(request): Json<KeyExchangeRequest>,
     ) -> Json<serde_json::Value> {
         let client_public_bytes = BASE64.decode(request.client_public_key).unwrap();
-        let client_public_key = opensecret::crypto::PublicKey::from(
+        let client_public_key = maple_sdk::crypto::PublicKey::from(
             <[u8; 32]>::try_from(client_public_bytes.as_slice()).unwrap(),
         );
         let shared_secret =
-            opensecret::crypto::derive_shared_secret(&state.key_pair.secret, &client_public_key);
+            maple_sdk::crypto::derive_shared_secret(&state.key_pair.secret, &client_public_key);
         let encrypted_session_key = BASE64.encode(
-            opensecret::crypto::encrypt_data(shared_secret.as_bytes(), &state.session_key).unwrap(),
+            maple_sdk::crypto::encrypt_data(shared_secret.as_bytes(), &state.session_key).unwrap(),
         );
         Json(serde_json::json!({
             "encrypted_session_key": encrypted_session_key,
@@ -1209,7 +1209,7 @@ mod tests {
             "refresh_token": "fresh_refresh",
         }))
         .unwrap();
-        let encrypted = opensecret::crypto::encrypt_data(&state.session_key, &plaintext).unwrap();
+        let encrypted = maple_sdk::crypto::encrypt_data(&state.session_key, &plaintext).unwrap();
         Json(serde_json::json!({ "encrypted": BASE64.encode(encrypted) }))
     }
 
@@ -1233,7 +1233,7 @@ mod tests {
     }
 
     async fn refresh_then_stall_fixture() -> RefreshThenStallFixture {
-        let key_pair = Arc::new(opensecret::crypto::generate_key_pair());
+        let key_pair = Arc::new(maple_sdk::crypto::generate_key_pair());
         let retry_started = Arc::new(Notify::new());
         let state = RefreshThenStallState {
             key_pair,
@@ -1459,7 +1459,7 @@ mod tests {
             .web_search(WebSearchRequest::new("maple privacy"), search_cancel)
             .await;
         assert!(
-            matches!(search, Err(opensecret::Error::Other(message)) if message.contains("cancelled"))
+            matches!(search, Err(maple_sdk::Error::Other(message)) if message.contains("cancelled"))
         );
 
         let extract_cancel = CancellationToken::new();
@@ -1471,7 +1471,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(extract, Err(opensecret::Error::Other(message)) if message.contains("cancelled"))
+            matches!(extract, Err(maple_sdk::Error::Other(message)) if message.contains("cancelled"))
         );
 
         let after = session.auth_snapshot().await.unwrap();

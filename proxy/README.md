@@ -54,6 +54,11 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
+The current source consumes the in-tree `maple-sdk` crate through a versioned
+path dependency. That SDK's registry ownership and first publication are
+pending. Publish the SDK before packaging or publishing a proxy crate that
+depends on its new registry name; local path builds work before publication.
+
 ## ⚙️ Configuration
 
 Set environment variables or use command-line arguments:

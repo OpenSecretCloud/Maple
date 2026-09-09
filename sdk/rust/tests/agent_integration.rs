@@ -1,7 +1,7 @@
 mod common;
 
 use futures::StreamExt;
-use opensecret::{
+use maple_sdk::{
     AgentItemsListParams, AgentSseEvent, ConversationItem, CreateSubagentRequest,
     ListSubagentsParams, OpenSecretClient, Result,
 };
@@ -51,7 +51,7 @@ async fn setup_authenticated_client() -> Result<OpenSecretClient> {
     Ok(client)
 }
 
-async fn create_test_subagent(client: &OpenSecretClient) -> Result<opensecret::SubagentResponse> {
+async fn create_test_subagent(client: &OpenSecretClient) -> Result<maple_sdk::SubagentResponse> {
     let suffix = Uuid::new_v4();
 
     client

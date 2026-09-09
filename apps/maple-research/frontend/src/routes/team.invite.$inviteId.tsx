@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { getBillingService } from "@/billing/billingService";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";

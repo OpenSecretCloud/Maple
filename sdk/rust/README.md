@@ -1,10 +1,10 @@
-# OpenSecret Rust SDK
+# Maple Rust SDK
 
 This source lives under Maple's `sdk/rust/` directory. Desktop Maple and
 Maple's in-tree `proxy/` consume it through versioned path dependencies, while
 crates.io publishing remains an independent compatibility surface.
 
-Rust SDK for OpenSecret - secure AI API interactions with nitro attestation.
+Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, and Nitro attestation.
 
 ## Features
 
@@ -17,20 +17,26 @@ Rust SDK for OpenSecret - secure AI API interactions with nitro attestation.
 
 ## Installation
 
-Add to your `Cargo.toml`:
+`maple-sdk` is the intended replacement for the `opensecret` crate. Registry
+ownership and first publication are pending; this checkout uses local path
+dependencies. After publication, add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opensecret = "3.6.2"
+maple-sdk = "3.6.2"
 bytes = "1"
 futures = "0.3"
 http = "1"
 ```
 
+Public Rust types such as `OpenSecretClient` keep their existing names. The
+package and import names change; backend URLs, authentication, and attestation
+behavior remain unchanged.
+
 ## Quick Start
 
 ```rust
-use opensecret::{OpenSecretClient, Pcr0Environment, Pcr0TrustPolicy, Result};
+use maple_sdk::{OpenSecretClient, Pcr0Environment, Pcr0TrustPolicy, Result};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -217,7 +223,7 @@ if let Some(session_id) = client.get_session_id()? {
 The SDK uses a custom `Error` type with detailed error variants:
 
 ```rust
-use opensecret::Error;
+use maple_sdk::Error;
 
 match client.login(email, password, client_id).await {
     Ok(response) => println!("Success!"),

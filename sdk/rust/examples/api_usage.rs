@@ -1,4 +1,4 @@
-use opensecret::{KeyOptions, OpenSecretClient, Result, SigningAlgorithm};
+use maple_sdk::{KeyOptions, OpenSecretClient, Result, SigningAlgorithm};
 use uuid::Uuid;
 
 #[tokio::main]

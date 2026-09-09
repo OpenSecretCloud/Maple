@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";

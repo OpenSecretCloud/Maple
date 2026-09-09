@@ -31,11 +31,7 @@ import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  useOpenSecret,
-  type Conversation,
-  type ConversationProjectListItem
-} from "@opensecret/react";
+import { useOpenSecret, type Conversation, type ConversationProjectListItem } from "@mapleai/sdk";
 import { useRouter } from "@tanstack/react-router";
 import { useSelectedProjectState } from "@/state/useLocalState";
 import { ConversationProjectDialog } from "@/components/ConversationProjectDialog";

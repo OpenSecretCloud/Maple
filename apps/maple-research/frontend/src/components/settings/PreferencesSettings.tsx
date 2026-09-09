@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useBlocker } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { RotateCcw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";

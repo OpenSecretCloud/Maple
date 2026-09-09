@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::Result;
+use maple_sdk::Result;
 use uuid::Uuid;
 
 #[tokio::test]

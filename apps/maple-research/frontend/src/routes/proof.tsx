@@ -17,7 +17,7 @@ import {
   Bot
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { ParsedAttestationView, useOpenSecret } from "@opensecret/react";
+import { ParsedAttestationView, useOpenSecret } from "@mapleai/sdk";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { MarketingHeader } from "@/components/MarketingHeader";

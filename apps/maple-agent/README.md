@@ -15,7 +15,7 @@ app/                  The maple-gpui binary. Owns the window, login, chat,
                       settings, notifications, and the backend adapter.
 crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       the Tauri app with Tauri removed. Owns embedded Goose,
-                      the Maple provider over the OpenSecret SDK, developer
+                      the Maple provider over the Maple Rust SDK, developer
                       tools, permission policy, account-scoped session
                       storage, and the ACP server.
 crates/maple-billing/ HTTP client for the Maple billing API.
@@ -450,9 +450,9 @@ the namespace. Local `just release` and `just dist` only build local files.
 
 ## Shared dependencies and provenance
 
-The component consumes the existing in-tree `opensecret` SDK at `../../sdk/rust`
+The component consumes the in-tree `maple-sdk` crate at `../../sdk/rust`
 and `maple-proxy` at `../../proxy` through workspace dependencies. The SDK fork
-patch is removed; no SDK rename or registry publication is needed for local
+patch is removed; registry publication is not needed for local
 builds. Keep the component lockfile and Nix source fileset aligned with these
 path dependencies. The pure package includes the required SDK attestation
 assets as well as Rust source.

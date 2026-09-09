@@ -1,5 +1,5 @@
 use crate::maple_api::MapleWebTransport;
-use opensecret::{
+use maple_sdk::{
     WebExtractRequest, WebSearchFilters, WebSearchLens, WebSearchRequest, WebSearchResult,
     WebSearchWorkflow,
 };
@@ -251,7 +251,7 @@ pub(crate) async fn execute_web_search(
         return Err("Web search was cancelled".to_string());
     }
 
-    let opensecret::WebSearchResponse {
+    let maple_sdk::WebSearchResponse {
         trace_id,
         mut results,
     } = response;
@@ -303,7 +303,7 @@ pub(crate) async fn execute_open_url(
         return Err("URL extraction was cancelled".to_string());
     }
 
-    let opensecret::WebExtractResponse { trace_id, pages } = response;
+    let maple_sdk::WebExtractResponse { trace_id, pages } = response;
     let page = pages
         .into_iter()
         .find(|page| normalize_public_https_url(&page.url).is_ok_and(|page_url| page_url == url))
@@ -586,7 +586,7 @@ fn bound_web_tool_error(error: String, final_output_limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opensecret::{WebExtractPage, WebExtractResponse, WebSearchResponse, WebSearchResult};
+    use maple_sdk::{WebExtractPage, WebExtractResponse, WebSearchResponse, WebSearchResult};
     use std::sync::Mutex as StdMutex;
 
     struct MockTransport {
@@ -603,11 +603,11 @@ mod tests {
             self: Arc<Self>,
             request: WebSearchRequest,
             cancel_token: CancellationToken,
-        ) -> opensecret::Result<WebSearchResponse> {
+        ) -> maple_sdk::Result<WebSearchResponse> {
             self.searches.lock().unwrap().push(request);
             if self.wait_for_cancellation {
                 cancel_token.cancelled().await;
-                return Err(opensecret::Error::Other("cancelled".to_string()));
+                return Err(maple_sdk::Error::Other("cancelled".to_string()));
             }
             Ok(self.search_response.clone())
         }
@@ -616,11 +616,11 @@ mod tests {
             self: Arc<Self>,
             request: WebExtractRequest,
             cancel_token: CancellationToken,
-        ) -> opensecret::Result<WebExtractResponse> {
+        ) -> maple_sdk::Result<WebExtractResponse> {
             self.extracts.lock().unwrap().push(request);
             if self.wait_for_cancellation {
                 cancel_token.cancelled().await;
-                return Err(opensecret::Error::Other("cancelled".to_string()));
+                return Err(maple_sdk::Error::Other("cancelled".to_string()));
             }
             Ok(self.extract_response.clone())
         }

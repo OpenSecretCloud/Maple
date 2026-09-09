@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { fetchProxyChatModels } from "@/services/proxyModels";
 import type { OpenSecretModel, OpenSecretModelCatalog } from "@/state/LocalStateContextDef";
 

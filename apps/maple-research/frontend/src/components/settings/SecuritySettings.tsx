@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

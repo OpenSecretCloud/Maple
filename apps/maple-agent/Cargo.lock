@@ -5821,8 +5821,8 @@ dependencies = [
  "libc",
  "log",
  "maple-proxy",
+ "maple-sdk",
  "once_cell",
- "opensecret",
  "process-wrap",
  "pulldown-cmark",
  "rand 0.8.7",
@@ -5866,8 +5866,8 @@ dependencies = [
  "maple-agent",
  "maple-billing",
  "maple-proxy",
+ "maple-sdk",
  "notify",
- "opensecret",
  "parking_lot",
  "percent-encoding",
  "pulldown-cmark",
@@ -5899,7 +5899,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "http",
- "opensecret",
+ "maple-sdk",
  "serde",
  "serde_json",
  "tokio",
@@ -5907,6 +5907,41 @@ dependencies = [
  "tower-http 0.6.11",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "maple-sdk"
+version = "3.6.2"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chacha20poly1305 0.10.1",
+ "chrono",
+ "ciborium",
+ "eventsource-stream",
+ "futures",
+ "hex",
+ "hkdf 0.12.4",
+ "http",
+ "p256",
+ "percent-encoding",
+ "pin-project",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+ "x25519-dalek",
+ "x509-parser",
+ "yasna",
 ]
 
 [[package]]
@@ -6968,41 +7003,6 @@ checksum = "7c603ab8300cf18bc3b14146b19fe3dfcc4843ae5a400cd0e7a30b95aa366634"
 dependencies = [
  "is-wsl",
  "libc",
-]
-
-[[package]]
-name = "opensecret"
-version = "3.6.2"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "async-stream",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "chacha20poly1305 0.10.1",
- "chrono",
- "ciborium",
- "eventsource-stream",
- "futures",
- "hex",
- "hkdf 0.12.4",
- "http",
- "p256",
- "percent-encoding",
- "pin-project",
- "reqwest 0.12.28",
- "ring",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "uuid",
- "x25519-dalek",
- "x509-parser",
- "yasna",
 ]
 
 [[package]]

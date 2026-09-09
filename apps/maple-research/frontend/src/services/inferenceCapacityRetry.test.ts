@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   findOpenSecretInferenceCapacityError,
   OpenSecretInferenceCapacityError
-} from "@opensecret/react";
+} from "@mapleai/sdk";
 import OpenAI from "openai";
 import { withInferenceCapacityRetry } from "./inferenceCapacityRetry";
 

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useLocation, useRouter } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import {
   ArrowLeft,
   BookOpen,

@@ -19,7 +19,7 @@ Do not commit, push, open a PR, merge, release, or clean unrelated work unless t
 
 Keep Maple's two inference paths distinct:
 
-- Research chat is a browser-capable React path. `UnifiedChat.tsx` uses the OpenAI JavaScript client with `@opensecret/react`'s authenticated and encrypted `aiCustomFetch`, targeting OpenSecret's Conversations and Responses APIs.
+- Research chat is a browser-capable React path. `UnifiedChat.tsx` uses the OpenAI JavaScript client with `@mapleai/sdk`'s authenticated and encrypted `aiCustomFetch`, targeting OpenSecret's Conversations and Responses APIs.
 - Agent Mode is desktop-only. `AgentMode.tsx` calls typed frontend services, which invoke Tauri commands and receive `agent-event` envelopes. Native Rust owns `MapleAgentService`, the embedded Goose managers and local sessions, Maple's provider, developer tools, permissions, and cancellation. `MapleProvider` sends encrypted OpenSecret SDK requests to `/v1/chat/completions`.
 - ACP is a secondary local adapter over the same `MapleAgentService`. It must not initialize a second Goose runtime or call through the Tauri adapter.
 - The local OpenAI-compatible proxy is a separate user-facing feature. Neither Research chat nor Agent Mode should silently route through it.

@@ -10187,11 +10187,11 @@ mod tests {
     impl provider::MapleInferenceTransport for InertMapleTransport {
         async fn send_inference_request(
             self: Arc<Self>,
-            _request: opensecret::InferenceRequest,
-            _send_budget: opensecret::InferenceSendBudget,
+            _request: maple_sdk::InferenceRequest,
+            _send_budget: maple_sdk::InferenceSendBudget,
             _cancel_token: CancellationToken,
-        ) -> opensecret::Result<opensecret::InferenceResponse> {
-            Err(opensecret::Error::Other(
+        ) -> maple_sdk::Result<maple_sdk::InferenceResponse> {
+            Err(maple_sdk::Error::Other(
                 "test transport should not be called".to_string(),
             ))
         }
@@ -10209,16 +10209,16 @@ mod tests {
     impl provider::MapleInferenceTransport for TerminalMapleTransport {
         async fn send_inference_request(
             self: Arc<Self>,
-            _request: opensecret::InferenceRequest,
-            _send_budget: opensecret::InferenceSendBudget,
+            _request: maple_sdk::InferenceRequest,
+            _send_budget: maple_sdk::InferenceSendBudget,
             _cancel_token: CancellationToken,
-        ) -> opensecret::Result<opensecret::InferenceResponse> {
+        ) -> maple_sdk::Result<maple_sdk::InferenceResponse> {
             match self.0 {
-                TerminalMapleFailure::Session => Err(opensecret::Error::Session(
+                TerminalMapleFailure::Session => Err(maple_sdk::Error::Session(
                     "private exhausted session detail".to_string(),
                 )),
                 TerminalMapleFailure::AttestationVerification => {
-                    Err(opensecret::Error::AttestationVerificationFailed(
+                    Err(maple_sdk::Error::AttestationVerificationFailed(
                         "private attestation detail".to_string(),
                     ))
                 }

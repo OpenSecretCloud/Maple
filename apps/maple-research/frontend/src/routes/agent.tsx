@@ -1,5 +1,5 @@
 import { Navigate, createFileRoute } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { AppEntryPage } from "@/components/AppEntryPage";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { appUrl } from "@/config/domains";

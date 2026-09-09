@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useBlocker } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { AlertCircle, Clock, Crown, Loader2, RotateCw, UserMinus, X } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { Alert, AlertDescription } from "@/components/ui/alert";

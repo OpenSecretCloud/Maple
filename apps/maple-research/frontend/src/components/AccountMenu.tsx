@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { AlertCircle, Settings } from "lucide-react";
 import { getBillingService } from "@/billing/billingService";
 import { CreditUsage } from "@/components/CreditUsage";

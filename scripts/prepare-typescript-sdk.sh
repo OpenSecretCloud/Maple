@@ -9,6 +9,7 @@ bun --no-env-file install --frozen-lockfile --ignore-scripts
 rm -rf dist
 bun --no-env-file run build
 
-test -f dist/opensecret-react.es.js
-test -f dist/opensecret-react.umd.js
+test -f dist/maple-sdk.es.js
+test -f dist/maple-sdk.umd.cjs
 test -f dist/index.d.ts
+test -f dist/index.d.cts

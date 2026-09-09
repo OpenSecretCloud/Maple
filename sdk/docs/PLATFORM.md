@@ -7,7 +7,7 @@ The Developer Platform API allows developers to manage organizations, projects, 
 The `OpenSecretDeveloper` component is the provider for developer-specific platform operations. It requires the URL of the OpenSecret developer API.
 
 ```tsx
-import { OpenSecretDeveloper } from "@opensecret/react";
+import { OpenSecretDeveloper } from "@mapleai/sdk";
 
 function App() {
   return (
@@ -125,7 +125,7 @@ export type OAuthSettings = {
 Before using the developer platform APIs, you need to authenticate. The SDK provides authentication methods through the `useOpenSecretDeveloper` hook:
 
 ```tsx
-import { useOpenSecretDeveloper } from "@opensecret/react";
+import { useOpenSecretDeveloper } from "@mapleai/sdk";
 
 function DeveloperLogin() {
   const dev = useOpenSecretDeveloper();
@@ -229,8 +229,8 @@ changePlatformPassword(currentPassword: string, newPassword: string): Promise<{ 
 The SDK provides methods for managing platform developer passwords, including password reset and password change functionality:
 
 ```tsx
-import { useOpenSecretDeveloper } from "@opensecret/react";
-import { generateSecureSecret, hashSecret } from "@opensecret/react";
+import { useOpenSecretDeveloper } from "@mapleai/sdk";
+import { generateSecureSecret, hashSecret } from "@mapleai/sdk";
 
 function DeveloperPasswordManagement() {
   const dev = useOpenSecretDeveloper();
@@ -312,7 +312,7 @@ if (!dev.auth.loading && dev.auth.developer) {
 The `useOpenSecretDeveloper` hook provides access to all developer platform management APIs. It returns an object with the following properties and methods:
 
 ```tsx
-import { useOpenSecretDeveloper } from "@opensecret/react";
+import { useOpenSecretDeveloper } from "@mapleai/sdk";
 
 function PlatformManagement() {
   const dev = useOpenSecretDeveloper();
@@ -669,7 +669,7 @@ Here's a complete example of how to use the developer platform API:
 
 ```tsx
 import React, { useEffect, useState } from 'react';
-import { OpenSecretDeveloper, useOpenSecretDeveloper } from '@opensecret/react';
+import { OpenSecretDeveloper, useOpenSecretDeveloper } from '@mapleai/sdk';
 
 function DeveloperPortal() {
   const dev = useOpenSecretDeveloper();

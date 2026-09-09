@@ -187,7 +187,7 @@ The v5+ SDK includes full support for:
 Create client with OpenSecret's custom fetch from the SDK:
 
 ```typescript
-import { createCustomFetch } from "@opensecret/react";
+import { createCustomFetch } from "@mapleai/sdk";
 import OpenAI from "openai";
 
 // Get API URL from environment
@@ -205,7 +205,7 @@ const openai = new OpenAI({
 });
 ```
 
-The custom fetch from `@opensecret/react` handles:
+The custom fetch from `@mapleai/sdk` handles:
 - JWT token injection from localStorage
 - Automatic token refresh on 401
 - Session key encryption/decryption for E2E encryption

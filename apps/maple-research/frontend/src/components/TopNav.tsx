@@ -1,7 +1,7 @@
 import { Link, useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/utils/utils";
 import { Button } from "./ui/button";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { Menu, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 

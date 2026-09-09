@@ -7,10 +7,12 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEPENDENCIES = {"opensecret": "sdk/rust/Cargo.toml", "maple-proxy": "proxy/Cargo.toml"}
+DEPENDENCIES = {"maple-sdk": "sdk/rust/Cargo.toml", "maple-proxy": "proxy/Cargo.toml"}
 
 
 def verify(metadata: dict, root: Path = ROOT) -> None:
+    if any(package["name"] == "opensecret" for package in metadata["packages"]):
+        raise ValueError("Agent must not resolve the legacy opensecret SDK alongside maple-sdk")
     for name, relative in DEPENDENCIES.items():
         packages = [package for package in metadata["packages"] if package["name"] == name]
         if len(packages) != 1:
@@ -29,7 +31,7 @@ def main() -> int:
         verify(metadata)
     except (KeyError, ValueError) as error:
         raise SystemExit(str(error)) from None
-    print("Maple Agent resolves exactly one in-tree OpenSecret SDK and proxy crate.")
+    print("Maple Agent resolves exactly one in-tree Maple SDK and proxy crate, with no legacy SDK.")
     return 0
 
 

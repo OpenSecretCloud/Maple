@@ -26,7 +26,7 @@ commit, external effect, and authority provided by the user.
 - The same Maple GitHub Release receives four native `maple-proxy` archives and
   their checksum manifest. Never create a separate proxy Release or proxy tag;
   `/releases/latest` must continue to identify the Maple application release.
-- Maple GitHub Releases do not publish `opensecret` or `maple-proxy` to
+- Maple GitHub Releases do not publish `maple-sdk` or `maple-proxy` to
   crates.io. A successful stable release starts a non-gating GHCR sibling that
   builds only for a new or missing non-baseline proxy version. It treats exact
   version tags as immutable, verifies release provenance and container inputs,

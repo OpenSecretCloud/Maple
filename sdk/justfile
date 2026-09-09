@@ -2,8 +2,8 @@
 publish-npm:
     nix develop --no-update-lock-file -c bun install --frozen-lockfile --ignore-scripts
     nix develop --no-update-lock-file -c bun run build
-    nix develop --no-update-lock-file -c bun pm pack --filename opensecret-react-publish.tgz
-    nix develop --no-update-lock-file -c npm publish ./opensecret-react-publish.tgz --access public
+    nix develop --no-update-lock-file -c bun pm pack --filename maple-sdk-publish.tgz
+    nix develop --no-update-lock-file -c npm publish ./maple-sdk-publish.tgz --access public
 
 # Publish the Rust crate using the committed lockfile.
 publish-cargo:

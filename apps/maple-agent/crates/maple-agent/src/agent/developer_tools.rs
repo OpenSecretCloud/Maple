@@ -2557,7 +2557,7 @@ mod tests {
     use goose::providers::base::{ProviderUsage, Usage};
     use goose::session::SessionManager;
     use goose::session::SessionType;
-    use opensecret::{
+    use maple_sdk::{
         WebExtractPage, WebExtractRequest, WebExtractResponse, WebSearchRequest, WebSearchResponse,
         WebSearchResult,
     };
@@ -2594,7 +2594,7 @@ mod tests {
             self: Arc<Self>,
             _request: WebSearchRequest,
             _cancel_token: CancellationToken,
-        ) -> opensecret::Result<WebSearchResponse> {
+        ) -> maple_sdk::Result<WebSearchResponse> {
             Ok(WebSearchResponse {
                 trace_id: None,
                 results: vec![WebSearchResult {
@@ -2611,7 +2611,7 @@ mod tests {
             self: Arc<Self>,
             request: WebExtractRequest,
             _cancel_token: CancellationToken,
-        ) -> opensecret::Result<WebExtractResponse> {
+        ) -> maple_sdk::Result<WebExtractResponse> {
             Ok(WebExtractResponse {
                 trace_id: None,
                 pages: vec![WebExtractPage {

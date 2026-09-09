@@ -78,7 +78,7 @@ through their public API URLs; do not depend on their source trees.
 
 - Put React, routes, contexts, and browser-facing services under `apps/maple-research/frontend/src/`.
 - Put privileged/native behavior under `apps/maple-research/frontend/src-tauri/src/` and expose the narrowest typed Tauri command or event needed by the UI.
-- Use `@opensecret/react` and the existing OpenSecret client paths for authentication, encryption, and API calls. Read `apps/maple-research/frontend/package.json` to determine whether the application consumes a published version or the in-tree `file:../../../sdk` package; do not infer that boundary from prose. Do not duplicate protocol or cryptographic logic in components.
+- Use `@mapleai/sdk` and the existing OpenSecret client paths for authentication, encryption, and API calls. Read `apps/maple-research/frontend/package.json` to determine whether the application consumes a published version or the in-tree `file:../../../sdk` package; do not infer that boundary from prose. Do not duplicate protocol or cryptographic logic in components.
 - Follow nearby state ownership, cancellation, error, and cleanup patterns. Preserve account isolation and handle logout, navigation, retries, and stale async completion explicitly.
 - Treat all network, file, deep-link, shell, tool, and Tauri-command inputs as untrusted. Validate again at the enforcing boundary.
 - Keep feature flags as rollout/UI controls, never authorization controls.

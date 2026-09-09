@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
-import { useOpenSecret, type LoginResponse } from "@opensecret/react";
+import { useOpenSecret, type LoginResponse } from "@mapleai/sdk";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
