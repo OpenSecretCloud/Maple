@@ -1,0 +1,156 @@
+name: Publish TypeScript SDK
+
+run-name: TypeScript SDK ${{ inputs.version }} (${{ inputs.dry_run && 'dry run' || inputs.mode }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable X.Y.Z already committed in sdk/package.json on master
+        type: string
+        required: true
+      mode:
+        description: Trusted publishing, or the one-time first-package bootstrap
+        type: choice
+        options: [trusted, bootstrap]
+        default: trusted
+        required: true
+      dry_run:
+        description: Build and validate only; uncheck to publish after environment approval
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-npm-publish
+  cancel-in-progress: false
+
+env:
+  SDK_VERSION: ${{ inputs.version }}
+  SDK_MODE: ${{ inputs.mode }}
+  SDK_PUBLISH_WORKFLOW_SHA: ${{ github.workflow_sha }}
+
+jobs:
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.repository_id == '923138240' &&
+      github.repository_owner_id == '322649754' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify source, version, and registry state
+        run: python3 -I scripts/ci/sdk_publish.py source --kind npm --version "$SDK_VERSION" --mode "$SDK_MODE"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Build and test the exact npm package without publishing credentials
+        run: bash scripts/ci/build-sdk-publish.sh npm "$RUNNER_TEMP/sdk-package"
+
+      - name: Bind the tested package to this source and run
+        run: >-
+          python3 -I scripts/ci/sdk_publish.py bundle --kind npm --version "$SDK_VERSION" --mode "$SDK_MODE"
+          --archive "$RUNNER_TEMP/sdk-package/package.tgz" --output "$RUNNER_TEMP/sdk-bundle"
+
+      - name: Upload the tested package and manifest
+        id: bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sdk-npm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-bundle/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: >-
+      !inputs.dry_run &&
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.repository_id == '923138240' &&
+      github.repository_owner_id == '322649754' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: sdk-npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download only the artifact created by this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/sdk-bundle
+
+      - name: Install the pinned publishing client without dependency caching
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.14.0 # Includes npm 11.9.0 with OIDC support.
+          package-manager-cache: false
+
+      - name: Verify the reviewed artifact and repeat registry checks
+        run: >-
+          python3 -I scripts/ci/sdk_publish.py verify --kind npm --version "$SDK_VERSION" --mode "$SDK_MODE"
+          --directory "$RUNNER_TEMP/sdk-bundle"
+
+      - name: Publish the verified tarball once
+        id: publish
+        continue-on-error: true
+        env:
+          NPM_BOOTSTRAP_TOKEN: ${{ inputs.mode == 'bootstrap' && secrets.NPM_BOOTSTRAP_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.14.0
+          test "$(npm --version)" = 11.9.0
+          publish_dir=$(mktemp -d "$RUNNER_TEMP/sdk-npm-publish.XXXXXX")
+          trap 'rm -rf -- "$publish_dir"' EXIT
+          export NPM_CONFIG_USERCONFIG="$publish_dir/npmrc"
+          export NPM_CONFIG_GLOBALCONFIG=/dev/null
+          export NPM_CONFIG_CACHE="$publish_dir/cache"
+          : > "$NPM_CONFIG_USERCONFIG"
+          case "$SDK_MODE" in
+            bootstrap)
+              test -n "$NPM_BOOTSTRAP_TOKEN" || { echo 'The protected npm bootstrap secret is missing.' >&2; exit 1; }
+              export NODE_AUTH_TOKEN="$NPM_BOOTSTRAP_TOKEN"
+              # npm resolves this placeholder; never write the token into the file.
+              # shellcheck disable=SC2016
+              printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPM_CONFIG_USERCONFIG"
+              ;;
+            trusted) unset NODE_AUTH_TOKEN NPM_TOKEN ;;
+            *) exit 1 ;;
+          esac
+          unset NPM_BOOTSTRAP_TOKEN
+          cd "$publish_dir"
+          npm publish "$RUNNER_TEMP/sdk-bundle/package.tgz" \
+            --ignore-scripts --provenance --access public --tag latest \
+            --fetch-retries=0 --registry https://registry.npmjs.org/
+
+      # The registry result is authoritative after a lost upload response. Never
+      # retry publication automatically; confirm the exact published checksum.
+      - name: Confirm the immutable registry result
+        if: ${{ always() && steps.publish.outcome != 'skipped' }}
+        run: >-
+          python3 -I scripts/ci/sdk_publish.py confirm --kind npm --version "$SDK_VERSION" --mode "$SDK_MODE"
+          --directory "$RUNNER_TEMP/sdk-bundle"

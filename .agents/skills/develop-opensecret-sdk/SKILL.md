@@ -95,11 +95,24 @@ result.
 ## Publishing boundary
 
 SDK publishing is separate from the Maple application release workflow.
-`just publish-npm` and `just publish-cargo` are external production mutations;
-run either only with explicit authority for the exact package, version, registry,
-and source commit. Verify versions, clean state, tests, and the built package
-before publishing, then report the immutable registry result. Do not create a
-Maple GitHub Release merely to publish an SDK.
+Follow `docs/sdk-publishing.md`. Use the separate manual
+`sdk-publish-npm.yml` and `sdk-publish-rust.yml` workflows on protected `master`;
+each publishes the stable version already committed for that SDK. Neither
+workflow creates GitHub Releases or tags, or changes the Maple application
+release version.
+
+`just publish-npm VERSION` and `just publish-cargo VERSION` dispatch validation
+in GitHub Actions with `mode=trusted` and `dry_run=true`. They do not publish
+locally. Initial publication also runs in Actions, using the guide's one-time
+bootstrap procedure. Normal publication uses registry trusted publishing and
+the protected `sdk-npm` or `sdk-crates` environment.
+
+Setting `dry_run=false` authorizes an external production mutation; do that
+only with explicit authority for the exact package, version, registry, and
+source commit. Review the workflow's validated package and source commit before
+approving its environment. Report the immutable registry result and the run URL.
+Never use local `npm publish` or `cargo publish`, and never create a Maple
+GitHub Release merely to publish an SDK.
 
 ## Report
 

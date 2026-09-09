@@ -748,6 +748,16 @@
             touch "$out"
           '';
 
+          sdk-publishing = pkgs.runCommand "maple-sdk-publishing-check" {
+            nativeBuildInputs = with pkgs; [ bash git python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 -I -m unittest discover -s scripts/ci -p 'test_sdk_publish*.py'
+            python3 -I -m unittest discover -s scripts/ci -p 'test_sdk_crates_upload.py'
+            touch "$out"
+          '';
+
           release-metadata = pkgs.runCommand "maple-release-metadata-check" {
             nativeBuildInputs = commonPackages;
             src = ./.;
