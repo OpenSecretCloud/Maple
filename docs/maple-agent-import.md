@@ -18,15 +18,16 @@ the source master above. The imported `apps/maple-agent` tree exactly equals
 the original root tree `feaa3bc67584d881aa5c85d742302afc52a620b4`.
 Dependency, tooling, and update adaptations follow that separate boundary.
 
-Merge this import PR with a normal merge commit. Squashing or rebasing away
-the import merge would discard the preserved upstream ancestry.
+The import merge is retained in Maple's ancestry. Its separate source parent
+preserves upstream history rather than flattening it into a squash commit.
 
 ## Integration
 
-- Use the local `maple-sdk` and `maple-proxy` packages. The GPUI SDK
-  fork is replaced by the canonical catalog API and its boolean capability
-  contract. The SDK package is renamed in tree; registry publishing remains
-  separate work.
+- The GPUI SDK fork is replaced by the canonical catalog API and its boolean capability
+  contract. Agent now selects the published `maple-sdk` independently while
+  consuming the local `maple-proxy` library. Local SDK links remain supported
+  by the [consumer version policy](sdk-publishing.md#consumer-version-policy);
+  [SDK publication](sdk-publishing.md) has its own protected manual workflow.
 - Keep the GPUI component's Cargo/Nix environment and internal `maple-gpui`
   binary name. Root commands, CI, and agent guidance route to the component.
   Linux exposes pure Nix packages; macOS uses the Nix development shell plus
@@ -62,8 +63,8 @@ follow-up work; this import does not merge, close, or rewrite them:
 | [69](https://github.com/benthecarman/maple-gpui/pull/69) | Draft `feature/cpython-codemode` | `e087b1af4eb0e4f77c036b9fff2f7904a2e9c4f0` | Separate focused port |
 | [2](https://github.com/benthecarman/maple-gpui/pull/2) | Draft `programmable-harness` | `653b95946bf391cc82998bcc6ca22fe40da577e9` | Historical conflicting draft; reassess individual slices against current master |
 
-After merging the import, direct new Agent work here and recheck each active
-branch's latest head with its author before replaying. Prefix the intended
+Direct new Agent work here and recheck each active branch's latest head with
+its author before replaying. Prefix the intended
 delta under `apps/maple-agent/` and review it against current code; do not
 blindly merge an old root-layout branch. Keep the source repository and open
 branches available until each item's disposition is recorded. Repository

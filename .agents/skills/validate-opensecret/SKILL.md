@@ -145,11 +145,12 @@ the corresponding Maple application client:
    usage when promised, and one terminal condition.
 5. Inspect bounded logs for accidental sensitive content.
 
-Follow the matching SDK and application validation skills. The monorepo-root
-`apps/maple-research/frontend/package.json` resolves the browser's in-tree
-`file:../../../sdk` dependency. Research desktop, the proxy, and the GPUI
-prototype consume `sdk/rust` through versioned path dependencies in their
-component `Cargo.toml` files. Root `sdk-integration.yml` runs both SDKs against
+Follow the matching SDK and application validation skills. Each consumer's
+manifest and lockfile select its SDK version and source; published pins are
+the default, with local links supported under the
+[consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Verify that selection before using an application build as evidence for an SDK
+source edit. Root `sdk-integration.yml` runs both in-tree SDKs against
 the backend in the same checkout with disposable PostgreSQL and loopback
 configuration. That deterministic gate does not prove an application or live
 provider flow. Test browser Research and affected native paths independently;

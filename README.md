@@ -12,7 +12,7 @@ application identity.
 | --- | --- |
 | [`apps/maple-research/`](apps/maple-research/README.md) | React/Vite frontend and Tauri desktop/mobile application, app documentation, and distribution configuration |
 | [`apps/maple-agent/`](apps/maple-agent/README.md) | GPUI desktop-v2 prototype, ACP agent, and CLI proxy; independent from the shipped Research app |
-| [`sdk/`](sdk/README.md) | Maple TypeScript/React and Rust SDKs, consumed in tree by Maple |
+| [`sdk/`](sdk/README.md) | Independently published Maple TypeScript/React and Rust SDKs |
 | [`proxy/`](proxy/README.md) | Standalone OpenAI-compatible proxy, also consumed by desktop Maple |
 | [`services/updates/`](services/updates/README.md) | Desktop updater Worker and verified release-metadata publishing |
 | [`services/opensecret/`](services/opensecret/README.md) | Confidential authentication, inference, conversations, and related backend APIs; local Nitro tooling and signed PCR files |
@@ -46,6 +46,9 @@ Preserve existing configuration and externally managed workspace resources.
 All `VITE_*` values are public client configuration and must never contain secrets.
 Root `justfile`, `flake.nix`, `.agents/`, and CI scripts remain shared entry points;
 use each component's guide for its direct Bun or Cargo commands.
+Consumers select their SDK versions independently. Published pins are the
+default, with local links available for development; follow the
+[SDK consumer version policy](docs/sdk-publishing.md#consumer-version-policy).
 OpenSecret retains its own pinned Nix shell and Rust package: enter
 `services/opensecret/` before running its commands, and follow its
 [setup guide](services/opensecret/README.md#local-quick-start) for stateful
@@ -64,6 +67,8 @@ GitHub Release starts cross-platform packaging and downstream publication. Use
 [the release procedure](.agents/skills/release-maple/SKILL.md) only for authorized
 release work. The [Pages guide](docs/pages-deployments.md) documents preview and
 production deployment profiles and controls.
+SDK publication uses separate protected manual workflows and does not create
+a Maple application release; see the [SDK publishing guide](docs/sdk-publishing.md).
 OpenSecret's root CI workflows validate code and in-tree SDK compatibility;
 they do not publish EIFs or deploy the TEE service. Backend deployment and
 [manual signed-PCR publication](services/opensecret/docs/pcr-compatibility.md)

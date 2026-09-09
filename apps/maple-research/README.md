@@ -2,17 +2,20 @@
 
 Maple Research is the existing Maple client, built with React, Vite, and Tauri.
 It runs as a web application and as native desktop/mobile applications, and uses
-[OpenSecret](https://github.com/OpenSecretCloud/opensecret) for confidential
+[OpenSecret](../../services/opensecret/README.md) for confidential
 authentication, inference, conversations, and related APIs.
 
 Research chat and desktop Agent Mode are different client paths. Research chat
-uses the TypeScript OpenSecret SDK with the Responses and Conversations APIs;
-Agent Mode embeds Goose and uses the Rust OpenSecret SDK through Tauri. The
+uses the TypeScript Maple SDK with the Responses and Conversations APIs;
+Agent Mode embeds Goose and uses the Rust Maple SDK through Tauri. The
 local OpenAI-compatible proxy is a separate user-facing service.
 
-The OpenSecret SDK source and its upstream Git history live under
-[`sdk/`](../../sdk/README.md), and Maple consumes its in-tree TypeScript and Rust
-packages. The proxy source and its upstream history live under
+The Maple SDK source and its upstream Git history live under
+[`sdk/`](../../sdk/README.md). Research selects published TypeScript and Rust
+versions independently in its manifests and lockfiles, with local links
+supported during development. See the
+[SDK consumer version policy](../../docs/sdk-publishing.md#consumer-version-policy).
+The proxy source and its upstream history live under
 [`proxy/`](../../proxy/README.md); desktop Maple consumes that in-tree crate too.
 
 The source directory name does not change the shipped Maple application identity
@@ -80,9 +83,10 @@ prove billing- or flag-gated behavior. Provider credentials and administrative
 API keys belong on their servers, never in Maple.
 
 To use a local backend, follow
-[OpenSecret's own setup guide](https://github.com/OpenSecretCloud/opensecret),
-including its SQL migration step, and keep the default frontend origin unless
-you also intend to change and validate OAuth/verification callback handling.
+[OpenSecret's setup guide](../../services/opensecret/README.md#local-quick-start)
+from `services/opensecret/`, including its SQL migration step. Keep the default
+frontend origin unless you also intend to change and validate OAuth/verification
+callback handling.
 
 ## Common commands
 

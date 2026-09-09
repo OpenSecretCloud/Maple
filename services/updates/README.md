@@ -17,9 +17,17 @@ The live pointer is ignored by git and must not be committed. The protected
 `Publish updater metadata` GitHub Actions workflow downloads the current stable
 GitHub Release's `latest.json`, verifies its GitHub digest and Worker schema,
 deploys it, and confirms that the public endpoint serves the exact same bytes.
-The first run also creates the `updates.trymaple.ai` Custom Domain and its DNS and
-TLS configuration. Publication is manual until the release workflow is connected
-in a later phase. Do not use a local Wrangler login for production deployment.
+The workflow runs after a successful stable Maple `Release` run and can also
+be dispatched from `master` to republish the current stable release. It ensures
+the `updates.trymaple.ai` Custom Domain targets the `maple-updates` Worker.
+SDK publication and Agent CI do not trigger this workflow. Do not use a local
+Wrangler login for production deployment.
+
+During the repository-transfer transition, keep the retained `v3.3.10` metadata
+serving until the next normal Maple release generates new-owner asset URLs.
+Do not manually republish that old metadata: the publisher now validates
+`MaplePrivacyLabs/Maple` release URLs. See the
+[release checkpoint](../../.agents/skills/release-maple/SKILL.md#repository-transfer-checkpoint).
 
 ## Development
 
