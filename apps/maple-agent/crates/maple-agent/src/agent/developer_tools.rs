@@ -4373,7 +4373,8 @@ printf '%s %s\n' "$$" "$!" > shell-pids"#.to_string(),
 
         // Join inline: a panic or timeout before the handshake drops the armed
         // shell future instead of detaching a spawned task or a blocked child.
-        let (result, mut group) = tokio::time::timeout(Duration::from_secs(10), async {
+        let fixture_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let (result, mut group) = tokio::time::timeout_at(fixture_deadline, async {
             tokio::join!(execution, revoke_after_parent_exit)
         })
         .await
@@ -4389,12 +4390,29 @@ printf '%s %s\n' "$$" "$!" > shell-pids"#.to_string(),
             "descendant kept output pipes open"
         );
         assert!(output.output_collection_error.is_none());
-        let error = OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&fifo)
-            .expect_err("revoked descendant still has its FIFO reader open");
-        assert_eq!(error.raw_os_error(), Some(libc::ENXIO));
+        // Output EOF does not prove every FIFO reader has closed: concurrent
+        // process spawns can briefly inherit the bootstrap reader before exec.
+        // Wait for the actual FIFO condition within the same deadline. Retaining
+        // the original writer without sending data prevents a surviving child
+        // from completing its read normally and making this assertion pass.
+        tokio::time::timeout_at(fixture_deadline, async {
+            loop {
+                match OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo)
+                {
+                    Ok(probe) => drop(probe),
+                    Err(error) => {
+                        assert_eq!(error.raw_os_error(), Some(libc::ENXIO));
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("revoked descendant still has its FIFO reader open");
         assert!(!temp.path().join("child-survived").exists());
         group.0 = None;
         drop(writer);
