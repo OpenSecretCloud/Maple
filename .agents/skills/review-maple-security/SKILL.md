@@ -289,10 +289,12 @@ Preserve the OpenSecret SDK's encrypted and attested transport. Do not replace `
 
 Review development and production enclave URLs and PCR/attestation allowlists together. Reject an endpoint that is not HTTPS unless it is an explicit loopback development address. Reject URL credentials and unexpected paths, queries, or fragments at the native authority boundary. Treat source-configured PCR values as policy, not proof that a live enclave currently matches; perform live attestation before making deployment claims.
 
-The SDK source is in this repository. The browser uses `file:../../../sdk`, while
-desktop Maple and `proxy/` use versioned path dependencies on `sdk/rust`.
-Review source changes and resolved application dependencies as distinct
-boundaries, and verify the local Cargo graph before claiming coverage. Do not assume
+The SDK source is in this repository, but each consumer selects a published
+version or local source through its manifest and lockfile. Follow the
+[SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Review SDK source changes and resolved application dependencies as distinct
+boundaries: a registry-pinned client does not exercise unpublished SDK edits.
+Verify the selected source and Cargo graph before claiming coverage. Do not assume
 the browser and native SDKs have identical features, request schemas, refresh
 behavior, attestation behavior, or error handling. For an OpenSecret API
 contract change, validate both clients. Keep decrypted upstream errors and

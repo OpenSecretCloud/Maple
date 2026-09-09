@@ -16,9 +16,15 @@ package boundaries remain independently versioned and publishable:
 - `rust/` builds the `maple-sdk` crate (imported as `maple_sdk`) for native consumers.
 - `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
   consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
-- desktop Maple and `proxy/` consume the in-tree Rust crate through versioned
-  path dependencies. iOS and Android do not compile those desktop-only
-  consumers.
+- Research desktop, Maple Agent, and `proxy/` select their Rust SDK through
+  their own manifests and lockfiles. iOS and Android do not compile Research's
+  desktop-only SDK/proxy consumers.
+
+Follow the [consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Prefer published pins without upgrading unrelated consumers. Local links are
+allowed during active development, including on `master`; a registry-pinned
+client build does not exercise an SDK source edit. Test an affected consumer
+with the local SDK when that integration is part of the change.
 
 Do not commit, push, open a PR, publish, or alter Maple's application dependency
 wiring unless the user authorizes that action.
@@ -89,8 +95,8 @@ cargo package --locked --manifest-path rust/Cargo.toml
 
 These commands validate package contents; they do not publish them. For Rust
 SDK changes, also run the root `scripts/ci/verify-local-rust-deps.sh` check and
-the applicable desktop/proxy validation before claiming Maple consumes the
-result.
+the applicable desktop/proxy validation. Check its selected SDK source before
+claiming Maple consumes the result.
 
 ## Publishing boundary
 

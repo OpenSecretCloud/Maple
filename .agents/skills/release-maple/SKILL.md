@@ -112,19 +112,34 @@ newer version and unused tag, and successful required workflows for the exact
 commit. Stop on any failure; correct it through the normal reviewed process.
 Never overwrite or move a release tag.
 
-Record the proxy version and whether proxy or Rust SDK runtime inputs changed
-since `previous_tag`:
+Review the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy)
+for the clients being released. Record the frontend's selected SDK from its
+manifest/lockfile and each Rust consumer's resolved version/source using the
+policy's `cargo metadata --locked` command. Local links are allowed. If those
+clients will ship unpublished SDK changes, recommend publishing the SDK and
+pinning those consumers first; an intentional local-source release can proceed
+with the exact monorepo commit recorded. Unrelated SDK source changes do not
+require a pinned client to upgrade, and this preference adds no release gate.
+
+Record the proxy version and inspect its own runtime inputs since `previous_tag`:
 
 ```bash
 proxy_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' proxy/Cargo.toml | head -n 1)"
-git diff --name-only "$previous_tag".."$head_sha" -- proxy sdk/rust
+git diff --name-only "$previous_tag".."$head_sha" -- proxy
 printf 'proxy_version=%s\n' "$proxy_version"
 ```
 
-If runtime inputs changed without a proxy version change, stop and make the
-version decision explicit before publishing. A normal Maple Release always
-builds the checked-in proxy version, but that does not implicitly authorize a
-crates.io or GHCR publish.
+Inspect the proxy's manifest and lockfile at both revisions. Include changes
+under `sdk/rust` in its runtime comparison when either revision uses that local
+SDK. With registry dependencies at both revisions, compare the selected SDK
+versions/checksums in `proxy/Cargo.lock`; unrelated `sdk/rust` edits are not
+proxy runtime changes. The embedding app's SDK selection is separate from the
+standalone proxy's lockfile.
+
+If consumed runtime inputs changed without a proxy version change, stop and
+make the version decision explicit before publishing. A normal Maple Release
+always builds the checked-in proxy version, but that does not implicitly
+authorize a crates.io or GHCR publish.
 
 Preview GitHub's generated notes:
 
