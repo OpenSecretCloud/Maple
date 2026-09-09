@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -169,7 +170,8 @@ class NPMPublishCommandTests(unittest.TestCase):
         (checkout / ".npmrc").write_text("registry=https://attacker.invalid/\n")
         (tools / "node").write_text("#!/bin/sh\necho v24.14.0\n")
         (tools / "npm").write_text(
-            "#!/usr/bin/env python3\n"
+            # Linux Nix sandboxes do not provide /usr/bin/env.
+            f"#!{sys.executable}\n"
             "import json, os, pathlib, sys\n"
             "if sys.argv[1:] == ['--version']:\n"
             "    print('11.9.0')\n"
