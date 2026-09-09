@@ -1,4 +1,6 @@
 /.github/CODEOWNERS @AnthonyRonning
 /.github/workflows/ @AnthonyRonning
+/scripts/ci/sdk_*.py @AnthonyRonning
+/scripts/ci/build-sdk-publish.sh @AnthonyRonning
 /services/updates/ @AnthonyRonning
 /proxy/ @AnthonyRonning

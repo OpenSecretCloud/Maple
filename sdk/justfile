@@ -1,10 +1,10 @@
-# Build a fresh npm tarball and publish that exact artifact.
-publish-npm:
-    nix develop --no-update-lock-file -c bun install --frozen-lockfile --ignore-scripts
-    nix develop --no-update-lock-file -c bun run build
-    nix develop --no-update-lock-file -c bun pm pack --filename maple-sdk-publish.tgz
-    nix develop --no-update-lock-file -c npm publish ./maple-sdk-publish.tgz --access public
+# These recipes dispatch GitHub Actions; they never publish from this machine.
+set positional-arguments
 
-# Publish the Rust crate using the committed lockfile.
-publish-cargo:
-    nix develop --no-update-lock-file -c cargo publish --locked --manifest-path rust/Cargo.toml
+# Validate the committed npm version in Actions; pass trusted false to publish.
+publish-npm version mode="trusted" dry_run="true":
+    gh workflow run sdk-publish-npm.yml --repo MaplePrivacyLabs/Maple --ref master --raw-field "version=$1" --raw-field "mode=$2" --raw-field "dry_run=$3"
+
+# Validate the committed Rust version in Actions; pass trusted false to publish.
+publish-cargo version mode="trusted" dry_run="true":
+    gh workflow run sdk-publish-rust.yml --repo MaplePrivacyLabs/Maple --ref master --raw-field "version=$1" --raw-field "mode=$2" --raw-field "dry_run=$3"

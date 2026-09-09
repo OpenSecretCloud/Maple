@@ -128,11 +128,15 @@ bun run pack
 
 Only `dist/` is included in the package.
 
-Publish a freshly built npm artifact with:
+Publishing runs in GitHub Actions. To dispatch validation of the committed
+TypeScript version from `sdk/`:
 
 ```sh
-just publish-npm
+just publish-npm 3.5.2
 ```
+
+This defaults to a dry run. See the [SDK publishing guide](../docs/sdk-publishing.md)
+for the protected publish action and the one-time registry setup.
 
 ## Rust SDK
 
@@ -163,11 +167,16 @@ nix develop --no-update-lock-file -c bash -lc '
 Integration tests use the variables documented in `rust/.env.example` and are
 separate from the default local validation path.
 
-Publish the locked Rust crate with:
+To dispatch validation of the committed Rust version from `sdk/`:
 
 ```sh
-just publish-cargo
+just publish-cargo 3.6.2
 ```
+
+This defaults to a dry run. Both recipes only dispatch GitHub Actions; they do
+not build or publish packages locally. Each SDK has its own workflow and
+version, independent of Maple application releases. Follow the
+[SDK publishing guide](../docs/sdk-publishing.md) to publish.
 
 ## Change discipline
 
