@@ -529,15 +529,20 @@ for raw_line in sys.stdin:
         write_executable(
             &shell,
             r#"#!/bin/sh
-fixture_root=$(/usr/bin/dirname "$0")
+fixture_root=${0%/*}
 /bin/sleep 30 &
 printf '%s\n' "$!" > "$fixture_root/same-group-child.pid"
-export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-/bin/sh -c "$4"
+printf '%s\n' "$MAPLE_LOGIN_SHELL_PATH_MARKER" '/usr/bin:/bin:/usr/sbin:/sbin'
+exit 0
 "#,
         );
 
-        let result = query_login_shell_search_paths(&shell, Duration::from_millis(500)).await;
+        // This tests output cleanup after the leader exits, not how quickly macOS can start
+        // several processes. Keep the fixture to shell builtins and the intentional stdout
+        // holder, and allow the normal probe budget for a busy hosted runner to reap the leader.
+        let started = Instant::now();
+        let result = query_login_shell_search_paths(&shell, LOGIN_SHELL_PATH_TIMEOUT).await;
+        let elapsed = started.elapsed();
         let pid = fs::read_to_string(pid_file)
             .unwrap()
             .trim()
@@ -557,6 +562,10 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
         let error = result.unwrap_err();
         assert!(error.contains("output did not close"), "{error}");
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "probe waited for the stdout holder instead of its deadline: {elapsed:?}"
+        );
         assert!(stopped, "same-process-group child {pid} survived cleanup");
     }
 
