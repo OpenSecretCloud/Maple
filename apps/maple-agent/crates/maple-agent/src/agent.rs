@@ -94,8 +94,9 @@ use web_permission::{
 };
 use web_tools::WebToolState;
 
-const DEFAULT_AGENT_MODEL: &str = "glm-5-2";
+const DEFAULT_AGENT_MODEL: &str = "glm-5-3";
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
+const PREVIOUS_RECOMMENDED_AGENT_MODEL: &str = "glm-5-2";
 const DEFAULT_GOOSE_MODE: &str = "smart_approve";
 // Keep Goose on its ActionRequired path so Maple can apply the currently selected
 // policy at every tool boundary, including when the user changes it mid-run.
@@ -8862,7 +8863,9 @@ fn load_agent_config_file(path: &Path) -> Result<AgentConfig, anyhow::Error> {
 
 fn migrate_agent_config(config: &mut AgentConfig) -> bool {
     let mut changed = false;
-    if config.default_model == LEGACY_AGENT_DEFAULT_MODEL {
+    if config.default_model == LEGACY_AGENT_DEFAULT_MODEL
+        || config.default_model == PREVIOUS_RECOMMENDED_AGENT_MODEL
+    {
         config.default_model = default_agent_model();
         changed = true;
     }
@@ -14237,8 +14240,23 @@ mod tests {
     }
 
     #[test]
+    fn previous_glm_5_2_agent_default_migrates_to_glm_5_3() {
+        let mut config = AgentConfig {
+            default_project_root: Some("/tmp/project".to_string()),
+            default_model: PREVIOUS_RECOMMENDED_AGENT_MODEL.to_string(),
+            mcp_servers: Vec::new(),
+            project_trust: Vec::new(),
+            removed_project_roots: Vec::new(),
+        };
+
+        assert!(migrate_agent_config(&mut config));
+        assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
+        assert!(!migrate_agent_config(&mut config));
+    }
+
+    #[test]
     fn explicit_agent_model_choices_are_not_migrated() {
-        for model in ["kimi-k2-6", "auto:quick", "glm-5-2", "gemma-3-27b"] {
+        for model in ["kimi-k2-6", "auto:quick", "glm-5-3", "gemma-3-27b"] {
             let mut config = AgentConfig {
                 default_project_root: None,
                 default_model: model.to_string(),

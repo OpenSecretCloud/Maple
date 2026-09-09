@@ -114,10 +114,9 @@ pub const DEFAULT_TOP_P: f32 = 1.0;
 pub const AUTO_QUICK_MODEL_ID: &str = "auto:quick";
 pub const AUTO_POWERFUL_MODEL_ID: &str = "auto:powerful";
 pub const QUICK_MODEL_ID: &str = "gpt-oss-120b";
-pub const GLM_5_2_MODEL_ID: &str = "glm-5-2";
 pub const GLM_5_3_MODEL_ID: &str = "glm-5-3";
 pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
-pub const POWERFUL_MODEL_ID: &str = GLM_5_2_MODEL_ID;
+pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 pub const KIMI_K2_6_MODEL_ID: &str = "kimi-k2-6";
 pub const DEEPSEEK_V4_FLASH_MODEL_ID: &str = "deepseek-v4-flash";
@@ -620,20 +619,6 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
     .with_catalog_provider("continuum", "glm-5.3")
     .with_catalog_metadata(ModelCatalogMetadata::new(&["text"], &["text"], None, None)),
     ModelConfigEntry::new(
-        GLM_5_2_MODEL_ID,
-        "GLM 5.2",
-        "GLM 5.2",
-        "Long-horizon pro reasoning model.",
-        ModelAccessTier::Pro,
-        ModelCapabilities::chat(true, false),
-        &["Reasoning"],
-        true,
-        true,
-        false,
-        60,
-        393_216,
-    ),
-    ModelConfigEntry::new(
         DEEPSEEK_V4_FLASH_MODEL_ID,
         "DeepSeek V4 Flash",
         "DeepSeek V4 Flash",
@@ -908,13 +893,12 @@ mod tests {
         assert_eq!(model_context_window("gpt-oss-safeguard-120b"), 131_072);
         assert_eq!(model_context_window("kimi-k2-6"), 262_144);
         assert_eq!(model_context_window("gemma4-31b"), 262_144);
-        assert_eq!(model_context_window("glm-5-2"), 393_216);
         assert_eq!(model_context_window("glm-5-3"), 262_144);
         assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
         assert_eq!(model_context_window("kimi-k3"), 262_144);
         assert_eq!(model_context_window("deepseek-v4-flash"), 1_048_576);
         assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 131_072);
-        assert_eq!(model_context_window(AUTO_POWERFUL_MODEL_ID), 393_216);
+        assert_eq!(model_context_window(AUTO_POWERFUL_MODEL_ID), 262_144);
     }
 
     #[test]
@@ -925,7 +909,6 @@ mod tests {
             "gpt-oss-safeguard-120b",
             "kimi-k2-6",
             "gemma4-31b",
-            "glm-5-2",
             "glm-5-3",
             "glm-5-3-flash",
             "kimi-k3",
@@ -1090,18 +1073,18 @@ mod tests {
 
     #[test]
     fn test_model_alias_targets_are_selected_by_plan() {
-        assert_eq!(POWERFUL_MODEL_ID, GLM_5_2_MODEL_ID);
+        assert_eq!(POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID);
 
         let free = ModelAliasTargets::for_plan(ModelPlan::Free);
         assert_eq!(free.resolve(AUTO_QUICK_MODEL_ID), QUICK_MODEL_ID);
-        assert_eq!(free.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_2_MODEL_ID);
+        assert_eq!(free.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
 
         let paid = ModelAliasTargets::for_plan(ModelPlan::Paid);
         assert_eq!(
             paid.resolve(AUTO_QUICK_MODEL_ID),
             DEEPSEEK_V4_FLASH_MODEL_ID
         );
-        assert_eq!(paid.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_2_MODEL_ID);
+        assert_eq!(paid.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
         assert_eq!(paid.resolve(KIMI_K3_MODEL_ID), KIMI_K3_MODEL_ID);
     }
 
@@ -1133,10 +1116,10 @@ mod tests {
                 assert_eq!(targets.resolve(model), model, "plan={plan:?}");
                 assert_eq!(resolve_public_model_id(targets.resolve(model)), Some(model));
             }
-            assert_eq!(targets.resolve(GLM_5_2_MODEL_ID), GLM_5_2_MODEL_ID);
+            assert_eq!(targets.resolve(GLM_5_3_MODEL_ID), GLM_5_3_MODEL_ID);
             assert_eq!(
-                resolve_completion_model_id(targets.resolve(GLM_5_2_MODEL_ID)),
-                Some(GLM_5_2_MODEL_ID)
+                resolve_completion_model_id(targets.resolve(GLM_5_3_MODEL_ID)),
+                Some(GLM_5_3_MODEL_ID)
             );
             assert_eq!(targets.resolve("unknown-model"), "unknown-model");
             assert_eq!(
@@ -1161,7 +1144,7 @@ mod tests {
             }
             assert_eq!(catalog["defaults"]["quick"], AUTO_QUICK_MODEL_ID);
             assert_eq!(catalog["defaults"]["powerful"], AUTO_POWERFUL_MODEL_ID);
-            assert!(has_model(&catalog, GLM_5_2_MODEL_ID));
+            assert!(!has_model(&catalog, "glm-5-2"));
             assert!(has_model(&catalog, GLM_5_3_MODEL_ID));
         }
     }
@@ -1175,7 +1158,7 @@ mod tests {
                 plan.allows_model(targets.resolve(AUTO_POWERFUL_MODEL_ID)),
                 plan.is_paid()
             );
-            for model in [GLM_5_2_MODEL_ID, GLM_5_3_MODEL_ID] {
+            for model in [GLM_5_3_MODEL_ID, GLM_5_3_FLASH_MODEL_ID] {
                 assert_eq!(plan.allows_model(targets.resolve(model)), plan.is_paid());
             }
         }
@@ -1192,21 +1175,14 @@ mod tests {
 
             let free = ModelAliasTargets::for_plan_with_overrides(ModelPlan::Free, overrides);
             assert_eq!(free.resolve(AUTO_QUICK_MODEL_ID), QUICK_MODEL_ID);
-            assert_eq!(free.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_2_MODEL_ID);
+            assert_eq!(free.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
 
             let paid = ModelAliasTargets::for_plan_with_overrides(ModelPlan::Paid, overrides);
             assert_eq!(
                 paid.resolve(AUTO_QUICK_MODEL_ID),
                 DEEPSEEK_V4_FLASH_MODEL_ID
             );
-            assert_eq!(
-                paid.resolve(AUTO_POWERFUL_MODEL_ID),
-                if powerful_enabled {
-                    GLM_5_3_MODEL_ID
-                } else {
-                    GLM_5_2_MODEL_ID
-                }
-            );
+            assert_eq!(paid.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
         }
 
         assert_eq!(
@@ -1256,8 +1232,8 @@ mod tests {
                 AUTO_QUICK_MODEL_ID,
                 DEEPSEEK_V4_FLASH_MODEL_ID,
             ),
-            (ModelPlan::Free, AUTO_POWERFUL_MODEL_ID, GLM_5_2_MODEL_ID),
-            (ModelPlan::Paid, AUTO_POWERFUL_MODEL_ID, GLM_5_2_MODEL_ID),
+            (ModelPlan::Free, AUTO_POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID),
+            (ModelPlan::Paid, AUTO_POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID),
         ] {
             let targets = ModelAliasTargets::for_plan(plan);
             assert_eq!(targets.resolve(selector), expected_target, "plan={plan:?}");
@@ -1272,7 +1248,6 @@ mod tests {
                 QUICK_MODEL_ID,
                 "kimi-k2-6",
                 KIMI_K3_MODEL_ID,
-                GLM_5_2_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
                 DEEPSEEK_V4_FLASH_MODEL_ID,
@@ -1303,7 +1278,7 @@ mod tests {
         assert_eq!(quick["target_model"], DEEPSEEK_V4_FLASH_MODEL_ID);
         assert_eq!(quick["access"], "pro");
         assert_eq!(quick["capabilities"]["vision"], false);
-        assert_eq!(powerful["target_model"], GLM_5_2_MODEL_ID);
+        assert_eq!(powerful["target_model"], GLM_5_3_MODEL_ID);
         assert_eq!(powerful["access"], "pro");
         assert_eq!(powerful["capabilities"]["vision"], false);
     }
@@ -1325,7 +1300,6 @@ mod tests {
             "gemma4-31b",
             "kimi-k3",
             "kimi-k2-6",
-            "glm-5-2",
             "glm-5-3",
             "glm-5-3-flash",
             "deepseek-v4-flash",
@@ -1436,7 +1410,7 @@ mod tests {
             .iter()
             .find(|alias| alias["id"] == AUTO_POWERFUL_MODEL_ID)
             .expect("powerful alias");
-        assert_eq!(powerful["target_model"], GLM_5_2_MODEL_ID);
+        assert_eq!(powerful["target_model"], GLM_5_3_MODEL_ID);
     }
 
     #[test]

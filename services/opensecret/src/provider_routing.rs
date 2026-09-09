@@ -7,9 +7,7 @@ use crate::inference_planning::{
     plan_completion_route, ConfiguredProviders, ProviderPreference, RoutePlan, RoutePlanningError,
     RoutePlanningInput,
 };
-use crate::model_config::{
-    resolve_completion_model_id, resolve_public_model_id, GLM_5_2_MODEL_ID, GLM_5_3_MODEL_ID,
-};
+use crate::model_config::{resolve_completion_model_id, resolve_public_model_id, GLM_5_3_MODEL_ID};
 use crate::os_flags::GLM_5_3_TINFOIL_FLAG_KEY;
 use crate::provider_registry::{
     ProviderId, ProviderRegistry, RouteSelectionSource, PROVIDER_REGISTRY,
@@ -181,14 +179,6 @@ const KIMI_K2_6_ROUTES: &[ModelProviderRoute] = &[ModelProviderRoute {
     requires_explicit_preference: false,
 }];
 
-const GLM_5_2_ROUTES: &[ModelProviderRoute] = &[ModelProviderRoute {
-    provider: ProviderId::Tinfoil,
-    provider_model_id: GLM_5_2_MODEL_ID,
-    weight: 100,
-    enabled: true,
-    requires_explicit_preference: false,
-}];
-
 const GLM_5_3_ROUTES: &[ModelProviderRoute] = &[
     ModelProviderRoute {
         provider: ProviderId::Continuum,
@@ -215,12 +205,6 @@ const MODEL_ROUTES: &[ModelRoutingConfig] = &[
         routes: KIMI_K2_6_ROUTES,
         provider_flag: None,
         default_provider: Some(ProviderId::Continuum),
-    },
-    ModelRoutingConfig {
-        public_model_id: GLM_5_2_MODEL_ID,
-        routes: GLM_5_2_ROUTES,
-        provider_flag: None,
-        default_provider: Some(ProviderId::Tinfoil),
     },
     ModelRoutingConfig {
         public_model_id: GLM_5_3_MODEL_ID,
@@ -802,8 +786,8 @@ mod tests {
     };
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, PaidModelAliasOverrides, AUTO_POWERFUL_MODEL_ID,
-        AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_FLASH_MODEL_ID, GLM_5_2_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-        GLM_5_3_MODEL_ID, KIMI_K2_6_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+        AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
+        KIMI_K2_6_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::os_flags::PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY;
     use std::collections::HashMap;
@@ -1096,9 +1080,9 @@ mod tests {
                 provider_preference: None,
                 continuum_available: true,
                 expected_access: false,
-                expected_public_model: GLM_5_2_MODEL_ID,
-                expected_provider: "tinfoil",
-                expected_provider_model: GLM_5_2_MODEL_ID,
+                expected_public_model: GLM_5_3_MODEL_ID,
+                expected_provider: "continuum",
+                expected_provider_model: "glm-5.3",
                 expected_source: RouteSelectionSource::DefaultProvider,
             },
             Case {
@@ -1120,9 +1104,9 @@ mod tests {
                 provider_preference: None,
                 continuum_available: true,
                 expected_access: true,
-                expected_public_model: GLM_5_2_MODEL_ID,
-                expected_provider: "tinfoil",
-                expected_provider_model: GLM_5_2_MODEL_ID,
+                expected_public_model: GLM_5_3_MODEL_ID,
+                expected_provider: "continuum",
+                expected_provider_model: "glm-5.3",
                 expected_source: RouteSelectionSource::DefaultProvider,
             },
             Case {
@@ -1136,18 +1120,6 @@ mod tests {
                 expected_provider: "tinfoil",
                 expected_provider_model: KIMI_K3_MODEL_ID,
                 expected_source: RouteSelectionSource::StaticSplit,
-            },
-            Case {
-                name: "explicit GLM default",
-                selector: GLM_5_2_MODEL_ID,
-                plan: ModelPlan::Paid,
-                provider_preference: None,
-                continuum_available: true,
-                expected_access: true,
-                expected_public_model: GLM_5_2_MODEL_ID,
-                expected_provider: "tinfoil",
-                expected_provider_model: GLM_5_2_MODEL_ID,
-                expected_source: RouteSelectionSource::DefaultProvider,
             },
             Case {
                 name: "explicit GLM 5.3 Tinfoil preference",
@@ -1619,7 +1591,6 @@ mod tests {
         let proxy_router = proxy_router_with_both_providers();
 
         for (provider, public_model, provider_model) in [
-            (ProviderId::Tinfoil, GLM_5_2_MODEL_ID, GLM_5_2_MODEL_ID),
             (
                 ProviderId::Tinfoil,
                 GLM_5_3_FLASH_MODEL_ID,
@@ -1691,47 +1662,19 @@ mod tests {
     }
 
     #[test]
-    fn test_glm_5_2_always_uses_tinfoil() {
-        let router = ProviderRouter::default();
-        let proxy_router = proxy_router_with_both_providers();
-
-        for bucket in [0, 29, 30, 69, 70, 99] {
-            let selected = router
-                .select_completion_route(&proxy_router, uuid_for_bucket(bucket), GLM_5_2_MODEL_ID)
-                .expect("route");
-
-            assert_eq!(selected.proxy.provider_name, "tinfoil");
-            assert_eq!(selected.public_model_id, GLM_5_2_MODEL_ID);
-            assert_eq!(selected.provider_model_id, GLM_5_2_MODEL_ID);
-            assert_eq!(selected.response_model_id, GLM_5_2_MODEL_ID);
-            assert_eq!(selected.bucket, None);
-            assert_eq!(
-                selected.selection_source,
-                RouteSelectionSource::DefaultProvider
-            );
-        }
-    }
-
-    #[test]
-    fn test_glm_5_2_and_alias_have_no_provider_routing_flag() {
+    fn test_alias_and_single_provider_models_have_no_provider_routing_flag() {
         let router = ProviderRouter::default();
 
-        assert_eq!(
-            router.provider_routing_flag_for_completion_model(GLM_5_2_MODEL_ID),
-            None
-        );
-        assert_eq!(
-            router.provider_routing_flag_for_completion_model(
-                crate::model_config::AUTO_POWERFUL_MODEL_ID
-            ),
-            None
-        );
         assert_eq!(
             router.provider_routing_flag_for_completion_model("kimi-k2-6"),
             None
         );
         assert_eq!(
             router.provider_routing_flag_for_completion_model("gpt-oss-120b"),
+            None
+        );
+        assert_eq!(
+            router.provider_routing_flag_for_completion_model(GLM_5_3_FLASH_MODEL_ID),
             None
         );
     }
@@ -1750,72 +1693,6 @@ mod tests {
             flag.preference_for(true).source(),
             RouteSelectionSource::FeatureFlag
         );
-    }
-
-    #[test]
-    fn test_glm_5_2_rejects_continuum_preference_and_stays_on_tinfoil() {
-        let router = ProviderRouter::default();
-        let proxy_router = proxy_router_with_both_providers();
-
-        let selected = router
-            .select_completion_route_with_preference(
-                &proxy_router,
-                uuid_for_bucket(1),
-                GLM_5_2_MODEL_ID,
-                Some(ProviderPreference::feature_flag(ProviderId::Continuum)),
-            )
-            .expect("route");
-
-        assert_eq!(selected.proxy.provider_name, "tinfoil");
-        assert_eq!(selected.public_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(selected.provider_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(selected.response_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(selected.bucket, None);
-        assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
-    }
-
-    #[test]
-    fn test_generic_tinfoil_preference_selects_glm_5_2_route() {
-        let router = ProviderRouter::default();
-        let proxy_router = proxy_router_with_both_providers();
-
-        let selected = router
-            .select_completion_route_with_preference(
-                &proxy_router,
-                uuid_for_bucket(99),
-                GLM_5_2_MODEL_ID,
-                Some(ProviderPreference::feature_flag(ProviderId::Tinfoil)),
-            )
-            .expect("route");
-
-        assert_eq!(selected.proxy.provider_name, "tinfoil");
-        assert_eq!(selected.provider_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(selected.bucket, None);
-        assert_eq!(selected.selection_source, RouteSelectionSource::FeatureFlag);
-    }
-
-    #[test]
-    fn test_glm_continuum_preference_falls_back_to_tinfoil_when_unavailable() {
-        let router = ProviderRouter::default();
-        let tinfoil_only = ProxyRouter::new(
-            "https://api.openai.com".to_string(),
-            None,
-            "http://tinfoil.example.com".to_string(),
-        );
-
-        let selected = router
-            .select_completion_route_with_preference(
-                &tinfoil_only,
-                uuid_for_bucket(70),
-                GLM_5_2_MODEL_ID,
-                Some(ProviderPreference::feature_flag(ProviderId::Continuum)),
-            )
-            .expect("route");
-
-        assert_eq!(selected.proxy.provider_name, "tinfoil");
-        assert_eq!(selected.provider_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(selected.bucket, None);
-        assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
     }
 
     #[test]
@@ -1911,10 +1788,10 @@ mod tests {
             )
             .expect("route");
 
-        assert_eq!(selected.proxy.provider_name, "tinfoil");
-        assert_eq!(selected.public_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(selected.provider_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(selected.response_model_id, GLM_5_2_MODEL_ID);
+        assert_eq!(selected.proxy.provider_name, "continuum");
+        assert_eq!(selected.public_model_id, GLM_5_3_MODEL_ID);
+        assert_eq!(selected.provider_model_id, "glm-5.3");
+        assert_eq!(selected.response_model_id, GLM_5_3_MODEL_ID);
         assert_eq!(selected.bucket, None);
         assert_eq!(
             selected.selection_source,

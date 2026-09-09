@@ -1832,11 +1832,10 @@ mod tests {
     fn tinfoil_glm_models_probe_independently() {
         let state = ShadowHealthState::with_policy(test_policy());
         let start = Instant::now();
-        let legacy = route(ProviderId::Tinfoil, "glm-5-2", "glm-5-2");
         let base = route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3");
         let flash = route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash");
 
-        for route in [&legacy, &base, &flash] {
+        for route in [&base, &flash] {
             state.observe_terminal_at(
                 &failed(
                     route.clone(),
@@ -1850,20 +1849,11 @@ mod tests {
         }
 
         let boundary = start + Duration::from_secs(4);
-        let legacy_probe = expect_probe(state.try_claim_probe_at(&legacy.route_key(), boundary));
         let base_probe = expect_probe(state.try_claim_probe_at(&base.route_key(), boundary));
         let flash_probe = expect_probe(state.try_claim_probe_at(&flash.route_key(), boundary));
 
-        assert_eq!(legacy_probe.claim_count(), 1);
         assert_eq!(base_probe.claim_count(), 1);
         assert_eq!(flash_probe.claim_count(), 1);
-        assert!(matches!(
-            state
-                .snapshot_at(&legacy.route_key(), boundary)
-                .unwrap()
-                .rate_limit_capacity,
-            ShadowDisposition::ProbeInFlight { .. }
-        ));
         assert!(matches!(
             state
                 .snapshot_at(&base.route_key(), boundary)

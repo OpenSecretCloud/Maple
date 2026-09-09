@@ -317,14 +317,14 @@ mod tests {
         let intent = InferenceIntent::new(
             Uuid::nil(),
             AUTO_POWERFUL_MODEL_ID,
-            "glm-5-2",
+            "glm-5-3",
             ModelPlan::Paid,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
 
         assert_eq!(intent.requested_model_id, AUTO_POWERFUL_MODEL_ID);
-        assert_eq!(intent.public_model_id, "glm-5-2");
+        assert_eq!(intent.public_model_id, "glm-5-3");
         assert_eq!(intent.selection_mode, ModelSelectionMode::AutoPowerful);
         assert!(intent.selection_mode.is_auto());
     }
@@ -348,8 +348,8 @@ mod tests {
     fn executions_and_attempts_keep_parent_ids_and_get_unique_ids() {
         let intent = InferenceIntent::new(
             Uuid::nil(),
-            "glm-5-2",
-            "glm-5-2",
+            "glm-5-3",
+            "glm-5-3",
             ModelPlan::Paid,
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
