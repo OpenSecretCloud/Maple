@@ -1,8 +1,9 @@
 # Maple Rust SDK
 
-This source lives under Maple's `sdk/rust/` directory. Desktop Maple and
-Maple's in-tree `proxy/` consume it through versioned path dependencies, while
-crates.io publishing remains an independent compatibility surface.
+This source lives under Maple's `sdk/rust/` directory. Research desktop,
+Maple Agent, and the proxy select published versions independently; local links
+remain supported for development. See the
+[consumer version policy](../../docs/sdk-publishing.md#consumer-version-policy).
 
 Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, and Nitro attestation.
 
@@ -17,9 +18,8 @@ Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, a
 
 ## Installation
 
-`maple-sdk` is the intended replacement for the `opensecret` crate. Registry
-ownership and first publication are pending; this checkout uses local path
-dependencies. After publication, add to your `Cargo.toml`:
+`maple-sdk` is the published replacement for the `opensecret` crate. Add it to
+your `Cargo.toml`:
 
 ```toml
 [dependencies]

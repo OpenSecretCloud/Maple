@@ -3,17 +3,20 @@
 Maple can publish prebuilt static assets to the existing Cloudflare Pages project
 `maple` (`maple-ca8.pages.dev`). Production remains `trymaple.ai`; its production
 branch remains `pages-production`. This does not move DNS, the `www` marketing
-site, or the updater Worker. The new path does not need a Cloudflare GitHub App.
+site, or the updater Worker. This path does not need a Cloudflare GitHub App.
 Cloudflare supports Wrangler uploads to an existing Git-integrated project after
 automatic builds are disabled; this does not convert the project's type.
 See [Cloudflare's Git integration guidance](https://developers.cloudflare.com/pages/configuration/git-integration/#disable-automatic-deployments).
 
-Merging these workflows does not enable publication. Both repository variables
+Both repository variables
 `MAPLE_PAGES_PREVIEW_ENABLED` and `MAPLE_PAGES_PRODUCTION_ENABLED` must equal the
-literal string `true` to enable their respective jobs. Missing/false variables
-leave the existing Cloudflare integration and legacy production promoter in use.
-Changing flags, secrets, Cloudflare settings, or production needs an authorized
-operator action; this guide is preparation, not evidence of a completed cutover.
+literal string `true` to enable their respective jobs. Keep both owned publishers
+enabled with Cloudflare's native automatic builds disabled. A missing/false
+variable disables its owned publisher; it does not
+reenable Cloudflare's native builds. A false production flag also reactivates
+the legacy GitHub branch promoter, as described under recovery below. Changing
+flags, secrets, Cloudflare settings, or production needs an authorized operator
+action; merging source alone does not change those settings.
 
 ## Build and destination contract
 
@@ -106,7 +109,10 @@ trust in the application being previewed.
    The new path reports GitHub deployments, workflow results, and a PR preview
    comment; it does not impersonate the old Cloudflare App check.
 
-## Staged activation before the repository transfer
+## Staged activation
+
+Use this sequence when configuring the publishers or deliberately repeating a
+cutover. Routine previews and releases use the build/destination contract above.
 
 1. Run offline validation, then merge the reviewed implementation with both flags
    absent/false. Retain evidence of the current production deployment.
@@ -127,10 +133,9 @@ trust in the application being previewed.
    release's existing artifact. No new Release or native rebuild is required.
    Verify deployment SHA, active canonical deployment ID, production ref, and
    browser production settings/PCR history; exercise login and chat.
-6. After this evidence passes, amend the organization-move runbook in its owning
-   repository to replace its earlier replacement-project/domain-cutover plan.
-   Transfer separately, then verify the new organization's runner/environment
-   access and publication. This PR does not edit that external runbook or transfer.
+6. Record the deployment and smoke-test evidence in the owning operations
+   runbook. After any repository transfer, separately verify the destination
+   organization's runner/environment access and publisher repository identity.
 
 ## Verification and recovery
 

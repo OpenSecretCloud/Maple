@@ -220,9 +220,9 @@ dependency.
 
 For Pages publishing, read [the deployment guide](../../docs/pages-deployments.md).
 Keep preview builds unprivileged, preserve development/production build profiles,
-and run credential-bearing publication only from trusted master. The new Pages
-publisher is opt-in; deployment flags, protected environments, and native CF
-build controls are separate operator prerequisites, not consequences of merging.
+and run credential-bearing publication only from trusted master. Repository
+variables control Pages publication; protected environments and native CF build
+controls are separate operator settings, not consequences of merging.
 
 PR artifact scripts deliberately ignore local `.env*` files and compile fixed
 PR endpoints. They prove PR packaging, not a configured local-backend runtime.
@@ -239,7 +239,7 @@ change-to-evidence matrix and full-stack smoke procedure.
 
 ## External services and full-stack work
 
-- Run OpenSecret using that repository's own instructions and migrations, then
+- Run OpenSecret from `services/opensecret/` using its component guide and migrations, then
   point `VITE_OPEN_SECRET_API_URL` to it. Do not copy backend secrets into
   Maple.
 - Feature flags and billing are independent API clients. Configure their dev

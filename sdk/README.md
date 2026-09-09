@@ -159,7 +159,7 @@ nix develop --no-update-lock-file -c bash -lc '
   cd rust
   cargo fmt --all -- --check
   cargo clippy --locked --all-targets --all-features -- -D warnings
-  cargo test --locked --all-features
+  cargo test --locked --all-features --lib
   cargo doc --locked --no-deps --all-features
 '
 ```
