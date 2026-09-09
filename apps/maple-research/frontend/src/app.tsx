@@ -4,7 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip.tsx";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
-import { useOpenSecret, OpenSecretProvider } from "@opensecret/react";
+import { useOpenSecret, OpenSecretProvider } from "@mapleai/sdk";
 import { OpenAIProvider } from "./ai/OpenAIContext";
 import { LocalStateProvider } from "./state/LocalStateContext";
 import { ErrorFallback } from "./components/ErrorFallback";

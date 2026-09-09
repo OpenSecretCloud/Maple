@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { v4 as uuidv4 } from "uuid";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";

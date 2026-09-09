@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { AlertTriangle, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";

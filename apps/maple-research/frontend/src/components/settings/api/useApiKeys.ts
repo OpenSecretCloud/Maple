@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 
 export type ApiKeySummary = {
   name: string;

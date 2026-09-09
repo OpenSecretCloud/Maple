@@ -1,4 +1,4 @@
-import { OpenSecretContextType } from "@opensecret/react";
+import { OpenSecretContextType } from "@mapleai/sdk";
 import {
   fetchBillingStatus,
   fetchPortalUrl,

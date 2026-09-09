@@ -1,5 +1,5 @@
 {
-  description = "OpenSecret SDK - TypeScript and Rust development environment";
+  description = "Maple SDK - TypeScript and Rust development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -66,7 +66,7 @@
           packages = allInputs;
 
           shellHook = ''
-            echo "OpenSecret SDK Development Environment"
+            echo "Maple SDK Development Environment"
             echo "----------------------------------------"
             echo "TypeScript/Bun tools available"
             echo "Rust toolchain: $(rustc --version)"

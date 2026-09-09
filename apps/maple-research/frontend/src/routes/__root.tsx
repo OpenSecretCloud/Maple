@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { useOpenSecret } from "@opensecret/react";
-import { OpenSecretContextType } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
+import { OpenSecretContextType } from "@mapleai/sdk";
 import { createRootRouteWithContext, Outlet, useLocation } from "@tanstack/react-router";
 import {
   AuthenticatedHomeContent,

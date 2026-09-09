@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { OpenAIContext } from "./OpenAIContextDef";
 
 export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {

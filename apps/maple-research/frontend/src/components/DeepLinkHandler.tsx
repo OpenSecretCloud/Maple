@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";

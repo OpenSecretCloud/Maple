@@ -1,7 +1,7 @@
-# OpenSecret SDKs
+# Maple SDKs
 
 This directory contains the TypeScript/React and Rust clients used by Maple and
-OpenSecret's internal applications. Both clients establish attested,
+internal OpenSecret applications. Both clients establish attested,
 end-to-end encrypted sessions with an OpenSecret backend and expose the API
 surface needed by those applications.
 
@@ -12,10 +12,10 @@ and tests.
 
 ## Repository layout
 
-- `src/` — `@opensecret/react`, including the React providers, encrypted API
+- `src/` — `@mapleai/sdk`, including the React providers, encrypted API
   client, attestation policy, model/conversation APIs, and internal developer
   platform client.
-- `rust/` — the `opensecret` crate used by native clients.
+- `rust/` — the `maple-sdk` crate, imported as `maple_sdk` by native clients.
 - `docs/PLATFORM.md` — internal developer/platform API notes.
 - repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
   and supply-chain validation for this directory.
@@ -23,8 +23,21 @@ and tests.
 Maple's frontend consumes this TypeScript package through `file:../../../sdk`.
 Desktop Maple and `proxy/` consume `sdk/rust` through versioned path
 dependencies; iOS and Android exclude those desktop-only Rust consumers.
-Published npm and crates.io packages remain independent compatibility surfaces
-for external users.
+Published npm and crates.io packages remain independently versioned.
+
+## Package identity migration
+
+The new package names are `@mapleai/sdk` and `maple-sdk`. This source change
+retains TypeScript version 3.5.2 and Rust version 3.6.2; first publication and
+registry ownership are separate steps. Until those packages are published,
+develop against the in-tree dependencies above. The registry installation
+examples below describe the new package identities after publication.
+
+The rename preserves the exported API, including `OpenSecretProvider`,
+`useOpenSecret`, `OpenSecretDeveloper` and `OpenSecretClient`. OpenSecret remains
+the backend name. Backend URLs, configuration variables, signed-PCR verification
+and encrypted transport retain their existing contracts. Existing published
+`@opensecret/react` and `opensecret` packages remain available to older consumers.
 
 ## Security model
 
@@ -46,14 +59,14 @@ production paths.
 Install the package:
 
 ```sh
-bun add @opensecret/react
+bun add @mapleai/sdk
 ```
 
 Wrap the application with `OpenSecretProvider` and supply the backend URL and
 client ID:
 
 ```tsx
-import { OpenSecretProvider } from "@opensecret/react";
+import { OpenSecretProvider } from "@mapleai/sdk";
 import type { ReactNode } from "react";
 
 export function AppProviders({ children }: { children: ReactNode }) {
@@ -127,10 +140,11 @@ Add the crate to a Rust application:
 
 ```toml
 [dependencies]
-opensecret = "3"
+maple-sdk = "3.6.2"
 ```
 
-The primary entry point is `OpenSecretClient`. See `rust/README.md` for native
+Import the primary entry point with `use maple_sdk::OpenSecretClient`.
+See `rust/README.md` for native
 client examples and transport details.
 
 Run the Rust validation from the `sdk/` directory:

@@ -29,7 +29,7 @@ path = "src/main.rs"
 
 [dependencies]
 # OpenSecret SDK
-opensecret = { version = "3.6.2", path = "../sdk/rust" }
+maple-sdk = { version = "3.6.2", path = "../sdk/rust" }
 
 # Web server
 axum = { version = "0.8.4", features = ["http2", "macros"] }

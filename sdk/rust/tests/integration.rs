@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::Result;
+use maple_sdk::Result;
 use std::env;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

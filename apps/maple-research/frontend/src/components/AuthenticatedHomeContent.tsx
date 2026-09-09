@@ -8,7 +8,7 @@ import {
   type ReactNode
 } from "react";
 import { useLocation, useRouter } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { ProjectDetailView } from "@/components/ProjectDetailView";
 import { UnifiedChat } from "@/components/UnifiedChat";
 import {

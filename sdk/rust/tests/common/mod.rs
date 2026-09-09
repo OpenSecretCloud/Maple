@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use opensecret::{Error, OpenSecretClient, Pcr0Environment, Result};
+use maple_sdk::{Error, OpenSecretClient, Pcr0Environment, Result};
 use std::env::{self, VarError};
 
 const PCR_ENVIRONMENT_VARIABLE: &str = "VITE_OPEN_SECRET_PCR_ENVIRONMENT";

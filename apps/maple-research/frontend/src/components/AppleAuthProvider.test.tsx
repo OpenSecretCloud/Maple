@@ -81,8 +81,8 @@ function appleEvent(type: "AppleIDSignInOnSuccess" | "AppleIDSignInOnFailure", d
 }
 
 let currentOpenSecret: Record<string, unknown>;
-const realOpenSecret = await import("@opensecret/react");
-mock.module("@opensecret/react", () => ({
+const realOpenSecret = await import("@mapleai/sdk");
+mock.module("@mapleai/sdk", () => ({
   ...realOpenSecret,
   useOpenSecret: () => currentOpenSecret
 }));

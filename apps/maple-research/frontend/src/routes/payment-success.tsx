@@ -1,7 +1,7 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { Loader2 } from "lucide-react";
 
 export const Route = createFileRoute("/payment-success")({

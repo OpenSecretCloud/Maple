@@ -30,7 +30,7 @@ use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
 };
 use maple_agent::open_secret_config::configured_pcr0_environment;
-use opensecret::OpenSecretClient;
+use maple_sdk::OpenSecretClient;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use uuid::Uuid;

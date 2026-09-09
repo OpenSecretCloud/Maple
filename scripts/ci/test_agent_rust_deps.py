@@ -23,6 +23,14 @@ class AgentRustDependencyTests(unittest.TestCase):
                 for name, manifest in verifier.DEPENDENCIES.items()
             ]}
             verifier.verify(graph, root)
+            legacy = copy.deepcopy(graph)
+            legacy["packages"].append({
+                "name": "opensecret",
+                "source": "registry+https://github.com/rust-lang/crates.io-index",
+                "manifest_path": str(root / "registry" / "opensecret" / "Cargo.toml"),
+            })
+            with self.assertRaisesRegex(ValueError, "legacy opensecret SDK"):
+                verifier.verify(legacy, root)
             for name in verifier.DEPENDENCIES:
                 for alteration in ("duplicate", "missing", "registry", "fork", "other_checkout"):
                     with self.subTest(name=name, alteration=alteration):

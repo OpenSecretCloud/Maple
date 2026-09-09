@@ -34,7 +34,7 @@ import {
 } from "@/state/useLocalState";
 import { SIDEBAR_MAX_WIDTH_CLASS, SIDEBAR_WIDTH_CLASS } from "@/constants/layout";
 import { isTauriDesktop } from "@/utils/platform";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { FEATURE_FLAGS, flagsClient, isForcedOn } from "@/services/flags";
 import { rememberWorkspaceMode } from "@/services/workspaceModePreference";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";

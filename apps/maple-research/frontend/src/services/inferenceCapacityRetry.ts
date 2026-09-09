@@ -1,4 +1,4 @@
-import { findOpenSecretInferenceCapacityError } from "@opensecret/react";
+import { findOpenSecretInferenceCapacityError } from "@mapleai/sdk";
 
 async function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();

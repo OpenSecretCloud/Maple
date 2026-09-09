@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::{OpenSecretClient, Result, WebExtractRequest, WebSearchRequest};
+use maple_sdk::{OpenSecretClient, Result, WebExtractRequest, WebSearchRequest};
 use uuid::Uuid;
 
 async fn authenticated_client() -> Result<OpenSecretClient> {

@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::{KeyOptions, Result, SigningAlgorithm};
+use maple_sdk::{KeyOptions, Result, SigningAlgorithm};
 use uuid::Uuid;
 
 #[tokio::test]

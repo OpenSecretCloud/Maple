@@ -3,7 +3,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AppEntryPage } from "@/components/AppEntryPage";
 import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
 import { PromoDialog, hasSeenPromo, markPromoAsSeen } from "@/components/PromoDialog";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useBillingState } from "@/state/useLocalState";

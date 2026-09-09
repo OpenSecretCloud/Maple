@@ -12,7 +12,7 @@ import {
   SquarePen,
   Trash2
 } from "lucide-react";
-import { useOpenSecret, type Conversation } from "@opensecret/react";
+import { useOpenSecret, type Conversation } from "@mapleai/sdk";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar, SidebarToggle } from "@/components/Sidebar";
 import { ResizableSidebarLayout } from "@/components/ResizableSidebarLayout";

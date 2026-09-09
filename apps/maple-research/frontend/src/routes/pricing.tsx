@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect, useCallback, type ReactNode } from "react";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { FullPageMain } from "@/components/FullPageMain";
 import { getBillingService } from "@/billing/billingService";
 import { useQuery } from "@tanstack/react-query";

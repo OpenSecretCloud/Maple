@@ -3,7 +3,7 @@ import type {
   ConversationProjectListItem,
   ConversationsListParams,
   OpenSecretContextType
-} from "@opensecret/react";
+} from "@mapleai/sdk";
 
 const SIDEBAR_PAGE_SIZE = 20;
 

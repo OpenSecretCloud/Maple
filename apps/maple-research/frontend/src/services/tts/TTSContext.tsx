@@ -1,4 +1,4 @@
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import {
   createContext,
   useCallback,

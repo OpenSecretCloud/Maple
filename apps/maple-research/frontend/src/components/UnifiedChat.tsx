@@ -73,7 +73,7 @@ import {
   findOpenSecretInferenceCapacityError,
   OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER,
   useOpenSecret
-} from "@opensecret/react";
+} from "@mapleai/sdk";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { DocumentPlatformDialog } from "@/components/DocumentPlatformDialog";
 import { ContextLimitDialog } from "@/components/ContextLimitDialog";

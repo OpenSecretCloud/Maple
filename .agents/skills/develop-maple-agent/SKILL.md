@@ -13,8 +13,8 @@ identify an arbitrary running development instance.
 `app/src/backend.rs` adapts the transport-neutral runtime under
 `crates/maple-agent/` to GPUI. Keep window/UI concerns in `app`, and shared
 account/session/tool policy in the runtime. The runtime consumes the existing
-local `opensecret` SDK and `maple-proxy`; registry names and publication are
-separate work. Research's Tauri runtime remains independently owned.
+local `maple-sdk` and `maple-proxy` packages; registry publication is separate
+work. Research's Tauri runtime remains independently owned.
 
 ## Build with the component environment
 

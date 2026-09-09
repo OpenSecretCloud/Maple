@@ -23,9 +23,10 @@ the import merge would discard the preserved upstream ancestry.
 
 ## Integration
 
-- Use the existing local `opensecret` and `maple-proxy` packages. The GPUI SDK
+- Use the local `maple-sdk` and `maple-proxy` packages. The GPUI SDK
   fork is replaced by the canonical catalog API and its boolean capability
-  contract. Package renaming and registry publishing remain separate work.
+  contract. The SDK package is renamed in tree; registry publishing remains
+  separate work.
 - Keep the GPUI component's Cargo/Nix environment and internal `maple-gpui`
   binary name. Root commands, CI, and agent guidance route to the component.
   Linux exposes pure Nix packages; macOS uses the Nix development shell plus

@@ -1,4 +1,4 @@
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { ProxyConfigSection } from "@/components/apikeys/ProxyConfigSection";
 import { Alert, AlertDescription } from "@/components/ui/alert";

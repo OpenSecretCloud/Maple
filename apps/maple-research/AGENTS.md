@@ -38,7 +38,7 @@ Maple is a React/Vite application packaged with Tauri for desktop and mobile.
 OpenSecret is its required backend. Keep these runtime paths distinct:
 
 - Research chat: React -> OpenAI JavaScript client ->
-  `@opensecret/react` encrypted custom fetch -> OpenSecret Responses and
+  `@mapleai/sdk` encrypted custom fetch -> OpenSecret Responses and
   Conversations APIs.
 - Desktop Agent Mode: React -> Maple-owned Tauri commands/events ->
   `MapleAgentService` -> embedded pinned Goose -> `MapleProvider` -> Rust

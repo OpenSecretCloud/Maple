@@ -8,7 +8,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures::{future::BoxFuture, Stream, StreamExt};
-use opensecret::{client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult};
+use maple_sdk::{client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult};
 use std::{
     collections::HashSet,
     io,
@@ -209,7 +209,7 @@ fn extract_api_key(
 async fn create_client_with_auth(
     backend_url: &str,
     api_key: &str,
-    pcr0_environment: opensecret::Pcr0Environment,
+    pcr0_environment: maple_sdk::Pcr0Environment,
     request_timeout: Duration,
 ) -> Result<OpenSecretClient, ProxyError> {
     let client = OpenSecretClient::new_with_api_key_and_pcr0_environment(
@@ -435,7 +435,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 0,
             backend_url: "http://localhost:3000".to_string(),
-            pcr0_environment: opensecret::Pcr0Environment::Production,
+            pcr0_environment: maple_sdk::Pcr0Environment::Production,
             default_api_key: None,
             debug: false,
             enable_cors: false,
@@ -495,7 +495,7 @@ mod tests {
         chunks: Vec<Bytes>,
     ) -> http::Response<OpenSecretResponseBody> {
         let body: OpenSecretResponseBody = Box::pin(futures::stream::iter(
-            chunks.into_iter().map(Ok::<_, opensecret::Error>),
+            chunks.into_iter().map(Ok::<_, maple_sdk::Error>),
         ));
         let mut response = http::Response::new(body);
         *response.status_mut() = status;
@@ -798,7 +798,7 @@ mod tests {
 
     #[tokio::test]
     async fn transport_errors_are_safe_bad_gateway_responses() {
-        let transport = Arc::new(MockTransport::new(vec![Err(opensecret::Error::Other(
+        let transport = Arc::new(MockTransport::new(vec![Err(maple_sdk::Error::Other(
             "sensitive transport detail".to_string(),
         ))]));
         let response = mock_app(transport)

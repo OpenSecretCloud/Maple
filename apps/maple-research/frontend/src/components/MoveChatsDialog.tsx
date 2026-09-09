@@ -10,7 +10,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "@/components/ui/dialog";
-import type { ConversationProjectListItem } from "@opensecret/react";
+import type { ConversationProjectListItem } from "@mapleai/sdk";
 import { cn } from "@/utils/utils";
 
 interface MoveChatsDialogProps {

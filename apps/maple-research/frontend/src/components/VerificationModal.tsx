@@ -7,7 +7,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { useRouter } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { Loader2, CheckCircle, LogOut } from "lucide-react";

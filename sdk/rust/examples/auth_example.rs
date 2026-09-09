@@ -1,4 +1,4 @@
-use opensecret::{OpenSecretClient, Result};
+use maple_sdk::{OpenSecretClient, Result};
 use uuid::Uuid;
 
 #[tokio::main]

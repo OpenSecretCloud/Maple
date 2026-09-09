@@ -101,7 +101,7 @@ publish, inspect the exact package first:
 cargo package --locked --manifest-path proxy/Cargo.toml
 ```
 
-If the proxy references a new `opensecret` version, publish that SDK crate
+If the proxy references a new `maple-sdk` version, publish that SDK crate
 first. Do not publish either crate from Maple's application Release workflow.
 Root proxy container CI builds without pushing. After a successful stable Maple
 Release, `.github/workflows/proxy-publish.yml` independently compares that

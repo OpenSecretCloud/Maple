@@ -2,7 +2,7 @@ mod common;
 
 use base64::{engine::general_purpose, Engine as _};
 use futures::StreamExt;
-use opensecret::{
+use maple_sdk::{
     ChatCompletionRequest, ChatMessage, EmbeddingInput, EmbeddingRequest, Error, Function,
     OpenSecretClient, Result, Tool,
 };

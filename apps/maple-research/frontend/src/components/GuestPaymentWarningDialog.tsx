@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { AlertTriangle, LogOut, CreditCard } from "lucide-react";
 import {
   clearMapleApiAuthForUser,

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { isMobile, isTauri } from "@/utils/platform";
 import {
   MIN_PURCHASE_CREDITS,

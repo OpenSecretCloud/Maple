@@ -1,4 +1,4 @@
-import type { PcrEnvironment } from "@opensecret/react";
+import type { PcrEnvironment } from "@mapleai/sdk";
 
 export function parseOpenSecretPcrEnvironment(value: string | undefined): PcrEnvironment {
   if (value === undefined || value === "production") return "production";

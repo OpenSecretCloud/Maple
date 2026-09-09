@@ -4724,11 +4724,11 @@ dependencies = [
  "libc",
  "log",
  "maple-proxy",
+ "maple-sdk",
  "objc2-app-kit",
  "objc2-foundation 0.3.2",
  "office_oxide",
  "once_cell",
- "opensecret",
  "openssl",
  "ort",
  "pdf_oxide",
@@ -4776,7 +4776,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "http",
- "opensecret",
+ "maple-sdk",
  "serde",
  "serde_json",
  "tokio",
@@ -4784,6 +4784,41 @@ dependencies = [
  "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "maple-sdk"
+version = "3.6.2"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chacha20poly1305",
+ "chrono",
+ "ciborium",
+ "eventsource-stream",
+ "futures",
+ "hex",
+ "hkdf 0.12.4",
+ "http",
+ "p256",
+ "percent-encoding",
+ "pin-project",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "x25519-dalek",
+ "x509-parser",
+ "yasna",
 ]
 
 [[package]]
@@ -5579,41 +5614,6 @@ dependencies = [
  "is-wsl",
  "libc",
  "pathdiff",
-]
-
-[[package]]
-name = "opensecret"
-version = "3.6.2"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "async-stream",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "chacha20poly1305",
- "chrono",
- "ciborium",
- "eventsource-stream",
- "futures",
- "hex",
- "hkdf 0.12.4",
- "http",
- "p256",
- "percent-encoding",
- "pin-project",
- "reqwest 0.12.28",
- "ring",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "x25519-dalek",
- "x509-parser",
- "yasna",
 ]
 
 [[package]]

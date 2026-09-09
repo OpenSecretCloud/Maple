@@ -45,7 +45,7 @@
     "yaml": "^2.8.3"
   },
   "dependencies": {
-    "@opensecret/react": "file:../../../sdk",
+    "@mapleai/sdk": "file:../../../sdk",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-dialog": "^1.1.15",

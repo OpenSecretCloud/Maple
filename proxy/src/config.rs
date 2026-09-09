@@ -1,5 +1,5 @@
 use clap::Parser;
-use opensecret::Pcr0Environment;
+use maple_sdk::Pcr0Environment;
 use serde::Serialize;
 use std::{net::SocketAddr, time::Duration};
 

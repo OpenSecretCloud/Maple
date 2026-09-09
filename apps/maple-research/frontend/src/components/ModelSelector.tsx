@@ -8,7 +8,7 @@ import {
   DropdownMenuSeparator
 } from "@/components/ui/dropdown-menu";
 import { useBillingState, useModelState } from "@/state/useLocalState";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UpgradePromptDialog } from "@/components/UpgradePromptDialog";
 import { POWERFUL_MODEL_ALIAS, QUICK_MODEL_ALIAS } from "@/utils/utils";

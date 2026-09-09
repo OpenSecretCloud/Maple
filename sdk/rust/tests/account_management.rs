@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::{OpenSecretClient, Result};
+use maple_sdk::{OpenSecretClient, Result};
 use std::env;
 use uuid::Uuid;
 

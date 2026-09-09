@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::{Error, OpenSecretClient, Pcr0Environment, Result};
+use maple_sdk::{Error, OpenSecretClient, Pcr0Environment, Result};
 use std::env;
 
 #[tokio::test]

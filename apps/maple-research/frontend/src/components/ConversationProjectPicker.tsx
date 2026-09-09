@@ -1,6 +1,6 @@
 import { Check, Folder, FolderOpen } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useOpenSecret } from "@opensecret/react";
+import { useOpenSecret } from "@mapleai/sdk";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils/utils";
 import { listAllConversationProjects } from "@/utils/paginatedLists";

@@ -1,6 +1,6 @@
 mod common;
 
-use opensecret::{Error, OpenSecretClient, Result};
+use maple_sdk::{Error, OpenSecretClient, Result};
 use std::env;
 use uuid::Uuid;
 
@@ -135,7 +135,7 @@ async fn test_streaming_chat_with_api_key() -> Result<()> {
     }
 
     use futures::StreamExt;
-    use opensecret::{ChatCompletionRequest, ChatMessage};
+    use maple_sdk::{ChatCompletionRequest, ChatMessage};
 
     let (api_url, email, password, client_id) = get_test_config();
 

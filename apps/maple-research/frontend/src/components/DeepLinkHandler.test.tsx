@@ -38,7 +38,7 @@ let deepLinkListener: ((event: DeepLinkEvent) => void) | undefined;
 let currentUser: { id: string } | undefined;
 const unlisten = mock(() => {});
 
-mock.module("@opensecret/react", () => ({
+mock.module("@mapleai/sdk", () => ({
   useOpenSecret: () => ({ auth: { user: currentUser } })
 }));
 

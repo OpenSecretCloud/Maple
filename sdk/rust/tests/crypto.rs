@@ -1,8 +1,8 @@
 use base64::Engine;
-use opensecret::crypto::{
+use maple_sdk::crypto::{
     decrypt_message, decrypt_session_key, derive_shared_secret, encrypt_message, generate_key_pair,
 };
-use opensecret::Result;
+use maple_sdk::Result;
 
 #[test]
 fn test_key_generation() {
