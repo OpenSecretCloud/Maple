@@ -21,7 +21,7 @@ interface PromoDialogProps {
 const PROMO_BENEFITS = [
   {
     icon: <Cpu className="h-4 w-4" />,
-    text: "Powerful AI models including Gemma 4 31B, GLM 5.2, and Kimi K2.6"
+    text: "Powerful AI models including Gemma 4 31B, GLM 5.3, and Kimi K2.6"
   },
   {
     icon: <Image className="h-4 w-4" />,

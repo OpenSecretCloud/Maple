@@ -1057,7 +1057,7 @@ mod tests {
         headers.insert("x-hop", HeaderValue::from_static("remove-me"));
         headers.insert("x-request-id", HeaderValue::from_static("request-123"));
 
-        let body = br#"{"model":"glm-5-2","messages":[],"stream":true}"#.to_vec();
+        let body = br#"{"model":"glm-5-3","messages":[],"stream":true}"#.to_vec();
         let request = client
             .build_tinfoil_request(
                 &tinfoil_proxy(),
@@ -1341,7 +1341,7 @@ mod tests {
             api_key: None,
             provider_name: ProviderId::Continuum.as_str().to_string(),
         };
-        let body = Bytes::from_static(br#"{"model":"glm-5-2"}"#);
+        let body = Bytes::from_static(br#"{"model":"glm-5-3"}"#);
 
         let response = client
             .send(
@@ -1415,7 +1415,7 @@ mod tests {
             "x-opaque",
             HeaderValue::from_bytes(b"\x80raw").expect("opaque header value"),
         );
-        let body = Bytes::from_static(br#"{"model":"glm-5-2"}"#);
+        let body = Bytes::from_static(br#"{"model":"glm-5-3"}"#);
 
         let response = client
             .send(
@@ -1469,7 +1469,7 @@ mod tests {
         };
         let mut headers = HeaderMap::new();
         headers.insert("x-request-id", HeaderValue::from_static("request-123"));
-        let body = br#"{"model":"glm-5-2","messages":[],"stream":true}"#.to_vec();
+        let body = br#"{"model":"glm-5-3","messages":[],"stream":true}"#.to_vec();
         let template = ProviderRequest::new(
             Method::POST,
             "/v1/chat/completions?trace=1",
@@ -1534,7 +1534,7 @@ mod tests {
         );
         headers.insert("x-hop", HeaderValue::from_static("remove-me"));
         headers.insert("x-request-id", HeaderValue::from_static("request-123"));
-        let body = br#"{"model":"glm-5-2","messages":[],"stream":true}"#.to_vec();
+        let body = br#"{"model":"glm-5-3","messages":[],"stream":true}"#.to_vec();
 
         let response = client
             .send(
@@ -1638,7 +1638,6 @@ mod tests {
             [
                 "doc-upload",
                 "gemma4-31b",
-                "glm-5-2",
                 "gpt-oss-120b",
                 "gpt-oss-safeguard-120b",
                 "kimi-k2-6",
@@ -1653,7 +1652,7 @@ mod tests {
             ]
         );
 
-        let completion_body = br#"{"model":"glm-5-2","messages":[{"role":"user","content":"Reply with exactly: parity-ok"}],"temperature":0,"max_tokens":32,"stream":false}"#.to_vec();
+        let completion_body = br#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"Reply with exactly: parity-ok"}],"temperature":0,"max_tokens":32,"stream":false}"#.to_vec();
         let completion = client
             .send(
                 &provider,
@@ -1679,12 +1678,12 @@ mod tests {
         let completion: serde_json::Value =
             serde_json::from_slice(&completion_response_body).unwrap();
         assert_eq!(completion["object"], "chat.completion");
-        assert_eq!(completion["model"], "glm-5-2");
+        assert_eq!(completion["model"], "gpt-oss-120b");
         assert_eq!(completion["choices"][0]["message"]["content"], "parity-ok");
         assert!(completion["usage"]["prompt_tokens"].is_number());
         assert!(completion["usage"]["completion_tokens"].is_number());
 
-        let stream_body = br#"{"model":"glm-5-2","messages":[{"role":"user","content":"Reply with exactly: parity-stream-ok"}],"temperature":0,"max_tokens":32,"stream":true,"stream_options":{"include_usage":true}}"#.to_vec();
+        let stream_body = br#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"Reply with exactly: parity-stream-ok"}],"temperature":0,"max_tokens":32,"stream":true,"stream_options":{"include_usage":true}}"#.to_vec();
         let stream = client
             .send(
                 &provider,
@@ -1724,7 +1723,7 @@ mod tests {
         for data in &data_frames[..data_frames.len() - 1] {
             let frame: serde_json::Value = serde_json::from_str(data).unwrap();
             assert_eq!(frame["object"], "chat.completion.chunk");
-            assert_eq!(frame["model"], "glm-5-2");
+            assert_eq!(frame["model"], "gpt-oss-120b");
             saw_usage |= frame.get("usage").is_some_and(|usage| !usage.is_null());
             json_frames += 1;
         }

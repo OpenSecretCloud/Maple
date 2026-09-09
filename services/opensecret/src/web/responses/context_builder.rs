@@ -1002,7 +1002,7 @@ mod tests {
     #[test]
     fn test_prompt_budget_uses_model_context_window() {
         assert_eq!(prompt_token_budget("llama3-3-70b"), 131_072);
-        assert_eq!(prompt_token_budget("glm-5-2"), 393_216);
+        assert_eq!(prompt_token_budget("glm-5-3"), 262_144);
         assert_eq!(prompt_token_budget("glm-5-3-flash"), 1_048_576);
     }
 
@@ -1234,11 +1234,11 @@ mod tests {
         let incoming_tokens = 2_000;
         let metadata = vec![
             context_metadata("user", 1, 1_000),
-            context_metadata("assistant", 2, 389_216),
+            context_metadata("assistant", 2, 258_144),
             context_metadata("user", 3, 1_000),
         ];
         let (needed_ids, did_truncate) =
-            determine_needed_message_ids(&metadata, "glm-5-2", 0, incoming_tokens)
+            determine_needed_message_ids(&metadata, "glm-5-3", 0, incoming_tokens)
                 .expect("select history within the full context window");
         assert!(!did_truncate);
         assert_eq!(
@@ -1252,15 +1252,15 @@ mod tests {
 
         let history = vec![
             create_chat_msg("user", "First question", Some(1_000)),
-            create_chat_msg("assistant", "Full answer", Some(389_216)),
+            create_chat_msg("assistant", "Full answer", Some(258_144)),
             create_chat_msg("user", "Follow-up", Some(1_000)),
         ];
         let (messages, history_tokens) =
-            build_prompt_from_chat_messages_with_token_reserve(history, "glm-5-2", incoming_tokens)
+            build_prompt_from_chat_messages_with_token_reserve(history, "glm-5-3", incoming_tokens)
                 .expect("build history with room reserved for the incoming message");
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[1]["content"], "Full answer");
-        assert_eq!(history_tokens + incoming_tokens, 393_216);
+        assert_eq!(history_tokens + incoming_tokens, 262_144);
     }
 
     #[test]
@@ -1849,7 +1849,7 @@ mod tests {
         ];
 
         let (messages, total_tokens) =
-            build_prompt_from_chat_messages(msgs, "glm-5-2").expect("build prompt");
+            build_prompt_from_chat_messages(msgs, "glm-5-3").expect("build prompt");
 
         assert_eq!(messages[1]["role"], ROLE_ASSISTANT);
         assert_eq!(messages[1]["content"], "The answer is 42.");

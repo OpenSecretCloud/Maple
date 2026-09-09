@@ -4194,7 +4194,7 @@ mod tests {
             InferenceIntent::new(
                 Uuid::nil(),
                 crate::model_config::AUTO_POWERFUL_MODEL_ID,
-                "glm-5-2",
+                "glm-5-3",
                 ModelPlan::Paid,
                 InferenceSurface::Responses,
                 WorkloadClass::Interactive,
@@ -4206,9 +4206,9 @@ mod tests {
                     api_key: None,
                     provider_name: "tinfoil".to_string(),
                 },
-                public_model_id: "glm-5-2".to_string(),
-                provider_model_id: "glm-5-2".to_string(),
-                response_model_id: "glm-5-2".to_string(),
+                public_model_id: "glm-5-3".to_string(),
+                provider_model_id: "glm-5-3".to_string(),
+                response_model_id: "glm-5-3".to_string(),
                 bucket: None,
                 selection_source: crate::provider_registry::RouteSelectionSource::DefaultProvider,
             },
@@ -4221,7 +4221,7 @@ mod tests {
         let pinned = pinned_test_completion();
         let matching = ExactCompletionRoute {
             provider_name: "tinfoil".to_string(),
-            provider_model_id: "glm-5-2".to_string(),
+            provider_model_id: "glm-5-3".to_string(),
         };
         assert!(completion_route_matches_exact_constraint(
             &pinned.route,
@@ -5764,8 +5764,8 @@ mod tests {
         assert_ne!(first.execution_id, second.execution_id);
         assert_ne!(first.attempt_id, second.attempt_id);
         assert_eq!(first.route, second.route);
-        assert_eq!(first.route.public_model_id, "glm-5-2");
-        assert_eq!(first.route.provider_model_id, "glm-5-2");
+        assert_eq!(first.route.public_model_id, "glm-5-3");
+        assert_eq!(first.route.provider_model_id, "glm-5-3");
         assert_eq!(
             pinned.intent().requested_model_id,
             crate::model_config::AUTO_POWERFUL_MODEL_ID
@@ -5785,9 +5785,9 @@ mod tests {
         let shadow = RoutePlan {
             selected: crate::inference::RouteIdentity::new(
                 ProviderId::Continuum,
-                "glm-5-2",
+                "glm-5-3",
                 "shadow-provider-model",
-                "glm-5-2",
+                "glm-5-3",
                 crate::provider_registry::RouteSelectionSource::Fallback,
                 Some(73),
             ),
@@ -5814,13 +5814,13 @@ mod tests {
         let retained = retain_active_route_after_shadow_observation(
             pinned.intent(),
             Ok(active.clone()),
-            Err(RoutePlanningError::NoEligibleRoute("glm-5-2".to_string())),
+            Err(RoutePlanningError::NoEligibleRoute("glm-5-3".to_string())),
         )
         .expect("shadow error must retain active route");
         assert_eq!(retained.identity(), active.identity());
         assert_eq!(retained.proxy, active.proxy);
 
-        let active_error = ProviderRoutingError::NoEligibleRoute("glm-5-2".to_string());
+        let active_error = ProviderRoutingError::NoEligibleRoute("glm-5-3".to_string());
         let result = retain_active_route_after_shadow_observation(
             pinned.intent(),
             Err(active_error.clone()),
@@ -6097,11 +6097,6 @@ mod tests {
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(ensure_completion_model_access("deepseek-v4-flash", ModelPlan::Paid).is_ok());
-        assert!(matches!(
-            ensure_completion_model_access("glm-5-2", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
-        assert!(ensure_completion_model_access("glm-5-2", ModelPlan::Paid).is_ok());
         assert!(matches!(
             ensure_completion_model_access("glm-5-3", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
@@ -6671,7 +6666,6 @@ mod tests {
             ("tinfoil", "gpt-oss-120b"),
             ("tinfoil", "deepseek-v4-flash"),
             ("tinfoil", "kimi-k3"),
-            ("tinfoil", "glm-5-2"),
             ("tinfoil", "glm-5-3"),
             ("tinfoil", "glm-5-3-flash"),
             ("continuum", "kimi-k2-6"),
