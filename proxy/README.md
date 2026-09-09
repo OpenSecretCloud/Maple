@@ -54,10 +54,12 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
-The current source consumes the in-tree `maple-sdk` crate through a versioned
-path dependency. That SDK's registry ownership and first publication are
-pending. Publish the SDK before packaging or publishing a proxy crate that
-depends on its new registry name; local path builds work before publication.
+The source uses a compatible `maple-sdk` registry requirement, starting at
+`3.6.2`. The standalone binary's lockfile selects its SDK version; an embedding
+application selects its own. Keep the host and proxy on one SDK source/version
+because their public APIs exchange SDK types. Local SDK links are supported
+for active development. See the [SDK consumer version policy](../docs/sdk-publishing.md#consumer-version-policy).
+A proxy crate publication still requires its SDK dependency to be published.
 
 ## ⚙️ Configuration
 
@@ -445,7 +447,8 @@ verification; local recipes intentionally cannot publish to it.
 
 `proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
 `apps/maple-research/frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency
-changes must keep the path graph and all affected locks coherent. Docker builds
+changes must keep the selected SDK sources and affected locks coherent; one
+consumer's SDK upgrade does not require upgrading the others. Docker builds
 must use the Maple repository root as context so both `proxy/` and `sdk/rust/`
 are available. GitHub Release archives, crates.io, and GHCR are three separate
 publication paths; completing one does not update the others.

@@ -145,14 +145,8 @@ jobs:
 
           if [ -n "${previous_proxy_version}" ]; then
             set +e
-            git diff --quiet "${previous_sha}" "${release_sha}" -- \
-                proxy/Dockerfile \
-                proxy/Cargo.toml \
-                proxy/Cargo.lock \
-                proxy/src \
-                sdk/rust/Cargo.toml \
-                sdk/rust/src \
-                sdk/rust/assets
+            python3 -I scripts/ci/proxy_runtime_diff.py \
+              "${previous_sha}" "${release_sha}"
             runtime_diff_status=$?
             set -e
             case "${runtime_diff_status}" in
@@ -438,14 +432,8 @@ jobs:
             local from_sha="$1"
             local diff_status
             set +e
-            git diff --quiet "${from_sha}" "${RELEASE_SHA}" -- \
-              proxy/Dockerfile \
-              proxy/Cargo.toml \
-              proxy/Cargo.lock \
-              proxy/src \
-              sdk/rust/Cargo.toml \
-              sdk/rust/src \
-              sdk/rust/assets
+            python3 -I scripts/ci/proxy_runtime_diff.py \
+              "${from_sha}" "${RELEASE_SHA}"
             diff_status=$?
             set -e
             case "${diff_status}" in

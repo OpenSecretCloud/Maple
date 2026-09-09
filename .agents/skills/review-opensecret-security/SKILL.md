@@ -109,9 +109,10 @@ Apply these OpenSecret-specific invariants:
   rollback, and access to the owning key; ordinary startup lacks user keys.
 - Shared protocol changes require coordinated review of the monorepo-root
   `sdk/` source and the dependency actually resolved by each affected Maple
-  application path. Treat `apps/maple-research/frontend/package.json` as
-  authoritative for the TypeScript client; Research desktop, the proxy, and
-  the GPUI prototype consume `sdk/rust` through versioned path dependencies.
+  application path. Its manifest and lockfile select a published SDK or local
+  source; do not treat in-tree SDK validation as proof for a consumer pinned
+  to different source. Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy)
+  when reviewing the selected versions and compatibility boundaries.
 
 Use `$change-opensecret-api` or `$change-opensecret-provider` for the detailed
 contract procedure rather than duplicating it here.

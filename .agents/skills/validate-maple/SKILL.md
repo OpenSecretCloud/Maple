@@ -42,12 +42,13 @@ Use for pure React, TypeScript, CSS, state, and browser behavior with no native 
 SDK work under `sdk/` has its own component checks. Load
 `$develop-opensecret-sdk`, run the applicable TypeScript or Rust SDK checks,
 and add the in-tree OpenSecret integration when the public protocol or
-backend compatibility changes. Maple's frontend consumes `file:../../../sdk`;
-desktop Maple and `proxy/` consume `sdk/rust` through local path dependencies.
-Rust SDK runtime changes therefore require proxy checks and desktop Maple
-coverage, while SDK tests/docs/examples and standalone lockfile changes remain
-independent. Do not run unrelated mobile packaging for desktop-only Rust SDK
-or proxy inputs.
+backend compatibility changes. Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy)
+and inspect the consumer's manifest/lockfile: a published pin and a local link
+exercise different SDK source. CI conservatively selects proxy and desktop
+checks for Rust SDK runtime changes; add local-source consumer coverage when
+claiming an unpublished SDK edit works in that client. SDK tests/docs/examples
+and standalone lockfile changes remain independent. Do not run unrelated mobile
+packaging for desktop-only Rust SDK or proxy inputs.
 
 Proxy work under `proxy/` likewise has component and application boundaries.
 Load `$develop-maple-proxy`. Proxy or Rust SDK runtime inputs route to desktop
@@ -153,7 +154,7 @@ nix develop --no-update-lock-file .#ci -c ./scripts/ci/rust.sh
 
 The lint recipe runs `cargo fmt --check` and Clippy with warnings denied. The CI script provisions Linux ONNX Runtime when needed and runs `cargo test --all-targets --locked`. Neither command launches Maple.
 
-### Proxy checks and local dependency graph
+### Proxy checks and selected dependency graph
 
 Run the proxy's CI-equivalent component checks through its pinned shell:
 
@@ -168,8 +169,8 @@ nix develop --no-update-lock-file ./proxy -c bash -lc '
 '
 ```
 
-For proxy dependency-wiring or Rust SDK runtime changes, also prove the root
-application resolves the intended in-tree crates:
+For proxy dependency-wiring or Rust SDK runtime changes, also prove Research
+resolves one SDK from its selected source and the in-tree proxy:
 
 ```bash
 nix develop --no-update-lock-file .#ci -c \
