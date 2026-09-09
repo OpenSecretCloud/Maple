@@ -76,7 +76,9 @@ when changing the public exports.
 
 ### Development
 
-Use the pinned Nix shell and Bun version:
+Use the pinned Nix shell and Bun version. `bun.lock` is the supported dependency
+lockfile; repository installation and updates use Bun. npm is used only to
+publish the built tarball, so do not create an npm lockfile.
 
 ```sh
 nix develop --no-update-lock-file
