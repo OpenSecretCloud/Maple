@@ -178,11 +178,18 @@ and compares generated measurements on PRs that explicitly edit the four
 approved PCR JSON files, relevant backend/TEE or approval changes to master,
 and manual runs. Ordinary backend PRs do not require new PCR approvals; master
 mismatches intentionally signal that the revision does not match its current
-approvals. CI does not sign, publish EIFs, or deploy the TEE service.
+approvals. CI does not sign, create EIF releases, or deploy the TEE service.
 Ordinary pull-request completion does not update PCR references.
 Do not copy or sign values just to clear a validation failure; distinguish an
 EIF build failure from a PCR mismatch. Use `docs/pcr-compatibility.md` for the
 offline signed-history validation and manual legacy-publication procedure.
+
+For EIF cache/workflow changes, follow
+`docs/nitro-deploy.md#binary-caches-and-cold-run-validation`: preserve
+master-only FlakeHub OIDC and the unprivileged GitHub cache path. Verify actual
+custom-kernel substitution and timing on a fresh hosted ARM64 runner, then
+unprivileged reuse of the warmed GitHub cache. Local store hits and skipped
+PR jobs cannot establish hosted cache performance or cross-organization access.
 
 Immediately before an authorized dev or prod publish/deployment, use the
 supported Linux/ARM64 release builder and the operator runbook in

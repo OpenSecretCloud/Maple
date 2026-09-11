@@ -149,7 +149,11 @@ measurements only when a PR explicitly edits one of the four approved PCR JSON
 files, on relevant backend/TEE or approval changes to master, or on a manual
 run. An ordinary backend PR does not require updated PCR approvals. A master
 mismatch deliberately reports that the revision does not match current
-approvals. GitHub Actions never signs or publishes EIFs or deploys the service.
+approvals. GitHub Actions never signs approvals, creates EIF releases, or deploys
+the service. Nix cache writes are not approval or deployment: only the master
+EIF job has FlakeHub OIDC permission, while PRs and other manual refs use the
+branch-scoped GitHub cache without OIDC. Follow the
+[cache validation policy](docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
 Do not update PCR references as part of ordinary pull-request work. Treat an
 EIF build failure separately from PCR mismatch.
 

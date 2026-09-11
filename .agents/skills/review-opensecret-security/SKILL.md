@@ -133,11 +133,15 @@ database, provider, client, build/artifact, and live evidence separately.
 
 Local artifact builds and read-only PCR comparison are validation when in
 scope. Root backend CI validates Rust, Nix checks/default binary, and SDK
-compatibility. A separate read-only ARM64 workflow compares dev/prod EIF
+compatibility. A separate ARM64 workflow compares dev/prod EIF
 measurements on explicit approved-PCR JSON edits in PRs, relevant master
 changes, and manual runs. Do not require ordinary backend PRs to update
-approvals, and do not suppress meaningful master mismatches. CI never signs,
-publishes EIFs, or deploys the TEE service. A passing comparison is not live
+approvals, and do not suppress meaningful master mismatches. Only its trusted
+master push/manual job receives OIDC for FlakeHub caching; PRs and non-master
+manual refs use GitHub's branch-scoped cache without OIDC. Review both event
+and ref guards, cache provenance, and default-branch versus PR cache scope.
+Cache writes never authorize approval changes, signing, EIF releases, or
+deployment. A passing comparison is not live
 deployment evidence or proof that both public PCR locations are synchronized.
 Use `docs/pcr-compatibility.md` for manual signed-PCR validation and legacy
 publication. Require explicit authorization for PCR

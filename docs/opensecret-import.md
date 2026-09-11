@@ -47,13 +47,18 @@ checkout against a disposable database; it no longer fetches an external
 backend revision. This advances that lane from the former pinned commit
 `d26eb6bd54d50cc8e6b2967f647a94c61da913da` to the imported source.
 
-PR jobs have read-only credentials and use hosted runners. Backend CI has no
-EIF publisher, signing credentials, OIDC permission, or deployment step. PCR
+PR jobs have read-only repository permission and use hosted runners, without
+OIDC or signing/deployment credentials. Ordinary backend CI has no EIF
+publisher or deployment step. PCR
 file changes retain their signature-validation lane. A separate ARM64 EIF
 workflow compares dev/prod measurements on PRs explicitly editing approved PCR
 JSON, relevant backend/TEE or approval changes to master, and manual runs.
 Ordinary backend PRs do not fail merely because approvals have not been
 updated; master mismatches are an intentional deployment-approval signal.
+Only the master EIF job receives OIDC for FlakeHub Cache and also warms
+GitHub's branch-scoped Nix cache for unprivileged PR/manual runs. Legacy
+cross-organization cache access does not transfer automatically; follow the
+[cache validation policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
 Backend-only changes do not select Research or Agent application packaging.
 
 The companion OpenSecret Workspaces change supports Maple-only compositions
@@ -91,6 +96,6 @@ policy. Operator builds run from `services/opensecret/`; verify the selected
 checkout and commit on each deployment host rather than assuming a merged
 source change migrated that host.
 
-GitHub does not sign PCR entries, publish EIFs, or deploy OpenSecret here. The
+GitHub does not sign PCR entries, create EIF releases, or deploy OpenSecret here. The
 copy helper does not commit or push. Sigstore and the legacy compatibility
 sunset remain separate decisions. There is no automatic expiry of the legacy files.

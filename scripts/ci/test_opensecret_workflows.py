@@ -1,4 +1,4 @@
-"""Exercise backend diff selection and enforce unprivileged CI boundaries."""
+"""Exercise backend diff selection and enforce scoped CI cache boundaries."""
 
 import functools
 import json
@@ -43,7 +43,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         # fetcher cannot calculate revCount for a shallow recursive input.
         for workflow_name, job_names in (
             ("opensecret-ci.yml", ("rust", "nix", "pcr")),
-            ("opensecret-eif.yml", ("eif",)),
+            ("opensecret-eif.yml", ("eif", "eif-trusted")),
             ("sdk-integration.yml", ("sdk-integration",)),
         ):
             for job_name in job_names:
@@ -55,7 +55,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                     self.assertEqual(checkouts[0]["submodules"], "recursive")
                     self.assertEqual(checkouts[0].get("fetch-depth"), 0)
 
-    def test_fork_jobs_are_hosted_read_only_and_credential_free(self):
+    def test_jobs_are_hosted_with_read_only_contents_and_scoped_oidc(self):
         for name in ("opensecret-ci.yml", "opensecret-eif.yml",
                      "opensecret-change-detection.yml", "sdk-integration.yml"):
             config = workflow(name)
@@ -64,10 +64,15 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                 self.assertNotIn("pull_request_target", config["on"])
                 self.assertNotIn("workflow_run", config["on"])
                 for value in strings(config):
-                    self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b|\bid-token\b")
-                for job in config["jobs"].values():
+                    self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
+                for job_name, job in config["jobs"].items():
                     self.assertNotIn("environment", job)
-                    self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
+                    if (name, job_name) == ("opensecret-eif.yml", "eif-trusted"):
+                        self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
+                    else:
+                        self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
+                        for value in strings(job):
+                            self.assertNotRegex(value, r"\bid-token\b|flakehub-cache-action")
                     if "uses" in job:
                         self.assertEqual(job["uses"], "./.github/workflows/opensecret-change-detection.yml")
                         self.assertNotIn("secrets", job)
@@ -101,7 +106,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(cache["save-if"],
                          "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
 
-    def test_eif_workflow_is_read_only_and_keeps_both_environments_independent(self):
+    def test_eif_workflow_preserves_approvals_and_keeps_both_environments_independent(self):
         config = workflow("opensecret-eif.yml")
         self.assertEqual(set(config["on"]), {"push", "pull_request", "workflow_dispatch"})
         for event in ("push", "pull_request"):
@@ -109,51 +114,95 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             self.assertNotIn("paths", config["on"][event])
         self.assertEqual(config["concurrency"]["group"],
                          "opensecret-eif-${{ github.event_name }}-${{ github.ref }}")
-        job = config["jobs"]["eif"]
-        self.assertEqual(job["strategy"]["matrix"], {"mode": ["dev", "prod"]})
-        self.assertIs(job["strategy"]["fail-fast"], False)
-        self.assertEqual(job["env"]["EIF_MODE"], "${{ matrix.mode }}")
-        self.assertEqual(job["timeout-minutes"], 90)
-        for key in ("OPENSECRET_DEV_POSTGRES", "OPENSECRET_DEV_ENV", "OPENSECRET_DEV_CONTAINERS"):
-            self.assertEqual(job["env"][key], "0")
-        commands = [step["run"] for step in job["steps"] if "run" in step]
-        self.assertEqual(commands, ['bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"'])
+        self.assertEqual(set(config["jobs"]), {"changes", "eif", "eif-trusted"})
+        for job_name in ("eif", "eif-trusted"):
+            job = config["jobs"][job_name]
+            self.assertEqual(job["needs"], "changes")
+            self.assertEqual(job["strategy"]["matrix"], {"mode": ["dev", "prod"]})
+            self.assertIs(job["strategy"]["fail-fast"], False)
+            self.assertEqual(job["env"]["EIF_MODE"], "${{ matrix.mode }}")
+            self.assertEqual(job["timeout-minutes"], 90)
+            for key in ("OPENSECRET_DEV_POSTGRES", "OPENSECRET_DEV_ENV", "OPENSECRET_DEV_CONTAINERS"):
+                self.assertEqual(job["env"][key], "0")
+            commands = [step["run"] for step in job["steps"] if "run" in step]
+            self.assertEqual(commands, ['bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"'])
         for value in strings(config["jobs"]):
             self.assertNotRegex(value, r"deploy-|stage-|scp-|update-pcr|append-pcr|generate-keys")
-            self.assertNotRegex(value, r"upload-artifact|download-artifact|flakehub-cache|gh release")
+            self.assertNotRegex(value, r"upload-artifact|download-artifact|gh release")
+
+    def test_eif_cache_setup_precedes_build_and_warms_fork_compatible_cache(self):
+        jobs = workflow("opensecret-eif.yml")["jobs"]
+        installer_action = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
+        for job_name, cache_action, cache_inputs, determinate in (
+            ("eif", "DeterminateSystems/magic-nix-cache-action@3c034b51a9deec0a09ef1df8b436ac5db50fae94", {
+                "source-revision": "4cc363589df8090801c098cdcde1bdd42562318a",
+                "use-flakehub": "disabled",
+                "use-gha-cache": "enabled",
+            }, False),
+            ("eif-trusted", "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea", {
+                "use-gha-cache": "enabled",
+                "diff-store": True,
+            }, True),
+        ):
+            with self.subTest(job=job_name):
+                steps = jobs[job_name]["steps"]
+                self.assertEqual(len(steps), 4)
+                self.assertTrue(steps[0]["uses"].startswith("actions/checkout@"))
+                self.assertEqual(steps[1]["uses"], installer_action)
+                self.assertEqual(steps[1]["with"], {"determinate": determinate, "github-token": ""})
+                self.assertEqual(steps[2]["uses"], cache_action)
+                self.assertEqual(steps[2]["with"], cache_inputs)
+                self.assertNotIn("if", steps[2])
+                self.assertNotIn("continue-on-error", steps[2])
+                self.assertEqual(steps[3]["run"], 'bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"')
 
     def test_eif_event_gate_matches_the_approval_policy(self):
         # Exercise the actual GitHub boolean expression with a restricted,
         # equivalent local representation, not a separately implemented policy.
-        expression = workflow("opensecret-eif.yml")["jobs"]["eif"]["if"]
-        expression = expression.strip().removeprefix("${{").removesuffix("}}").strip()
-        expression = expression.replace("&&", " and ").replace("||", " or ")
-        expression = expression.replace("!cancelled()", "True").replace("always()", "True")
-        expression = " ".join(expression.split())
+        expressions = {}
+        for job_name in ("eif", "eif-trusted"):
+            expression = workflow("opensecret-eif.yml")["jobs"][job_name]["if"]
+            expression = expression.strip().removeprefix("${{").removesuffix("}}").strip()
+            expression = expression.replace("&&", " and ").replace("||", " or ")
+            expression = expression.replace("!cancelled()", "NOT_CANCELLED").replace("always()", "True")
+            expressions[job_name] = " ".join(expression.split())
         cases = (
             ("pull_request", "refs/pull/1/merge", "success", "true", "false", False),
             ("pull_request", "refs/pull/1/merge", "success", "true", "true", True),
             ("pull_request", "refs/pull/1/merge", "failure", "", "", False),
             ("pull_request", "refs/pull/1/merge", "success", "", "", False),
+            ("pull_request", "refs/heads/master", "success", "true", "true", True),
             ("push", "refs/heads/master", "success", "true", "false", True),
             ("push", "refs/heads/master", "success", "false", "false", False),
             ("push", "refs/heads/master", "failure", "", "", True),
             ("push", "refs/heads/master", "success", "", "", True),
             ("push", "refs/heads/feature", "success", "true", "true", False),
             ("workflow_dispatch", "refs/heads/master", "success", "true", "false", True),
+            ("workflow_dispatch", "refs/heads/master", "failure", "", "", True),
+            ("workflow_dispatch", "refs/heads/feature", "success", "true", "false", True),
+            ("workflow_dispatch", "refs/tags/review", "success", "true", "false", True),
+            ("workflow_dispatch", "refs/tags/master", "failure", "", "", True),
             ("schedule", "refs/heads/master", "success", "true", "true", False),
         )
         for event, ref, result, eif, approvals, expected in cases:
             with self.subTest(event=event, ref=ref, result=result, eif=eif, approvals=approvals):
-                condition = expression
-                for key, value in {
-                    "github.event_name": event, "github.ref": ref,
-                    "needs.changes.result": result,
-                    "needs.changes.outputs.eif": eif,
-                    "needs.changes.outputs.pcr_approvals": approvals,
-                }.items():
-                    condition = condition.replace(key, repr(value))
-                self.assertEqual(eval(condition, {"__builtins__": {}}, {}), expected)
+                trusted = event in ("push", "workflow_dispatch") and ref == "refs/heads/master"
+                for cancelled in (False, True):
+                    selected = []
+                    for job_name, expression in expressions.items():
+                        condition = expression
+                        for key, value in {
+                            "github.event_name": event, "github.ref": ref,
+                            "needs.changes.result": result,
+                            "needs.changes.outputs.eif": eif,
+                            "needs.changes.outputs.pcr_approvals": approvals,
+                            "NOT_CANCELLED": not cancelled,
+                        }.items():
+                            condition = condition.replace(key, repr(value))
+                        if eval(condition, {"__builtins__": {}}, {}):
+                            selected.append(job_name)
+                    expected_jobs = ["eif-trusted" if trusted else "eif"] if expected and not cancelled else []
+                    self.assertEqual(selected, expected_jobs)
 
     def test_backend_retains_exact_rust_gates_and_disabled_stateful_shell_hooks(self):
         config = workflow("opensecret-ci.yml")
