@@ -12,7 +12,7 @@ import tempfile
 import tomllib
 import unittest
 
-from opensecret_change_detection import OUTPUTS
+from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +43,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         # fetcher cannot calculate revCount for a shallow recursive input.
         for workflow_name, job_names in (
             ("opensecret-ci.yml", ("rust", "nix", "pcr")),
+            ("opensecret-eif.yml", ("eif",)),
             ("sdk-integration.yml", ("sdk-integration",)),
         ):
             for job_name in job_names:
@@ -55,7 +56,8 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                     self.assertEqual(checkouts[0].get("fetch-depth"), 0)
 
     def test_fork_jobs_are_hosted_read_only_and_credential_free(self):
-        for name in ("opensecret-ci.yml", "opensecret-change-detection.yml", "sdk-integration.yml"):
+        for name in ("opensecret-ci.yml", "opensecret-eif.yml",
+                     "opensecret-change-detection.yml", "sdk-integration.yml"):
             config = workflow(name)
             with self.subTest(workflow=name):
                 self.assertEqual(config["permissions"], {"contents": "read"})
@@ -70,7 +72,8 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                         self.assertEqual(job["uses"], "./.github/workflows/opensecret-change-detection.yml")
                         self.assertNotIn("secrets", job)
                         continue
-                    self.assertEqual(job["runs-on"], "ubuntu-latest")
+                    expected_runner = "ubuntu-24.04-arm" if name == "opensecret-eif.yml" else "ubuntu-latest"
+                    self.assertEqual(job["runs-on"], expected_runner)
                     for step in job["steps"]:
                         self.assertNotIn("${{", step.get("run", ""))
                         action = step.get("uses", "")
@@ -83,7 +86,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                         if action.startswith("DeterminateSystems/nix-installer-action@"):
                             self.assertEqual(step["with"]["github-token"], "")
 
-    def test_backend_does_not_publish_or_run_privileged_legacy_builds(self):
+    def test_ordinary_backend_ci_does_not_publish_or_build_eifs(self):
         config = workflow("opensecret-ci.yml")
         self.assertEqual(set(config["on"]), {"push", "pull_request", "schedule", "workflow_dispatch"})
         self.assertEqual(config["on"]["push"]["branches"], ["master"])
@@ -97,6 +100,60 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(cache["workspaces"], "services/opensecret -> target")
         self.assertEqual(cache["save-if"],
                          "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
+
+    def test_eif_workflow_is_read_only_and_keeps_both_environments_independent(self):
+        config = workflow("opensecret-eif.yml")
+        self.assertEqual(set(config["on"]), {"push", "pull_request", "workflow_dispatch"})
+        for event in ("push", "pull_request"):
+            self.assertEqual(config["on"][event]["branches"], ["master"])
+            self.assertNotIn("paths", config["on"][event])
+        self.assertEqual(config["concurrency"]["group"],
+                         "opensecret-eif-${{ github.event_name }}-${{ github.ref }}")
+        job = config["jobs"]["eif"]
+        self.assertEqual(job["strategy"]["matrix"], {"mode": ["dev", "prod"]})
+        self.assertIs(job["strategy"]["fail-fast"], False)
+        self.assertEqual(job["env"]["EIF_MODE"], "${{ matrix.mode }}")
+        self.assertEqual(job["timeout-minutes"], 90)
+        for key in ("OPENSECRET_DEV_POSTGRES", "OPENSECRET_DEV_ENV", "OPENSECRET_DEV_CONTAINERS"):
+            self.assertEqual(job["env"][key], "0")
+        commands = [step["run"] for step in job["steps"] if "run" in step]
+        self.assertEqual(commands, ['bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"'])
+        for value in strings(config["jobs"]):
+            self.assertNotRegex(value, r"deploy-|stage-|scp-|update-pcr|append-pcr|generate-keys")
+            self.assertNotRegex(value, r"upload-artifact|download-artifact|flakehub-cache|gh release")
+
+    def test_eif_event_gate_matches_the_approval_policy(self):
+        # Exercise the actual GitHub boolean expression with a restricted,
+        # equivalent local representation, not a separately implemented policy.
+        expression = workflow("opensecret-eif.yml")["jobs"]["eif"]["if"]
+        expression = expression.strip().removeprefix("${{").removesuffix("}}").strip()
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+        expression = expression.replace("!cancelled()", "True").replace("always()", "True")
+        expression = " ".join(expression.split())
+        cases = (
+            ("pull_request", "refs/pull/1/merge", "success", "true", "false", False),
+            ("pull_request", "refs/pull/1/merge", "success", "true", "true", True),
+            ("pull_request", "refs/pull/1/merge", "failure", "", "", False),
+            ("pull_request", "refs/pull/1/merge", "success", "", "", False),
+            ("push", "refs/heads/master", "success", "true", "false", True),
+            ("push", "refs/heads/master", "success", "false", "false", False),
+            ("push", "refs/heads/master", "failure", "", "", True),
+            ("push", "refs/heads/master", "success", "", "", True),
+            ("push", "refs/heads/feature", "success", "true", "true", False),
+            ("workflow_dispatch", "refs/heads/master", "success", "true", "false", True),
+            ("schedule", "refs/heads/master", "success", "true", "true", False),
+        )
+        for event, ref, result, eif, approvals, expected in cases:
+            with self.subTest(event=event, ref=ref, result=result, eif=eif, approvals=approvals):
+                condition = expression
+                for key, value in {
+                    "github.event_name": event, "github.ref": ref,
+                    "needs.changes.result": result,
+                    "needs.changes.outputs.eif": eif,
+                    "needs.changes.outputs.pcr_approvals": approvals,
+                }.items():
+                    condition = condition.replace(key, repr(value))
+                self.assertEqual(eval(condition, {"__builtins__": {}}, {}), expected)
 
     def test_backend_retains_exact_rust_gates_and_disabled_stateful_shell_hooks(self):
         config = workflow("opensecret-ci.yml")
@@ -153,7 +210,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(job["services"]["postgres"]["env"]["POSTGRES_DB"], "opensecret")
 
     def test_selector_failures_or_missing_outputs_cannot_skip_validation(self):
-        for workflow_name, lanes in (("opensecret-ci.yml", {name: name for name in OUTPUTS if name != "integration"}),
+        for workflow_name, lanes in (("opensecret-ci.yml", {name: name for name in ("rust", "nix", "audit", "pcr")}),
                                      ("sdk-integration.yml", {"sdk-integration": "integration"})):
             config = workflow(workflow_name)
             self.assertNotIn("paths", config["on"]["pull_request"])
@@ -232,6 +289,143 @@ class SdkWorkflowFailurePropagationTests(unittest.TestCase):
                     self.assertTrue(command.startswith(expected), command)
 
 
+class EifComparisonCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.repo = self.root / "repo"
+        self.component = self.repo / "services/opensecret"
+        self.component.mkdir(parents=True)
+        scripts = self.repo / "scripts/ci"
+        scripts.mkdir(parents=True)
+        self.script = scripts / "check_opensecret_eif.sh"
+        shutil.copyfile(ROOT / "scripts/ci/check_opensecret_eif.sh", self.script)
+        self.binaries = self.root / "bin"
+        self.binaries.mkdir()
+        self.scratch = self.root / "scratch"
+        self.scratch.mkdir()
+        for tool in ("dirname", "mktemp", "rm", "diff"):
+            (self.binaries / tool).symlink_to(shutil.which(tool))
+        uname = self.binaries / "uname"
+        uname.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "print('Linux' if sys.argv[1] == '-s' else os.environ.get('TEST_ARCH', 'aarch64'))\n"
+        )
+        uname.chmod(0o755)
+        nix = self.binaries / "nix"
+        nix.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "Path(os.environ['TEST_TRACE']).write_text(json.dumps({'args': args, 'cwd': os.getcwd()}))\n"
+            "if os.environ.get('TEST_FAIL_BUILD'):\n"
+            "    sys.exit(42)\n"
+            "output = Path(args[args.index('--out-link') + 1])\n"
+            "output.mkdir()\n"
+            "if not os.environ.get('TEST_MISSING_IMAGE'):\n"
+            "    (output / 'image.eif').write_bytes(b'fixture EIF, not a real image')\n"
+            "if os.environ.get('TEST_PCR_DIRECTORY'):\n"
+            "    (output / 'pcr.json').mkdir()\n"
+            "elif not os.environ.get('TEST_MISSING_PCR'):\n"
+            "    (output / 'pcr.json').write_text(os.environ['TEST_MEASUREMENTS'])\n"
+        )
+        nix.chmod(0o755)
+        self.measurements = {
+            mode: json.dumps({"HashAlgorithm": "fixture", "PCR0": f"reviewed-{mode}"}) + "\n"
+            for mode in ("dev", "prod")
+        }
+        for mode, name in (("dev", "pcrDev.json"), ("prod", "pcrProd.json")):
+            (self.component / name).write_text(self.measurements[mode])
+        for name in ("pcrDevHistory.json", "pcrProdHistory.json"):
+            (self.component / name).write_text("untouched history fixture\n")
+        self.existing_result = self.component / "result"
+        self.existing_result.symlink_to(self.root / "operator-owned-output")
+        self.sentinel = self.root / "dotenv-was-loaded"
+        (self.component / ".env").write_text(f"touch '{self.sentinel}'\n")
+        self.before_files = {
+            p.name: p.read_bytes() for p in self.component.iterdir() if p.is_file()
+        }
+
+    def run_check(self, mode="dev", **extra_env):
+        env = {
+            "PATH": str(self.binaries), "HOME": str(self.root),
+            "TMPDIR": str(self.scratch), "TEST_TRACE": str(self.root / "trace"),
+            "TEST_MEASUREMENTS": self.measurements.get(mode, self.measurements["dev"]), **extra_env,
+        }
+        result = subprocess.run(
+            [shutil.which("bash"), "--noprofile", "--norc", str(self.script), mode],
+            cwd=self.root, env=env, capture_output=True, text=True,
+        )
+        self.assertFalse(self.sentinel.exists())
+        self.assertEqual(os.readlink(self.existing_result), str(self.root / "operator-owned-output"))
+        self.assertEqual(
+            {p.name: p.read_bytes() for p in self.component.iterdir() if p.is_file()},
+            self.before_files,
+        )
+        self.assertEqual(list(self.scratch.iterdir()), [])
+        return result
+
+    def test_each_environment_builds_the_pinned_component_without_loading_dotenv(self):
+        for mode in ("dev", "prod"):
+            with self.subTest(mode=mode):
+                result = self.run_check(mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"EIF/PCR approval match ({mode})", result.stdout)
+                trace = json.loads((self.root / "trace").read_text())
+                self.assertEqual(trace["cwd"], str(self.component))
+                self.assertEqual(trace["args"][:4], [
+                    "build", "--no-update-lock-file", "--print-build-logs", "--out-link",
+                ])
+                self.assertEqual(trace["args"][-1], f".?submodules=1#eif-{mode}")
+
+    def test_measurement_mismatch_fails_without_rewriting_approvals(self):
+        result = self.run_check(TEST_MEASUREMENTS='{"PCR0":"not approved"}\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EIF/PCR approval mismatch", result.stderr)
+
+    def test_build_failure_and_missing_generated_measurements_fail(self):
+        result = self.run_check(TEST_FAIL_BUILD="1")
+        self.assertEqual(result.returncode, 42)
+        for failure in ("TEST_MISSING_PCR", "TEST_MISSING_IMAGE", "TEST_PCR_DIRECTORY"):
+            with self.subTest(failure=failure):
+                result = self.run_check(**{failure: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("did not produce", result.stderr)
+
+    def test_invalid_mode_and_wrong_architecture_do_not_build(self):
+        for mode, extra_env in (("preview", {}), ("dev", {"TEST_ARCH": "x86_64"})):
+            with self.subTest(mode=mode, extra_env=extra_env):
+                result = self.run_check(mode, **extra_env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "trace").exists())
+
+    def test_missing_or_symlinked_approved_measurements_do_not_build(self):
+        reference = self.component / "pcrDev.json"
+        reference.unlink()
+        self.before_files.pop(reference.name)
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "trace").exists())
+        reference.symlink_to(self.component / "pcrProd.json")
+        self.before_files[reference.name] = self.measurements["prod"].encode()
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "trace").exists())
+
+    def test_directory_instead_of_approved_measurements_does_not_build(self):
+        reference = self.component / "pcrDev.json"
+        reference.unlink()
+        self.before_files.pop(reference.name)
+        reference.mkdir()
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing regular approved measurement file", result.stderr)
+        self.assertFalse((self.root / "trace").exists())
+
+
 class OpenSecretDiffSelectionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -259,7 +453,7 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         self.git("commit", "-qm", "fixture change")
         return self.git("rev-parse", "HEAD")
 
-    def select(self, event, base, head):
+    def select(self, event, base, head, *, succeeds=True):
         step = next(step for step in workflow("opensecret-change-detection.yml")["jobs"]["detect"]["steps"]
                     if step.get("id") == "classify")
         output = self.root / "output"
@@ -268,8 +462,12 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
                "GITHUB_OUTPUT": str(output)}
         result = subprocess.run(["bash", "-c", step["run"]], cwd=self.root, env=env,
                                 capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+        if succeeds:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Cannot determine the PR's approved-PCR changes", result.stdout)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
 
     def expected(self, *selected):
         return {name: "true" if name in selected else "false" for name in OUTPUTS}
@@ -278,9 +476,9 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         docs = self.commit_file("services/opensecret/docs/design.md", "design\n")
         self.assertEqual(self.select("push", self.base, docs), self.expected())
         runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
-        self.assertEqual(self.select("push", docs, runtime), self.expected("rust", "nix", "integration"))
+        self.assertEqual(self.select("push", docs, runtime), self.expected("rust", "nix", "integration", "eif"))
         pcr = self.commit_file("services/opensecret/pcrDevHistory.json", "[]\n")
-        self.assertEqual(self.select("push", runtime, pcr), self.expected("pcr"))
+        self.assertEqual(self.select("push", runtime, pcr), self.expected("pcr", "eif", "pcr_approvals"))
 
     def test_pull_request_uses_merge_base_instead_of_unrelated_base_changes(self):
         master = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
@@ -288,21 +486,61 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         docs = self.commit_file("services/opensecret/docs/design.md", "design\n")
         self.assertEqual(self.select("pull_request", master, docs), self.expected())
 
+    def test_unrelated_master_approvals_do_not_count_as_pr_approval_edits(self):
+        master = self.commit_file("services/opensecret/pcrDev.json", "approved on master\n")
+        self.git("checkout", "-qb", "contributor", self.base)
+        runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
+        self.assertEqual(self.select("pull_request", master, runtime),
+                         self.expected("rust", "nix", "integration", "eif"))
+
+    def test_pr_approval_edit_selects_comparison_even_with_backend_changes(self):
+        runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
+        approvals = self.commit_file("services/opensecret/pcrProdHistory.json", "[]\n")
+        self.assertEqual(self.select("pull_request", self.base, approvals),
+                         self.expected("rust", "nix", "integration", "pcr", "eif", "pcr_approvals"))
+        self.assertEqual(self.select("pull_request", runtime, approvals),
+                         self.expected("pcr", "eif", "pcr_approvals"))
+
     def test_deletion_or_rename_out_of_backend_still_selects_contract_checks(self):
         runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
         self.git("mv", "services/opensecret/src/main.rs", "LICENSE")
         self.git("commit", "-qam", "rename fixture")
         self.assertEqual(self.select("push", runtime, self.git("rev-parse", "HEAD")),
-                         self.expected("rust", "nix", "integration"))
+                         self.expected("rust", "nix", "integration", "eif"))
+
+    def test_deletion_or_rename_of_an_approval_file_is_an_explicit_edit(self):
+        for rename in (False, True):
+            with self.subTest(rename=rename):
+                before = self.commit_file("services/opensecret/pcrProd.json", "approval\n")
+                if rename:
+                    (self.root / "services/opensecret/docs").mkdir(exist_ok=True)
+                    self.git("mv", "services/opensecret/pcrProd.json", "services/opensecret/docs/old-approval.json")
+                else:
+                    self.git("rm", "services/opensecret/pcrProd.json")
+                self.git("commit", "-qam", "remove approval fixture")
+                self.assertEqual(self.select("pull_request", before, self.git("rev-parse", "HEAD")),
+                                 self.expected("pcr", "eif", "pcr_approvals"))
 
     def test_missing_history_manual_event_classifier_failure_and_partial_output_fail_safe(self):
         for event, base, head in (("push", "0" * 40, self.base), ("push", "a" * 40, self.base),
                                   ("workflow_dispatch", "", "")):
             with self.subTest(event=event, base=base):
-                self.assertEqual(self.select(event, base, head), self.expected(*OUTPUTS))
+                self.assertEqual(self.select(event, base, head), self.expected(*CHECK_OUTPUTS))
         classifier = self.root / "scripts/ci/opensecret_change_detection.py"
         classifier.write_text("print('rust=false')\nraise RuntimeError('fixture')\n")
-        self.assertEqual(self.select("push", self.base, self.base), self.expected(*OUTPUTS))
+        self.assertEqual(self.select("push", self.base, self.base), self.expected(*CHECK_OUTPUTS))
+        self.assertEqual(self.select("pull_request", self.base, self.base, succeeds=False), {})
+
+    def test_pr_missing_history_fails_routing_without_inventing_approval_changes(self):
+        self.assertEqual(self.select("pull_request", "a" * 40, self.base, succeeds=False), {})
+
+    def test_successful_but_incomplete_classifier_output_is_rejected(self):
+        classifier = self.root / "scripts/ci/opensecret_change_detection.py"
+        classifier.write_text(
+            "OUTPUTS = " + repr(OUTPUTS) + "\nprint('rust=false')\n"
+        )
+        self.assertEqual(self.select("pull_request", self.base, self.base, succeeds=False), {})
+        self.assertEqual(self.select("push", self.base, self.base), self.expected(*CHECK_OUTPUTS))
 
     def test_schedule_selects_only_advisory_audit(self):
         self.assertEqual(self.select("schedule", "", ""), self.expected("audit"))

@@ -2,9 +2,31 @@
 
 This operator runbook remains manual. Run repository-local build and `just`
 commands from `services/opensecret/` in the Maple monorepo using its pinned Nix
-flake. The root GitHub workflows do not build or publish EIFs or deploy this
-service. For authorized signed-PCR updates and legacy client compatibility,
-follow [the PCR publication procedure](pcr-compatibility.md).
+flake. The root EIF approval workflow performs read-only dev/prod builds and
+measurement comparisons under the policy below; it never signs, publishes,
+or deploys this service. For authorized signed-PCR updates and legacy client
+compatibility, follow [the PCR publication procedure](pcr-compatibility.md).
+
+## CI approval checks
+
+`opensecret-eif.yml` compares generated measurements with the approved JSON
+files on Linux ARM64. A PR runs these comparisons only if its own diff edits
+`pcrDev.json`, `pcrProd.json`, `pcrDevHistory.json`, or `pcrProdHistory.json`
+under `services/opensecret/`. Backend code changes alone do not require new
+approvals to pass PR CI. The PR's checkout supplies both source and references.
+
+Master compares on backend/TEE build-input, approved-PCR, and EIF-check tooling
+changes. A mismatch intentionally leaves the distinct EIF/PCR approval check
+red until an operator reviews and updates approvals. Unrelated client-only or
+documentation changes skip it. Manual dispatch checks both environments.
+If a PR's changed files cannot be determined, routing fails explicitly instead
+of treating missing information as an approval edit.
+
+Existing signed-history validation is separate. Neither a matching EIF nor
+green CI verifies both public publication locations, live KMS policy, or the
+running enclave, and neither authorizes deployment. Builds use normal Nix
+cache semantics; this is measurement parity, not a forced independent rebuild.
+CI never updates references or handles signing keys.
 
 ## Log into AWS CLI 
 

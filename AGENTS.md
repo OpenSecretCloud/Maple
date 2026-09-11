@@ -101,6 +101,10 @@ its table-driven tests when the dependency graph or component layout changes.
 The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
 same checkout. Backend changes do not imply Research or Agent packaging.
+The separate `opensecret-eif.yml` compares dev/prod EIF measurements only on PRs
+editing approved PCR JSON, relevant master changes, and manual runs. Preserve
+ordinary backend PRs without fresh approvals and meaningful master mismatches;
+these read-only checks never sign, publish, or authorize deployment.
 
 For Pages, read [the deployment guide](docs/pages-deployments.md). Preserve
 unprivileged preview builds and separate development/production profiles.
