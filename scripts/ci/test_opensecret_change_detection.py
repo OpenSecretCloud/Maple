@@ -7,7 +7,7 @@ import unittest
 
 from agent_change_detection import affects_agent
 from change_detection import classify_path as research_routes
-from opensecret_change_detection import OUTPUTS, classify_paths
+from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS, classify_paths
 
 
 class OpenSecretChangeDetectionTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
                          "migrations/2026/up.sql", ".cargo/config.toml", "build.rs"):
             path = "services/opensecret/" + relative
             with self.subTest(path=path):
-                expected = ("rust", "integration") if relative.startswith(("tests/", "migrations/")) else ("rust", "nix", "integration")
+                expected = ("rust", "integration") if relative.startswith(("tests/", "migrations/")) else ("rust", "nix", "integration", "eif")
                 self.assert_routes([path], *expected)
                 self.assertEqual(research_routes(path), frozenset())
                 self.assertFalse(affects_agent(path))
@@ -28,7 +28,7 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
         for relative in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock"):
             path = "services/opensecret/" + relative
             with self.subTest(path=path):
-                self.assert_routes([path], *OUTPUTS)
+                self.assert_routes([path], *CHECK_OUTPUTS)
                 self.assertEqual(research_routes(path), frozenset())
                 self.assertFalse(affects_agent(path))
 
@@ -41,13 +41,20 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
     def test_backend_nix_only_inputs_and_dependency_policy_keep_independent_checks(self):
         for relative in ("nix/kernel-upstream.nix", "entrypoint.sh", "continuum-proxy",
                          "nitro-toolkit", "nitro-toolkit/init/main.c", "privatemode-public"):
-            self.assert_routes(["services/opensecret/" + relative], "nix")
+            self.assert_routes(["services/opensecret/" + relative], "nix", "eif")
         self.assert_routes(["services/opensecret/deny.toml"], "audit")
         self.assert_routes(["services/opensecret/.env.sample"], "integration")
 
-    def test_signed_pcr_and_operator_documentation_changes_do_not_rebuild_clients(self):
-        for relative in ("pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json",
-                         "pcrPreview.json", "pcrPreviewHistory.json", "pcr_sign.js", "pcr_verify.js",
+    def test_only_the_four_approved_json_files_select_pr_eif_comparison(self):
+        for relative in ("pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json"):
+            path = "services/opensecret/" + relative
+            with self.subTest(path=path):
+                self.assert_routes([path], "pcr", "eif", "pcr_approvals")
+                self.assertEqual(research_routes(path), frozenset())
+                self.assertFalse(affects_agent(path))
+
+    def test_pcr_tooling_and_other_pcr_names_do_not_claim_an_approval_edit(self):
+        for relative in ("pcrPreview.json", "pcrPreviewHistory.json", "pcr_sign.js", "pcr_verify.js",
                          "scripts/pcr_compatibility.py", "scripts/test_pcr_compatibility.py"):
             path = "services/opensecret/" + relative
             with self.subTest(path=path):
@@ -77,25 +84,41 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
     def test_submodules_and_selector_changes_select_all_backend_checks(self):
         for path in (".gitmodules", ".github/workflows/opensecret-change-detection.yml",
                      "scripts/ci/opensecret_change_detection.py"):
-            self.assert_routes([path], *OUTPUTS)
+            self.assert_routes([path], *CHECK_OUTPUTS)
         self.assertFalse(affects_agent(".gitmodules"))
         self.assertEqual(research_routes(".gitmodules"), frozenset())
-        self.assert_routes([".github/workflows/opensecret-ci.yml"], "rust", "nix", "audit", "pcr")
+        self.assert_routes([".github/workflows/opensecret-ci.yml"], "rust", "nix", "audit", "pcr", "eif")
         self.assert_routes([".github/workflows/sdk-integration.yml"], "integration")
+
+    def test_eif_workflow_and_comparison_helper_select_only_master_eif_checks(self):
+        for path in (".github/workflows/opensecret-eif.yml", "scripts/ci/check_opensecret_eif.sh"):
+            self.assert_routes([path], "eif")
+            self.assertEqual(research_routes(path), frozenset())
+            self.assertFalse(affects_agent(path))
+
+    def test_mixed_backend_and_approval_changes_retain_both_signals(self):
+        self.assert_routes(
+            ["services/opensecret/src/main.rs", "services/opensecret/pcrProd.json"],
+            "rust", "nix", "integration", "pcr", "eif", "pcr_approvals",
+        )
+        self.assert_routes(
+            ["sdk/src/lib/client.ts", "services/opensecret/pcrDevHistory.json"],
+            "integration", "pcr", "eif", "pcr_approvals",
+        )
 
     def test_unknown_inputs_invalid_paths_and_empty_diff(self):
         for path in ("unknown-root.toml", "services/opensecret/new-build-input", "", "/tmp/path",
                      "services/opensecret/../updates/src/main.ts"):
-            self.assert_routes([path], *OUTPUTS)
+                self.assert_routes([path], *CHECK_OUTPUTS)
         self.assert_routes([])
-        self.assert_routes(["README.md", "services/opensecret/src/main.rs"], "rust", "nix", "integration")
+        self.assert_routes(["README.md", "services/opensecret/src/main.rs"], "rust", "nix", "integration", "eif")
 
     def test_null_delimited_cli_and_explicit_fallback(self):
         script = Path(__file__).with_name("opensecret_change_detection.py")
         for arguments, paths, selected in (
-            ([], b"README.md\0services/opensecret/src/name with\nnewline.rs\0", {"rust", "nix", "integration"}),
+            ([], b"README.md\0services/opensecret/src/name with\nnewline.rs\0", {"rust", "nix", "integration", "eif"}),
             ([], b"README.md\0services/opensecret/docs/note with spaces.md\0", set()),
-            (["--all"], b"", set(OUTPUTS)),
+            (["--all"], b"", set(CHECK_OUTPUTS)),
         ):
             result = subprocess.run([sys.executable, str(script), *arguments], input=paths,
                                     check=True, capture_output=True)

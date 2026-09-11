@@ -1,6 +1,6 @@
 ---
 name: validate-opensecret
-description: Validate OpenSecret changes with focused Rust tests, exact Rust CI parity, disposable PostgreSQL migration and ignored-test proof, separately authorized provider checks, encrypted SDK or Maple smoke tests, Nix checks, and release-only EIF/PCR evidence. Use before claiming backend work complete or when reviewing whether test evidence matches a changed API, provider, persistence, security, build, or deployment boundary.
+description: Validate OpenSecret changes with focused Rust tests, exact Rust CI parity, disposable PostgreSQL migration and ignored-test proof, separately authorized provider checks, encrypted SDK or Maple smoke tests, Nix checks, and read-only EIF/PCR evidence. Use before claiming backend work complete or when reviewing whether test evidence matches a changed API, provider, persistence, security, build, or deployment boundary.
 ---
 
 # Validate OpenSecret
@@ -170,10 +170,16 @@ nix flake check --no-write-lock-file --print-build-logs '.?submodules=1'
 nix build --no-link --no-write-lock-file '.?submodules=1#default'
 ```
 
-EIF construction, PCR comparison, and reference/history updates are
-release-only work. Root backend CI runs applicable Nix checks and builds the
-default backend binary; it does not build or publish EIFs or deploy the TEE
-service. Ordinary pull-request completion does not update PCR references.
+PCR reference/history updates remain operator-controlled release work.
+Read-only EIF construction and PCR comparison are validation when in scope.
+Root backend CI runs applicable Nix checks and builds the
+default backend binary. The separate root EIF approval workflow builds dev/prod
+and compares generated measurements on PRs that explicitly edit the four
+approved PCR JSON files, relevant backend/TEE or approval changes to master,
+and manual runs. Ordinary backend PRs do not require new PCR approvals; master
+mismatches intentionally signal that the revision does not match its current
+approvals. CI does not sign, publish EIFs, or deploy the TEE service.
+Ordinary pull-request completion does not update PCR references.
 Do not copy or sign values just to clear a validation failure; distinguish an
 EIF build failure from a PCR mismatch. Use `docs/pcr-compatibility.md` for the
 offline signed-history validation and manual legacy-publication procedure.
@@ -193,8 +199,8 @@ configuration, and every unrun or unavailable layer. For release evidence,
 also record the target artifact and PCR source.
 
 Use narrow labels: **static/unit**, **disposable DB**, **live provider**, or
-**local encrypted full stack**. Use **Linux/Nitro/PCR** or **deployed** only for
-authorized release/deployment evidence.
+**local encrypted full stack**. Use **Linux/Nitro/PCR** for actual artifact
+evidence and **deployed** only for authorized live deployment evidence.
 Failed, skipped, ignored, interrupted, timing-dependent, and unavailable checks
 remain exactly that; do not turn partial evidence into “fully tested” or
 “production ready.”

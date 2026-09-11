@@ -2,8 +2,9 @@
 
 OpenSecret lives in `services/opensecret/`, retaining its Rust package, Nix
 toolchain, operator recipes, submodule revisions, and PCR filenames. This is a
-source and development-workflow migration. Building and deploying the TEE
-service remains an operator-controlled process.
+source and development-workflow migration. Approval, signing, publication, and
+deployment remain operator-controlled. Read-only EIF/PCR comparisons now also
+run in CI under the [approval-check policy](../services/opensecret/docs/nitro-deploy.md#ci-approval-checks).
 
 ## Preserved source boundary
 
@@ -48,8 +49,12 @@ backend revision. This advances that lane from the former pinned commit
 
 PR jobs have read-only credentials and use hosted runners. Backend CI has no
 EIF publisher, signing credentials, OIDC permission, or deployment step. PCR
-file changes have their own validation lane. Backend-only changes do not
-select Research or Agent application packaging.
+file changes retain their signature-validation lane. A separate ARM64 EIF
+workflow compares dev/prod measurements on PRs explicitly editing approved PCR
+JSON, relevant backend/TEE or approval changes to master, and manual runs.
+Ordinary backend PRs do not fail merely because approvals have not been
+updated; master mismatches are an intentional deployment-approval signal.
+Backend-only changes do not select Research or Agent application packaging.
 
 The companion OpenSecret Workspaces change supports Maple-only compositions
 through `services/opensecret/`. An explicitly included standalone `opensecret`
