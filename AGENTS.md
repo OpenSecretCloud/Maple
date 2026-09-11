@@ -104,7 +104,11 @@ same checkout. Backend changes do not imply Research or Agent packaging.
 The separate `opensecret-eif.yml` compares dev/prod EIF measurements only on PRs
 editing approved PCR JSON, relevant master changes, and manual runs. Preserve
 ordinary backend PRs without fresh approvals and meaningful master mismatches;
-these read-only checks never sign, publish, or authorize deployment.
+these checks never change approvals, sign, release, or authorize deployment.
+Only the master EIF job receives OIDC permission for FlakeHub caching. PRs and
+non-master manual runs use GitHub's branch-scoped cache without OIDC. Preserve
+that separation and verify cache changes on fresh hosted runners, not just a
+warm local Nix store. See the [cache policy](services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
 
 For Pages, read [the deployment guide](docs/pages-deployments.md). Preserve
 unprivileged preview builds and separate development/production profiles.
