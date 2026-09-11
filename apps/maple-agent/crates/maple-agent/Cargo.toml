@@ -43,11 +43,11 @@ bytes = "1"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# CUA's native SDK is not published to crates.io yet. Pin the exact source
-# commit that applies the Xcode 26.5 linker compatibility and embedded-host
-# main-thread restoration fixes directly on top of the 0.23.2 release so
-# Maple's embedded runtime remains reproducible.
-cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "4c17c70aa920f238bcccc4f1b13375d87ef0c478", package = "cua-driver-sdk" }
+# CUA's native SDK is not published to crates.io yet. Pin the trycua/cua
+# commit that landed the Xcode 26.5 linker compatibility, embedded-host
+# main-thread restoration, and ashpd async-io backend (trycua/cua#3687)
+# so Maple's embedded runtime remains reproducible.
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00", package = "cua-driver-sdk" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Ask the session bus whether the GNOME compositor helper is loaded. It is
@@ -59,7 +59,7 @@ zbus = { version = "5.19", default-features = false, features = ["blocking-api",
 # already links, so it stays on by default. PipeWire per-window capture needs
 # libpipewire and libspa headers at build time and is deliberately left off;
 # full-screen portal screenshots do not need it.
-cua-driver-sdk = { git = "https://github.com/AnthonyRonning/cua.git", rev = "4c17c70aa920f238bcccc4f1b13375d87ef0c478", package = "cua-driver-sdk", features = ["portal-input"] }
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00", package = "cua-driver-sdk", features = ["portal-input"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

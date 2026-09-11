@@ -2,12 +2,13 @@
 
 Maple can expose the Cua Driver tool catalog to its embedded Goose agent
 without launching a Cua Driver daemon or an MCP child process. The macOS and
-Linux builds pin Cua's `cua-driver-sdk` source at an immutable commit directly
-on top of release `0.23.2` and create the native runtime inside the Maple
-process. The source delta fixes Cua's macOS SDK link declarations for Xcode
-26.5 and routes self-process window restoration through AppKit's main queue.
-The latter avoids an upstream `invoke_menu` crash that only exists when CUA is
-embedded inside the application whose window it restores.
+Linux builds pin Cua's `cua-driver-sdk` source at the trycua/cua commit that
+landed Xcode 26.5 linker compatibility, self-process window restoration on the
+AppKit main queue, and the ashpd `async-io` backend (`trycua/cua#3687`) and
+create the native runtime inside the Maple process. Self-process restoration
+avoids an `invoke_menu` crash that only exists when CUA is embedded inside the
+application whose window it restores. The Linux backend selection matches
+GPUI's `async-io` stack so the two compile together.
 
 Which platforms host the runtime is decided in one place, by the `embedded_cua`
 configuration flag that `crates/maple-agent/build.rs` sets. Adding a platform
