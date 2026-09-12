@@ -160,6 +160,7 @@ Run the proxy's CI-equivalent component checks through its pinned shell:
 
 ```bash
 nix develop --no-update-lock-file ./proxy -c bash -lc '
+  set -euo pipefail
   cd proxy
   cargo fmt --all -- --check
   cargo clippy --locked --all-targets --all-features -- -D warnings
