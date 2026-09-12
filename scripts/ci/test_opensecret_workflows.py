@@ -1,6 +1,7 @@
 """Exercise backend diff selection and enforce scoped CI cache boundaries."""
 
 import functools
+import itertools
 import json
 import os
 from pathlib import Path
@@ -169,40 +170,63 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         cases = (
             ("pull_request", "refs/pull/1/merge", "success", "true", "false", False),
             ("pull_request", "refs/pull/1/merge", "success", "true", "true", True),
+            ("pull_request", "refs/pull/1/merge", "success", "false", "true", True),
             ("pull_request", "refs/pull/1/merge", "failure", "", "", False),
+            ("pull_request", "refs/pull/1/merge", "failure", "true", "true", False),
+            ("pull_request", "refs/pull/1/merge", "skipped", "", "", False),
+            ("pull_request", "refs/pull/1/merge", "cancelled", "", "", False),
             ("pull_request", "refs/pull/1/merge", "success", "", "", False),
             ("pull_request", "refs/heads/master", "success", "true", "true", True),
             ("push", "refs/heads/master", "success", "true", "false", True),
             ("push", "refs/heads/master", "success", "false", "false", False),
             ("push", "refs/heads/master", "failure", "", "", True),
+            ("push", "refs/heads/master", "skipped", "", "", True),
             ("push", "refs/heads/master", "success", "", "", True),
             ("push", "refs/heads/feature", "success", "true", "true", False),
+            ("push", "refs/tags/master", "success", "true", "true", False),
             ("workflow_dispatch", "refs/heads/master", "success", "true", "false", True),
             ("workflow_dispatch", "refs/heads/master", "failure", "", "", True),
             ("workflow_dispatch", "refs/heads/feature", "success", "true", "false", True),
             ("workflow_dispatch", "refs/tags/review", "success", "true", "false", True),
             ("workflow_dispatch", "refs/tags/master", "failure", "", "", True),
             ("schedule", "refs/heads/master", "success", "true", "true", False),
+            ("pull_request_target", "refs/heads/master", "success", "true", "true", False),
+            ("workflow_run", "refs/heads/master", "success", "true", "true", False),
         )
-        for event, ref, result, eif, approvals, expected in cases:
-            with self.subTest(event=event, ref=ref, result=result, eif=eif, approvals=approvals):
-                trusted = event in ("push", "workflow_dispatch") and ref == "refs/heads/master"
-                for cancelled in (False, True):
-                    selected = []
-                    for job_name, expression in expressions.items():
-                        condition = expression
-                        for key, value in {
-                            "github.event_name": event, "github.ref": ref,
-                            "needs.changes.result": result,
-                            "needs.changes.outputs.eif": eif,
-                            "needs.changes.outputs.pcr_approvals": approvals,
-                            "NOT_CANCELLED": not cancelled,
-                        }.items():
-                            condition = condition.replace(key, repr(value))
-                        if eval(condition, {"__builtins__": {}}, {}):
-                            selected.append(job_name)
-                    expected_jobs = ["eif-trusted" if trusted else "eif"] if expected and not cancelled else []
-                    self.assertEqual(selected, expected_jobs)
+        head_repositories = (
+            ("MaplePrivacyLabs/Maple", True),
+            ("contributor/Maple", False),
+            ("MaplePrivacyLabs/Maple-fork", False),
+            ("", False),  # Missing nested properties evaluate to an empty string.
+            (None, False),
+        )
+        for case, (head_repo, same_repo), cancelled in itertools.product(
+            cases, head_repositories, (False, True)
+        ):
+            event, ref, result, eif, approvals, expected = case
+            with self.subTest(event=event, ref=ref, result=result, eif=eif,
+                              approvals=approvals, head_repo=head_repo, cancelled=cancelled):
+                trusted = (
+                    (event == "pull_request" and same_repo) or
+                    (event in ("push", "workflow_dispatch") and ref == "refs/heads/master")
+                )
+                selected = []
+                for job_name, expression in expressions.items():
+                    condition = expression
+                    for key, value in {
+                        "github.event_name": event, "github.ref": ref,
+                        "github.event.pull_request.head.repo.full_name": head_repo,
+                        "github.repository": "MaplePrivacyLabs/Maple",
+                        "needs.changes.result": result,
+                        "needs.changes.outputs.eif": eif,
+                        "needs.changes.outputs.pcr_approvals": approvals,
+                        "NOT_CANCELLED": not cancelled,
+                    }.items():
+                        condition = condition.replace(key, repr(value))
+                    if eval(condition, {"__builtins__": {}}, {}):
+                        selected.append(job_name)
+                expected_jobs = ["eif-trusted" if trusted else "eif"] if expected and not cancelled else []
+                self.assertEqual(selected, expected_jobs)
 
     def test_backend_retains_exact_rust_gates_and_disabled_stateful_shell_hooks(self):
         config = workflow("opensecret-ci.yml")
