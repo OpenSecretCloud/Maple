@@ -1120,13 +1120,13 @@ mod tests {
     #[test]
     fn test_apply_responses_model_defaults_preserves_glm_reasoning_history() {
         let mut chat_request = json!({
-            "model": "glm-5-2"
+            "model": "glm-5-3"
         });
 
         apply_responses_model_defaults(
             &mut chat_request,
-            crate::model_config::model_config("glm-5-2").responses,
-            "glm-5-2",
+            crate::model_config::model_config("glm-5-3").responses,
+            "glm-5-3",
         );
 
         assert_eq!(
@@ -1773,12 +1773,12 @@ mod tests {
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert!(matches!(
-            resolve_responses_model("glm-5-2", "tinfoil", ModelPlan::Free),
+            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
         assert_eq!(
-            resolve_responses_model("glm-5-2", "tinfoil", ModelPlan::Paid).unwrap(),
-            "glm-5-2"
+            resolve_responses_model("glm-5-3", "tinfoil", ModelPlan::Paid).unwrap(),
+            "glm-5-3"
         );
         assert!(matches!(
             resolve_responses_model("glm-5-3", "continuum", ModelPlan::Free),
@@ -1803,6 +1803,14 @@ mod tests {
         assert_eq!(
             resolve_responses_model("deepseek-v4-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "deepseek-v4-flash"
+        );
+        assert!(matches!(
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        assert_eq!(
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid).unwrap(),
+            "deepseek-v4-1-flash"
         );
     }
 
@@ -1860,7 +1868,7 @@ mod tests {
                 name: "free auto powerful",
                 plan: ModelPlan::Free,
                 selector: crate::model_config::AUTO_POWERFUL_MODEL_ID,
-                expected_model: crate::model_config::GLM_5_2_MODEL_ID,
+                expected_model: crate::model_config::GLM_5_3_MODEL_ID,
                 expected_access: false,
             },
             Case {
@@ -1874,7 +1882,7 @@ mod tests {
                 name: "paid auto powerful",
                 plan: ModelPlan::Paid,
                 selector: crate::model_config::AUTO_POWERFUL_MODEL_ID,
-                expected_model: crate::model_config::GLM_5_2_MODEL_ID,
+                expected_model: crate::model_config::GLM_5_3_MODEL_ID,
                 expected_access: true,
             },
         ];
@@ -1901,11 +1909,6 @@ mod tests {
             kimi_request["chat_template_kwargs"]["preserve_thinking"],
             true
         );
-
-        let glm = responses_request_for_model("glm-5-2");
-        let glm_request =
-            build_model_turn_request(&glm, &[json!({"role": "user", "content": "hello"})], false);
-        assert_eq!(glm_request["chat_template_kwargs"]["clear_thinking"], false);
 
         let glm_5_3 = responses_request_for_model("glm-5-3");
         let glm_5_3_request = build_model_turn_request(
@@ -1940,7 +1943,7 @@ mod tests {
             &[json!({"role": "user", "content": "hello"})],
             false,
         );
-        assert_eq!(auto_request["model"], crate::model_config::GLM_5_2_MODEL_ID);
+        assert_eq!(auto_request["model"], crate::model_config::GLM_5_3_MODEL_ID);
         assert_eq!(
             auto_request["chat_template_kwargs"]["clear_thinking"],
             false

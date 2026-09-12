@@ -268,8 +268,7 @@ fn stable_account_bucket(account_uuid: uuid::Uuid) -> u8 {
 mod tests {
     use super::*;
     use crate::model_config::{
-        ModelPlan, AUTO_POWERFUL_MODEL_ID, GLM_5_2_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-        GLM_5_3_MODEL_ID,
+        ModelPlan, AUTO_POWERFUL_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
     };
     use crate::provider_registry::{ProviderId, PROVIDER_REGISTRY};
     use uuid::Uuid;
@@ -287,7 +286,7 @@ mod tests {
 
     #[test]
     fn planner_uses_resolved_public_model_without_resolving_auto_again() {
-        let intent = intent(AUTO_POWERFUL_MODEL_ID, GLM_5_2_MODEL_ID);
+        let intent = intent(AUTO_POWERFUL_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
         let plan = plan_completion_route(
             &PROVIDER_REGISTRY,
             RoutePlanningInput {
@@ -298,8 +297,8 @@ mod tests {
         .expect("shadow route");
 
         assert_eq!(intent.requested_model_id, AUTO_POWERFUL_MODEL_ID);
-        assert_eq!(plan.selected.public_model_id, GLM_5_2_MODEL_ID);
-        assert_eq!(plan.selected.provider_model_id, GLM_5_2_MODEL_ID);
+        assert_eq!(plan.selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(plan.selected.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
         assert_eq!(plan.selected.bucket, None);
         assert_eq!(plan.decision, PlanDecision::FixedRoute);

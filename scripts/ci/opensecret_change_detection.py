@@ -8,16 +8,23 @@ from collections.abc import Iterable
 import sys
 
 
-OUTPUTS = ("rust", "nix", "integration", "audit", "pcr")
-ALL_OUTPUTS = frozenset(OUTPUTS)
+CHECK_OUTPUTS = ("rust", "nix", "integration", "audit", "pcr", "eif")
+OUTPUTS = (*CHECK_OUTPUTS, "pcr_approvals")
+ALL_CHECKS = frozenset(CHECK_OUTPUTS)
 BACKEND_PREFIX = "services/opensecret/"
 BACKEND_INERT_FILES = frozenset({
     "AGENTS.md", "README.md", "LICENSE", ".gitignore", ".gitmodules",
 })
-PCR_INPUTS = frozenset({
+APPROVED_PCR_FILES = frozenset({
     "pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json",
+})
+PCR_INPUTS = frozenset({
     "pcrPreview.json", "pcrPreviewHistory.json", "pcr_verify.js", "pcr_sign.js",
     "scripts/pcr_compatibility.py", "scripts/test_pcr_compatibility.py",
+})
+EIF_CI_INPUTS = frozenset({
+    ".github/workflows/opensecret-eif.yml",
+    "scripts/ci/check_opensecret_eif.sh",
 })
 # Shell test inputs consumed directly by the component flake, not Cargo.
 NIX_TEST_INPUTS = frozenset({"tests/entrypoint_entropy_preflight.sh"})
@@ -46,25 +53,29 @@ KNOWN_INDEPENDENT_FILES = frozenset({
 
 def classify_path(path: str) -> frozenset[str]:
     if not path or path.startswith("/") or ".." in path.split("/"):
-        return ALL_OUTPUTS
+        return ALL_CHECKS
     if path in SHARED_INPUTS:
-        return ALL_OUTPUTS
+        return ALL_CHECKS
+    if path in EIF_CI_INPUTS:
+        return frozenset({"eif"})
     if path == ".github/workflows/opensecret-ci.yml":
-        return frozenset({"rust", "nix", "audit", "pcr"})
+        return frozenset({"rust", "nix", "audit", "pcr", "eif"})
     if path in SDK_INTEGRATION_FILES or path.startswith(("sdk/src/", "sdk/rust/", "sdk/test/")):
         return frozenset({"integration"})
     if path.startswith(BACKEND_PREFIX):
         relative = path.removeprefix(BACKEND_PREFIX)
         if relative in BACKEND_INERT_FILES or relative.startswith(BACKEND_INERT_PREFIXES):
             return frozenset()
+        if relative in APPROVED_PCR_FILES:
+            return frozenset({"pcr", "eif", "pcr_approvals"})
         if relative in PCR_INPUTS:
             return frozenset({"pcr"})
         if relative == "deny.toml":
             return frozenset({"audit"})
         if relative in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock"}:
-            return ALL_OUTPUTS
+            return ALL_CHECKS
         if relative.startswith(("src/", ".cargo/")) or relative == "build.rs":
-            return frozenset({"rust", "nix", "integration"})
+            return frozenset({"rust", "nix", "integration", "eif"})
         if relative in NIX_TEST_INPUTS:
             return frozenset({"nix"})
         if relative.startswith(("tests/", "migrations/")):
@@ -74,13 +85,13 @@ def classify_path(path: str) -> frozenset[str]:
         if relative.startswith(("nix/", "nitro-toolkit/", "privatemode-public/")) or relative in {
             "entrypoint.sh", "continuum-proxy", "nitro-toolkit", "privatemode-public",
         }:
-            return frozenset({"nix"})
+            return frozenset({"nix", "eif"})
         # Unknown backend files could be build or runtime inputs.
-        return ALL_OUTPUTS
+        return ALL_CHECKS
     if path.startswith("sdk/") or path in KNOWN_INDEPENDENT_FILES or path.startswith(KNOWN_INDEPENDENT_PREFIXES):
         return frozenset()
     # New roots must be classified explicitly before checks can be skipped.
-    return ALL_OUTPUTS
+    return ALL_CHECKS
 
 
 def classify_paths(paths: Iterable[str]) -> dict[str, bool]:
@@ -92,10 +103,10 @@ def classify_paths(paths: Iterable[str]) -> dict[str, bool]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--all", action="store_true", help="Select all checks when the diff is unavailable")
+    parser.add_argument("--all", action="store_true", help="Select all checks without claiming approvals changed")
     args = parser.parse_args()
     if args.all:
-        result = dict.fromkeys(OUTPUTS, True)
+        result = {name: name in ALL_CHECKS for name in OUTPUTS}
     else:
         paths = (path.decode("utf-8", errors="surrogateescape")
                  for path in sys.stdin.buffer.read().split(b"\0") if path)

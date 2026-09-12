@@ -17,6 +17,8 @@ on:
       - "scripts/ci/_common.sh"
       - "scripts/ci/rust.sh"
       - "scripts/ci/verify-local-rust-deps.sh"
+      - "scripts/ci/verify-agent-rust-deps.py"
+      - "scripts/ci/test_agent_rust_deps.py"
       - "flake.nix"
       - "flake.lock"
   pull_request:
@@ -32,6 +34,8 @@ on:
       - "scripts/ci/_common.sh"
       - "scripts/ci/rust.sh"
       - "scripts/ci/verify-local-rust-deps.sh"
+      - "scripts/ci/verify-agent-rust-deps.py"
+      - "scripts/ci/test_agent_rust_deps.py"
       - "flake.nix"
       - "flake.lock"
 

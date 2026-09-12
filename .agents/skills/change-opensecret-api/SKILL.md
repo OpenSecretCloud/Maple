@@ -104,11 +104,12 @@ not one shared wire-field edit. Trace request construction, provider handoff,
 persistence, and usage in each affected path.
 
 Use the SDK source and application dependency resolutions recorded by the
-selected Maple revision. `apps/maple-research/frontend/package.json` is
-authoritative for the browser client's in-tree `file:../../../sdk` dependency.
-Research desktop, the proxy, and the GPUI prototype consume `sdk/rust` through
-versioned path dependencies in their component `Cargo.toml` files. Update SDK
-types, custom-fetch adaptation, native
+selected Maple revision. The frontend's `package.json` and `bun.lock`, and each
+Rust consumer's Cargo manifest and lockfile, select a published SDK or local
+source. Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Validate SDK source changes separately from consumers pinned to a published
+version; update only the consumers intended to adopt the changed contract.
+Update SDK types, custom-fetch adaptation, native
 transport allowlists, call sites, mocks, and fixtures only where the contract
 reaches them. Test old-client/new-server and new-client/old-server behavior.
 Prefer server-first rollout for compatible additions; use an explicit

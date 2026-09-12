@@ -371,7 +371,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -382,7 +382,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2400,8 +2400,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-contract"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -2411,8 +2411,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-core"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2427,6 +2427,7 @@ dependencies = [
  "hkdf 0.12.4",
  "hmac 0.12.1",
  "image 0.25.10",
+ "jsonschema 0.46.10",
  "libc",
  "regex",
  "regorus",
@@ -2448,8 +2449,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-sdk"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.0",
@@ -2470,8 +2471,8 @@ dependencies = [
 
 [[package]]
 name = "cursor-overlay"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "anyhow",
  "cua-driver-contract",
@@ -2839,7 +2840,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3128,7 +3129,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4814,7 +4815,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -5928,6 +5929,8 @@ dependencies = [
 [[package]]
 name = "maple-sdk"
 version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee9efa6ceaaddf0d1ff4d88448eacd48f3ebd6900a8c597d3b729b334750a5b4"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6371,7 +6374,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7096,7 +7099,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -7334,8 +7337,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pip-preview"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -7377,14 +7380,15 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform-linux"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "anyhow",
  "ashpd",
  "async-trait",
  "atspi 0.30.0",
  "base64 0.22.1",
+ "bitflags 2.13.1",
  "calloop",
  "clipboard-rs",
  "crossbeam-channel",
@@ -7394,6 +7398,7 @@ dependencies = [
  "dirs 5.0.1",
  "enumflags2",
  "evdev",
+ "futures-util",
  "getrandom 0.4.3",
  "image 0.25.10",
  "keyring",
@@ -7404,6 +7409,8 @@ dependencies = [
  "reis",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "socket2",
  "thiserror 1.0.69",
  "tiny-skia",
  "tokio",
@@ -7423,8 +7430,8 @@ dependencies = [
 
 [[package]]
 name = "platform-macos"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7447,11 +7454,12 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-quartz-core 0.2.2",
  "pip-preview",
- "screencapturekit 6.1.0",
+ "screencapturekit 8.0.1",
  "security-framework",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "time",
  "tiny-skia",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -7462,8 +7470,8 @@ dependencies = [
 
 [[package]]
 name = "platform-windows"
-version = "0.23.2"
-source = "git+https://github.com/AnthonyRonning/cua.git?rev=4c17c70aa920f238bcccc4f1b13375d87ef0c478#4c17c70aa920f238bcccc4f1b13375d87ef0c478"
+version = "0.28.0"
+source = "git+https://github.com/trycua/cua.git?rev=2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00#2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7930,7 +7938,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8676,7 +8684,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8734,7 +8742,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8892,9 +8900,9 @@ dependencies = [
 
 [[package]]
 name = "screencapturekit"
-version = "6.1.0"
+version = "8.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d826cde3e3238feab5cd87fc73f9d0d9d1132e31d02db37e1a510401882392e9"
+checksum = "9ddaa8d6b16a2762c9a97c9a6297f04cb8ded0487e5ef02dc98b4e2bee3a26c7"
 dependencies = [
  "apple-cf",
  "apple-metal",
@@ -9445,7 +9453,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9699,7 +9707,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10140,7 +10148,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10898,7 +10906,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset 0.9.1",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -11885,7 +11893,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

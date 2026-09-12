@@ -46,7 +46,7 @@ use super::image_mediation::{
 };
 use super::web_tools::{Keep, bounded_chars};
 
-pub(super) const EMBEDDED_CUA_VERSION: &str = "0.23.2";
+pub(super) const EMBEDDED_CUA_VERSION: &str = "0.28.0";
 
 // These match Cua Driver's reviewed standard-session policy. The trusted
 // session is renewed whenever Maple prepares the task for another run.

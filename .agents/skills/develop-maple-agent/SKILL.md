@@ -12,9 +12,12 @@ identify an arbitrary running development instance.
 
 `app/src/backend.rs` adapts the transport-neutral runtime under
 `crates/maple-agent/` to GPUI. Keep window/UI concerns in `app`, and shared
-account/session/tool policy in the runtime. The runtime consumes the existing
-local `maple-sdk` and `maple-proxy` packages; registry publication is separate
-work. Research's Tauri runtime remains independently owned.
+account/session/tool policy in the runtime. The runtime consumes the in-tree
+`maple-proxy` library and independently selects `maple-sdk` in the workspace
+manifest and lockfile. Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy):
+prefer a published pin and allow local links during active development. Keep
+the runtime and embedded proxy on one SDK source/version. Research's Tauri
+runtime remains independently owned.
 
 ## Build with the component environment
 
@@ -41,9 +44,10 @@ back to the system interpreter. Linux Nix packages retain their separately
 declared CPython runtime closure; portable debug/archive layouts use the pinned
 Python standalone distribution.
 
-Agent has its own Cargo and Nix lockfiles. Shared Rust SDK/proxy runtime
-changes must select Agent as well as the Research consumer; component-only
-changes must not unnecessarily select Research packaging. Maintain the root
+Agent has its own Cargo and Nix lockfiles. CI conservatively selects Agent for
+shared Rust SDK/proxy runtime changes even when its SDK is registry-pinned;
+passing that build does not validate unpublished SDK source. Component-only
+changes should not unnecessarily select Research packaging. Maintain the root
 selectors, their tests, and `.github/workflows/agent-ci.yml` together.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including

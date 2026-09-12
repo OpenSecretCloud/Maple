@@ -528,6 +528,7 @@ for required_control in (
     "proxy container runtime inputs changed without a proxy version bump",
     '"${UNBACKFILLED_PROXY_BASELINE}"',
     "plan-proxy-container-publish.sh",
+    "python3 -I scripts/ci/proxy_runtime_diff.py",
     "python3 -I scripts/ci/proxy_registry_inventory.py",
 ):
     check(required_control in prepare_runs, f"Proxy publication plan is missing control: {required_control}")
@@ -626,6 +627,7 @@ for required_control in (
     "inspect-proxy-container-manifest.sh",
     "python3 -I scripts/ci/proxy_registry_inventory.py --require-public",
     "published exact tag does not match the current proxy runtime inputs",
+    "python3 -I scripts/ci/proxy_runtime_diff.py",
     'for tag in "${PROXY_MINOR}" "${PROXY_MAJOR}" latest',
     "docker buildx imagetools create",
     "per-platform SLSA provenance",
@@ -654,5 +656,8 @@ pass "proxy container publish planner preserves immutable versions and recovery"
 
 python3 "${script_dir}/test_proxy_registry_inventory.py" >/dev/null
 pass "proxy registry inventory distinguishes initial creation from failed access"
+
+python3 "${script_dir}/test_proxy_runtime_diff.py" >/dev/null
+pass "proxy runtime comparisons follow the SDK selected at both revisions"
 
 printf '1..%d\n' "${passed}"

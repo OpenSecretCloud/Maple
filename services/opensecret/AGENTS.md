@@ -133,7 +133,7 @@ guidance.
 Use `$develop-opensecret` for the local stack and code-placement workflow. Use
 `$validate-opensecret` to choose focused tests, exact Rust CI parity,
 disposable-database validation, authorized provider probes, encrypted client
-smoke tests, Nix checks, and release-only EIF/PCR evidence.
+smoke tests, Nix checks, and read-only EIF/PCR evidence.
 
 Match evidence to the changed boundary. Report exact commands, counts, ignored
 or skipped tests, configured external services, and every unverified layer.
@@ -144,7 +144,16 @@ EIF/PCR parity is a release and deployment gate, not an ordinary development
 or pull-request gate. The monorepo-root `opensecret-ci.yml` validates Rust,
 Nix checks and the default backend binary, and dependency policy;
 `sdk-integration.yml` exercises both in-tree SDKs against this backend.
-GitHub Actions does not build or publish EIFs or deploy the TEE service.
+The separate root `opensecret-eif.yml` builds dev/prod EIFs and compares their
+measurements only when a PR explicitly edits one of the four approved PCR JSON
+files, on relevant backend/TEE or approval changes to master, or on a manual
+run. An ordinary backend PR does not require updated PCR approvals. A master
+mismatch deliberately reports that the revision does not match current
+approvals. GitHub Actions never signs approvals, creates EIF releases, or deploys
+the service. Nix cache writes are not approval or deployment: only the master
+EIF job has FlakeHub OIDC permission, while PRs and other manual refs use the
+branch-scoped GitHub cache without OIDC. Follow the
+[cache validation policy](docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
 Do not update PCR references as part of ordinary pull-request work. Treat an
 EIF build failure separately from PCR mismatch.
 

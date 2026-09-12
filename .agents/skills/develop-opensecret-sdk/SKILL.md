@@ -16,9 +16,15 @@ package boundaries remain independently versioned and publishable:
 - `rust/` builds the `maple-sdk` crate (imported as `maple_sdk`) for native consumers.
 - `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
   consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
-- desktop Maple and `proxy/` consume the in-tree Rust crate through versioned
-  path dependencies. iOS and Android do not compile those desktop-only
-  consumers.
+- Research desktop, Maple Agent, and `proxy/` select their Rust SDK through
+  their own manifests and lockfiles. iOS and Android do not compile Research's
+  desktop-only SDK/proxy consumers.
+
+Follow the [consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Prefer published pins without upgrading unrelated consumers. Local links are
+allowed during active development, including on `master`; a registry-pinned
+client build does not exercise an SDK source edit. Test an affected consumer
+with the local SDK when that integration is part of the change.
 
 Do not commit, push, open a PR, publish, or alter Maple's application dependency
 wiring unless the user authorizes that action.
@@ -58,7 +64,7 @@ nix develop --no-update-lock-file -c bash -lc '
   cd rust
   cargo fmt --all -- --check
   cargo clippy --locked --all-targets --all-features -- -D warnings
-  cargo test --locked --all-features
+  cargo test --locked --all-features --lib
   cargo doc --locked --no-deps --all-features
 '
 ```
@@ -89,17 +95,30 @@ cargo package --locked --manifest-path rust/Cargo.toml
 
 These commands validate package contents; they do not publish them. For Rust
 SDK changes, also run the root `scripts/ci/verify-local-rust-deps.sh` check and
-the applicable desktop/proxy validation before claiming Maple consumes the
-result.
+the applicable desktop/proxy validation. Check its selected SDK source before
+claiming Maple consumes the result.
 
 ## Publishing boundary
 
 SDK publishing is separate from the Maple application release workflow.
-`just publish-npm` and `just publish-cargo` are external production mutations;
-run either only with explicit authority for the exact package, version, registry,
-and source commit. Verify versions, clean state, tests, and the built package
-before publishing, then report the immutable registry result. Do not create a
-Maple GitHub Release merely to publish an SDK.
+Follow `docs/sdk-publishing.md`. Use the separate manual
+`sdk-publish-npm.yml` and `sdk-publish-rust.yml` workflows on protected `master`;
+each publishes the stable version already committed for that SDK. Neither
+workflow creates GitHub Releases or tags, or changes the Maple application
+release version.
+
+`just publish-npm VERSION` and `just publish-cargo VERSION` dispatch validation
+in GitHub Actions with `mode=trusted` and `dry_run=true`. They do not publish
+locally. Initial publication also runs in Actions, using the guide's one-time
+bootstrap procedure. Normal publication uses registry trusted publishing and
+the protected `sdk-npm` or `sdk-crates` environment.
+
+Setting `dry_run=false` authorizes an external production mutation; do that
+only with explicit authority for the exact package, version, registry, and
+source commit. Review the workflow's validated package and source commit before
+approving its environment. Report the immutable registry result and the run URL.
+Never use local `npm publish` or `cargo publish`, and never create a Maple
+GitHub Release merely to publish an SDK.
 
 ## Report
 

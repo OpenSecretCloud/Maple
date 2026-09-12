@@ -20,18 +20,18 @@ and tests.
 - repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
   and supply-chain validation for this directory.
 
-Maple's frontend consumes this TypeScript package through `file:../../../sdk`.
-Desktop Maple and `proxy/` consume `sdk/rust` through versioned path
-dependencies; iOS and Android exclude those desktop-only Rust consumers.
-Published npm and crates.io packages remain independently versioned.
+Maple consumers prefer independently selected published SDK versions; local
+TypeScript `file:` and Rust `path` dependencies remain available for active
+development. The consumer's manifest and lockfile determine what it builds.
+iOS and Android exclude the desktop-only Rust SDK/proxy consumers. See the
+[consumer version policy](../docs/sdk-publishing.md#consumer-version-policy)
+for switching sources and preparing client releases.
 
 ## Package identity migration
 
-The new package names are `@mapleai/sdk` and `maple-sdk`. This source change
-retains TypeScript version 3.5.2 and Rust version 3.6.2; first publication and
-registry ownership are separate steps. Until those packages are published,
-develop against the in-tree dependencies above. The registry installation
-examples below describe the new package identities after publication.
+The package names are `@mapleai/sdk` and `maple-sdk`, first published at
+TypeScript version 3.5.2 and Rust version 3.6.2. Their versions and publication
+remain independent of Maple application releases.
 
 The rename preserves the exported API, including `OpenSecretProvider`,
 `useOpenSecret`, `OpenSecretDeveloper` and `OpenSecretClient`. OpenSecret remains
@@ -59,7 +59,7 @@ production paths.
 Install the package:
 
 ```sh
-bun add @mapleai/sdk
+bun add --exact @mapleai/sdk@3.5.2
 ```
 
 Wrap the application with `OpenSecretProvider` and supply the backend URL and
@@ -128,11 +128,15 @@ bun run pack
 
 Only `dist/` is included in the package.
 
-Publish a freshly built npm artifact with:
+Publishing runs in GitHub Actions. To dispatch validation of the committed
+TypeScript version from `sdk/`:
 
 ```sh
-just publish-npm
+just publish-npm 3.5.2
 ```
+
+This defaults to a dry run. See the [SDK publishing guide](../docs/sdk-publishing.md)
+for the protected publish action and the one-time registry setup.
 
 ## Rust SDK
 
@@ -140,7 +144,7 @@ Add the crate to a Rust application:
 
 ```toml
 [dependencies]
-maple-sdk = "3.6.2"
+maple-sdk = "=3.6.2"
 ```
 
 Import the primary entry point with `use maple_sdk::OpenSecretClient`.
@@ -155,7 +159,7 @@ nix develop --no-update-lock-file -c bash -lc '
   cd rust
   cargo fmt --all -- --check
   cargo clippy --locked --all-targets --all-features -- -D warnings
-  cargo test --locked --all-features
+  cargo test --locked --all-features --lib
   cargo doc --locked --no-deps --all-features
 '
 ```
@@ -163,11 +167,16 @@ nix develop --no-update-lock-file -c bash -lc '
 Integration tests use the variables documented in `rust/.env.example` and are
 separate from the default local validation path.
 
-Publish the locked Rust crate with:
+To dispatch validation of the committed Rust version from `sdk/`:
 
 ```sh
-just publish-cargo
+just publish-cargo 3.6.2
 ```
+
+This defaults to a dry run. Both recipes only dispatch GitHub Actions; they do
+not build or publish packages locally. Each SDK has its own workflow and
+version, independent of Maple application releases. Follow the
+[SDK publishing guide](../docs/sdk-publishing.md) to publish.
 
 ## Change discipline
 

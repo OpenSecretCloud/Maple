@@ -451,12 +451,14 @@ the namespace. Local `just release` and `just dist` only build local files.
 
 ## Shared dependencies and provenance
 
-The component consumes the in-tree `maple-sdk` crate at `../../sdk/rust`
-and `maple-proxy` at `../../proxy` through workspace dependencies. The SDK fork
-patch is removed; registry publication is not needed for local
-builds. Keep the component lockfile and Nix source fileset aligned with these
-path dependencies. The pure package includes the required SDK attestation
-assets as well as Rust source.
+The workspace manifest and lockfile independently select a published
+`maple-sdk` version; the former SDK fork patch is removed. The component still
+consumes `maple-proxy` at `../../proxy`. Local SDK links to `../../sdk/rust`
+remain supported for development under the
+[SDK consumer version policy](../../docs/sdk-publishing.md#consumer-version-policy).
+Keep Agent and its embedded proxy on one resolved SDK source/version. The Nix
+source fileset includes the local SDK source and attestation assets so local
+links work too; a registry-pinned build uses its locked registry package.
 
 See [import provenance and follow-up work](../../docs/maple-agent-import.md).
 This component preserves the original GPUI history; its old nested workflows

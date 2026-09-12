@@ -109,9 +109,10 @@ Apply these OpenSecret-specific invariants:
   rollback, and access to the owning key; ordinary startup lacks user keys.
 - Shared protocol changes require coordinated review of the monorepo-root
   `sdk/` source and the dependency actually resolved by each affected Maple
-  application path. Treat `apps/maple-research/frontend/package.json` as
-  authoritative for the TypeScript client; Research desktop, the proxy, and
-  the GPUI prototype consume `sdk/rust` through versioned path dependencies.
+  application path. Its manifest and lockfile select a published SDK or local
+  source; do not treat in-tree SDK validation as proof for a consumer pinned
+  to different source. Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy)
+  when reviewing the selected versions and compatibility boundaries.
 
 Use `$change-opensecret-api` or `$change-opensecret-provider` for the detailed
 contract procedure rather than duplicating it here.
@@ -132,7 +133,16 @@ database, provider, client, build/artifact, and live evidence separately.
 
 Local artifact builds and read-only PCR comparison are validation when in
 scope. Root backend CI validates Rust, Nix checks/default binary, and SDK
-compatibility; it does not build or publish EIFs or deploy the TEE service.
+compatibility. A separate ARM64 workflow compares dev/prod EIF
+measurements on explicit approved-PCR JSON edits in PRs, relevant master
+changes, and manual runs. Do not require ordinary backend PRs to update
+approvals, and do not suppress meaningful master mismatches. Only its trusted
+master push/manual job receives OIDC for FlakeHub caching; PRs and non-master
+manual refs use GitHub's branch-scoped cache without OIDC. Review both event
+and ref guards, cache provenance, and default-branch versus PR cache scope.
+Cache writes never authorize approval changes, signing, EIF releases, or
+deployment. A passing comparison is not live
+deployment evidence or proof that both public PCR locations are synchronized.
 Use `docs/pcr-compatibility.md` for manual signed-PCR validation and legacy
 publication. Require explicit authorization for PCR
 reference/history mutation, signing, KMS/IAM changes, shared or remote

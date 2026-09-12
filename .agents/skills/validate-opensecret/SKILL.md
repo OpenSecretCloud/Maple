@@ -1,6 +1,6 @@
 ---
 name: validate-opensecret
-description: Validate OpenSecret changes with focused Rust tests, exact Rust CI parity, disposable PostgreSQL migration and ignored-test proof, separately authorized provider checks, encrypted SDK or Maple smoke tests, Nix checks, and release-only EIF/PCR evidence. Use before claiming backend work complete or when reviewing whether test evidence matches a changed API, provider, persistence, security, build, or deployment boundary.
+description: Validate OpenSecret changes with focused Rust tests, exact Rust CI parity, disposable PostgreSQL migration and ignored-test proof, separately authorized provider checks, encrypted SDK or Maple smoke tests, Nix checks, and read-only EIF/PCR evidence. Use before claiming backend work complete or when reviewing whether test evidence matches a changed API, provider, persistence, security, build, or deployment boundary.
 ---
 
 # Validate OpenSecret
@@ -145,11 +145,12 @@ the corresponding Maple application client:
    usage when promised, and one terminal condition.
 5. Inspect bounded logs for accidental sensitive content.
 
-Follow the matching SDK and application validation skills. The monorepo-root
-`apps/maple-research/frontend/package.json` resolves the browser's in-tree
-`file:../../../sdk` dependency. Research desktop, the proxy, and the GPUI
-prototype consume `sdk/rust` through versioned path dependencies in their
-component `Cargo.toml` files. Root `sdk-integration.yml` runs both SDKs against
+Follow the matching SDK and application validation skills. Each consumer's
+manifest and lockfile select its SDK version and source; published pins are
+the default, with local links supported under the
+[consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Verify that selection before using an application build as evidence for an SDK
+source edit. Root `sdk-integration.yml` runs both in-tree SDKs against
 the backend in the same checkout with disposable PostgreSQL and loopback
 configuration. That deterministic gate does not prove an application or live
 provider flow. Test browser Research and affected native paths independently;
@@ -169,13 +170,26 @@ nix flake check --no-write-lock-file --print-build-logs '.?submodules=1'
 nix build --no-link --no-write-lock-file '.?submodules=1#default'
 ```
 
-EIF construction, PCR comparison, and reference/history updates are
-release-only work. Root backend CI runs applicable Nix checks and builds the
-default backend binary; it does not build or publish EIFs or deploy the TEE
-service. Ordinary pull-request completion does not update PCR references.
+PCR reference/history updates remain operator-controlled release work.
+Read-only EIF construction and PCR comparison are validation when in scope.
+Root backend CI runs applicable Nix checks and builds the
+default backend binary. The separate root EIF approval workflow builds dev/prod
+and compares generated measurements on PRs that explicitly edit the four
+approved PCR JSON files, relevant backend/TEE or approval changes to master,
+and manual runs. Ordinary backend PRs do not require new PCR approvals; master
+mismatches intentionally signal that the revision does not match its current
+approvals. CI does not sign, create EIF releases, or deploy the TEE service.
+Ordinary pull-request completion does not update PCR references.
 Do not copy or sign values just to clear a validation failure; distinguish an
 EIF build failure from a PCR mismatch. Use `docs/pcr-compatibility.md` for the
 offline signed-history validation and manual legacy-publication procedure.
+
+For EIF cache/workflow changes, follow
+`docs/nitro-deploy.md#binary-caches-and-cold-run-validation`: preserve
+master-only FlakeHub OIDC and the unprivileged GitHub cache path. Verify actual
+custom-kernel substitution and timing on a fresh hosted ARM64 runner, then
+unprivileged reuse of the warmed GitHub cache. Local store hits and skipped
+PR jobs cannot establish hosted cache performance or cross-organization access.
 
 Immediately before an authorized dev or prod publish/deployment, use the
 supported Linux/ARM64 release builder and the operator runbook in
@@ -192,8 +206,8 @@ configuration, and every unrun or unavailable layer. For release evidence,
 also record the target artifact and PCR source.
 
 Use narrow labels: **static/unit**, **disposable DB**, **live provider**, or
-**local encrypted full stack**. Use **Linux/Nitro/PCR** or **deployed** only for
-authorized release/deployment evidence.
+**local encrypted full stack**. Use **Linux/Nitro/PCR** for actual artifact
+evidence and **deployed** only for authorized live deployment evidence.
 Failed, skipped, ignored, interrupted, timing-dependent, and unavailable checks
 remain exactly that; do not turn partial evidence into “fully tested” or
 “production ready.”

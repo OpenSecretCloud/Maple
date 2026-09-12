@@ -25,6 +25,11 @@ current source and tests take precedence over historical design documents.
   `justfile`, and `repo.meta.json`: shared documentation, tooling, CI, and
   repository identity. Keep active workflows and discoverable skills at root.
 
+For SDK consumption, follow the [consumer version policy](docs/sdk-publishing.md#consumer-version-policy):
+prefer independently pinned published versions, allow local links during active
+development, and review the actual SDK source before a client release. SDK
+publication and upgrading a consumer are separate decisions.
+
 The backend import does not change TEE deployment or introduce EIF publication
 through GitHub Actions. Preserve the manual signed-PCR compatibility procedure
 in [the backend guide](services/opensecret/docs/pcr-compatibility.md) and the
@@ -87,14 +92,23 @@ Run `nix flake check --no-update-lock-file` for flake, workflow, CI-script, or
 release-configuration changes, plus the affected component checks. The
 pre-commit hook is useful but does not establish full CI parity.
 
-`scripts/ci/change_detection.py` routes expensive app packaging. TypeScript SDK
-runtime inputs affect Research frontend builds; Rust SDK and proxy runtime
-inputs affect desktop builds. Tests, docs, container-only inputs, and standalone
+`scripts/ci/change_detection.py` routes expensive app packaging. It conservatively
+selects Research frontend builds for TypeScript SDK runtime inputs and desktop
+builds for Rust SDK and proxy runtime inputs, including when a consumer uses a
+published SDK pin. Tests, docs, container-only inputs, and standalone
 component lockfiles retain their independent lanes. Update the classifier and
 its table-driven tests when the dependency graph or component layout changes.
 The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
 same checkout. Backend changes do not imply Research or Agent packaging.
+The separate `opensecret-eif.yml` compares dev/prod EIF measurements only on PRs
+editing approved PCR JSON, relevant master changes, and manual runs. Preserve
+ordinary backend PRs without fresh approvals and meaningful master mismatches;
+these checks never change approvals, sign, release, or authorize deployment.
+Only the master EIF job receives OIDC permission for FlakeHub caching. PRs and
+non-master manual runs use GitHub's branch-scoped cache without OIDC. Preserve
+that separation and verify cache changes on fresh hosted runners, not just a
+warm local Nix store. See the [cache policy](services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
 
 For Pages, read [the deployment guide](docs/pages-deployments.md). Preserve
 unprivileged preview builds and separate development/production profiles.

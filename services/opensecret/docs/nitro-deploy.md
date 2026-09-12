@@ -2,9 +2,60 @@
 
 This operator runbook remains manual. Run repository-local build and `just`
 commands from `services/opensecret/` in the Maple monorepo using its pinned Nix
-flake. The root GitHub workflows do not build or publish EIFs or deploy this
-service. For authorized signed-PCR updates and legacy client compatibility,
-follow [the PCR publication procedure](pcr-compatibility.md).
+flake. The root EIF approval workflow builds dev/prod and compares measurements
+without updating approvals; binary caching is separate from signing, release
+publication, and deployment. For authorized signed-PCR updates and legacy client
+compatibility, follow [the PCR publication procedure](pcr-compatibility.md).
+
+## CI approval checks
+
+`opensecret-eif.yml` compares generated measurements with the approved JSON
+files on Linux ARM64. A PR runs these comparisons only if its own diff edits
+`pcrDev.json`, `pcrProd.json`, `pcrDevHistory.json`, or `pcrProdHistory.json`
+under `services/opensecret/`. Backend code changes alone do not require new
+approvals to pass PR CI. The PR's checkout supplies both source and references.
+
+Master compares on backend/TEE build-input, approved-PCR, and EIF-check tooling
+changes. A mismatch intentionally leaves the distinct EIF/PCR approval check
+red until an operator reviews and updates approvals. Unrelated client-only or
+documentation changes skip it. Manual dispatch checks both environments.
+If a PR's changed files cannot be determined, routing fails explicitly instead
+of treating missing information as an approval edit.
+
+Existing signed-history validation is separate. Neither a matching EIF nor
+green CI verifies both public publication locations, live KMS policy, or the
+running enclave, and neither authorizes deployment. Builds use normal Nix
+cache semantics; this is measurement parity, not a forced independent rebuild.
+CI never updates references or handles signing keys.
+
+### Binary caches and cold-run validation
+
+The master push/manual job installs Determinate Nix and uses FlakeHub Cache
+with job-scoped `id-token: write`. It also explicitly enables the GitHub cache
+and `diff-store: true`, so paths fetched from FlakeHub, not just locally built
+paths, warm the default-branch cache. The cache action's post step can run after
+an expected PCR mismatch; the comparison still fails and approvals stay unchanged.
+
+PRs, including forks, and manual runs on other refs have no OIDC permission.
+They use the pinned Magic Nix Cache action with FlakeHub disabled and GitHub
+caching enabled. GitHub permits default/base-branch cache reads; PR cache
+writes are confined to the PR merge ref and cannot populate master's cache.
+Do not use `pull_request_target`, pass cache secrets to PRs, or change the
+checkout to trusted master while claiming to check a PR's source.
+
+FlakeHub access is repository/organization-scoped, and fork PRs cannot
+authenticate to it. Restoring the action does not grant Maple access to
+`OpenSecretCloud/opensecret` cache entries. A new identity or an empty/evicted
+GitHub cache may need operator-approved access or a trusted cache-warming run.
+Never assume the old cache's visibility transferred with the source import.
+
+After a cache change, inspect a fresh hosted ARM64 run for successful cache
+setup, actual substitution of the expected custom kernel store path, build
+duration, and the eventual measurement comparison. Then verify that an
+unprivileged run can reuse the warmed GitHub cache. A warm local store, a
+skipped PR EIF job, or passing workflow unit tests does not prove this.
+Diagnose missing cache access separately from PCR mismatch; do not conceal
+it by increasing the timeout or changing measured kernel/build inputs.
 
 ## Log into AWS CLI 
 

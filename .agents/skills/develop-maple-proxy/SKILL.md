@@ -14,13 +14,19 @@ The source is part of Maple but keeps distinct public package and runtime
 boundaries:
 
 - `proxy/` builds the `maple-proxy` crate and binary.
-- `proxy/Cargo.toml` consumes the in-tree OpenSecret Rust SDK at `../sdk/rust`
-  with a registry version retained for Cargo publishing.
-- desktop Maple consumes `../../proxy` and `../../sdk/rust` from
-  `apps/maple-research/frontend/src-tauri/Cargo.toml`; iOS and Android do not compile the proxy.
+- `proxy/Cargo.toml` uses a compatible `maple-sdk` registry requirement;
+  `proxy/Cargo.lock` selects the standalone binary's version. Local SDK links
+  are also supported during active development.
+- Research desktop and Maple Agent consume the in-tree proxy library and
+  choose their SDK versions independently in their own Cargo manifests/locks.
+  iOS and Android do not compile Research's proxy.
 - `apps/maple-research/frontend/src-tauri/src/proxy.rs` owns Maple's account-scoped listener,
   configuration, key storage, and lifecycle around the library. Do not move
   that application behavior into the reusable crate incidentally.
+
+Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Keep the embedded proxy and its host on the same SDK source/version; avoid
+exact-pinning the reusable library in a way that forces all hosts to upgrade.
 
 Do not commit, push, open a PR, publish, tag, release, or change live
 infrastructure unless the user authorizes that action.
@@ -40,8 +46,8 @@ nix develop --no-update-lock-file ./proxy -c bash -lc '
 '
 ```
 
-For Rust SDK or dependency-wiring changes, also prove the application resolves
-one local SDK and one local proxy:
+For Rust SDK or dependency-wiring changes, also prove Research resolves one
+SDK from its selected source and the in-tree proxy:
 
 ```sh
 nix develop --no-update-lock-file .#ci -c \
@@ -52,8 +58,10 @@ Root workflows own proxy Rust, daily supply-chain, non-publishing container,
 and native-release rehearsal checks. `proxy/src/**`, `proxy/Cargo.toml`, and
 unknown proxy build inputs are desktop application inputs; tests, examples,
 docs, the standalone lockfile, and container-only files do not by themselves
-route expensive Maple app builds. `sdk/rust` runtime changes affect both proxy
-checks and desktop Maple. When a new input changes either graph, update
+route expensive Maple app builds. `sdk/rust` runtime changes conservatively
+select proxy checks and desktop Maple even with a published SDK pin; verify
+the selected source when testing an SDK edit. When a new input changes either
+graph, update
 `scripts/ci/change_detection.py`, its table-driven tests, and workflow paths in
 the same change.
 

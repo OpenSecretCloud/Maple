@@ -43,6 +43,10 @@ just install
 
 The flake pins Bun, Rust, and platform tooling. Use Bun for frontend dependencies; do not create npm, Yarn, or pnpm lockfiles.
 
+Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+Prefer published pins; use local SDK links when developing across that boundary,
+and update only the consumers intended to adopt a new SDK version.
+
 Configure a local API without committing secrets:
 
 ```bash

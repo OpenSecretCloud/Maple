@@ -2,8 +2,9 @@
 
 OpenSecret lives in `services/opensecret/`, retaining its Rust package, Nix
 toolchain, operator recipes, submodule revisions, and PCR filenames. This is a
-source and development-workflow migration. Building and deploying the TEE
-service remains an operator-controlled process.
+source and development-workflow migration. Approval, signing, publication, and
+deployment remain operator-controlled. Read-only EIF/PCR comparisons now also
+run in CI under the [approval-check policy](../services/opensecret/docs/nitro-deploy.md#ci-approval-checks).
 
 ## Preserved source boundary
 
@@ -18,8 +19,8 @@ commit above. The imported subtree exactly equals the original root tree,
 `89bc0ccc1398aea4f4ece3f373a4a96d2cfd8019`. Monorepo adaptations follow this
 separate commit.
 
-Use a normal merge commit for the import PR. Squashing or rebasing away the
-import merge discards the preserved source ancestry.
+The import merge is retained in Maple's ancestry. Its separate source parent
+preserves upstream history rather than flattening it into a squash commit.
 
 Only source master is imported. Existing OpenSecret pull requests and branches
 remain in the old repository for separate review and replay under the new
@@ -46,10 +47,19 @@ checkout against a disposable database; it no longer fetches an external
 backend revision. This advances that lane from the former pinned commit
 `d26eb6bd54d50cc8e6b2967f647a94c61da913da` to the imported source.
 
-PR jobs have read-only credentials and use hosted runners. Backend CI has no
-EIF publisher, signing credentials, OIDC permission, or deployment step. PCR
-file changes have their own validation lane. Backend-only changes do not
-select Research or Agent application packaging.
+PR jobs have read-only repository permission and use hosted runners, without
+OIDC or signing/deployment credentials. Ordinary backend CI has no EIF
+publisher or deployment step. PCR
+file changes retain their signature-validation lane. A separate ARM64 EIF
+workflow compares dev/prod measurements on PRs explicitly editing approved PCR
+JSON, relevant backend/TEE or approval changes to master, and manual runs.
+Ordinary backend PRs do not fail merely because approvals have not been
+updated; master mismatches are an intentional deployment-approval signal.
+Only the master EIF job receives OIDC for FlakeHub Cache and also warms
+GitHub's branch-scoped Nix cache for unprivileged PR/manual runs. Legacy
+cross-organization cache access does not transfer automatically; follow the
+[cache validation policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
+Backend-only changes do not select Research or Agent application packaging.
 
 The companion OpenSecret Workspaces change supports Maple-only compositions
 through `services/opensecret/`. An explicitly included standalone `opensecret`
@@ -60,9 +70,9 @@ and root `$develop-opensecret` / `$validate-opensecret` skills.
 
 ## Signed PCR compatibility and cutover
 
-The four imported files are byte-for-byte unchanged:
+At the import boundary, the four files were byte-for-byte unchanged:
 `pcrDev.json`, `pcrDevHistory.json`, `pcrProd.json`, and `pcrProdHistory.json`.
-Each captured history contains 145 entries. All 290 PCR0 signatures verify
+Each captured history contains 145 entries. All 290 captured PCR0 signatures verify
 against the public key pinned by both SDKs. PCR1/PCR2 are present in the JSON
 but are not covered by those signatures; this import preserves that format.
 
@@ -71,21 +81,21 @@ unarchived. Installed clients still request its raw history URLs. Retain the
 old source and outstanding branches until a separate retirement decision;
 removing that code is unnecessary for manual compatibility publication.
 
-After this import merges:
+Current TypeScript and Rust SDK defaults read the canonical histories under
+`MaplePrivacyLabs/Maple/master/services/opensecret/`. The SDK package names are
+`@mapleai/sdk` and `maple-sdk`, with independent protected
+[publishing workflows](sdk-publishing.md). Publishing a package does not upgrade
+its consumers or retire the URLs used by older clients.
 
-1. Verify the new master raw URLs for all four files return the expected bytes
-   without redirects, and validate their signatures.
-2. Use the [manual PCR compatibility procedure](../services/opensecret/docs/pcr-compatibility.md)
-   for subsequent authorized backend releases. Commit the reviewed signed
-   files in Maple, prepare an exact-byte copy into the legacy repository, and
-   verify both published locations before deploying an EIF that needs them.
-3. Switch SDK PCR history URLs in a separate change after step 1. Preserve the
-   existing signed-PCR format, pinned public key, and redirect policy.
-4. Update internal developer workspaces and deployment-builder checkouts to
-   the imported component deliberately. Existing operator hosts are not
-   migrated by merging this PR.
+For authorized backend releases, use the
+[manual PCR compatibility procedure](../services/opensecret/docs/pcr-compatibility.md):
+commit the reviewed signed files in Maple, prepare an exact-byte copy into the
+legacy repository, and verify both published locations before deploying an EIF
+that needs them. Preserve the signed-PCR format, pinned public key, and redirect
+policy. Operator builds run from `services/opensecret/`; verify the selected
+checkout and commit on each deployment host rather than assuming a merged
+source change migrated that host.
 
-GitHub does not sign PCR entries, publish EIFs, or deploy OpenSecret here. The
-copy helper does not commit or push. SDK package renaming/publishing, Sigstore,
-and the legacy compatibility sunset remain separate decisions. There is no
-automatic expiry of the legacy files.
+GitHub does not sign PCR entries, create EIF releases, or deploy OpenSecret here. The
+copy helper does not commit or push. Sigstore and the legacy compatibility
+sunset remain separate decisions. There is no automatic expiry of the legacy files.

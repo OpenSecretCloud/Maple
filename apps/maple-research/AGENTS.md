@@ -48,18 +48,20 @@ OpenSecret is its required backend. Keep these runtime paths distinct:
 - Local proxy: a separate user-facing OpenAI-compatible relay. Research chat
   and Agent Mode do not internally route through it.
 
-The OpenSecret SDK source lives under `sdk/`. The browser client consumes the
-in-tree `file:../../../sdk` package, and the desktop Tauri app plus proxy consume the
-in-tree `sdk/rust` crate. Do not assume the TypeScript and Rust SDKs have
-identical transports, retries, or API coverage. A backend contract change that
-Maple consumes needs compatibility checks for every affected client path.
+The OpenSecret SDK source lives under `sdk/`. Research independently selects
+published TypeScript and Rust versions in its manifests and lockfiles; local
+`file:`/Cargo links are supported for active development. Follow the
+[SDK consumer version policy](../../docs/sdk-publishing.md#consumer-version-policy).
+Do not assume the TypeScript and Rust SDKs have identical transports, retries,
+or API coverage. A backend contract change that Maple consumes needs compatibility
+checks for every affected client path.
 
 The Maple Proxy source lives under `proxy/`. From the repository root,
 run its Rust commands through
 `nix develop --no-update-lock-file ./proxy -c bash -lc 'cd proxy && ...'`;
-root path-scoped workflows own proxy CI. Proxy and Rust SDK runtime changes are
-desktop application build inputs; container, test, documentation, and
-standalone lockfile changes remain independent.
+root path-scoped workflows own proxy CI. Proxy and Rust SDK runtime changes
+conservatively select desktop builds, including when the SDK is registry-pinned;
+container, test, documentation, and standalone lockfile changes remain independent.
 
 ## Code ownership and placement
 
@@ -218,9 +220,9 @@ dependency.
 
 For Pages publishing, read [the deployment guide](../../docs/pages-deployments.md).
 Keep preview builds unprivileged, preserve development/production build profiles,
-and run credential-bearing publication only from trusted master. The new Pages
-publisher is opt-in; deployment flags, protected environments, and native CF
-build controls are separate operator prerequisites, not consequences of merging.
+and run credential-bearing publication only from trusted master. Repository
+variables control Pages publication; protected environments and native CF build
+controls are separate operator settings, not consequences of merging.
 
 PR artifact scripts deliberately ignore local `.env*` files and compile fixed
 PR endpoints. They prove PR packaging, not a configured local-backend runtime.
@@ -237,7 +239,7 @@ change-to-evidence matrix and full-stack smoke procedure.
 
 ## External services and full-stack work
 
-- Run OpenSecret using that repository's own instructions and migrations, then
+- Run OpenSecret from `services/opensecret/` using its component guide and migrations, then
   point `VITE_OPEN_SECRET_API_URL` to it. Do not copy backend secrets into
   Maple.
 - Feature flags and billing are independent API clients. Configure their dev
