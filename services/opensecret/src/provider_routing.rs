@@ -1257,6 +1257,8 @@ mod tests {
             "kimi-k-3",
             "kimi-k3-latest",
             "deepseek-v4-flash-0731",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-1-flash-latest",
         ] {
             let account_uuid = uuid_for_bucket(50);
             let intent = InferenceIntent::new(
@@ -1868,7 +1870,12 @@ mod tests {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
 
-        for model_id in ["kimi-k3", "deepseek-v4-flash", "glm-5-3-flash"] {
+        for model_id in [
+            "kimi-k3",
+            "deepseek-v4-flash",
+            "deepseek-v4-1-flash",
+            "glm-5-3-flash",
+        ] {
             let selected = router
                 .select_completion_route(&proxy_router, uuid_for_bucket(50), model_id)
                 .expect("canonical Tinfoil model should route");
@@ -1891,6 +1898,9 @@ mod tests {
             "kimi-k3-latest",
             "deepseek-v4-flash-0731",
             "deepseek-v4flash",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-1-flash-latest",
+            "deepseek-v41-flash",
             "glm-5.3-flash",
             "glm-5-3-flash-latest",
         ] {

@@ -1804,6 +1804,14 @@ mod tests {
             resolve_responses_model("deepseek-v4-flash", "tinfoil", ModelPlan::Paid).unwrap(),
             "deepseek-v4-flash"
         );
+        assert!(matches!(
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        assert_eq!(
+            resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Paid).unwrap(),
+            "deepseek-v4-1-flash"
+        );
     }
 
     #[test]
