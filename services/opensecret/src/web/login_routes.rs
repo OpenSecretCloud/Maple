@@ -8,7 +8,10 @@ use crate::{
 };
 use crate::{jwt::USER_REFRESH, web::encryption_middleware::TransportSession};
 use crate::{
-    web::encryption_middleware::{decrypt_request, encrypt_response, Decrypted},
+    web::encryption_middleware::{
+        decrypt_request, encrypt_response, require_transport_v2, require_v2_transport_session,
+        Decrypted,
+    },
     Error,
 };
 use crate::{ApiError, AppState};
@@ -16,7 +19,7 @@ use axum::{
     body::{Body, HttpBody},
     extract::{Path, State},
     http::Request,
-    middleware::{from_fn_with_state, Next},
+    middleware::{from_fn, from_fn_with_state, Next},
     response::Response,
     routing::{get, post},
     Extension, Router,
@@ -42,6 +45,53 @@ pub struct PasswordResetConfirmPayload {
     plaintext_secret: String,
     new_password: String,
     client_id: Uuid,
+}
+
+/// The existing email reset proof for v2 reset routes: the emailed
+/// alphanumeric code, the client reset secret established at reset-request
+/// time, and the coordinates (email, client_id) that scope the account.
+/// Reused unchanged by the read-only options route and the completion route.
+#[derive(Clone, Deserialize)]
+pub struct PasswordResetV2Proof {
+    pub email: String,
+    pub alphanumeric_code: String,
+    pub plaintext_secret: String,
+    pub client_id: Uuid,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct PasswordResetV2OptionsRequest {
+    pub proof: PasswordResetV2Proof,
+}
+
+#[derive(Serialize)]
+pub struct PasswordResetV2OptionsResponse {
+    pub recovery_enrolled: bool,
+    pub destructive_reset_available: bool,
+}
+
+/// The informed choice between the two V2 reset completions. Preserve keeps
+/// the enrolled seed by presenting the recovery code; Destructive discards
+/// every encrypted credential and must explicitly acknowledge the data loss.
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletePasswordResetMode {
+    Preserve { recovery_code: String },
+    Destructive { acknowledge_data_loss: bool },
+}
+
+#[derive(Deserialize, Clone)]
+pub struct CompletePasswordResetV2Request {
+    pub proof: PasswordResetV2Proof,
+    pub new_password: String,
+    pub mode: CompletePasswordResetMode,
+}
+
+#[derive(Serialize)]
+pub struct CompletePasswordResetV2Response {
+    pub message: String,
+    pub access_token: String,
+    pub refresh_token: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -108,7 +158,35 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
                 decrypt_request::<PasswordResetConfirmPayload>,
             )),
         )
+        // The v2 options sub-router keeps its own v2-transport gate, merged in
+        // after the legacy defenses so only v2 reset routes require it.
+        .merge(password_reset_v2_router(app_state.clone()))
         .with_state(app_state)
+}
+
+/// The transport-v2 password-reset options sub-router.
+///
+/// Layer ordering within this sub-router places `require_transport_v2`
+/// outermost, so legacy v1 transport sessions are rejected before any request
+/// body is decrypted or reset proof is verified. The state is intentionally
+/// kept so `router()` erases it once with `.with_state`.
+fn password_reset_v2_router(app_state: Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/password-reset/v2/options",
+            post(password_reset_v2_options).layer(from_fn_with_state(
+                app_state.clone(),
+                decrypt_request::<PasswordResetV2OptionsRequest>,
+            )),
+        )
+        .route(
+            "/password-reset/v2/complete",
+            post(password_reset_v2_complete).layer(from_fn_with_state(
+                app_state.clone(),
+                decrypt_request::<CompletePasswordResetV2Request>,
+            )),
+        )
+        .route_layer(from_fn(require_transport_v2))
 }
 
 #[derive(Serialize)]
@@ -560,4 +638,197 @@ pub async fn password_reset_confirm(
     });
     let result = encrypt_response(&data, &session_id, &response).await;
     result
+}
+
+/// Maps reset-proof rejections to one sanitized status so the options route
+/// cannot distinguish unknown accounts from wrong codes or wrong secrets.
+/// Only proof rejections stay generic: infrastructure failures remain
+/// internal-server errors and never leak into a successful response.
+fn map_reset_proof_error(e: Error) -> ApiError {
+    match e {
+        Error::UserNotFound
+        | Error::PasswordResetExpired
+        | Error::InvalidPasswordResetSecret
+        | Error::InvalidPasswordResetRequest
+        | Error::DatabaseError(DBError::UserNotFound) => ApiError::BadRequest,
+        _ => ApiError::InternalServerError,
+    }
+}
+
+/// Transport-v2 password reset options.
+///
+/// Verifies the existing email reset proof — the same proof legacy
+/// `/password-reset/confirm` verifies, mapped onto one sanitized error — and
+/// only after it succeeds reveals whether recovery is enrolled. The check is
+/// read-only: the reset request is neither consumed nor modified, so
+/// repeated calls stay safe until the request expires or is consumed by a
+/// completion. An unauthenticated caller learns nothing about account state.
+pub async fn password_reset_v2_options(
+    State(data): State<Arc<AppState>>,
+    Extension(transport_session): Extension<TransportSession>,
+    Decrypted(request): Decrypted<PasswordResetV2OptionsRequest>,
+) -> Result<Response, ApiError> {
+    // Defense-in-depth: the sub-router middleware already rejected non-v2
+    // transports before decryption; this guard keeps the handler
+    // self-sufficient if it is ever reachable from a mis-wired router.
+    require_v2_transport_session(&transport_session)?;
+
+    // The project client id scopes the email to exactly one account space.
+    let project = data
+        .db
+        .get_org_project_by_client_id(request.proof.client_id)
+        .map_err(|_| ApiError::BadRequest)?;
+
+    let (user, _active_request) = data
+        .verify_password_reset_proof(
+            request.proof.email,
+            request.proof.alphanumeric_code,
+            request.proof.plaintext_secret,
+            project.id,
+        )
+        .map_err(map_reset_proof_error)?;
+
+    // Read-only reveal, after the proof succeeded.
+    let recovery_enrolled = data
+        .db
+        .recovery_wrap_exists(user.uuid)
+        .map_err(|_| ApiError::InternalServerError)?;
+
+    let response = PasswordResetV2OptionsResponse {
+        recovery_enrolled,
+        destructive_reset_available: true,
+    };
+    encrypt_response(&data, &transport_session, &response).await
+}
+
+/// Maps seed-preserving completion rejections to one sanitized status:
+/// malformed codes, well-formed codes that failed to open the wrap,
+/// unenrolled accounts, and every lost commit-time race share the same
+/// generic 400 body, so the route cannot distinguish them. Infrastructure
+/// failures stay internal-server errors and never leak into a response.
+fn map_preserving_completion_error(e: Error) -> ApiError {
+    match e {
+        Error::InvalidRecoveryCode
+        | Error::AuthenticationError
+        | Error::RecoveryNotEnrolled
+        | Error::InvalidPasswordResetRequest
+        | Error::PasswordResetExpired
+        | Error::InvalidPasswordResetSecret
+        | Error::DatabaseError(DBError::UserNotFound)
+        | Error::DatabaseError(DBError::PasswordResetRequestNotFound)
+        | Error::DatabaseError(DBError::StaleCredentialState) => ApiError::BadRequest,
+        _ => ApiError::InternalServerError,
+    }
+}
+
+/// Transport-v2 password reset completion.
+///
+/// Re-verifies the existing email reset proof — the same read-only proof the
+/// options route verifies — and then performs the requested completion:
+///
+/// - **Preserve** opens the enrolled recovery wrap with the submitted
+///   recovery code and installs a new password credential over the same
+///   seed. The recovery wrap, seed-key-encrypted data, and OAuth
+///   connections are left unchanged.
+/// - **Destructive** requires an explicit data-loss acknowledgment and
+///   reuses the legacy destructive reset path unchanged; it creates no
+///   recovery wrap.
+///
+/// Both modes revalidate the reset request at commit time inside the
+/// transaction that mutates credentials, so a concurrent completion,
+/// password change, disablement, or rotation either wins the whole commit
+/// or loses without consuming anything. On success the caller receives new
+/// access and refresh tokens bound to the new password credential.
+pub async fn password_reset_v2_complete(
+    State(data): State<Arc<AppState>>,
+    Extension(transport_session): Extension<TransportSession>,
+    Decrypted(request): Decrypted<CompletePasswordResetV2Request>,
+) -> Result<Response, ApiError> {
+    // Defense-in-depth: the sub-router middleware already rejected non-v2
+    // transports before decryption; this guard keeps the handler
+    // self-sufficient if it is ever reachable from a mis-wired router.
+    require_v2_transport_session(&transport_session)?;
+
+    // Destructive reset must be an explicit, informed choice before any
+    // proof verification or account lookup.
+    if matches!(
+        request.mode,
+        CompletePasswordResetMode::Destructive {
+            acknowledge_data_loss: false
+        }
+    ) {
+        return Err(ApiError::BadRequest);
+    }
+
+    // The project client id scopes the email to exactly one account space.
+    let project = data
+        .db
+        .get_org_project_by_client_id(request.proof.client_id)
+        .map_err(|_| ApiError::BadRequest)?;
+
+    let (user, selected_request) = data
+        .verify_password_reset_proof(
+            request.proof.email.clone(),
+            request.proof.alphanumeric_code.clone(),
+            request.proof.plaintext_secret.clone(),
+            project.id,
+        )
+        .map_err(map_reset_proof_error)?;
+
+    let new_auth_context = match request.mode {
+        CompletePasswordResetMode::Preserve { recovery_code } => data
+            .complete_preserving_password_reset_v2(
+                &user,
+                &selected_request,
+                &recovery_code,
+                request.new_password,
+            )
+            .await
+            .map_err(map_preserving_completion_error)?,
+        CompletePasswordResetMode::Destructive {
+            acknowledge_data_loss: true,
+        } => {
+            // Reuse the legacy destructive reset path unchanged: it
+            // reverifies the proof, reseeds, disconnects OAuth, preserves
+            // API keys, and installs the new password wrap without creating
+            // recovery state.
+            data.confirm_password_reset(
+                request.proof.email,
+                request.proof.alphanumeric_code,
+                request.proof.plaintext_secret,
+                request.new_password,
+                project.id,
+            )
+            .await
+            .map_err(map_reset_proof_error)?
+        }
+        CompletePasswordResetMode::Destructive {
+            acknowledge_data_loss: false,
+        } => {
+            debug_assert!(false, "checked before the proof verification");
+            return Err(ApiError::BadRequest);
+        }
+    };
+
+    // Tokens are bound to the new password credential, matching the session
+    // transport the completion arrived on.
+    let access_token = NewToken::new_with_auth_context(
+        &user,
+        TokenType::access_for_transport(transport_session.is_v2()),
+        &data,
+        &new_auth_context,
+    )?;
+    let refresh_token = NewToken::new_with_auth_context(
+        &user,
+        TokenType::refresh_for_transport(transport_session.is_v2()),
+        &data,
+        &new_auth_context,
+    )?;
+
+    let response = CompletePasswordResetV2Response {
+        message: "Password reset successful.".to_string(),
+        access_token: access_token.token,
+        refresh_token: refresh_token.token,
+    };
+    encrypt_response(&data, &transport_session, &response).await
 }

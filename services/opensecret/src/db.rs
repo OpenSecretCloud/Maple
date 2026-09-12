@@ -230,6 +230,34 @@ pub trait DBConnection {
         new_password_enc: Vec<u8>,
         new_wrapping: NewUserSeedWrapping,
     ) -> Result<(), DBError>;
+    /// Consumes exactly one active, unexpired reset request for the user with
+    /// the guarded row predicate (unused, unexpired, unchanged secret hash).
+    /// A count other than one means the request was already consumed or
+    /// changed and fails without touching anything else.
+    fn consume_selected_password_reset_request(
+        &self,
+        user: &User,
+        request: &PasswordResetRequest,
+    ) -> Result<(), DBError>;
+    /// Seed-preserving password reset completion: replaces the password
+    /// verifier and password wrap over the seed opened from
+    /// `recovery_wrap`, consumes the selected and all other active reset
+    /// requests, and leaves the recovery wrap byte-for-byte unchanged.
+    ///
+    /// The transaction locks the user row first, then rechecks the unchanged
+    /// predicates (reset request, recovery wrap) before any mutation, so a
+    /// concurrent completion, password change, disablement, or rotation
+    /// either wins the whole commit or the call fails with
+    /// `StaleCredentialState` / `PasswordResetRequestNotFound` and nothing
+    /// is written.
+    fn complete_preserving_password_reset(
+        &self,
+        user: &User,
+        reset_request: &PasswordResetRequest,
+        recovery_wrap: &UserSeedWrapping,
+        new_password_enc: Vec<u8>,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<(), DBError>;
 
     // Account Deletion methods
     fn create_account_deletion_request(
@@ -746,6 +774,20 @@ pub trait DBConnection {
 
     // Delete operation for user messages
     fn delete_user_message(&self, id: Uuid, user_id: Uuid) -> Result<(), DBError>;
+
+    // Recovery wrap helpers
+    fn get_recovery_wrap(&self, user_id: Uuid) -> Result<Option<UserSeedWrapping>, DBError>;
+    fn insert_recovery_wrap_if_absent(
+        &self,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError>;
+    fn replace_recovery_wrap_if_unchanged(
+        &self,
+        old_wrapping: &UserSeedWrapping,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError>;
+    fn delete_recovery_wrap_for_user(&self, user_id: Uuid) -> Result<usize, DBError>;
+    fn recovery_wrap_exists(&self, user_id: Uuid) -> Result<bool, DBError>;
 }
 
 pub(crate) struct PostgresConnection {
@@ -1110,6 +1152,119 @@ impl DBConnection for PostgresConnection {
 
             new_wrapping.upsert_by_credential(conn)?;
 
+            Ok(())
+        })
+    }
+
+    fn consume_selected_password_reset_request(
+        &self,
+        user: &User,
+        request: &PasswordResetRequest,
+    ) -> Result<(), DBError> {
+        use crate::models::schema::password_reset_requests;
+
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let consumed_count = diesel::update(
+            password_reset_requests::table
+                .filter(password_reset_requests::id.eq(request.id))
+                .filter(password_reset_requests::user_id.eq(user.uuid))
+                .filter(password_reset_requests::hashed_secret.eq(request.hashed_secret.as_str()))
+                .filter(password_reset_requests::is_reset.eq(false))
+                .filter(password_reset_requests::expiration_time.gt(diesel::dsl::now)),
+        )
+        .set(password_reset_requests::is_reset.eq(true))
+        .execute(conn)?;
+        if consumed_count != 1 {
+            return Err(DBError::PasswordResetRequestNotFound);
+        }
+        Ok(())
+    }
+
+    fn complete_preserving_password_reset(
+        &self,
+        user: &User,
+        reset_request: &PasswordResetRequest,
+        recovery_wrap: &UserSeedWrapping,
+        new_password_enc: Vec<u8>,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<(), DBError> {
+        use crate::models::schema::{password_reset_requests, users};
+
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+
+        conn.transaction::<_, DBError, _>(|conn| {
+            // Same user-row lock order as the destructive reset and password
+            // change flows: the user row serializes every credential mutation
+            // before reset requests or wraps are touched.
+            let _locked_user = users::table
+                .filter(users::uuid.eq(user.uuid))
+                .for_update()
+                .first::<User>(conn)?;
+
+            // Recheck the unchanged reset-request predicates at commit time:
+            // unused, unexpired, and still bound to the secret the proof
+            // verified. The guarded count makes a concurrent completion the
+            // only possible winner.
+            let consumed_reset_count = diesel::update(
+                password_reset_requests::table
+                    .filter(password_reset_requests::id.eq(reset_request.id))
+                    .filter(password_reset_requests::user_id.eq(user.uuid))
+                    .filter(
+                        password_reset_requests::hashed_secret
+                            .eq(reset_request.hashed_secret.as_str()),
+                    )
+                    .filter(password_reset_requests::is_reset.eq(false))
+                    .filter(password_reset_requests::expiration_time.gt(diesel::dsl::now)),
+            )
+            .set(password_reset_requests::is_reset.eq(true))
+            .execute(conn)?;
+            if consumed_reset_count != 1 {
+                return Err(DBError::PasswordResetRequestNotFound);
+            }
+
+            diesel::update(
+                password_reset_requests::table
+                    .filter(password_reset_requests::user_id.eq(user.uuid))
+                    .filter(password_reset_requests::id.ne(reset_request.id))
+                    .filter(password_reset_requests::is_reset.eq(false)),
+            )
+            .set(password_reset_requests::is_reset.eq(true))
+            .execute(conn)?;
+
+            // The recovery wrap opened above must be the one still stored:
+            // a concurrent rotation or disablement makes the opened seed
+            // stale, so the whole completion fails without writing anything.
+            let current_recovery = UserSeedWrapping::get_for_user_and_kind(
+                conn,
+                user.uuid,
+                CredentialKind::Recovery.as_str(),
+            )?;
+            match current_recovery.into_iter().next() {
+                Some(current)
+                    if current.id == recovery_wrap.id
+                        && current.seed_enc == recovery_wrap.seed_enc
+                        && current.credential_lookup_hash
+                            == recovery_wrap.credential_lookup_hash
+                        && current.wrapping_version == recovery_wrap.wrapping_version => {}
+                _ => return Err(DBError::StaleCredentialState),
+            }
+
+            let updated_user_count = diesel::update(users::table.filter(users::uuid.eq(user.uuid)))
+                .set((
+                    users::password_enc.eq(Some(new_password_enc)),
+                    users::updated_at.eq(diesel::dsl::now),
+                ))
+                .execute(conn)?;
+            if updated_user_count != 1 {
+                return Err(DBError::StaleCredentialState);
+            }
+
+            UserSeedWrapping::delete_for_user_and_kind(
+                conn,
+                user.uuid,
+                CredentialKind::Password.as_str(),
+            )?;
+            new_wrapping.insert(conn)?;
             Ok(())
         })
     }
@@ -2981,6 +3136,96 @@ impl DBConnection for PostgresConnection {
         // First get the message by UUID to find its ID
         let msg = UserMessage::get_by_uuid_and_user(conn, id, user_id)?;
         UserMessage::delete_by_id_and_user(conn, msg.id, user_id).map_err(DBError::from)
+    }
+
+    // Recovery wrap helpers
+    fn get_recovery_wrap(&self, user_id: Uuid) -> Result<Option<UserSeedWrapping>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let wraps = UserSeedWrapping::get_for_user_and_kind(
+            conn,
+            user_id,
+            CredentialKind::Recovery.as_str(),
+        )
+        .map_err(DBError::from)?;
+        Ok(wraps.into_iter().next())
+    }
+
+    fn insert_recovery_wrap_if_absent(
+        &self,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        conn.transaction::<_, DBError, _>(|conn| {
+            let existing = UserSeedWrapping::get_for_user_and_kind(
+                conn,
+                new_wrapping.user_id,
+                CredentialKind::Recovery.as_str(),
+            )
+            .map_err(DBError::from)?;
+            if existing.into_iter().next().is_some() {
+                return Err(DBError::StaleCredentialState);
+            }
+            new_wrapping.insert(conn).map_err(|e| match e {
+                UserSeedWrappingError::DatabaseError(diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                    _,
+                )) => DBError::StaleCredentialState,
+                other => DBError::from(other),
+            })
+        })
+    }
+
+    fn replace_recovery_wrap_if_unchanged(
+        &self,
+        old_wrapping: &UserSeedWrapping,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        conn.transaction::<_, DBError, _>(|conn| {
+            let current = UserSeedWrapping::get_for_user_and_kind(
+                conn,
+                old_wrapping.user_id,
+                CredentialKind::Recovery.as_str(),
+            )
+            .map_err(DBError::from)?;
+
+            let current = current.into_iter().next();
+            match current {
+                Some(existing) if existing.id == old_wrapping.id => {
+                    // The `id` check above is a soft guard; the conditional DELETE below is the
+                    // actual CAS -- it only removes the exact row we think we’re replacing. If
+                    // another transaction already replaced or deleted it, the count will be 0
+                    // and we return StaleCredentialState instead of clobbering a newer wrap.
+                    use crate::models::schema::user_seed_wrappings;
+                    let deleted = diesel::delete(
+                        user_seed_wrappings::table
+                            .filter(user_seed_wrappings::user_id.eq(old_wrapping.user_id))
+                            .filter(user_seed_wrappings::id.eq(old_wrapping.id))
+                            .filter(
+                                user_seed_wrappings::credential_kind
+                                    .eq(CredentialKind::Recovery.as_str()),
+                            ),
+                    )
+                    .execute(conn)
+                    .map_err(DBError::from)?;
+                    if deleted != 1 {
+                        return Err(DBError::StaleCredentialState);
+                    }
+                    new_wrapping.insert(conn).map_err(DBError::from)
+                }
+                _ => Err(DBError::StaleCredentialState),
+            }
+        })
+    }
+
+    fn delete_recovery_wrap_for_user(&self, user_id: Uuid) -> Result<usize, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        UserSeedWrapping::delete_for_user_and_kind(conn, user_id, CredentialKind::Recovery.as_str())
+            .map_err(DBError::from)
+    }
+
+    fn recovery_wrap_exists(&self, user_id: Uuid) -> Result<bool, DBError> {
+        self.get_recovery_wrap(user_id).map(|wrap| wrap.is_some())
     }
 
     // Maintenance
