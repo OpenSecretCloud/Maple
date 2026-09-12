@@ -120,6 +120,7 @@ pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 pub const KIMI_K2_6_MODEL_ID: &str = "kimi-k2-6";
 pub const DEEPSEEK_V4_FLASH_MODEL_ID: &str = "deepseek-v4-flash";
+pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
 
 const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
     quick: QUICK_MODEL_ID,
@@ -619,6 +620,26 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
     .with_catalog_provider("continuum", "glm-5.3")
     .with_catalog_metadata(ModelCatalogMetadata::new(&["text"], &["text"], None, None)),
     ModelConfigEntry::new(
+        DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        "DeepSeek V4.1 Flash",
+        "DeepSeek V4.1 Flash",
+        "Long-context multimodal reasoning and tool-use model.",
+        ModelAccessTier::Pro,
+        ModelCapabilities::chat(true, true),
+        &["New", "Reasoning"],
+        true,
+        true,
+        false,
+        65,
+        1_048_576,
+    )
+    .with_catalog_metadata(ModelCatalogMetadata::new(
+        &["text", "image"],
+        &["text"],
+        Some("552B"),
+        Some("16B"),
+    )),
+    ModelConfigEntry::new(
         DEEPSEEK_V4_FLASH_MODEL_ID,
         "DeepSeek V4 Flash",
         "DeepSeek V4 Flash",
@@ -897,6 +918,7 @@ mod tests {
         assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
         assert_eq!(model_context_window("kimi-k3"), 262_144);
         assert_eq!(model_context_window("deepseek-v4-flash"), 1_048_576);
+        assert_eq!(model_context_window("deepseek-v4-1-flash"), 1_048_576);
         assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 131_072);
         assert_eq!(model_context_window(AUTO_POWERFUL_MODEL_ID), 262_144);
     }
@@ -913,6 +935,7 @@ mod tests {
             "glm-5-3-flash",
             "kimi-k3",
             "deepseek-v4-flash",
+            "deepseek-v4-1-flash",
         ] {
             let config = model_config(model);
 
@@ -1040,6 +1063,10 @@ mod tests {
             resolve_completion_model_id("deepseek-v4-flash"),
             Some("deepseek-v4-flash")
         );
+        assert_eq!(
+            resolve_completion_model_id("deepseek-v4-1-flash"),
+            Some("deepseek-v4-1-flash")
+        );
         assert_eq!(resolve_completion_model_id("unknown-model"), None);
     }
 
@@ -1067,6 +1094,10 @@ mod tests {
         assert_eq!(
             resolve_public_model_id("deepseek-v4-flash"),
             Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            resolve_public_model_id("deepseek-v4-1-flash"),
+            Some("deepseek-v4-1-flash")
         );
         assert_eq!(resolve_public_model_id("unknown-model"), None);
     }
@@ -1303,6 +1334,7 @@ mod tests {
             "glm-5-3",
             "glm-5-3-flash",
             "deepseek-v4-flash",
+            "deepseek-v4-1-flash",
             AUTO_POWERFUL_MODEL_ID,
         ] {
             assert!(
@@ -1436,6 +1468,32 @@ mod tests {
     }
 
     #[test]
+    fn test_catalog_adds_deepseek_v4_1_flash_through_tinfoil_with_image_and_1m_context() {
+        let catalog = model_catalog_response(ModelAliasTargets::for_plan(ModelPlan::Paid));
+        let deepseek = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+
+        assert_eq!(deepseek["provider"], "tinfoil");
+        assert_eq!(deepseek["provider_id"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(deepseek["display_name"], "DeepSeek V4.1 Flash");
+        assert_eq!(deepseek["access"], "pro");
+        assert_eq!(deepseek["context_window"], 1_048_576);
+        assert_eq!(deepseek["input_modalities"], json!(["text", "image"]));
+        assert_eq!(deepseek["output_modalities"], json!(["text"]));
+        assert_eq!(deepseek["capabilities"]["vision"], true);
+        assert_eq!(deepseek["capabilities"]["reasoning"], true);
+        assert_eq!(deepseek["capabilities"]["tool_use"], true);
+        assert_eq!(deepseek["tasks"], json!(["generate", "vision"]));
+        assert_eq!(
+            resolve_completion_model_id(DEEPSEEK_V4_1_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID)
+        );
+        assert_eq!(
+            catalog_model(&catalog, DEEPSEEK_V4_FLASH_MODEL_ID)["id"],
+            DEEPSEEK_V4_FLASH_MODEL_ID
+        );
+    }
+
+    #[test]
     fn test_new_tinfoil_models_are_generally_listed() {
         let catalog = model_catalog_response(ModelAliasTargets::default());
         let openai_models = openai_models_response();
@@ -1443,6 +1501,7 @@ mod tests {
         for model in [
             "kimi-k3",
             "deepseek-v4-flash",
+            "deepseek-v4-1-flash",
             GLM_5_3_FLASH_MODEL_ID,
             QUICK_MODEL_ID,
         ] {
@@ -1454,6 +1513,7 @@ mod tests {
     #[test]
     fn test_new_badges_match_the_currently_launched_models() {
         let expected = vec![
+            DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
             DEEPSEEK_V4_FLASH_MODEL_ID.to_string(),
             GLM_5_3_MODEL_ID.to_string(),
             GLM_5_3_FLASH_MODEL_ID.to_string(),
@@ -1498,6 +1558,20 @@ mod tests {
         assert_eq!(deepseek["capabilities"]["reasoning"], true);
         assert_eq!(deepseek["capabilities"]["tool_use"], true);
         assert_eq!(deepseek["tasks"], json!(["generate"]));
+
+        let deepseek_v41 = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(deepseek_v41["access"], "pro");
+        assert_eq!(deepseek_v41["provider_id"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(deepseek_v41["display_name"], "DeepSeek V4.1 Flash");
+        assert_eq!(deepseek_v41["context_window"], 1_048_576);
+        assert_eq!(deepseek_v41["input_modalities"], json!(["text", "image"]));
+        assert_eq!(deepseek_v41["output_modalities"], json!(["text"]));
+        assert_eq!(deepseek_v41["parameter_size"], "552B");
+        assert_eq!(deepseek_v41["active_parameter_size"], "16B");
+        assert_eq!(deepseek_v41["capabilities"]["vision"], true);
+        assert_eq!(deepseek_v41["capabilities"]["reasoning"], true);
+        assert_eq!(deepseek_v41["capabilities"]["tool_use"], true);
+        assert_eq!(deepseek_v41["tasks"], json!(["generate", "vision"]));
 
         let minimal = openai_models_response();
         let minimal_kimi = catalog_model(&minimal, "kimi-k3");

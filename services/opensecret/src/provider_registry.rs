@@ -6,8 +6,8 @@
 //! separate Router v1 configuration.
 
 use crate::model_config::{
-    DEEPSEEK_V4_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K2_6_MODEL_ID,
-    KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+    DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+    GLM_5_3_MODEL_ID, KIMI_K2_6_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v2";
@@ -182,6 +182,15 @@ const DEEPSEEK_V4_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
+const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Tinfoil,
+    provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    response_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    rate_limit_scope: RateLimitScope::ProviderModel,
+    weight: 100,
+    enabled: true,
+}];
+
 const LLAMA3_3_70B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
     provider_model_id: "llama3-3-70b",
@@ -224,6 +233,10 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     CompletionModelSpec {
         public_model_id: GLM_5_3_FLASH_MODEL_ID,
         routes: GLM_5_3_FLASH_ROUTES,
+    },
+    CompletionModelSpec {
+        public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        routes: DEEPSEEK_V4_1_FLASH_ROUTES,
     },
     CompletionModelSpec {
         public_model_id: DEEPSEEK_V4_FLASH_MODEL_ID,
@@ -299,6 +312,7 @@ mod tests {
                 KIMI_K2_6_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 DEEPSEEK_V4_FLASH_MODEL_ID,
                 "llama3-3-70b",
                 "gpt-oss-safeguard-120b",
@@ -379,6 +393,12 @@ mod tests {
                     ProviderId::Tinfoil,
                     GLM_5_3_FLASH_MODEL_ID,
                     GLM_5_3_FLASH_MODEL_ID
+                ),
+                (
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    ProviderId::Tinfoil,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    DEEPSEEK_V4_1_FLASH_MODEL_ID
                 ),
                 (
                     DEEPSEEK_V4_FLASH_MODEL_ID,
