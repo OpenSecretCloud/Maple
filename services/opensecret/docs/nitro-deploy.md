@@ -30,16 +30,24 @@ CI never updates references or handles signing keys.
 
 ### Binary caches and cold-run validation
 
-The master push/manual job installs Determinate Nix and uses FlakeHub Cache
-with job-scoped `id-token: write`. It also explicitly enables the GitHub cache
-and `diff-store: true`, so paths fetched from FlakeHub, not just locally built
-paths, warm the default-branch cache. The cache action's post step can run after
-an expected PCR mismatch; the comparison still fails and approvals stay unchanged.
+Master push/manual runs and same-repository PR comparisons use the trusted EIF
+job, which installs Determinate Nix and uses FlakeHub Cache with job-scoped
+`id-token: write`. A PR qualifies only when its head repository's full name
+equals `github.repository` and the successful selector reports an approval
+JSON edit. This intentionally trusts same-repository PR code to write the
+FlakeHub cache; it does not grant signing or deployment authority.
 
-PRs, including forks, and manual runs on other refs have no OIDC permission.
-They use the pinned Magic Nix Cache action with FlakeHub disabled and GitHub
-caching enabled. GitHub permits default/base-branch cache reads; PR cache
-writes are confined to the PR merge ref and cannot populate master's cache.
+The trusted job also explicitly enables the GitHub cache and `diff-store: true`,
+so paths fetched from FlakeHub, not just locally built paths, populate that
+cache. Master runs warm the default-branch cache. GitHub permits reads from the
+default/base-branch cache, but PR writes are confined to the PR merge ref and
+cannot populate master's GitHub cache, even for same-repository PRs. The cache
+action's post step can run after an expected PCR mismatch; the comparison still
+fails and approvals stay unchanged.
+
+Fork PRs, PRs with missing head-repository metadata, and manual runs on other
+refs have no OIDC permission. They use the pinned Magic Nix Cache action with
+FlakeHub disabled and GitHub caching enabled.
 Do not use `pull_request_target`, pass cache secrets to PRs, or change the
 checkout to trusted master while claiming to check a PR's source.
 
@@ -49,11 +57,12 @@ authenticate to it. Restoring the action does not grant Maple access to
 GitHub cache may need operator-approved access or a trusted cache-warming run.
 Never assume the old cache's visibility transferred with the source import.
 
-After a cache change, inspect a fresh hosted ARM64 run for successful cache
-setup, actual substitution of the expected custom kernel store path, build
-duration, and the eventual measurement comparison. Then verify that an
-unprivileged run can reuse the warmed GitHub cache. A warm local store, a
-skipped PR EIF job, or passing workflow unit tests does not prove this.
+After a cache change, inspect fresh hosted ARM64 master and same-repository PR
+runs for successful FlakeHub authentication, actual substitution of the expected
+custom kernel store path, build duration, and the eventual measurement comparison.
+Then verify that an unprivileged fork run can reuse the GitHub cache warmed by
+master. A warm local store, a skipped PR EIF job, or passing workflow unit tests
+does not prove this.
 Diagnose missing cache access separately from PCR mismatch; do not conceal
 it by increasing the timeout or changing measured kernel/build inputs.
 
