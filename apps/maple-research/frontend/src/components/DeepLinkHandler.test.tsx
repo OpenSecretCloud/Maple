@@ -110,7 +110,8 @@ mock.module("@tauri-apps/api/event", () => ({
 }));
 
 let startupUrls: string[] | null = null;
-const getCurrent = mock(async () => startupUrls);
+let launchUrls: () => Promise<string[] | null> = async () => startupUrls;
+const getCurrent = mock(() => launchUrls());
 mock.module("@tauri-apps/plugin-deep-link", () => ({ getCurrent }));
 
 type PendingNativeOAuthAttempt = import("@/services/nativeOAuthAttempt").PendingNativeOAuthAttempt;
@@ -179,6 +180,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
   beforeEach(async () => {
     deepLinkListener = undefined;
     startupUrls = null;
+    launchUrls = async () => startupUrls;
     getCurrent.mockClear();
     renderer = null;
     storage = new MemoryStorage();
@@ -418,7 +420,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
       );
       await Promise.resolve();
     });
-    expect(getCurrent).toHaveBeenCalledTimes(1);
+    expect(getCurrent).toHaveBeenCalledTimes(2);
     expect(renderer?.root.findByType(NativeOAuthAccountConfirmation).props.account.userId).toBe(
       USER_ID
     );
@@ -428,8 +430,8 @@ describe("DeepLinkHandler native auth callbacks", () => {
     expect(sharedState().installCalls).toHaveLength(1);
   });
 
-  test("Dev cold launch ignores other-app and unsolicited callbacks; production does not read startup URLs", async () => {
-    expect(getCurrent).not.toHaveBeenCalled();
+  test("Dev cold launch ignores other-app and unsolicited callbacks", async () => {
+    expect(getCurrent).toHaveBeenCalledTimes(1);
     startupUrls = [
       `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`,
       `cloud.opensecret.maple.dev://auth?handoff_grant=${VALID_GRANT}`
@@ -442,7 +444,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
       );
       await Promise.resolve();
     });
-    expect(getCurrent).toHaveBeenCalledTimes(1);
+    expect(getCurrent).toHaveBeenCalledTimes(2);
     expect(nativeCalls).toHaveLength(0);
     expect(sharedState().installCalls).toHaveLength(0);
     expect(location.href).toBe("tauri://localhost/");
@@ -620,5 +622,145 @@ describe("DeepLinkHandler payment callbacks", () => {
 
     await flushDeepLink("cloud.opensecret.maple://payment?source=desktop");
     expect(location.href).toBe("/pricing");
+  });
+});
+
+describe("DeepLinkHandler launch links", () => {
+  let location: { href: string };
+  let renderer: ReactTestRenderer | null;
+  let storage: MemoryStorage;
+  let originalConsoleError: typeof console.error;
+  let originalConsoleLog: typeof console.log;
+  let originalConsoleWarn: typeof console.warn;
+
+  async function render(appVariant: "production" | "dev" = "production"): Promise<void> {
+    await act(async () => {
+      renderer = create(
+        <NotificationProvider>
+          <DeepLinkHandler tauri appVariant={appVariant} />
+        </NotificationProvider>
+      );
+      // Let the listener attach and the async launch-link check finish.
+      for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    if (!deepLinkListener) throw new Error("Deep-link listener was not registered");
+  }
+
+  beforeEach(() => {
+    deepLinkListener = undefined;
+    sharedState().currentUser = undefined;
+    renderer = null;
+    storage = new MemoryStorage();
+    location = { href: "tauri://localhost/" };
+    launchUrls = async () => null;
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: storage,
+      writable: true
+    });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { sessionStorage: storage, location },
+      writable: true
+    });
+    originalConsoleError = console.error;
+    originalConsoleLog = console.log;
+    originalConsoleWarn = console.warn;
+    console.error = mock(() => {});
+    console.log = mock(() => {});
+    console.warn = mock(() => {});
+  });
+
+  afterEach(() => {
+    if (renderer) act(() => renderer?.unmount());
+    launchUrls = async () => null;
+    restoreGlobal("sessionStorage", originalGlobals.sessionStorage);
+    restoreGlobal("window", originalGlobals.window);
+    console.error = originalConsoleError;
+    console.log = originalConsoleLog;
+    console.warn = originalConsoleWarn;
+  });
+
+  test("handles the link that launched the app", async () => {
+    const url = "cloud.opensecret.maple://payment-canceled?case=launch";
+    launchUrls = async () => [url];
+
+    await render();
+
+    expect(location.href).toBe("/pricing?canceled=true");
+    expect(JSON.parse(storage.getItem("maple.handledDeepLinks") ?? "[]")).toEqual([url]);
+  });
+
+  test("does not handle the launch link again after the page reloads", async () => {
+    const url = "cloud.opensecret.maple://payment-success?case=reload";
+    storage.setItem("maple.handledDeepLinks", JSON.stringify([url]));
+    launchUrls = async () => [url];
+
+    await render();
+
+    expect(location.href).toBe("tauri://localhost/");
+  });
+
+  test("does not repeat a link that already arrived as an event", async () => {
+    const url = "cloud.opensecret.maple://payment-success?case=live";
+    await render();
+    await flushDeepLink(url);
+    expect(location.href).toBe("/pricing?success=true");
+
+    act(() => renderer?.unmount());
+    renderer = null;
+    location.href = "tauri://localhost/";
+    launchUrls = async () => [url];
+    await render();
+
+    expect(location.href).toBe("tauri://localhost/");
+  });
+
+  test("never stores an auth grant", async () => {
+    await render();
+    await flushDeepLink(`cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`);
+
+    const stored = storage.getItem("maple.handledDeepLinks") ?? "";
+    expect(stored).toBe("");
+    expect(stored).not.toContain(VALID_GRANT);
+  });
+
+  test("never stores credentials from rejected callbacks", async () => {
+    await render();
+    for (const url of [
+      "cloud.opensecret.maple://auth?access_token=secret&refresh_token=secret",
+      `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}&cache_namespace_root=secret`,
+      "cloud.opensecret.maple://payment-success?access_token=secret",
+      "cloud.opensecret.maple://secret:secret@payment-success",
+      "cloud.opensecret.maple://payment-success#secret"
+    ]) {
+      await flushDeepLink(url);
+    }
+    expect(storage.getItem("maple.handledDeepLinks")).toBeNull();
+  });
+
+  test("production builds ignore a Dev launch link", async () => {
+    launchUrls = async () => ["cloud.opensecret.maple.dev://payment-canceled?case=production"];
+    await render();
+    expect(location.href).toBe("tauri://localhost/");
+  });
+
+  test("dev builds ignore a production launch link", async () => {
+    launchUrls = async () => ["cloud.opensecret.maple://payment-success?case=dev"];
+
+    await render("dev");
+
+    expect(location.href).toBe("tauri://localhost/");
+  });
+
+  test("live links still work when the launch link can't be read", async () => {
+    launchUrls = async () => {
+      throw new Error("plugin unavailable");
+    };
+
+    await render();
+    await flushDeepLink("cloud.opensecret.maple://payment-canceled?case=fallback");
+
+    expect(location.href).toBe("/pricing?canceled=true");
   });
 });
