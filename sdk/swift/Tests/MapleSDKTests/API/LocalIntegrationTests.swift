@@ -293,7 +293,7 @@ struct LocalIntegrationTests {
         }
     #endif
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["RUN_LIVE_AI"] == "1"))
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RUN_LIVE_AI"] == "1"), .timeLimit(.minutes(5)))
     func localLiveResponsesAudioAndCancellation() async throws {
         let configuration = try LocalConfiguration()
         let client = try await configuration.signedInEmailClient()
@@ -301,55 +301,76 @@ struct LocalIntegrationTests {
         let conversation = try await api.createConversation(metadata: [
             "title": .string("Disposable SDK provider fixture")
         ])
-        let correlation = UUID().uuidString.lowercased()
-        let events = try await api.createResponse(
-            .init(
-                input: .text("Reply with the word Maple."), conversation: conversation.id,
-                metadata: ["internal_message_id": .string(correlation)]))
-        var responseId: String?
-        var completed = false
-        for try await event in events {
-            if case let .created(value) = event { responseId = value.response.id }
-            if case .completed = event { completed = true }
-        }
-        #expect(completed)
-        guard let responseId else { throw ResearchAPIError.invalidResponse }
-        #expect(try await api.retrieveResponse(id: responseId).status == .completed)
-        let items = try await api.listConversationItems(conversationId: conversation.id, parameters: .init(order: .asc))
-        #expect(items.data.contains { $0.id == correlation && $0.role == "user" && $0.responseId == responseId })
-        #expect(items.data.contains { $0.role == "assistant" })
-        let correlatedItem = try await api.getConversationItem(conversationId: conversation.id, itemId: correlation)
-        #expect(correlatedItem.id == correlation)
-        #expect(correlatedItem.type == "message")
-        #expect(correlatedItem.role == "user")
-        #expect(correlatedItem.responseId == responseId)
-
-        let speech = try await api.synthesizeSpeech(input: "Maple test.", voice: "neutral_female")
-        let bytes = try await api.collect(speech.body, limit: 10 * 1_024 * 1_024)
-        #expect(!bytes.isEmpty)
-        let transcript = try await api.transcribeAudio(
-            data: bytes, filename: "fixture.wav", contentType: "audio/wav", language: "en")
-        #expect(!transcript.text.isEmpty)
-
-        let cancellable = try await api.createResponse(
-            .init(
-                input: .text("Write a numbered list of the integers from one to one thousand."),
-                conversation: conversation.id))
-        var cancelId: String?
-        var terminal = false
-        for try await event in cancellable {
-            if case let .created(value) = event {
-                cancelId = value.response.id
-                do { _ = try await api.cancelResponse(id: value.response.id) } catch ResearchAPIError.http(
-                    status: 400, reason: _)
-                { /* Finished before cancellation: reconcile below. */  }
+        do {
+            let correlation = UUID().uuidString.lowercased()
+            let events = try await api.createResponse(
+                .init(
+                    input: .text("Reply with the word Maple."), conversation: conversation.id,
+                    metadata: ["internal_message_id": .string(correlation)]))
+            var responseId: String?
+            var completed = false
+            for try await event in events {
+                if case let .created(value) = event { responseId = value.response.id }
+                if case .completed = event { completed = true }
             }
-            if event.isTerminal { terminal = true }
+            try #require(completed)
+            guard let responseId else { throw ResearchAPIError.invalidResponse }
+            #expect(try await api.retrieveResponse(id: responseId).status == .completed)
+            let items = try await api.listConversationItems(
+                conversationId: conversation.id, parameters: .init(order: .asc))
+            #expect(items.data.contains { $0.id == correlation && $0.role == "user" && $0.responseId == responseId })
+            #expect(items.data.contains { $0.role == "assistant" })
+            let correlatedItem = try await api.getConversationItem(conversationId: conversation.id, itemId: correlation)
+            #expect(correlatedItem.id == correlation)
+            #expect(correlatedItem.type == "message")
+            #expect(correlatedItem.role == "user")
+            #expect(correlatedItem.responseId == responseId)
+
+            let speech = try await api.synthesizeSpeech(input: "Maple test.", voice: "neutral_female")
+            let bytes = try await api.collect(speech.body, limit: 10 * 1_024 * 1_024)
+            let contentType =
+                speech.header("content-type")?.split(separator: ";", maxSplits: 1).first?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            let hasAudioContentType = contentType.hasPrefix("audio/") || contentType == "application/octet-stream"
+            try #require(hasAudioContentType)
+            let hasWAVHeader =
+                bytes.count >= 12 && bytes.prefix(4) == Data("RIFF".utf8)
+                && bytes[8..<12] == Data("WAVE".utf8)
+            try #require(hasWAVHeader)
+            let transcript = try await api.transcribeAudio(
+                data: bytes, filename: "fixture.wav", contentType: "audio/wav", language: "en")
+            try #require(!transcript.text.isEmpty)
+
+            let cancellable = try await api.createResponse(
+                .init(
+                    input: .text("Write a numbered list of the integers from one to one hundred."),
+                    conversation: conversation.id))
+            var cancelId: String?
+            var terminal = false
+            for try await event in cancellable {
+                if case let .created(value) = event {
+                    cancelId = value.response.id
+                    do { _ = try await api.cancelResponse(id: value.response.id) } catch ResearchAPIError.http(
+                        status: 400, reason: _)
+                    { /* Finished before cancellation: reconcile below. */  }
+                }
+                if event.isTerminal { terminal = true }
+            }
+            try #require(terminal)
+            guard let cancelId else { throw ResearchAPIError.invalidResponse }
+            let status = try await api.retrieveResponse(id: cancelId).status
+            #expect(status == .cancelled || status == .completed)
+        } catch {
+            // Only this test's new conversation is eligible for cleanup.
+            do {
+                let deleted = try await api.deleteConversation(id: conversation.id).deleted
+                #expect(deleted)
+            } catch {
+                Issue.record("Could not remove the disposable provider-test conversation after failure.")
+            }
+            try? await client.signOut()
+            throw error
         }
-        #expect(terminal)
-        guard let cancelId else { throw ResearchAPIError.invalidResponse }
-        let status = try await api.retrieveResponse(id: cancelId).status
-        #expect(status == .cancelled || status == .completed)
         #expect(try await api.deleteConversation(id: conversation.id).deleted)
         try await client.signOut()
     }
