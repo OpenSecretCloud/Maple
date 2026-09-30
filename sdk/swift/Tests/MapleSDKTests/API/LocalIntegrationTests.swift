@@ -301,7 +301,7 @@ struct LocalIntegrationTests {
         let conversation = try await api.createConversation(metadata: [
             "title": .string("Disposable SDK provider fixture")
         ])
-        let correlation = UUID().uuidString
+        let correlation = UUID().uuidString.lowercased()
         let events = try await api.createResponse(
             .init(
                 input: .text("Reply with the word Maple."), conversation: conversation.id,
@@ -316,11 +316,13 @@ struct LocalIntegrationTests {
         guard let responseId else { throw ResearchAPIError.invalidResponse }
         #expect(try await api.retrieveResponse(id: responseId).status == .completed)
         let items = try await api.listConversationItems(conversationId: conversation.id, parameters: .init(order: .asc))
-        #expect(items.data.contains { $0.role == "user" })
+        #expect(items.data.contains { $0.id == correlation && $0.role == "user" && $0.responseId == responseId })
         #expect(items.data.contains { $0.role == "assistant" })
-        if let first = items.data.first {
-            #expect(try await api.getConversationItem(conversationId: conversation.id, itemId: first.id).id == first.id)
-        }
+        let correlatedItem = try await api.getConversationItem(conversationId: conversation.id, itemId: correlation)
+        #expect(correlatedItem.id == correlation)
+        #expect(correlatedItem.type == "message")
+        #expect(correlatedItem.role == "user")
+        #expect(correlatedItem.responseId == responseId)
 
         let speech = try await api.synthesizeSpeech(input: "Maple test.", voice: "neutral_female")
         let bytes = try await api.collect(speech.body, limit: 10 * 1_024 * 1_024)
