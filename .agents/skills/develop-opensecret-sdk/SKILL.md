@@ -1,6 +1,6 @@
 ---
 name: develop-opensecret-sdk
-description: Develop and review the Maple TypeScript/React and Rust SDKs under Maple's sdk directory. Use for SDK API, authentication, attestation, encrypted transport, tests, in-tree OpenSecret integration, package contents, versions, or an explicitly authorized npm or crates.io publishing handoff; use develop-maple for application-only work.
+description: Develop and review the Maple TypeScript/React, Rust and Swift SDKs under Maple's sdk directory. Use for SDK API, authentication, attestation, encrypted transport, tests, in-tree OpenSecret integration, package contents, versions, or an explicitly authorized publishing handoff; use develop-maple for application-only work.
 ---
 
 # Develop the Maple SDK
@@ -14,6 +14,9 @@ package boundaries remain independently versioned and publishable:
 
 - `src/` builds `@mapleai/sdk` for browser and React consumers.
 - `rust/` builds the `maple-sdk` crate (imported as `maple_sdk`) for native consumers.
+- `swift/` builds the independent `MapleSDK` Swift package for native Apple
+  clients. Read `swift/AGENTS.md` and `swift/README.md`; its Xcode toolchain,
+  version, tests and publication boundary are independent of the other SDKs.
 - `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
   consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
 - Research native clients, Maple Agent, and `proxy/` select their Rust SDK
@@ -50,7 +53,28 @@ caller.
 
 ## Develop and validate
 
-Use the SDK's pinned Nix shell. For TypeScript/React work:
+Use the SDK's pinned Nix shell for TypeScript and Rust. Swift uses the root
+Apple shell and host Xcode 26.5, including its bundled `swift-format`:
+
+```sh
+nix develop --no-update-lock-file .#apple -c bash scripts/ci/sdk-swift.sh unit
+nix develop --no-update-lock-file .#apple -c bash scripts/ci/sdk-swift.sh build
+nix develop --no-update-lock-file .#apple -c bash scripts/ci/sdk-swift.sh ios-build
+```
+
+Run Swift commands from the repository root. Match `sdk-swift.yml` for
+deterministic and disposable local-backend integration coverage. The
+`integration` mode requires an explicit loopback endpoint and disposable
+test account configuration; preserve externally owned services. Real
+development-enclave trust checks use the separately authorized
+`live-attestation` mode. Never infer hardware, provider or Nitro trust from
+mocks. Keep one shared credential authority per API origin and test atomic
+replacement, cancellation, stale generations and persistence failures.
+Swift package-root distribution has not been published; local source,
+source checkpoint tags and an eventual independent package publication must
+not create or advance a Maple app release. See `swift/README.md`.
+
+For TypeScript/React work:
 
 ```sh
 nix develop --no-update-lock-file -c bun install --frozen-lockfile --ignore-scripts

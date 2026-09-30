@@ -68,6 +68,7 @@ IOS_ONNX_INPUTS = frozenset(
 )
 
 WORKFLOW_ROUTES = {
+    ".github/workflows/sdk-swift.yml": frozenset(),
     ".github/workflows/android-build.yml": frozenset({"android"}),
     ".github/workflows/android-pr-build.yml": frozenset({"android"}),
     ".github/workflows/app-change-detection.yml": NATIVE_PLATFORMS,
@@ -78,6 +79,8 @@ WORKFLOW_ROUTES = {
 }
 
 CI_SCRIPT_ROUTES = {
+    "scripts/ci/sdk-swift.sh": frozenset(),
+    "scripts/ci/sdk-swift-backend.sh": frozenset(),
     "scripts/ci/_common.sh": frozenset({"frontend", *NATIVE_PLATFORMS, "ios_onnx"}),
     "scripts/ci/android-pr.sh": frozenset({"android"}),
     "scripts/ci/android-release.sh": frozenset({"android"}),

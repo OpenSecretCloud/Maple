@@ -119,6 +119,9 @@ fi
 if hook_selected sdk_rust || hook_selected sdk_ts; then
     run_component sdk "$REPO_ROOT/sdk" "." "$REPO_ROOT/sdk/.githooks/pre-commit"
 fi
+if hook_selected sdk_swift; then
+    run_component sdk-swift "$REPO_ROOT" ".#apple" "$REPO_ROOT/sdk/swift/.githooks/pre-commit"
+fi
 if hook_selected proxy; then
     run_component proxy "$REPO_ROOT/proxy" "." "$REPO_ROOT/proxy/.githooks/pre-commit"
 fi

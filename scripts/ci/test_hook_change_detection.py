@@ -80,6 +80,20 @@ class HookChangeDetectionTests(unittest.TestCase):
         self.assert_selects(["sdk/flake.lock"], "sdk_rust", "sdk_ts")
         self.assert_selects(["sdk/test/integration/bootstrap.sql"])
 
+    def test_swift_sdk_is_independent_of_other_sdk_lanes(self) -> None:
+        for path in (
+            "sdk/swift/Package.swift", "sdk/swift/.swift-format",
+            "sdk/swift/Sources/MapleSDK/Trust/AttestationVerifier.swift",
+            "sdk/swift/Tests/MapleSDKTests/Trust/AttestationTests.swift",
+            "sdk/swift/Sources/MapleSDK/Trust/Resources/aws_nitro_root.der",
+        ):
+            with self.subTest(path=path):
+                self.assert_selects([path], "sdk_swift")
+        self.assert_selects(["sdk/swift/README.md", "sdk/swift/AGENTS.md", "sdk/swift/.githooks/pre-commit"])
+        self.assert_selects(["scripts/ci/sdk-swift.sh"], "sdk_swift", "repo")
+        self.assert_selects([".github/workflows/sdk-swift.yml"], "sdk_swift", "repo")
+        self.assert_selects(["sdk/swift/Package.swift", "sdk/rust/src/client.rs"], "sdk_swift", "sdk_rust")
+
     def test_proxy_opensecret_and_updates(self) -> None:
         self.assert_selects(["proxy/src/main.rs"], "proxy")
         self.assert_selects(["proxy/Cargo.toml"], "proxy")

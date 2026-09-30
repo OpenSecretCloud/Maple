@@ -91,6 +91,12 @@ class ChangeDetectionTests(unittest.TestCase):
             "sdk/rust/src/client.rs",
             "sdk/rust/assets/aws_nitro_root.der",
             "sdk/rust/build.rs",
+            "sdk/swift/Package.swift",
+            "sdk/swift/Sources/MapleSDK/Trust/AttestationVerifier.swift",
+            "sdk/swift/Tests/MapleSDKTests/Trust/AttestationTests.swift",
+            "sdk/swift/.githooks/pre-commit",
+            ".github/workflows/sdk-swift.yml",
+            "scripts/ci/sdk-swift.sh",
         ):
             with self.subTest(path=path):
                 self.assert_routes([path])

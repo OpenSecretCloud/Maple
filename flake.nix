@@ -779,6 +779,15 @@
             touch "$out"
           '';
 
+          sdk-swift = pkgs.runCommand "maple-swift-sdk-config-check" {
+            nativeBuildInputs = with pkgs; [ bash python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_sdk_swift.py
+            touch "$out"
+          '';
+
           release-metadata = pkgs.runCommand "maple-release-metadata-check" {
             nativeBuildInputs = commonPackages;
             src = ./.;

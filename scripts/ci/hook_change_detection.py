@@ -20,6 +20,7 @@ OUTPUTS = (
     "agent",
     "sdk_rust",
     "sdk_ts",
+    "sdk_swift",
     "proxy",
     "opensecret",
     "updates",
@@ -66,6 +67,8 @@ SDK_TS_FILES = frozenset(
     }
 )
 SDK_RUST_PREFIX = "sdk/rust/"
+SDK_SWIFT_PREFIX = "sdk/swift/"
+SDK_SWIFT_CHECK_FILES = frozenset({".github/workflows/sdk-swift.yml", "scripts/ci/sdk-swift.sh", "scripts/ci/sdk-swift-backend.sh"})
 SDK_SHARED_FILES = frozenset({"sdk/flake.nix", "sdk/flake.lock", "sdk/rust-toolchain.toml"})
 SDK_INERT_PREFIXES = ("sdk/docs/", "sdk/test/", "sdk/.githooks/")
 SDK_INERT_FILES = frozenset({"sdk/deny.toml", "sdk/justfile"})
@@ -137,6 +140,12 @@ def classify_path(path: str) -> frozenset[str]:
 
     if path in SDK_SHARED_FILES:
         return frozenset({"sdk_rust", "sdk_ts"})
+    if path in SDK_SWIFT_CHECK_FILES:
+        return frozenset({"sdk_swift", "repo"})
+    if path.startswith(SDK_SWIFT_PREFIX):
+        if path.removeprefix(SDK_SWIFT_PREFIX).startswith(".githooks/"):
+            return frozenset()
+        return frozenset({"sdk_swift"})
     if path in SDK_INERT_FILES or path.startswith(SDK_INERT_PREFIXES):
         return frozenset()
     if path.startswith(SDK_RUST_PREFIX):

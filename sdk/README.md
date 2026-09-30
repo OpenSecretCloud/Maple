@@ -1,7 +1,7 @@
 # Maple SDKs
 
-This directory contains the TypeScript/React and Rust clients used by Maple and
-internal OpenSecret applications. Both clients establish attested,
+This directory contains the TypeScript/React, Rust and Swift clients used by Maple and
+internal OpenSecret applications. The clients establish attested,
 end-to-end encrypted sessions with an OpenSecret backend and expose the API
 surface needed by those applications.
 
@@ -16,9 +16,11 @@ and tests.
   client, attestation policy, model/conversation APIs, and internal developer
   platform client.
 - `rust/` — the `maple-sdk` crate, imported as `maple_sdk` by native clients.
+- `swift/` — the independent `MapleSDK` Swift package for native Apple clients;
+  see its [guide](swift/AGENTS.md) and [build/transport documentation](swift/README.md).
 - `docs/PLATFORM.md` — internal developer/platform API notes.
 - repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
-  and supply-chain validation for this directory.
+  Swift, integration and supply-chain validation for this directory.
 
 Maple consumers prefer independently selected published SDK versions; local
 TypeScript `file:` and Rust `path` dependencies remain available for active

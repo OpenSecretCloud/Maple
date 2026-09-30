@@ -16,8 +16,10 @@ current source and tests take precedence over historical design documents.
 - `apps/maple-agent/`: GPUI desktop-v2 prototype, ACP and proxy CLI. Read its
   [guide](apps/maple-agent/AGENTS.md) and `$develop-maple-agent`. Its runtime and
   update discovery are separate from Research and its existing Agent Mode.
-- `sdk/`: TypeScript/React and Rust Maple SDKs for the OpenSecret backend. Read
+- `sdk/`: TypeScript/React, Rust and Swift Maple SDKs for the OpenSecret backend. Read
   `$develop-opensecret-sdk` and the SDK documentation.
+  The native Apple package under `sdk/swift/` has its own contributor guide,
+  Xcode-based checks and independent version; it does not use the SDK Rust shell.
 - `proxy/`: the separate OpenAI-compatible relay, also consumed by the desktop
   app. Read `$develop-maple-proxy` and the proxy documentation.
 - `services/updates/`: the updater Worker. Preserve its deployed identity,
