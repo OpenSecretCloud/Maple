@@ -1,0 +1,417 @@
+import Foundation
+import XCTest
+
+/// Run only against the dedicated local account already signed into this exact
+/// simulator. Each test changes its own uniquely named resources; never delete all.
+@MainActor final class LibraryWorkflowUITests: XCTestCase {
+    private var app: XCUIApplication!
+    private var currentProjectID: String?
+    private var currentChatID: String?
+    private var cleanupRegistered = false
+    private var observedCleanupOwner: String?
+
+    private func launchLocal() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MAPLE_RUN_LOCAL_UI"] == "1")
+        continueAfterFailure = false
+        app = XCUIApplication(); app.launchArguments = ["--maple-library-local-cleanup"]; app.launch()
+        XCTAssertTrue(app.buttons["chat.new"].waitForExistence(timeout: 30))
+        observedCleanupOwner = try accountMarker()
+        try writeJournal(ownedJournal())
+        if !cleanupRegistered {
+            cleanupRegistered = true
+            let cleanup: @MainActor @Sendable () throws -> Void = { [weak self] in
+                guard let self else { return }
+                try self.cleanupJournaledEntities()
+            }
+            addTeardownBlock { try await cleanup() }
+        }
+        // A previous interrupted test must be cleaned before creating another resource.
+        try cleanupJournaledEntities()
+    }
+    private func referenceScreenshot(_ surface: String) {
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Reference — actual local Library — " + surface
+        capture.lifetime = .keepAlways; add(capture)
+    }
+    private func uniqueName(_ suffix: String) -> String {
+        let value = "Native UI \(UUID().uuidString.prefix(8)) \(suffix)"
+        let record = XCTAttachment(string: value)
+        record.name = "Synthetic local resource for exact cleanup"; record.lifetime = .keepAlways; add(record)
+        return value
+    }
+    private func tap(_ label: String) {
+        let button = app.buttons[label].firstMatch
+        XCTAssertTrue(button.waitForExistence(timeout: 15))
+        for _ in 0..<5 where !button.isHittable { app.swipeUp() }
+        XCTAssertTrue(button.isHittable); button.tap()
+    }
+    private func replace(_ field: XCUIElement, with text: String, presentedAlert: XCUIElement? = nil) throws {
+        try replaceSyntheticText(field, with: text, in: app, presentedAlert: presentedAlert)
+    }
+    private func openMenu() {
+        tap("chat.menu"); XCTAssertTrue(app.buttons["library.new-project"].waitForExistence(timeout: 20))
+    }
+    private func createProject(_ name: String) {
+        tap("library.new-project")
+        let alert = app.alerts["New project"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 10)); alert.textFields.firstMatch.tap()
+        alert.textFields.firstMatch.typeText(name)
+        referenceScreenshot("new-project dialog")
+        alert.buttons["Create"].tap()
+        let project = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "library.project.", name)
+        ).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 20))
+        let id = String(project.identifier.dropFirst("library.project.".count))
+        do {
+            try rememberProject(id)
+            currentProjectID = id
+        } catch { XCTFail("Could not durably record this test's project ID: \(error)") }
+        XCTAssertTrue(app.staticTexts[name].firstMatch.waitForExistence(timeout: 20))
+    }
+    private func openProject(_ name: String) {
+        let owner = app.staticTexts["library.cleanup-account"]
+        guard let currentProjectID, UUID(uuidString: currentProjectID) != nil,
+            let observedCleanupOwner, owner.exists, owner.label == observedCleanupOwner
+        else {
+            XCTFail("The current project and account owner must remain available")
+            return
+        }
+        let title = app.staticTexts.matching(identifier: "library.project." + currentProjectID)
+            .matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 20))
+        for _ in 0..<4 where !title.isHittable { app.swipeDown() }
+        let manage = app.buttons["library.project.manage." + currentProjectID].firstMatch
+        if !manage.exists { title.tap() }
+        XCTAssertTrue(manage.waitForExistence(timeout: 15))
+        for _ in 0..<5 where !manage.isHittable { app.swipeUp() }
+        XCTAssertTrue(manage.isHittable); manage.tap()
+        XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: 15))
+    }
+    private func deleteCurrentProject() {
+        tap("Project actions"); tap("Delete project")
+        let confirmation = app.textFields["library.delete-confirmation"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["library.delete-confirm"].isEnabled)
+        referenceScreenshot("project deletion warning before confirmation")
+        confirmation.tap(); confirmation.typeText("DELETE"); tap("library.delete-confirm")
+        XCTAssertTrue(app.buttons["library.new-project"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.staticTexts["library.error"].exists)
+        if let currentProjectID {
+            do { try forgetProject(currentProjectID) } catch {
+                XCTFail("Could not update exact cleanup journal: \(error)")
+            }
+        }
+    }
+    private func row(named title: String) -> XCUIElement {
+        app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "library.chat.", title)
+        ).firstMatch
+    }
+
+    func testLocalProjectInstructionsSaveDiscardRenameAndExactDeletion() throws {
+        try launchLocal()
+        let project = uniqueName("project"), renamed = project + " renamed"
+        openMenu()
+        referenceScreenshot("sidebar before creating the owned project")
+        createProject(project); openProject(project)
+        tap("Project instructions")
+        let editor = app.textViews["library.instructions-text"]
+        try replace(editor, with: "Use concise responses for this synthetic local project.")
+        referenceScreenshot("project instructions editor before Save")
+        tap("library.instructions-save")
+        XCTAssertTrue(app.navigationBars[project].waitForExistence(timeout: 20))
+        tap("Project instructions")
+        XCTAssertTrue(editor.waitForExistence(timeout: 15))
+        XCTAssertEqual(editor.value as? String, "Use concise responses for this synthetic local project.")
+        try replace(editor, with: "This edit must be discarded.")
+        tap("library.instructions-cancel")
+        XCTAssertTrue(app.buttons["Discard changes"].waitForExistence(timeout: 10))
+        referenceScreenshot("unsaved instructions discard warning")
+        tap("Discard changes")
+        tap("Project instructions")
+        XCTAssertTrue(editor.waitForExistence(timeout: 15))
+        XCTAssertEqual(editor.value as? String, "Use concise responses for this synthetic local project.")
+        tap("library.instructions-cancel")
+        tap("Project actions"); tap("Rename project")
+        let rename = app.alerts["Rename project"]
+        try replace(rename.textFields.firstMatch, with: renamed, presentedAlert: rename)
+        referenceScreenshot("rename-project dialog")
+        rename.buttons["Save"].tap()
+        XCTAssertTrue(app.navigationBars[renamed].waitForExistence(timeout: 20))
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Local native project and saved instructions"; screenshot.lifetime = .keepAlways;
+        add(screenshot)
+        deleteCurrentProject()
+        XCTAssertFalse(app.staticTexts[project].exists); XCTAssertFalse(app.staticTexts[renamed].exists)
+    }
+
+    func testLocalProjectChatRenamePinMoveHistoryAndExactDeletion() throws {
+        try launchLocal()
+        let project = uniqueName("chat project"), chatName = uniqueName("chat")
+        openMenu(); createProject(project); openProject(project)
+        guard let currentProjectID else { throw LibraryCleanupIssue.invalidJournal }
+        try rememberPendingCreation(currentProjectID)
+        tap("New chat in project")
+        let composer = app.textViews["chat.composer"]
+        try replace(composer, with: "Reply with exactly: Native library workflow passed.")
+        tap("chat.send")
+        // Capture only a state actually observed during this existing request.
+        // Fast completion can omit this attachment; it is not a streaming pass.
+        if app.buttons["chat.stop"].exists && app.buttons["chat.stop"].isHittable {
+            referenceScreenshot("active local request with Stop visible")
+        }
+        let completed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                self.app.descendants(matching: .any).matching(
+                    NSPredicate(format: "identifier BEGINSWITH %@", "assistant.message.")
+                ).count > 0
+                    && !self.app.buttons["chat.stop"].exists
+            }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 90), .completed)
+        XCTAssertFalse(app.staticTexts["chat.error"].exists)
+        openMenu(); openProject(project)
+        let initial = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")).firstMatch
+        XCTAssertTrue(initial.waitForExistence(timeout: 20))
+        let chatID = String(initial.identifier.dropFirst("library.chat.".count))
+        try rememberChat(chatID); currentChatID = chatID
+        initial.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 10))
+        referenceScreenshot("chat context menu")
+        tap("Rename")
+        let rename = app.alerts["Rename chat"]
+        try replace(rename.textFields.firstMatch, with: chatName, presentedAlert: rename)
+        referenceScreenshot("rename-chat dialog")
+        rename.buttons["Save"].tap()
+        let chat = row(named: chatName)
+        XCTAssertTrue(chat.waitForExistence(timeout: 20)); chat.press(forDuration: 1); tap("Pin")
+        chat.press(forDuration: 1); XCTAssertTrue(app.buttons["Unpin"].waitForExistence(timeout: 15))
+        referenceScreenshot("pinned chat context menu")
+        tap("Unpin")
+        chat.press(forDuration: 1); tap("Move to project")
+        XCTAssertTrue(app.buttons["No project"].waitForExistence(timeout: 10))
+        referenceScreenshot("move-chat destination chooser")
+        tap("No project")
+        let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !chat.exists }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 20), .completed)
+        // The project now owns no chat, so its destructive cleanup is narrowly scoped.
+        deleteCurrentProject()
+        let search = app.textFields["library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 15)); search.tap(); search.typeText(chatName)
+        XCTAssertTrue(chat.waitForExistence(timeout: 20))
+        referenceScreenshot("filtered Recent menu with the exact owned chat")
+        chat.press(forDuration: 1); tap("Delete")
+        let confirm = app.buttons["Delete"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        referenceScreenshot("chat deletion confirmation")
+        confirm.tap()
+        let deleted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !chat.exists }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [deleted], timeout: 30), .completed)
+        XCTAssertFalse(app.staticTexts["library.error"].exists)
+        if let currentChatID { try forgetChat(currentChatID) }
+    }
+}
+
+private struct LibraryCleanupJournal: Codable {
+    var owner: String
+    var projectIDs: Set<String> = []
+    var chatIDs: Set<String> = []
+    var pendingCreationProjectIDs: Set<String> = []
+}
+private enum LibraryCleanupIssue: Error {
+    case noAccountMarker, invalidJournal, accountMismatch, inaccessibleControl, loadingFailed
+    case paginationLimit, unjournaledProjectChat, deletionUnconfirmed
+}
+
+extension LibraryWorkflowUITests {
+    private var journalURL: URL {
+        get throws {
+            let root = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+            ).appendingPathComponent("NativeLibraryUITestCleanup", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            var excluded = URLResourceValues(); excluded.isExcludedFromBackup = true
+            var directory = root; try directory.setResourceValues(excluded)
+            return root.appendingPathComponent("exact-entities-v1.json")
+        }
+    }
+    private func accountMarker() throws -> String {
+        let marker = app.staticTexts["library.cleanup-account"]
+        guard marker.waitForExistence(timeout: 20), marker.label.count == 64,
+            marker.label.allSatisfy({ $0.isHexDigit })
+        else { throw LibraryCleanupIssue.noAccountMarker }
+        return marker.label
+    }
+    private func readJournal() throws -> LibraryCleanupJournal? {
+        let url = try journalURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        guard data.count <= 64 * 1_024,
+            let value = try? JSONDecoder().decode(LibraryCleanupJournal.self, from: data),
+            value.owner.count == 64, value.owner.allSatisfy({ $0.isHexDigit }),
+            value.projectIDs.count <= 64, value.chatIDs.count <= 64,
+            value.pendingCreationProjectIDs.isSubset(of: value.projectIDs),
+            (value.projectIDs.union(value.chatIDs)).allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 })
+        else { throw LibraryCleanupIssue.invalidJournal }
+        return value
+    }
+    private func writeJournal(_ journal: LibraryCleanupJournal) throws {
+        // Retain an empty journal too: an interrupted process can reuse the same
+        // file without broad filesystem cleanup or any account-owned app storage.
+        let data = try JSONEncoder().encode(journal)
+        try data.write(to: journalURL, options: [.atomic, .completeFileProtection])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalURL.path)
+    }
+    private func ownedJournal() throws -> LibraryCleanupJournal {
+        guard let owner = observedCleanupOwner else { throw LibraryCleanupIssue.noAccountMarker }
+        guard let saved = try readJournal() else { return LibraryCleanupJournal(owner: owner) }
+        guard saved.owner == owner || (saved.projectIDs.isEmpty && saved.chatIDs.isEmpty) else {
+            throw LibraryCleanupIssue.accountMismatch
+        }
+        return saved.owner == owner ? saved : LibraryCleanupJournal(owner: owner)
+    }
+    private func rememberProject(_ id: String) throws {
+        guard !id.isEmpty, id.utf8.count <= 256 else { throw LibraryCleanupIssue.invalidJournal }
+        var journal = try ownedJournal(); journal.projectIDs.insert(id)
+        recordCleanupIDs(journal); try writeJournal(journal)
+    }
+    private func rememberChat(_ id: String) throws {
+        guard !id.isEmpty, id.utf8.count <= 256 else { throw LibraryCleanupIssue.invalidJournal }
+        var journal = try ownedJournal(); journal.chatIDs.insert(id)
+        if let currentProjectID { journal.pendingCreationProjectIDs.remove(currentProjectID) }
+        recordCleanupIDs(journal); try writeJournal(journal)
+    }
+    private func rememberPendingCreation(_ projectID: String) throws {
+        var journal = try ownedJournal()
+        guard journal.projectIDs.contains(projectID) else { throw LibraryCleanupIssue.invalidJournal }
+        journal.pendingCreationProjectIDs.insert(projectID); try writeJournal(journal)
+    }
+    private func forgetProject(_ id: String) throws {
+        var journal = try ownedJournal(); journal.projectIDs.remove(id)
+        journal.pendingCreationProjectIDs.remove(id); try writeJournal(journal)
+    }
+    private func forgetChat(_ id: String) throws {
+        var journal = try ownedJournal(); journal.chatIDs.remove(id); try writeJournal(journal)
+    }
+    private func recordCleanupIDs(_ journal: LibraryCleanupJournal) {
+        let value =
+            "Projects: " + journal.projectIDs.sorted().joined(separator: ",")
+            + "\nChats: " + journal.chatIDs.sorted().joined(separator: ",")
+            + "\nUnresolved creation in projects: " + journal.pendingCreationProjectIDs.sorted().joined(separator: ",")
+        let attachment = XCTAttachment(string: value)
+        attachment.name = "Exact owned local entities for cleanup"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+    private func cleanupTap(_ identifier: String) throws {
+        let target = app.buttons[identifier].firstMatch
+        guard target.waitForExistence(timeout: 10) else { throw LibraryCleanupIssue.inaccessibleControl }
+        for _ in 0..<12 where !target.isHittable { app.swipeUp() }
+        guard target.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
+        target.tap()
+    }
+    private func cleanupWait(_ condition: @escaping @MainActor () -> Bool) throws {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in condition() }, object: app)
+        guard XCTWaiter.wait(for: [expectation], timeout: 15) == .completed else {
+            throw LibraryCleanupIssue.loadingFailed
+        }
+    }
+    private func cleanupRestart() throws {
+        app.terminate(); app.launchArguments = ["--maple-library-local-cleanup"]; app.launch()
+        guard app.buttons["chat.new"].waitForExistence(timeout: 30) else {
+            throw LibraryCleanupIssue.inaccessibleControl
+        }
+        observedCleanupOwner = try accountMarker()
+        _ = try ownedJournal()
+        try cleanupTap("chat.menu")
+        guard app.textFields["library.search"].waitForExistence(timeout: 15) else {
+            throw LibraryCleanupIssue.inaccessibleControl
+        }
+    }
+    private func waitForLibraryRows() throws {
+        try cleanupWait {
+            self.app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")).count > 0
+                || self.app.buttons["Load more"].exists || self.app.staticTexts["No chats yet"].exists
+                || self.app.staticTexts["library.error"].exists
+        }
+        if app.staticTexts["library.error"].exists { throw LibraryCleanupIssue.loadingFailed }
+    }
+    private func loadedRows() -> [XCUIElement] {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")).allElementsBoundByIndex
+    }
+    private func loadAllHistoryPages() throws {
+        try waitForLibraryRows()
+        for _ in 0..<20 {
+            if app.staticTexts["library.error"].exists { throw LibraryCleanupIssue.loadingFailed }
+            guard app.buttons["Load more"].exists else { return }
+            let previous = Set(loadedRows().map(\.identifier))
+            try cleanupTap("Load more")
+            try cleanupWait {
+                !self.app.buttons["Load more"].exists || self.app.staticTexts["library.error"].exists
+                    || Set(self.loadedRows().map(\.identifier)) != previous
+            }
+        }
+        throw LibraryCleanupIssue.paginationLimit
+    }
+    private func cleanupChat(_ id: String) throws {
+        try cleanupRestart()
+        let projects = try ownedJournal().projectIDs.sorted()
+        guard let row = try MenuChatUI.find(id, in: app, projectIDs: projects, pageLimit: 20) else {
+            throw LibraryCleanupIssue.deletionUnconfirmed
+        }
+        XCTAssertEqual(row.identifier, "library.chat." + id)
+        guard row.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
+        row.press(forDuration: 1); try cleanupTap("Delete")
+        guard app.staticTexts["Delete chat?"].waitForExistence(timeout: 10) else {
+            throw LibraryCleanupIssue.inaccessibleControl
+        }
+        try cleanupTap("Delete")
+        try cleanupWait { !row.exists || self.app.staticTexts["library.error"].exists }
+        guard !row.exists, !app.staticTexts["library.error"].exists else {
+            throw LibraryCleanupIssue.deletionUnconfirmed
+        }
+        try forgetChat(id)
+    }
+    private func cleanupProject(_ id: String) throws {
+        try cleanupRestart()
+        guard try !ownedJournal().pendingCreationProjectIDs.contains(id) else {
+            throw LibraryCleanupIssue.unjournaledProjectChat
+        }
+        let target = app.descendants(matching: .any).matching(identifier: "library.project." + id).firstMatch
+        // Missing or inaccessible IDs remain journaled. Only a confirmed UI
+        // deletion removes an ID; a page load is not authority to forget it.
+        try cleanupWait { self.app.activityIndicators.count == 0 }
+        if app.staticTexts["library.error"].exists { throw LibraryCleanupIssue.loadingFailed }
+        guard target.exists else { throw LibraryCleanupIssue.deletionUnconfirmed }
+        for _ in 0..<20 where !target.isHittable { app.swipeUp() }
+        guard target.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
+        target.tap(); try cleanupTap("Manage project")
+        try loadAllHistoryPages()
+        // Every recorded chat is cleaned first. Refuse cascade deletion if the
+        // project now contains any other chat, including an unrecorded test result.
+        guard loadedRows().isEmpty, app.staticTexts["No chats yet"].exists else {
+            throw LibraryCleanupIssue.unjournaledProjectChat
+        }
+        try cleanupTap("Project actions"); try cleanupTap("Delete project")
+        let field = app.textFields["library.delete-confirmation"]
+        guard field.waitForExistence(timeout: 10) else { throw LibraryCleanupIssue.inaccessibleControl }
+        field.tap(); field.typeText("DELETE"); try cleanupTap("library.delete-confirm")
+        try cleanupWait { self.app.buttons["library.new-project"].exists }
+        guard !app.staticTexts["library.error"].exists, !target.exists else {
+            throw LibraryCleanupIssue.deletionUnconfirmed
+        }
+        try forgetProject(id)
+    }
+    private func cleanupJournaledEntities() throws {
+        guard ProcessInfo.processInfo.environment["MAPLE_RUN_LOCAL_UI"] == "1", let app else { return }
+        guard let journal = try readJournal(), !journal.chatIDs.isEmpty || !journal.projectIDs.isEmpty else { return }
+        try cleanupRestart()
+        recordCleanupIDs(journal)
+        for id in journal.chatIDs.sorted() { try cleanupChat(id) }
+        for id in journal.projectIDs.sorted() { try cleanupProject(id) }
+        // Restore the normal root before another test begins creating resources.
+        app.terminate(); app.launchArguments = ["--maple-library-local-cleanup"]; app.launch()
+        guard app.buttons["chat.new"].waitForExistence(timeout: 30) else {
+            throw LibraryCleanupIssue.inaccessibleControl
+        }
+    }
+}

@@ -55,6 +55,10 @@ public struct AttestationClockSkewError: Error, Sendable, LocalizedError {
     }
 
     private static func duration(_ milliseconds: Double) -> String {
+        // A diagnostic must never trap on an extreme injected system clock.
+        guard milliseconds.isFinite, milliseconds >= 0,
+            milliseconds < Double(Int.max) / 2
+        else { return "a very large amount of time" }
         for (name, size) in [("day", 86_400_000.0), ("hour", 3_600_000), ("minute", 60_000)] {
             if milliseconds >= size {
                 let count = Int((milliseconds / size).rounded())
@@ -65,9 +69,33 @@ public struct AttestationClockSkewError: Error, Sendable, LocalizedError {
     }
 
     private static func iso(_ date: Date) -> String {
+        guard diagnosticDateRange.contains(date.timeIntervalSince1970) else { return "an unrepresentable date" }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
+    }
+}
+
+extension AttestationClockSkewError {
+    private static var diagnosticDateRange: ClosedRange<Double> { -62_135_596_800...253_402_300_799 }
+
+    /// Constructs a bounded diagnostic for presentation or error propagation.
+    /// Constructing this value does not verify an attestation or grant trust.
+    /// Dates must fit the ISO-8601 year range 0001...9999, and certificate
+    /// validity must be ordered. The verifier creates its error independently.
+    public init?(
+        validatingDeviceTime deviceTime: Date, enclaveTime: Date, certificateIndex: Int,
+        notBefore: Date, notAfter: Date
+    ) {
+        let dates = [deviceTime, enclaveTime, notBefore, notAfter]
+        let delta = deviceTime.timeIntervalSince(enclaveTime) * 1_000
+        guard certificateIndex >= 0, notBefore <= notAfter,
+            dates.allSatisfy({ Self.diagnosticDateRange.contains($0.timeIntervalSince1970) }),
+            delta.isFinite, abs(delta) < Double(Int.max) / 2
+        else { return nil }
+        self.init(
+            deviceTime: deviceTime, enclaveTime: enclaveTime, certificateIndex: certificateIndex,
+            notBefore: notBefore, notAfter: notAfter)
     }
 }
 

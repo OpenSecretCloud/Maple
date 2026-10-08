@@ -1,0 +1,215 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Waiting for microphone permission": {
+      "comment": "Inline dictation state while iOS permission prompt is open.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for microphone permission"
+          }
+        }
+      }
+    },
+    "Recording time": {
+      "comment": "Accessibility label for elapsed microphone recording time.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recording time"
+          }
+        }
+      }
+    },
+    "Stop": {
+      "comment": "Stops capture and starts transcription of this draft.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        }
+      }
+    },
+    "Transcribing…": {
+      "comment": "Inline progress while encrypted audio request is pending.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transcribing…"
+          }
+        }
+      }
+    },
+    "Finish typing to insert dictation": {
+      "comment": "Transcription waits until marked input composition is committed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish typing to insert dictation"
+          }
+        }
+      }
+    },
+    "Transcription unavailable": {
+      "comment": "Sanitized failed transcription message; recording remains only in memory.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transcription unavailable"
+          }
+        }
+      }
+    },
+    "Retry": {
+      "comment": "Retries transcription using the existing in-memory recording.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        }
+      }
+    },
+    "Discard": {
+      "comment": "Cancels this dictation operation without changing existing draft text or images.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard"
+          }
+        }
+      }
+    },
+    "Dictate": {
+      "comment": "Starts microphone dictation into the owning draft.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dictate"
+          }
+        }
+      }
+    },
+    "Open Settings": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Settings"
+          }
+        }
+      }
+    },
+    "Dismiss": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss"
+          }
+        }
+      }
+    },
+    "Allow microphone access in Settings to dictate. Your draft is unchanged.": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow microphone access in Settings to dictate. Your draft is unchanged."
+          }
+        }
+      }
+    },
+    "The microphone is unavailable. Try again when another audio operation has finished.": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The microphone is unavailable. Try again when another audio operation has finished."
+          }
+        }
+      }
+    },
+    "No audio was recorded. Your draft is unchanged.": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No audio was recorded. Your draft is unchanged."
+          }
+        }
+      }
+    },
+    "This recording could not be processed. Record up to five minutes at a time.": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This recording could not be processed. Record up to five minutes at a time."
+          }
+        }
+      }
+    },
+    "Finish or discard an earlier dictation before starting another.": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or discard an earlier dictation before starting another."
+          }
+        }
+      }
+    },
+    "Finish the current draft operation before starting dictation.": {
+      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish the current draft operation before starting dictation."
+          }
+        }
+      }
+    },
+    "Place the cursor to insert dictation": {
+      "comment": "Explicit recovery if an input transaction cannot preserve the pending dictation insertion point.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Place the cursor to insert dictation"
+          }
+        }
+      }
+    },
+    "Insert": {
+      "comment": "Explicit recovery if an input transaction cannot preserve the pending dictation insertion point.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insert"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

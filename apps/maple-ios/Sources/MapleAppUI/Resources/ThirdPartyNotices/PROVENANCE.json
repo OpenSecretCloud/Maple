@@ -1,0 +1,135 @@
+{
+  "formatVersion": 1,
+  "notices": [
+    {
+      "component": "Textual",
+      "notice": "Textual-MIT.txt",
+      "sourceRepository": "https://github.com/gonzalezreal/textual",
+      "sourceRevision": "01b51875a5406eefc95f52a058cb059e7bc94dc4",
+      "sourcePath": "LICENSE",
+      "sha256": "9c9191ada6888f3da1a888b6c74dae46e98787b1150c734e3b1e5ec5bbf73b09"
+    },
+    {
+      "component": "SwiftUIMath",
+      "notice": "SwiftUIMath-MIT.txt",
+      "sourceRepository": "https://github.com/gonzalezreal/swiftui-math",
+      "sourceRevision": "0b5c2cfaaec8d6193db206f675048eeb5ce95f71",
+      "sourcePath": "LICENSE",
+      "sha256": "10023a3a8bab8cd2206023303aa8d104a9d1cfb184e18a2f7a48b5b34fc0bb8f"
+    },
+    {
+      "component": "ConcurrencyExtras",
+      "notice": "ConcurrencyExtras-MIT.txt",
+      "sourceRepository": "https://github.com/pointfreeco/swift-concurrency-extras",
+      "sourceRevision": "82a4ae7170d98d8538ec77238b7eb8e7199ef2e8",
+      "sourcePath": "LICENSE",
+      "sha256": "72565151804cdc168937ccc70e4c30c5afff92ff314bb9d504780a3ad1c1f868"
+    },
+    {
+      "component": "Prism.js",
+      "notice": "PrismJS-MIT.txt",
+      "sourceRepository": "https://github.com/PrismJS/prism",
+      "sourceRevision": "59e5a3471377057de1f401ba38337aca27b80e03",
+      "sourcePath": "LICENSE",
+      "sha256": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b",
+      "sourceTag": "v1.29.0",
+      "sourceTagObject": "8893d805d9a1287de497364079127c6eb26c97c6",
+      "sourceURL": "https://raw.githubusercontent.com/PrismJS/prism/59e5a3471377057de1f401ba38337aca27b80e03/LICENSE",
+      "distributedBy": "Textual",
+      "distributedResource": "Sources/Textual/Internal/Highlighter/Prism/prism-bundle.js",
+      "distributedResourceSHA256": "22b70192dc9d73377b5b8fe2c85655c7e3218afd37b65db638b4e168c4bacbf5"
+    },
+    {
+      "component": "Maple",
+      "notice": "Maple-MIT.txt",
+      "sourceRepository": "https://github.com/MaplePrivacyLabs/Maple",
+      "sourceRevision": "6499617122cdf9b2b2e44de1cea1ed07486cde34",
+      "sourcePath": "LICENSE",
+      "sha256": "076f3390f6342f51a64feadb9cd84d4ca41f56ebc6c2f9f1fe98fa255d853ad8"
+    },
+    {
+      "component": "Maple SDK",
+      "notice": "MapleSDK-MIT.txt",
+      "sourceRepository": "https://github.com/MaplePrivacyLabs/Maple",
+      "sourceRevision": "6499617122cdf9b2b2e44de1cea1ed07486cde34",
+      "sourcePath": "sdk/LICENSE.md",
+      "sha256": "2cbf426b424ec7a96a18a465e75583e07e1af3356187d4b6dacb6ed152b96656"
+    }
+  ],
+  "textualProvenance": [
+    {
+      "file": "Textual-UPSTREAM.json",
+      "sha256": "6916033e1a954b28df59ba53ad247a255848a6425ce954a794ae8beacd3f3c5e"
+    },
+    {
+      "file": "Textual-MAPLE-PATCH.md",
+      "sha256": "f9c0d5bd527d69a8a6961e62a0f8b23262f23dbc8c0c8cf772a105f0a20763a5"
+    }
+  ],
+  "otherBundledNotices": [
+    {
+      "component": "KaTeX",
+      "sourcePath": "apps/maple-ios/Sources/MapleAppUI/Resources/EquationRenderer/LICENSE",
+      "bundlePath": "MapleApp_MapleAppUI.bundle/EquationRenderer/LICENSE",
+      "sha256": "766ccc1f306c885aa45542a9846bbd0a505b27a0374f146778171c2254ce18e3"
+    },
+    {
+      "component": "KaTeX fonts",
+      "sourcePath": "apps/maple-ios/Sources/MapleAppUI/Resources/EquationRenderer/FONT-LICENSE.txt",
+      "bundlePath": "MapleApp_MapleAppUI.bundle/EquationRenderer/FONT-LICENSE.txt",
+      "sha256": "35b07f5841b2ea07da02a759e6751bb5bbcc5e29586c1c2cb3748bce06b2ca13"
+    },
+    {
+      "component": "Array",
+      "sourcePath": "apps/maple-ios/Resources/FontLicenses/Array-FFL.txt",
+      "bundlePath": "FontLicenses/Array-FFL.txt",
+      "sha256": "145e7fe2429a3336ba215c070ef722000e01348a3e1baaa127e871bb5012f554"
+    },
+    {
+      "component": "Manrope",
+      "sourcePath": "apps/maple-ios/Resources/FontLicenses/Manrope-OFL.txt",
+      "bundlePath": "FontLicenses/Manrope-OFL.txt",
+      "sha256": "e01b637272e0cbdfb240184dd98ea5cc671556d9894dae2668d92ab2c906787c"
+    },
+    {
+      "component": "SwiftUIMath fonts",
+      "sourceRepository": "https://github.com/gonzalezreal/swiftui-math",
+      "sourceRevision": "0b5c2cfaaec8d6193db206f675048eeb5ce95f71",
+      "sourcePath": "Sources/SwiftUIMath/mathFonts.bundle/LICENSE",
+      "bundlePath": "swiftui-math_SwiftUIMath.bundle/mathFonts.bundle/LICENSE",
+      "sha256": "431b2cb82b8a55977323598231f1baa44f32accac1231b4781a9a393d0bc29ed"
+    },
+    {
+      "component": "SwiftUIMath fonts",
+      "sourceRepository": "https://github.com/gonzalezreal/swiftui-math",
+      "sourceRevision": "0b5c2cfaaec8d6193db206f675048eeb5ce95f71",
+      "sourcePath": "Sources/SwiftUIMath/mathFonts.bundle/OFL.txt",
+      "bundlePath": "swiftui-math_SwiftUIMath.bundle/mathFonts.bundle/OFL.txt",
+      "sha256": "a96bed88f867f6a5bbe78ced4ca52a3ce6e002475363d86edd9097b2f8206d8d"
+    },
+    {
+      "component": "SwiftUIMath fonts",
+      "sourceRepository": "https://github.com/gonzalezreal/swiftui-math",
+      "sourceRevision": "0b5c2cfaaec8d6193db206f675048eeb5ce95f71",
+      "sourcePath": "Sources/SwiftUIMath/mathFonts.bundle/GUST-FONT-LICENSE.txt",
+      "bundlePath": "swiftui-math_SwiftUIMath.bundle/mathFonts.bundle/GUST-FONT-LICENSE.txt",
+      "sha256": "2bd69affc3da00715116f713f57eab9707e96daf3562ad0215987b15b9c16f73"
+    },
+    {
+      "component": "Geist Mono",
+      "sourceRepository": "https://github.com/vercel/geist-font",
+      "sourceTag": "v1.7.2",
+      "sourcePath": "apps/maple-ios/Resources/FontLicenses/GeistMono-OFL.txt",
+      "bundlePath": "FontLicenses/GeistMono-OFL.txt",
+      "sha256": "c683bfbcc7e087f5d37a54ef628f10387c451a83ddc459b151403a164ac46c90"
+    },
+    {
+      "component": "Geist Mono",
+      "sourceRepository": "https://github.com/vercel/geist-font",
+      "sourceTag": "v1.7.2",
+      "sourcePath": "apps/maple-ios/Sources/MapleAppUI/Resources/Fonts/GeistMono-OFL.txt",
+      "bundlePath": "MapleApp_MapleAppUI.bundle/Fonts/GeistMono-OFL.txt",
+      "sha256": "c683bfbcc7e087f5d37a54ef628f10387c451a83ddc459b151403a164ac46c90"
+    }
+  ]
+}

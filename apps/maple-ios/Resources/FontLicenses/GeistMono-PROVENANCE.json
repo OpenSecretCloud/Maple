@@ -1,0 +1,12 @@
+{
+  "family": "Geist Mono",
+  "style": "Regular",
+  "upstream": "https://github.com/vercel/geist-font",
+  "license": "SIL Open Font License 1.1",
+  "license_file": "GeistMono-OFL.txt",
+  "asset": "../../Sources/MapleAppUI/Resources/Fonts/GeistMono-Regular.ttf",
+  "sha256": "42d8ad2e610238e64e8abfcde3037c63f7850a73928742b7ab7229d897bcb155",
+  "modifications": "None",
+  "upstreamRelease": "v1.7.2",
+  "fontVersion": "1.700"
+}

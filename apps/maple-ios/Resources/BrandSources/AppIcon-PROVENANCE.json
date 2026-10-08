@@ -1,0 +1,21 @@
+{
+  "source": "app-icon.svg",
+  "source_sha256": "396918c9a261d3fb8d742b55faf9dd10c73c152bd16aeffb2e639cf9eedf0b38",
+  "output": "../Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+  "output_sha256": "e49809af9c5a3b5106798da5ac7598e0e217e1da7c0b372b956889a1fcb9eb59",
+  "renderer": {
+    "sharp": "0.35.4",
+    "librsvg": "2.62.91",
+    "libvips": "8.18.6"
+  },
+  "render": {
+    "density": 4608,
+    "intermediate_size": 4096,
+    "output_size": 1024,
+    "kernel": "lanczos3",
+    "flatten": "#FFFFFF",
+    "alpha": false,
+    "space": "srgb"
+  },
+  "artwork_changes": "None"
+}

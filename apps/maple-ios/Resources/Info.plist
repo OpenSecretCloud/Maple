@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleDisplayName</key><string>Maple Native Dev</string>
+    <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>CFBundleURLTypes</key>
+    <array><dict><key>CFBundleURLName</key><string>Native authentication</string><key>CFBundleURLSchemes</key><array><string>$(MAPLE_CALLBACK_SCHEME)</string></array></dict></array>
+    <key>ITSAppUsesNonExemptEncryption</key><false/>
+    <key>LSRequiresIPhoneOS</key><true/>
+    <key>NSCameraUsageDescription</key><string>Take a photo to attach to your message.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Record your voice to turn it into message text.</string>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
+    <key>UILaunchScreen</key><dict/>
+    <key>UIBackgroundModes</key><array><string>audio</string></array>
+    <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+    <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+    <key>UIAppFonts</key><array><string>Array-Regular.otf</string><string>Manrope-VariableFont_wght.ttf</string><string>GeistMono-Regular.ttf</string></array>
+    <key>MAPLE_PROFILE</key><string>$(MAPLE_PROFILE)</string>
+    <key>MAPLE_API_URL</key><string>$(MAPLE_API_URL)</string>
+    <key>MAPLE_BILLING_URL</key><string>$(MAPLE_BILLING_URL)</string>
+    <key>MAPLE_FLAGS_URL</key><string>$(MAPLE_FLAGS_URL)</string>
+    <key>MAPLE_AUTH_URL</key><string>$(MAPLE_AUTH_URL)</string>
+    <key>MAPLE_CLIENT_ID</key><string>$(MAPLE_CLIENT_ID)</string>
+    <key>MAPLE_CALLBACK_SCHEME</key><string>$(MAPLE_CALLBACK_SCHEME)</string>
+</dict>
+</plist>

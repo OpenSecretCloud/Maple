@@ -83,6 +83,16 @@ let client = try MapleClient(
 let api = try await client.accountAPI()
 ```
 
+Observe `await client.credentials.changes()` to retire application-owned work
+when authentication is replaced or revoked. This bounded stream starts with the
+current token-free generation and cleanup state; routine token refresh emits no
+change. Recheck `currentState()` and the current identity before handling a delayed
+event. A failed Keychain clear still revokes in-memory authority and emits a cleanup
+requirement. `completePendingCleanup()` retries that revoked state without clearing
+any subsequently installed credentials. Keep replacement app sessions blocked until
+private app cleanup also succeeds; an authority observer must not call unconditional
+sign-out on a replacement account.
+
 Credential authorities have monotonic revisions and account generations.
 Capture a snapshot before authentication, then install the complete returned
 access/refresh pair against that snapshot before publishing the account.

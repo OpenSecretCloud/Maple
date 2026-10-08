@@ -788,6 +788,16 @@
             touch "$out"
           '';
 
+          ios-native = pkgs.runCommand "maple-ios-native-config-check" {
+            nativeBuildInputs = with pkgs; [ bash python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_ios_native.py
+            python3 apps/maple-ios/scripts/test_configure_local.py
+            touch "$out"
+          '';
+
           release-metadata = pkgs.runCommand "maple-release-metadata-check" {
             nativeBuildInputs = commonPackages;
             src = ./.;
@@ -833,6 +843,7 @@
           ci-signed-android-release-rehearsal = mkNixApp "maple-ci-signed-android-release-rehearsal" "android" "./scripts/ci/signed-release-rehearsal.sh android";
         }
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
+          ci-ios-native = mkNixApp "maple-ci-ios-native" "apple" "./scripts/ci/ios-native.sh";
           ci-ios-onnxruntime = mkNixApp "maple-ci-ios-onnxruntime" "apple" "./scripts/ci/ios-onnxruntime.sh";
           ci-ios-pr = mkNixApp "maple-ci-ios-pr" "apple" "./scripts/ci/ios-pr.sh";
           ci-ios-release = mkNixApp "maple-ci-ios-release" "apple" "./scripts/ci/ios-release.sh";

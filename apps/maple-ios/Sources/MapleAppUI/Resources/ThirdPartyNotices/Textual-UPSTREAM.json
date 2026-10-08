@@ -1,0 +1,971 @@
+{
+  "repository": "https://github.com/gonzalezreal/textual.git",
+  "revision": "01b51875a5406eefc95f52a058cb059e7bc94dc4",
+  "files": [
+    {
+      "path": "Sources/Textual/Attachment/Attachment.swift",
+      "upstream_sha256": "194bbb96b44f530c1f6d810e26188dc1a51c0faa486936b8336f220c8475022f",
+      "local_sha256": "194bbb96b44f530c1f6d810e26188dc1a51c0faa486936b8336f220c8475022f"
+    },
+    {
+      "path": "Sources/Textual/Attachment/AttachmentLoader.swift",
+      "upstream_sha256": "b080e2dd3c88790dea7e90eb784fb7e069d2d81c9265d4c505ddfceb8755d7e8",
+      "local_sha256": "b080e2dd3c88790dea7e90eb784fb7e069d2d81c9265d4c505ddfceb8755d7e8"
+    },
+    {
+      "path": "Sources/Textual/Attachment/ResourceAttachmentLoader.swift",
+      "upstream_sha256": "ffbe2496d93b8d630dbfa40415ebb03c5c0b9987e74469504cd8211e111dc686",
+      "local_sha256": "ffbe2496d93b8d630dbfa40415ebb03c5c0b9987e74469504cd8211e111dc686"
+    },
+    {
+      "path": "Sources/Textual/Attachment/URLAttachmentLoader.swift",
+      "upstream_sha256": "0ad07de18bfc4167d155d96fecf9dcf0fc2be716e94de4305cee3bca82b43a14",
+      "local_sha256": "0ad07de18bfc4167d155d96fecf9dcf0fc2be716e94de4305cee3bca82b43a14"
+    },
+    {
+      "path": "Sources/Textual/ColorEnvironmentValues.swift",
+      "upstream_sha256": "664907af71fd6c4db06334215b52ee9b9ed1a8571272639cb9b426badc9a17ab",
+      "local_sha256": "664907af71fd6c4db06334215b52ee9b9ed1a8571272639cb9b426badc9a17ab"
+    },
+    {
+      "path": "Sources/Textual/Deprecations.swift",
+      "upstream_sha256": "5432e9b15ea537bd735cd7f1a2b025d6feaf23124f58b7841e4e5f02ce6d508e",
+      "local_sha256": "5432e9b15ea537bd735cd7f1a2b025d6feaf23124f58b7841e4e5f02ce6d508e"
+    },
+    {
+      "path": "Sources/Textual/DynamicColor.swift",
+      "upstream_sha256": "957bf905ced0ebbb585de2c062a0a800f6fd94dd0ff5cef8eba317d2aba816c5",
+      "local_sha256": "957bf905ced0ebbb585de2c062a0a800f6fd94dd0ff5cef8eba317d2aba816c5"
+    },
+    {
+      "path": "Sources/Textual/EmojiProperties.swift",
+      "upstream_sha256": "f01a974badab3dceedeae18de47e2506a803e8d41583fb924cf00d77f2a55ede",
+      "local_sha256": "f01a974badab3dceedeae18de47e2506a803e8d41583fb924cf00d77f2a55ede"
+    },
+    {
+      "path": "Sources/Textual/FontScaled.swift",
+      "upstream_sha256": "6b36a2b63ea3d789b62b611f2170deda6e1cdec2ff5460c0ce236dc73c70cf2c",
+      "local_sha256": "6b36a2b63ea3d789b62b611f2170deda6e1cdec2ff5460c0ce236dc73c70cf2c"
+    },
+    {
+      "path": "Sources/Textual/InlineText/InlineStyle+Default.swift",
+      "upstream_sha256": "00c82086f15281ec01c5ccf4da888ccde4bbd967ea6e90a3a7c0997b20501d93",
+      "local_sha256": "00c82086f15281ec01c5ccf4da888ccde4bbd967ea6e90a3a7c0997b20501d93"
+    },
+    {
+      "path": "Sources/Textual/InlineText/InlineStyle+GitHub.swift",
+      "upstream_sha256": "6e2db417677c0bc8e88e65f03049d7dafa42e6a5b0a8ce8e50ac72029d10272d",
+      "local_sha256": "6e2db417677c0bc8e88e65f03049d7dafa42e6a5b0a8ce8e50ac72029d10272d"
+    },
+    {
+      "path": "Sources/Textual/InlineText/InlineStyle.swift",
+      "upstream_sha256": "f59e60491c16dc24152c20c09769c6b70a1084250587e24cb69bfabab899dd70",
+      "local_sha256": "f59e60491c16dc24152c20c09769c6b70a1084250587e24cb69bfabab899dd70"
+    },
+    {
+      "path": "Sources/Textual/InlineText/InlineText.swift",
+      "upstream_sha256": "4fcb9ab06dfc5477ab51158a7117a74d0c7de3b85e6a73f9aa39c59861605598",
+      "local_sha256": "4fcb9ab06dfc5477ab51158a7117a74d0c7de3b85e6a73f9aa39c59861605598"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/AttachmentAttribute.swift",
+      "upstream_sha256": "230c2da09b4e87335968ec6f23afd4a9bd812a9c309a87510c5a7d4585f58fba",
+      "local_sha256": "230c2da09b4e87335968ec6f23afd4a9bd812a9c309a87510c5a7d4585f58fba"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/AttachmentOverlay.swift",
+      "upstream_sha256": "070ce9009e08f2da3e16a40b440878326873c9443e1be043cc097d79d72f3359",
+      "local_sha256": "070ce9009e08f2da3e16a40b440878326873c9443e1be043cc097d79d72f3359"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/AttachmentView.swift",
+      "upstream_sha256": "3227b5c219cd7cc3eca80c959cefab02871ed88f7e062a3e375ea861e742f36c",
+      "local_sha256": "3227b5c219cd7cc3eca80c959cefab02871ed88f7e062a3e375ea861e742f36c"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/EmojiAttachment.swift",
+      "upstream_sha256": "fee5696a7201e80266320a70127c975a937cc2a540353107eb0efc5ecbb5def0",
+      "local_sha256": "fee5696a7201e80266320a70127c975a937cc2a540353107eb0efc5ecbb5def0"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/EmojiResourceAttachment.swift",
+      "upstream_sha256": "f5550702de4ebf52626a09e2f20c88f7de57d49144d13a856b05e8b66220ec9a",
+      "local_sha256": "f5550702de4ebf52626a09e2f20c88f7de57d49144d13a856b05e8b66220ec9a"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/ImageAttachment.swift",
+      "upstream_sha256": "532b9225d217de63aaf2382b3d3c65c98b13752547a742cefb017924ffee772b",
+      "local_sha256": "532b9225d217de63aaf2382b3d3c65c98b13752547a742cefb017924ffee772b"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/ImageResourceAttachment.swift",
+      "upstream_sha256": "4895c0ef2768aee2185ccf83bcda914bb90f7aa0f02033dc2ce5f71de34ef0b0",
+      "local_sha256": "4895c0ef2768aee2185ccf83bcda914bb90f7aa0f02033dc2ce5f71de34ef0b0"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/MathAttachment.swift",
+      "upstream_sha256": "e1ca7f06ea433c13aca611a678e184d5868e8377c9efe2c335bbdc5a8eeb6fe2",
+      "local_sha256": "e1ca7f06ea433c13aca611a678e184d5868e8377c9efe2c335bbdc5a8eeb6fe2"
+    },
+    {
+      "path": "Sources/Textual/Internal/Attachment/WithAttachments.swift",
+      "upstream_sha256": "37fe05776b16451763e157f9ef0ff2aa43b036b44e0924e7e6b80f934734ea52",
+      "local_sha256": "37fe05776b16451763e157f9ef0ff2aa43b036b44e0924e7e6b80f934734ea52"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/AnyFontProvider+Font.swift",
+      "upstream_sha256": "45da19a1b5a783aa1772432b3974f70833358e40dce28b692ec113f6b8b28c07",
+      "local_sha256": "45da19a1b5a783aa1772432b3974f70833358e40dce28b692ec113f6b8b28c07"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/AnyFontProvider.swift",
+      "upstream_sha256": "5241b7492346d42b216232a6b8b0f9ee5204e0af12708a88d96fd8bcab8d6e71",
+      "local_sha256": "5241b7492346d42b216232a6b8b0f9ee5204e0af12708a88d96fd8bcab8d6e71"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/FontModifier.swift",
+      "upstream_sha256": "a7abfc284d4d6c1b3944881602506c4c710af37173eaedb0fe3d1c4f5a096ca0",
+      "local_sha256": "a7abfc284d4d6c1b3944881602506c4c710af37173eaedb0fe3d1c4f5a096ca0"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/FontModifierProvider.swift",
+      "upstream_sha256": "5904148b027576d96e5efa98d4a2fec0aa40539b146cc07062d380f68f9969eb",
+      "local_sha256": "5904148b027576d96e5efa98d4a2fec0aa40539b146cc07062d380f68f9969eb"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/FontProvider.swift",
+      "upstream_sha256": "749d87bdc7a4552d50b808a6c54d44ebf790536ac06818b1d65e46ccb8e9a33f",
+      "local_sha256": "749d87bdc7a4552d50b808a6c54d44ebf790536ac06818b1d65e46ccb8e9a33f"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/FontScaleModifier.swift",
+      "upstream_sha256": "4bcce30e0b6cc2a791c30024e038007f4304848c51058e00f6f98edec0da46e5",
+      "local_sha256": "4bcce30e0b6cc2a791c30024e038007f4304848c51058e00f6f98edec0da46e5"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/NamedFontProvider.swift",
+      "upstream_sha256": "0f30ee6d73afdbb3dd6b53bdb0052a7193e4a818ec7622613969604fea7e14d4",
+      "local_sha256": "0f30ee6d73afdbb3dd6b53bdb0052a7193e4a818ec7622613969604fea7e14d4"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/PlatformFont.swift",
+      "upstream_sha256": "10d11638f072b26b9e623f2fd9f69d1c7731de8806eb771ee9a02a443167aa94",
+      "local_sha256": "10d11638f072b26b9e623f2fd9f69d1c7731de8806eb771ee9a02a443167aa94"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/PlatformFontProvider.swift",
+      "upstream_sha256": "154e3782e32fb61ecf19659e87f4d694e8ca19779044dd4a44e6365a8e42859d",
+      "local_sha256": "154e3782e32fb61ecf19659e87f4d694e8ca19779044dd4a44e6365a8e42859d"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/StaticFontModifierProvider.swift",
+      "upstream_sha256": "ade427ec0a6200013e3dd5458776b077db72fc9fb154962a92de70132ff26548",
+      "local_sha256": "ade427ec0a6200013e3dd5458776b077db72fc9fb154962a92de70132ff26548"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/SystemFontProvider.swift",
+      "upstream_sha256": "754cb11edfe5c428d674c8b1ceed14f8356a36d2256f0c06eabfde6df558fdb6",
+      "local_sha256": "754cb11edfe5c428d674c8b1ceed14f8356a36d2256f0c06eabfde6df558fdb6"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/TextStyleFontProvider.swift",
+      "upstream_sha256": "774c4bfd9d1aac86d4ee2ea48f370d39473d67e3e0dea332c5e8342e00994587",
+      "local_sha256": "774c4bfd9d1aac86d4ee2ea48f370d39473d67e3e0dea332c5e8342e00994587"
+    },
+    {
+      "path": "Sources/Textual/Internal/Font/WithFontScaledValue.swift",
+      "upstream_sha256": "0ac4d6e7af1d6586c7959847f60ce79657e626234db50909e94ce7d994b60f07",
+      "local_sha256": "0ac4d6e7af1d6586c7959847f60ce79657e626234db50909e94ce7d994b60f07"
+    },
+    {
+      "path": "Sources/Textual/Internal/Formatting/Formatter+HTML.swift",
+      "upstream_sha256": "450f36b58b128b3d98eab881fc500c101785034b2e0ce0726ccb2bdea615ed36",
+      "local_sha256": "6ee4b93a0d7edc6c3dabdf2dcec4d405128e4f056c7a8014f9493895e5f1f758"
+    },
+    {
+      "path": "Sources/Textual/Internal/Formatting/Formatter+PlainText.swift",
+      "upstream_sha256": "260ef1eb7fd03e09902189343e67c1f7ff9e0936639494443093517ac36e154f",
+      "local_sha256": "a31a393ac6bad145b3561b1aef9ee896e782225f8a986642bd61e281286c6419"
+    },
+    {
+      "path": "Sources/Textual/Internal/Formatting/Formatter.swift",
+      "upstream_sha256": "e961ea1950ffc0b72bd68ceb8e6005e09008efdc31b1a91fb325e5bab967c8db",
+      "local_sha256": "e961ea1950ffc0b72bd68ceb8e6005e09008efdc31b1a91fb325e5bab967c8db"
+    },
+    {
+      "path": "Sources/Textual/Internal/Formatting/TransferableText.swift",
+      "upstream_sha256": "f9ae0bfd86e687966b13303900ea379e8e2e5af52de2ea3f349dc8b832ab7d29",
+      "local_sha256": "f9ae0bfd86e687966b13303900ea379e8e2e5af52de2ea3f349dc8b832ab7d29"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/Array.swift",
+      "upstream_sha256": "c24b13c87db5265ae6b5a4fac814eeb4fb9bea07220480897a771ca6f306f3f8",
+      "local_sha256": "c24b13c87db5265ae6b5a4fac814eeb4fb9bea07220480897a771ca6f306f3f8"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/AttributedString.swift",
+      "upstream_sha256": "b5de6d87181ce6335545c06abf914a558e1c3dc6fb10b1a0d568081740e327e7",
+      "local_sha256": "b5de6d87181ce6335545c06abf914a558e1c3dc6fb10b1a0d568081740e327e7"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/Box.swift",
+      "upstream_sha256": "e8f600756e01403fbaf59e42d2732ff55c74cf6f6a4c172df5b78aecbaad8535",
+      "local_sha256": "e8f600756e01403fbaf59e42d2732ff55c74cf6f6a4c172df5b78aecbaad8535"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/Bundle.swift",
+      "upstream_sha256": "72c66333cb1456519d659d5e1db007ce9e6dfc75f8b3efe4c77247b6a0e06847",
+      "local_sha256": "72c66333cb1456519d659d5e1db007ce9e6dfc75f8b3efe4c77247b6a0e06847"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/CGImage+PNGData.swift",
+      "upstream_sha256": "40cd24b109604d339d3fefd5f24aa08f80875875319ef7b27a706e839a054562",
+      "local_sha256": "40cd24b109604d339d3fefd5f24aa08f80875875319ef7b27a706e839a054562"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/Logger.swift",
+      "upstream_sha256": "e98419a3566e5464158182d2adac1b0904b5b9c30788c2d3fd1529f9a5a7ea9f",
+      "local_sha256": "e98419a3566e5464158182d2adac1b0904b5b9c30788c2d3fd1529f9a5a7ea9f"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/PlatformImage.swift",
+      "upstream_sha256": "65089a11c9b4da8c7bcc9564f55605f59f89ec4ac4543330ed25f1d2e17a0a76",
+      "local_sha256": "65089a11c9b4da8c7bcc9564f55605f59f89ec4ac4543330ed25f1d2e17a0a76"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/Range.swift",
+      "upstream_sha256": "3df401190d63e6fd9fe1ce14d0bd7f2c759c9d2d651373533432b5577f56a6ed",
+      "local_sha256": "3df401190d63e6fd9fe1ce14d0bd7f2c759c9d2d651373533432b5577f56a6ed"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/Tuple.swift",
+      "upstream_sha256": "b4fa6bafd57db837c61023388faeae2c8e6a2b536b65fa7fa6ced202547cf536",
+      "local_sha256": "b4fa6bafd57db837c61023388faeae2c8e6a2b536b65fa7fa6ced202547cf536"
+    },
+    {
+      "path": "Sources/Textual/Internal/Helpers/VerticalAlignment+FirstTextCenter.swift",
+      "upstream_sha256": "3804605ee3a429c379f8d1c41958e6f7c9a2ab6bb54000c5fec92edcc1c478b1",
+      "local_sha256": "3804605ee3a429c379f8d1c41958e6f7c9a2ab6bb54000c5fec92edcc1c478b1"
+    },
+    {
+      "path": "Sources/Textual/Internal/Highlighter/CodeTokenizer.swift",
+      "upstream_sha256": "43e3bfd472ca2cd8b14f71c5ef65829528ce55b9857c499b38d8aaa269084e9e",
+      "local_sha256": "43e3bfd472ca2cd8b14f71c5ef65829528ce55b9857c499b38d8aaa269084e9e"
+    },
+    {
+      "path": "Sources/Textual/Internal/Highlighter/HighlightedTextFragment.swift",
+      "upstream_sha256": "0b586c394905d1de8b0e7149506df915d6cd3da038abaae16a2b8777d7fcfdd9",
+      "local_sha256": "0b586c394905d1de8b0e7149506df915d6cd3da038abaae16a2b8777d7fcfdd9"
+    },
+    {
+      "path": "Sources/Textual/Internal/Highlighter/Prism/prism-bundle.js",
+      "upstream_sha256": "22b70192dc9d73377b5b8fe2c85655c7e3218afd37b65db638b4e168c4bacbf5",
+      "local_sha256": "22b70192dc9d73377b5b8fe2c85655c7e3218afd37b65db638b4e168c4bacbf5"
+    },
+    {
+      "path": "Sources/Textual/Internal/Image/Image.swift",
+      "upstream_sha256": "faed7ccd5c534072beead46c498c000023e801ce40be74510a367810599fc756",
+      "local_sha256": "faed7ccd5c534072beead46c498c000023e801ce40be74510a367810599fc756"
+    },
+    {
+      "path": "Sources/Textual/Internal/Image/ImageLoader.swift",
+      "upstream_sha256": "113383f59f40cc1e06a15dc3b80fcb8a94054c959cd97995c794983dce1cf964",
+      "local_sha256": "113383f59f40cc1e06a15dc3b80fcb8a94054c959cd97995c794983dce1cf964"
+    },
+    {
+      "path": "Sources/Textual/Internal/Image/ImageView.swift",
+      "upstream_sha256": "3061595d941f7d01e3b80eea92ea66f0d972c3d9d2587cbd454dde9e942c7086",
+      "local_sha256": "3061595d941f7d01e3b80eea92ea66f0d972c3d9d2587cbd454dde9e942c7086"
+    },
+    {
+      "path": "Sources/Textual/Internal/InlineText/WithInlineStyle.swift",
+      "upstream_sha256": "838c1831eda252291266ddc4542ddb1876385c132d45b5fa61bb29e93043e255",
+      "local_sha256": "838c1831eda252291266ddc4542ddb1876385c132d45b5fa61bb29e93043e255"
+    },
+    {
+      "path": "Sources/Textual/Internal/MarkdownParser/Emoji+Preview.swift",
+      "upstream_sha256": "bf9ec77220552cfb031e4e00528fffbabad525eb65f05f0fe2914cfe46e6ca84",
+      "local_sha256": "bf9ec77220552cfb031e4e00528fffbabad525eb65f05f0fe2914cfe46e6ca84"
+    },
+    {
+      "path": "Sources/Textual/Internal/MarkdownParser/PatternProcessor.swift",
+      "upstream_sha256": "48148710614283bf908745bb937cf604b15ea404442a045dea83e4f6097a3a49",
+      "local_sha256": "48148710614283bf908745bb937cf604b15ea404442a045dea83e4f6097a3a49"
+    },
+    {
+      "path": "Sources/Textual/Internal/MarkdownParser/PatternTokenizer.swift",
+      "upstream_sha256": "ca3e811a6fbd2723a17714ce03ad7d56df52d7f213a1188e5220f6d80f772c30",
+      "local_sha256": "ca3e811a6fbd2723a17714ce03ad7d56df52d7f213a1188e5220f6d80f772c30"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/BlockContent.swift",
+      "upstream_sha256": "5dba454c122e17091dfa89797f2554b6b13082f5d3a72209adfcba2e36820c84",
+      "local_sha256": "5dba454c122e17091dfa89797f2554b6b13082f5d3a72209adfcba2e36820c84"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/BlockQuote.swift",
+      "upstream_sha256": "a90871e3a65d6448e2e7ade50d71c92057311ccf81d8d4fa0a3e6f9bcb75259b",
+      "local_sha256": "a90871e3a65d6448e2e7ade50d71c92057311ccf81d8d4fa0a3e6f9bcb75259b"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/BlockSpacingKey.swift",
+      "upstream_sha256": "7fe5fb1f17da8dec9123bd3c4e52ae2613e9fdb4f757d2b77d848123c64b53a3",
+      "local_sha256": "7fe5fb1f17da8dec9123bd3c4e52ae2613e9fdb4f757d2b77d848123c64b53a3"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/BlockVStack.swift",
+      "upstream_sha256": "3c85ba6073a6b0ec57c1d468cce0d37fa0a3cc5f53217bb436e2d32bda6e1daf",
+      "local_sha256": "3c85ba6073a6b0ec57c1d468cce0d37fa0a3cc5f53217bb436e2d32bda6e1daf"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/CodeBlock.swift",
+      "upstream_sha256": "db2a780de3bb55e007c60b2f7e7de62b291e30b6bb8e3df83cc43530ea617608",
+      "local_sha256": "db2a780de3bb55e007c60b2f7e7de62b291e30b6bb8e3df83cc43530ea617608"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Heading.swift",
+      "upstream_sha256": "7b7626253700f565b7e11632ddfba74bd875d205abb1c1c7d9c1bb789a6c5ef0",
+      "local_sha256": "7b7626253700f565b7e11632ddfba74bd875d205abb1c1c7d9c1bb789a6c5ef0"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/ListEnvironment.swift",
+      "upstream_sha256": "4ecd77e707be108c6c9771894bd34d517605b704d7bc8f7a97406a2387bcf5ba",
+      "local_sha256": "4ecd77e707be108c6c9771894bd34d517605b704d7bc8f7a97406a2387bcf5ba"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/MathBlock.swift",
+      "upstream_sha256": "001aecf51cea87c342440a1f7c12dd83c30c30687fccf46b8781d50c4ce9548b",
+      "local_sha256": "001aecf51cea87c342440a1f7c12dd83c30c30687fccf46b8781d50c4ce9548b"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/MathCodeBlock.swift",
+      "upstream_sha256": "8ae1012b306b36d308adabbf513f364bdaedfc3919473b50ed51ed0b5f7b1ee5",
+      "local_sha256": "8ae1012b306b36d308adabbf513f364bdaedfc3919473b50ed51ed0b5f7b1ee5"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/OrderedList.swift",
+      "upstream_sha256": "d96b79cbc06a1a1d8fb9feec202ae85916e78c9b8b8e789c2ec4896e4943a2de",
+      "local_sha256": "d96b79cbc06a1a1d8fb9feec202ae85916e78c9b8b8e789c2ec4896e4943a2de"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Paragraph.swift",
+      "upstream_sha256": "8b9d98466a95adc176e98e137a8195cb7a50e653dd1112a7d3dea06b9f412947",
+      "local_sha256": "8b9d98466a95adc176e98e137a8195cb7a50e653dd1112a7d3dea06b9f412947"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/OverflowFrameKey.swift",
+      "upstream_sha256": "d2b2e948e6ab89235ea45a2bbf390f5baa19955b512e0500167c932f1d24b8c6",
+      "local_sha256": "d2b2e948e6ab89235ea45a2bbf390f5baa19955b512e0500167c932f1d24b8c6"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedBlockQuoteStyle.swift",
+      "upstream_sha256": "ce5c5873bf391227d470ecc812f683170b5e8ff5d51ec5c0fa6d6c22818ba389",
+      "local_sha256": "ce5c5873bf391227d470ecc812f683170b5e8ff5d51ec5c0fa6d6c22818ba389"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedCodeBlockStyle.swift",
+      "upstream_sha256": "925fe99ae4a0763605da0469f73c668d2fbf5168b78a005c96e72d66ac274bf3",
+      "local_sha256": "925fe99ae4a0763605da0469f73c668d2fbf5168b78a005c96e72d66ac274bf3"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedHeadingStyle.swift",
+      "upstream_sha256": "c14894b099f9d6ad40c5aabcbfed92f1753db0324fbb74a123af324c79e87f33",
+      "local_sha256": "c14894b099f9d6ad40c5aabcbfed92f1753db0324fbb74a123af324c79e87f33"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedListItemStyle.swift",
+      "upstream_sha256": "abe7a913aedb934bd6b25ae878fa2a22c97725bcad119d39d0ec8e299224efef",
+      "local_sha256": "abe7a913aedb934bd6b25ae878fa2a22c97725bcad119d39d0ec8e299224efef"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedOrderedListMarker.swift",
+      "upstream_sha256": "3d90f120813e4cb94f4356cb54a10b6e1745aad19c36d4c2157e53a820a9e979",
+      "local_sha256": "3d90f120813e4cb94f4356cb54a10b6e1745aad19c36d4c2157e53a820a9e979"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedParagraphStyle.swift",
+      "upstream_sha256": "c7bbd7944ef0b2a9455d757c55d9ffccac770259307a3d2c650a076d4531b8e4",
+      "local_sha256": "c7bbd7944ef0b2a9455d757c55d9ffccac770259307a3d2c650a076d4531b8e4"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedTableCellStyle.swift",
+      "upstream_sha256": "ad7027af5438d859f66a2cb57f72632d89404871e4c20d0aa55580bb3495e11a",
+      "local_sha256": "ad7027af5438d859f66a2cb57f72632d89404871e4c20d0aa55580bb3495e11a"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedTableStyle.swift",
+      "upstream_sha256": "bb73bb48c2a45970559b1d0dea02d6b1722c0e5568e2bc49ffeffc883038e3ab",
+      "local_sha256": "bb73bb48c2a45970559b1d0dea02d6b1722c0e5568e2bc49ffeffc883038e3ab"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedThematicBreakStyle.swift",
+      "upstream_sha256": "c863bb4bf7d080b5c74ae06bc044291edb6d2c57fbf515c75731b4c439c11e67",
+      "local_sha256": "c863bb4bf7d080b5c74ae06bc044291edb6d2c57fbf515c75731b4c439c11e67"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Style/ResolvedUnorderedListMarker.swift",
+      "upstream_sha256": "2ce8e477344f7e0f82888fcb11366cc62581147cd015773b6100ee95a54692f4",
+      "local_sha256": "2ce8e477344f7e0f82888fcb11366cc62581147cd015773b6100ee95a54692f4"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/Table.swift",
+      "upstream_sha256": "e5a4089d27e0f473a6409a54e3f4594cae0797cb3190457ab408593202b8c055",
+      "local_sha256": "e5a4089d27e0f473a6409a54e3f4594cae0797cb3190457ab408593202b8c055"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/TableCell.swift",
+      "upstream_sha256": "823afb0cfe7bb127422b88b56796a34284137b5421907ebd70be129d7ee0c60d",
+      "local_sha256": "823afb0cfe7bb127422b88b56796a34284137b5421907ebd70be129d7ee0c60d"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/ThematicBreak.swift",
+      "upstream_sha256": "14e0766c077764989326da8e230bdc912ee3c574e054d91fce0e24cef9364fb4",
+      "local_sha256": "14e0766c077764989326da8e230bdc912ee3c574e054d91fce0e24cef9364fb4"
+    },
+    {
+      "path": "Sources/Textual/Internal/StructuredText/UnorderedList.swift",
+      "upstream_sha256": "95a9ab2479c555a0c5d84747ba1fd9ed0b8819d1cb93bb0b1607c14fccbec3cc",
+      "local_sha256": "95a9ab2479c555a0c5d84747ba1fd9ed0b8819d1cb93bb0b1607c14fccbec3cc"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextFragment/TextBuilder.swift",
+      "upstream_sha256": "8bc965e2ec5c1146ef9857114c24cb32826c9e0e836dc5c60a28157f1d3b027e",
+      "local_sha256": "8bc965e2ec5c1146ef9857114c24cb32826c9e0e836dc5c60a28157f1d3b027e"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextFragment/TextFragment.swift",
+      "upstream_sha256": "839bae276e3451107bf4d28f9f29a48ea09ea202a54c44a86e708243ec03a6b8",
+      "local_sha256": "839bae276e3451107bf4d28f9f29a48ea09ea202a54c44a86e708243ec03a6b8"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/AppKit/AppKitTextInteractionOverlay.swift",
+      "upstream_sha256": "02dff5b4f48e2d25a5487e3ae094a6acbe166b97a38217f1f94c3468d562c903",
+      "local_sha256": "02dff5b4f48e2d25a5487e3ae094a6acbe166b97a38217f1f94c3468d562c903"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/AppKit/AppKitTextSelectionInteraction.swift",
+      "upstream_sha256": "45d79bfd0746790abf59f806d062b5f69e53a16d50a70aad785139a30d006c05",
+      "local_sha256": "45d79bfd0746790abf59f806d062b5f69e53a16d50a70aad785139a30d006c05"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/AppKit/AppKitTextSelectionView.swift",
+      "upstream_sha256": "d2826dd3a57f3faf4cd258d33bd0314e4b90371c84c44b147376b4cee8f62531",
+      "local_sha256": "d2826dd3a57f3faf4cd258d33bd0314e4b90371c84c44b147376b4cee8f62531"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/AppKit/NSTextInteractionView.swift",
+      "upstream_sha256": "57ed95840c4467439e50d55e3fcd7634b751858700e400eb40e359029d79d4a1",
+      "local_sha256": "57ed95840c4467439e50d55e3fcd7634b751858700e400eb40e359029d79d4a1"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/IndexPath+TextPosition.swift",
+      "upstream_sha256": "a8bf8bb772d8f9ecfc4e29664d8dd2e26e47951f7f4e29d1735b16ecb10ce77b",
+      "local_sha256": "a8bf8bb772d8f9ecfc4e29664d8dd2e26e47951f7f4e29d1735b16ecb10ce77b"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/LayoutDirection+Locale.swift",
+      "upstream_sha256": "ea982d2e7a1c4651cc6770861a1816f6be198aca5bb2ddeea56bf9b3a1d60069",
+      "local_sha256": "ea982d2e7a1c4651cc6770861a1816f6be198aca5bb2ddeea56bf9b3a1d60069"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/LinkAttribute.swift",
+      "upstream_sha256": "adfca7dbea1069919a2fddc20ab3e86fd91c855ef5523206ebd0f7bd86d8efe2",
+      "local_sha256": "adfca7dbea1069919a2fddc20ab3e86fd91c855ef5523206ebd0f7bd86d8efe2"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/EmptyTextLayoutCollection.swift",
+      "upstream_sha256": "98a60b42ba7b5d5925693ea1c96e84cbf8aad1b0e83815d6f50637ccafdd14e7",
+      "local_sha256": "98a60b42ba7b5d5925693ea1c96e84cbf8aad1b0e83815d6f50637ccafdd14e7"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/Layout+Internals.swift",
+      "upstream_sha256": "f32d1efb74e6116801785c4a12219209f23171be8e3299f353afa56868f1f875",
+      "local_sha256": "f32d1efb74e6116801785c4a12219209f23171be8e3299f353afa56868f1f875"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/LiveTextLayoutCollection.swift",
+      "upstream_sha256": "d8d1b34f62a64c9ed12bfaa017e24d8661be65d04833f4ac947b53691dd5a38b",
+      "local_sha256": "d8d1b34f62a64c9ed12bfaa017e24d8661be65d04833f4ac947b53691dd5a38b"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/TextLayoutCollection+AttributedStringAccess.swift",
+      "upstream_sha256": "ecf59989161809e177c64987ce64e17400f769c560a4d6125dba6c538f85bf05",
+      "local_sha256": "ecf59989161809e177c64987ce64e17400f769c560a4d6125dba6c538f85bf05"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/TextLayoutCollection+Geometry.swift",
+      "upstream_sha256": "d751b97d8f149839ed68d0f1e7c2684845c46b40f5d4f5162e123be8f88da0bf",
+      "local_sha256": "d751b97d8f149839ed68d0f1e7c2684845c46b40f5d4f5162e123be8f88da0bf"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/TextLayoutCollection+Positioning.swift",
+      "upstream_sha256": "80f0c1d10a9eb597018e1a24dde203880d3f8ffdbe2628a21338e4c0e56576d3",
+      "local_sha256": "80f0c1d10a9eb597018e1a24dde203880d3f8ffdbe2628a21338e4c0e56576d3"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/TextLayoutCollection+Ranges.swift",
+      "upstream_sha256": "2859b1b13d1d2d91e84b45bbc74b18f4bb2d01db82fb69414b4090decbd803ed",
+      "local_sha256": "2859b1b13d1d2d91e84b45bbc74b18f4bb2d01db82fb69414b4090decbd803ed"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/TextLayoutCollection+RunSliceTraversal.swift",
+      "upstream_sha256": "ce19158ba12786f5acc45b10456e8f7b52a0e444c306cc5d82f041aa85880f46",
+      "local_sha256": "ce19158ba12786f5acc45b10456e8f7b52a0e444c306cc5d82f041aa85880f46"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/TextLayoutCollection+SelectionRects.swift",
+      "upstream_sha256": "e9b491641be35a3697d948a62f3917ed5343fae44cc5250c695db238c12436c1",
+      "local_sha256": "e9b491641be35a3697d948a62f3917ed5343fae44cc5250c695db238c12436c1"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/TextLayoutCollection.swift",
+      "upstream_sha256": "f0e150fb0a6c6be19c894aeeab3ab6d5737ba59e939b8b7146815fb19229fc4a",
+      "local_sha256": "f0e150fb0a6c6be19c894aeeab3ab6d5737ba59e939b8b7146815fb19229fc4a"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLayout/View+TextLayoutCollection.swift",
+      "upstream_sha256": "6a41b1b861c71ed9529274b4ced3279b831b12ebc35cbbba539a5056b37589e9",
+      "local_sha256": "6a41b1b861c71ed9529274b4ced3279b831b12ebc35cbbba539a5056b37589e9"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextLinkInteraction.swift",
+      "upstream_sha256": "69b03439a898385094cd7c332cc2b0e709d5dec94e6cec610c2903bb918669cf",
+      "local_sha256": "69b03439a898385094cd7c332cc2b0e709d5dec94e6cec610c2903bb918669cf"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextPosition.swift",
+      "upstream_sha256": "be2d6c351dadccaee57c7ffeae4f8806ba3d8bc52cfd8511825a27e79d5b4df0",
+      "local_sha256": "be2d6c351dadccaee57c7ffeae4f8806ba3d8bc52cfd8511825a27e79d5b4df0"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextRange.swift",
+      "upstream_sha256": "1e120b1709260b3ff17b40076973dde635660b27b85bc529114d3bfdbb49a6a2",
+      "local_sha256": "1e120b1709260b3ff17b40076973dde635660b27b85bc529114d3bfdbb49a6a2"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextSelectionBackground.swift",
+      "upstream_sha256": "d4f014ad759f16f937667ebf3caf8f8f7cac290b057d7f0d3ead1c26eedc9f26",
+      "local_sha256": "d4f014ad759f16f937667ebf3caf8f8f7cac290b057d7f0d3ead1c26eedc9f26"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextSelectionCoordinator.swift",
+      "upstream_sha256": "1c3f8393295cc67c0f3a1aa617b9045703e2205a5332fb3f9dfbedd3e16020eb",
+      "local_sha256": "1c3f8393295cc67c0f3a1aa617b9045703e2205a5332fb3f9dfbedd3e16020eb"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextSelectionInteraction.swift",
+      "upstream_sha256": "cb31920a50fbcfb23c3874bfbc1629587f86ae66f3c1f35947e058a49f4338a4",
+      "local_sha256": "cb31920a50fbcfb23c3874bfbc1629587f86ae66f3c1f35947e058a49f4338a4"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextSelectionModel.swift",
+      "upstream_sha256": "2e95d6f1cf6af7dd9cc79a9742a8720e59e3baa5cac0cf98713c0b8c35c86b37",
+      "local_sha256": "2e95d6f1cf6af7dd9cc79a9742a8720e59e3baa5cac0cf98713c0b8c35c86b37"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/Shared/TextSelectionRect.swift",
+      "upstream_sha256": "29a2b2c3de16e56dcd4a255c9dda2d3c16e6af331b7be7d4552ccd45db68d04f",
+      "local_sha256": "29a2b2c3de16e56dcd4a255c9dda2d3c16e6af331b7be7d4552ccd45db68d04f"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/TextActivityItemSource.swift",
+      "upstream_sha256": "0a7ba7f5ced58d87decb1bd1d623ec4ab6cf6745f1b8b87dff45f7ee33295a29",
+      "local_sha256": "0a7ba7f5ced58d87decb1bd1d623ec4ab6cf6745f1b8b87dff45f7ee33295a29"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/TextPositionBox.swift",
+      "upstream_sha256": "758f17ab92714617e153d1275957e92bf2bac795bdb1e40023a1e42cfc059b1e",
+      "local_sha256": "758f17ab92714617e153d1275957e92bf2bac795bdb1e40023a1e42cfc059b1e"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/TextRangeBox.swift",
+      "upstream_sha256": "83612fee5c0eddb89fed82a0ec6c99e00ba9101902c1a74bbd4d1330b82de8ed",
+      "local_sha256": "83612fee5c0eddb89fed82a0ec6c99e00ba9101902c1a74bbd4d1330b82de8ed"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/TextSelectionRectBox.swift",
+      "upstream_sha256": "699d4e9e3f5fdca9999e8cf3bb1f077b3a81646e0fc9e276547fe3bb965e7612",
+      "local_sha256": "699d4e9e3f5fdca9999e8cf3bb1f077b3a81646e0fc9e276547fe3bb965e7612"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/UIKitTextInteractionOverlay.swift",
+      "upstream_sha256": "5b169e9589b6f78d851c4be2870ad674de446ab1d5fcebd365f4efb4b03ac45f",
+      "local_sha256": "5b169e9589b6f78d851c4be2870ad674de446ab1d5fcebd365f4efb4b03ac45f"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/UIKitTextSelectionInteraction.swift",
+      "upstream_sha256": "db2ac2603df19f70bc170fcb1706d76c7f47563a8045eefaadf035e9af6c2b05",
+      "local_sha256": "db2ac2603df19f70bc170fcb1706d76c7f47563a8045eefaadf035e9af6c2b05"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/UITextInteractionView+UITextInput.swift",
+      "upstream_sha256": "ae297d82eda5becc0a64a1efcfbd99702e7c3163d06486b178ac9b5c6532945e",
+      "local_sha256": "ae297d82eda5becc0a64a1efcfbd99702e7c3163d06486b178ac9b5c6532945e"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/UITextInteractionView+UITextInputTokenizer.swift",
+      "upstream_sha256": "888826d312cc25c42a8b85a2491c64d6f429887972556162fb07c397dcaa071c",
+      "local_sha256": "888826d312cc25c42a8b85a2491c64d6f429887972556162fb07c397dcaa071c"
+    },
+    {
+      "path": "Sources/Textual/Internal/TextInteraction/UIKit/UITextInteractionView.swift",
+      "upstream_sha256": "7ec6c8f8f6ec8aa0b7cb444c2e3bd4083364a15c9da6ddbc0e7eb289535cc20e",
+      "local_sha256": "ff74afe5771e3a867af79663b15b52baf3262c4b9cc9a03df243829253f9c2f0"
+    },
+    {
+      "path": "Sources/Textual/MarkdownParser/AttributedStringMarkdownParser.swift",
+      "upstream_sha256": "d470a3d8c59f0d321eddeba9e9c005dc4cb861c9e271d5c8555243a1abd77c29",
+      "local_sha256": "d470a3d8c59f0d321eddeba9e9c005dc4cb861c9e271d5c8555243a1abd77c29"
+    },
+    {
+      "path": "Sources/Textual/MarkdownParser/Emoji.swift",
+      "upstream_sha256": "618a38612e907ca0615be4e397f081623c4ddb330ba3342ca51f728afbf02549",
+      "local_sha256": "618a38612e907ca0615be4e397f081623c4ddb330ba3342ca51f728afbf02549"
+    },
+    {
+      "path": "Sources/Textual/MarkdownParser/SyntaxExtension.swift",
+      "upstream_sha256": "7056bf85712c1801fa0606de4bc842634f645055b65d09d52345570578a99a6a",
+      "local_sha256": "7056bf85712c1801fa0606de4bc842634f645055b65d09d52345570578a99a6a"
+    },
+    {
+      "path": "Sources/Textual/MarkdownParser/TextualAttributes.swift",
+      "upstream_sha256": "9e13f5b291aa800135c81f75ad7989b2fb947fa3064c40475f412582e5fbde09",
+      "local_sha256": "9e13f5b291aa800135c81f75ad7989b2fb947fa3064c40475f412582e5fbde09"
+    },
+    {
+      "path": "Sources/Textual/MarkupParser.swift",
+      "upstream_sha256": "6c3d6b880513cfa86b842588a286a8dadeb9a79c063298421f5c37eed6e5de20",
+      "local_sha256": "6c3d6b880513cfa86b842588a286a8dadeb9a79c063298421f5c37eed6e5de20"
+    },
+    {
+      "path": "Sources/Textual/MathProperties.swift",
+      "upstream_sha256": "0c07b9647838963d3148981d704c7fed3d2caac455d34a8fd37aa4ea0cf581cf",
+      "local_sha256": "0c07b9647838963d3148981d704c7fed3d2caac455d34a8fd37aa4ea0cf581cf"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/HighlighterTheme/HighlighterTheme+Default.swift",
+      "upstream_sha256": "00d5cc56ced06c3efd7fee4091d85dc5e3852788425b9a6f874e9f470b3c2a9c",
+      "local_sha256": "00d5cc56ced06c3efd7fee4091d85dc5e3852788425b9a6f874e9f470b3c2a9c"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/HighlighterTheme/HighlighterTheme+Plain.swift",
+      "upstream_sha256": "e68930f38227780c54551a92657f950a4fccf6e2f33e4babc56339e3c61e54b7",
+      "local_sha256": "e68930f38227780c54551a92657f950a4fccf6e2f33e4babc56339e3c61e54b7"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/HighlighterTheme/HighlighterTheme.swift",
+      "upstream_sha256": "276b3d897611aebce37f9b06373adbe5bde1d66ec99e2f3f7da30bb0cc8c6197",
+      "local_sha256": "276b3d897611aebce37f9b06373adbe5bde1d66ec99e2f3f7da30bb0cc8c6197"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/HighlighterTheme/TokenType.swift",
+      "upstream_sha256": "73d933cf60a7d7cafe4d34ac41e7c81331a82ed883b0cf6236999bbd9a230b9e",
+      "local_sha256": "73d933cf60a7d7cafe4d34ac41e7c81331a82ed883b0cf6236999bbd9a230b9e"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/StructuredText.swift",
+      "upstream_sha256": "72bd3ad4db3ffae696bc95773735de03c537d2467c79c89f4ba0e644783fc2dd",
+      "local_sha256": "72bd3ad4db3ffae696bc95773735de03c537d2467c79c89f4ba0e644783fc2dd"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/BlockQuoteStyle.swift",
+      "upstream_sha256": "b00409732e18b5ceb2f9a349c8235d83ee1ab2f3c2554dd9e44ba9f28da73930",
+      "local_sha256": "b00409732e18b5ceb2f9a349c8235d83ee1ab2f3c2554dd9e44ba9f28da73930"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/BlockSpacing.swift",
+      "upstream_sha256": "a8ea9a161bf19dfa9a50f746914b79e5df50cd8f58061361e6330017f21d1894",
+      "local_sha256": "a8ea9a161bf19dfa9a50f746914b79e5df50cd8f58061361e6330017f21d1894"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/BlockStyleConfiguration.swift",
+      "upstream_sha256": "6bd90d22c28dc4abe2335a07291bea6c8fad8892fc7c8c5844f54270733b1ee8",
+      "local_sha256": "6bd90d22c28dc4abe2335a07291bea6c8fad8892fc7c8c5844f54270733b1ee8"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/CodeBlockProxy.swift",
+      "upstream_sha256": "e4056c60c210c40150cc7fae69423e2352c76cae97cc6df8a71b2b7405716c27",
+      "local_sha256": "e4056c60c210c40150cc7fae69423e2352c76cae97cc6df8a71b2b7405716c27"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/CodeBlockStyle.swift",
+      "upstream_sha256": "50e327aaa7f8b8c91302457f8f0453034f5b3804dabea37f4ed0319ea0817615",
+      "local_sha256": "50e327aaa7f8b8c91302457f8f0453034f5b3804dabea37f4ed0319ea0817615"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultBlockQuoteStyle.swift",
+      "upstream_sha256": "fc4010488d7e77e55d550c01d73121b86df853ca77b58d53f64fe3e601dab9e5",
+      "local_sha256": "fc4010488d7e77e55d550c01d73121b86df853ca77b58d53f64fe3e601dab9e5"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultCodeBlockStyle.swift",
+      "upstream_sha256": "cb00fcb603b477bcaa42af6bb8b61443806c76948cf5433a66815351763b8a66",
+      "local_sha256": "cb00fcb603b477bcaa42af6bb8b61443806c76948cf5433a66815351763b8a66"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultHeadingStyle.swift",
+      "upstream_sha256": "fae638508cc2a15f3503efbb3b7ddb764626cd6ff2605159e091619f4d8decd9",
+      "local_sha256": "fae638508cc2a15f3503efbb3b7ddb764626cd6ff2605159e091619f4d8decd9"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultListItemStyle.swift",
+      "upstream_sha256": "c62ae85e9e9ae5bdcdf4d62d4d530749cbeb6a84795a594f438c8f8f70d57fd8",
+      "local_sha256": "c62ae85e9e9ae5bdcdf4d62d4d530749cbeb6a84795a594f438c8f8f70d57fd8"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultParagraphStyle.swift",
+      "upstream_sha256": "bc2dcf7e00fafb2af56d310541f8ce9b87d4891acd5c07e3874766a0a9b5a7e9",
+      "local_sha256": "bc2dcf7e00fafb2af56d310541f8ce9b87d4891acd5c07e3874766a0a9b5a7e9"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultStyle.swift",
+      "upstream_sha256": "ec9dc56b7569a48dcb69662b4a3a47a552fae808af389f21fbce08ea111aed98",
+      "local_sha256": "ec9dc56b7569a48dcb69662b4a3a47a552fae808af389f21fbce08ea111aed98"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultTableCellStyle.swift",
+      "upstream_sha256": "6be859d593553a8280853f6910fe9385bc0385143889177d29c5dda56e637df5",
+      "local_sha256": "6be859d593553a8280853f6910fe9385bc0385143889177d29c5dda56e637df5"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DefaultTableStyle.swift",
+      "upstream_sha256": "6b4badf53b4b5572e8fae3165dc0bae82afe02769de76080737bd4dd8386af8c",
+      "local_sha256": "6b4badf53b4b5572e8fae3165dc0bae82afe02769de76080737bd4dd8386af8c"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DividerThematicBreakStyle.swift",
+      "upstream_sha256": "06b62e386cbb59248dac490dadb9048cf9b46362d6bbdcef27a5af3514f600b0",
+      "local_sha256": "06b62e386cbb59248dac490dadb9048cf9b46362d6bbdcef27a5af3514f600b0"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/DynamicColor+Default.swift",
+      "upstream_sha256": "47f466de41afab5a3ba4c9ab7a00fc52dce315ab245b256de28f51f6303d8370",
+      "local_sha256": "47f466de41afab5a3ba4c9ab7a00fc52dce315ab245b256de28f51f6303d8370"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Default/OverflowTableStyle.swift",
+      "upstream_sha256": "2055509570ad72f7fb0c37a1defc388cd7460f057f9bb88df802754d0c6cae63",
+      "local_sha256": "2055509570ad72f7fb0c37a1defc388cd7460f057f9bb88df802754d0c6cae63"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/DynamicColor+GitHub.swift",
+      "upstream_sha256": "e4e97aa3bdb4d7440fefbafc4cbd04fd0848d24dfc3ddf3ee214a850927096c3",
+      "local_sha256": "e4e97aa3bdb4d7440fefbafc4cbd04fd0848d24dfc3ddf3ee214a850927096c3"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubBlockQuoteStyle.swift",
+      "upstream_sha256": "5cbd495c8d149365b3fd1b5cee98f5fe4a3a0d3e444deb21df35602ef7809483",
+      "local_sha256": "5cbd495c8d149365b3fd1b5cee98f5fe4a3a0d3e444deb21df35602ef7809483"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubCodeBlockStyle.swift",
+      "upstream_sha256": "b10c6d844518fcaaad4bcbfbfecd73136fd43a4f204b5cf077d51c49679bd6c5",
+      "local_sha256": "b10c6d844518fcaaad4bcbfbfecd73136fd43a4f204b5cf077d51c49679bd6c5"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubHeadingStyle.swift",
+      "upstream_sha256": "047a67e912c52a7810621fb2a3143d54415c94b3c3625a8619f6086daeca630b",
+      "local_sha256": "047a67e912c52a7810621fb2a3143d54415c94b3c3625a8619f6086daeca630b"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubParagraphStyle.swift",
+      "upstream_sha256": "1026396ce0e727ab620e5349d42fe585cd3fe420f4d570b82df08fa7543cef69",
+      "local_sha256": "1026396ce0e727ab620e5349d42fe585cd3fe420f4d570b82df08fa7543cef69"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubStyle.swift",
+      "upstream_sha256": "f2bbc522200fb2c7280be436481c0abf056c116ae4b9a7ebef43b1199f658566",
+      "local_sha256": "f2bbc522200fb2c7280be436481c0abf056c116ae4b9a7ebef43b1199f658566"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubTableCellStyle.swift",
+      "upstream_sha256": "18300fdac59047c2717e8d47c2354383f7ad0d3fb2a53cd53f343fb395ab13ff",
+      "local_sha256": "18300fdac59047c2717e8d47c2354383f7ad0d3fb2a53cd53f343fb395ab13ff"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubTableStyle.swift",
+      "upstream_sha256": "c8e4e8b126573b6046808a32279e0f4778f80afaf355b7e0c56496f460b1db54",
+      "local_sha256": "c8e4e8b126573b6046808a32279e0f4778f80afaf355b7e0c56496f460b1db54"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/GitHub/GitHubThematicBreak.swift",
+      "upstream_sha256": "cbcd93d80b4577935649bf2c051d5f69ba1705902751d6d2661cadde48458679",
+      "local_sha256": "cbcd93d80b4577935649bf2c051d5f69ba1705902751d6d2661cadde48458679"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/HeadingStyle.swift",
+      "upstream_sha256": "aa5ec2278073303aff9eba6eab59f60341298c48656bc62ff7754943b1224635",
+      "local_sha256": "aa5ec2278073303aff9eba6eab59f60341298c48656bc62ff7754943b1224635"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/ListItemStyle.swift",
+      "upstream_sha256": "f62250aebe73172d5b42e5453d28793b37f8c40463726ebc33142ab3aa993a84",
+      "local_sha256": "f62250aebe73172d5b42e5453d28793b37f8c40463726ebc33142ab3aa993a84"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/OrderedListMarker.swift",
+      "upstream_sha256": "ebf3919391896da40d45024cbf7fb45f5569e9ac55b2fdea31aa36ffb96fc0ef",
+      "local_sha256": "ebf3919391896da40d45024cbf7fb45f5569e9ac55b2fdea31aa36ffb96fc0ef"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Overflow.swift",
+      "upstream_sha256": "ff9b7d6ea701b1613324b6ce5715d176233c23ebcff41a8252885dc9601466a6",
+      "local_sha256": "b76db1e1943cffc4ab88b76bc2cc3c1cd5a424dd4bc3e1169367d07465e4b196"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/ParagraphStyle.swift",
+      "upstream_sha256": "9fb0fa98b7779b2715918ed984d30ee56cc60df86ad5ae16da0d1151759c1fb6",
+      "local_sha256": "9fb0fa98b7779b2715918ed984d30ee56cc60df86ad5ae16da0d1151759c1fb6"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/Style.swift",
+      "upstream_sha256": "e6646ddf07631afb0d25390c29c9373e62ccc049143d08f81779656edc96fa03",
+      "local_sha256": "e6646ddf07631afb0d25390c29c9373e62ccc049143d08f81779656edc96fa03"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/TableCellStyle.swift",
+      "upstream_sha256": "74285756cddb10dcc57f8b7b0b0e30276ed92645bf4d65ae515952810409ab1f",
+      "local_sha256": "74285756cddb10dcc57f8b7b0b0e30276ed92645bf4d65ae515952810409ab1f"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/TableLayout.swift",
+      "upstream_sha256": "8fcf75f3d47bfe8a3a3814afa3fafa8521db2cfb3de01f383b5ec5a08297d4aa",
+      "local_sha256": "8fcf75f3d47bfe8a3a3814afa3fafa8521db2cfb3de01f383b5ec5a08297d4aa"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/TableStyle.swift",
+      "upstream_sha256": "02df543d63caeab909a721957e84379fb702979050fff0c1d406b790282e5533",
+      "local_sha256": "02df543d63caeab909a721957e84379fb702979050fff0c1d406b790282e5533"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/ThematicBreakStyle.swift",
+      "upstream_sha256": "44c45981069ee0c571fe2de8a1ced6373267335c3dacc34b646ebaafdbb1e64e",
+      "local_sha256": "44c45981069ee0c571fe2de8a1ced6373267335c3dacc34b646ebaafdbb1e64e"
+    },
+    {
+      "path": "Sources/Textual/StructuredText/Style/UnorderedListMarker.swift",
+      "upstream_sha256": "e6eb544f63329f6f0ed3a3583644d4879df8672c3f1c78772a3ffc05562e350c",
+      "local_sha256": "e6eb544f63329f6f0ed3a3583644d4879df8672c3f1c78772a3ffc05562e350c"
+    },
+    {
+      "path": "Sources/Textual/TextEnvironmentValues.swift",
+      "upstream_sha256": "529835802d14ad5214b015d066d6d2e840139771508d03f68a54676492bf1763",
+      "local_sha256": "529835802d14ad5214b015d066d6d2e840139771508d03f68a54676492bf1763"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Color/BackgroundColorProperty.swift",
+      "upstream_sha256": "c2d8d08622672a864c04720b5ad990f704b74c3df60772ecba9a0accf15e93f3",
+      "local_sha256": "c2d8d08622672a864c04720b5ad990f704b74c3df60772ecba9a0accf15e93f3"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Color/ForegroundColorProperty.swift",
+      "upstream_sha256": "3e42917538bdd2ae911a51b64bf867ca297492f440be3751b97623fa77a0bc12",
+      "local_sha256": "3e42917538bdd2ae911a51b64bf867ca297492f440be3751b97623fa77a0bc12"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/BoldProperty.swift",
+      "upstream_sha256": "a83a6d1cef8c41f26a8933ca9ccbd76cf1fca362e0aca17c1fc81721188d6361",
+      "local_sha256": "a83a6d1cef8c41f26a8933ca9ccbd76cf1fca362e0aca17c1fc81721188d6361"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/FontLeadingProperty.swift",
+      "upstream_sha256": "356aed7420af4a6d650b22d27534498fad4cf125bb1caf5e90af1c84f22b1c7a",
+      "local_sha256": "356aed7420af4a6d650b22d27534498fad4cf125bb1caf5e90af1c84f22b1c7a"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/FontProperty.swift",
+      "upstream_sha256": "8ede8e0a5db2aceecf52ea5a884bcf28717810c2a9c4035dbfadfe155ab2401f",
+      "local_sha256": "8ede8e0a5db2aceecf52ea5a884bcf28717810c2a9c4035dbfadfe155ab2401f"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/FontScaleProperty.swift",
+      "upstream_sha256": "25c9a51ddaf5e23b0bf113fd68cfb2e037498a318619dd5b761ec763ebab6478",
+      "local_sha256": "25c9a51ddaf5e23b0bf113fd68cfb2e037498a318619dd5b761ec763ebab6478"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/FontWeightProperty.swift",
+      "upstream_sha256": "fda98f5176b16ae4562ac38adbfd369b48ffcb7add6b7cc8eb0c95cb1538418c",
+      "local_sha256": "fda98f5176b16ae4562ac38adbfd369b48ffcb7add6b7cc8eb0c95cb1538418c"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/FontWidthProperty.swift",
+      "upstream_sha256": "d055350ce9e28a955418f027a7d981d876c05d24064b1e1b59fee803a2edcd9d",
+      "local_sha256": "d055350ce9e28a955418f027a7d981d876c05d24064b1e1b59fee803a2edcd9d"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/ItalicProperty.swift",
+      "upstream_sha256": "b1e12c2148e841c98a618ba3cc129b07040075d51612dcacf5bc4aa9ed00f4c1",
+      "local_sha256": "b1e12c2148e841c98a618ba3cc129b07040075d51612dcacf5bc4aa9ed00f4c1"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/LowercaseSmallCapsProperty.swift",
+      "upstream_sha256": "13f2ae9b03dafbcd3acf494c86904fef9d74b7bf77c4bf1ca5894d12cc4e3d9d",
+      "local_sha256": "13f2ae9b03dafbcd3acf494c86904fef9d74b7bf77c4bf1ca5894d12cc4e3d9d"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/MonospacedDigitProperty.swift",
+      "upstream_sha256": "c7605627baa98312e183f9a3431e28e9c64b49cd654f14d8e904a06ada50c200",
+      "local_sha256": "c7605627baa98312e183f9a3431e28e9c64b49cd654f14d8e904a06ada50c200"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/MonospacedProperty.swift",
+      "upstream_sha256": "8960c5c5403e12173b47ef9fd425295cbecb3fb848cb35d8f3aacdf9ab62398d",
+      "local_sha256": "8960c5c5403e12173b47ef9fd425295cbecb3fb848cb35d8f3aacdf9ab62398d"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/SmallCapsProperty.swift",
+      "upstream_sha256": "1414d54f272ab3b5cab9797997ffa637f6b2ea93ff47a5a25d9ab8cfc6eedbb4",
+      "local_sha256": "1414d54f272ab3b5cab9797997ffa637f6b2ea93ff47a5a25d9ab8cfc6eedbb4"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Font/UppercaseSmallCapsProperty.swift",
+      "upstream_sha256": "f5b146f5beb717b1110b230c3685958882df0b6a66da628b7efbd1ed43726371",
+      "local_sha256": "f5b146f5beb717b1110b230c3685958882df0b6a66da628b7efbd1ed43726371"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/LineStyle/StrikethroughStyleProperty.swift",
+      "upstream_sha256": "5b3e4d668377d06ee7e1647d5bf42dfbf40e4fffdfafa18934803e67a61b10ed",
+      "local_sha256": "5b3e4d668377d06ee7e1647d5bf42dfbf40e4fffdfafa18934803e67a61b10ed"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/LineStyle/UnderlineStyleProperty.swift",
+      "upstream_sha256": "99373fda0293a988baa00eb0a755991382ae58fd1e25f1fe23f6e61afb71d341",
+      "local_sha256": "99373fda0293a988baa00eb0a755991382ae58fd1e25f1fe23f6e61afb71d341"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Space/BaselineOffsetProperty.swift",
+      "upstream_sha256": "3b4e6e10acce959feb37074c9ea3a900df00828f2cd340122a7dc248bc31877d",
+      "local_sha256": "3b4e6e10acce959feb37074c9ea3a900df00828f2cd340122a7dc248bc31877d"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Space/KerningProperty.swift",
+      "upstream_sha256": "18dada1a3271ae96300f4d86eef4d77f94ef00603bbb8f5f0241b1cd0ed17487",
+      "local_sha256": "18dada1a3271ae96300f4d86eef4d77f94ef00603bbb8f5f0241b1cd0ed17487"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/Space/TrackingProperty.swift",
+      "upstream_sha256": "5a04232cd618a2d2748df7035178c5d8631b531d96ec4a4f3f92d5c0271e7542",
+      "local_sha256": "5a04232cd618a2d2748df7035178c5d8631b531d96ec4a4f3f92d5c0271e7542"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/TextProperty.swift",
+      "upstream_sha256": "434d009fa2f451717587b57d2231dfef8a63945cf090ccec6c8bdf6d7e3182cf",
+      "local_sha256": "434d009fa2f451717587b57d2231dfef8a63945cf090ccec6c8bdf6d7e3182cf"
+    },
+    {
+      "path": "Sources/Textual/TextProperty/TupleTextProperty.swift",
+      "upstream_sha256": "ed267c4e4b0a51d84e7c451b3b857376b83871d850cc4728836ca9e8a41ef6e9",
+      "local_sha256": "ed267c4e4b0a51d84e7c451b3b857376b83871d850cc4728836ca9e8a41ef6e9"
+    },
+    {
+      "path": "Sources/Textual/TextualNamespace.swift",
+      "upstream_sha256": "c1da49bd9c2c076cec144210470f890a7d7f34ed6bd411b51fda83e924d547cf",
+      "local_sha256": "c1da49bd9c2c076cec144210470f890a7d7f34ed6bd411b51fda83e924d547cf"
+    },
+    {
+      "path": "Sources/Textual/View+Textual.swift",
+      "upstream_sha256": "36fefb072da676deef914f086ecdecdc1960b2d9fc5c54dee87e5c29bc414709",
+      "local_sha256": "36fefb072da676deef914f086ecdecdc1960b2d9fc5c54dee87e5c29bc414709"
+    }
+  ]
+}

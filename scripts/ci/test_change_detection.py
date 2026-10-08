@@ -61,6 +61,19 @@ class ChangeDetectionTests(unittest.TestCase):
             "frontend",
         )
 
+    def test_native_ios_component_never_selects_research_packaging(self) -> None:
+        for path in (
+            "apps/maple-ios/Sources/MapleAppUI/MapleRootView.swift", "apps/maple-ios/Package.swift",
+            "apps/maple-ios/Package.resolved", "apps/maple-ios/Maple.xcodeproj/project.pbxproj",
+            "apps/maple-ios/Config/PR.xcconfig", "apps/maple-ios/Resources/Info.plist",
+            "apps/maple-ios/scripts/build.sh", "apps/maple-ios/.githooks/pre-commit",
+            ".github/workflows/ios-native.yml", "scripts/ci/ios-native.sh",
+            "scripts/ci/ios_native_change_detection.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path])
+        self.assert_routes(["apps/maple-ios/Package.swift", "proxy/src/proxy.rs"], "macos", "linux", "windows")
+
     def test_in_tree_rust_runtime_inputs_mark_desktop_lanes(self) -> None:
         for path in (
             "proxy/Cargo.toml",

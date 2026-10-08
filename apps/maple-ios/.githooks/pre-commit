@@ -1,0 +1,7 @@
+#!/bin/sh
+# The root orchestrator supplies the pinned Apple shell. No live test opt-ins,
+# service startup, signing or app packaging belong in this local hook.
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
+hook_require xcrun
+hook_run bash "$MAPLE_HOOK_REPO_ROOT/scripts/ci/ios-native.sh" unit

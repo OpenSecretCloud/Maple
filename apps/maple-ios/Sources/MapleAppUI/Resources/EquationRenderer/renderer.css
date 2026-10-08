@@ -1,0 +1,2 @@
+html,body{margin:0;padding:0;background:transparent;overflow:hidden}body{font-size:20px;color:#000;white-space:nowrap;width:max-content}#equation{display:inline-block;padding:2px;vertical-align:baseline}.katex-display{margin:0;text-align:left}#baseline{display:inline-block;width:0;height:0;padding:0;vertical-align:baseline}
+.katex-display>.katex>.katex-html>.katex-tag{position:static;margin-left:1em}

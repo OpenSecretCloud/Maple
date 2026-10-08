@@ -1,0 +1,582 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Account deletion code": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account deletion code"
+          }
+        }
+      }
+    },
+    "Account deletion was not confirmed. Check your account before trying again.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account deletion was not confirmed. Check your account before trying again."
+          }
+        }
+      }
+    },
+    "Any required billing cleanup must finish before the account can be deleted.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Any required billing cleanup must finish before the account can be deleted."
+          }
+        }
+      }
+    },
+    "Browser sign-in isn’t available in this build. Sign in with email or an existing guest account.": {
+      "comment": "Browser provider sign-in is unavailable because this application target is not supported by the current callback broker. Do not imply a connectivity or credential failure.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browser sign-in isn’t available in this build. Sign in with email or an existing guest account."
+          }
+        }
+      }
+    },
+    "Cancel sign-in": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel sign-in"
+          }
+        }
+      }
+    },
+    "Change password": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change password"
+          }
+        }
+      }
+    },
+    "Check the code and make sure your new passwords match. Use at least eight characters.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the code and make sure your new passwords match. Use at least eight characters."
+          }
+        }
+      }
+    },
+    "Check your inbox for a verification email.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check your inbox for a verification email."
+          }
+        }
+      }
+    },
+    "Confirm account": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm account"
+          }
+        }
+      }
+    },
+    "Confirm account deletion": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm account deletion"
+          }
+        }
+      }
+    },
+    "Confirm new password": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm new password"
+          }
+        }
+      }
+    },
+    "Continue with GitHub": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue with GitHub"
+          }
+        }
+      }
+    },
+    "Continue with Google": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue with Google"
+          }
+        }
+      }
+    },
+    "Continue with reset": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue with reset"
+          }
+        }
+      }
+    },
+    "Continue with this account": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue with this account"
+          }
+        }
+      }
+    },
+    "Current password": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current password"
+          }
+        }
+      }
+    },
+    "Delete account": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete account"
+          }
+        }
+      }
+    },
+    "Eight-character reset code": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eight-character reset code"
+          }
+        }
+      }
+    },
+    "Email": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Email"
+          }
+        }
+      }
+    },
+    "If a code does not arrive, check spam or try the provider you used to create your account.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If a code does not arrive, check spam or try the provider you used to create your account."
+          }
+        }
+      }
+    },
+    "Maple could not safely stop account activity. Your account was not deleted. Try again.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple could not safely stop account activity. Your account was not deleted. Try again."
+          }
+        }
+      }
+    },
+    "New password": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New password"
+          }
+        }
+      }
+    },
+    "Only continue if this is the account you intended to use.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only continue if this is the account you intended to use."
+          }
+        }
+      }
+    },
+    "Password reset creates a new private key and removes private encrypted content, including chats and saved data. If you can still sign in, change your password in settings instead.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Password reset creates a new private key and removes private encrypted content, including chats and saved data. If you can still sign in, change your password in settings instead."
+          }
+        }
+      }
+    },
+    "Request deletion code": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Request deletion code"
+          }
+        }
+      }
+    },
+    "Request password reset": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Request password reset"
+          }
+        }
+      }
+    },
+    "Reset password": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset password"
+          }
+        }
+      }
+    },
+    "Resetting your password deletes private data": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resetting your password deletes private data"
+          }
+        }
+      }
+    },
+    "Return to sign-in": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Return to sign-in"
+          }
+        }
+      }
+    },
+    "Send another verification email": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send another verification email"
+          }
+        }
+      }
+    },
+    "Start the reset in this app to use your code. A code alone cannot restore the private confirmation secret.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start the reset in this app to use your code. A code alone cannot restore the private confirmation secret."
+          }
+        }
+      }
+    },
+    "The current password is incorrect.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current password is incorrect."
+          }
+        }
+      }
+    },
+    "The request could not be completed. Check your connection and try again.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The request could not be completed. Check your connection and try again."
+          }
+        }
+      }
+    },
+    "This permanently removes your account and its saved data. You will lose access to chats and paid features. This cannot be undone.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This permanently removes your account and its saved data. You will lose access to chats and paid features. This cannot be undone."
+          }
+        }
+      }
+    },
+    "This request expired. Start again to get a new code or sign-in request.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This request expired. Start again to get a new code or sign-in request."
+          }
+        }
+      }
+    },
+    "This sign-in response could not be verified. Start sign-in again.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This sign-in response could not be verified. Start sign-in again."
+          }
+        }
+      }
+    },
+    "Try your current password or Apple, Google, or GitHub first. Resetting removes private encrypted chats and saved data.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try your current password or Apple, Google, or GitHub first. Resetting removes private encrypted chats and saved data."
+          }
+        }
+      }
+    },
+    "Type DELETE to confirm": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type DELETE to confirm"
+          }
+        }
+      }
+    },
+    "Use at least eight characters.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use at least eight characters."
+          }
+        }
+      }
+    },
+    "Verification code": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verification code"
+          }
+        }
+      }
+    },
+    "Verify email": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verify email"
+          }
+        }
+      }
+    },
+    "Working…": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Working…"
+          }
+        }
+      }
+    },
+    "Your account was deleted. Maple is clearing this account’s local data.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your account was deleted. Maple is clearing this account’s local data."
+          }
+        }
+      }
+    },
+    "Your account was not deleted because billing cleanup could not finish. Try again later or contact support.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your account was not deleted because billing cleanup could not finish. Try again later or contact support."
+          }
+        }
+      }
+    },
+    "Your email is verified.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your email is verified."
+          }
+        }
+      }
+    },
+    "Your password was changed.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your password was changed."
+          }
+        }
+      }
+    },
+    "Your password was reset. Sign in with your new password.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your password was reset. Sign in with your new password."
+          }
+        }
+      }
+    },
+    "Your sign-in changed. Reopen this screen to continue.": {
+      "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your sign-in changed. Reopen this screen to continue."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

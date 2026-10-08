@@ -1,0 +1,21 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "CFBundleDisplayName": {
+      "comment": "Name displayed below the native development app icon, distinct from Research.",
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Maple Native Dev" } } }
+    },
+    "NSCameraUsageDescription": {
+      "comment": "Camera permission explanation when attaching a photo to chat.",
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Take a photo to attach to your message." } } }
+    },
+    "NSMicrophoneUsageDescription": {
+      "comment": "Microphone permission explanation for inline dictation.",
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Record your voice to turn it into message text." } } }
+    }
+  },
+  "version": "1.0"
+}

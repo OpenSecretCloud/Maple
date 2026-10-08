@@ -1,0 +1,640 @@
+#if os(iOS) && DEBUG
+    import Foundation
+    import MapleAppCore
+    import MapleSDK
+    import Observation
+    import SwiftUI
+    import UIKit
+
+    /// Exercises ChatDetail itself. Only service, persistence and account inputs
+    /// are synthetic; pagination, turn grouping, rendering, actions, progress,
+    /// accepted-turn anchoring and the composer inset are shipping implementations.
+    struct ShippingViewportFixtureView: View {
+        @State private var model: ShippingViewportFixtureModel?
+        @State private var failed = false
+        @State private var showingChat = true
+        @State private var compactLease = CompactMenuLease()
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        private var resizeProof: Bool { ProcessInfo.processInfo.arguments.contains("--maple-shipping-window-proof") }
+
+        var body: some View {
+            Group {
+                if let model,
+                    ProcessInfo.processInfo.arguments.contains("--maple-shipping-pagination-menu-proof")
+                {
+                    paginationMenuViewport(model)
+                } else if let model, model.compactProjectionProof {
+                    compactViewport(model)
+                } else {
+                    standardViewport
+                }
+            }
+            .font(.custom("Manrope-Regular", size: 17, relativeTo: .body))
+            .task {
+                guard model == nil, !failed else { return }
+                do {
+                    let created = try ShippingViewportFixtureModel()
+                    model = created
+                    await created.prepare()
+                    if resizeProof { created.prepareWindowOwnership() }
+                } catch { failed = true }
+            }
+            .onDisappear {
+                if let model { compactLease.retireAccount(scope: model.account.scope); model.retire() }
+            }
+        }
+
+        private var standardViewport: some View {
+            NavigationStack {
+                Group {
+                    if let model {
+                        Group {
+                            if model.draftLoadProof && !showingChat {
+                                Text("Retained draft remains in its runtime")
+                                    .accessibilityIdentifier("shipping-draft.away")
+                            } else {
+                                ChatDetail(
+                                    environment: model.environment, runtime: model.runtime,
+                                    account: model.account, preferences: model.preferences,
+                                    fixtureProjectionIsCurrent: { [weak model] scope, owner in
+                                        model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
+                                    }
+                                )
+                            }
+                        }
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            controls(model).padding(8).background(.bar)
+                        }
+                    } else {
+                        Text(failed ? "Viewport fixture failed" : "Opening viewport fixture")
+                    }
+                }
+                .navigationTitle("Shipping transcript fixture")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+
+        /// The same history runtime stays behind the actual retained navigation
+        /// while its existing synthetic pagination service is released.
+        private func paginationMenuViewport(_ model: ShippingViewportFixtureModel) -> some View {
+            let scope = model.runtime.scope, owner = model.runtime.snapshot.storageOwner
+            return CompactMenuNavigation(
+                scope: scope, storageOwner: owner,
+                requestedMenu: model.projectionMenuPresented, reduceMotion: reduceMotion, lease: compactLease,
+                library: VStack(spacing: 16) {
+                    Text("Synthetic retained Library")
+                    Button("Return to chat") { model.projectionMenuPresented = false }
+                        .accessibilityIdentifier("shipping-pagination.close")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(ShippingPaginationViewportProbe())
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("shipping-pagination.library"),
+                chat: NavigationStack {
+                    ChatDetail(
+                        environment: model.environment, runtime: model.runtime,
+                        account: model.account, preferences: model.preferences,
+                        fixtureProjectionIsCurrent: { [weak model] scope, owner in
+                            model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
+                        }
+                    )
+                    .id(owner)
+                }
+                .environment(\.compactMenuChatState) { [weak compactLease] scope, owner in
+                    compactLease?.state(scope: scope, storageOwner: owner) ?? CompactMenuChatState()
+                }
+                .modifier(
+                    CompactMenuChatAccessibility(
+                        lease: compactLease, scope: scope, storageOwner: owner,
+                        isCurrent: { [weak model] in
+                            model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
+                        })),
+                // Admit same-account updates while initial loading replaces the
+                // owner; the lease and child still fence the exact projection.
+                isCurrent: { [weak model] in
+                    model?.projectionIsCurrent(scope: scope) ?? false
+                },
+                presentationBlocked: { false },
+                requestMenu: { [weak model] in model?.projectionMenuPresented = $0 },
+                blockPresentation: { _, _ in }, chatShown: {}
+            )
+            .id(scope)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 4) {
+                    HStack {
+                        Button("Open Library") { model.projectionMenuPresented = true }
+                            .accessibilityIdentifier("shipping-pagination.open")
+                            .disabled(!model.ready || model.projectionMenuPresented)
+                        Button("Release older") { Task { await model.releaseOlder() } }
+                            .accessibilityIdentifier("shipping-pagination.release-older")
+                            .disabled(!model.runtime.isLoadingOlder || !compactLease.menuVisible)
+                    }.font(.caption)
+                    Text(model.summary).font(.caption2)
+                        .accessibilityIdentifier("shipping-viewport.summary")
+                    Text("Synthetic retained Chat owners").font(.caption2)
+                        .accessibilityIdentifier("shipping-window.ownership")
+                        .accessibilityValue(model.windowOwnership)
+                }
+                .frame(maxWidth: .infinity).frame(height: 80).background(.bar)
+            }
+        }
+
+        private func compactViewport(_ model: ShippingViewportFixtureModel) -> some View {
+            let selected = model.selectedProjection
+            let scope = model.account.scope
+            return CompactMenuNavigation(
+                scope: scope, storageOwner: selected.snapshot.storageOwner,
+                requestedMenu: model.projectionMenuPresented, reduceMotion: reduceMotion, lease: compactLease,
+                library: Text("Synthetic retained Library").frame(maxWidth: .infinity, maxHeight: .infinity),
+                chat: NavigationStack {
+                    ChatDetail(
+                        environment: model.environment, runtime: selected,
+                        account: model.account, preferences: model.preferences,
+                        fixtureProjectionIsCurrent: { [weak model] scope, owner in
+                            model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
+                        }
+                    )
+                    .id(selected.snapshot.storageOwner)
+                }
+                .environment(\.compactMenuChatState) { [weak compactLease] scope, owner in
+                    compactLease?.state(scope: scope, storageOwner: owner) ?? CompactMenuChatState()
+                }
+                .modifier(
+                    CompactMenuChatAccessibility(
+                        lease: compactLease, scope: scope, storageOwner: selected.snapshot.storageOwner,
+                        isCurrent: { [weak model] in model?.projectionIsCurrent(scope: scope) ?? false })),
+                isCurrent: { [weak model] in model?.projectionIsCurrent(scope: scope) ?? false },
+                presentationBlocked: { false },
+                requestMenu: { [weak model] in model?.projectionMenuPresented = $0 },
+                blockPresentation: { _, _ in }, chatShown: {}
+            )
+            .id(scope)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 4) {
+                    HStack {
+                        Button("Select cached A") { model.selectProjection(newChat: true) }
+                            .accessibilityIdentifier("shipping-projection.select-a")
+                            .disabled(!model.ready || model.projectionIsNewChat)
+                        Button("Select cached B") { model.selectProjection(newChat: false) }
+                            .accessibilityIdentifier("shipping-projection.select-b")
+                            .disabled(!model.ready || !model.projectionIsNewChat)
+                    }.font(.caption)
+                    Text(model.summary).font(.caption2)
+                        .accessibilityIdentifier("shipping-viewport.summary")
+                    Text("Synthetic cached owners").font(.caption2)
+                        .accessibilityIdentifier("shipping-projection.ownership")
+                        .accessibilityValue(model.projectionOwnership)
+                }
+                .frame(maxWidth: .infinity).frame(height: 80).background(.bar)
+            }
+        }
+
+        @ViewBuilder private func controls(_ model: ShippingViewportFixtureModel) -> some View {
+            if model.draftLoadProof {
+                VStack(spacing: 4) {
+                    HStack {
+                        Button("Release stored draft") { Task { await model.releaseDraftLoad() } }
+                            .accessibilityIdentifier("shipping-draft.release")
+                            .disabled(!model.draftLoadHeld)
+                        Button(showingChat ? "Visit another screen" : "Return to chat") { showingChat.toggle() }
+                            .accessibilityIdentifier("shipping-draft.navigate")
+                            .disabled(!model.ready)
+                    }.font(.caption)
+                    Text(model.draftLoadHeld ? "Load held" : "Load resumed")
+                        .accessibilityIdentifier("shipping-draft.state")
+                    Text(model.summary).font(.caption2)
+                        .accessibilityIdentifier("shipping-viewport.summary")
+                    Text(model.runtime.draftText).font(.caption2).lineLimit(1)
+                        .accessibilityIdentifier("shipping-draft.model")
+                }
+                .frame(maxWidth: .infinity).frame(height: 96)
+            } else {
+                regularControls(model)
+            }
+        }
+
+        private func regularControls(_ model: ShippingViewportFixtureModel) -> some View {
+            VStack(spacing: 4) {
+                HStack {
+                    Button("Release older") { Task { await model.releaseOlder() } }
+                        .accessibilityIdentifier("shipping-viewport.release-older")
+                        .disabled(!model.runtime.isLoadingOlder)
+                    Button("Start run") { model.startRun() }
+                        .accessibilityIdentifier("shipping-viewport.start")
+                        .disabled(!model.ready || model.started)
+                    Button("Emit chunks") { model.emitChunks() }
+                        .accessibilityIdentifier("shipping-viewport.emit")
+                        .disabled(model.runtime.phase != .streaming || model.emitting || model.chunks > 0)
+                    Button("Finish") { Task { await model.finish() } }
+                        .accessibilityIdentifier("shipping-viewport.finish")
+                        .disabled(model.chunks != 40 || model.emitting || !model.runtime.hasUnresolvedRun)
+                }.font(.caption)
+                Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
+                    .accessibilityIdentifier("shipping-viewport.summary")
+                if resizeProof {
+                    Text("Window ownership").font(.caption2)
+                        .accessibilityIdentifier("shipping-window.ownership")
+                        .accessibilityValue(model.windowOwnership)
+                }
+            }
+            .frame(height: resizeProof ? 80 : 60)
+        }
+    }
+
+    /// Exposes UIKit's actual laid-out bounds without assigning an accessibility frame.
+    private struct ShippingPaginationViewportProbe: UIViewRepresentable {
+        func makeUIView(context: Context) -> UIView {
+            let view = UIView()
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
+            view.isAccessibilityElement = true
+            view.accessibilityLabel = "Synthetic retained Library viewport"
+            view.accessibilityIdentifier = "shipping-pagination.viewport"
+            return view
+        }
+
+        func updateUIView(_ uiView: UIView, context: Context) {}
+    }
+
+    @MainActor @Observable private final class ShippingViewportFixtureModel {
+        let environment: AppEnvironment
+        let runtime: ChatRuntime
+        let account: AccountEntitlements
+        let preferences: PreferencesController
+        private let service = ShippingViewportService()
+        private let store: ShippingViewportStore
+        let draftLoadProof: Bool
+        let compactProjectionProof: Bool
+        private let cachedProjection: ChatRuntime?
+        private let cachedProjectionInstance = UUID()
+        private(set) var projectionIsNewChat = true
+        var projectionMenuPresented = false
+        private let instanceID = UUID()
+        private(set) var draftLoadHeld = false
+        @ObservationIgnored private var draftLoadTask: Task<Void, Never>?
+        @ObservationIgnored private var retired = false
+        var ready = false
+        var started = false
+        var emitting = false
+        var chunks = 0
+        var failed = false
+        @ObservationIgnored private var streamTask: Task<Void, Never>?
+
+        init() throws {
+            let draftLoadProof =
+                ProcessInfo.processInfo.arguments.contains("--maple-shipping-viewport-fixture")
+                && ProcessInfo.processInfo.arguments.contains("--maple-shipping-draft-load-proof")
+            self.draftLoadProof = draftLoadProof
+            let compactProjectionProof =
+                ProcessInfo.processInfo.arguments.contains("--maple-shipping-viewport-fixture")
+                && ProcessInfo.processInfo.arguments.contains("--maple-shipping-compact-projection-proof")
+            self.compactProjectionProof = compactProjectionProof
+            let store = ShippingViewportStore(holdInitialLoad: draftLoadProof)
+            self.store = store
+            // This environment is never restored or activated. Inert loopback
+            // origins isolate its SDK namespace from the local signed-in app.
+            let configuration = try AppConfiguration(
+                profile: .local, apiURL: "http://127.0.0.1:9", billingURL: "http://127.0.0.1:9",
+                flagsURL: "http://127.0.0.1:9", authURL: "http://127.0.0.1:9",
+                clientID: "00000000-0000-4000-8000-000000000009", callbackScheme: "cloud.opensecret.maple.native.dev")
+            environment = try AppEnvironment(configuration: configuration)
+            let scope = AccountScope(apiOrigin: configuration.apiURL.absoluteString, principalID: "synthetic-viewport")
+            runtime = ChatRuntime(
+                scope: scope, service: service, persistence: store,
+                conversationID: ShippingViewportService.chatID)
+            cachedProjection =
+                compactProjectionProof
+                ? ChatRuntime(scope: scope, service: service, persistence: store) : nil
+            let entitlements = ShippingViewportEntitlements()
+            account = AccountEntitlements(scope: scope, isGuest: false, billing: entitlements, catalog: entitlements)
+            preferences = PreferencesController(scope: scope, store: ShippingViewportPreferences())
+            runtime.isVisible = true
+        }
+
+        var summary: String {
+            "Ready \(ready ? 1 : 0); older \(runtime.isLoadingOlder ? 1 : 0); messages \(runtime.messages.count); chunks \(chunks); running \(runtime.hasUnresolvedRun ? 1 : 0); failed \(failed ? 1 : 0)"
+        }
+        func prepare() async {
+            guard !retired else { return }
+            await preferences.load()
+            guard !retired, !Task.isCancelled else { return }
+            await account.refresh()
+            guard !retired, !Task.isCancelled else { return }
+            if draftLoadProof {
+                await store.seed(
+                    ChatSnapshot(
+                        storageKey: ShippingViewportService.chatID, conversationID: ShippingViewportService.chatID,
+                        draft: ChatDraft(text: "Stored synthetic draft arrives before typing")))
+                guard !retired, !Task.isCancelled else { return }
+                let runtime = runtime
+                let loading = Task { await runtime.load(chatID: ShippingViewportService.chatID) }
+                draftLoadTask = loading
+                await store.waitForInitialLoad()
+                guard !retired, !Task.isCancelled else {
+                    loading.cancel(); await store.cancelInitialLoad(); return
+                }
+                draftLoadHeld = true
+                await loading.value
+                draftLoadTask = nil; draftLoadHeld = false
+            } else {
+                await runtime.load(chatID: ShippingViewportService.chatID)
+            }
+            guard !retired, !Task.isCancelled else { return }
+            if compactProjectionProof, let cachedProjection {
+                await cachedProjection.load(chatID: nil)
+                guard !retired, !Task.isCancelled else { return }
+                runtime.draftText = "Cached B draft stays separate"
+            }
+            ready = preferences.state == .ready && account.chatAccess == .allowed && runtime.messages.count == 8
+            failed = !ready
+        }
+        var selectedProjection: ChatRuntime {
+            projectionIsNewChat ? cachedProjection ?? runtime : runtime
+        }
+        func projectionIsCurrent(scope: AccountScope) -> Bool {
+            !retired && account.scope == scope && selectedProjection.scope == scope
+        }
+        func projectionIsCurrent(scope: AccountScope, storageOwner: UUID) -> Bool {
+            projectionIsCurrent(scope: scope) && selectedProjection.snapshot.storageOwner == storageOwner
+        }
+        func selectProjection(newChat: Bool) {
+            guard compactProjectionProof, ready, !retired, cachedProjection != nil else { return }
+            // Select an already-loaded runtime only. No load, draft mutation or
+            // deferred model publication may repair the returned projection.
+            projectionIsNewChat = newChat
+        }
+        var projectionOwnership: String {
+            guard let cachedProjection else { return "{}" }
+            let value: [String: String] = [
+                "selected": projectionIsNewChat ? "A" : "B",
+                "aInstance": cachedProjectionInstance.uuidString, "bInstance": instanceID.uuidString,
+                "aStorageOwner": cachedProjection.snapshot.storageOwner.uuidString,
+                "aDraftOwner": cachedProjection.snapshot.draft.id.uuidString,
+                "bStorageOwner": runtime.snapshot.storageOwner.uuidString,
+                "bDraftOwner": runtime.snapshot.draft.id.uuidString,
+                "aText": cachedProjection.draftText, "bText": runtime.draftText,
+                "aLoading": cachedProjection.isLoading ? "true" : "false",
+                "bLoading": runtime.isLoading ? "true" : "false",
+                "running": cachedProjection.hasUnresolvedRun || runtime.hasUnresolvedRun ? "true" : "false",
+            ]
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
+        func releaseDraftLoad() async {
+            guard draftLoadProof, draftLoadHeld, !retired else { return }
+            await store.releaseInitialLoad()
+        }
+        /// Resize tests retain actual runtime draft/queue owners. The initial
+        /// synthetic data is admitted by the runtime; no Responses call is made.
+        func prepareWindowOwnership() {
+            guard ready, !runtime.hasUnresolvedRun, runtime.queuedTurns.isEmpty else { failed = true; return }
+            runtime.draftText = "Window queued A remains paused"
+            guard runtime.enqueueDraft() else { failed = true; return }
+            runtime.draftText = "Window held draft B"
+        }
+        var windowOwnership: String {
+            let value: [String: String] = [
+                "instance": instanceID.uuidString,
+                "storageOwner": runtime.snapshot.storageOwner.uuidString,
+                "draftOwner": runtime.snapshot.draft.id.uuidString,
+                "queueOwner": runtime.queuedTurns.first?.id.uuidString ?? "none",
+                "queueDraftOwner": runtime.queuedTurns.first?.draft.id.uuidString ?? "none",
+                "queueMessageID": runtime.queuedTurns.first?.messageID ?? "none",
+                "queueCount": String(runtime.queuedTurns.count),
+                "queuePaused": runtime.isQueuePaused ? "true" : "false",
+                "queuedText": runtime.queuedTurns.first?.draft.text ?? "",
+                "running": runtime.hasUnresolvedRun ? "true" : "false",
+            ]
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
+        func releaseOlder() async { await service.releaseOlder() }
+        func startRun() {
+            guard ready, !started else { return }
+            runtime.draftText = "Synthetic live viewport turn"
+            started = runtime.send()
+            failed = !started
+        }
+        func emitChunks() {
+            guard runtime.phase == .streaming, !emitting, chunks == 0 else { return }
+            emitting = true
+            streamTask = Task { [weak self] in
+                guard let self else { return }
+                defer { emitting = false }
+                do {
+                    for index in 0..<40 {
+                        try Task.checkCancellation()
+                        try await service.append(index: index)
+                        chunks = index + 1
+                        try await Task.sleep(for: .milliseconds(40))
+                    }
+                } catch { if !Task.isCancelled { failed = true } }
+            }
+        }
+        func finish() async {
+            do { try await service.finish() } catch { failed = true }
+        }
+        func retire() {
+            guard !retired else { return }
+            retired = true; draftLoadTask?.cancel(); streamTask?.cancel(); runtime.invalidate()
+            cachedProjection?.invalidate()
+            Task {
+                await store.cancelInitialLoad(); await service.abort()
+            }
+        }
+    }
+
+    private actor ShippingViewportService: ChatServing {
+        static let chatID = "synthetic-viewport-chat"
+        private var older: CheckedContinuation<APIPage<ConversationItem>, Error>?
+        private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
+        private var text = "Synthetic live reply."
+        private var retired = false
+
+        func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) throws
+            -> Conversation
+        {
+            throw ChatIssue.uncertainResponse
+        }
+        func listConversations(_ parameters: ConversationsListParameters) -> APIPage<Conversation> { APIPage(data: []) }
+        func listConversationItems(conversationId: String, parameters: ListParameters) async throws -> APIPage<
+            ConversationItem
+        > {
+            guard !retired, conversationId == Self.chatID, parameters.order == .desc else {
+                throw ChatIssue.historyUnavailable
+            }
+            if parameters.after == nil { return Self.page(20..<24, hasMore: true) }
+            guard parameters.after == "viewport-user-20", older == nil else { throw ChatIssue.historyUnavailable }
+            return try await withCheckedThrowingContinuation { older = $0 }
+        }
+        func releaseOlder() {
+            let pending = older; older = nil
+            pending?.resume(returning: Self.page(10..<20, hasMore: false))
+        }
+        private static func page(_ indices: Range<Int>, hasMore: Bool) -> APIPage<ConversationItem> {
+            let ascending = indices.flatMap { index in
+                [
+                    ConversationItem(
+                        id: "viewport-user-\(index)", type: "message", status: "completed", role: "user",
+                        content: [MessageContent(type: "input_text", text: "Viewport reading anchor \(index)")]),
+                    ConversationItem(
+                        id: "viewport-assistant-\(index)", type: "message", status: "completed", role: "assistant",
+                        content: [
+                            MessageContent(
+                                type: "output_text",
+                                text:
+                                    "Synthetic reply \(index). **Bold**, *emphasis*, and `inline code` use the shipping renderer.\n\nA second paragraph makes this turn taller than a plain list row."
+                            )
+                        ]),
+                ]
+            }
+            return APIPage(
+                data: Array(ascending.reversed()), firstId: ascending.last?.id,
+                lastId: ascending.first?.id, hasMore: hasMore)
+        }
+        func createResponse(_ request: ResponsesCreateRequest, maximumInferenceSends: Int) throws
+            -> AsyncThrowingStream<ResponseStreamEvent, Error>
+        {
+            guard !retired, stream == nil, request.conversation == Self.chatID else {
+                throw ChatIssue.uncertainResponse
+            }
+            let pair = AsyncThrowingStream<ResponseStreamEvent, Error>.makeStream()
+            stream = pair.continuation
+            stream?.yield(.created(try lifecycle(status: .inProgress, output: [])))
+            struct Item: Encodable { let outputIndex = 0; let item: ConversationItem }
+            stream?.yield(.outputItemAdded(try event(Item(item: assistant(status: "in_progress")))))
+            return pair.stream
+        }
+        func append(index: Int) throws {
+            guard !retired, let stream else { throw CancellationError() }
+            let delta = " Synthetic chunk \(index) grows the last reply while earlier text remains the reading target."
+            text += delta
+            struct Delta: Encodable {
+                let itemId = "viewport-live-assistant"
+                let outputIndex = 0
+                let contentIndex = 0
+                let delta: String
+            }
+            stream.yield(.outputTextDelta(try event(Delta(delta: delta))))
+        }
+        func finish() throws {
+            guard !retired, let current = stream else { throw CancellationError() }
+            current.yield(.completed(try lifecycle(status: .completed, output: [assistant(status: "completed")])))
+            current.finish(); stream = nil
+        }
+        private func assistant(status: String) -> ConversationItem {
+            ConversationItem(
+                id: "viewport-live-assistant", responseId: "viewport-response", type: "message", status: status,
+                role: "assistant", content: [MessageContent(type: "output_text", text: text)])
+        }
+        private func lifecycle(status: ResponseStatus, output: [ConversationItem]) throws -> ResponseLifecycleEvent {
+            struct Wrapper: Encodable { let response: ResearchResponse }
+            return try event(
+                Wrapper(
+                    response: ResearchResponse(
+                        id: "viewport-response", object: "response", createdAt: 0,
+                        status: status, model: "auto:quick", output: output)))
+        }
+        private func event<T: Decodable, Value: Encodable>(_ value: Value) throws -> T {
+            let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+            let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(T.self, from: encoder.encode(value))
+        }
+        func abort() {
+            retired = true
+            older?.resume(throwing: CancellationError()); older = nil
+            stream?.finish(throwing: CancellationError()); stream = nil
+        }
+        func retrieveResponse(id: String) throws -> ResearchResponse { throw ChatIssue.uncertainResponse }
+        func cancelResponse(id: String) throws -> ResearchResponse { throw ChatIssue.cancellationUnavailable }
+        func getConversationItem(conversationId: String, itemId: String) throws -> ConversationItem {
+            throw ResearchAPIError.http(status: 404, reason: .notFound)
+        }
+    }
+
+    private actor ShippingViewportStore: ChatPersistence {
+        private var values: [String: ChatSnapshot] = [:]
+        private var holdInitialLoad: Bool
+        private var initialLoadEntered = false
+        private var retired = false
+        private var arrival: CheckedContinuation<Void, Never>?
+        private var pendingLoad: (String, CheckedContinuation<ChatSnapshot?, Error>)?
+
+        init(holdInitialLoad: Bool = false) { self.holdInitialLoad = holdInitialLoad }
+        func seed(_ snapshot: ChatSnapshot) { values[snapshot.storageKey] = snapshot }
+        func waitForInitialLoad() async {
+            guard !initialLoadEntered, !retired else { return }
+            await withCheckedContinuation { arrival = $0 }
+        }
+        func load(chatID: String, scope: AccountScope) async throws -> ChatSnapshot? {
+            guard !retired else { throw CancellationError() }
+            guard holdInitialLoad else { return values[chatID] }
+            holdInitialLoad = false; initialLoadEntered = true
+            return try await withCheckedThrowingContinuation { continuation in
+                pendingLoad = (chatID, continuation)
+                let waiter = arrival; arrival = nil; waiter?.resume()
+            }
+        }
+        func releaseInitialLoad() {
+            guard !retired, let pending = pendingLoad else { return }
+            pendingLoad = nil
+            pending.1.resume(returning: values[pending.0])
+        }
+        func cancelInitialLoad() {
+            retired = true; holdInitialLoad = false
+            let waiter = arrival; arrival = nil; waiter?.resume()
+            let pending = pendingLoad; pendingLoad = nil
+            pending?.1.resume(throwing: CancellationError())
+        }
+        func loadAll(scope: AccountScope) -> [ChatSnapshot] { Array(values.values) }
+        func save(_ snapshot: ChatSnapshot, scope: AccountScope) { values[snapshot.storageKey] = snapshot }
+        func remove(chatID: String, scope: AccountScope) { values.removeValue(forKey: chatID) }
+        func rekey(from: String, to snapshot: ChatSnapshot, scope: AccountScope) {
+            values.removeValue(forKey: from); values[snapshot.storageKey] = snapshot
+        }
+    }
+    private actor ShippingViewportPreferences: PreferencesStoring {
+        private var value = LocalPreferences()
+        func activate(_ scope: AccountScope) -> LocalPreferences { value }
+        func save(_ value: LocalPreferences, scope: AccountScope, revision: UInt64) { self.value = value }
+        func retire(_ scope: AccountScope, removePersisted: Bool) {}
+    }
+    private actor ShippingViewportEntitlements: BillingServing, ModelCatalogServing {
+        func subscriptionStatus() throws -> BillingStatus {
+            try decode([
+                "is_subscribed": true, "product_id": "synthetic", "product_name": "Pro",
+                "subscription_status": "active", "can_chat": true, "chats_remaining": 50,
+            ])
+        }
+        func teamStatus() throws -> TeamStatus {
+            try decode(["has_team_subscription": false, "team_created": false])
+        }
+        func fetchCatalog() -> ModelCatalog {
+            let capabilities = ModelCapabilities(chat: true, vision: false, reasoning: true, toolUse: false)
+            return ModelCatalog(
+                object: "list",
+                data: [
+                    ModelCatalogItem(
+                        id: "synthetic-quick", object: "model", created: 0,
+                        ownedBy: "synthetic", displayName: "Quick target", shortName: "Quick", contextWindow: 32768,
+                        maxContextTokens: 32768,
+                        access: "free", capabilities: capabilities, enabled: true, deprecated: false)
+                ],
+                aliases: [
+                    ModelAlias(
+                        id: .quick, label: "Quick", shortName: "Quick", description: "Synthetic quick model",
+                        targetModel: "synthetic-quick", access: "free", capabilities: capabilities)
+                ],
+                defaults: ModelDefaults(quick: .quick, powerful: .powerful),
+                audio: AudioModelCatalog(
+                    transcription: AudioModelAvailability(available: true, model: "synthetic-stt"),
+                    speech: AudioModelAvailability(available: true, model: "synthetic-tts")))
+        }
+        func retire() {}
+        private func decode<T: Decodable>(_ value: [String: Any]) throws -> T {
+            let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(T.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+    }
+#endif

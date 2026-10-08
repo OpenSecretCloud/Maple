@@ -63,17 +63,27 @@ public final class MapleClient: Sendable {
             accessToken: login.accessToken, refreshToken: login.refreshToken, expected: expected)
     }
 
-    public func signOut() async throws {
-        let snapshot = try await credentials.snapshot()
-        let refresh = try await credentials.pair()?.refreshToken
-        try await credentials.clear(expected: snapshot)
+    /// Pass the original account lease when sign-out follows asynchronous app
+    /// cleanup. Replacement credentials, including same-account re-login, are preserved.
+    public func signOut(expected: CredentialSnapshot? = nil) async throws {
+        let refresh = try await credentials.revoke(expected: expected)
         try await transport.cancelNativeOAuthHandoff()
         if let refresh { try? await anonymousAPI.signOut(refreshToken: refresh) }
     }
 
-    public func changePassword(currentPassword: String, newPassword: String) async throws {
+    /// Bind an account settings ceremony to its original lease. Routine token
+    /// renewal is allowed; replacement authentication, even for the same user, is not.
+    public func changePassword(
+        currentPassword: String, newPassword: String, expected: CredentialSnapshot? = nil
+    ) async throws {
+        let owner: CredentialSnapshot
+        if let expected { owner = expected } else { owner = try await credentials.snapshot() }
+        try await credentials.assertCurrent(owner, exactRevision: false)
         let snapshot = try await transport.prepareAuthenticatedSnapshot()
-        let api = try await accountAPI()
+        guard snapshot.ownsSameAccount(as: owner) else { throw TransportError.authorityChanged }
+        let api = ResearchAPI(
+            transport: AccountScopedTransport(transport: transport, snapshot: snapshot),
+            expectedPrincipalId: snapshot.principalId)
         let update = try await api.changePassword(currentPassword: currentPassword, newPassword: newPassword)
         if let access = update.accessToken, let refresh = update.refreshToken {
             _ = try await credentials.install(
@@ -86,9 +96,19 @@ public final class MapleClient: Sendable {
     @discardableResult
     public func refreshCredentials() async throws -> CredentialSnapshot { try await transport.refreshCredentials() }
 
-    public func confirmAccountDeletion(code: String, plaintextSecret: String) async throws {
-        let snapshot = try await credentials.snapshot()
-        try await accountAPI().confirmAccountDeletion(code: code, plaintextSecret: plaintextSecret)
+    /// Supply the snapshot captured when requesting the deletion code so a
+    /// stale screen cannot adopt a subsequently signed-in account.
+    public func confirmAccountDeletion(
+        code: String, plaintextSecret: String, expected: CredentialSnapshot? = nil
+    ) async throws {
+        let snapshot: CredentialSnapshot
+        if let expected { snapshot = expected } else { snapshot = try await credentials.snapshot() }
+        guard snapshot.principalId != nil else { throw TransportError.signedOut }
+        try await credentials.assertCurrent(snapshot, exactRevision: false)
+        let api = ResearchAPI(
+            transport: AccountScopedTransport(transport: transport, snapshot: snapshot),
+            expectedPrincipalId: snapshot.principalId)
+        try await api.confirmAccountDeletion(code: code, plaintextSecret: plaintextSecret)
         try await credentials.clearAccount(expected: snapshot)
         try await transport.cancelNativeOAuthHandoff()
     }

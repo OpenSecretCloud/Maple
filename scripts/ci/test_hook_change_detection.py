@@ -71,6 +71,20 @@ class HookChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_selects([path], "agent")
 
+    def test_native_ios_is_an_independent_component(self) -> None:
+        for path in (
+            "apps/maple-ios/Sources/MapleAppCore/AccountScope.swift", "apps/maple-ios/Package.swift",
+            "apps/maple-ios/Package.resolved", "apps/maple-ios/Maple.xcodeproj/project.pbxproj",
+            "apps/maple-ios/Config/PR.xcconfig", "apps/maple-ios/Resources/Info.plist",
+            "apps/maple-ios/Tests/MapleAppCoreTests/Account/AccountEntitlementsTests.swift",
+        ):
+            with self.subTest(path=path):
+                self.assert_selects([path], "ios_native")
+        self.assert_selects(["apps/maple-ios/README.md", "apps/maple-ios/AGENTS.md", "apps/maple-ios/.githooks/pre-commit"])
+        self.assert_selects(["scripts/ci/ios-native.sh"], "ios_native", "repo")
+        self.assert_selects([".github/workflows/ios-native.yml"], "ios_native", "repo")
+        self.assert_selects(["apps/maple-ios/Package.swift", "sdk/swift/Sources/MapleSDK/MapleClient.swift"], "ios_native", "sdk_swift")
+
     def test_sdk_components(self) -> None:
         self.assert_selects(["sdk/rust/src/client.rs"], "sdk_rust")
         self.assert_selects(["sdk/rust/tests/crypto.rs"], "sdk_rust")

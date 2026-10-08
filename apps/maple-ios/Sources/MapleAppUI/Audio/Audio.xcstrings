@@ -1,0 +1,258 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "%@ elapsed, %@ total": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ elapsed, %@ total"
+          }
+        }
+      }
+    },
+    "Autoplay replies": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoplay replies"
+          }
+        }
+      }
+    },
+    "Close reply player": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close reply player"
+          }
+        }
+      }
+    },
+    "Finish or cancel dictation before playing reply audio.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel dictation before playing reply audio."
+          }
+        }
+      }
+    },
+    "Go back ten seconds": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go back ten seconds"
+          }
+        }
+      }
+    },
+    "Go forward ten seconds": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go forward ten seconds"
+          }
+        }
+      }
+    },
+    "Maple": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple"
+          }
+        }
+      }
+    },
+    "Pause reply audio": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause reply audio"
+          }
+        }
+      }
+    },
+    "Play reply audio": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play reply audio"
+          }
+        }
+      }
+    },
+    "Playback speed": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Playback speed"
+          }
+        }
+      }
+    },
+    "Preparing reply audio": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing reply audio"
+          }
+        }
+      }
+    },
+    "Read aloud requires an eligible paid plan.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read aloud requires an eligible paid plan."
+          }
+        }
+      }
+    },
+    "Reply audio is temporarily unavailable. Try again.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reply audio is temporarily unavailable. Try again."
+          }
+        }
+      }
+    },
+    "Reply audio progress": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reply audio progress"
+          }
+        }
+      }
+    },
+    "Retry audio cleanup": {
+      "comment": "Retry clearing only the retired listening session temporary audio files after an operating-system storage failure.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry audio cleanup"
+          }
+        }
+      }
+    },
+    "Temporary reply audio could not be stored or cleared. Try again.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temporary reply audio could not be stored or cleared. Try again."
+          }
+        }
+      }
+    },
+    "The reply audio could not be played. Try again.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The reply audio could not be played. Try again."
+          }
+        }
+      }
+    },
+    "This audio request exceeds the player’s current limits. Your message text is unchanged.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This audio request exceeds the player’s current limits. Your message text is unchanged."
+          }
+        }
+      }
+    },
+    "This listening session has ended.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This listening session has ended."
+          }
+        }
+      }
+    },
+    "This reply has no text to read aloud.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This reply has no text to read aloud."
+          }
+        }
+      }
+    },
+    "Your account’s current audio allowance has been reached.": {
+      "comment": "Native reply-audio player. Keep the full accessible action or status message. No chat title or response content appears in system media metadata.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your account’s current audio allowance has been reached."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

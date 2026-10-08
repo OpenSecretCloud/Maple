@@ -1,0 +1,91 @@
+name: Native iOS CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-native-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ios_native: ${{ steps.classify.outputs.ios_native }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select native app inputs
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          enable() { echo 'ios_native=true' >> "$GITHUB_OUTPUT"; }
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) separator='...' ;;
+            push)
+              separator='..'
+              if [[ "$BASE_SHA" =~ ^0+$ ]]; then enable; exit 0; fi
+              ;;
+            *) enable; exit 0 ;;
+          esac
+          if ! git cat-file -e "${BASE_SHA}^{commit}" || ! git cat-file -e "${HEAD_SHA}^{commit}"; then
+            enable; exit 0
+          fi
+          changed_paths="$(mktemp)"
+          trap 'rm -f "$changed_paths"' EXIT
+          if ! git diff --no-renames --name-only -z "${BASE_SHA}${separator}${HEAD_SHA}" > "$changed_paths"; then
+            enable; exit 0
+          fi
+          python3 scripts/ci/ios_native_change_detection.py < "$changed_paths" >> "$GITHUB_OUTPUT"
+
+  ios-native:
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ios_native != 'false') }}
+    runs-on: macos-26-xlarge
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Select Xcode 26.5
+        run: |
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.app \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcodebuild -version
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          exit 1
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+      - name: Check formatting and deterministic app tests
+        run: nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh unit
+      - name: Compile iOS device and simulator packages
+        run: nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh cross-build
+      - name: Build unsigned fixed-profile simulator app
+        run: nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh simulator-build
+      - name: Build unsigned fixed-profile device app
+        run: nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh device-build

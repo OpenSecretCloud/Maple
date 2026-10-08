@@ -59,6 +59,18 @@ public struct CredentialSnapshot: Sendable, Equatable {
     }
 }
 
+/// Token-free authority state. Revisions from routine refresh are deliberately
+/// absent: only authentication replacement, revocation and cleanup alter this state.
+public struct CredentialAuthorityChange: Sendable, Equatable {
+    public let apiOrigin: String
+    public let generation: UUID
+    public let requiresCleanup: Bool
+
+    public init(apiOrigin: String, generation: UUID, requiresCleanup: Bool) {
+        self.apiOrigin = apiOrigin; self.generation = generation; self.requiresCleanup = requiresCleanup
+    }
+}
+
 struct CredentialPair: Sendable, Codable {
     let accessToken: String
     let refreshToken: String
@@ -115,6 +127,7 @@ public actor CredentialAuthority {
     private let storageKey: String
     private var state: State
     private var cleanupFailed = false
+    private var observers: [UUID: AsyncStream<CredentialAuthorityChange>.Continuation] = [:]
     private var refreshing: (snapshot: CredentialSnapshot, task: Task<Void, Error>)?
 
     private struct State: Codable {
@@ -146,6 +159,40 @@ public actor CredentialAuthority {
         } else {
             state = State(origin: apiOrigin)
         }
+    }
+
+    /// Registration and the initial value share this actor turn, so a subscriber
+    /// cannot miss a replacement between reading the current state and observing.
+    /// Slow consumers receive only the newest state and must recheck currentState().
+    public func changes() -> AsyncStream<CredentialAuthorityChange> {
+        let id = UUID()
+        let pair = AsyncStream<CredentialAuthorityChange>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeObserver(id) }
+        }
+        observers[id] = pair.continuation
+        pair.continuation.yield(currentState())
+        return pair.stream
+    }
+
+    public func currentState() -> CredentialAuthorityChange {
+        CredentialAuthorityChange(apiOrigin: apiOrigin, generation: state.generation, requiresCleanup: cleanupFailed)
+    }
+
+    private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
+    var observerCount: Int { observers.count }
+    private func publish() {
+        let value = currentState()
+        for observer in observers.values { observer.yield(value) }
+    }
+
+    /// Retries only an already-revoked authority's failed durable cleanup. It
+    /// cannot clear credentials installed by another caller while this awaited.
+    public func completePendingCleanup() throws {
+        guard cleanupFailed else { return }
+        try commit(state)
+        cleanupFailed = false
+        publish()
     }
 
     public func snapshot() throws -> CredentialSnapshot {
@@ -199,6 +246,7 @@ public actor CredentialAuthority {
         updated.access = accessToken; updated.refresh = refreshToken
         if !refreshing { updated.generation = UUID() }
         try commit(updated)
+        if !refreshing { publish() }
         return try snapshot()
     }
 
@@ -208,9 +256,20 @@ public actor CredentialAuthority {
         var updated = try nextState()
         updated.access = nil; updated.refresh = nil; updated.generation = UUID()
         state = updated
+        defer { publish() }
         do { try commit(updated); cleanupFailed = false } catch {
             cleanupFailed = true; throw TransportError.persistence
         }
+    }
+
+    /// Capture the refresh token and revoke the exact owning generation in one
+    /// actor turn. A routine refresh cannot interleave between capture and clear.
+    func revoke(expected: CredentialSnapshot?) throws -> String? {
+        try completePendingCleanup()
+        if let expected { try assertCurrent(expected, exactRevision: false) }
+        let refresh = try pair()?.refreshToken
+        try clear()
+        return refresh
     }
 
     /// An account deletion invalidates the account lease even if a routine

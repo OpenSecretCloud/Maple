@@ -105,6 +105,30 @@ Use for iOS, Android, signing, updater metadata, installers, entitlements, or di
 
 Run commands from the repository root unless the command changes directory explicitly.
 
+### Native SwiftUI iOS app
+
+Read `apps/maple-ios/AGENTS.md`. The app uses the root Apple shell and host
+Xcode 26.5; its PR profile ignores local overrides and builds with the
+development bundle identity. Run deterministic checks and unsigned packaging:
+
+```bash
+nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh unit
+nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh cross-build
+nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh simulator-build
+nix develop --no-update-lock-file .#apple -c bash scripts/ci/ios-native.sh device-build
+```
+
+The component hook runs only the first command. These commands clear inherited
+live-test switches and never sign or upload. Swift package tests on macOS are
+core-workflow evidence; iOS compilation is not a simulator UI pass. Run the
+exact configured app on iPhone and iPad simulators for UI, lifecycle, resource,
+accessibility, account isolation and local-service flows. Record the built
+bundle's identity and public origins, simulator runtime and test scope.
+Keep real-device permissions, hardware, protection and distribution evidence
+distinct. Use only explicitly authorized disposable fixtures for live account
+tests; credentials belong in a private child environment, never command
+arguments, screenshots, tracked files or logs.
+
 ### Standalone hosted Auth
 
 For changes confined to `apps/maple-auth`, use its own guide and checks:

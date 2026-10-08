@@ -21,6 +21,7 @@ OUTPUTS = (
     "sdk_rust",
     "sdk_ts",
     "sdk_swift",
+    "ios_native",
     "proxy",
     "opensecret",
     "updates",
@@ -48,6 +49,8 @@ RESEARCH_INERT_PREFIXES = ("apps/maple-research/docs/", "apps/maple-research/.gi
 RESEARCH_INERT_FILES = frozenset({"apps/maple-research/deny.toml", "apps/maple-research/zapstore.yaml"})
 
 AUTH_PREFIX = "apps/maple-auth/"
+IOS_NATIVE_PREFIX = "apps/maple-ios/"
+IOS_NATIVE_CHECK_FILES = frozenset({".github/workflows/ios-native.yml", "scripts/ci/ios-native.sh"})
 
 AGENT_PREFIX = "apps/maple-agent/"
 AGENT_INERT_PREFIXES = ("docs/", ".githooks/")
@@ -131,6 +134,13 @@ def classify_path(path: str) -> frozenset[str]:
         if path.removeprefix(AUTH_PREFIX).startswith(".githooks/"):
             return frozenset()
         return frozenset({"auth"})
+
+    if path in IOS_NATIVE_CHECK_FILES:
+        return frozenset({"ios_native", "repo"})
+    if path.startswith(IOS_NATIVE_PREFIX):
+        if path.removeprefix(IOS_NATIVE_PREFIX).startswith(".githooks/"):
+            return frozenset()
+        return frozenset({"ios_native"})
 
     if path.startswith(AGENT_PREFIX):
         relative = path.removeprefix(AGENT_PREFIX)

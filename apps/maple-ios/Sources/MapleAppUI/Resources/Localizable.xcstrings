@@ -1,0 +1,1950 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Account access is unavailable. Your draft is preserved.": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account access is unavailable. Your draft is preserved."
+          }
+        }
+      }
+    },
+    "Account cleanup must finish before you can sign in again.": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account cleanup must finish before you can sign in again."
+          }
+        }
+      }
+    },
+    "Account details are still loading. Try again when loading finishes.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account details are still loading. Try again when loading finishes."
+          }
+        }
+      }
+    },
+    "Account details are unavailable. Refresh account status and try again.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account details are unavailable. Refresh account status and try again."
+          }
+        }
+      }
+    },
+    "Already have an account? Sign in": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Already have an account? Sign in"
+          }
+        }
+      }
+    },
+    "An account already uses this email address.": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An account already uses this email address."
+          }
+        }
+      }
+    },
+    "Attach image": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attach image"
+          }
+        }
+      }
+    },
+    "Attached image": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attached image"
+          }
+        }
+      }
+    },
+    "Available after this reply finishes.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available after this reply finishes."
+          }
+        }
+      }
+    },
+    "Back": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back"
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        }
+      }
+    },
+    "Check response": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check response"
+          }
+        }
+      }
+    },
+    "Check the account details and try again.": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the account details and try again."
+          }
+        }
+      }
+    },
+    "Check the image attachments and try again.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the image attachments and try again."
+          }
+        }
+      }
+    },
+    "Checking account access…": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking account access…"
+          }
+        }
+      }
+    },
+    "Checking response…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking response…"
+          }
+        }
+      }
+    },
+    "Choose a model that supports images.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a model that supports images."
+          }
+        }
+      }
+    },
+    "Choose a model that supports web search.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a model that supports web search."
+          }
+        }
+      }
+    },
+    "Close image": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close image"
+          }
+        }
+      }
+    },
+    "Completed": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completed"
+          }
+        }
+      }
+    },
+    "Configuration unavailable": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration unavailable"
+          }
+        }
+      }
+    },
+    "Copy code": {
+      "comment": "VoiceOver label for copying one code block from a message into the local clipboard.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy code"
+          }
+        }
+      }
+    },
+    "Copy message": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy message"
+          }
+        }
+      }
+    },
+    "Couldn’t load the conversation. Try again when connected.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t load the conversation. Try again when connected."
+          }
+        }
+      }
+    },
+    "Create account": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create account"
+          }
+        }
+      }
+    },
+    "Create an account": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create an account"
+          }
+        }
+      }
+    },
+    "Create your account": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create your account"
+          }
+        }
+      }
+    },
+    "Delete": {
+      "comment": "Queued-message review, pause, editing, or deletion control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete"
+          }
+        }
+      }
+    },
+    "Delete all chat history?": {
+      "comment": "Account settings startup or permanent chat-history deletion confirmation.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete all chat history?"
+          }
+        }
+      }
+    },
+    "Delete all chats": {
+      "comment": "Account settings startup or permanent chat-history deletion confirmation.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete all chats"
+          }
+        }
+      }
+    },
+    "Dictate": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dictate"
+          }
+        }
+      }
+    },
+    "Dictation": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dictation"
+          }
+        }
+      }
+    },
+    "Dictation is currently unavailable. Try again later.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dictation is currently unavailable. Try again later."
+          }
+        }
+      }
+    },
+    "Dictation requires an eligible paid plan.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dictation requires an eligible paid plan."
+          }
+        }
+      }
+    },
+    "Done": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
+    "Edit": {
+      "comment": "Queued-message review, pause, editing, or deletion control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        }
+      }
+    },
+    "Editing queued message": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editing queued message"
+          }
+        }
+      }
+    },
+    "Email": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Email"
+          }
+        }
+      }
+    },
+    "Encrypted and private at every step": {
+      "comment": "Privacy reassurance in the empty-chat view, matching the Maple Research composer. Describes encrypted communication without promising absolute anonymity.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted and private at every step"
+          }
+        }
+      }
+    },
+    "Equations": {
+      "comment": "Accessibility custom content containing the original formula text.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Equations"
+          }
+        }
+      }
+    },
+    "Failed": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed"
+          }
+        }
+      }
+    },
+    "Files": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files"
+          }
+        }
+      }
+    },
+    "Forgot password?": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forgot password?"
+          }
+        }
+      }
+    },
+    "Forward": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forward"
+          }
+        }
+      }
+    },
+    "Guest account ID": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guest account ID"
+          }
+        }
+      }
+    },
+    "Image": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image"
+          }
+        }
+      }
+    },
+    "Image attachments require an eligible paid plan.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image attachments require an eligible paid plan."
+          }
+        }
+      }
+    },
+    "Image unavailable": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image unavailable"
+          }
+        }
+      }
+    },
+    "Images": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Images"
+          }
+        }
+      }
+    },
+    "Incomplete": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incomplete"
+          }
+        }
+      }
+    },
+    "Learn why this feature is unavailable.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Learn why this feature is unavailable."
+          }
+        }
+      }
+    },
+    "Load earlier messages": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load earlier messages"
+          }
+        }
+      }
+    },
+    "Loading account…": {
+      "comment": "Account settings startup or permanent chat-history deletion confirmation.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading account…"
+          }
+        }
+      }
+    },
+    "Maple": {
+      "comment": "Maple application brand on the sign-in screen. Do not translate the brand name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple"
+          }
+        }
+      }
+    },
+    "Maple couldn’t open protected account storage.": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple couldn’t open protected account storage."
+          }
+        }
+      }
+    },
+    "Menu": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Menu"
+          }
+        }
+      }
+    },
+    "Message": {
+      "comment": "Accessibility container for one chat message and its controls.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message"
+          }
+        }
+      }
+    },
+    "Message Maple": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message Maple"
+          }
+        }
+      }
+    },
+    "Model": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model"
+          }
+        }
+      }
+    },
+    "Name (optional)": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name (optional)"
+          }
+        }
+      }
+    },
+    "New chat": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New chat"
+          }
+        }
+      }
+    },
+    "No project": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No project"
+          }
+        }
+      }
+    },
+    "No tool details available.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No tool details available."
+          }
+        }
+      }
+    },
+    "OK": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "Offline — your draft stays here": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline — your draft stays here"
+          }
+        }
+      }
+    },
+    "Open external link?": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open external link?"
+          }
+        }
+      }
+    },
+    "Open in default browser": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open in default browser"
+          }
+        }
+      }
+    },
+    "Open link": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open link"
+          }
+        }
+      }
+    },
+    "Opening Maple…": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opening Maple…"
+          }
+        }
+      }
+    },
+    "Opening chat…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opening chat…"
+          }
+        }
+      }
+    },
+    "Opening menu…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opening menu…"
+          }
+        }
+      }
+    },
+    "Password": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Password"
+          }
+        }
+      }
+    },
+    "Paste an image from the clipboard.": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste an image from the clipboard."
+          }
+        }
+      }
+    },
+    "Paste image": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste image"
+          }
+        }
+      }
+    },
+    "Pause queue": {
+      "comment": "Queued-message review, pause, editing, or deletion control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause queue"
+          }
+        }
+      }
+    },
+    "Photo library": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo library"
+          }
+        }
+      }
+    },
+    "Preparing images…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing images…"
+          }
+        }
+      }
+    },
+    "Preparing…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing…"
+          }
+        }
+      }
+    },
+    "Project": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project"
+          }
+        }
+      }
+    },
+    "Protected account storage is unavailable. Try again after unlocking.": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protected account storage is unavailable. Try again after unlocking."
+          }
+        }
+      }
+    },
+    "Queue message": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queue message"
+          }
+        }
+      }
+    },
+    "Queued messages": {
+      "comment": "Queued-message review, pause, editing, or deletion control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queued messages"
+          }
+        }
+      }
+    },
+    "Queued messages are paused. Resume when you’re ready.": {
+      "comment": "Queued-message review, pause, editing, or deletion control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queued messages are paused. Resume when you’re ready."
+          }
+        }
+      }
+    },
+    "Read aloud": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read aloud"
+          }
+        }
+      }
+    },
+    "Read aloud is currently unavailable. Try again later.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read aloud is currently unavailable. Try again later."
+          }
+        }
+      }
+    },
+    "Read aloud requires an eligible paid plan.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read aloud requires an eligible paid plan."
+          }
+        }
+      }
+    },
+    "Read reply aloud": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read reply aloud"
+          }
+        }
+      }
+    },
+    "Reload": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reload"
+          }
+        }
+      }
+    },
+    "Remove image": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove image"
+          }
+        }
+      }
+    },
+    "Research anything...": {
+      "comment": "Empty-chat headline matching Maple Research. Research is a verb here; the trailing three dots are intentional. Displayed in the Array brand font.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Research anything..."
+          }
+        }
+      }
+    },
+    "Responding…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Responding…"
+          }
+        }
+      }
+    },
+    "Restore unsent message": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore unsent message"
+          }
+        }
+      }
+    },
+    "Resume queue": {
+      "comment": "Queued-message review, pause, editing, or deletion control.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resume queue"
+          }
+        }
+      }
+    },
+    "Retry": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        }
+      }
+    },
+    "Review unsent work": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review unsent work"
+          }
+        }
+      }
+    },
+    "Save changes": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save changes"
+          }
+        }
+      }
+    },
+    "Secure storage unavailable": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure storage unavailable"
+          }
+        }
+      }
+    },
+    "Send": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        }
+      }
+    },
+    "Sending…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending…"
+          }
+        }
+      }
+    },
+    "Sign in": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in"
+          }
+        }
+      }
+    },
+    "Sign in with email": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in with email"
+          }
+        }
+      }
+    },
+    "Sign out": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign out"
+          }
+        }
+      }
+    },
+    "Signing out…": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signing out…"
+          }
+        }
+      }
+    },
+    "Stop": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        }
+      }
+    },
+    "Stop hasn’t been confirmed. Check the response to try again.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop hasn’t been confirmed. Check the response to try again."
+          }
+        }
+      }
+    },
+    "Stopping…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopping…"
+          }
+        }
+      }
+    },
+    "Take photo": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Take photo"
+          }
+        }
+      }
+    },
+    "The account details were not accepted. Try again.": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The account details were not accepted. Try again."
+          }
+        }
+      }
+    },
+    "The draft for this image is no longer open.": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The draft for this image is no longer open."
+          }
+        }
+      }
+    },
+    "The image could not be imported. Your existing draft is unchanged.": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The image could not be imported. Your existing draft is unchanged."
+          }
+        }
+      }
+    },
+    "The request couldn’t finish. Your unsent work is preserved.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The request couldn’t finish. Your unsent work is preserved."
+          }
+        }
+      }
+    },
+    "The response is still being checked. Your message will not be sent again.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The response is still being checked. Your message will not be sent again."
+          }
+        }
+      }
+    },
+    "The secure connection’s certificate is not valid at the device’s current date and time. Try again in a moment. If this continues, check Date & Time and the time zone in Settings.": {
+      "comment": "Safe guidance for a typed SDK attestation time failure. Do not imply trust validation can be bypassed. Settings refers to device system Settings.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The secure connection’s certificate is not valid at the device’s current date and time. Try again in a moment. If this continues, check Date & Time and the time zone in Settings."
+          }
+        }
+      }
+    },
+    "The selected model is unavailable. Choose an available model.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected model is unavailable. Choose an available model."
+          }
+        }
+      }
+    },
+    "The selected model isn’t currently available.": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected model isn’t currently available."
+          }
+        }
+      }
+    },
+    "Thinking": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking"
+          }
+        }
+      }
+    },
+    "This build needs a valid service configuration.": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build needs a valid service configuration."
+          }
+        }
+      }
+    },
+    "This conversation is too long for the selected model. Start a new chat.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This conversation is too long for the selected model. Start a new chat."
+          }
+        }
+      }
+    },
+    "This device’s date or time appears incorrect. Check Date & Time and the time zone in Settings, then try again.": {
+      "comment": "Safe guidance for a typed SDK attestation time failure. Do not imply trust validation can be bypassed. Settings refers to device system Settings.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device’s date or time appears incorrect. Check Date & Time and the time zone in Settings, then try again."
+          }
+        }
+      }
+    },
+    "This feature is available for your account.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This feature is available for your account."
+          }
+        }
+      }
+    },
+    "This guest account can’t start a chat. Sign in with an eligible account.": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This guest account can’t start a chat. Sign in with an eligible account."
+          }
+        }
+      }
+    },
+    "This image could not be read. Choose a PNG, JPEG, WebP, or HEIF image.": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This image could not be read. Choose a PNG, JPEG, WebP, or HEIF image."
+          }
+        }
+      }
+    },
+    "This image is too large. Choose an image smaller than 20 MB.": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This image is too large. Choose an image smaller than 20 MB."
+          }
+        }
+      }
+    },
+    "This link type cannot be opened by Maple.": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This link type cannot be opened by Maple."
+          }
+        }
+      }
+    },
+    "This message is too large. Shorten it and try again.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This message is too large. Shorten it and try again."
+          }
+        }
+      }
+    },
+    "This model is unavailable. Choose another model.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This model is unavailable. Choose another model."
+          }
+        }
+      }
+    },
+    "This model requires a paid plan. Choose an available model.": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This model requires a paid plan. Choose an available model."
+          }
+        }
+      }
+    },
+    "This page couldn’t be loaded.": {
+      "comment": "Confirmation or navigation in the user-opened external browser. This browser is separate from chat content.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This page couldn’t be loaded."
+          }
+        }
+      }
+    },
+    "This permanently deletes your chats and their saved drafts and queued messages. Active requests must stop before deletion can finish.": {
+      "comment": "Account settings startup or permanent chat-history deletion confirmation.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This permanently deletes your chats and their saved drafts and queued messages. Active requests must stop before deletion can finish."
+          }
+        }
+      }
+    },
+    "This selection exceeds your current attachment limits. Existing images are unchanged.": {
+      "comment": "Image attachment selection, eligibility, or import feedback. These messages refer to the current draft.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This selection exceeds your current attachment limits. Existing images are unchanged."
+          }
+        }
+      }
+    },
+    "Try again": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try again"
+          }
+        }
+      }
+    },
+    "Unable to open your account": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to open your account"
+          }
+        }
+      }
+    },
+    "Unavailable": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable"
+          }
+        }
+      }
+    },
+    "Unfinished messages": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unfinished messages"
+          }
+        }
+      }
+    },
+    "Use an existing guest account": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use an existing guest account"
+          }
+        }
+      }
+    },
+    "View attached image": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View attached image"
+          }
+        }
+      }
+    },
+    "View message image": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View message image"
+          }
+        }
+      }
+    },
+    "We couldn’t connect. Check your connection and try again.": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "We couldn’t connect. Check your connection and try again."
+          }
+        }
+      }
+    },
+    "Web search": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web search"
+          }
+        }
+      }
+    },
+    "Web search requires an eligible paid plan.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web search requires an eligible paid plan."
+          }
+        }
+      }
+    },
+    "Web tool": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web tool"
+          }
+        }
+      }
+    },
+    "Welcome back": {
+      "comment": "Email sign-in, signup, or existing guest-account sign-in form. Preserve existing-account versus new-account distinctions. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Welcome back"
+          }
+        }
+      }
+    },
+    "Working…": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Working…"
+          }
+        }
+      }
+    },
+    "You": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You"
+          }
+        }
+      }
+    },
+    "Your account has reached its current usage limit.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your account has reached its current usage limit."
+          }
+        }
+      }
+    },
+    "Your draft hasn’t been saved. Unlock your device and try again.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your draft hasn’t been saved. Unlock your device and try again."
+          }
+        }
+      }
+    },
+    "Your plan details are unavailable. Refresh account status and try again.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your plan details are unavailable. Refresh account status and try again."
+          }
+        }
+      }
+    },
+    "Your saved work is preserved. Try again when your connection and protected storage are available.": {
+      "comment": "Account startup, restoration, or protected-storage cleanup interface. Maple is the application name and stays unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your saved work is preserved. Try again when your connection and protected storage are available."
+          }
+        }
+      }
+    },
+    "Your session has ended.": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your session has ended."
+          }
+        }
+      }
+    },
+    "Your session has ended. Sign in again.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your session has ended. Sign in again."
+          }
+        }
+      }
+    },
+    "Your team’s seat allocation needs attention.": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your team’s seat allocation needs attention."
+          }
+        }
+      }
+    },
+    "Your team’s seat allocation needs attention. Contact your team administrator.": {
+      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your team’s seat allocation needs attention. Contact your team administrator."
+          }
+        }
+      }
+    },
+    "You’re offline. Your draft is saved when protected storage is available.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You’re offline. Your draft is saved when protected storage is available."
+          }
+        }
+      }
+    },
+    "You’ve reached your current chat allowance.": {
+      "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You’ve reached your current chat allowance."
+          }
+        }
+      }
+    },
+    "You’ve reached your usage limit.": {
+      "comment": "Chat composer, transcript, response progress, or message action. Control labels are also read by VoiceOver.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You’ve reached your usage limit."
+          }
+        }
+      }
+    },
+    "Zoom in": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom in"
+          }
+        }
+      }
+    },
+    "Zoom out": {
+      "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom out"
+          }
+        }
+      }
+    },
+    "browser.external-link-message": {
+      "comment": "External-link confirmation. %@ is the complete destination URL; preserve it without translation or modification. Maple is the application name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You’re leaving Maple content.\n%@"
+          }
+        }
+      }
+    },
+    "chat.image-count": {
+      "comment": "Number of image attachments belonging to one queued message.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld image"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld images"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "chat.queued-message-count": {
+      "comment": "Number of waiting messages shown on the composer queue-review button. The count excludes a response already running.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld queued message"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld queued messages"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

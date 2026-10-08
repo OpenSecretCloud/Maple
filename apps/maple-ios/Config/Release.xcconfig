@@ -1,0 +1,5 @@
+// Optimized development artifact only; production identity and distribution are separate.
+#include "Base.xcconfig"
+#include? "Local.generated.xcconfig"
+SWIFT_OPTIMIZATION_LEVEL = -O
+SWIFT_COMPILATION_MODE = wholemodule

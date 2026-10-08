@@ -1,0 +1,942 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "About Maple": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About Maple"
+          }
+        }
+      }
+    },
+    "Account": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account"
+          }
+        }
+      }
+    },
+    "Account management": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account management"
+          }
+        }
+      }
+    },
+    "Advanced models": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Advanced models"
+          }
+        }
+      }
+    },
+    "Appearance": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appearance"
+          }
+        }
+      }
+    },
+    "Arabic-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arabic-accented — Male"
+          }
+        }
+      }
+    },
+    "Casual — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casual — Female"
+          }
+        }
+      }
+    },
+    "Casual — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casual — Male"
+          }
+        }
+      }
+    },
+    "Change password": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change password"
+          }
+        }
+      }
+    },
+    "Chat font": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat font"
+          }
+        }
+      }
+    },
+    "Checking plan…": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking plan…"
+          }
+        }
+      }
+    },
+    "Cheerful — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cheerful — Female"
+          }
+        }
+      }
+    },
+    "Contact support": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contact support"
+          }
+        }
+      }
+    },
+    "Current period ends": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current period ends"
+          }
+        }
+      }
+    },
+    "Current plan": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current plan"
+          }
+        }
+      }
+    },
+    "Dark": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dark"
+          }
+        }
+      }
+    },
+    "Default instructions": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default instructions"
+          }
+        }
+      }
+    },
+    "Default model": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default model"
+          }
+        }
+      }
+    },
+    "Delete account": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete account"
+          }
+        }
+      }
+    },
+    "Delete all chat history": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete all chat history"
+          }
+        }
+      }
+    },
+    "Dutch-accented — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dutch-accented — Female"
+          }
+        }
+      }
+    },
+    "Dutch-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dutch-accented — Male"
+          }
+        }
+      }
+    },
+    "Email not verified": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Email not verified"
+          }
+        }
+      }
+    },
+    "Email verified": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Email verified"
+          }
+        }
+      }
+    },
+    "Free": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Free"
+          }
+        }
+      }
+    },
+    "French-accented — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "French-accented — Female"
+          }
+        }
+      }
+    },
+    "French-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "French-accented — Male"
+          }
+        }
+      }
+    },
+    "German-accented — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "German-accented — Female"
+          }
+        }
+      }
+    },
+    "German-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "German-accented — Male"
+          }
+        }
+      }
+    },
+    "Guest account": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guest account"
+          }
+        }
+      }
+    },
+    "Hindi-accented — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hindi-accented — Female"
+          }
+        }
+      }
+    },
+    "Hindi-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hindi-accented — Male"
+          }
+        }
+      }
+    },
+    "Italian-accented — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Italian-accented — Female"
+          }
+        }
+      }
+    },
+    "Italian-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Italian-accented — Male"
+          }
+        }
+      }
+    },
+    "Light": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Light"
+          }
+        }
+      }
+    },
+    "Loading preferences…": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading preferences…"
+          }
+        }
+      }
+    },
+    "Manrope": {
+      "comment": "Font or product plan name. Preserve the proper name unless the product has an official localized name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manrope"
+          }
+        }
+      }
+    },
+    "Max": {
+      "comment": "Font or product plan name. Preserve the proper name unless the product has an official localized name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Max"
+          }
+        }
+      }
+    },
+    "Models could not be loaded.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Models could not be loaded."
+          }
+        }
+      }
+    },
+    "Neutral — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neutral — Female"
+          }
+        }
+      }
+    },
+    "Neutral — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neutral — Male"
+          }
+        }
+      }
+    },
+    "No compatible models are currently available.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No compatible models are currently available."
+          }
+        }
+      }
+    },
+    "Plan": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plan"
+          }
+        }
+      }
+    },
+    "Plan details are unavailable. Paid features remain unavailable until your plan is known.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plan details are unavailable. Paid features remain unavailable until your plan is known."
+          }
+        }
+      }
+    },
+    "Playback speed": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Playback speed"
+          }
+        }
+      }
+    },
+    "Portuguese-accented — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Portuguese-accented — Female"
+          }
+        }
+      }
+    },
+    "Portuguese-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Portuguese-accented — Male"
+          }
+        }
+      }
+    },
+    "Preferences": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preferences"
+          }
+        }
+      }
+    },
+    "Privacy policy": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy policy"
+          }
+        }
+      }
+    },
+    "Pro": {
+      "comment": "Font or product plan name. Preserve the proper name unless the product has an official localized name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pro"
+          }
+        }
+      }
+    },
+    "Read aloud voice": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read aloud voice"
+          }
+        }
+      }
+    },
+    "Refresh account status": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh account status"
+          }
+        }
+      }
+    },
+    "Reset password": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset password"
+          }
+        }
+      }
+    },
+    "Retry saving preferences": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry saving preferences"
+          }
+        }
+      }
+    },
+    "Saved preferences could not be loaded.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved preferences could not be loaded."
+          }
+        }
+      }
+    },
+    "Serif": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Serif"
+          }
+        }
+      }
+    },
+    "Settings": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings"
+          }
+        }
+      }
+    },
+    "Sign in again to change preferences.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in again to change preferences."
+          }
+        }
+      }
+    },
+    "Sign out": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign out"
+          }
+        }
+      }
+    },
+    "Signed in": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signed in"
+          }
+        }
+      }
+    },
+    "Spanish-accented — Female": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spanish-accented — Female"
+          }
+        }
+      }
+    },
+    "Spanish-accented — Male": {
+      "comment": "Read-aloud voice label. Describes the provider voice or reference accent; this does not select the interface language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spanish-accented — Male"
+          }
+        }
+      }
+    },
+    "System": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System"
+          }
+        }
+      }
+    },
+    "Team": {
+      "comment": "Font or product plan name. Preserve the proper name unless the product has an official localized name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Team"
+          }
+        }
+      }
+    },
+    "Terms of service": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terms of service"
+          }
+        }
+      }
+    },
+    "Text size follows your system settings. Autoplay is off each time Maple launches.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Text size follows your system settings. Autoplay is off each time Maple launches."
+          }
+        }
+      }
+    },
+    "This change could not be saved on this device.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This change could not be saved on this device."
+          }
+        }
+      }
+    },
+    "Try again": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try again"
+          }
+        }
+      }
+    },
+    "Unavailable for your current account": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable for your current account"
+          }
+        }
+      }
+    },
+    "Unknown": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unknown"
+          }
+        }
+      }
+    },
+    "Verify email": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verify email"
+          }
+        }
+      }
+    },
+    "Version": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version"
+          }
+        }
+      }
+    },
+    "Web search": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web search"
+          }
+        }
+      }
+    },
+    "Why is web search unavailable?": {
+      "comment": "Explanation action under the disabled web-search switch at the top of the chat model selector. Opens the existing account, plan, or model compatibility explanation without changing the saved preference.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why is web search unavailable?"
+          }
+        }
+      }
+    },
+    "Your account has reached its current chat allowance.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your account has reached its current chat allowance."
+          }
+        }
+      }
+    },
+    "Your plan could not be loaded. Try refreshing account status.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your plan could not be loaded. Try refreshing account status."
+          }
+        }
+      }
+    },
+    "Your team has more members than paid seats. Contact your team administrator.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your team has more members than paid seats. Contact your team administrator."
+          }
+        }
+      }
+    },
+    "Your web search preference is saved. Web search requires an eligible paid plan and a compatible model.": {
+      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your web search preference is saved. Web search requires an eligible paid plan and a compatible model."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

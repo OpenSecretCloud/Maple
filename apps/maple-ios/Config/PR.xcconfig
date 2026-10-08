@@ -1,0 +1,10 @@
+#include "Base.xcconfig"
+// Fixed public development profile. Never include developer-local configuration.
+MAPLE_PROFILE = development
+MAPLE_API_URL = https:/$()/enclave.secretgpt.ai
+MAPLE_BILLING_URL = https:/$()/billing-dev.opensecret.cloud
+MAPLE_FLAGS_URL = https:/$()/flags-dev.opensecret.cloud
+MAPLE_AUTH_URL = https:/$()/app-dev.trymaple.ai
+MAPLE_CLIENT_ID = ba5a14b5-d915-47b1-b7b1-afda52bc5fc6
+SWIFT_OPTIMIZATION_LEVEL = -Onone
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) DEBUG

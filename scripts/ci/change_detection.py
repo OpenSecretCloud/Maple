@@ -31,7 +31,7 @@ INERT_FILES = frozenset(
         "apps/maple-research/zapstore.yaml",
     }
 )
-INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")
+INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/", "apps/maple-ios/")
 PURE_FRONTEND_PREFIXES = ("apps/maple-research/frontend/public/", "apps/maple-research/frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"apps/maple-research/frontend/icon.svg", "apps/maple-research/frontend/index.html"})
 PROXY_RUNTIME_PREFIXES = ("proxy/src/",)
@@ -68,6 +68,7 @@ IOS_ONNX_INPUTS = frozenset(
 )
 
 WORKFLOW_ROUTES = {
+    ".github/workflows/ios-native.yml": frozenset(),
     ".github/workflows/sdk-swift.yml": frozenset(),
     ".github/workflows/android-build.yml": frozenset({"android"}),
     ".github/workflows/android-pr-build.yml": frozenset({"android"}),
@@ -79,6 +80,7 @@ WORKFLOW_ROUTES = {
 }
 
 CI_SCRIPT_ROUTES = {
+    "scripts/ci/ios-native.sh": frozenset(),
     "scripts/ci/sdk-swift.sh": frozenset(),
     "scripts/ci/sdk-swift-backend.sh": frozenset(),
     "scripts/ci/_common.sh": frozenset({"frontend", *NATIVE_PLATFORMS, "ios_onnx"}),

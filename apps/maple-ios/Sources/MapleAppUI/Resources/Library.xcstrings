@@ -1,0 +1,691 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Another account update is in progress. Wait for it to finish.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another account update is in progress. Wait for it to finish."
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        }
+      }
+    },
+    "Chat name": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat name"
+          }
+        }
+      }
+    },
+    "Chats": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chats"
+          }
+        }
+      }
+    },
+    "Check the name or selection and try again.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the name or selection and try again."
+          }
+        }
+      }
+    },
+    "Close menu": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close menu"
+          }
+        }
+      }
+    },
+    "Create": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        }
+      }
+    },
+    "Delete": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete"
+          }
+        }
+      }
+    },
+    "Delete all chats": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete all chats"
+          }
+        }
+      }
+    },
+    "Delete chat?": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete chat?"
+          }
+        }
+      }
+    },
+    "Delete project": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete project"
+          }
+        }
+      }
+    },
+    "Delete selected chats": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete selected chats"
+          }
+        }
+      }
+    },
+    "Delete selected chats?": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete selected chats?"
+          }
+        }
+      },
+      "generatesSymbol": false
+    },
+    "Deleted chats cannot be restored.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deleted chats cannot be restored."
+          }
+        }
+      }
+    },
+    "Discard changes": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard changes"
+          }
+        }
+      }
+    },
+    "Discard unsaved changes?": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard unsaved changes?"
+          }
+        }
+      }
+    },
+    "Done selecting": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done selecting"
+          }
+        }
+      }
+    },
+    "Instructions": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instructions"
+          }
+        }
+      }
+    },
+    "Instructions apply to future messages. Save to apply your changes.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instructions apply to future messages. Save to apply your changes."
+          }
+        }
+      }
+    },
+    "Load more": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load more"
+          }
+        }
+      }
+    },
+    "Manage project": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage project"
+          }
+        }
+      }
+    },
+    "Maple could not confirm that all affected requests stopped. Nothing was deleted. Try again after the requests settle.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple could not confirm that all affected requests stopped. Nothing was deleted. Try again after the requests settle."
+          }
+        }
+      }
+    },
+    "Maple could not load or update this information. Check your connection and try again.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple could not load or update this information. Check your connection and try again."
+          }
+        }
+      }
+    },
+    "Maple could not verify the service response. Refresh before trying again.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple could not verify the service response. Refresh before trying again."
+          }
+        }
+      }
+    },
+    "Move selected chats": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move selected chats"
+          }
+        }
+      }
+    },
+    "Move to project": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to project"
+          }
+        }
+      }
+    },
+    "New chat": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New chat"
+          }
+        }
+      }
+    },
+    "New chat in project": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New chat in project"
+          }
+        }
+      }
+    },
+    "New project": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New project"
+          }
+        }
+      }
+    },
+    "No chats yet": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No chats yet"
+          }
+        }
+      }
+    },
+    "No project": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No project"
+          }
+        }
+      }
+    },
+    "Pin": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pin"
+          }
+        }
+      }
+    },
+    "Pinned": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pinned"
+          }
+        }
+      }
+    },
+    "Project actions": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project actions"
+          }
+        }
+      }
+    },
+    "Project instructions": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project instructions"
+          }
+        }
+      }
+    },
+    "Project name": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project name"
+          }
+        }
+      }
+    },
+    "Projects": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Projects"
+          }
+        }
+      }
+    },
+    "Recent": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent"
+          }
+        }
+      }
+    },
+    "Rename": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename"
+          }
+        }
+      }
+    },
+    "Rename chat": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename chat"
+          }
+        }
+      }
+    },
+    "Rename project": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename project"
+          }
+        }
+      }
+    },
+    "Save": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        }
+      }
+    },
+    "Search loaded titles": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search loaded titles"
+          }
+        }
+      }
+    },
+    "Select chats": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select chats"
+          }
+        }
+      }
+    },
+    "Settings": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings"
+          }
+        }
+      }
+    },
+    "Some selected chats could not be updated. The remaining selection still needs attention.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some selected chats could not be updated. The remaining selection still needs attention."
+          }
+        }
+      }
+    },
+    "The server deletion finished, but local cleanup needs another attempt before more changes can be made.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server deletion finished, but local cleanup needs another attempt before more changes can be made."
+          }
+        }
+      }
+    },
+    "This deletes every chat in this account, including chats in projects. Projects remain.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This deletes every chat in this account, including chats in projects. Projects remain."
+          }
+        }
+      }
+    },
+    "This permanently deletes the project and every chat in it.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This permanently deletes the project and every chat in it."
+          }
+        }
+      }
+    },
+    "Try again": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try again"
+          }
+        }
+      }
+    },
+    "Type DELETE to confirm": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. DELETE is the exact confirmation token and must remain untranslated.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type DELETE to confirm"
+          }
+        }
+      }
+    },
+    "Unpin": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unpin"
+          }
+        }
+      }
+    },
+    "Untitled chat": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untitled chat"
+          }
+        }
+      }
+    },
+    "Your sign-in changed. Reopen this screen to continue.": {
+      "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your sign-in changed. Reopen this screen to continue."
+          }
+        }
+      }
+    },
+    "Close settings": {
+      "comment": "Accessibility label for the close button on full-screen settings in regular-width layouts.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close settings"
+          }
+        }
+      }
+    },
+    "Chat actions": {
+      "comment": "Accessibility label for the main menu actions: selection, moving and deleting chats.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat actions"
+          }
+        }
+      }
+    },
+    "Clear search": {
+      "comment": "Accessibility label for clearing the main menu title search field.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear search"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

@@ -16,6 +16,9 @@ current source and tests take precedence over historical design documents.
 - `apps/maple-agent/`: GPUI desktop-v2 prototype, ACP and proxy CLI. Read its
   [guide](apps/maple-agent/AGENTS.md) and `$develop-maple-agent`. Its runtime and
   update discovery are separate from Research and its existing Agent Mode.
+- `apps/maple-ios/`: native SwiftUI app for iPhone and iPad, with an independent
+  unsigned validation lane and development identity. Read its
+  [guide](apps/maple-ios/AGENTS.md); its app core consumes `sdk/swift/`.
 - `sdk/`: TypeScript/React, Rust and Swift Maple SDKs for the OpenSecret backend. Read
   `$develop-opensecret-sdk` and the SDK documentation.
   The native Apple package under `sdk/swift/` has its own contributor guide,
@@ -123,6 +126,15 @@ manifest selects, so changing that manifest (a pin bump or a local link) is
 what selects its lanes. Tests, docs, container-only inputs, and standalone
 component lockfiles retain their independent lanes. Update the classifier and
 its table-driven tests when the dependency graph or component layout changes.
+
+Native iOS has its own `ios_native` hook component in the root `.#apple` shell
+and `ios-native.yml` workflow. Its change selector includes the app's explicit
+font inputs and root toolchain but does not select packaging for SDK-only
+edits. Native app changes do not select Research packaging. The hook runs
+format lint and deterministic package tests; CI also compiles the package for
+both iOS targets and builds unsigned PR-profile apps. Runtime fixtures and
+physical-device checks remain separate evidence.
+
 The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
 same checkout. Backend changes do not imply Research or Agent packaging.
