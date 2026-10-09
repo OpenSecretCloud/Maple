@@ -2666,15 +2666,20 @@ mod state_tests {
                 .iter()
                 .map(|row| (row.name.as_str(), row.enabled))
                 .collect();
-            // Curated integrations return in their own commit.
-            assert_eq!(rows, vec![("docs", true), ("wiki", false)]);
+            // The curated CUA row follows the servers, unconfigured here;
+            // no external agent is enabled in this fresh configuration.
+            assert_eq!(
+                rows,
+                vec![("docs", true), ("wiki", false), ("cua-driver", false)]
+            );
+            assert!(!this.session_mcp[2].available);
             assert_eq!(this.mcp_enabled_count, 1);
         });
 
         press(cx, "mcp-menu");
         assert_eq!(open_menu(&chat, cx), "Integrations");
         chat.update(cx, |this, _| {
-            assert_eq!(this.session_mcp.len(), 2, "opening the chip keeps the rows");
+            assert_eq!(this.session_mcp.len(), 3, "opening the chip keeps the rows");
         });
         assert!(
             cx.debug_bounds("mcp-Mcp-docs").is_some(),
