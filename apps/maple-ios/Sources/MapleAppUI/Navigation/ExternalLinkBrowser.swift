@@ -167,7 +167,6 @@
         var body: some View {
             NavigationStack {
                 VStack(spacing: 0) {
-                    if model.isLoading { ProgressView().frame(maxWidth: .infinity).padding(4) }
                     if model.failed {
                         HStack {
                             Text(MapleStrings.text("This page couldn’t be loaded."))

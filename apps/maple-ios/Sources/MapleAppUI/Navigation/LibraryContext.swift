@@ -53,21 +53,39 @@
 
         private func attach(_ model: LibraryModel) {
             models.removeAll { $0.value == nil }; models.append(WeakLibraryOwner(model))
-            model.onConversationsDeleted = { [weak self] ids, all in
+            model.onConversationsDeleted = { [weak self, weak model] ids, all in
                 guard let self, active else { return }
+                for other in models.compactMap(\.value) where other !== model {
+                    other.receiveDeletion(ids, all: all, from: scope)
+                }
                 onConversationsDeleted?(ids, all)
             }
-            model.onConversationUpdated = { [weak self] value in
+            model.onConversationUpdated = { [weak self, weak model] value in
                 guard let self, active else { return }
+                for other in models.compactMap(\.value) where other !== model {
+                    other.receiveConversationUpdate(value, from: scope)
+                }
                 onConversationUpdated?(value)
             }
-            model.onConversationProjectUpdated = { [weak self] ids, projectID in
+            model.onConversationProjectUpdated = { [weak self, weak model] ids, projectID in
                 guard let self, active else { return }
+                for other in models.compactMap(\.value) where other !== model {
+                    other.receiveProjectMembership(ids, projectID: projectID, from: scope)
+                }
                 onConversationProjectUpdated?(ids, projectID)
             }
-            model.onProjectDeleted = { [weak self] id in
+            model.onProjectDeleted = { [weak self, weak model] id in
                 guard let self, active else { return }
+                for other in models.compactMap(\.value) where other !== model {
+                    other.receiveProjectDeletion(id, from: scope)
+                }
                 onProjectDeleted?(id)
+            }
+            model.onProjectUpdated = { [weak self, weak model] value in
+                guard let self, active else { return }
+                for other in models.compactMap(\.value) where other !== model {
+                    other.receiveProjectUpdate(value, from: scope)
+                }
             }
         }
     }

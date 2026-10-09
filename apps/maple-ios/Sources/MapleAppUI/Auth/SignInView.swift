@@ -63,7 +63,6 @@
                         }
                         Button(action: submit) {
                             HStack {
-                                if session.phase == .authenticating { ProgressView().tint(MapleAccent.onProminent) }
                                 Text(
                                     mode == .signup ? MapleStrings.text("Create account") : MapleStrings.text("Sign in")
                                 )

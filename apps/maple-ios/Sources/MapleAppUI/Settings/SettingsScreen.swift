@@ -34,7 +34,7 @@
                             canChangePassword: ["email", "guest"].contains(user.loginMethod.lowercased())),
                         version: version, onAction: handle)
                 } else {
-                    ProgressView(MapleStrings.text("Loading account…"))
+                    MapleSurface.canvas
                 }
             }
             .navigationDestination(

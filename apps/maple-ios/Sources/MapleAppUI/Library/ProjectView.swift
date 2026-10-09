@@ -45,11 +45,13 @@
                         }
                     }
                 }
+                .listRowSeparator(.hidden).listRowBackground(Color.clear)
                 Section {
                     ForEach(library.visibleConversations, id: \.id) { conversation in
-                        ConversationLibraryRow(conversation: conversation, library: library, onSelect: onSelectChat)
+                        ConversationLibraryRow(
+                            conversation: conversation, library: library, onSelect: onSelectChat,
+                            onMutation: { await library.refresh() })
                     }
-                    if library.isLoading { ProgressView() }
                     if library.hasMore {
                         Button {
                             Task { await library.loadMore() }
@@ -62,9 +64,13 @@
                     }
                     if let issue = library.issue { LibraryIssueView(issue: issue) }
                 } header: {
-                    libraryText("Chats")
+                    libraryText("Chats").font(.headline)
                 }
+                .textCase(nil).listRowSeparator(.hidden).listRowBackground(Color.clear)
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.sidebar)
             .navigationTitle(renamed ?? project.name)
             .navigationDestination(
                 isPresented: Binding(
@@ -74,7 +80,7 @@
                 if let instructionEditor { InstructionEditorView(editor: instructionEditor) }
             }
             .searchable(
-                text: $library.searchText, prompt: Text("Search loaded titles", tableName: "Library", bundle: .module)
+                text: $library.searchText, prompt: Text("Search chats", tableName: "Library", bundle: .module)
             )
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -294,6 +294,7 @@ import UIKit
         let record = XCTAttachment(string: oldChat)
         record.name = "Exact synthetic queue cleanup conversation ID"; record.lifetime = .keepAlways; add(record)
         tap("chat.menu")
+        tap("library.actions")
         let settings = app.buttons["library.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 20)); XCTAssertTrue(settings.isHittable)
         XCTAssertTrue(settings.isEnabled); settings.tap(); try signOutFromSettings()

@@ -12,6 +12,7 @@
         var accountGeneration: UUID? = nil
         var isCurrentOwner: () -> Bool = { true }
         let placeholder: String
+        var isCompact = false
         var accessibilityIdentifier = "chat.composer"
         var externalSelection: DictationEditorState? = nil
         var onChange: (DictationEditorState, [DictationTextEdit]) -> Void = { _, _ in }
@@ -63,7 +64,7 @@
             // Keep the normal tap surface and eight-line cap, then honor the
             // composer budget without reducing the native font. UITextView scrolls
             // its remaining content when chrome and the keyboard need more room.
-            let preferred = min(max(44, max(line, size.height)), max(44, line * 8))
+            let preferred = isCompact ? max(44, line) : min(max(44, max(line, size.height)), max(44, line * 8))
             let available = proposal.height.flatMap { $0.isFinite ? max(0, $0) : nil }
             let minimum = max(44, line)
             return CGSize(width: width, height: min(preferred, max(minimum, available ?? preferred)))
@@ -287,6 +288,12 @@
                 view.accessibilityLabel = parent.placeholder
                 view.placeholderLabel.text = parent.placeholder
                 let previousSelection = view.selectedRange
+                let maximumLines = parent.isCompact ? 1 : 0
+                if view.textContainer.maximumNumberOfLines != maximumLines {
+                    view.textContainer.maximumNumberOfLines = maximumLines
+                    view.textContainer.lineBreakMode = parent.isCompact ? .byTruncatingTail : .byWordWrapping
+                }
+                view.placeholderLabel.numberOfLines = parent.isCompact ? 1 : 0
                 if ownerChanged {
                     view.invalidateReturnCommands()
                     owner = nextOwner

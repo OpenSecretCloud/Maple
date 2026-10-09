@@ -77,12 +77,13 @@ import XCTest
             XCTFail("The current project and account owner must remain available")
             return
         }
-        let title = app.staticTexts.matching(identifier: "library.project." + currentProjectID)
+        let title = app.buttons.matching(identifier: "library.project." + currentProjectID)
             .matching(NSPredicate(format: "label == %@", name)).firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 20))
         for _ in 0..<4 where !title.isHittable { app.swipeDown() }
+        XCTAssertTrue(title.isHittable)
+        title.press(forDuration: 1)
         let manage = app.buttons["library.project.manage." + currentProjectID].firstMatch
-        if !manage.exists { title.tap() }
         XCTAssertTrue(manage.waitForExistence(timeout: 15))
         for _ in 0..<5 where !manage.isHittable { app.swipeUp() }
         XCTAssertTrue(manage.isHittable); manage.tap()
@@ -107,6 +108,58 @@ import XCTest
         app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "library.chat.", title)
         ).firstMatch
+    }
+
+    func testLocalComposerProjectPickerCreatesSelectsClearsAndDeletesOwnedProject() throws {
+        try launchLocal()
+        let project = uniqueName("picker project")
+        tap("chat.new")
+        let composer = app.textViews["chat.composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let draft = try XCTUnwrap(composer.value as? String)
+        tap("chat.project")
+        let picker = app.navigationBars["Projects"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 15))
+        tap("project-picker.new-project")
+        let alert = app.alerts["New project"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 10))
+        XCTAssertFalse(alert.buttons["Create"].isEnabled)
+        alert.textFields.firstMatch.tap(); alert.textFields.firstMatch.typeText(project)
+        referenceScreenshot("composer project picker create")
+        alert.buttons["Create"].tap()
+        let dismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                !picker.exists && !alert.exists && composer.exists && composer.isHittable
+            }, object: app)
+        let creationDismissed = XCTWaiter.wait(for: [dismissed], timeout: 20)
+        // Record the returned UUID before asserting dismissal/selection, so an
+        // observed created project remains owned by the existing teardown.
+        if !picker.exists { tap("chat.project") }
+        let createdRows = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "project-picker.project.", project))
+        let created = createdRows.firstMatch
+        XCTAssertTrue(created.waitForExistence(timeout: 20))
+        XCTAssertEqual(createdRows.count, 1, "The unique synthetic project must resolve to exactly one picker row")
+        let id = String(created.identifier.dropFirst("project-picker.project.".count))
+        guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
+        try rememberProject(id); currentProjectID = id
+        XCTAssertEqual(creationDismissed, .completed, "Creating a project must automatically dismiss the picker")
+        XCTAssertTrue(created.isSelected, "The returned project must be selected in the composer")
+        referenceScreenshot("composer created project selected")
+        tap("project-picker.project.none")
+        try cleanupWait { !picker.exists && composer.exists && composer.isHittable }
+        XCTAssertEqual(composer.value as? String, draft)
+        tap("chat.project")
+        let none = app.buttons["project-picker.project.none"]
+        XCTAssertTrue(none.waitForExistence(timeout: 15))
+        XCTAssertTrue(none.isSelected, "No project selection must be retained after reopening")
+        XCTAssertFalse(created.isSelected)
+        referenceScreenshot("composer no project selected")
+        tap("project-picker.project.none")
+        try cleanupWait { !picker.exists && composer.exists && composer.isHittable }
+        XCTAssertEqual(composer.value as? String, draft)
+        openMenu(); openProject(project); deleteCurrentProject()
+        XCTAssertFalse(app.buttons["library.project." + id].exists)
     }
 
     func testLocalProjectInstructionsSaveDiscardRenameAndExactDeletion() throws {
@@ -376,15 +429,15 @@ extension LibraryWorkflowUITests {
         guard try !ownedJournal().pendingCreationProjectIDs.contains(id) else {
             throw LibraryCleanupIssue.unjournaledProjectChat
         }
-        let target = app.descendants(matching: .any).matching(identifier: "library.project." + id).firstMatch
+        let target = app.buttons.matching(identifier: "library.project." + id).firstMatch
         // Missing or inaccessible IDs remain journaled. Only a confirmed UI
         // deletion removes an ID; a page load is not authority to forget it.
-        try cleanupWait { self.app.activityIndicators.count == 0 }
+        try cleanupWait { target.exists || self.app.staticTexts["library.error"].exists }
         if app.staticTexts["library.error"].exists { throw LibraryCleanupIssue.loadingFailed }
         guard target.exists else { throw LibraryCleanupIssue.deletionUnconfirmed }
         for _ in 0..<20 where !target.isHittable { app.swipeUp() }
         guard target.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
-        target.tap(); try cleanupTap("Manage project")
+        target.press(forDuration: 1); try cleanupTap("library.project.manage." + id)
         try loadAllHistoryPages()
         // Every recorded chat is cleaned first. Refuse cascade deletion if the
         // project now contains any other chat, including an unrecorded test result.

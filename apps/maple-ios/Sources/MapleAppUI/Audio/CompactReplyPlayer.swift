@@ -21,10 +21,6 @@
                     HStack {
                         Text("Maple", tableName: "Audio", bundle: .module).font(.headline)
                         Spacer()
-                        if session.phase == .preparing {
-                            ProgressView().accessibilityLabel(
-                                Text("Preparing reply audio", tableName: "Audio", bundle: .module))
-                        }
                         if let chatID = session.current?.chatID ?? session.pending.first?.chatID {
                             Toggle(
                                 isOn: Binding(
@@ -68,7 +64,7 @@
                     if let issue = session.issue { SpeechIssueText(issue: issue).font(.footnote) }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
                 .accessibilityElement(children: .contain).accessibilityIdentifier("audio.player")
             }
         }

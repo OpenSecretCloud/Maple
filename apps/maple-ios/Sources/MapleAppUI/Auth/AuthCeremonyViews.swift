@@ -69,7 +69,7 @@
             _email = State(initialValue: ceremonies.accountEmail ?? "")
         }
         public var body: some View {
-            Form {
+            List {
                 if ceremonies.state == .completed(.passwordReset) {
                     Section {
                         Text(
@@ -117,10 +117,11 @@
                     }
                 }
                 if let issue = ceremonies.issue { Section { AuthIssueView(issue: issue) } }
-                if ceremonies.isBusy {
-                    ProgressView().accessibilityLabel(Text("Working…", tableName: "Auth", bundle: .module))
-                }
             }
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
             .navigationTitle(Text("Reset password", tableName: "Auth", bundle: .module))
             .confirmationDialog(
                 Text("Resetting your password deletes private data", tableName: "Auth", bundle: .module),
@@ -191,7 +192,7 @@
             self.ceremonies = ceremonies; initialCode = code; _code = State(initialValue: code ?? "")
         }
         public var body: some View {
-            Form {
+            List {
                 if ceremonies.state == .completed(.emailVerified) {
                     Text("Your email is verified.", tableName: "Auth", bundle: .module).accessibilityIdentifier(
                         "auth.verified")
@@ -222,8 +223,11 @@
                     }
                 }
                 if let issue = ceremonies.issue { AuthIssueView(issue: issue) }
-                if ceremonies.isBusy { ProgressView() }
             }
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
             .navigationTitle(Text("Verify email", tableName: "Auth", bundle: .module))
             .task { if let initialCode { await ceremonies.verifyEmail(code: initialCode) } }
             .onChange(of: initialCode) { _, value in
@@ -242,7 +246,7 @@
         @State private var confirmation = ""
         public init(ceremonies: AuthCeremonies) { self.ceremonies = ceremonies }
         public var body: some View {
-            Form {
+            List {
                 if ceremonies.state == .completed(.passwordChanged) {
                     Text("Your password was changed.", tableName: "Auth", bundle: .module).accessibilityIdentifier(
                         "auth.password-changed")
@@ -279,8 +283,11 @@
                     }.disabled(ceremonies.isBusy)
                 }
                 if let issue = ceremonies.issue { AuthIssueView(issue: issue) }
-                if ceremonies.isBusy { ProgressView() }
             }
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
             .navigationTitle(Text("Change password", tableName: "Auth", bundle: .module))
             .interactiveDismissDisabled(ceremonies.isBusy).navigationBarBackButtonHidden(ceremonies.isBusy)
             .onChange(of: ceremonies.state) { _, value in
@@ -300,7 +307,7 @@
         @State private var confirmingCode = false
         public init(ceremonies: AuthCeremonies) { self.ceremonies = ceremonies }
         public var body: some View {
-            Form {
+            List {
                 if ceremonies.state == .completed(.accountDeleted) {
                     Text(
                         "Your account was deleted. Maple is clearing this account’s local data.", tableName: "Auth",
@@ -348,8 +355,11 @@
                     }.disabled(ceremonies.isBusy)
                 }
                 if let issue = ceremonies.issue { AuthIssueView(issue: issue) }
-                if ceremonies.isBusy { ProgressView() }
             }
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
             .navigationTitle(Text("Delete account", tableName: "Auth", bundle: .module))
             .interactiveDismissDisabled(ceremonies.isBusy).navigationBarBackButtonHidden(ceremonies.isBusy)
             .onChange(of: ceremonies.state) { _, value in

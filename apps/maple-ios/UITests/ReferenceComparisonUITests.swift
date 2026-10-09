@@ -473,9 +473,17 @@ import XCTest
     }
     private func openSettings() throws {
         _ = try openLibrary()
-        // The Settings gear is adjacent to the persistent root search field.
+        // Settings is an explicit action in the principal Maple menu.
+        tap("library.actions", attempts: 24, in: app)
         tap("library.settings", attempts: 24, in: app)
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 20))
+    }
+    private func returnFromModelPicker() {
+        XCTAssertTrue(app.collectionViews["settings.models"].exists)
+        let back = app.navigationBars.buttons.matching(
+            NSPredicate(format: "label == %@ OR label == %@", "Settings", "Back")
+        ).firstMatch
+        XCTAssertTrue(back.exists); XCTAssertTrue(back.isHittable); back.tap()
     }
     private func closeSettings() {
         if app.buttons["library.settings-close"].exists {
@@ -593,8 +601,7 @@ import XCTest
         selectAndVerifyAppearance()
         tap("settings.font"); tap("Manrope")
         tap("Default model"); tap("settings.model.auto:quick")
-        let back = app.navigationBars["Default model"].buttons.firstMatch
-        XCTAssertTrue(back.isHittable); back.tap()
+        returnFromModelPicker()
         verifyWebPreference()
         try alignPlaybackSpeed()
         verifiedCell = cellKey
@@ -713,7 +720,7 @@ import XCTest
     private func openMenuChats() throws -> XCUIElement {
         let sidebar = try openLibrary()
         XCTAssertTrue(app.textFields["library.search"].waitForExistence(timeout: 20))
-        XCTAssertTrue(app.buttons["library.settings"].isHittable)
+        XCTAssertTrue(app.buttons["library.actions"].isHittable)
         XCTAssertFalse(app.buttons["library.history"].exists)
         XCTAssertFalse(app.navigationBars["All chats"].exists)
         return sidebar
@@ -1187,6 +1194,60 @@ import XCTest
         let cancellationRecord = XCTAttachment(string: String(decoding: cancellationData, as: UTF8.self))
         cancellationRecord.name = "Physical-left cancelled preview geometry"
         cancellationRecord.lifetime = .keepAlways; add(cancellationRecord)
+        // Compare query identity and bounded geometry without recording message content.
+        func elementGeometry(_ element: XCUIElement) -> [String: Any] {
+            let exists = element.exists
+            let frame = exists ? element.frame : .zero
+            let finite = [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+            let canQueryHittability = exists && finite && frame.width > 0 && frame.height > 0
+            return [
+                "exists": exists, "type": element.elementType.rawValue,
+                "x": frame.minX.isFinite ? Double(frame.minX) : -Double.greatestFiniteMagnitude,
+                "y": frame.minY.isFinite ? Double(frame.minY) : -Double.greatestFiniteMagnitude,
+                "width": frame.width.isFinite ? Double(frame.width) : -Double.greatestFiniteMagnitude,
+                "height": frame.height.isFinite ? Double(frame.height) : -Double.greatestFiniteMagnitude,
+                "hittabilityQueried": canQueryHittability,
+                "hittable": canQueryHittability ? element.isHittable : false,
+            ]
+        }
+        func candidateGeometry(_ query: XCUIElementQuery) -> [String: Any] {
+            let count = query.count
+            let leafTypes = [
+                XCUIElement.ElementType.staticText.rawValue, XCUIElement.ElementType.textView.rawValue,
+                XCUIElement.ElementType.button.rawValue, XCUIElement.ElementType.image.rawValue,
+                XCUIElement.ElementType.link.rawValue,
+            ]
+            let candidates: [[String: Any]] = (0..<min(count, 8)).map { index in
+                let candidate = query.element(boundBy: index)
+                var record = elementGeometry(candidate)
+                record["index"] = index
+                if index < 2 {
+                    let leaves = candidate.descendants(matching: .any).matching(
+                        NSPredicate(format: "elementType IN %@", leafTypes))
+                    let leafCount = leaves.count
+                    record["leafCount"] = leafCount
+                    record["leaves"] = (0..<min(leafCount, 8)).map { leafIndex in
+                        var leaf = elementGeometry(leaves.element(boundBy: leafIndex))
+                        leaf["index"] = leafIndex
+                        return leaf
+                    }
+                }
+                return record
+            }
+            return ["count": count, "candidates": candidates]
+        }
+        let identityGeometry: [String: Any] = [
+            "heldOriginalAnchor": elementGeometry(anchor),
+            "heldAfterEdgeClose": elementGeometry(afterEdgeClose),
+            "freshAfterCancelledPreview": elementGeometry(afterCancelledPreview),
+            "appMatches": candidateGeometry(app.descendants(matching: .any).matching(identifier: identifier)),
+            "transcriptMatches": candidateGeometry(
+                transcript.descendants(matching: .any).matching(identifier: identifier)),
+        ]
+        let identityData = try JSONSerialization.data(withJSONObject: identityGeometry, options: .sortedKeys)
+        let identityRecord = XCTAttachment(string: String(decoding: identityData, as: UTF8.self))
+        identityRecord.name = "Physical-left cancelled preview query identity geometry"
+        identityRecord.lifetime = .keepAlways; add(identityRecord)
         XCTAssertEqual(settledResult, .completed)
         XCTAssertFalse(app.buttons["library.close"].exists)
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "library.drawer").firstMatch.exists)
@@ -1246,7 +1307,7 @@ import XCTest
             ("sidebar", app.collectionViews["library.sidebar-list"]),
             ("close", app.buttons["library.close"]),
             ("searchField", app.textFields["library.search"]),
-            ("settingsGear", app.buttons["library.settings"]),
+            ("menuActions", app.buttons["library.actions"]),
         ] {
             let exists = element.exists
             let frame = exists ? element.frame : .zero
@@ -1335,7 +1396,7 @@ import XCTest
         try start(signedIn: true); let library = try openLibrary()
         capture("library")
         XCTAssertTrue(app.textFields["library.search"].exists)
-        XCTAssertTrue(app.buttons["library.settings"].isHittable)
+        XCTAssertTrue(app.buttons["library.actions"].isHittable)
         XCTAssertFalse(app.buttons["library.history"].exists)
         XCTAssertFalse(app.navigationBars["All chats"].exists)
         XCTAssertFalse(app.navigationBars["Maple"].exists, "The logo remains without a separate Maple title")
@@ -1412,8 +1473,9 @@ import XCTest
         try start(signedIn: true)
         guard let id = input.projectID else { throw XCTSkip("No explicit shared synthetic project ID supplied") }
         let library = try openLibrary()
-        let project = app.descendants(matching: .any).matching(identifier: "library.project." + id).firstMatch
-        reveal(project, down: true, attempts: 24, in: library); project.tap(); tap("library.project.manage." + id)
+        let project = app.buttons.matching(identifier: "library.project." + id).firstMatch
+        reveal(project, down: true, attempts: 24, in: library)
+        project.press(forDuration: 1); tap("library.project.manage." + id)
         capture("project")
         tap("Project instructions")
         XCTAssertTrue(app.textViews["library.instructions-text"].waitForExistence(timeout: 20))
@@ -1424,6 +1486,7 @@ import XCTest
     func testCaptureReadOnlyModelsAndFeatureAccess() throws {
         try start(signedIn: true); tap("chat.new")
         try replaceSyntheticText(composer, with: "Unsent comparison draft", in: app)
+        composer.tap()
         tap("chat.model")
         XCTAssertTrue(app.buttons["settings.model.auto:quick"].waitForExistence(timeout: 20))
         let web = app.switches["model.web-search"]
@@ -1449,6 +1512,7 @@ import XCTest
             XCTAssertEqual(XCTWaiter.wait(for: [flipped], timeout: 10), .completed)
             tap("Done")
             XCTAssertEqual(composer.value as? String, "Unsent comparison draft")
+            composer.tap()
             tap("chat.model")
             let reopened = app.switches["model.web-search"]
             XCTAssertTrue(reopened.waitForExistence(timeout: 20)); XCTAssertTrue(reopened.isEnabled)
@@ -1532,7 +1596,7 @@ import XCTest
         tapSettingsRow("settings.theme", down: true); capture("settings-appearance-options")
         tap(input.appearance == "light" ? "Light" : "Dark")
         tapSettingsRow("Default model"); capture("settings-models")
-        app.navigationBars["Default model"].buttons.firstMatch.tap()
+        returnFromModelPicker()
         tapSettingsRow("Default instructions")
         XCTAssertTrue(app.textViews["library.instructions-text"].waitForExistence(timeout: 20))
         capture("account-instructions"); tap("library.instructions-cancel")

@@ -38,7 +38,7 @@
         }
 
         public var body: some View {
-            Form {
+            List {
                 accountSection
                 Section {
                     planRow
@@ -107,6 +107,10 @@
                     settingsText("About Maple")
                 }
             }
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
             .navigationTitle(settingsText("Settings"))
             .task { await preferences.load() }
             .accessibilityIdentifier("settings.screen")
@@ -141,8 +145,10 @@
         @ViewBuilder private var planRow: some View {
             switch entitlements.billing {
             case .unknown, .loading:
-                HStack {
-                    settingsText("Checking plan…"); Spacer(); ProgressView()
+                LabeledContent {
+                    Text(verbatim: "—").foregroundStyle(.secondary)
+                } label: {
+                    settingsText("Current plan")
                 }
             case .failed:
                 settingsText("Your plan could not be loaded. Try refreshing account status.")
@@ -175,9 +181,7 @@
             Section {
                 switch preferences.state {
                 case .idle, .loading:
-                    HStack {
-                        settingsText("Loading preferences…"); Spacer(); ProgressView()
-                    }
+                    preferenceControls.disabled(true)
                 case .failed:
                     settingsText("Saved preferences could not be loaded.")
                     Button {
@@ -186,75 +190,80 @@
                         settingsText("Try again")
                     }
                 case .retired: settingsText("Sign in again to change preferences.")
-                case .ready:
-                    Picker(selection: Binding(get: { preferences.value.theme }, set: { preferences.setTheme($0) })) {
-                        ForEach(MapleTheme.allCases, id: \.self) { settingsText($0.settingsLabel).tag($0) }
-                    } label: {
-                        settingsText("Appearance")
-                    }
-                    .accessibilityIdentifier("settings.theme")
-                    Picker(
-                        selection: Binding(get: { preferences.value.chatFont }, set: { preferences.setChatFont($0) })
-                    ) {
-                        ForEach(MapleChatFont.allCases, id: \.self) { settingsText($0.settingsLabel).tag($0) }
-                    } label: {
-                        settingsText("Chat font")
-                    }
-                    .accessibilityIdentifier("settings.font")
-                    NavigationLink {
-                        SettingsModelPicker(entitlements: entitlements) { id in preferences.setSelectedModelID(id) }
-                    } label: {
-                        settingsText("Default model")
-                    }
-                    Toggle(
-                        isOn: Binding(
-                            get: { preferences.value.webSearchPreferred },
-                            set: {
-                                preferences.setWebSearchPreferred($0); entitlements.webSearchPreferred = $0
-                            }
-                        )
-                    ) { settingsText("Web search") }
-                    .disabled(entitlements.webSearchAccess != .allowed)
-                    .accessibilityIdentifier("settings.web-search")
-                    if entitlements.webSearchAccess != .allowed {
-                        settingsText(
-                            "Your web search preference is saved. Web search requires an eligible paid plan and a compatible model."
-                        )
-                        .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Picker(selection: Binding(get: { preferences.value.voice }, set: { preferences.setVoice($0) })) {
-                        ForEach(MapleVoice.allCases, id: \.self) { settingsText($0.settingsLabel).tag($0) }
-                    } label: {
-                        settingsText("Read aloud voice")
-                    }
-                    .accessibilityIdentifier("settings.voice")
-                    Picker(
-                        selection: Binding(
-                            get: { preferences.value.playbackSpeed }, set: { preferences.setPlaybackSpeed($0) }
-                        )
-                    ) {
-                        ForEach(MaplePlaybackSpeed.allCases, id: \.self) { speed in
-                            Text(
-                                verbatim: "\(speed.rawValue.formatted(.number.precision(.fractionLength(0...2))))×"
-                            ).tag(speed)
-                        }
-                    } label: {
-                        settingsText("Playback speed")
-                    }
-                    .accessibilityIdentifier("settings.speed")
-                    settingsText("Text size follows your system settings. Autoplay is off each time Maple launches.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if preferences.saveIssue != nil {
-                        settingsText("This change could not be saved on this device.")
-                        Button {
-                            preferences.retrySave()
-                        } label: {
-                            settingsText("Retry saving preferences")
-                        }
-                    }
+                case .ready: preferenceControls
                 }
             } header: {
                 settingsText("Preferences")
+            }
+        }
+
+        @ViewBuilder private var preferenceControls: some View {
+            Group {
+                Picker(selection: Binding(get: { preferences.value.theme }, set: { preferences.setTheme($0) })) {
+                    ForEach(MapleTheme.allCases, id: \.self) { settingsText($0.settingsLabel).tag($0) }
+                } label: {
+                    settingsText("Appearance")
+                }
+                .accessibilityIdentifier("settings.theme")
+                Picker(
+                    selection: Binding(get: { preferences.value.chatFont }, set: { preferences.setChatFont($0) })
+                ) {
+                    ForEach(MapleChatFont.allCases, id: \.self) { settingsText($0.settingsLabel).tag($0) }
+                } label: {
+                    settingsText("Chat font")
+                }
+                .accessibilityIdentifier("settings.font")
+                NavigationLink {
+                    SettingsModelPicker(entitlements: entitlements) { id in preferences.setSelectedModelID(id) }
+                } label: {
+                    settingsText("Default model")
+                }
+                Toggle(
+                    isOn: Binding(
+                        get: { preferences.value.webSearchPreferred },
+                        set: {
+                            preferences.setWebSearchPreferred($0); entitlements.webSearchPreferred = $0
+                        }
+                    )
+                ) { settingsText("Web search") }
+                .disabled(entitlements.webSearchAccess != .allowed)
+                .accessibilityIdentifier("settings.web-search")
+                if entitlements.webSearchAccess != .allowed {
+                    settingsText(
+                        "Your web search preference is saved. Web search requires an eligible paid plan and a compatible model."
+                    )
+                    .font(.footnote).foregroundStyle(.secondary)
+                }
+                Picker(selection: Binding(get: { preferences.value.voice }, set: { preferences.setVoice($0) })) {
+                    ForEach(MapleVoice.allCases, id: \.self) { settingsText($0.settingsLabel).tag($0) }
+                } label: {
+                    settingsText("Read aloud voice")
+                }
+                .accessibilityIdentifier("settings.voice")
+                Picker(
+                    selection: Binding(
+                        get: { preferences.value.playbackSpeed }, set: { preferences.setPlaybackSpeed($0) }
+                    )
+                ) {
+                    ForEach(MaplePlaybackSpeed.allCases, id: \.self) { speed in
+                        Text(
+                            verbatim: "\(speed.rawValue.formatted(.number.precision(.fractionLength(0...2))))×"
+                        ).tag(speed)
+                    }
+                } label: {
+                    settingsText("Playback speed")
+                }
+                .accessibilityIdentifier("settings.speed")
+                settingsText("Text size follows your system settings. Autoplay is off each time Maple launches.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if preferences.saveIssue != nil {
+                    settingsText("This change could not be saved on this device.")
+                    Button {
+                        preferences.retrySave()
+                    } label: {
+                        settingsText("Retry saving preferences")
+                    }
+                }
             }
         }
 
@@ -314,10 +323,7 @@
                             .accessibilityIdentifier("model.web-search")
                         if let preferences = webSearchPreferences {
                             switch preferences.state {
-                            case .idle, .loading:
-                                HStack {
-                                    settingsText("Loading preferences…"); Spacer(); ProgressView()
-                                }
+                            case .idle, .loading: EmptyView()
                             case .failed:
                                 settingsText("Saved preferences could not be loaded.")
                                 Button {
@@ -334,13 +340,10 @@
                             Button {
                                 webSearchNoticePresented = true
                             } label: {
-                                Label {
-                                    settingsText("Why is web search unavailable?")
-                                } icon: {
-                                    Image(systemName: "info.circle")
-                                }
+                                Image(systemName: "info.circle")
                             }
-                            .frame(minHeight: 44)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .accessibilityLabel(settingsText("Why is web search unavailable?"))
                             .accessibilityValue(MapleStrings.text("Unavailable"))
                             .accessibilityHint(MapleStrings.text("Learn why this feature is unavailable."))
                             .accessibilityIdentifier("model.web-search-unavailable")
@@ -348,7 +351,7 @@
                     }
                 }
                 switch entitlements.catalog {
-                case .unknown, .loading: ProgressView()
+                case .unknown, .loading: EmptyView()
                 case .failed:
                     settingsText("Models could not be loaded.")
                     Button {
@@ -368,7 +371,11 @@
                     }
                 }
             }
-            .navigationTitle(settingsText("Default model"))
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("settings.models")
             .sheet(isPresented: $webSearchNoticePresented) {
                 MediaFeatureNotice(feature: .webSearch, account: entitlements)
@@ -380,21 +387,24 @@
                 if entitlements.selectModel(model.id) == .allowed { onSelection(model.id) }
             } label: {
                 HStack {
-                    VStack(alignment: .leading) {
-                        Text(verbatim: model.label)
-                        if let description = model.description {
-                            Text(verbatim: description).font(.caption).foregroundStyle(.secondary)
-                        }
-                        if entitlements.modelAccess(model) != .allowed {
-                            settingsText("Unavailable for your current account").font(.caption)
-                        }
-                    }
+                    Text(verbatim: model.label).foregroundStyle(.primary)
                     Spacer()
-                    if entitlements.selectedModelID == model.id { Image(systemName: "checkmark") }
+                    if entitlements.modelAccess(model) != .allowed {
+                        Image(systemName: "lock").foregroundStyle(.secondary)
+                    }
+                    if entitlements.selectedModelID == model.id {
+                        Image(systemName: "checkmark").foregroundStyle(MapleAccent.foreground)
+                    }
                 }
+                .frame(minHeight: 44).contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .disabled(entitlements.modelAccess(model) != .allowed)
             .accessibilityAddTraits(entitlements.selectedModelID == model.id ? .isSelected : [])
+            .accessibilityValue(
+                entitlements.modelAccess(model) == .allowed
+                    ? Text(verbatim: "") : settingsText("Unavailable for your current account")
+            )
             .accessibilityIdentifier("settings.model.\(model.id)")
         }
     }

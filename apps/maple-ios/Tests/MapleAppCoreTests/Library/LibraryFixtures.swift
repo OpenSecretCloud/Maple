@@ -34,6 +34,14 @@ actor LibraryFixture: LibraryServing {
     var instructionSaveGate: ChatTestGate?
     var instructionSaveFailure = false
     var instructionUpdateIDs: [String] = []
+    var conversationListCalls: [ConversationsListParameters] = []
+    var projects = [
+        ConversationProjectListItem(id: "project", object: "project", name: "Project", createdAt: 0, updatedAt: 0)
+    ]
+    var projectsGate: ChatTestGate?
+    func configureProjects(_ values: [ConversationProjectListItem], gate: ChatTestGate? = nil) {
+        projects = values; projectsGate = gate
+    }
     func holdUpdate(_ gate: ChatTestGate?) { updateGate = gate }
     func configureMove(gate: ChatTestGate? = nil, failedCall: Int? = nil) {
         moveGate = gate; failedMoveCall = failedCall
@@ -62,6 +70,7 @@ actor LibraryFixture: LibraryServing {
             hasMore: end < values.count)
     }
     func listConversations(_ parameters: ConversationsListParameters) async throws -> APIPage<Conversation> {
+        conversationListCalls.append(parameters)
         if failList { throw URLError(.notConnectedToInternet) }
         let rows = conversations.filter {
             (parameters.projectId == nil || $0.projectId == parameters.projectId)
@@ -118,10 +127,10 @@ actor LibraryFixture: LibraryServing {
         }
         return BatchUpdateProjectResponse(success: true)
     }
-    func listProjects(_ parameters: ListParameters) -> APIPage<ConversationProjectListItem> {
-        APIPage(data: [
-            ConversationProjectListItem(id: "project", object: "project", name: "Project", createdAt: 0, updatedAt: 0)
-        ])
+    func listProjects(_ parameters: ListParameters) async -> APIPage<ConversationProjectListItem> {
+        let result = page(projects, ids: projects.map(\.id), parameters: parameters)
+        if let projectsGate { await projectsGate.hold() }
+        return result
     }
     func getProject(id: String) -> ConversationProject {
         ConversationProject(

@@ -27,9 +27,9 @@
     }
 
     @MainActor enum MapleSurface {
-        static let canvas = MapleAccent.adaptive(light: 0xFF_FF_FF, dark: 0x0A_0A_0A)
+        static let canvas = MapleAccent.adaptive(light: 0xFF_FF_FF, dark: 0x00_00_00)
         static let card = MapleAccent.adaptive(light: 0xFA_FA_FA, dark: 0x26_26_26)
-        static let sidebar = MapleAccent.adaptive(light: 0xF7_F7_F9, dark: 0x30_31_3A)
+        static let sidebar = canvas
         static let border = MapleAccent.adaptive(light: 0xD1_D2_DC, dark: 0x5E_5F_6E)
         static let displayText = MapleAccent.adaptive(light: 0x47_48_54, dark: 0xBA_BC_CB)
     }

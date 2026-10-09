@@ -40,6 +40,10 @@
                         }.padding(.vertical, 4)
                     }
                 }
+                .listStyle(.plain)
+                .listRowBackground(Color.clear)
+                .scrollContentBackground(.hidden)
+                .background(MapleSurface.canvas)
                 .navigationTitle(MapleStrings.text("Queued messages")).navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(MapleStrings.text("Done")) { dismiss() } } }
             }

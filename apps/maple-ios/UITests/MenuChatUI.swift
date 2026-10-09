@@ -72,11 +72,13 @@ import XCTest
         let root = try rootList(in: app)
         try reveal(root.buttons["library.new-chat"], in: app, owner: root, towardTop: true, limit: pageLimit)
         try settle(root)
-        let folder = root.descendants(matching: .any).matching(identifier: "library.project." + projectID).firstMatch
+        let folder = root.buttons.matching(identifier: "library.project." + projectID).firstMatch
         try reveal(folder, in: app, owner: root, towardTop: false, limit: pageLimit)
-        let manage = root.buttons["library.project.manage." + projectID].firstMatch
+        guard let state = folder.value as? String, state == "Expanded" || state == "Collapsed" else {
+            throw NativeTextEntryIssue.unavailable
+        }
         var remainingScrolls = pageLimit
-        if !manage.exists {
+        if state == "Collapsed" {
             // Require the whole header and child margin inside the same clear band
             // used by the capped gesture before deciding to toggle the disclosure.
             var childRoom = false
@@ -98,20 +100,27 @@ import XCTest
                 try settle(root)
             }
             guard childRoom else { throw NativeTextEntryIssue.unavailable }
-            if !manage.exists { folder.tap() }
+            folder.tap()
         }
-        guard manage.waitForExistence(timeout: 15) else { throw NativeTextEntryIssue.unavailable }
+        let expanded = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in folder.exists && folder.value as? String == "Expanded" }, object: folder)
+        guard XCTWaiter.wait(for: [expanded], timeout: 15) == .completed else {
+            throw NativeTextEntryIssue.unavailable
+        }
         try settle(root)
         // Position the expanded children using the remaining disclosure budget.
+        // The header is the stable anchor; Manage now lives in its context menu.
         // Empty projects remain valid; no conversation row is required here.
         for _ in 0...remainingScrolls {
             let viewport = try childRoomRegion(in: app, owner: root)
-            guard manage.exists else { throw NativeTextEntryIssue.unavailable }
-            let frame = manage.frame
+            guard folder.exists, folder.value as? String == "Expanded" else {
+                throw NativeTextEntryIssue.unavailable
+            }
+            let frame = folder.frame
             guard [frame.minX, frame.minY, frame.maxX, frame.maxY].allSatisfy({ $0.isFinite }),
                 frame.width > 0, frame.height > 0
             else { throw NativeTextEntryIssue.unavailable }
-            if manage.isHittable, viewport.contains(frame), frame.minY <= viewport.minY + 44 {
+            if folder.isHittable, viewport.contains(frame), frame.minY <= viewport.minY + 44 {
                 return
             }
             guard remainingScrolls > 0 else { throw NativeTextEntryIssue.unavailable }
@@ -221,6 +230,10 @@ import XCTest
             return
         }
         var region = owner.frame.intersection(window.frame).insetBy(dx: 16, dy: 24)
+        let search = app.textFields["library.search"]
+        if search.exists, search.frame.intersects(region) {
+            region.size.height = max(0, search.frame.minY - region.minY - 8)
+        }
         for keyboard in app.keyboards.allElementsBoundByIndex where keyboard.exists {
             let overlap = keyboard.frame.intersection(region)
             if !overlap.isEmpty { region.size.height = max(0, overlap.minY - region.minY - 16) }
@@ -245,9 +258,7 @@ import XCTest
             !region.isNull, !region.isInfinite
         else { throw NativeTextEntryIssue.unavailable }
         let initialRegion = region
-        let overlays =
-            app.navigationBars.allElementsBoundByIndex
-            + [app.textFields["library.search"], app.buttons["library.settings"]]
+        let overlays = app.navigationBars.allElementsBoundByIndex
         for overlay in overlays where overlay.exists {
             let frame = overlay.frame
             guard [frame.minX, frame.minY, frame.maxX, frame.maxY].allSatisfy({ $0.isFinite }) else {
@@ -257,6 +268,16 @@ import XCTest
                 let minY = max(region.minY, frame.maxY + 8)
                 region.size.height = max(0, region.maxY - minY)
                 region.origin.y = minY
+            }
+        }
+        let search = app.textFields["library.search"]
+        if search.exists {
+            let frame = search.frame
+            guard [frame.minX, frame.minY, frame.maxX, frame.maxY].allSatisfy({ $0.isFinite }) else {
+                throw NativeTextEntryIssue.unavailable
+            }
+            if frame.intersects(region), !frame.isEmpty {
+                region.size.height = max(0, frame.minY - region.minY - 8)
             }
         }
         for keyboard in app.keyboards.allElementsBoundByIndex where keyboard.exists {

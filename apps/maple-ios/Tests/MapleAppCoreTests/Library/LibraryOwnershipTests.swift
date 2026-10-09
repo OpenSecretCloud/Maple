@@ -122,4 +122,64 @@ import Testing
         #expect(model.visibleProjects.map(\.id) == ["project"])
         #expect(model.visibleConversations.isEmpty)
     }
+
+    @Test func siblingPinAcknowledgementWinsOverPendingRecentRefresh() async {
+        let (model, service, _, _, _) = LibraryModelTests().fixture(), gate = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("a")])
+        await model.load(.recent)
+        await service.configure(listGate: gate)
+        let refresh = Task { await model.refresh() }
+        await gate.waitForArrival()
+        model.receiveConversationUpdate(libraryConversation("a", pinned: true), from: model.scope)
+        await gate.release(); await refresh.value
+        #expect(model.conversations.isEmpty && model.visibleConversations.isEmpty && !model.isLoading)
+    }
+
+    @Test func siblingMoveAndDeleteCannotBeUndoneByPendingRefresh() async {
+        let (model, service, _, _, _) = LibraryModelTests().fixture(), gate = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("a"), libraryConversation("b")])
+        await model.load(.recent); model.selectedIDs = ["a", "b"]
+        await service.configure(listGate: gate)
+        let refresh = Task { await model.refresh() }
+        await gate.waitForArrival()
+        model.receiveProjectMembership(["a"], projectID: "folder", from: model.scope)
+        model.receiveDeletion(["b"], all: false, from: model.scope)
+        await gate.release(); await refresh.value
+        #expect(model.visibleConversations.isEmpty && model.selectedIDs == ["a"])
+        #expect(!model.isLoading)
+    }
+
+    @Test func previousAccountGenerationCannotBroadcastIntoCurrentCache() async {
+        let (model, service, _, _, _) = LibraryModelTests().fixture()
+        await service.configure(conversations: [libraryConversation("a")])
+        await model.load(); await model.loadProjects()
+        let oldOwner = AccountScope(apiOrigin: model.scope.apiOrigin, principalID: model.scope.principalID)
+        model.receiveConversationUpdate(libraryConversation("other"), from: oldOwner)
+        model.receiveProjectMembership(["a"], projectID: "foreign", from: oldOwner)
+        model.receiveDeletion(["a"], all: true, from: oldOwner)
+        model.receiveProjectDeletion("project", from: oldOwner)
+        #expect(model.conversations == [libraryConversation("a")] && model.projects.count == 1)
+        model.invalidate()
+        model.receiveConversationUpdate(libraryConversation("late"), from: model.scope)
+        #expect(model.conversations.isEmpty)
+    }
+
+    @Test func projectAcknowledgementInvalidatesOlderListAndRetirementDropsLateProjects() async {
+        let (model, service, _, _, _) = LibraryModelTests().fixture(), gate = ChatTestGate()
+        await model.loadProjects()
+        await service.configureProjects(model.projects, gate: gate)
+        let refresh = Task { await model.loadProjects() }
+        await gate.waitForArrival()
+        model.receiveProjectUpdate(
+            ConversationProject(id: "project", object: "project", name: "Renamed", createdAt: 0, updatedAt: 1),
+            from: model.scope)
+        await gate.release(); await refresh.value
+        #expect(model.projects.first?.name == "Renamed" && !model.isLoadingProjects)
+        let retiredGate = ChatTestGate()
+        await service.configureProjects(model.projects, gate: retiredGate)
+        let retiredRead = Task { await model.loadProjects() }
+        await retiredGate.waitForArrival(); model.invalidate()
+        await retiredGate.release(); await retiredRead.value
+        #expect(model.projects.isEmpty && !model.isLoadingProjects)
+    }
 }

@@ -68,7 +68,7 @@ public struct SDKLibraryService: LibraryServing {
     public func deleteInstruction(id: String) async throws -> DeletedObject { try await api.deleteInstruction(id: id) }
 }
 
-public enum LibraryFilter: Sendable, Equatable { case all, pinned, unassigned, project(String) }
+public enum LibraryFilter: Sendable, Equatable { case all, pinned, recent, unassigned, project(String) }
 public enum LibraryIssue: Error, Sendable, Equatable {
     case connection, invalidInput, invalidResponse, busy, retired, quiescence, cleanupRequired, partialMutation
     static func present(_ error: Error) -> LibraryIssue {

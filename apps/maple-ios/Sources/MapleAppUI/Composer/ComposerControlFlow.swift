@@ -9,8 +9,18 @@ struct ComposerFlowPlan {
         let width = max(0, width)
         var frames: [CGRect?] = []
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
-        for size in sizes {
+        let trailingStart = sizes.indices.first { trailingIndices.contains($0) && sizes[$0].width > 0 }
+        for (index, size) in sizes.enumerated() {
             guard size.width > 0, size.height > 0 else { frames.append(nil); continue }
+            if index == trailingStart, x > 0 {
+                let group = sizes.indices.filter { $0 >= index && trailingIndices.contains($0) && sizes[$0].width > 0 }
+                let groupWidth =
+                    group.reduce(CGFloat.zero) { $0 + sizes[$1].width }
+                    + CGFloat(max(0, group.count - 1)) * spacing
+                if groupWidth <= width, x + groupWidth > width {
+                    x = 0; y += rowHeight + spacing; rowHeight = 0
+                }
+            }
             if x > 0, x + size.width > width {
                 x = 0; y += rowHeight + spacing; rowHeight = 0
             }
@@ -18,16 +28,66 @@ struct ComposerFlowPlan {
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
-        // Only the final visible action may consume the remainder of its row.
-        // This preserves the preceding actions and logical order without overlap.
+        // The trailing cluster stays together when it fits a row. Move it as a
+        // unit so project, microphone and the primary action share the same edge.
         if let index = frames.lastIndex(where: { $0 != nil }), trailingIndices.contains(index),
-            var frame = frames[index]
+            let frame = frames[index]
         {
-            frame.origin.x = max(frame.minX, width - frame.width)
-            frames[index] = frame
+            let shift = max(0, width - frame.maxX)
+            for candidate in frames.indices where trailingIndices.contains(candidate) {
+                guard var trailing = frames[candidate], trailing.minY == frame.minY else { continue }
+                trailing.origin.x += shift; frames[candidate] = trailing
+            }
         }
         self.frames = frames
         height = y + rowHeight
+    }
+}
+
+/// One editor is measured in either an inline pill or above the same controls.
+/// The plan never mutates focus, the draft, or a presentation's identity.
+struct ComposerInputPlan {
+    let frames: [CGRect?]
+    let height: CGFloat
+
+    init(
+        sizes: [CGSize], editorIndex: Int, width: CGFloat, expanded: Bool,
+        hiddenIndices: Set<Int> = [], trailingIndices: Set<Int> = [], spacing: CGFloat = 4
+    ) {
+        let width = width.isFinite ? max(0, width) : 0
+        guard sizes.indices.contains(editorIndex) else { frames = []; height = 0; return }
+        let visible = sizes.indices.filter {
+            !hiddenIndices.contains($0) && sizes[$0].width > 0 && sizes[$0].height > 0
+        }
+        let controls = visible.filter { $0 != editorIndex }
+        let controlWidth = controls.reduce(CGFloat.zero) { $0 + sizes[$1].width }
+        let inlineWidth = width - controlWidth - CGFloat(max(0, visible.count - 1)) * spacing
+        var frames = Array<CGRect?>(repeating: nil, count: sizes.count)
+        if !expanded, inlineWidth >= 44 {
+            let rowHeight = visible.map { sizes[$0].height }.max() ?? 0
+            var x: CGFloat = 0
+            for index in visible {
+                let size = CGSize(
+                    width: index == editorIndex ? inlineWidth : sizes[index].width, height: sizes[index].height)
+                frames[index] = CGRect(x: x, y: (rowHeight - size.height) / 2, width: size.width, height: size.height)
+                x += size.width + spacing
+            }
+            self.frames = frames; height = rowHeight
+        } else {
+            let controlSizes = sizes.indices.map { index in
+                index == editorIndex || hiddenIndices.contains(index) ? CGSize.zero : sizes[index]
+            }
+            let flow = ComposerFlowPlan(
+                sizes: controlSizes, width: width, spacing: spacing, trailingIndices: trailingIndices)
+            let editorHeight = sizes[editorIndex].height
+            let gap: CGFloat = flow.height > 0 ? 4 : 0
+            frames[editorIndex] = CGRect(x: 0, y: 0, width: width, height: editorHeight)
+            for index in flow.frames.indices {
+                frames[index] =
+                    index == editorIndex ? frames[index] : flow.frames[index]?.offsetBy(dx: 0, dy: editorHeight + gap)
+            }
+            self.frames = frames; height = editorHeight + gap + flow.height
+        }
     }
 }
 
@@ -36,6 +96,71 @@ struct ComposerFlowPlan {
 
     struct ComposerEditorLayoutKey: LayoutValueKey {
         static let defaultValue = false
+    }
+
+    enum ComposerInputRole { case attachment, editor, model, project, microphone, action }
+    struct ComposerInputRoleKey: LayoutValueKey { static let defaultValue = ComposerInputRole.attachment }
+
+    /// Changes positions and finite editor proposals while retaining the exact
+    /// native input surface through expansion and keyboard dismissal.
+    struct ComposerInputLayout: Layout {
+        var expanded: Bool
+        var layoutDirection: LayoutDirection = .leftToRight
+
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? 320
+            let plan = measuredPlan(width: width, height: proposal.height, subviews: subviews)
+            return CGSize(width: width, height: plan.height)
+        }
+
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+            let plan = measuredPlan(width: bounds.width, height: bounds.height, subviews: subviews)
+            for index in subviews.indices {
+                guard plan.frames.indices.contains(index), let frame = plan.frames[index] else {
+                    subviews[index].place(at: bounds.origin, proposal: .zero)
+                    continue
+                }
+                subviews[index].place(
+                    at: CGPoint(
+                        x: layoutDirection == .rightToLeft ? bounds.maxX - frame.minX : bounds.minX + frame.minX,
+                        y: bounds.minY + frame.minY),
+                    anchor: layoutDirection == .rightToLeft ? .topTrailing : .topLeading,
+                    proposal: ProposedViewSize(frame.size))
+            }
+        }
+
+        private func measuredPlan(width: CGFloat, height: CGFloat?, subviews: Subviews) -> ComposerInputPlan {
+            guard let editor = subviews.indices.first(where: { subviews[$0][ComposerInputRoleKey.self] == .editor })
+            else {
+                return ComposerInputPlan(sizes: [], editorIndex: 0, width: width, expanded: expanded)
+            }
+            let hidden = Set(
+                subviews.indices.filter {
+                    !expanded && [.model, .project].contains(subviews[$0][ComposerInputRoleKey.self])
+                })
+            let trailing = Set(
+                subviews.indices.filter {
+                    [.project, .microphone, .action].contains(subviews[$0][ComposerInputRoleKey.self])
+                })
+            var sizes = subviews.indices.map { index -> CGSize in
+                guard index != editor, !hidden.contains(index) else { return .zero }
+                let natural = subviews[index].sizeThatFits(.unspecified)
+                guard natural.width > 0, natural.height > 0 else { return .zero }
+                let controlWidth = min(width, max(44, natural.width))
+                let measured = subviews[index].sizeThatFits(ProposedViewSize(width: controlWidth, height: nil))
+                return CGSize(width: controlWidth, height: max(44, measured.height))
+            }
+            let controls = sizes.filter { $0.width > 0 && $0.height > 0 }
+            let inlineWidth = width - controls.reduce(0) { $0 + $1.width } - CGFloat(controls.count) * 4
+            let inline = !expanded && inlineWidth >= 44
+            let chrome = ComposerFlowPlan(sizes: sizes, width: width, spacing: 4, trailingIndices: trailing).height
+            let editorHeight = height.flatMap { $0.isFinite ? max(0, $0 - (inline ? 0 : chrome + 4)) : nil }
+            sizes[editor] = subviews[editor].sizeThatFits(
+                ProposedViewSize(width: inline ? inlineWidth : width, height: editorHeight))
+            return ComposerInputPlan(
+                sizes: sizes, editorIndex: editor, width: width, expanded: expanded,
+                hiddenIndices: hidden, trailingIndices: trailing)
+        }
     }
 
     /// Reserve the existing chrome at its measured size before giving the native

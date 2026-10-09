@@ -10,9 +10,12 @@
                 Text(issueMessage(issue)).font(.footnote).foregroundStyle(MapleRedText()).accessibilityIdentifier(
                     "chat.error")
             }
-            if runtime.phase == .recovering {
-                Button(MapleStrings.text("Check response")) { Task { await runtime.reconcile() } }
-                    .accessibilityIdentifier("chat.recover")
+            if runtime.phase == .recovering, runtime.lastIssue != nil {
+                Button(MapleStrings.text("Check response"), systemImage: "arrow.clockwise") {
+                    Task { await runtime.reconcile() }
+                }
+                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                .accessibilityIdentifier("chat.recover")
             }
             if runtime.snapshot.unsentTurn != nil {
                 Button(MapleStrings.text("Restore unsent message")) { runtime.restoreUnsentTurn() }

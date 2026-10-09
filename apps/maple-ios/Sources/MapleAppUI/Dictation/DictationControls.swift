@@ -7,6 +7,7 @@
         private let coordinator: DictationCoordinator
         private let runtime: ChatRuntime
         @Environment(\.openURL) private var openURL
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
         public init(coordinator: DictationCoordinator, runtime: ChatRuntime) {
             self.coordinator = coordinator; self.runtime = runtime
@@ -17,19 +18,16 @@
                 HStack(spacing: 12) {
                     switch status.phase {
                     case .requestingPermission:
-                        ProgressView()
-                        Text("Waiting for microphone permission", tableName: "Dictation", bundle: .module)
+                        EmptyView()
                     case .recording:
                         Image(systemName: "record.circle.fill").foregroundStyle(.red)
                         Text(Duration.seconds(status.elapsedSeconds), format: .time(pattern: .minuteSecond))
                             .monospacedDigit()
                             .accessibilityLabel(Text("Recording time", tableName: "Dictation", bundle: .module))
-                        Button(action: { coordinator.stop(runtime: runtime) }) {
-                            Text("Stop", tableName: "Dictation", bundle: .module)
-                        }.accessibilityIdentifier("dictation.stop")
                     case .transcribing:
-                        ProgressView()
-                        Text("Transcribing…", tableName: "Dictation", bundle: .module)
+                        Image(systemName: "waveform")
+                            .symbolEffect(.variableColor, isActive: !reduceMotion)
+                            .accessibilityLabel(Text("Transcribing…", tableName: "Dictation", bundle: .module))
                     case .waitingForComposition:
                         Text("Finish typing to insert dictation", tableName: "Dictation", bundle: .module)
                     case .waitingForInsertionPoint:
@@ -45,8 +43,11 @@
                     }
                     Spacer(minLength: 0)
                     Button(action: { coordinator.cancel(runtime: runtime) }) {
-                        Text("Discard", tableName: "Dictation", bundle: .module)
-                    }.accessibilityIdentifier("dictation.discard")
+                        Image(systemName: "xmark")
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel(Text("Discard", tableName: "Dictation", bundle: .module))
+                    .accessibilityIdentifier("dictation.discard")
                 }
                 .font(.subheadline)
                 .accessibilityElement(children: .contain)
@@ -109,15 +110,23 @@
             self.coordinator = coordinator; self.runtime = runtime; self.isEnabled = isEnabled
         }
         public var body: some View {
-            Button(action: { coordinator.start(runtime: runtime) }) {
+            Button(action: {
+                if recording { coordinator.stop(runtime: runtime) } else { coordinator.start(runtime: runtime) }
+            }) {
                 Label {
-                    Text("Dictate", tableName: "Dictation", bundle: .module)
+                    Text(recording ? "Stop" : "Dictate", tableName: "Dictation", bundle: .module)
                 } icon: {
-                    Image(systemName: "mic")
+                    Image(systemName: recording ? "stop.fill" : "mic")
                 }
             }
-            .disabled(!isEnabled || runtime.busyDraftIDs.contains(runtime.snapshot.draft.id))
-            .accessibilityIdentifier("dictation.start")
+            .disabled(
+                !isEnabled
+                    || (!recording
+                        && (coordinator.status(for: runtime) != nil
+                            || runtime.busyDraftIDs.contains(runtime.snapshot.draft.id)))
+            )
+            .accessibilityIdentifier(recording ? "dictation.stop" : "dictation.start")
         }
+        private var recording: Bool { coordinator.status(for: runtime)?.phase == .recording }
     }
 #endif

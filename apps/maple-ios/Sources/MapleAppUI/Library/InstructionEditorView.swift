@@ -9,9 +9,7 @@
         public init(editor: InstructionEditor) { self.editor = editor }
         public var body: some View {
             VStack(alignment: .leading, spacing: 12) {
-                if editor.isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if editor.isLoaded {
+                if editor.isLoaded {
                     Text(
                         "Instructions apply to future messages. Save to apply your changes.", tableName: "Library",
                         bundle: .module
@@ -21,7 +19,7 @@
                         .accessibilityLabel(Text("Instructions", tableName: "Library", bundle: .module))
                         .accessibilityIdentifier("library.instructions-text")
                         .scrollContentBackground(.hidden)
-                } else {
+                } else if !editor.isLoading {
                     Button {
                         Task { await editor.load() }
                     } label: {
@@ -29,9 +27,9 @@
                     }
                 }
                 if let issue = editor.issue { LibraryIssueView(issue: issue) }
-                if editor.isSaving { ProgressView().frame(maxWidth: .infinity) }
             }
-            .padding().background(Color(uiColor: .systemBackground))
+            .padding().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(MapleSurface.canvas)
             .navigationTitle(Text("Instructions", tableName: "Library", bundle: .module))
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden()

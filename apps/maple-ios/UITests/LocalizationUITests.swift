@@ -134,7 +134,7 @@ import XCTest
         let composer = app.textViews["chat.composer"]
         let originalDraft = try XCTUnwrap(composer.value as? String)
         try openLibrary(app)
-        try assertLibrarySearchHeader(in: app, window: original)
+        try assertLibrarySearchAndMenu(in: app, window: original)
         captureLibraryWindow(app, name: "RTL large-text Library before system resize", frame: original)
 
         // These are the insets of the observed public bottom-right handle. Use
@@ -155,7 +155,7 @@ import XCTest
         XCTAssertGreaterThan(compact.width, 300)
         XCTAssertGreaterThan(compact.height, 500)
         try openLibrary(app)
-        try assertLibrarySearchHeader(in: app, window: compact)
+        try assertLibrarySearchAndMenu(in: app, window: compact)
         try assertPhysicalLeftDrawer(in: app)
         let close = app.buttons["library.close"]
         XCTAssertTrue(close.waitForExistence(timeout: 10), "The compact menu must provide its app-owned Close")
@@ -175,8 +175,10 @@ import XCTest
         }
         try assertObservedTraits(app, rtl: true)
         try openLibrary(app)
-        try assertLibrarySearchHeader(in: app, window: window.frame)
+        try assertLibrarySearchAndMenu(in: app, window: window.frame)
         captureLibraryWindow(app, name: "RTL large-text Library after window restoration", frame: window.frame)
+        app.buttons["library.actions"].tap()
+        try assertNativeMenuCommand(app.buttons["library.settings"], in: app)
         app.buttons["library.settings"].tap()
         _ = try settingsCollection(app)
         let settingsClose = app.buttons["library.settings-close"]
@@ -199,28 +201,24 @@ import XCTest
         return value
     }
 
-    @MainActor private func assertLibrarySearchHeader(
-        in app: XCUIApplication, window: CGRect, rtl: Bool = true
+    @MainActor private func assertLibrarySearchAndMenu(
+        in app: XCUIApplication, window: CGRect
     ) throws {
-        let search = app.textFields["library.search"], settings = app.buttons["library.settings"]
+        let search = app.textFields["library.search"], actions = app.buttons["library.actions"]
         // These persistent controls must be reachable without scrolling loaded chats.
-        for control in [search, settings] {
+        for control in [search, actions] {
             try assertTarget(control, in: app)
             XCTAssertTrue(window.insetBy(dx: -0.5, dy: -0.5).contains(control.frame))
         }
-        if rtl {
-            XCTAssertGreaterThan(search.frame.midX, settings.frame.midX, "RTL mirrors the actual search/gear row")
-        } else {
-            XCTAssertLessThan(search.frame.midX, settings.frame.midX, "LTR places the gear beside search")
-        }
-        XCTAssertTrue(search.frame.intersection(settings.frame).isEmpty, "Search and Settings must not overlap")
-        XCTAssertEqual(search.frame.midY, settings.frame.midY, accuracy: 1)
-        let navigation = search.frame.union(settings.frame)
-        XCTAssertLessThanOrEqual(navigation.height, min(240, window.height * 0.3) + 1)
+        XCTAssertTrue(search.frame.intersection(actions.frame).isEmpty, "Search and Maple menu must not overlap")
+        XCTAssertGreaterThanOrEqual(search.frame.minY, actions.frame.maxY, "Search floats below the Maple menu")
+        XCTAssertLessThanOrEqual(search.frame.height + actions.frame.height, min(240, window.height * 0.3) + 1)
         let list = try XCTUnwrap(visibleCollection(in: app, prefix: "library."))
         let scrolling = visibleRegion(list, in: app)
+        let contentTop = max(scrolling.minY, actions.frame.maxY)
+        let contentBottom = min(scrolling.maxY, search.frame.minY)
         XCTAssertGreaterThanOrEqual(
-            scrolling.height - navigation.height, 100, "Search must leave usable scrolling content")
+            contentBottom - contentTop, 100, "Floating search and Maple menu must leave usable scrolling content")
         XCTAssertFalse(app.buttons["library.history"].exists)
     }
 
@@ -286,8 +284,12 @@ import XCTest
         try reveal(libraryNew, in: app, owner: baselineLibrary, down: true, attempts: 24)
         XCTAssertTrue(libraryNew.waitForExistence(timeout: 10))
         let baseNewLabel = libraryNew.label
-        try assertTarget(app.buttons["library.settings"], in: app)
+        try assertTarget(app.buttons["library.actions"], in: app)
+        app.buttons["library.actions"].tap()
+        try assertNativeMenuCommand(app.buttons["library.settings"], in: app)
         let baseSettingsLabel = app.buttons["library.settings"].label
+        app.buttons["library.settings"].tap()
+        _ = try settingsCollection(app)
         app.terminate()
 
         app.launchArguments = arguments(mode: mode)
@@ -333,18 +335,19 @@ import XCTest
             try assertPhysicalLeftDrawer(in: app)
             activeLibrary = try XCTUnwrap(visibleCollection(in: app, prefix: "library."))
         }
-        // Search and its adjacent Settings gear stay reachable at the largest
-        // text size and follow actual RTL geometry without scrolling chats.
-        try assertLibrarySearchHeader(in: app, window: windowFrame(in: app), rtl: mode == .rightToLeft)
+        // Bottom search and the top Maple menu remain reachable at the largest
+        // text size in both directions without scrolling chats.
+        try assertLibrarySearchAndMenu(in: app, window: windowFrame(in: app))
         try reveal(libraryNew, in: app, owner: activeLibrary, down: true, attempts: 24)
         XCTAssertTrue(libraryNew.waitForExistence(timeout: 10))
         if mode == .expanded { assertDoubled(libraryNew.label, baseline: baseNewLabel) }
         try assertTarget(libraryNew, in: app)
-        let settings = app.buttons["library.settings"]
-        try assertTarget(settings, in: app)
-        if mode == .expanded { assertDoubled(settings.label, baseline: baseSettingsLabel) }
-        try assertTarget(settings, in: app)
         capture(app, name: "Localization expanded or RTL shipping Library")
+        app.buttons["library.actions"].tap()
+        let settings = app.buttons["library.settings"]
+        try assertNativeMenuCommand(settings, in: app)
+        if mode == .expanded { assertDoubled(settings.label, baseline: baseSettingsLabel) }
+        try assertNativeMenuCommand(settings, in: app)
         settings.tap()
         let settingsOwner = try settingsCollection(app)
         if compactMenu {
@@ -599,7 +602,9 @@ import XCTest
         // Keep one actual list owner for the full reveal. A visible iPad sidebar
         // container may report isHittable=false; app-wide swipes hit the chat.
         for _ in 0..<attempts {
-            if element.exists, element.isHittable, windowFrame(in: app).insetBy(dx: 2, dy: 2).contains(element.frame) {
+            if element.exists, element.isHittable,
+                windowFrame(in: app).insetBy(dx: -0.5, dy: -0.5).contains(element.frame)
+            {
                 return
             }
             guard hasVisibleContent(owner, in: app) else { throw NativeTextEntryIssue.unavailable }
@@ -621,8 +626,63 @@ import XCTest
             }
             coordinate(down ? top : bottom).press(forDuration: 0.05, thenDragTo: coordinate(down ? bottom : top))
         }
+        // Record only finite rectangles; omitted nodes are absent or nonfinite.
+        // Labels, identifiers, values and conversation contents are not attached.
+        var rectangles: [String: [Double]] = [:]
+        let window = app.windows.firstMatch
+        for (name, frame) in [
+            ("target", element.exists ? element.frame : CGRect.null),
+            ("owner", owner.exists ? owner.frame : CGRect.null),
+            ("window", window.exists ? window.frame : CGRect.null),
+        ] {
+            let values = [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)]
+            if values.allSatisfy(\.isFinite) { rectangles[name] = values }
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: rectangles, options: .sortedKeys) {
+            let geometry = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+            geometry.name = "Localized control reveal geometry"
+            geometry.lifetime = .keepAlways; add(geometry)
+        }
         XCTFail("Shipping localized control could not be reached in its owning list")
         throw NativeTextEntryIssue.unavailable
+    }
+
+    @MainActor private func assertNativeMenuCommand(_ element: XCUIElement, in app: XCUIApplication) throws {
+        // UIKit owns native popup row sizing. Keep app controls on assertTarget's
+        // 44pt contract and require this exact command in the open Maple menu.
+        guard element.waitForExistence(timeout: 10) else {
+            XCTFail("The exact native Settings menu command must be available")
+            throw NativeTextEntryIssue.unavailable
+        }
+        recordTargetGeometry(element, in: app)
+        guard element.exists, element.identifier == "library.settings",
+            app.buttons.matching(identifier: "library.settings").count == 1,
+            element.isEnabled, element.isHittable
+        else {
+            XCTFail("The exact native Settings menu command must be available")
+            throw NativeTextEntryIssue.unavailable
+        }
+        let frame = element.frame, window = windowFrame(in: app)
+        let coordinates = [
+            frame.minX, frame.minY, frame.width, frame.height,
+            window.minX, window.minY, window.width, window.height,
+        ]
+        guard coordinates.allSatisfy(\.isFinite), frame.width > 0, frame.height > 0,
+            window.width > 0, window.height > 0,
+            window.insetBy(dx: -0.5, dy: -0.5).contains(frame)
+        else {
+            XCTFail("The native menu command must have finite visible bounds inside the window")
+            throw NativeTextEntryIssue.unavailable
+        }
+        // These tests pin English; prefix matching also covers doubled labels.
+        // Observe the other native commands without activating either action.
+        for title in ["Select chats", "Delete all chats"] {
+            let commands = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", title))
+            guard commands.count == 1, commands.firstMatch.isEnabled, commands.firstMatch.isHittable else {
+                XCTFail("Require the currently presented Maple menu commands")
+                throw NativeTextEntryIssue.unavailable
+            }
+        }
     }
 
     @MainActor private func assertTarget(_ element: XCUIElement, in app: XCUIApplication) throws {
@@ -639,6 +699,10 @@ import XCTest
     }
 
     @MainActor private func assertComposerViewport(_ composer: XCUIElement, in app: XCUIApplication) throws {
+        // Existing chats expose model/project controls only while the native
+        // editor is focused. Enter that production state before measuring it.
+        try assertTarget(composer, in: app)
+        composer.tap()
         let window = windowFrame(in: app)
         let navigation = app.navigationBars.containing(.button, identifier: "chat.menu").firstMatch
         let keyboard = app.keyboards.firstMatch

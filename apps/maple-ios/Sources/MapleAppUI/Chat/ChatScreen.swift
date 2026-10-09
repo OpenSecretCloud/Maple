@@ -1,3 +1,48 @@
+import Foundation
+import MapleSDK
+
+struct ChatTranscriptRow: Identifiable {
+    let item: ConversationItem
+    let toolResult: ConversationItem?
+    let order: Int
+    var id: String { item.id }
+
+    static func rows(_ items: [ConversationItem]) -> [Self] {
+        let calls = Dictionary(
+            grouping: items.indices.filter {
+                ["function_call", "web_search_call"].contains(items[$0].type) && usableCallID(items[$0])
+            }, by: { items[$0].callId! })
+        let results = Dictionary(
+            grouping: items.indices.filter {
+                items[$0].type == "function_call_output" && usableCallID(items[$0])
+            }, by: { items[$0].callId! })
+        var paired: [Int: Int] = [:]
+        for (callID, callIndices) in calls {
+            guard callIndices.count == 1, let call = callIndices.first,
+                let resultIndices = results[callID], resultIndices.count == 1,
+                let result = resultIndices.first, result > call
+            else { continue }
+            paired[call] = result
+        }
+        let absorbed = Set(paired.values)
+        return items.indices.compactMap { index in
+            guard !absorbed.contains(index) else { return nil }
+            return Self(item: items[index], toolResult: paired[index].map { items[$0] }, order: index)
+        }
+    }
+
+    private static func usableCallID(_ item: ConversationItem) -> Bool {
+        guard let id = item.callId else { return false }
+        return !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+enum ChatComposerPresentation {
+    static func expanded(newConversation: Bool, editingQueue: Bool, focused: Bool, keyboardVisible: Bool?) -> Bool {
+        newConversation || editingQueue || (focused && keyboardVisible != false)
+    }
+}
+
 #if os(iOS)
     import MapleAppCore
     import MapleSDK
@@ -83,19 +128,21 @@
                     blockPresentation: { [weak environment] presentationID, blocked in
                         environment?.setPresentationBlocked(blocked, id: presentationID, scope: scope)
                     },
-                    chatShown: {
+                    chatShown: { reason in
                         guard environment.session.account?.scope == scope,
                             environment.libraryContext?.scope == scope, !environment.menuPresented
                         else { return }
                         environment.finishNavigationDismissal()
-                        menuButtonFocused = environment.accountFlow == nil && environment.session.account != nil
+                        if reason == .navigation {
+                            menuButtonFocused = environment.accountFlow == nil && environment.session.account != nil
+                        }
                     }
                 )
                 .id(scope)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.container)
             } else {
-                ProgressView(MapleStrings.text("Opening chat…"))
+                Color.clear.accessibilityHidden(true)
             }
         }
 
@@ -111,7 +158,7 @@
                     ChatDetail(environment: environment, runtime: chat, account: details, preferences: preferences)
                         .id(chat.snapshot.storageOwner)
                 } else {
-                    ProgressView(MapleStrings.text("Opening chat…"))
+                    Color.clear.accessibilityHidden(true)
                 }
             }
             #if DEBUG
@@ -209,7 +256,7 @@
                     #endif
                 }
             } else {
-                ProgressView(MapleStrings.text("Opening menu…"))
+                Color.clear.accessibilityHidden(true)
             }
         }
 
@@ -265,7 +312,7 @@
 
         func body(content: Content) -> some View {
             content.accessibilityHidden(
-                !isCurrent() || lease.chatAccessibilityHidden(scope: scope, storageOwner: storageOwner))
+                !isCurrent() || lease.chatProjectionAccessibilityHidden(scope: scope, storageOwner: storageOwner))
         }
     }
 
@@ -282,10 +329,12 @@
         @State private var queuePresented = false
         @State private var modelPresented = false
         @State private var projectPresented = false
+        @State private var projectPresentationID = UUID()
         @State private var externalLink: URL?
         @State private var browserPresentationID = UUID()
         @State private var mediaNotice: MediaFeature?
         @State private var composerFocused = false
+        @State private var softwareKeyboardVisible: Bool?
         @State private var readingPosition = ScrollPosition(idType: String.self)
         @State private var turnFrames: [String: TranscriptTurnGeometry] = [:]
         @State private var readingAnchor: ReadingAnchor?
@@ -329,6 +378,30 @@
         private var productionCurrentProjection: Bool {
             environment.session.account?.scope == runtime.scope && runtime.scope == account.scope
                 && environment.selectedChat?.snapshot.storageOwner == runtime.snapshot.storageOwner
+        }
+
+        private var retainsMessageRendering: @MainActor @Sendable () -> Bool {
+            #if DEBUG
+                let fixtureProjection = fixtureProjectionIsCurrent
+            #endif
+            return {
+                [
+                    weak environment, weak runtime, weak account, scope = runtime.scope,
+                    owner = runtime.snapshot.storageOwner, state = compactMenuState
+                ] in
+                guard let environment, let runtime, let account,
+                    account.scope == scope, runtime.scope == scope, runtime.snapshot.storageOwner == owner
+                else { return false }
+                #if DEBUG
+                    if let fixtureProjection {
+                        return fixtureProjection(scope, owner) && state(scope, owner).occluded
+                    }
+                #endif
+                guard environment.session.account?.scope == scope,
+                    environment.selectedChat?.snapshot.storageOwner == owner
+                else { return false }
+                return state(scope, owner).occluded
+            }
         }
 
         private func scheduleAnchorCorrection() {
@@ -385,13 +458,14 @@
 
         private struct Turn: Identifiable {
             let id: String
+            let firstItemIndex: Int
             var items: [ConversationItem]
         }
         private var turns: [Turn] {
             var result: [Turn] = []
-            for item in runtime.messages {
+            for (index, item) in runtime.messages.enumerated() {
                 if item.role == "user" || result.isEmpty {
-                    result.append(Turn(id: item.id, items: [item]))
+                    result.append(Turn(id: item.id, firstItemIndex: index, items: [item]))
                 } else {
                     result[result.count - 1].items.append(item)
                 }
@@ -450,16 +524,17 @@
                                         Text(MapleStrings.text("Research anything..."))
                                             .font(MapleTypography.display)
                                             .foregroundStyle(MapleSurface.displayText)
-                                        Text(MapleStrings.text("Encrypted and private at every step")).foregroundStyle(
-                                            .secondary)
                                     }
                                     .accessibilityElement(children: .combine)
                                 }
                                 ForEach(turns) { turn in
                                     VStack(alignment: .leading, spacing: 24) {
-                                        ForEach(turn.items, id: \.id) { item in
+                                        ForEach(ChatTranscriptRow.rows(turn.items)) { row in
+                                            let item = row.item
                                             TranscriptItem(
-                                                item: item, generation: runtime.scope.generation,
+                                                item: item, toolResult: row.toolResult,
+                                                generation: runtime.scope.generation,
+                                                revealDelay: min(Double(turn.firstItemIndex + row.order) * 0.024, 0.12),
                                                 theme: preferences.value.theme.messageRenderTheme,
                                                 font: preferences.value.chatFont.messageRenderFont,
                                                 isReplyReady: item.status == "completed" || !runtime.hasUnresolvedRun,
@@ -469,12 +544,6 @@
                                             ) { url in
                                                 externalLink = url
                                             }
-                                        }
-                                        if turn.id == turns.last?.id, runtime.hasUnresolvedRun {
-                                            HStack(spacing: 8) {
-                                                ProgressView()
-                                                Text(runLabel).foregroundStyle(.secondary)
-                                            }.font(.footnote).accessibilityIdentifier("chat.progress")
                                         }
                                     }
                                     .frame(
@@ -551,24 +620,16 @@
                 acceptedTurnScrollTask?.cancel(); acceptedTurnScrollTask = nil
                 if !menuState.occluded { readingAnchor = nil; pendingScrollMessage = nil }
             }
-            .environment(\.retainedMessageRendering) {
-                [
-                    weak environment, weak runtime, weak account, scope = runtime.scope,
-                    owner = runtime.snapshot.storageOwner, state = compactMenuState
-                ] in
-                guard let environment, let runtime, let account,
-                    environment.session.account?.scope == scope, account.scope == scope,
-                    runtime.scope == scope, runtime.snapshot.storageOwner == owner,
-                    environment.selectedChat?.snapshot.storageOwner == owner
-                else { return false }
-                return state(scope, owner).occluded
-            }
+            .environment(\.retainedMessageRendering, retainsMessageRendering)
             .tracksChatPresentation(queuePresented || modelPresented || projectPresented || mediaNotice != nil)
             .environment(\.chatPresentationChanged) { id, presented in
                 environment.setPresentationBlocked(presented, id: id, scope: runtime.scope)
             }
             .onChange(of: environment.menuPresented) { _, presented in
                 if presented { composerFocused = false }
+            }
+            .onChange(of: composerFocused) { _, focused in
+                if !focused { softwareKeyboardVisible = nil }
             }
             .onChange(of: menuState.occluded) { _, occluded in
                 if occluded {
@@ -591,6 +652,7 @@
                 MediaFeatureNotice(feature: feature, account: account)
             }
             .sheet(isPresented: $modelPresented) {
+                let scope = runtime.scope, owner = runtime.snapshot.storageOwner
                 NavigationStack {
                     SettingsModelPicker(
                         entitlements: account,
@@ -599,38 +661,33 @@
                             set: { preferences.setWebSearchPreferred($0) }),
                         webSearchPreferences: preferences
                     ) { id in
+                        guard environment.session.account?.scope == scope, runtime.scope == scope,
+                            runtime.snapshot.storageOwner == owner, currentProjection
+                        else { return }
                         preferences.setSelectedModelID(id); modelPresented = false
                     }
-                    .navigationTitle(MapleStrings.text("Model"))
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button(MapleStrings.text("Done")) { modelPresented = false }
-                        }
-                    }
-                }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+                    .frame(maxWidth: .infinity)
+                }
+                .presentationDetents([.large]).presentationDragIndicator(.visible)
+                .presentationSizing(.page).presentationBackground(MapleSurface.canvas)
             }
             .sheet(isPresented: $projectPresented) {
+                let scope = runtime.scope, owner = runtime.snapshot.storageOwner
+                let presentationID = projectPresentationID
                 NavigationStack {
-                    List {
-                        Button(MapleStrings.text("No project")) {
-                            environment.selectedProjectID = nil; projectPresented = false
+                    if let library = environment.library, library.scope == scope {
+                        ProjectPickerView(library: library, selectedProjectID: environment.selectedProjectID) { id in
+                            guard projectPresented, projectPresentationID == presentationID,
+                                environment.session.account?.scope == scope, runtime.scope == scope,
+                                runtime.snapshot.storageOwner == owner, currentProjection
+                            else { return }
+                            environment.selectedProjectID = id; projectPresented = false
                         }
-                        ForEach(environment.library?.projects ?? [], id: \.id) { project in
-                            Button(project.name) {
-                                environment.selectedProjectID = project.id; projectPresented = false
-                            }
-                        }
-                        if environment.library?.isLoadingProjects == true { ProgressView() }
-                        if let issue = environment.library?.issue { LibraryIssueView(issue: issue) }
+                        .frame(maxWidth: .infinity)
                     }
-                    .navigationTitle(MapleStrings.text("Project"))
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button(MapleStrings.text("Done")) { projectPresented = false }
-                        }
-                    }
-                    .task { await environment.library?.loadProjects() }
-                }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+                }
+                .presentationDetents([.large]).presentationDragIndicator(.visible)
+                .presentationSizing(.page).presentationBackground(MapleSurface.canvas)
             }
             .onDisappear {
                 // Outer navigation hides this exact retained projection temporarily.
@@ -647,10 +704,11 @@
 
         private func composer(maximumHeight: CGFloat) -> some View {
             let owner = runtime.snapshot.draft.id
-            let padding: CGFloat = 12, bottomPadding: CGFloat = 8
+            let projectionOwner = runtime.snapshot.storageOwner, scope = runtime.scope
+            let padding: CGFloat = 8, bottomPadding: CGFloat = 4
             return ComposerVerticalLayout(
                 maximumHeight: max(0, maximumHeight - padding * 2 - bottomPadding),
-                layoutDirection: layoutDirection
+                layoutDirection: layoutDirection, spacing: 6
             ) {
                 if runtime.isEditingQueue {
                     HStack {
@@ -674,6 +732,14 @@
                         .contentShape(Rectangle())
                     }.font(.footnote).accessibilityIdentifier("queue.open")
                 }
+                if runtime.hasUnresolvedRun, runtime.canSend, !runtime.isEditingQueue {
+                    Button(MapleStrings.text("Queue message"), systemImage: "text.line.first.and.arrowtriangle.forward")
+                    {
+                        send()
+                    }
+                    .font(.footnote).frame(minHeight: 44)
+                    .accessibilityIdentifier("queue.enqueue")
+                }
                 if !runtime.isOnline {
                     Label(MapleStrings.text("Offline — your draft stays here"), systemImage: "wifi.slash")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -684,29 +750,51 @@
                 ChatRecoveryControls(runtime: runtime)
                 if let importer = environment.imageImporters[ObjectIdentifier(runtime)] {
                     DraftImageStrip(importer: importer)
-                    if importer.importingDrafts.contains(owner) { ProgressView(MapleStrings.text("Preparing images…")) }
                     if let issue = importer.issue { ImageImportIssueView(issue: issue) }
                 }
                 if let dictation = environment.dictation { DictationControls(coordinator: dictation, runtime: runtime) }
-                if runtime.isLoading {
-                    ProgressView(MapleStrings.text("Opening chat…"))
-                        .frame(maxWidth: .infinity).padding(12)
-                        .accessibilityIdentifier("chat.loading")
-                } else {
-                    composerEditor(owner: owner)
-                        .padding(12).background(MapleSurface.canvas, in: RoundedRectangle(cornerRadius: 16))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(composerFocused ? MapleAccent.foreground : MapleSurface.border, lineWidth: 1)
-                                .allowsHitTesting(false)
+                ComposerInputLayout(expanded: composerExpanded, layoutDirection: layoutDirection) {
+                    attachmentButton.layoutValue(key: ComposerInputRoleKey.self, value: .attachment)
+                    Group {
+                        if runtime.isLoading {
+                            Color.clear.frame(height: 44).accessibilityIdentifier("chat.loading")
+                        } else {
+                            composerEditor(owner: owner)
                         }
-                        .layoutValue(key: ComposerEditorLayoutKey.self, value: true)
+                    }.layoutValue(key: ComposerInputRoleKey.self, value: .editor)
+                    // Keep the native editor's preceding slot unchanged while
+                    // removing collapsed controls from the accessibility tree.
+                    Group {
+                        if composerExpanded {
+                            modelButton.layoutValue(key: ComposerInputRoleKey.self, value: .model)
+                            projectButton.layoutValue(key: ComposerInputRoleKey.self, value: .project)
+                        }
+                    }
+                    microphoneButton.layoutValue(key: ComposerInputRoleKey.self, value: .microphone)
+                    primaryAction.layoutValue(key: ComposerInputRoleKey.self, value: .action)
                 }
-                composerControls
+                .padding(8)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: composerExpanded ? 24 : 32))
+                .background {
+                    ComposerKeyboardVisibility(eligible: composerFocused && currentProjection && !menuState.occluded) {
+                        visible in
+                        guard runtime.scope == scope, runtime.snapshot.storageOwner == projectionOwner,
+                            currentProjection, !menuState.occluded
+                        else { return }
+                        softwareKeyboardVisible = visible
+                    }
+                    .allowsHitTesting(false).accessibilityHidden(true)
+                }
+                .layoutValue(key: ComposerEditorLayoutKey.self, value: true)
             }
             // Keep the trailing controls clear of the keyboard's prediction strip.
             .padding(padding).padding(.bottom, bottomPadding).frame(maxWidth: 874).frame(maxWidth: .infinity)
-            .background(MapleSurface.card)
+        }
+
+        private var composerExpanded: Bool {
+            ChatComposerPresentation.expanded(
+                newConversation: runtime.conversationID == nil, editingQueue: runtime.isEditingQueue,
+                focused: composerFocused, keyboardVisible: softwareKeyboardVisible)
         }
 
         /// Capture a fresh draft owner for both SwiftUI updates and synchronous Send handoff.
@@ -722,6 +810,7 @@
                     runtime.scope == account.scope && runtime.snapshot.draft.id == owner
                 },
                 placeholder: MapleStrings.text("Message Maple"),
+                isCompact: !composerExpanded,
                 externalSelection: environment.dictation?.editorState(runtime: runtime, draftID: owner),
                 onChange: { state, edits in
                     environment.dictation?.updateEditor(
@@ -738,18 +827,6 @@
             )
         }
 
-        /// Layout moves the existing controls without creating alternative owners.
-        private var composerControls: some View {
-            ComposerControlFlow(layoutDirection: layoutDirection) {
-                attachmentButton
-                modelButton
-                projectButton
-                microphoneButton
-                stopButton
-                sendButton.layoutValue(key: ComposerTrailingControlKey.self, value: true)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }
-
         @ViewBuilder private var attachmentButton: some View {
             if let importer = environment.imageImporters[ObjectIdentifier(runtime)] {
                 ImageAttachmentMenu(
@@ -762,6 +839,7 @@
                 modelPresented = true
             } label: {
                 Text(account.selectedModel?.shortName ?? MapleStrings.text("Model"))
+                    .lineLimit(1)
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }
@@ -773,7 +851,7 @@
                     MapleStrings.text("Project"),
                     systemImage: environment.selectedProjectID == nil ? "folder" : "folder.fill"
                 ) {
-                    projectPresented = true
+                    projectPresentationID = UUID(); projectPresented = true
                 }
                 .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                 .accessibilityIdentifier("chat.project")
@@ -781,7 +859,7 @@
         }
         @ViewBuilder private var microphoneButton: some View {
             if let dictation = environment.dictation {
-                if account.transcriptionAccess == .allowed {
+                if account.transcriptionAccess == .allowed || dictation.status(for: runtime)?.phase == .recording {
                     DictationMicrophoneButton(coordinator: dictation, runtime: runtime, isEnabled: true)
                         .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                 } else {
@@ -797,28 +875,21 @@
                 }
             }
         }
-        @ViewBuilder private var stopButton: some View {
-            if runtime.hasUnresolvedRun {
-                Button(MapleStrings.text("Stop"), systemImage: "stop.fill") { runtime.stop() }
-                    .buttonStyle(.bordered).frame(minWidth: 44, minHeight: 44)
-                    .accessibilityIdentifier("chat.stop")
-            }
-        }
-        @ViewBuilder private var sendButton: some View {
-            if !runtime.isEditingQueue {
+        @ViewBuilder private var primaryAction: some View {
+            if !runtime.isEditingQueue || runtime.hasUnresolvedRun {
                 Button {
-                    send()
+                    if runtime.hasUnresolvedRun { runtime.stop() } else { send() }
                 } label: {
                     Label(
-                        runtime.hasUnresolvedRun ? MapleStrings.text("Queue message") : MapleStrings.text("Send"),
-                        systemImage: "arrow.up"
+                        runtime.hasUnresolvedRun ? MapleStrings.text("Stop") : MapleStrings.text("Send"),
+                        systemImage: runtime.hasUnresolvedRun ? "stop.fill" : "arrow.up"
                     )
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .labelStyle(.iconOnly).buttonStyle(MaplePrimaryButtonStyle(compact: true))
-                .disabled(!runtime.canSend || account.chatAccess != .allowed)
-                .accessibilityIdentifier("chat.send")
+                .disabled(!runtime.hasUnresolvedRun && (!runtime.canSend || account.chatAccess != .allowed))
+                .accessibilityIdentifier(runtime.hasUnresolvedRun ? "chat.stop" : "chat.send")
             }
         }
 
@@ -833,22 +904,14 @@
                 composerFocused = false
             }
         }
-        private var runLabel: String {
-            switch runtime.phase {
-            case .preparing: MapleStrings.text("Preparing…")
-            case .sending: MapleStrings.text("Sending…")
-            case .streaming: MapleStrings.text("Responding…")
-            case .recovering: MapleStrings.text("Checking response…")
-            case .stopping: MapleStrings.text("Stopping…")
-            case nil: ""
-            }
-        }
 
     }
 
     private struct TranscriptItem: View {
         let item: ConversationItem
+        let toolResult: ConversationItem?
         let generation: UUID
+        let revealDelay: Double
         let theme: MessageRenderTheme
         let font: MessageRenderFont
         let isReplyReady: Bool
@@ -856,7 +919,17 @@
         let onReadAloud: () -> Void
         let onSpeechUnavailable: () -> Void
         let onOpenLink: (URL) -> Void
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var appeared = false
         private var text: String { (item.content ?? []).compactMap(\.text).joined(separator: "\n\n") }
+        private var readableContent: Bool {
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (item.content ?? []).contains(where: { $0.imageUrl != nil })
+        }
+        private var revealsContent: Bool {
+            ["user", "assistant"].contains(item.role ?? "")
+                && !["function_call", "web_search_call", "function_call_output"].contains(item.type)
+        }
 
         var body: some View {
             VStack(alignment: .leading, spacing: 8) {
@@ -875,7 +948,8 @@
                     || item.type == "function_call_output"
                 {
                     ToolActivityView(
-                        item: item, theme: theme, font: font, generation: generation, onOpenLink: onOpenLink)
+                        item: item, result: toolResult, theme: theme, font: font, generation: generation,
+                        onOpenLink: onOpenLink)
                 } else if !text.isEmpty {
                     MessageView(
                         text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
@@ -907,13 +981,25 @@
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(revealsContent && !appeared && !reduceMotion ? 0 : 1)
+            .onAppear { revealContent() }
+            .onChange(of: readableContent) { _, _ in revealContent() }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier((item.role == "assistant" ? "assistant.message." : "message.") + item.id)
+        }
+        private func revealContent() {
+            guard !appeared, readableContent else { return }
+            if revealsContent, !reduceMotion {
+                withAnimation(.easeOut(duration: 0.18).delay(revealDelay)) { appeared = true }
+            } else {
+                appeared = true
+            }
         }
     }
 
     private struct ToolActivityView: View {
         let item: ConversationItem
+        let result: ConversationItem?
         let theme: MessageRenderTheme
         let font: MessageRenderFont
         let generation: UUID
@@ -921,7 +1007,9 @@
         @State private var expanded = false
         @State private var details = ""
         @State private var detailsRevision = UUID()
-        private var failed: Bool { ["failed", "error"].contains(item.status ?? "") }
+        private var failed: Bool {
+            [item.status, result?.status].contains(where: { ["failed", "error"].contains($0 ?? "") })
+        }
         var body: some View {
             DisclosureGroup(isExpanded: $expanded) {
                 if !details.isEmpty {
@@ -931,39 +1019,98 @@
                     Text(MapleStrings.text("No tool details available.")).foregroundStyle(.secondary)
                 }
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     Label(
-                        item.name ?? MapleStrings.text("Web tool"),
-                        systemImage: failed ? "exclamationmark.circle" : "globe")
-                    Spacer()
-                    Text(statusLabel).font(.caption).foregroundStyle(failed ? .red : .secondary)
+                        title,
+                        systemImage: failed ? "exclamationmark.circle" : "globe"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(.secondary))
+                    Spacer(minLength: 0)
                 }
+                .frame(minHeight: 44)
             }
-            .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+            .tint(MapleAccent.foreground.opacity(0.75))
             .onChange(of: failed, initial: true) { _, value in if value { expanded = true } }
             .onChange(of: item) { _, _ in detailsRevision = UUID() }
+            .onChange(of: result) { _, _ in detailsRevision = UUID() }
             .task(id: detailsRevision) {
-                let arguments = item.arguments, output = item.output
+                let arguments = item.arguments, output = item.output, result = result
                 let work = Task.detached(priority: .userInitiated) {
                     let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                    return [arguments, output].compactMap { value -> String? in
+                    var details = [arguments, output, result?.arguments, result?.output].compactMap {
+                        value -> String? in
                         guard let value, let bytes = try? encoder.encode(value), bytes.count <= 1_048_576,
                             let text = String(data: bytes, encoding: .utf8)
                         else { return nil }
                         return text
-                    }.joined(separator: "\n\n")
+                    }
+                    if let content = result?.content, !content.isEmpty,
+                        let bytes = try? encoder.encode(content), bytes.count <= 1_048_576,
+                        let text = String(data: bytes, encoding: .utf8)
+                    {
+                        details.append(text)
+                    }
+                    return details.joined(separator: "\n\n")
                 }
                 let value = await work.value
                 if !Task.isCancelled { details = value }
             }
         }
-        private var statusLabel: String {
-            switch item.status {
-            case "completed": MapleStrings.text("Completed")
-            case "failed", "error": MapleStrings.text("Failed")
-            case "incomplete", "cancelled": MapleStrings.text("Incomplete")
-            default: MapleStrings.text("Working…")
+        private var title: String {
+            let search = item.name == "web_search" || item.type == "web_search_call"
+            if failed { return MapleStrings.text(search ? "Search failed" : "Tool failed") }
+            if item.name == "open_urls" { return MapleStrings.text("Opened pages") }
+            if search {
+                return MapleStrings.text(result != nil || item.status == "completed" ? "Search results" : "Web search")
             }
+            return MapleStrings.text("Tool results")
+        }
+    }
+
+    /// Observe only this composer's window. Focus and account admission remain
+    /// with ChatDetail; this adapter reports geometry without changing input.
+    private struct ComposerKeyboardVisibility: UIViewRepresentable {
+        let eligible: Bool
+        let changed: (Bool) -> Void
+        func makeUIView(context: Context) -> KeyboardVisibilityView { KeyboardVisibilityView() }
+        func updateUIView(_ view: KeyboardVisibilityView, context: Context) {
+            view.eligible = eligible; view.changed = changed
+        }
+        static func dismantleUIView(_ view: KeyboardVisibilityView, coordinator: ()) { view.invalidate() }
+    }
+
+    private final class KeyboardVisibilityView: UIView {
+        var eligible = false
+        var changed: ((Bool) -> Void)?
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false; isAccessibilityElement = false
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(keyboardChanged), name: UIResponder.keyboardDidChangeFrameNotification,
+                object: nil)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(keyboardHidden), name: UIResponder.keyboardDidHideNotification, object: nil)
+        }
+        convenience init() { self.init(frame: .zero) }
+        required init?(coder: NSCoder) { nil }
+        func invalidate() {
+            eligible = false; changed = nil; NotificationCenter.default.removeObserver(self)
+        }
+        @objc private func keyboardChanged(_ notification: Notification) {
+            guard eligible, let window, let scene = window.windowScene, scene.activationState == .foregroundActive,
+                notification.userInfo?[UIResponder.keyboardIsLocalUserInfoKey] as? Bool != false,
+                let frame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
+                frame.origin.x.isFinite, frame.origin.y.isFinite, frame.width.isFinite, frame.height.isFinite
+            else { return }
+            let overlap = window.bounds.intersection(window.convert(frame, from: scene.screen.coordinateSpace))
+            changed?(!overlap.isNull && overlap.width > 0 && overlap.height > 0)
+        }
+        @objc private func keyboardHidden(_ notification: Notification) {
+            guard eligible, let window, window.windowScene?.activationState == .foregroundActive,
+                notification.userInfo?[UIResponder.keyboardIsLocalUserInfoKey] as? Bool != false
+            else { return }
+            changed?(false)
         }
     }
 #endif

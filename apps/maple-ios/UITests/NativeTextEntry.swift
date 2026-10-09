@@ -6,7 +6,7 @@ enum NativeTextEntryIssue: Error { case unavailable, selectionUnavailable, clear
 /// paste path. Hardware Command-A is not an iPhone text-replacement operation.
 @MainActor func replaceSyntheticText(
     _ field: XCUIElement, with text: String, in app: XCUIApplication,
-    presentedAlert: XCUIElement? = nil,
+    presentedAlert: XCUIElement? = nil, centeredNativeFocus: Bool = false, beforeTyping: (() throws -> Void)? = nil,
     file: StaticString = #filePath, line: UInt = #line
 ) throws {
     guard field.waitForExistence(timeout: 20), text.utf16.count <= 4_096,
@@ -15,7 +15,8 @@ enum NativeTextEntryIssue: Error { case unavailable, selectionUnavailable, clear
         XCTFail("Synthetic text field unavailable or outside fixture bounds", file: file, line: line)
         throw NativeTextEntryIssue.unavailable
     }
-    try interactWithSyntheticField(field, in: app, presentedAlert: presentedAlert, longPress: false)
+    try interactWithSyntheticField(
+        field, in: app, presentedAlert: presentedAlert, longPress: false, centeredNativeFocus: centeredNativeFocus)
     if !previous.isEmpty {
         if let presentedAlert {
             // Single-line alert fields may place a caret without opening an edit
@@ -64,6 +65,7 @@ enum NativeTextEntryIssue: Error { case unavailable, selectionUnavailable, clear
             throw NativeTextEntryIssue.clearFailed
         }
     }
+    try beforeTyping?()
     if !text.isEmpty { field.typeText(text) }
     let replaced = XCTNSPredicateExpectation(
         predicate: NSPredicate { _, _ in (field.value as? String) == text }, object: field)
@@ -78,10 +80,27 @@ enum NativeTextEntryIssue: Error { case unavailable, selectionUnavailable, clear
 /// interruption path before UIKit receives the intended field gesture.
 @MainActor private func interactWithSyntheticField(
     _ field: XCUIElement, in app: XCUIApplication, presentedAlert: XCUIElement?, longPress: Bool,
-    trailingInsertion: Bool = false
+    trailingInsertion: Bool = false, centeredNativeFocus: Bool = false
 ) throws {
     guard let presentedAlert else {
-        if longPress { field.press(forDuration: 1.2) } else { field.tap() }
+        if longPress {
+            field.press(forDuration: 1.2)
+        } else if centeredNativeFocus {
+            guard field.exists, field.isEnabled, field.isHittable else { throw NativeTextEntryIssue.unavailable }
+            let fieldFrame = field.frame, appFrame = app.frame
+            guard
+                [fieldFrame, appFrame].allSatisfy({
+                    $0.minX.isFinite && $0.minY.isFinite && $0.maxX.isFinite && $0.maxY.isFinite
+                        && $0.width.isFinite && $0.height.isFinite && $0.width > 0 && $0.height > 0
+                }), appFrame.contains(fieldFrame)
+            else { throw NativeTextEntryIssue.unavailable }
+            // One ordinary event inside the observed editor, without a second focus tap.
+            app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: fieldFrame.midX - appFrame.minX, dy: fieldFrame.midY - appFrame.minY)
+            ).tap()
+        } else {
+            field.tap()
+        }
         return
     }
     guard presentedAlert.exists, presentedAlert.elementType == .alert,

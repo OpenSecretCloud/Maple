@@ -104,6 +104,9 @@ final class MapleUITests: XCTestCase {
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in library() != nil }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 20), .completed)
         _ = try XCTUnwrap(library())
+        let actions = app.buttons["library.actions"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 20)); XCTAssertTrue(actions.isHittable)
+        XCTAssertTrue(actions.isEnabled); actions.tap()
         let settings = app.buttons["library.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 20)); XCTAssertTrue(settings.isHittable)
         XCTAssertTrue(settings.isEnabled); settings.tap()

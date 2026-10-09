@@ -55,7 +55,7 @@ import XCTest
         notice("images", containing: "unavailable")
         scenario("loading", billing: "loading")
         XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
-        XCTAssertTrue(app.staticTexts["Checking account access…"].exists)
+        XCTAssertFalse(app.staticTexts["Checking account access…"].exists)
         notice("dictation", containing: "still loading")
         scenario("failed", billing: "failed")
         XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)

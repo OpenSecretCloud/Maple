@@ -142,7 +142,8 @@ enum ImagePreviewDecoding {
                     Label(MapleStrings.text("Image unavailable"), systemImage: "photo.badge.exclamationmark").font(
                         .footnote)
                 } else {
-                    ProgressView().frame(width: 120, height: 120)
+                    Image(systemName: "photo").foregroundStyle(.secondary)
+                        .frame(width: 120, height: 120).accessibilityHidden(true)
                 }
             }
             .task {
@@ -228,7 +229,7 @@ enum ImagePreviewDecoding {
                         } else if failed {
                             Text(MapleStrings.text("Image unavailable"))
                         } else {
-                            ProgressView()
+                            Image(systemName: "photo").foregroundStyle(.secondary).accessibilityHidden(true)
                         }
                     }.clipped()
                 }

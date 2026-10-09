@@ -14,9 +14,49 @@ final class ShippingViewportUITests: XCTestCase {
         app.launch()
         waitSummary("Ready 1; older 0; messages 8")
         XCTAssertTrue(app.textViews["chat.composer"].exists)
-        XCTAssertTrue(app.buttons["chat.model"].exists)
+        XCTAssertFalse(app.buttons["chat.model"].exists, "An existing chat starts with its compact composer")
         XCTAssertTrue(app.buttons["message.copy.viewport-user-20"].exists)
         XCTAssertTrue(app.buttons["message.speak.viewport-assistant-20"].exists)
+    }
+
+    func testExistingChatComposerExpandsWithoutReplacingDraftAndPickerKeepsWidth() throws {
+        launchFixture()
+        defer { app.terminate() }
+        let composer = app.textViews["chat.composer"]
+        XCTAssertLessThanOrEqual(composer.frame.height, 60)
+        XCTAssertTrue(app.buttons["chat.send"].exists)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+        capture("Existing chat starts with a compact composer")
+
+        let draft = "Synthetic draft survives composer expansion and picker resizing"
+        try replaceSyntheticText(composer, with: draft, in: app)
+        let model = app.buttons["chat.model"]
+        XCTAssertTrue(model.waitForExistence(timeout: 10))
+        XCTAssertTrue(model.isHittable)
+        XCTAssertEqual(composer.value as? String, draft)
+        capture("Focused composer expands around the same native draft")
+        model.tap()
+        let picker = app.collectionViews["settings.models"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.switches["model.web-search"].exists)
+        XCTAssertFalse(app.buttons["Done"].exists)
+        XCTAssertFalse(app.navigationBars["Default model"].exists)
+        let width = picker.frame.width
+        XCTAssertGreaterThan(width, 250)
+        picker.swipeUp(velocity: .slow)
+        XCTAssertEqual(picker.frame.width, width, accuracy: 1)
+        capture("Model picker uses plain rows and a stable presentation width")
+        // The native grabber is eight points below this sheet's measured top.
+        // Drag the sheet itself; a gesture inside its List scrolls the models.
+        let grabber = picker.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 8))
+        let away = picker.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+        grabber.press(forDuration: 0.15, thenDragTo: away)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
+        XCTAssertTrue(composer.exists)
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
     }
 
     func testShippingComposerWaitsForLoadedDraftAndRetainsNativeEdits() throws {
@@ -207,6 +247,112 @@ final class ShippingViewportUITests: XCTestCase {
         capture("Full-screen Menu returns the same Chat owner and pagination anchor")
     }
 
+    func testCancelledLeadingEdgePreservesRetainedAssistantGeometryAndDraft() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = [
+            "--maple-shipping-viewport-fixture", "--maple-shipping-pagination-menu-proof",
+            "--maple-shipping-complex-markdown-proof",
+        ]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let preparedMessage = app.descendants(matching: .any).matching(
+            identifier: "assistant.message.viewport-assistant-20"
+        ).firstMatch
+        // This no-formula fixture completes preparation synchronously with
+        // publication. Its code button witnesses completed rich rendering
+        // before the first occlusion, rather than just loaded message data.
+        XCTAssertTrue(preparedMessage.buttons["Copy code"].firstMatch.waitForExistence(timeout: 15))
+        let composer = app.textViews["chat.composer"]
+        let draft = "Synthetic draft survives a cancelled native edge preview"
+        try replaceSyntheticText(
+            composer, with: draft, in: app, centeredNativeFocus: true,
+            beforeTyping: {
+                let keyboard = self.app.keyboards.firstMatch
+                let model = self.app.buttons["chat.model"]
+                var lastFrames: [CGRect]?
+                var stableSince: TimeInterval?
+                let ready = XCTNSPredicateExpectation(
+                    predicate: NSPredicate { _, _ in
+                        guard model.exists, keyboard.exists, composer.exists, composer.isHittable else {
+                            lastFrames = nil; stableSince = nil
+                            return false
+                        }
+                        let editorFrame = composer.frame, keyboardFrame = keyboard.frame
+                        let frames = [editorFrame, keyboardFrame]
+                        guard
+                            frames.allSatisfy({
+                                $0.minX.isFinite && $0.minY.isFinite && $0.width.isFinite && $0.height.isFinite
+                                    && $0.width > 0 && $0.height > 0
+                            }), editorFrame.maxY <= keyboardFrame.minY
+                        else {
+                            lastFrames = nil; stableSince = nil
+                            return false
+                        }
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if frames != lastFrames {
+                            lastFrames = frames; stableSince = now
+                            return false
+                        }
+                        return stableSince.map { now - $0 >= 0.25 } ?? false
+                    }, object: composer)
+                guard XCTWaiter.wait(for: [ready], timeout: 10) == .completed else {
+                    XCTFail("Expanded native editor and keyboard did not reach stable typing geometry")
+                    throw NativeTextEntryIssue.unavailable
+                }
+            })
+        app.buttons["shipping-pagination.open"].tap()
+        let menu = app.otherElements["shipping-pagination.library"]
+        let close = app.buttons["shipping-pagination.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 15))
+        let hiddenKeyboard = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !self.app.keyboards.firstMatch.exists }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [hiddenKeyboard], timeout: 10), .completed)
+        close.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        XCTAssertEqual(composer.value as? String, draft)
+        let owners = try windowOwnership()
+        let transcript = app.scrollViews["chat.transcript"]
+        let leading = app.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
+        leading.press(
+            forDuration: 0.1,
+            thenDragTo: leading.withOffset(CGVector(dx: min(190, app.frame.width * 0.55), dy: 0)))
+        XCTAssertTrue(close.waitForExistence(timeout: 15), "A real edge gesture must open the retained menu")
+        XCTAssertTrue(menu.exists)
+        close.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let anchor = transcript.descendants(matching: .any).matching(identifier: preparedMessage.identifier).firstMatch
+        XCTAssertTrue(anchor.exists)
+        XCTAssertTrue(anchor.buttons["Copy code"].firstMatch.exists)
+        XCTAssertTrue(anchor.frame.intersects(transcript.frame))
+        let original = anchor.frame
+        let start = app.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 44, dy: 0)))
+        let returnedAnchor = transcript.descendants(matching: .any).matching(identifier: anchor.identifier).firstMatch
+        let settled = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                guard !menu.exists, !close.exists, composer.exists, composer.isHittable,
+                    composer.value as? String == draft, returnedAnchor.exists
+                else { return false }
+                let returned = returnedAnchor.frame
+                return abs(returned.minX - original.minX) <= 3 && abs(returned.minY - original.minY) <= 3
+                    && abs(returned.height - original.height) <= 3
+            }, object: app)
+        let result = XCTWaiter.wait(for: [settled], timeout: 10)
+        let geometry = XCTAttachment(
+            string:
+                "Original assistant frame: \(original); retained: \(anchor.exists ? anchor.frame : .zero); fresh match: \(returnedAnchor.exists ? returnedAnchor.frame : .zero); candidate count: \(transcript.descendants(matching: .any).matching(identifier: anchor.identifier).count)"
+        )
+        geometry.name = "Cancelled retained assistant geometry"; geometry.lifetime = .keepAlways; add(geometry)
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(try windowOwnership(), owners)
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
+        capture("Cancelled edge preserves the retained assistant, draft and native composer")
+    }
+
     func testShippingStreamPreservesEarlierReadingAnchor() {
         launchFixture()
         app.buttons["shipping-viewport.start"].tap()
@@ -214,7 +360,9 @@ final class ShippingViewportUITests: XCTestCase {
         let emit = app.buttons["shipping-viewport.emit"]
         let streamReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: emit)
         XCTAssertEqual(XCTWaiter.wait(for: [streamReady], timeout: 10), .completed)
-        XCTAssertTrue(app.otherElements["chat.progress"].exists || app.staticTexts["chat.progress"].exists)
+        XCTAssertTrue(app.buttons["chat.stop"].exists && app.buttons["chat.stop"].isEnabled)
+        XCTAssertFalse(app.buttons["chat.send"].exists, "Stop occupies the send button while a response is active")
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
         let anchor = readingAnchor(20)
         let transcript = app.scrollViews["chat.transcript"]
         XCTAssertTrue(transcript.exists)
@@ -339,13 +487,14 @@ final class ShippingViewportUITests: XCTestCase {
     }
 
     private func assertWindowControls(composer: XCUIElement, in frame: CGRect) throws {
-        for control in [composer, app.buttons["chat.model"], app.buttons["chat.send"], app.buttons["queue.open"]] {
+        for control in [composer, app.buttons["chat.send"], app.buttons["queue.open"]] {
             XCTAssertTrue(control.exists && control.isHittable)
             let target = control.frame
             XCTAssertGreaterThanOrEqual(target.height, 44)
             XCTAssertGreaterThanOrEqual(target.width, 44)
             XCTAssertTrue(frame.insetBy(dx: -1, dy: -1).contains(target))
         }
+        XCTAssertFalse(app.buttons["chat.model"].exists, "The keyboard-hidden composer remains compact after resizing")
         XCTAssertFalse(app.buttons["chat.stop"].exists)
     }
 

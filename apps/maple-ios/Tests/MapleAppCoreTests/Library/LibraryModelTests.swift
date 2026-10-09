@@ -1,7 +1,15 @@
 import Foundation
 import MapleSDK
+import Observation
+import Synchronization
 import Testing
 @testable import MapleAppCore
+
+private final class LibraryObservationChanges: Sendable {
+    private let count = Mutex(0)
+    var value: Int { count.withLock { $0 } }
+    func record() { count.withLock { $0 += 1 } }
+}
 
 @MainActor @Suite struct LibraryModelTests {
     func fixture() -> (LibraryModel, LibraryFixture, ChatDeletionCoordinator, ChatFixtureService, ChatFixtureStore) {
@@ -88,6 +96,108 @@ import Testing
         let loading = Task { await model.load() }
         await gate.waitForArrival(); model.invalidate(); await gate.release(); await loading.value
         #expect(model.conversations.isEmpty && !model.isLoading)
+    }
+
+    @Test func recentExcludesPinnedAndProjectChatsAtThePageBoundary() async {
+        let (model, service, _, _, _) = fixture()
+        await service.configure(conversations: [
+            libraryConversation("pin", pinned: true), libraryConversation("recent"),
+            libraryConversation("project", project: "folder"),
+            libraryConversation("project-pin", project: "folder", pinned: true),
+        ])
+        await model.load(.recent)
+        #expect(model.visibleConversations.map(\.id) == ["recent"])
+        #expect(await service.conversationListCalls.last?.pinned == false)
+        #expect(await service.conversationListCalls.last?.unassignedProject == true)
+        var pinned = libraryConversation("recent", pinned: true)
+        model.receiveConversationUpdate(pinned, from: model.scope)
+        #expect(model.visibleConversations.isEmpty)
+        pinned.pinned = false
+        model.receiveConversationUpdate(pinned, from: model.scope)
+        #expect(model.visibleConversations.map(\.id) == ["recent"])
+    }
+
+    @Test func movingLastProjectChatRemovesItsCachedMembershipImmediately() async {
+        let (model, service, _, _, _) = fixture()
+        await service.configure(conversations: [libraryConversation("a", project: "folder")])
+        await model.load(.project("folder")); model.selectedIDs = ["a"]
+        await model.moveConversations(ids: ["a"], projectID: nil)
+        #expect(model.conversations.isEmpty && model.selectedIDs.isEmpty && model.issue == nil)
+        #expect(await service.conversations.first?.projectId == nil)
+    }
+
+    @Test func unchangedRefreshRetainsRowsSelectionAndAllLoadedPagesWithoutPublishing() async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
+        let rows = (0..<205).map { libraryConversation(String($0)) }
+        await service.configure(conversations: rows)
+        await model.load(); await model.loadMore()
+        model.selectedIDs = ["150"]; model.searchText = "Title"
+        let changes = LibraryObservationChanges()
+        _ = withObservationTracking {
+            model.conversations
+        } onChange: {
+            changes.record()
+        }
+        await service.configure(listGate: gate)
+        let refresh = Task { await model.load() }
+        await gate.waitForArrival()
+        #expect(model.conversations == Array(rows.prefix(200)) && model.hasMore)
+        await gate.release(); await refresh.value
+        #expect(changes.value == 0)
+        #expect(model.selectedIDs == ["150"] && model.searchText == "Title")
+        #expect(await service.conversationListCalls.map(\.page.after) == [nil, "99", nil, "99"])
+        await service.configure(listGate: nil)
+        await model.loadMore()
+        #expect(model.conversations == rows && !model.hasMore)
+    }
+
+    @Test func refreshReconcilesChangedLoadedPagesAtomically() async {
+        let (model, service, _, _, _) = fixture()
+        let rows = (0..<202).map { libraryConversation(String($0)) }
+        await service.configure(conversations: rows)
+        await model.load(); await model.loadMore()
+        var changed = Array(rows.dropFirst()); changed[120].metadata = ["title": .string("Renamed elsewhere")]
+        changed.insert(libraryConversation("new"), at: 0)
+        await service.configure(conversations: changed)
+        await model.refresh()
+        #expect(model.conversations == Array(changed.prefix(200)) && model.hasMore)
+        await model.loadMore()
+        #expect(model.conversations == changed)
+    }
+
+    @Test func failedOrCancelledRefreshKeepsLastSuccessfulPageAndCursor() async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
+        let rows = (0..<102).map { libraryConversation(String($0)) }
+        await service.configure(conversations: rows)
+        await model.load()
+        await service.configure(failList: true)
+        await model.refresh()
+        #expect(model.conversations == Array(rows.prefix(100)) && model.hasMore && model.issue == .connection)
+        await service.configure(conversations: [libraryConversation("stale")], listGate: gate)
+        let refresh = Task { await model.refresh() }
+        await gate.waitForArrival(); refresh.cancel(); await gate.release(); await refresh.value
+        #expect(model.conversations == Array(rows.prefix(100)) && model.hasMore && !model.isLoading)
+        #expect(model.issue == nil)
+        await service.configure(conversations: rows)
+        await model.loadMore()
+        #expect(model.conversations == rows && !model.hasMore)
+    }
+
+    @Test func unchangedProjectRefreshDoesNotPublishAndKeepsCacheWhileLoading() async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
+        await model.loadProjects()
+        let projects = model.projects, changes = LibraryObservationChanges()
+        _ = withObservationTracking {
+            model.projects
+        } onChange: {
+            changes.record()
+        }
+        await service.configureProjects(projects, gate: gate)
+        let refresh = Task { await model.loadProjects() }
+        await gate.waitForArrival()
+        #expect(model.projects == projects)
+        await gate.release(); await refresh.value
+        #expect(changes.value == 0 && !model.isLoadingProjects)
     }
 }
 

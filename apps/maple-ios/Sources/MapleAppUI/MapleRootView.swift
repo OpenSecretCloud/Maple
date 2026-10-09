@@ -72,7 +72,7 @@
                         #endif
                     }
                 } else {
-                    ProgressView(MapleStrings.text("Opening Maple…"))
+                    MapleLaunchSurface()
                 }
             }
             .safeAreaInset(edge: .top) {
@@ -111,6 +111,7 @@
             }
             .font(MapleTypography.body)
             .tint(MapleAccent.foreground)
+            .background(MapleSurface.canvas.ignoresSafeArea())
             .task {
                 guard environment == nil, !configurationFailed else { return }
                 do {
@@ -200,9 +201,7 @@
                         session: environment.session, coordinator: environment.signIn,
                         onPasswordReset: { environment.presentAccount(.reset) })
                 case .restoring, .cleaningUp:
-                    ProgressView(
-                        environment.session.phase == .restoring
-                            ? MapleStrings.text("Opening Maple…") : MapleStrings.text("Signing out…"))
+                    MapleLaunchSurface()
                 case .unavailable:
                     ContentUnavailableView {
                         Label(MapleStrings.text("Unable to open your account"), systemImage: "wifi.exclamationmark")
@@ -236,6 +235,16 @@
                 AccountFlowView(flow: flow, session: environment.session)
             }
             .preferredColorScheme(environment.preferences?.value.theme.preferredColorScheme)
+        }
+    }
+
+    private struct MapleLaunchSurface: View {
+        var body: some View {
+            MapleWordmark()
+                .frame(width: 130, height: 28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MapleSurface.canvas.ignoresSafeArea())
+                .accessibilityLabel(Text(verbatim: "Maple"))
         }
     }
 #endif

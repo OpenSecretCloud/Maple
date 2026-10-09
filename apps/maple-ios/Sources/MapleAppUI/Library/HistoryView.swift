@@ -17,7 +17,6 @@
                             conversation: conversation, library: library, selectionLibrary: library,
                             selecting: selecting, onSelect: onSelectChat)
                     }
-                    if library.isLoading { ProgressView() }
                     if library.hasMore {
                         Button {
                             Task { await library.loadMore() }
@@ -31,6 +30,9 @@
                     }
                     if let issue = library.issue { LibraryIssueView(issue: issue) }
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(MapleSurface.sidebar)
                 .accessibilityIdentifier("library.fixture.chat-list")
                 .modifier(LibraryChatManagement(library: library, selecting: $selecting))
                 .task { await library.load(.all) }
@@ -47,28 +49,31 @@
         let onSelect: @MainActor (String) -> Void
         var onMutation: (@MainActor () async -> Void)? = nil
         var body: some View {
-            if selecting {
-                Button {
-                    if selectionLibrary.selectedIDs.contains(conversation.id) {
-                        selectionLibrary.selectedIDs.remove(conversation.id)
-                    } else {
-                        selectionLibrary.selectedIDs.insert(conversation.id)
+            Group {
+                if selecting {
+                    Button {
+                        if selectionLibrary.selectedIDs.contains(conversation.id) {
+                            selectionLibrary.selectedIDs.remove(conversation.id)
+                        } else {
+                            selectionLibrary.selectedIDs.insert(conversation.id)
+                        }
+                    } label: {
+                        HStack {
+                            Image(
+                                systemName: selectionLibrary.selectedIDs.contains(conversation.id)
+                                    ? "checkmark.circle.fill" : "circle")
+                            ConversationTitle(conversation: conversation)
+                        }.foregroundStyle(.primary)
                     }
-                } label: {
-                    HStack {
-                        Image(
-                            systemName: selectionLibrary.selectedIDs.contains(conversation.id)
-                                ? "checkmark.circle.fill" : "circle")
-                        ConversationTitle(conversation: conversation)
-                    }.foregroundStyle(.primary)
+                    .accessibilityIdentifier("library.chat." + conversation.id)
+                    .accessibilityAddTraits(selectionLibrary.selectedIDs.contains(conversation.id) ? [.isSelected] : [])
+                    .disabled(library.isMutating || selectionLibrary.isMutating)
+                } else {
+                    ConversationLibraryRow(
+                        conversation: conversation, library: library, onSelect: onSelect, onMutation: onMutation)
                 }
-                .accessibilityIdentifier("library.chat." + conversation.id)
-                .accessibilityAddTraits(selectionLibrary.selectedIDs.contains(conversation.id) ? [.isSelected] : [])
-                .disabled(library.isMutating || selectionLibrary.isMutating)
-            } else {
-                ConversationLibraryRow(
-                    conversation: conversation, library: library, onSelect: onSelect, onMutation: onMutation)
             }
+            .listRowSeparator(.hidden).listRowBackground(Color.clear)
         }
     }
 
@@ -76,6 +81,7 @@
         @Bindable var library: LibraryModel
         @Binding var selecting: Bool
         var onMutation: (@MainActor () async -> Void)? = nil
+        var onSettings: (@MainActor () -> Void)? = nil
         @State private var moving = false
         @State private var deleting = false
         @State private var deletingAll = false
@@ -84,6 +90,16 @@
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Menu {
+                            if let onSettings {
+                                Button(action: onSettings) {
+                                    Label {
+                                        libraryText("Settings")
+                                    } icon: {
+                                        Image(systemName: "gearshape")
+                                    }
+                                }
+                                .accessibilityIdentifier("library.settings")
+                            }
                             Button {
                                 selecting.toggle(); if !selecting { library.selectedIDs = [] }
                             } label: {
@@ -95,9 +111,13 @@
                                 libraryText("Delete all chats")
                             }
                         } label: {
-                            Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44)
+                            MapleWordmark().frame(width: 103, height: 20)
+                                .frame(minHeight: 44).contentShape(Rectangle())
                         }
-                        .accessibilityLabel(libraryText("Chat actions"))
+                        .menuStyle(.button)
+                        .buttonStyle(.plain)
+                        .frame(minHeight: 44)
+                        .accessibilityLabel(libraryText("Maple menu"))
                         .accessibilityIdentifier("library.actions")
                         .disabled(library.isMutating)
                     }
@@ -137,7 +157,8 @@
                     Button(role: .destructive) {
                         let ids = library.selectedIDs
                         Task {
-                            await library.deleteConversations(ids: ids); await onMutation?()
+                            await library.deleteConversations(ids: ids)
+                            if library.issue == nil { await onMutation?() }
                         }
                     } label: {
                         libraryText("Delete selected chats")
@@ -169,7 +190,10 @@
         let conversation: Conversation
         var body: some View {
             let title = LibraryModel.title(conversation)
-            if title.isEmpty { libraryText("Untitled chat") } else { Text(title) }
+            Group {
+                if title.isEmpty { libraryText("Untitled chat") } else { Text(verbatim: title) }
+            }
+            .lineLimit(1).truncationMode(.tail)
         }
     }
 
@@ -186,15 +210,11 @@
             Button {
                 onSelect(conversation.id)
             } label: {
-                HStack {
-                    ConversationTitle(conversation: conversation).multilineTextAlignment(.leading)
-                    Spacer(minLength: 8)
-                    if conversation.pinned {
-                        Image(systemName: "pin.fill").foregroundStyle(.secondary).accessibilityLabel(
-                            Text("Pinned", tableName: "Library", bundle: .module))
-                    }
-                }.foregroundStyle(.primary)
+                ConversationTitle(conversation: conversation)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle()).foregroundStyle(.primary)
             }
+            .listRowSeparator(.hidden).listRowBackground(Color.clear)
             .accessibilityIdentifier("library.chat." + conversation.id)
             .contextMenu { actions }
             .swipeActions(edge: .trailing) {
@@ -319,9 +339,12 @@
                     libraryText("No project")
                 }
                 ForEach(library.projects, id: \.id) { project in Button(project.name) { move(project.id) } }
-                if library.isLoadingProjects { ProgressView() }
                 if let issue = library.issue { LibraryIssueView(issue: issue) }
             }
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
             .disabled(library.isMutating)
             .navigationTitle(Text("Move to project", tableName: "Library", bundle: .module))
             .toolbar {
@@ -352,7 +375,7 @@
         @State private var working = false
         @State private var issue: LibraryIssue?
         var body: some View {
-            Form {
+            List {
                 libraryText(explanation)
                 TextField(
                     text: $confirmation,
@@ -369,9 +392,12 @@
                     libraryText(title)
                 }.disabled(confirmation != "DELETE" || working)
                     .accessibilityIdentifier("library.delete-confirm")
-                if working { ProgressView() }
                 if let issue { LibraryIssueView(issue: issue) }
             }
+            .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(MapleSurface.canvas)
             .navigationTitle(libraryText(title))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

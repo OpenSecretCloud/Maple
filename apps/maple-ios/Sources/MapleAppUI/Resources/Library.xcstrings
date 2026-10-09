@@ -685,6 +685,54 @@
           }
         }
       }
+    },
+    "Collapsed": {
+      "comment": "Accessibility state of a collapsed project folder.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapsed"
+          }
+        }
+      }
+    },
+    "Expanded": {
+      "comment": "Accessibility state of an expanded project folder.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expanded"
+          }
+        }
+      }
+    },
+    "Maple menu": {
+      "comment": "Accessibility label for the Maple wordmark button opening Settings and chat management actions.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple menu"
+          }
+        }
+      }
+    },
+    "Search chats": {
+      "comment": "Floating Library search field. Searches titles already loaded in this account; keep concise.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search chats"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

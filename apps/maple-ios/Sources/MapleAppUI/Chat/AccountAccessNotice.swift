@@ -5,17 +5,25 @@
     struct AccountAccessNotice: View {
         @Bindable var account: AccountEntitlements
         var body: some View {
-            HStack(alignment: .top) {
-                Text(message).font(.footnote).foregroundStyle(.secondary)
-                if account.chatAccess == .unavailable || account.chatAccess == .unknownPlan {
-                    Button(MapleStrings.text("Retry")) { Task { await account.refresh() } }.font(.footnote)
+            if !awaitingDetails && account.chatAccess != .allowed {
+                HStack(alignment: .top) {
+                    Text(message).font(.footnote).foregroundStyle(.secondary)
+                    if account.chatAccess == .unavailable || account.chatAccess == .unknownPlan
+                        || (account.chatAccess == .modelUnavailable && account.catalog.value == nil)
+                    {
+                        Button(MapleStrings.text("Retry")) { Task { await account.refresh() } }.font(.footnote)
+                    }
                 }
             }
         }
-        private var message: String {
-            if account.billing == .loading || account.catalog == .loading {
-                return MapleStrings.text("Checking account access…")
+        private var awaitingDetails: Bool {
+            switch account.chatAccess {
+            case .unavailable: account.billing == .unknown || account.billing == .loading
+            case .modelUnavailable: account.catalog == .unknown || account.catalog == .loading
+            default: false
             }
+        }
+        private var message: String {
             switch account.chatAccess {
             case .allowed: return ""
             case .usageLimit: return MapleStrings.text("You’ve reached your current chat allowance.")
