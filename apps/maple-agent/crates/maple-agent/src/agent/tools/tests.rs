@@ -83,7 +83,6 @@ fn commands_get_the_login_path_the_task_id_and_its_tool_context() {
         AgentToolContextSpec::try_new(
             BTreeMap::from([("FOR_TOOLS".to_string(), "value".to_string())]),
             BTreeSet::from(["BUZZ_AUTH_TAG".to_string()]),
-            false,
         )
         .unwrap(),
     );
@@ -122,7 +121,6 @@ fn a_revoked_context_stops_adding_its_values_but_keeps_scrubbing() {
         AgentToolContextSpec::try_new(
             BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
             BTreeSet::from(["TOKEN".to_string()]),
-            true,
         )
         .unwrap(),
     );

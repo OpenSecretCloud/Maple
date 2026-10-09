@@ -3,8 +3,8 @@
 //! Pi's session gives every task `read`, `bash`, `edit` and `write`, or
 //! `powershell` in place of `bash` on Windows without Git Bash. Maple sets up
 //! how their commands start: from the login shell's PATH, with the task's id,
-//! and with the task's tool context, so the ACP bridge's variables stay out.
-//! `MAPLE_SHELL` names the bash to run.
+//! and with the task's tool context, so the ACP bridge's variables reach only
+//! the tasks of its sessions. `MAPLE_SHELL` names the bash to run.
 //!
 //! Maple's own tools join these: every task gets `read_image`, desktop tasks
 //! get the plan the user watches (`todo_write`) and questions the user

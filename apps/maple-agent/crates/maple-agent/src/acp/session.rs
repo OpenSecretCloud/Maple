@@ -316,10 +316,7 @@ pub(super) fn bridge_tool_context_spec(
         .into_iter()
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
-    let ephemeral = SENSITIVE_BRIDGE_ENV
-        .iter()
-        .any(|key| environment.contains_key(*key));
-    AgentToolContextSpec::try_new(values, scrub_from_parent, ephemeral)
+    AgentToolContextSpec::try_new(values, scrub_from_parent)
 }
 
 pub(super) fn has_buzz_credentials(environment: &HashMap<String, String>) -> bool {

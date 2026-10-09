@@ -22,7 +22,6 @@ pub fn default_tool_context_spec() -> Result<AgentToolContextSpec, String> {
             .into_iter()
             .map(str::to_string)
             .collect(),
-        false,
     )
 }
 
@@ -33,21 +32,18 @@ const MAX_TOOL_CONTEXT_TOTAL_BYTES: usize = 32 * 1024;
 
 /// Validated, transport-neutral context supplied to Maple's developer tools.
 ///
-/// Protocol adapters own their allowlists and decide which values make an
-/// invocation ephemeral. The Agent service owns only validation, installation,
-/// and revocation.
+/// Protocol adapters own their allowlists. The Agent service owns only
+/// validation, installation, and revocation.
 #[derive(Clone, Default)]
 pub struct AgentToolContextSpec {
     values: BTreeMap<String, String>,
     scrub_from_parent: BTreeSet<String>,
-    ephemeral: bool,
 }
 
 impl AgentToolContextSpec {
     pub fn try_new(
         values: BTreeMap<String, String>,
         scrub_from_parent: BTreeSet<String>,
-        ephemeral: bool,
     ) -> Result<Self, String> {
         if values.len() > MAX_TOOL_CONTEXT_KEYS || scrub_from_parent.len() > MAX_TOOL_CONTEXT_KEYS {
             return Err(format!(
@@ -85,7 +81,6 @@ impl AgentToolContextSpec {
         Ok(Self {
             values,
             scrub_from_parent,
-            ephemeral,
         })
     }
 }
@@ -105,7 +100,6 @@ fn validate_key(key: &str) -> Result<(), String> {
 struct AgentToolContextState {
     values: BTreeMap<String, String>,
     scrub_from_parent: BTreeSet<String>,
-    ephemeral: bool,
 }
 
 #[derive(Clone)]
@@ -121,7 +115,6 @@ impl SharedAgentToolContext {
             state: Arc::new(RwLock::new(AgentToolContextState {
                 values: spec.values,
                 scrub_from_parent: spec.scrub_from_parent,
-                ephemeral: spec.ephemeral,
             })),
             revoked: CancellationToken::new(),
             launch_gate: Arc::new(Mutex::new(())),
@@ -136,14 +129,9 @@ impl SharedAgentToolContext {
         AgentToolContextSnapshot {
             values: state.values.clone(),
             scrub_from_parent: state.scrub_from_parent.clone(),
-            ephemeral: state.ephemeral,
             revoked: self.revoked.clone(),
             launch_gate: Arc::clone(&self.launch_gate),
         }
-    }
-
-    pub(crate) fn lifetime_token(&self) -> CancellationToken {
-        self.revoked.clone()
     }
 
     pub(crate) fn revoke(&self) {
@@ -160,24 +148,8 @@ impl SharedAgentToolContext {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.values.clear();
-        state.ephemeral = false;
         // Retain inherited-key scrubbing after revocation. A removed explicit
         // credential must never reveal a same-named ambient process value.
-    }
-
-    pub(crate) fn cancel_run(&self, run: &CancellationToken) {
-        // A run cancellation and a tool launch share the same fence. Once this
-        // method returns, a snapshot from this context cannot cross the launch
-        // boundary for that run.
-        let _launch = self
-            .launch_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        run.cancel();
-    }
-
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.state, &other.state)
     }
 
     pub(crate) fn is_revoked(&self) -> bool {
@@ -189,7 +161,6 @@ impl SharedAgentToolContext {
 pub(crate) struct AgentToolContextSnapshot {
     pub(crate) values: BTreeMap<String, String>,
     pub(crate) scrub_from_parent: BTreeSet<String>,
-    pub(crate) ephemeral: bool,
     pub(crate) revoked: CancellationToken,
     launch_gate: Arc<Mutex<()>>,
 }
@@ -223,7 +194,6 @@ mod tests {
             AgentToolContextSpec::try_new(
                 BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
                 BTreeSet::from(["TOKEN".to_string()]),
-                true,
             )
             .unwrap(),
         );
@@ -235,7 +205,6 @@ mod tests {
             snapshot.scrub_from_parent,
             BTreeSet::from(["TOKEN".to_string()])
         );
-        assert!(!snapshot.ephemeral);
         assert!(snapshot.revoked.is_cancelled());
     }
 
@@ -245,7 +214,6 @@ mod tests {
             AgentToolContextSpec::try_new(
                 BTreeMap::from([("CUSTOM_TOKEN".to_string(), "value".to_string())]),
                 BTreeSet::new(),
-                false,
             )
             .is_ok()
         );
@@ -253,31 +221,29 @@ mod tests {
             AgentToolContextSpec::try_new(
                 BTreeMap::from([("BAD=KEY".to_string(), "value".to_string())]),
                 BTreeSet::new(),
-                false,
             )
             .is_err()
         );
     }
 
     #[test]
-    fn run_cancellation_returns_only_after_the_process_launch_fence() {
+    fn revocation_returns_only_after_a_launch_in_progress() {
         let context = SharedAgentToolContext::new(AgentToolContextSpec::default());
         let snapshot = context.snapshot();
         let run = CancellationToken::new();
         let launch = snapshot.begin_process_launch(&run).unwrap();
-        let cancellation_context = context.clone();
-        let cancellation_run = run.clone();
+        let revoking = context.clone();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let task = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            cancellation_context.cancel_run(&cancellation_run);
+            revoking.revoke();
             finished_tx.send(()).unwrap();
         });
 
         started_rx
             .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("cancellation thread should start");
+            .expect("the revoking thread starts");
         assert!(
             finished_rx
                 .recv_timeout(std::time::Duration::from_millis(50))
@@ -286,10 +252,10 @@ mod tests {
         drop(launch);
         finished_rx
             .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("cancellation should finish after launch releases the fence");
+            .expect("revocation finishes once the launch releases the fence");
         task.join().unwrap();
 
-        assert!(run.is_cancelled());
+        assert!(context.is_revoked());
         assert!(snapshot.begin_process_launch(&run).is_err());
     }
 }

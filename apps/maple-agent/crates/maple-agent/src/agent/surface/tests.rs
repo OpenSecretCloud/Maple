@@ -23,7 +23,6 @@ fn bridge_context() -> AgentToolContextSpec {
             .into_iter()
             .map(str::to_string)
             .collect::<BTreeSet<_>>(),
-        true,
     )
     .unwrap()
 }
