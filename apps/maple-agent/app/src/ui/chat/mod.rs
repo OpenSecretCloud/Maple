@@ -2407,10 +2407,10 @@ impl ChatScreen {
                     .await
             },
             cx,
-            |this, result, cx| {
-                if let Ok(Some((tokens, limit))) = result {
-                    this.apply_context_usage(tokens, limit, cx);
-                }
+            |this, result, cx| match result {
+                Ok(Some((tokens, limit))) => this.apply_context_usage(tokens, limit, cx),
+                Ok(None) => this.apply_context_usage(0, 0, cx),
+                Err(_) => {}
             },
         );
     }
