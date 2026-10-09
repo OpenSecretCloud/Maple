@@ -1311,8 +1311,11 @@ fn switch(task: &str, name: &str, enabled: bool) -> AgentSetSessionMcpServerRequ
     }
 }
 
+/// The menu's rows for the account's MCP servers; built-in CUA's comes
+/// last and has tests of its own.
 fn mcp_rows(rows: &[AgentSessionMcpServer]) -> Vec<(&str, bool, bool)> {
     rows.iter()
+        .filter(|row| row.name != "cua-driver")
         .map(|row| (row.name.as_str(), row.enabled, row.available))
         .collect()
 }
@@ -1636,8 +1639,8 @@ async fn a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on
         .await
         .unwrap();
     assert_eq!(mcp_rows(&rows), [("Broken", false, true)]);
-    // An external agent is switched on in Settings first, and computer use
-    // does not run in tasks yet.
+    // An external agent is switched on in Settings first, and built-in CUA
+    // set up there first.
     let error = harness
         .handle
         .set_session_mcp_server_enabled(AgentSetSessionMcpServerRequest {
@@ -1655,9 +1658,9 @@ async fn a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on
         .set_session_mcp_server_enabled(switch(&task, "cua-driver", true))
         .await
         .unwrap_err();
-    assert_eq!(
-        error,
-        "This feature is not available in this build of Maple yet"
+    assert!(
+        error.starts_with("Set up built-in CUA in Settings"),
+        "{error}"
     );
 }
 
@@ -1667,21 +1670,39 @@ async fn integrations_list_and_refuse_what_cannot_be_enabled() {
     let cards = harness.handle.list_integrations().await.unwrap();
     let ids: Vec<&str> = cards.iter().map(|card| card.id.as_str()).collect();
     assert_eq!(ids, ["cua-driver", "codex", "claude"]);
+    // Built-in CUA reads as this device has it: not available without the
+    // SDK, and needing setup until every permission is granted.
+    let readiness = cua::readiness();
     assert_eq!(
         cards[0].availability,
-        AgentIntegrationAvailability::NotDetected
+        match &readiness {
+            None => AgentIntegrationAvailability::NotDetected,
+            Some(readiness) if readiness.permissions.ready() => {
+                AgentIntegrationAvailability::Available
+            }
+            Some(_) => AgentIntegrationAvailability::SetupRequired,
+        }
     );
     assert_eq!(cards[0].backend, None);
+    let ready = cua::ready();
 
-    let error = harness
+    let enabled = harness
         .handle
         .set_integration_enabled(AgentSetIntegrationEnabledRequest {
             id: "cua-driver".into(),
             enabled: true,
         })
-        .await
-        .unwrap_err();
-    assert!(error.contains("permissions"), "{error}");
+        .await;
+    match enabled {
+        Ok(cards) => {
+            assert!(ready);
+            assert!(cards[0].enabled_for_new_tasks);
+        }
+        Err(error) => {
+            assert!(!ready);
+            assert!(error.contains("permissions"), "{error}");
+        }
+    }
     let error = harness
         .handle
         .set_integration_enabled(AgentSetIntegrationEnabledRequest {
@@ -1698,7 +1719,182 @@ async fn integrations_list_and_refuse_what_cannot_be_enabled() {
         })
         .await
         .unwrap();
-    assert_eq!(cards[0].backend, None, "setup cannot finish in this build");
+    // Setup records the built-in backend only once the grants are in.
+    assert_eq!(
+        cards[0].backend,
+        ready.then_some(AgentIntegrationBackend::Embedded)
+    );
+}
+
+/// Save built-in CUA as set up on the device, as Settings does once its
+/// permissions are granted, on or off for new tasks.
+fn set_up_cua(harness: &Harness, on_for_new_tasks: bool) {
+    let dir = config::account_local_data_dir_path(harness.handle.paths(), &harness.handle.user_id)
+        .unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("integrations.json"),
+        json!({
+            "version": 2,
+            "integrations": [
+                {"id": "cua-driver", "enabled": on_for_new_tasks, "backend": "embedded"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+fn cua_row(rows: &[AgentSessionMcpServer]) -> (&str, bool, bool) {
+    let row = rows.iter().find(|row| row.name == "cua-driver").unwrap();
+    (row.transport.as_str(), row.enabled, row.available)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn built_in_cua_follows_the_device_and_the_tasks_switch() {
+    let harness = Harness::new().await;
+    let runtime = harness.runtime().await;
+    let switch = |task: &str, enabled| AgentSetSessionMcpServerRequest {
+        session_id: task.to_string(),
+        name: "cua-driver".to_string(),
+        kind: AgentSessionIntegrationKind::Mcp,
+        enabled,
+    };
+    let create = |names: Option<Vec<String>>| {
+        harness
+            .handle
+            .create_session(Some(AgentCreateSessionRequest {
+                project_root: None,
+                title: None,
+                model: None,
+                context_limit: None,
+                mcp_server_names: names,
+                system_prompt: None,
+            }))
+    };
+
+    // Not set up on the device: the row says so, and the switch refuses.
+    let task = harness.create_task().await;
+    let rows = harness
+        .handle
+        .list_session_mcp_servers(task.clone())
+        .await
+        .unwrap();
+    assert_eq!(cua_row(&rows), ("unconfigured", false, false));
+    let error = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, true))
+        .await
+        .unwrap_err();
+    assert!(
+        error.starts_with("Set up built-in CUA in Settings"),
+        "{error}"
+    );
+
+    // Set up and off for new tasks: a new task has it off, and available
+    // as far as the device's permissions go.
+    let ready = cua::ready();
+    set_up_cua(&harness, false);
+    let off = create(None).await.unwrap().session.id;
+    let rows = harness.handle.list_session_mcp_servers(off).await.unwrap();
+    assert_eq!(cua_row(&rows), ("embedded", false, ready));
+
+    // On for new tasks: a new task has it on, unless the composer named
+    // its servers without it.
+    set_up_cua(&harness, true);
+    let on = create(None).await.unwrap().session.id;
+    let rows = harness
+        .handle
+        .list_session_mcp_servers(on.clone())
+        .await
+        .unwrap();
+    assert_eq!(cua_row(&rows), ("embedded", true, ready));
+    let named_others = create(Some(Vec::new())).await.unwrap().session.id;
+    let rows = harness
+        .handle
+        .list_session_mcp_servers(named_others)
+        .await
+        .unwrap();
+    assert_eq!(cua_row(&rows), ("embedded", false, ready));
+
+    // Switched off, the task keeps that choice.
+    let rows = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&on, false))
+        .await
+        .unwrap();
+    assert_eq!(cua_row(&rows), ("embedded", false, ready));
+    if !ready {
+        let error = harness
+            .handle
+            .set_session_mcp_server_enabled(switch(&on, true))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("permission") || error.contains("not available"),
+            "{error}"
+        );
+        return;
+    }
+
+    // Where CUA can run, switching it on for a loaded task binds the task:
+    // its session gets the tools.
+    let row = runtime.store.get(&on).unwrap().unwrap();
+    let session = runtime
+        .task_session(&row, runtime.pi_model(&runtime.model, None, false))
+        .await
+        .unwrap();
+    let cua_tools = |session: &pi_coding_agent::AgentSession| {
+        session
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .filter(|name| name.starts_with("cua-driver__"))
+            .collect::<Vec<_>>()
+    };
+    assert!(cua_tools(&session).is_empty());
+    let rows = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&on, true))
+        .await
+        .unwrap();
+    assert_eq!(cua_row(&rows), ("embedded", true, true));
+    let tools = cua_tools(&session);
+    assert!(!tools.is_empty());
+    assert!(!tools.iter().any(|name| name.ends_with("__start_session")));
+
+    // Switched off, the binding closes. Its tools stay with the session, as
+    // in Pi a tool is never taken from one, and calling one fails.
+    harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&on, false))
+        .await
+        .unwrap();
+    assert_eq!(cua_tools(&session), tools);
+    let without_arguments = session
+        .all_tools()
+        .into_iter()
+        .find(|tool| {
+            tool.name.starts_with("cua-driver__")
+                && tool.parameters["required"]
+                    .as_array()
+                    .is_none_or(Vec::is_empty)
+        })
+        .unwrap();
+    harness
+        .faux
+        .push_message(vec![faux_tool_call(&without_arguments.name, json!({}))]);
+    harness.faux.push_text("Computer use is off.");
+    let mut run = harness.send(&on, "Look at the screen").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let requests = harness.faux.requests();
+    assert_eq!(
+        last_tool_result(&requests[requests.len() - 1]),
+        (
+            "Computer use (CUA) is not connected to this task.".to_string(),
+            true
+        )
+    );
 }
 
 #[tokio::test]
