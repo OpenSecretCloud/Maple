@@ -17,6 +17,7 @@ The development profile uses the existing development services:
 | Enclave approval environment | `development` |
 | Billing | `https://billing-dev.opensecret.cloud` |
 | Feature flags | `https://flags-dev.opensecret.cloud` |
+| Hosted native authentication | `https://auth-dev.maple.ai` |
 
 The profile is fixed at build time. It is not a user-selectable backend switch.
 Development and production accounts remain in their respective existing
@@ -29,13 +30,17 @@ Hosted native sign-in uses the separate Auth application at
 browser validation requires an authorized Access session.
 
 Set the public repository variable `MAPLE_IOS_DEV_AUTH_ORIGIN` to
-`https://auth-dev.maple.ai`, a canonical HTTPS origin without a path, query,
-fragment, or credentials. The native build requires this variable and compiles
-it as `VITE_MAPLE_DEV_AUTH_ORIGIN`; there is no production fallback. Updating the
-variable affects future builds, not installed apps, so publish a new Dev
-TestFlight build after changing it. The development Pages build also receives
-this value; production builds remove it. An unset variable preserves ordinary
-web previews but blocks a Maple Dev native build.
+`https://auth-dev.maple.ai`, exactly as pinned in the Dev profile in
+`scripts/ci/ios-build-profile.py`. The native build requires this variable and
+compiles it as `VITE_MAPLE_DEV_AUTH_ORIGIN`; a missing or different value fails
+before dependency installation and signing setup. Artifact verification also
+checks against the committed profile, even if the supplied variable and embedded
+profile agree on the same wrong host. There is no production fallback.
+Changing this destination requires a reviewed profile update and a new Dev
+TestFlight build; neither a variable change nor a source change alters installed
+apps. The development Pages build also receives this value; production builds
+remove it. An unset variable preserves ordinary web previews but blocks a Maple
+Dev native build.
 
 For Google and GitHub, Maple Dev opens Auth's `/desktop-auth` entry with
 `native_app_variant=dev`. The standalone `apps/maple-auth` application supports
@@ -93,11 +98,12 @@ steps, within the existing protected `apple-signing` environment.
 
 Before device testing, inspect `environment.VITE_MAPLE_DEV_AUTH_ORIGIN` in the
 artifact's `ios-build-profile.json` and the IPA's embedded
-`Payload/<app>.app/assets/maple-build-profile.json`. It must match the intended
-Auth origin, `https://auth-dev.maple.ai`. Build and verifier both consume the same
-repository variable, so green CI can consistently package an outdated but valid
-origin. Record the exact source commit and installed TestFlight build number;
-then confirm Google/GitHub actually visit Auth and return to Maple Dev.
+`Payload/<app>.app/assets/maple-build-profile.json`. The committed expected Auth
+origin is `https://auth-dev.maple.ai`; passing the profile checks proves this
+configuration matches, not that provider callbacks or device handoff work.
+Record the exact source commit and installed TestFlight build number, then
+confirm Google/GitHub actually visit Auth and return to Maple Dev. Native Apple
+success does not validate this hosted Google/GitHub path.
 
 The development export sets `testFlightInternalTestingOnly=true`, which prevents
 the IPA from being used for external TestFlight or App Store distribution. IPA

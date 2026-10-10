@@ -25,7 +25,7 @@ CANONICAL_SPEC.loader.exec_module(CANONICAL)
 SOURCE_SHA = "a" * 40
 FRONTEND_SHA = "b" * 64
 BUILD_NUMBER = "42.1"
-AUTH_ORIGIN = "https://dev-auth.example.test"
+AUTH_ORIGIN = "https://auth-dev.maple.ai"
 
 
 def environment_for(variant):
@@ -213,9 +213,50 @@ python3 -c 'import os,json; print(json.dumps({k:v for k,v in os.environ.items() 
                         "https://DEV.example.test"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 PROFILE.validate_auth_origin(invalid)
-        with self.assertRaisesRegex(ValueError, "profile"):
+        with self.assertRaisesRegex(ValueError, "MAPLE_IOS_DEV_AUTH_ORIGIN"):
             PROFILE.verify_bundle(make_info(), make_profile(), "dev", SOURCE_SHA, BUILD_NUMBER,
                                   auth_origin="https://other-dev.example.test")
+
+    def test_dev_build_rejects_other_valid_https_origins(self):
+        for origin in ("https://app-dev.trymaple.ai", "https://app-dev.maple.ai",
+                       "https://auth.maple.ai"):
+            with self.subTest(origin=origin):
+                environment = dict(environment_for("dev"), VITE_MAPLE_DEV_AUTH_ORIGIN=origin)
+                with self.assertRaisesRegex(ValueError, "MAPLE_IOS_DEV_AUTH_ORIGIN"):
+                    PROFILE.make_profile("dev", SOURCE_SHA, BUILD_NUMBER, FRONTEND_SHA, environment)
+
+    def test_dev_verifier_rejects_stale_origin_even_when_both_inputs_agree(self):
+        embedded = make_profile()
+        embedded["environment"]["VITE_MAPLE_DEV_AUTH_ORIGIN"] = "https://app-dev.trymaple.ai"
+        # Build 94.1 and its verifier agreed on this valid but obsolete host.
+        # Neither input may define the expected destination for the other.
+        with self.assertRaisesRegex(ValueError, "MAPLE_IOS_DEV_AUTH_ORIGIN"):
+            PROFILE.verify_bundle(make_info(), embedded, "dev", SOURCE_SHA, BUILD_NUMBER,
+                                  auth_origin="https://app-dev.trymaple.ai")
+        with self.assertRaisesRegex(ValueError, "profile"):
+            PROFILE.verify_bundle(make_info(), embedded, "dev", SOURCE_SHA, BUILD_NUMBER,
+                                  auth_origin=AUTH_ORIGIN)
+
+    def test_dev_release_rejects_stale_origin_before_build_or_secret_handling(self):
+        environment = dict(os.environ, MAPLE_IOS_VARIANT="dev",
+                           MAPLE_IOS_DEV_AUTH_ORIGIN="https://app-dev.trymaple.ai")
+        result = subprocess.run(["bash", str(SCRIPT_DIR / "ios-release.sh")],
+                                env=environment, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MAPLE_IOS_DEV_AUTH_ORIGIN", result.stderr)
+        self.assertNotIn("git-commit", result.stdout)
+
+    def test_production_profile_ignores_dev_auth_origin(self):
+        environment = dict(environment_for("production"),
+                           VITE_MAPLE_DEV_AUTH_ORIGIN="https://app-dev.trymaple.ai")
+        embedded = PROFILE.make_profile("production", SOURCE_SHA, BUILD_NUMBER,
+                                        FRONTEND_SHA, environment)
+        self.assertEqual(embedded, make_profile("production"))
+        self.assertNotIn("VITE_MAPLE_DEV_AUTH_ORIGIN", embedded["environment"])
+        report = PROFILE.verify_bundle(make_info("production"), embedded, "production",
+                                       SOURCE_SHA, BUILD_NUMBER,
+                                       auth_origin="https://app-dev.trymaple.ai")
+        self.assertEqual(report["bundle_identifier"], "cloud.opensecret.maple")
 
     def test_build_number_constraints(self):
         for valid in ("1", "3.4.2", "9999.99.99", BUILD_NUMBER):
