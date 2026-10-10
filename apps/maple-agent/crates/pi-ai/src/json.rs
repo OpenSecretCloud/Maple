@@ -2,22 +2,75 @@ use serde_json::{Map, Value};
 
 /// Parse tool-call arguments that may have been cut off mid-stream.
 ///
-/// Complete JSON parses normally. Truncated JSON is closed off at the last complete
-/// value: an unfinished string is closed, a dangling key is dropped, a partial literal
-/// is completed and open containers are closed. Anything that still does not parse,
-/// or is not an object, yields an empty object.
+/// Complete JSON parses normally. Strings with raw control characters or backslashes
+/// that start no valid escape are repaired. Truncated JSON is closed off at the last
+/// complete value: an unfinished string is closed, a dangling key is dropped, a partial
+/// literal is completed and open containers are closed. Anything that still does not
+/// parse, or is not an object, yields an empty object.
 pub fn parse_streaming_json(raw: &str) -> Map<String, Value> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Map::new();
     }
-    if let Ok(Value::Object(map)) = serde_json::from_str(trimmed) {
-        return map;
+    let parse = |json: &str| match serde_json::from_str(json) {
+        Ok(Value::Object(map)) => Some(map),
+        _ => None,
+    };
+    let strings_repaired = repair_strings(trimmed);
+    let changed = strings_repaired != trimmed;
+    parse(trimmed)
+        .or_else(|| changed.then(|| parse(&strings_repaired)).flatten())
+        .or_else(|| parse(&repair(trimmed)))
+        .or_else(|| changed.then(|| parse(&repair(&strings_repaired))).flatten())
+        .unwrap_or_default()
+}
+
+/// Escape what JSON does not allow inside strings: raw control characters, and
+/// backslashes that start no valid escape.
+fn repair_strings(json: &str) -> String {
+    let mut repaired = String::with_capacity(json.len());
+    let mut in_string = false;
+    let mut chars = json.char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
+        if !in_string {
+            repaired.push(ch);
+            in_string = ch == '"';
+            continue;
+        }
+        match ch {
+            '"' => {
+                repaired.push(ch);
+                in_string = false;
+            }
+            '\\' => match chars.peek().map(|(_, next)| *next) {
+                Some('u')
+                    if json
+                        .get(offset + 2..offset + 6)
+                        .is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit())) =>
+                {
+                    repaired.push_str(&json[offset..offset + 6]);
+                    chars.nth(4);
+                }
+                Some(next @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u')) => {
+                    repaired.push('\\');
+                    repaired.push(next);
+                    chars.next();
+                }
+                // Any other backslash stands for itself.
+                _ => repaired.push_str("\\\\"),
+            },
+            '\u{8}' => repaired.push_str("\\b"),
+            '\u{c}' => repaired.push_str("\\f"),
+            '\n' => repaired.push_str("\\n"),
+            '\r' => repaired.push_str("\\r"),
+            '\t' => repaired.push_str("\\t"),
+            control if control < ' ' => {
+                repaired.push_str(&format!("\\u{:04x}", u32::from(control)));
+            }
+            other => repaired.push(other),
+        }
     }
-    match serde_json::from_str(&repair(trimmed)) {
-        Ok(Value::Object(map)) => map,
-        _ => Map::new(),
-    }
+    repaired
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -198,6 +251,27 @@ mod tests {
         assert_eq!(
             parse(r#"{"a": {"b": {"c": "d"#),
             json!({"a": {"b": {"c": "d"}}})
+        );
+    }
+
+    #[test]
+    fn raw_control_characters_and_invalid_escapes_are_repaired() {
+        assert_eq!(
+            parse("{\"path\":\"A\\H\",\"text\":\"col1\tcol2\"}"),
+            json!({ "path": "A\\H", "text": "col1\tcol2" })
+        );
+        assert_eq!(
+            parse("{\"a\": \"line1\nline2\u{1}\", \"b\": \"x\\\"y\\\\z\\u00e9\\/\"}"),
+            json!({ "a": "line1\nline2\u{1}", "b": "x\"y\\z\u{e9}/" })
+        );
+        // Cut off as well.
+        assert_eq!(
+            parse("{\"a\": \"line1\nline2"),
+            json!({ "a": "line1\nline2" })
+        );
+        assert_eq!(
+            parse("{\"a\": \"C:\\dir\", \"b\": [1"),
+            json!({ "a": "C:\\dir", "b": [1] })
         );
     }
 
