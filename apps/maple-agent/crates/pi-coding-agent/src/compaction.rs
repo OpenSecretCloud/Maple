@@ -398,8 +398,10 @@ pub fn prepare_compaction(
         return None;
     }
     let mut file_operations = FileOperations::default();
+    // An extension's details are its own, whatever they hold.
     if let Some(EntryKind::Compaction {
         details: Some(details),
+        from_extension: false,
         ..
     }) = previous.map(|entry| &entry.kind)
     {
@@ -973,6 +975,37 @@ mod tests {
         assert_eq!(preparation.messages_to_summarize.len(), 2);
         assert_eq!(preparation.turn_prefix_messages[0].text(), "big task");
         assert!(preparation.file_operations.read.contains("file0.rs"));
+    }
+
+    #[test]
+    fn only_its_own_earlier_compaction_passes_file_lists_on() {
+        for (from_extension, carried) in [(false, true), (true, false)] {
+            let mut session = three_turns();
+            let leaf = session.leaf_id().unwrap().to_string();
+            session.append_compaction(
+                "earlier summary".into(),
+                Some(leaf),
+                1,
+                Some(json!({ "readFiles": ["notes.md"], "modifiedFiles": ["main.rs"] })),
+                None,
+                from_extension,
+            );
+            for turn in 3..6 {
+                session.append_message(user(&format!("question {turn} {}", "x".repeat(500))));
+                session.append_message(assistant(vec![AssistantContent::text(format!(
+                    "answer {turn} {}",
+                    "y".repeat(500)
+                ))]));
+            }
+            let preparation = prepare_compaction(&session.branch(), &settings(250)).unwrap();
+            assert_eq!(
+                preparation.previous_summary.as_deref(),
+                Some("earlier summary")
+            );
+            let files = &preparation.file_operations;
+            assert_eq!(files.read.contains("notes.md"), carried);
+            assert_eq!(files.modified.contains("main.rs"), carried);
+        }
     }
 
     #[test]
