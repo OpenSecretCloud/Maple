@@ -426,7 +426,7 @@ impl AgentRuntimeHandle {
             Some(session) => session,
             None => {
                 let model_id = row.model.clone().unwrap_or_else(|| runtime.model.clone());
-                let model = runtime.pi_model(&model_id, None, false);
+                let model = runtime.pi_model(&model_id, None, None).await;
                 runtime.task_session(&row, model).await?
             }
         };

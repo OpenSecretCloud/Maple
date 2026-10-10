@@ -14,7 +14,7 @@ use maple_agent::agent::{
     AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentProjectTrustStatus,
     AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent, AgentSessionIntegrationKind,
     AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
-    AgentTimelineItem, CatalogEntry, SideQuestionEvent,
+    AgentThinkingState, AgentTimelineItem, CatalogEntry, SideQuestionEvent, ThinkingLevel,
 };
 
 use crate::backend::{AgentBackend, PendingQuestion};
@@ -40,6 +40,7 @@ mod speech;
 mod summaries;
 #[cfg(test)]
 mod tests;
+mod thinking;
 mod transcript;
 
 use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
@@ -178,6 +179,7 @@ pub(super) enum ChatPopup {
     /// The header chip's project menu.
     Project,
     Model,
+    Thinking,
     Integrations,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
@@ -392,6 +394,9 @@ pub struct ChatScreen {
     selected_model: Option<String>,
     /// Last explicit pick / saved default. New tasks restore this.
     default_model: Option<String>,
+    thinking: Option<AgentThinkingState>,
+    thinking_generation: u64,
+    thinking_saving: bool,
     /// The task on screen has a persisted model after its first message.
     model_locked: bool,
     /// Desktop notifications enabled (settings).
@@ -1025,6 +1030,9 @@ impl ChatScreen {
             models: Vec::new(),
             selected_model: None,
             default_model: None,
+            thinking: None,
+            thinking_generation: 0,
+            thinking_saving: false,
             model_locked: false,
             notify_enabled: settings.desktop_notifications,
             window_active: true,
@@ -1676,6 +1684,7 @@ impl ChatScreen {
                     }
                     this.models = models;
                     this.refresh_model_catalog(cx);
+                    this.refresh_thinking(cx);
                 }
                 cx.notify();
             },
@@ -3620,6 +3629,11 @@ impl ChatScreen {
     }
 
     fn send_text_with(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+        if self.thinking_saving {
+            self.notice = Some("The thinking level is still being saved".into());
+            cx.notify();
+            return;
+        }
         if self.booting {
             self.notice = Some("Agent runtime is still starting".into());
             cx.notify();
@@ -4379,6 +4393,7 @@ impl ChatScreen {
         }
         self.selected_model = Some(model.clone());
         self.default_model = Some(model.clone());
+        self.refresh_thinking(cx);
         self.popup.close(cx);
         cx.notify();
         self.refresh_model_catalog(cx);
@@ -4408,6 +4423,7 @@ impl ChatScreen {
     fn restore_default_model(&mut self, cx: &mut Context<Self>) {
         self.model_locked = false;
         self.set_composer_model(self.default_model.clone(), cx);
+        self.refresh_thinking(cx);
     }
 
     fn apply_session_model(&mut self, session: &AgentSessionSummary, cx: &mut Context<Self>) {
@@ -4415,6 +4431,7 @@ impl ChatScreen {
         if locked {
             self.model_locked = true;
             self.set_composer_model(session.model.clone(), cx);
+            self.refresh_thinking(cx);
         } else {
             self.restore_default_model(cx);
         }

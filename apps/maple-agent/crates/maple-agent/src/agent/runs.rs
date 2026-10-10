@@ -1226,11 +1226,13 @@ impl AgentRuntime {
                 "This task is locked to model {locked}. Start a new task to use {model_id}."
             ));
         }
-        let model = self.pi_model(
-            &model_id,
-            request.context_limit.map(|limit| limit as u64),
-            request.vision_capable,
-        );
+        let model = self
+            .pi_model(
+                &model_id,
+                request.context_limit.map(|limit| limit as u64),
+                Some(request.vision_capable),
+            )
+            .await;
         let session = self.task_session(&row, model).await?;
         self.failures.clear(session_id);
         self.wake(session_id)?;

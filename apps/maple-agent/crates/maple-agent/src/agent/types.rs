@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+pub use pi_ai::ThinkingLevel;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -21,6 +22,8 @@ pub struct AgentConfig {
     pub default_project_root: Option<String>,
     #[serde(default = "default_agent_model")]
     pub default_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ThinkingLevel>,
     #[serde(default)]
     pub mcp_servers: Vec<AgentMcpServer>,
     #[serde(
@@ -58,6 +61,7 @@ impl Default for AgentConfig {
         Self {
             default_project_root: None,
             default_model: default_agent_model(),
+            default_thinking_level: None,
             mcp_servers: Vec::new(),
             project_trust: Vec::new(),
             removed_project_roots: Vec::new(),
@@ -909,4 +913,11 @@ mod speech_body_tests {
     fn empty_body_is_an_error() {
         assert!(speech_audio_from_body(Vec::new()).is_err());
     }
+}
+
+/// The selected model's supported levels and the task's actual Pi setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentThinkingState {
+    pub levels: Vec<ThinkingLevel>,
+    pub current: ThinkingLevel,
 }

@@ -613,6 +613,7 @@ fn catalog_entries_resolve_aliases_and_reconcile_limits() {
         Some(CatalogEntry {
             context_window: Some(200_000),
             vision: Some(false),
+            ..CatalogEntry::default()
         })
     );
     assert_eq!(
@@ -620,6 +621,7 @@ fn catalog_entries_resolve_aliases_and_reconcile_limits() {
         Some(CatalogEntry {
             context_window: Some(256_000),
             vision: Some(true),
+            ..CatalogEntry::default()
         })
     );
     // An explicit alias capability, false included, overrides the target's.
@@ -728,4 +730,143 @@ fn context_length_texts_are_recognized() {
     for text in ["bad request", "rate limit exceeded", "too many requests"] {
         assert!(!is_context_length_exceeded_message(text), "{text}");
     }
+}
+
+#[test]
+fn reasoning_catalog_shapes_define_levels_and_clamp_the_default() {
+    use ThinkingLevel::{High, Low, Max, Medium, Minimal, Off, Xhigh};
+    let cases = [
+        (
+            "glm-5-3",
+            json!({"mandatory":true,"supported_efforts":["max","high","low"]}),
+            vec![Low, High, Max],
+            High,
+        ),
+        (
+            "kimi-k3",
+            json!({"mandatory":false,"supported_efforts":["max","high","low"]}),
+            vec![Low, High, Max],
+            High,
+        ),
+        (
+            "deepseek-v4-1-flash",
+            json!({"supported_efforts":["max","xhigh","high","low"]}),
+            vec![Off, Low, High, Xhigh, Max],
+            High,
+        ),
+        (
+            "gpt-oss-120b",
+            json!({"mandatory":true,"supported_efforts":["high","medium","low"]}),
+            vec![Low, Medium, High],
+            Medium,
+        ),
+        (
+            "gemma4-31b",
+            json!({"mandatory":false}),
+            vec![Off, Minimal, Low, Medium, High],
+            Medium,
+        ),
+        (
+            "untiered-required",
+            json!({"mandatory":true}),
+            vec![Minimal, Low, Medium, High],
+            Medium,
+        ),
+        ("llama3-3-70b", Value::Null, vec![Off], Off),
+    ];
+    for (id, reasoning, levels, default) in cases {
+        let entry = CatalogEntry {
+            reasoning: serde_json::from_value(reasoning).unwrap(),
+            ..Default::default()
+        };
+        let model = maple_model(id, Some(&entry), None);
+        assert_eq!(model.thinking_levels(), levels, "{id}");
+        assert_eq!(model.clamp_thinking_level(Medium), default, "{id}");
+        assert_eq!(model.reasoning, entry.reasoning.is_some());
+        assert_eq!(model.compat.supports_reasoning_effort, model.reasoning);
+        for level in levels {
+            let expected = model
+                .reasoning
+                .then(|| if level == Off { "none" } else { level.as_str() }.to_string());
+            assert_eq!(
+                model.provider_thinking_value(level),
+                expected,
+                "{id}/{level:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn aliases_keep_their_reasoning_overrides_and_the_target_restrictions() {
+    let catalog = serde_json::from_value(json!({
+        "object":"list", "data":[
+            {"id":"target", "reasoning":{"mandatory":true,"supported_efforts":["high","low"]}},
+            {"id":"kimi-k3", "reasoning":{"supported_efforts":["max","high","low"]}}
+        ], "aliases":[
+            {"id":"auto:inherit","target_model":"target"},
+            {"id":"auto:override","target_model":"target","reasoning":{"supported_efforts":["medium"]}},
+            {"id":"auto:kimi","target_model":"kimi-k3"}
+        ]
+    })).unwrap();
+    for (id, levels) in [
+        (
+            "auto:inherit",
+            vec![ThinkingLevel::Low, ThinkingLevel::High],
+        ),
+        (
+            "auto:override",
+            vec![ThinkingLevel::Off, ThinkingLevel::Medium],
+        ),
+        (
+            "auto:kimi",
+            vec![ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max],
+        ),
+    ] {
+        let entry = catalog_entry(&catalog, id).unwrap();
+        assert_eq!(
+            maple_model(id, Some(&entry), None).thinking_levels(),
+            levels
+        );
+    }
+}
+
+#[tokio::test]
+async fn thinking_choices_reach_the_wire_and_side_calls_omit_them() {
+    let entry = CatalogEntry {
+        reasoning: Some(maple_sdk::ModelReasoning {
+            supported_efforts: Some(vec!["low".into(), "high".into(), "max".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let model = maple_model("reasoning-model", Some(&entry), None);
+    for level in model.thinking_levels() {
+        let transport = FakeTransport::new(vec![sse(200, TEXT_STREAM.to_vec())]);
+        let mut stream = MapleStreamFn::new(transport.clone()).stream(
+            &model,
+            context("Hello"),
+            StreamOptions {
+                reasoning: Some(level),
+                ..Default::default()
+            },
+        );
+        while stream.next().await.is_some() {}
+        assert_eq!(
+            transport.requests.lock().unwrap()[0].body["reasoning_effort"],
+            model.provider_thinking_value(level).unwrap()
+        );
+    }
+    let transport = FakeTransport::new(vec![sse(200, TEXT_STREAM.to_vec())]);
+    respond(
+        transport.clone(),
+        &maple_model("reasoning-model", None, None),
+    )
+    .await;
+    assert!(
+        transport.requests.lock().unwrap()[0]
+            .body
+            .get("reasoning_effort")
+            .is_none()
+    );
 }

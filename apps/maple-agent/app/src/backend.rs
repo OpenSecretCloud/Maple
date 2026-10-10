@@ -2272,6 +2272,33 @@ impl AgentBackend {
         }
     }
 
+    pub async fn thinking_state(
+        &self,
+        user_id: &str,
+        session_id: Option<&str>,
+        model: &str,
+    ) -> Result<maple_agent::agent::AgentThinkingState, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .thinking_state(session_id, model)
+            .await
+    }
+
+    pub async fn set_thinking_level(
+        &self,
+        user_id: &str,
+        session_id: Option<&str>,
+        model: &str,
+        level: maple_agent::agent::ThinkingLevel,
+    ) -> Result<maple_agent::agent::AgentThinkingState, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .set_thinking_level(session_id, model, level)
+            .await
+    }
+
     /// Persist the UI's model choice as the account's default model.
     pub async fn save_default_model(&self, user_id: &str, model: String) -> Result<(), String> {
         let handle = self.service.handle_for_user(user_id).await?;

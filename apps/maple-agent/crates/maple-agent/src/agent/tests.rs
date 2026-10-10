@@ -1215,7 +1215,10 @@ async fn read_image_describes_exactly_while_the_runs_model_cannot_see() {
     // a task.
     let row = runtime.store.get(&task).unwrap().unwrap();
     runtime
-        .task_session(&row, runtime.pi_model(&runtime.model, None, false))
+        .task_session(
+            &row,
+            runtime.pi_model(&runtime.model, None, Some(false)).await,
+        )
         .await
         .unwrap();
     harness.faux.push_text("Seen.");
@@ -1266,6 +1269,7 @@ async fn the_catalog_gives_a_models_vision_and_window() {
         Some(CatalogEntry {
             context_window: Some(64_000),
             vision: Some(true),
+            ..CatalogEntry::default()
         })
     );
     assert_eq!(
@@ -2009,7 +2013,10 @@ async fn built_in_cua_follows_the_device_and_the_tasks_switch() {
     // its session gets the tools.
     let row = runtime.store.get(&on).unwrap().unwrap();
     let session = runtime
-        .task_session(&row, runtime.pi_model(&runtime.model, None, false))
+        .task_session(
+            &row,
+            runtime.pi_model(&runtime.model, None, Some(false)).await,
+        )
         .await
         .unwrap();
     let cua_tools = |session: &pi_coding_agent::AgentSession| {
@@ -2071,4 +2078,92 @@ async fn answers_reach_the_question_broker_of_the_service() {
     let broker = harness.service.question_broker();
     assert!(!harness.service.answer_question("unknown", "x".into()).await);
     drop(broker);
+}
+
+#[tokio::test]
+async fn thinking_picks_persist_in_pi_and_default_new_tasks_after_restart() {
+    use ThinkingLevel::{High, Low, Max};
+    let mut harness = Harness::new().await;
+    let catalog = json!({"object":"list","data":[{
+        "id":"glm-5-3", "reasoning":{"mandatory":true,"supported_efforts":["max","high","low"]}
+    }],"aliases":[]});
+    harness.serve_catalog(catalog.clone()).await;
+    assert_eq!(
+        harness
+            .handle
+            .thinking_state(None, "glm-5-3")
+            .await
+            .unwrap(),
+        AgentThinkingState {
+            levels: vec![Low, High, Max],
+            current: High
+        }
+    );
+    let task = harness.create_task().await;
+    let selected = harness
+        .handle
+        .set_thinking_level(Some(&task), "glm-5-3", Low)
+        .await
+        .unwrap();
+    assert_eq!(selected.current, Low);
+    assert_eq!(
+        harness
+            .handle
+            .load_config()
+            .await
+            .unwrap()
+            .default_thinking_level,
+        Some(Low)
+    );
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Hello").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(
+        harness
+            .runtime()
+            .await
+            .loaded_session(&task)
+            .await
+            .unwrap()
+            .thinking_level(),
+        Low
+    );
+    // A later default affects new tasks, not the task's persisted choice.
+    harness
+        .handle
+        .set_thinking_level(None, "glm-5-3", Max)
+        .await
+        .unwrap();
+    harness.restart().await;
+    harness.start().await;
+    harness.serve_catalog(catalog).await;
+    assert_eq!(
+        harness
+            .handle
+            .thinking_state(Some(&task), "glm-5-3")
+            .await
+            .unwrap()
+            .current,
+        Low
+    );
+    let fresh = harness.create_task().await;
+    assert_eq!(
+        harness
+            .handle
+            .thinking_state(Some(&fresh), "glm-5-3")
+            .await
+            .unwrap()
+            .current,
+        Max
+    );
+    // A nonreasoning model offers and saves only Off.
+    assert_eq!(
+        harness
+            .handle
+            .set_thinking_level(None, "plain", Max)
+            .await
+            .unwrap()
+            .current,
+        ThinkingLevel::Off
+    );
 }

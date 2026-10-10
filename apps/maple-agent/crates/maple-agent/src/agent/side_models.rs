@@ -115,6 +115,7 @@ async fn ask_side_model(
         Some(&CatalogEntry {
             context_window: None,
             vision: Some(has_image),
+            ..CatalogEntry::default()
         }),
         None,
     );

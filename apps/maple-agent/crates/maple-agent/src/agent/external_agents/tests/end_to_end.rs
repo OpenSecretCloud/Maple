@@ -48,7 +48,7 @@ fn choose_for_task(runtime: &AgentRuntime, task: &str, providers: &[&str]) {
 /// The external agent tools a run of the task would declare to the model.
 async fn declared_agent_tools(runtime: &AgentRuntime, task: &str) -> Vec<String> {
     let row = runtime.store.get(task).unwrap().unwrap();
-    let model = runtime.pi_model(&runtime.model, None, false);
+    let model = runtime.pi_model(&runtime.model, None, Some(false)).await;
     runtime
         .task_session(&row, model)
         .await

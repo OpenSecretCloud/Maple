@@ -10,7 +10,7 @@
 //! fixed wording also keeps response bodies, which may echo decrypted
 //! content, out of the timeline and the logs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,6 +23,7 @@ use pi_ai::openai::{HttpRequest, HttpResponse, HttpTransport, OpenAiCompletions}
 use pi_ai::{
     AssistantContent, AssistantMessageEvent, AssistantMessageStream, Content, Context,
     InputModality, MaxTokensField, Message, Model, ModelCompat, StreamFn, StreamOptions,
+    ThinkingLevel,
 };
 use pi_coding_agent::{ApiKeySource, ModelRegistry};
 use serde_json::{Value, json};
@@ -148,6 +149,8 @@ pub struct CatalogEntry {
     pub context_window: Option<u64>,
     /// Whether the model sees images; `None` when the catalog does not say.
     pub vision: Option<bool>,
+    /// The model's reasoning controls, including alias overrides.
+    pub reasoning: Option<maple_sdk::ModelReasoning>,
 }
 
 /// The catalog's view of `model_id`. An alias resolves to its target; an
@@ -158,8 +161,10 @@ pub(crate) fn catalog_entry(
 ) -> Option<CatalogEntry> {
     let mut concrete_id = model_id;
     let mut alias_vision = None;
+    let mut alias_reasoning = None;
     for alias in &catalog.aliases {
         if alias.id == model_id {
+            alias_reasoning = alias.reasoning.clone();
             alias_vision = alias
                 .capabilities
                 .as_ref()
@@ -173,7 +178,15 @@ pub(crate) fn catalog_entry(
         }
     }
     let model = catalog.data.iter().find(|model| model.id == concrete_id)?;
+    let mut reasoning = alias_reasoning.or_else(|| model.reasoning.clone());
+    // K3 currently keeps reasoning on, including when selected through an alias.
+    if concrete_id == KIMI_K3_MODEL_ID
+        && let Some(reasoning) = &mut reasoning
+    {
+        reasoning.mandatory = true;
+    }
     Some(CatalogEntry {
+        reasoning,
         context_window: reconcile_context_limit(model.context_window, model.max_context_tokens),
         vision: alias_vision.or_else(|| {
             model
@@ -202,9 +215,9 @@ pub(crate) fn reconcile_context_limit(
 
 /// The Pi model for a Maple model id.
 ///
-/// The first version sends no thinking control (owner decision, 2026-10-07),
-/// so every model is declared without reasoning levels and thinks at its own
-/// default. No output cap is sent either; the server applies its own.
+/// Reasoning controls come from the catalog. Callers that omit reasoning
+/// metadata, such as Maple's side calls, send no thinking control. No output
+/// cap is sent; the server applies its own.
 /// `context_override` is the developer's `MAPLE_CONTEXT_LIMIT`.
 pub(crate) fn maple_model(
     model_id: &str,
@@ -218,23 +231,45 @@ pub(crate) fn maple_model(
     if entry.and_then(|entry| entry.vision).unwrap_or(false) {
         input.push(InputModality::Image);
     }
+    let reasoning = entry.and_then(|entry| entry.reasoning.as_ref());
+    let mut thinking_levels = BTreeMap::new();
+    if let Some(reasoning) = reasoning {
+        thinking_levels.insert(
+            ThinkingLevel::Off,
+            (!reasoning.mandatory && model_id != KIMI_K3_MODEL_ID).then(|| "none".into()),
+        );
+        if let Some(efforts) = &reasoning.supported_efforts {
+            for level in ThinkingLevel::ALL
+                .into_iter()
+                .filter(|level| *level != ThinkingLevel::Off)
+            {
+                thinking_levels.insert(
+                    level,
+                    efforts
+                        .iter()
+                        .find(|effort| effort.as_str() == level.as_str())
+                        .cloned(),
+                );
+            }
+        }
+    }
     Model {
         id: model_id.to_string(),
         name: model_id.to_string(),
         api: MAPLE_API.to_string(),
         provider: MAPLE_PROVIDER.to_string(),
         base_url: MAPLE_BASE_URL.to_string(),
-        reasoning: false,
+        reasoning: reasoning.is_some(),
         input,
         cost: Default::default(),
         context_window,
         max_tokens: 0,
-        thinking_levels: Default::default(),
+        thinking_levels,
         compat: ModelCompat {
             supports_developer_role: false,
             max_tokens_field: MaxTokensField::MaxTokens,
             supports_usage_in_streaming: true,
-            supports_reasoning_effort: false,
+            supports_reasoning_effort: reasoning.is_some(),
             supports_mid_conversation_system_messages: false,
             // Maple's backends do not advertise strict tool schemas.
             supports_strict_mode: false,

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use pi_agent_core::QueueMode;
-use pi_ai::{Model, ThinkingLevel};
+use pi_ai::Model;
 use pi_coding_agent::resources::Resources;
 use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
@@ -24,7 +24,7 @@ use super::integrations::{CUA_NAME, external_agents_on};
 use super::mcp::{
     MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, task_servers,
 };
-use super::provider::{CatalogEntry, maple_model, maple_model_registry};
+use super::provider::{CatalogEntry, catalog_entry, maple_model, maple_model_registry};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
@@ -467,7 +467,7 @@ impl AgentRuntime {
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
         let model_id = row.model.clone().unwrap_or_else(|| self.model.clone());
-        self.task_session(&row, self.pi_model(&model_id, None, false))
+        self.task_session(&row, self.pi_model(&model_id, None, None).await)
             .await
     }
 
@@ -518,18 +518,40 @@ impl AgentRuntime {
         });
     }
 
-    /// The Pi model of a Maple model id. The host resolves the context
-    /// window and vision from the catalog; the developer override wins.
-    pub(super) fn pi_model(
+    /// Resolve the full catalog metadata for a task. Hosts may supply a
+    /// newer window or vision flag; the developer's context override wins.
+    pub(super) async fn pi_model(
         &self,
         model_id: &str,
         context_window: Option<u64>,
-        vision: bool,
+        vision: Option<bool>,
     ) -> Model {
-        let entry = CatalogEntry {
-            context_window,
-            vision: Some(vision),
+        let mut entry = match self.api.model_catalog().await {
+            Ok(catalog) => catalog_entry(&catalog, model_id).unwrap_or_default(),
+            Err(error) => {
+                log::warn!("Failed to fetch the task's model catalog: {error}");
+                // A transient catalog failure must not clamp a loaded task's
+                // saved thinking level to Off.
+                if let Some(mut model) = self.models.find(super::provider::MAPLE_PROVIDER, model_id)
+                {
+                    model.context_window = context_limit_override()
+                        .or(context_window)
+                        .unwrap_or(model.context_window);
+                    if let Some(vision) = vision {
+                        model
+                            .input
+                            .retain(|input| *input != pi_ai::InputModality::Image);
+                        if vision {
+                            model.input.push(pi_ai::InputModality::Image);
+                        }
+                    }
+                    return model;
+                }
+                CatalogEntry::default()
+            }
         };
+        entry.context_window = context_window.or(entry.context_window);
+        entry.vision = vision.or(entry.vision);
         maple_model(model_id, Some(&entry), context_limit_override())
     }
 
@@ -673,7 +695,7 @@ impl AgentRuntime {
     }
 
     /// The settings of every session: Maple's retry budget, queued messages
-    /// delivered together, no thinking control yet, and the host's opening
+    /// delivered together, the saved thinking default, and the host's opening
     /// instructions after Pi's own, then the caller's `system_prompt`.
     fn settings(&self, system_prompt: Option<String>) -> Settings {
         let appended = [Some(self.host.harness_instructions()), system_prompt]
@@ -690,7 +712,15 @@ impl AgentRuntime {
             http_idle_timeout_ms: Some(0),
             steering_mode: QueueMode::All,
             follow_up_mode: QueueMode::All,
-            default_thinking_level: Some(ThinkingLevel::Off),
+            default_thinking_level: super::config::load_agent_config_inner(
+                &self.host.paths,
+                &self.user_id,
+            )
+            .map(|config| config.default_thinking_level)
+            .unwrap_or_else(|error| {
+                log::warn!("Failed to read the thinking default: {error}");
+                None
+            }),
             append_system_prompt: Some(appended).filter(|text| !text.is_empty()),
             ..Settings::default()
         }

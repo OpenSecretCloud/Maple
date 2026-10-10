@@ -28,6 +28,7 @@ mod side_models;
 mod store;
 mod surface;
 mod tasks;
+mod thinking;
 mod timeline;
 mod tool_context;
 mod tools;
