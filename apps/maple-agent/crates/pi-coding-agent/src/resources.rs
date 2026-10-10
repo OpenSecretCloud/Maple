@@ -521,7 +521,10 @@ fn load_template(
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default(),
         description,
-        argument_hint: frontmatter["argument-hint"].as_str().map(str::to_string),
+        argument_hint: frontmatter["argument-hint"]
+            .as_str()
+            .filter(|hint| !hint.is_empty())
+            .map(str::to_string),
         content: body,
         file_path: path.to_path_buf(),
         source,
@@ -944,6 +947,26 @@ mod tests {
             expand_prompt_template("/unknown x", &templates),
             "/unknown x"
         );
+    }
+
+    #[test]
+    fn an_empty_argument_hint_is_none() {
+        let (_root, cwd, paths) = layout();
+        let prompts = paths.agent_dir.join("prompts");
+        write(
+            &prompts.join("empty.md"),
+            "---\ndescription: A command with an empty hint\nargument-hint: \"\"\n---\nDo it",
+        );
+        write(
+            &prompts.join("hinted.md"),
+            "---\nargument-hint: \"[instructions]\"\n---\nDo $ARGUMENTS",
+        );
+        let (templates, _) = load_prompt_templates(&cwd, &paths, &[], true);
+        let hints: Vec<(&str, Option<&str>)> = templates
+            .iter()
+            .map(|template| (template.name.as_str(), template.argument_hint.as_deref()))
+            .collect();
+        assert_eq!(hints, [("empty", None), ("hinted", Some("[instructions]"))]);
     }
 
     #[test]
