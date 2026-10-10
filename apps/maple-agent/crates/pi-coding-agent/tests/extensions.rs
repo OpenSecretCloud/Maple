@@ -590,6 +590,77 @@ async fn names_entries_and_settling_are_reported_as_in_pi() {
 }
 
 #[tokio::test]
+async fn handlers_and_commands_get_pis_contexts() {
+    let harness = Harness::new();
+    harness.faux.push_tool_call("echo", json!({ "text": "a" }));
+    harness.faux.push_text("done");
+    for turn in 0..2 {
+        harness
+            .faux
+            .push_text(&format!("reply {turn} {}", "x".repeat(400)));
+    }
+    harness.faux.push_text("## Goal\nsummary");
+    harness.faux.push_text("## Original Request\nsummary");
+    let signals = Arc::new(Mutex::new(Vec::new()));
+    let seen = signals.clone();
+    let contexts = extension("contexts", move |api| {
+        let seen = seen.clone();
+        api.on(move |_event: ToolCall, ctx| {
+            let seen = seen.clone();
+            async move {
+                // A handler inside a run sees its cancellation, as Pi's signal.
+                seen.lock()
+                    .unwrap()
+                    .push(ctx.signal().is_some_and(|signal| !signal.is_cancelled()));
+                Ok(None)
+            }
+        });
+        api.register_command("inspect", "Inspect the session", |_args, ctx| async move {
+            assert!(ctx.is_project_trusted());
+            assert!(ctx.models().unwrap().find("faux", "faux-1").is_some());
+            assert_eq!(ctx.system_prompt_options().app_name, "Maple");
+            assert!(ctx.signal().is_none());
+            // A command can wait for the session; the compaction it starts stops nothing.
+            ctx.wait_for_idle().await;
+            let result = ctx.compact(None).await.unwrap()?;
+            assert!(result.summary.starts_with("## Goal"));
+            Ok(())
+        });
+    });
+    let session = harness
+        .session_with(|options| {
+            options.tools = vec![echo_tool(true)];
+            options.extensions = vec![contexts];
+            options.project_trusted = true;
+            options.settings.compaction.keep_recent_tokens = 50;
+        })
+        .await;
+    for text in ["go", "question 0", "question 1"] {
+        session
+            .prompt(text, PromptOptions::default())
+            .await
+            .unwrap();
+    }
+    assert_eq!(*signals.lock().unwrap(), [true]);
+    assert_eq!(
+        session
+            .prompt("/inspect", PromptOptions::default())
+            .await
+            .unwrap(),
+        PromptOutcome::Handled
+    );
+    assert_eq!(roles_of(&session)[..2], ["system", "compactionSummary"]);
+}
+
+fn roles_of(session: &pi_coding_agent::AgentSession) -> Vec<&'static str> {
+    session
+        .messages()
+        .iter()
+        .map(SessionMessage::role)
+        .collect()
+}
+
+#[tokio::test]
 async fn context_actions_reach_the_session() {
     let harness = Harness::new();
     harness.faux.push_text("ok");

@@ -394,6 +394,12 @@ impl<M: AgentMessage> Agent<M> {
         Err(AgentError::CannotContinueFromAssistant)
     }
 
+    /// The active run's cancellation token, as Pi's `signal` is its abort signal; `None`
+    /// while no run is active.
+    pub fn signal(&self) -> Option<CancellationToken> {
+        lock(&self.inner.run).clone()
+    }
+
     /// Cancel the active run, if any.
     pub fn abort(&self) {
         if let Some(cancel) = lock(&self.inner.run).as_ref() {

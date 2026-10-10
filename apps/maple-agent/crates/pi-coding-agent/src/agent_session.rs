@@ -36,12 +36,13 @@ use crate::compaction::{
     prepare_compaction, should_compact, summarize_branch,
 };
 use crate::extensions::{
-    AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderRequest, CustomMessageDraft,
-    Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, ForkPosition,
-    Input, InputAction, InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact,
-    SessionBeforeFork, SessionBeforeTree, SessionCompact, SessionInfoChanged, SessionShutdown,
-    SessionStart, SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource,
-    ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult,
+    AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderRequest, CommandContext,
+    CustomMessageDraft, Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner,
+    ExtensionUi, ForkPosition, Input, InputAction, InputSource, MessageEnd, ModelSelect,
+    RegisteredTool, SessionBeforeCompact, SessionBeforeFork, SessionBeforeTree, SessionCompact,
+    SessionInfoChanged, SessionShutdown, SessionStart, SessionStartReason, SessionTree,
+    SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt,
+    ToolResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -291,6 +292,9 @@ pub struct AgentSessionOptions {
     /// How the model reads skill files. Without it, `read` or else `bash` does, and
     /// with neither, skills are left out of the prompt.
     pub skill_load_hint: Option<String>,
+    /// Whether the project's own resources and settings were loaded, which extensions
+    /// can ask, as Pi's `isProjectTrusted`.
+    pub project_trusted: bool,
 }
 
 impl AgentSessionOptions {
@@ -315,6 +319,7 @@ impl AgentSessionOptions {
             ui: Arc::new(crate::extensions::NoUi),
             custom_prompt: None,
             skill_load_hint: None,
+            project_trusted: false,
         }
     }
 }
@@ -406,6 +411,7 @@ pub(crate) struct SessionCore {
     listeners: Mutex<Vec<(u64, Listener)>>,
     next_listener: AtomicU64,
     activity: watch::Sender<Activity>,
+    project_trusted: bool,
     run: Mutex<RunState>,
     /// User shell commands running now, by a key of their own.
     bash_runs: Mutex<Vec<(u64, CancellationToken)>>,
@@ -587,6 +593,7 @@ impl AgentSession {
                 listeners: Mutex::new(Vec::new()),
                 next_listener: AtomicU64::new(1),
                 activity: watch::channel(Activity::Idle).0,
+                project_trusted: options.project_trusted,
                 run: Mutex::new(RunState::default()),
                 bash_runs: Mutex::new(Vec::new()),
                 next_bash: AtomicU64::new(1),
@@ -2498,6 +2505,39 @@ impl ExtensionContext {
             .is_none_or(|core| core.activity() == Activity::Idle)
     }
 
+    /// Whether the project's own resources and settings were loaded, as Pi's
+    /// `isProjectTrusted`.
+    pub fn is_project_trusted(&self) -> bool {
+        self.core().is_some_and(|core| core.project_trusted)
+    }
+
+    /// The models and credentials the session uses, as Pi's `modelRegistry`.
+    pub fn models(&self) -> Option<ModelRegistry> {
+        Some(self.core()?.models.clone())
+    }
+
+    /// The running agent turn's cancellation, as Pi's `signal`; `None` while none runs.
+    pub fn signal(&self) -> Option<CancellationToken> {
+        self.core()?.agent.signal()
+    }
+
+    /// Compact the session without waiting for it, as Pi's `compact`: whatever runs is
+    /// stopped first. Await the handle for the result, as Pi's `onComplete` and
+    /// `onError` give it.
+    pub fn compact(
+        &self,
+        custom_instructions: Option<String>,
+    ) -> tokio::task::JoinHandle<Result<CompactionResult, AgentSessionError>> {
+        let core = self.core();
+        tokio::spawn(async move {
+            let session = AgentSession {
+                core: core
+                    .ok_or_else(|| AgentSessionError::Failed("The session has ended".into()))?,
+            };
+            session.compact(custom_instructions.as_deref()).await
+        })
+    }
+
     pub fn abort(&self) {
         if let Some(core) = self.core() {
             core.abort();
@@ -2688,6 +2728,53 @@ impl ExtensionContext {
                 core.runner.report(&extension, "send_user_message", error);
             }
         });
+    }
+}
+
+// What only a command can safely wait for, since no run is waiting for it.
+impl CommandContext {
+    fn session(&self) -> Result<AgentSession, AgentSessionError> {
+        let core = self
+            .core()
+            .ok_or_else(|| AgentSessionError::Failed("The session has ended".into()))?;
+        Ok(AgentSession { core })
+    }
+
+    /// Wait until no prompt, retry or compaction is in progress, as Pi's `waitForIdle`.
+    pub async fn wait_for_idle(&self) {
+        if let Ok(session) = self.session() {
+            session.wait_for_idle().await;
+        }
+    }
+
+    /// Move to another point of the tree, as Pi's `navigateTree`.
+    pub async fn navigate_tree(
+        &self,
+        target_id: &str,
+        summarize: bool,
+        custom_instructions: Option<&str>,
+    ) -> Result<(), AgentSessionError> {
+        self.session()?
+            .navigate_tree(target_id, summarize, custom_instructions)
+            .await
+    }
+
+    /// Fork the session, as Pi's `fork`, into `store`.
+    pub async fn fork(
+        &self,
+        entry_id: &str,
+        position: ForkPosition,
+        store: Box<dyn SessionStore>,
+    ) -> Result<Option<String>, AgentSessionError> {
+        self.session()?.fork(entry_id, position, store).await
+    }
+
+    /// The options the session builds its system prompt from, as Pi's
+    /// `getSystemPromptOptions`.
+    pub fn system_prompt_options(&self) -> SystemPromptOptions {
+        self.core()
+            .map(|core| core.prompt_options())
+            .unwrap_or_default()
     }
 }
 

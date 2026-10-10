@@ -299,7 +299,7 @@ type Handler<E> = Arc<
 >;
 
 type CommandHandler =
-    Arc<dyn Fn(String, ExtensionContext) -> BoxFuture<'static, HandlerResult<()>> + Send + Sync>;
+    Arc<dyn Fn(String, CommandContext) -> BoxFuture<'static, HandlerResult<()>> + Send + Sync>;
 
 /// A tool's contribution to the system prompt.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -419,6 +419,22 @@ impl ExtensionContext {
     }
 }
 
+/// What a command's handler gets, as Pi's `ExtensionCommandContext`: the extension's
+/// context, and what only a command the user started can safely wait for, such as the
+/// end of a run, a move in the tree or a fork.
+#[derive(Clone)]
+pub struct CommandContext {
+    context: ExtensionContext,
+}
+
+impl std::ops::Deref for CommandContext {
+    type Target = ExtensionContext;
+
+    fn deref(&self) -> &ExtensionContext {
+        &self.context
+    }
+}
+
 /// Handlers by event type: each holds the extension name and a boxed `Handler<E>`.
 type HandlerTable = HashMap<TypeId, Vec<(Arc<str>, Box<dyn Any + Send + Sync>)>>;
 
@@ -474,7 +490,7 @@ impl ExtensionApi<'_> {
     /// Handle `/name args` typed as a prompt.
     pub fn register_command<F, Fut>(&mut self, name: &str, description: &str, handler: F)
     where
-        F: Fn(String, ExtensionContext) -> Fut + Send + Sync + 'static,
+        F: Fn(String, CommandContext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = HandlerResult<()>> + Send + 'static,
     {
         self.registry.commands.push(RegisteredCommand {
@@ -958,9 +974,11 @@ impl ExtensionRunner {
             .commands
             .iter()
             .find(|command| command.name == name)?;
-        let context = ExtensionContext {
-            core: core.clone(),
-            extension: Arc::from(command.extension.as_str()),
+        let context = CommandContext {
+            context: ExtensionContext {
+                core: core.clone(),
+                extension: Arc::from(command.extension.as_str()),
+            },
         };
         Some((command.handler)(args, context).await)
     }
