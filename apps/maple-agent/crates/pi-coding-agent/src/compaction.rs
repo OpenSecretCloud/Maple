@@ -450,11 +450,9 @@ pub struct Summarizer<'a> {
 
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
-const SUMMARY_FORMAT: &str = "## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
+const SUMMARY_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
 
-const SUMMARY_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n";
-
-const UPDATE_PROMPT: &str = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed\n- UPDATE \"Next Steps\" based on what was accomplished\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n";
+const UPDATE_PROMPT: &str = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed\n- UPDATE \"Next Steps\" based on what was accomplished\n- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n## Goal\n[Preserve existing goals, add new ones if the task expanded]\n\n## Constraints & Preferences\n- [Preserve existing, add new ones discovered]\n\n## Progress\n### Done\n- [x] [Include previously done items AND newly completed items]\n\n### In Progress\n- [ ] [Current work - update based on progress]\n\n### Blocked\n- [Current blockers - remove if resolved]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale] (preserve all previous, add new)\n\n## Next Steps\n1. [Update based on current state]\n\n## Critical Context\n- [Preserve important context, add new if needed]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
 
 const TURN_PREFIX_PROMPT: &str = "The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.\n\nCreate a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.\n\n## Original Request\n[What did the user ask for?]\n\n## Progress So Far\n- [Key decisions and work completed in these messages]\n\n## Context Needed to Continue\n- [Information from these messages needed to understand the later work]\n\nOnly summarize information explicitly present above. Do not infer or recreate later messages.";
 
@@ -613,7 +611,7 @@ pub async fn compact(
             }
             None => SUMMARY_PROMPT,
         };
-        prompt.push_str(&format!("{instructions}{SUMMARY_FORMAT}{focus}"));
+        prompt.push_str(&format!("{instructions}{focus}"));
         summarize(summarizer, prompt, reserve * 4 / 5, "Summarization").await
     };
     let (mut summary, usage) = if preparation.turn_prefix_messages.is_empty() {
@@ -1025,6 +1023,45 @@ mod tests {
         let prompt = content_text(&prompt.content);
         assert!(prompt.contains("[User]: edit main.rs"));
         assert!(prompt.contains("Additional focus: keep paths"));
+    }
+
+    #[tokio::test]
+    async fn an_update_asks_to_keep_the_previous_summary_in_its_own_format() {
+        let preparation = CompactionPreparation {
+            first_kept_entry_id: "kept".into(),
+            messages_to_summarize: vec![user("a newer question")],
+            turn_prefix_messages: Vec::new(),
+            tokens_before: 100,
+            previous_summary: Some("## Goal\nthe old goal".into()),
+            file_operations: FileOperations::default(),
+            settings: settings(20),
+        };
+        let faux = FauxProvider::new();
+        faux.push_text("## Goal\nthe old goal, and more");
+        let model = faux.model();
+        let summarizer = Summarizer {
+            model: &model,
+            stream_fn: &faux,
+            options: StreamOptions::default(),
+            max_retries: 0,
+            retry_base_ms: 1,
+        };
+        compact(&preparation, &summarizer, Some("keep paths"))
+            .await
+            .unwrap();
+        let prompt = last_prompt(&faux);
+        assert!(
+            prompt.contains("<previous-summary>\n## Goal\nthe old goal\n</previous-summary>\n\nThe messages above are NEW conversation messages"),
+            "{prompt}"
+        );
+        assert!(prompt.contains(
+            "- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it"
+        ));
+        assert!(
+            prompt
+                .contains("## Goal\n[Preserve existing goals, add new ones if the task expanded]")
+        );
+        assert!(prompt.ends_with("and error messages.\n\nAdditional focus: keep paths"));
     }
 
     #[tokio::test]
