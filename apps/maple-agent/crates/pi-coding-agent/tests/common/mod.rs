@@ -131,6 +131,7 @@ pub fn record(session: &AgentSession) -> Arc<Mutex<Vec<String>>> {
             AgentSessionEvent::RetryEnd {
                 success, attempt, ..
             } => format!("retry_end:{success}:{attempt}"),
+            AgentSessionEvent::ThinkingLevelChanged { level } => format!("thinking:{level:?}"),
             AgentSessionEvent::ExtensionError(report) => {
                 format!("extension_error:{}:{}", report.extension, report.event)
             }

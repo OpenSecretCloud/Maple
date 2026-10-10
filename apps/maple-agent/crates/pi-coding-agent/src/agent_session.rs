@@ -106,6 +106,10 @@ impl From<AgentError> for AgentSessionError {
     }
 }
 
+/// The thinking level a session starts at when neither its record nor the settings name
+/// one, as in Pi.
+pub const DEFAULT_THINKING_LEVEL: ThinkingLevel = ThinkingLevel::Medium;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompactionReason {
     Manual,
@@ -139,6 +143,10 @@ pub enum AgentSessionEvent {
         success: bool,
         attempt: u32,
         error: Option<String>,
+    },
+    /// The thinking level changed, also when a new model needed another one.
+    ThinkingLevelChanged {
+        level: ThinkingLevel,
     },
     ExtensionError(ExtensionErrorReport),
     /// Writing the session failed; the conversation goes on in memory.
@@ -437,17 +445,27 @@ fn placeholder_model() -> Model {
 impl AgentSession {
     pub async fn new(options: AgentSessionOptions) -> Result<Self, AgentSessionError> {
         let projection = options.session.projection();
-        let has_history = !options.session.entries().is_empty();
+        let has_messages = !projection.messages.is_empty();
+        let has_thinking_entry = options
+            .session
+            .branch()
+            .iter()
+            .any(|entry| matches!(entry.kind, EntryKind::ThinkingLevelChange { .. }));
         let models = options.models.clone();
         let model = projection
             .model
             .as_ref()
             .and_then(|(provider, id)| models.find(provider, id))
             .or(options.model.clone());
-        let requested_thinking_level = if has_history {
+        // As Pi restores a session: one with a conversation keeps the level it recorded;
+        // anything else starts at the settings' default level, or else at Pi's.
+        let requested_thinking_level = if has_messages && has_thinking_entry {
             projection.thinking_level
         } else {
-            options.settings.default_thinking_level.unwrap_or_default()
+            options
+                .settings
+                .default_thinking_level
+                .unwrap_or(DEFAULT_THINKING_LEVEL)
         };
         let thinking_level = model.as_ref().map_or(ThinkingLevel::Off, |model| {
             model.clamp_thinking_level(requested_thinking_level)
@@ -573,11 +591,21 @@ impl AgentSession {
                 .set_thinking_level(model.clamp_thinking_level(requested_thinking_level));
             *lock(&core.model) = Some(model);
         }
-        let thinking_level = core.agent.thinking_level();
-        if !has_history && thinking_level != ThinkingLevel::Off {
-            // Recorded so a resumed session starts at the same level.
-            lock(&core.session).append_thinking_level_change(thinking_level);
+        {
+            // Recorded so a resumed session starts with the same model and level, as in Pi:
+            // a new session records both, an older one the level it now has.
+            let thinking_level = core.agent.thinking_level();
+            let mut session = lock(&core.session);
+            if !has_messages {
+                if let Some(model) = lock(&core.model).as_ref() {
+                    session.append_model_change(&model.provider, &model.id);
+                }
+                session.append_thinking_level_change(thinking_level);
+            } else if !has_thinking_entry {
+                session.append_thinking_level_change(thinking_level);
+            }
         }
+        core.report_persistence();
         let sink = core.weak.clone();
         core.runner.set_error_sink(Arc::new(move |report| {
             if let Some(core) = sink.upgrade() {
@@ -1862,26 +1890,42 @@ impl SessionCore {
         Ok(())
     }
 
+    /// As Pi's `setModel`: the settings' default level applies again, or else the current
+    /// one, clamped to the new model. Extensions hear of a model that really changed.
     async fn set_model(&self, model: Model) {
+        let level = lock(&self.settings)
+            .default_thinking_level
+            .unwrap_or_else(|| self.agent.thinking_level());
         let previous = lock(&self.model).replace(model.clone());
         self.agent.set_model(model.clone());
-        let level = model.clamp_thinking_level(self.agent.thinking_level());
-        self.agent.set_thinking_level(level);
         lock(&self.session).append_model_change(&model.provider, &model.id);
         self.report_persistence();
-        self.runner
-            .emit(&ModelSelect { model, previous }, &self.weak)
-            .await;
+        self.set_thinking_level(level).await;
+        let changed = previous
+            .as_ref()
+            .is_none_or(|previous| previous.provider != model.provider || previous.id != model.id);
+        if changed {
+            self.runner
+                .emit(&ModelSelect { model, previous }, &self.weak)
+                .await;
+        }
     }
 
+    /// As Pi's `setThinkingLevel`: the level is clamped to the model, and recorded and
+    /// announced only when it changes. Without a model, any level stands.
     async fn set_thinking_level(&self, level: ThinkingLevel) {
-        let level = self.model().map_or(ThinkingLevel::Off, |model| {
-            model.clamp_thinking_level(level)
-        });
+        let level = match self.model() {
+            Some(model) => model.clamp_thinking_level(level),
+            None => level,
+        };
         let previous = self.agent.thinking_level();
+        if level == previous {
+            return;
+        }
         self.agent.set_thinking_level(level);
         lock(&self.session).append_thinking_level_change(level);
         self.report_persistence();
+        self.emit(AgentSessionEvent::ThinkingLevelChanged { level });
         self.runner
             .emit(&ThinkingLevelSelect { level, previous }, &self.weak)
             .await;

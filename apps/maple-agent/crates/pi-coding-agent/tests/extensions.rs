@@ -241,7 +241,8 @@ async fn commands_run_in_place_of_a_prompt_and_can_add_messages() {
     );
     assert_eq!(*seen.lock().unwrap(), "buy milk");
     assert!(harness.faux.requests().is_empty());
-    assert_eq!(entry_kinds(&session), ["custom_message"]);
+    // After the model and thinking level the new session started with.
+    assert_eq!(entry_kinds(&session)[2..], ["custom_message"]);
 
     harness.faux.push_text("noted");
     session
@@ -515,7 +516,7 @@ async fn context_actions_reach_the_session() {
             .iter()
             .any(|message| message.text().contains("count"))
     );
-    assert_eq!(entry_kinds(&session)[..2], ["custom", "session_info"]);
+    assert_eq!(entry_kinds(&session)[2..4], ["custom", "session_info"]);
 }
 
 #[tokio::test]

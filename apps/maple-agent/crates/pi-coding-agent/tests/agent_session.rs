@@ -10,7 +10,7 @@ use pi_agent_core::AgentEvent;
 use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
 use pi_coding_agent::compaction::estimate_tokens;
-use pi_coding_agent::extensions::CustomMessageDraft;
+use pi_coding_agent::extensions::{CustomMessageDraft, ModelSelect, extension};
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
 use pi_coding_agent::store::{JsonlStore, MemoryStore, SessionStore};
@@ -37,9 +37,16 @@ async fn a_prompt_records_the_system_prompt_and_the_exchange() {
             .unwrap(),
         PromptOutcome::Completed
     );
+    // A new session records the model and thinking level it starts with, as in Pi.
     assert_eq!(
         entry_kinds(&session),
-        ["message:system", "message:user", "message:assistant"]
+        [
+            "model_change",
+            "thinking_level_change",
+            "message:system",
+            "message:user",
+            "message:assistant"
+        ]
     );
     let prompt = session.system_prompt();
     assert!(prompt.contains("inside Maple"), "{prompt}");
@@ -58,7 +65,7 @@ async fn a_prompt_records_the_system_prompt_and_the_exchange() {
         .await
         .unwrap();
     assert_eq!(
-        entry_kinds(&session)[3..],
+        entry_kinds(&session)[5..],
         ["message:user", "message:assistant"]
     );
     assert_eq!(
@@ -164,7 +171,7 @@ async fn transient_errors_are_retried_and_the_failed_attempt_leaves_the_context(
     assert!(events.contains(&"retry_end:true:1".to_string()));
     // The tree keeps the failed attempt and the edit that hides it.
     assert_eq!(
-        entry_kinds(&session),
+        entry_kinds(&session)[2..],
         [
             "message:system",
             "message:user",
@@ -644,16 +651,60 @@ async fn model_and_thinking_changes_are_recorded_and_clamped() {
     plain.id = "plain".into();
     plain.reasoning = false;
     harness.models.register_models([plain.clone()]);
-    let session = harness.session().await;
+    let selected = Arc::new(Mutex::new(Vec::new()));
+    let seen = selected.clone();
+    let observer = extension("observer", move |api| {
+        let models = seen.clone();
+        api.on(move |event: ModelSelect, _ctx| {
+            let models = models.clone();
+            async move {
+                models.lock().unwrap().push(event.model.id);
+                Ok(())
+            }
+        });
+    });
+    let session = harness.session_with_extensions(vec![observer]).await;
+    let events = record(&session);
+    // Pi's default level, since the settings name none.
+    assert_eq!(session.thinking_level(), ThinkingLevel::Medium);
 
     session.set_thinking_level(ThinkingLevel::High).await;
     assert_eq!(session.thinking_level(), ThinkingLevel::High);
-    session.set_model(plain).await;
+    // Setting the same level again changes nothing.
+    session.set_thinking_level(ThinkingLevel::High).await;
+    session.set_model(plain.clone()).await;
     assert_eq!(session.thinking_level(), ThinkingLevel::Off);
+    // The same model again is recorded but not announced.
+    session.set_model(plain).await;
     assert_eq!(
         entry_kinds(&session),
-        ["thinking_level_change", "model_change"]
+        [
+            "model_change",
+            "thinking_level_change",
+            "thinking_level_change",
+            "model_change",
+            "thinking_level_change",
+            "model_change"
+        ]
     );
+    assert_eq!(*selected.lock().unwrap(), ["plain"]);
+    assert_eq!(*events.lock().unwrap(), ["thinking:High", "thinking:Off"]);
+}
+
+#[tokio::test]
+async fn a_model_switch_applies_the_default_thinking_level_again() {
+    let harness = Harness::new();
+    let mut other = FauxProvider::default_model();
+    other.id = "other".into();
+    harness.models.register_models([other.clone()]);
+    let session = harness
+        .session_with(|options| options.settings.default_thinking_level = Some(ThinkingLevel::Low))
+        .await;
+    assert_eq!(session.thinking_level(), ThinkingLevel::Low);
+    session.set_thinking_level(ThinkingLevel::High).await;
+    // As in Pi, the settings' default wins over the level the last model had.
+    session.set_model(other).await;
+    assert_eq!(session.thinking_level(), ThinkingLevel::Low);
 }
 
 #[tokio::test]
@@ -1161,7 +1212,7 @@ async fn resources_set_between_prompts_reach_the_next_one_as_a_patch() {
     assert!(prompt.contains("Answer in Dutch.") && !prompt.contains("French"));
     // Only the sections that changed went out again.
     assert_eq!(
-        entry_kinds(&session)[3..],
+        entry_kinds(&session)[5..],
         ["message:system", "message:user", "message:assistant"]
     );
     let patch = harness.faux.requests()[1]
