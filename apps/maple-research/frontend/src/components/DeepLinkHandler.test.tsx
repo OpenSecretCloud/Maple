@@ -752,6 +752,31 @@ describe("DeepLinkHandler launch links", () => {
     expect(reloadedLocation.href).toBe("tauri://localhost/pricing?canceled=true");
   });
 
+  test("launch replay leaves settled credits and Team pages when storage is unavailable", async () => {
+    storage.setItem = () => {
+      throw new Error("storage unavailable");
+    };
+    for (const [url, pathname] of [
+      ["cloud.opensecret.maple://payment-success-credits?case=settled", "/settings/api"],
+      ["cloud.opensecret.maple://payment-success?case=settled", "/settings/team"]
+    ]) {
+      const settledLocation = { pathname, search: "", href: `tauri://localhost${pathname}` };
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: { sessionStorage: storage, location: settledLocation },
+        writable: true
+      });
+      launchUrls = async () => [url];
+      await render();
+      expect(settledLocation.href).toBe(`tauri://localhost${pathname}`);
+      // A fresh click remains actionable even from its settled page.
+      await flushDeepLink(url);
+      expect(settledLocation.href).not.toBe(`tauri://localhost${pathname}`);
+      act(() => renderer?.unmount());
+      renderer = null;
+    }
+  });
+
   test("never stores an auth grant", async () => {
     await render();
     await flushDeepLink(`cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`);
@@ -773,6 +798,7 @@ describe("DeepLinkHandler launch links", () => {
       await flushDeepLink(url);
     }
     expect(storage.getItem("maple.handledDeepLinks")).toBeNull();
+    expect(location.href).toBe("tauri://localhost/");
   });
 
   test("production builds ignore a Dev launch link", async () => {

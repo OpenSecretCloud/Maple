@@ -84,9 +84,17 @@ function wasDeepLinkHandled(url: string): boolean {
   );
 }
 
-function navigatePaymentReturn(destination: string): void {
+function navigatePaymentReturn(destination: string, launch: boolean): void {
   // If replay storage is unavailable, the launch URL is read after every
   // reload. Once at its destination, avoid starting another reload.
+  // Credits and Team success routes replace their initial callback URL.
+  if (
+    launch &&
+    ((destination === "/?credits_success=true" && window.location.pathname === "/settings/api") ||
+      (destination === "/pricing?success=true" && window.location.pathname === "/settings/team"))
+  ) {
+    return;
+  }
   if (`${window.location.pathname}${window.location.search}` !== destination) {
     window.location.href = destination;
   }
@@ -143,7 +151,7 @@ export function DeepLinkHandler({
         if (tauri) {
           console.log("[Deep Link] Setting up handler for Tauri app");
 
-          const handleDeepLink = async (url: string) => {
+          const handleDeepLink = async (url: string, launch = false) => {
             if (disposed) return;
             let isAuthenticationCallback = false;
             console.log("[Deep Link] Received callback");
@@ -225,6 +233,15 @@ export function DeepLinkHandler({
                   }
                 }
               } else if (
+                urlObj.username ||
+                urlObj.password ||
+                urlObj.hash ||
+                ["handoff_grant", "access_token", "refresh_token", "cache_namespace_root"].some(
+                  (name) => urlObj.searchParams.has(name)
+                )
+              ) {
+                return;
+              } else if (
                 firstPathPart === "payment" ||
                 firstPathPart === "payment-success" ||
                 firstPathPart === "payment-success-credits" ||
@@ -259,17 +276,17 @@ export function DeepLinkHandler({
                 if (isCreditSuccess) {
                   // Keep the established root callback contract; the home route bridges it into
                   // the dedicated API credits settings page.
-                  navigatePaymentReturn("/?credits_success=true");
+                  navigatePaymentReturn("/?credits_success=true", launch);
                 } else if (isSuccess) {
                   // Navigate to the success page or show a success message
-                  navigatePaymentReturn("/pricing?success=true");
+                  navigatePaymentReturn("/pricing?success=true", launch);
                 } else if (isCanceled) {
                   // Navigate to the canceled page or show a canceled message
-                  navigatePaymentReturn("/pricing?canceled=true");
+                  navigatePaymentReturn("/pricing?canceled=true", launch);
                 } else {
                   // Handle unknown payment status
                   console.warn("[Deep Link] Unknown payment status in callback");
-                  navigatePaymentReturn("/pricing");
+                  navigatePaymentReturn("/pricing", launch);
                 }
               } else {
                 console.warn("[Deep Link] Unknown deep link type:", firstPathPart);
@@ -310,7 +327,7 @@ export function DeepLinkHandler({
             if (disposed) return;
             if (wasDeepLinkHandled(url)) continue;
             rememberHandledDeepLink(url);
-            await handleDeepLink(url);
+            await handleDeepLink(url, true);
           }
 
           console.log("[Deep Link] Handler setup complete");
