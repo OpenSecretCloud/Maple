@@ -45,7 +45,8 @@ the tree, but not for TypeScript SDK changes. Component-only
 changes should not unnecessarily select Research packaging. Maintain the root
 selectors, their tests, `.github/workflows/agent-ci.yml`, and unsigned PR
 selection in `.github/workflows/agent-desktop-build.yml` together. The desktop
-workflow intentionally builds both profiles on every `master` push.
+workflow compares `master` with the last fully verified ancestor package run;
+unrelated pushes skip packages, while manual master dispatch forces both profiles.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency

@@ -1,7 +1,18 @@
 # Agent desktop builds
 
-`Maple Agent Desktop Builds` builds both hosted profiles on every protected
-`master` push and on a manual dispatch from `master`. macOS ARM64 builds are
+`Maple Agent Desktop Builds` builds both hosted profiles when Agent inputs change
+on protected `master`, and always on a manual dispatch from `master`. It compares
+the current source with the last successful ancestor run that actually completed
+all four Dev/Prod macOS/Linux downloaded-package verifiers. Failed, in-flight and
+selector-only runs do not advance that baseline, so a later unrelated push still
+builds outstanding Agent changes. Missing history, API failures or no verified
+baseline in the last 100 successful master runs select a full build. PRs continue
+to select unsigned previews from their whole merge-base diff.
+
+Unrelated master commits have no new Agent artifacts. Existing downloads keep
+their original source SHA and provenance; they are never relabeled as a newer
+commit. A manual dispatch from `master` forces fresh packages, including when
+the previous run's 30-day artifacts have expired. macOS ARM64 builds are
 Developer ID signed, notarized, and stapled. Linux x86_64 builds are AppImages
 with a bundled runtime; CI also checks each downloaded AppImage's command-line
 startup in an Ubuntu 24.04 container with no Nix installation and no network
@@ -35,7 +46,8 @@ verification. GUI startup uses empty temporary state and does not sign in.
 
 ## Download and install
 
-Open the latest successful `Maple Agent Desktop Builds` run on GitHub Actions.
+Open the latest successful `Maple Agent Desktop Builds` run with completed
+package verifiers on GitHub Actions; a selector-only run has no packages.
 Its artifacts include the profile, platform, and run ID in their names:
 
 - `maple-agent-dev-macos-aarch64-RUN`
