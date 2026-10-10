@@ -575,8 +575,9 @@ pub struct Model {
     pub cost: ModelCost,
     pub context_window: u64,
     pub max_tokens: u64,
-    /// Provider value for each thinking level. `None` marks a level the model rejects;
-    /// unlisted levels up to `high` use their own name, `xhigh` and `max` must be listed.
+    /// Provider value for each thinking level. `None` marks a level the model rejects.
+    /// Unlisted levels from `minimal` to `high` use their own name and an unlisted `off`
+    /// sends nothing; `xhigh` and `max` must be listed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub thinking_levels: BTreeMap<ThinkingLevel, Option<String>>,
     #[serde(default)]
@@ -588,45 +589,48 @@ impl Model {
         self.input.contains(&InputModality::Image)
     }
 
-    /// The thinking levels this model accepts, `off` first.
+    /// The thinking levels this model accepts, lowest first. A model without reasoning
+    /// accepts only `off`.
     pub fn thinking_levels(&self) -> Vec<ThinkingLevel> {
         if !self.reasoning {
             return vec![ThinkingLevel::Off];
         }
         ThinkingLevel::ALL
             .into_iter()
-            .filter(|level| match level {
-                ThinkingLevel::Off => true,
-                ThinkingLevel::Xhigh | ThinkingLevel::Max => {
-                    matches!(self.thinking_levels.get(level), Some(Some(_)))
-                }
-                other => !matches!(self.thinking_levels.get(other), Some(None)),
+            .filter(|level| match self.thinking_levels.get(level) {
+                Some(value) => value.is_some(),
+                None => !matches!(level, ThinkingLevel::Xhigh | ThinkingLevel::Max),
             })
             .collect()
     }
 
-    /// `level` if the model accepts it, otherwise the highest accepted level below it.
+    /// `level` if the model accepts it, otherwise the nearest accepted level above it, or
+    /// below it when there is none above.
     pub fn clamp_thinking_level(&self, level: ThinkingLevel) -> ThinkingLevel {
         let available = self.thinking_levels();
         if available.contains(&level) {
             return level;
         }
-        available
-            .into_iter()
-            .filter(|candidate| *candidate <= level)
-            .max()
-            .unwrap_or_default()
+        let above = available.iter().find(|candidate| **candidate > level);
+        let below = available.iter().rev().find(|candidate| **candidate < level);
+        above.or(below).copied().unwrap_or_default()
     }
 
     /// The provider's value for `level`, clamped to the levels this model accepts, or
-    /// `None` when reasoning stays off.
+    /// `None` when nothing is sent. `off` is sent only when the model's map gives it a
+    /// value, such as `"none"`.
     pub fn provider_thinking_value(&self, level: ThinkingLevel) -> Option<String> {
-        let level = self.clamp_thinking_level(level);
-        if level == ThinkingLevel::Off {
+        if !self.reasoning {
             return None;
         }
+        // Off means no level was asked for, so it is not clamped.
+        let level = match level {
+            ThinkingLevel::Off => ThinkingLevel::Off,
+            level => self.clamp_thinking_level(level),
+        };
         match self.thinking_levels.get(&level) {
             Some(value) => value.clone(),
+            None if level == ThinkingLevel::Off => None,
             None => Some(level.as_str().to_string()),
         }
     }
@@ -710,45 +714,57 @@ mod tests {
 
     #[test]
     fn thinking_levels_follow_the_model_map() {
+        use ThinkingLevel::*;
         let mut model = model();
+        // xhigh and max need a value of their own.
+        assert_eq!(model.thinking_levels(), [Off, Minimal, Low, Medium, High]);
+        assert_eq!(model.clamp_thinking_level(Max), High);
+        // A level the model does not accept is clamped, not sent as is.
+        assert_eq!(model.provider_thinking_value(Xhigh), Some("high".into()));
+
+        // A hole between high and max.
+        model.thinking_levels.insert(Xhigh, None);
+        model.thinking_levels.insert(Max, Some("max".into()));
         assert_eq!(
             model.thinking_levels(),
-            vec![
-                ThinkingLevel::Off,
-                ThinkingLevel::Minimal,
-                ThinkingLevel::Low,
-                ThinkingLevel::Medium,
-                ThinkingLevel::High
-            ]
+            [Off, Minimal, Low, Medium, High, Max]
         );
-        // A level the model does not accept is clamped, not sent as is.
-        assert_eq!(
-            model.provider_thinking_value(ThinkingLevel::Xhigh),
-            Some("high".into())
-        );
-        model.thinking_levels.insert(ThinkingLevel::Minimal, None);
-        model
-            .thinking_levels
-            .insert(ThinkingLevel::Xhigh, Some("extra".into()));
-        assert!(!model.thinking_levels().contains(&ThinkingLevel::Minimal));
-        assert_eq!(
-            model.provider_thinking_value(ThinkingLevel::Xhigh),
-            Some("extra".into())
-        );
-        assert_eq!(
-            model.clamp_thinking_level(ThinkingLevel::Max),
-            ThinkingLevel::Xhigh
-        );
-        assert_eq!(
-            model.clamp_thinking_level(ThinkingLevel::Minimal),
-            ThinkingLevel::Off
-        );
+        assert_eq!(model.clamp_thinking_level(Xhigh), Max);
+        assert_eq!(model.provider_thinking_value(Xhigh), Some("max".into()));
+
+        // An unsupported level clamps up first, then down.
+        model.thinking_levels.insert(Minimal, None);
+        assert_eq!(model.clamp_thinking_level(Minimal), Low);
+        model.thinking_levels.insert(Max, None);
+        assert_eq!(model.clamp_thinking_level(Xhigh), High);
+
         model.reasoning = false;
-        assert_eq!(
-            model.clamp_thinking_level(ThinkingLevel::High),
-            ThinkingLevel::Off
-        );
-        assert_eq!(model.provider_thinking_value(ThinkingLevel::High), None);
+        assert_eq!(model.thinking_levels(), [Off]);
+        assert_eq!(model.clamp_thinking_level(High), Off);
+        assert_eq!(model.provider_thinking_value(High), None);
+    }
+
+    #[test]
+    fn off_is_dropped_or_sent_as_the_model_maps_it() {
+        use ThinkingLevel::*;
+        let mut model = model();
+        // Unlisted, it sends nothing.
+        assert_eq!(model.provider_thinking_value(Off), None);
+        model.thinking_levels.insert(Off, Some("none".into()));
+        assert_eq!(model.provider_thinking_value(Off), Some("none".into()));
+        // A level that clamps down to off sends off's value too.
+        for level in [Minimal, Low, Medium, High] {
+            model.thinking_levels.insert(level, None);
+        }
+        assert_eq!(model.provider_thinking_value(High), Some("none".into()));
+
+        // Mapped to None, off is not a level the model accepts, so it clamps up.
+        let mut model = self::model();
+        model.thinking_levels.insert(Off, None);
+        model.thinking_levels.insert(Minimal, None);
+        assert_eq!(model.thinking_levels(), [Low, Medium, High]);
+        assert_eq!(model.clamp_thinking_level(Off), Low);
+        assert_eq!(model.provider_thinking_value(Off), None);
     }
 
     #[test]

@@ -973,6 +973,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reasoning_effort_follows_the_models_thinking_levels() {
+        let effort = |model: &Model, reasoning: Option<ThinkingLevel>| {
+            let options = StreamOptions {
+                reasoning,
+                ..StreamOptions::default()
+            };
+            build_request_body(model, &Context::default(), &options).unwrap()["reasoning_effort"]
+                .clone()
+        };
+        let mut model = model();
+        assert_eq!(effort(&model, None), Value::Null);
+        // An unsupported level is clamped up first.
+        model.thinking_levels.insert(ThinkingLevel::Minimal, None);
+        assert_eq!(effort(&model, Some(ThinkingLevel::Minimal)), "low");
+        // Off goes out as the value the model maps it to.
+        model
+            .thinking_levels
+            .insert(ThinkingLevel::Off, Some("none".into()));
+        assert_eq!(effort(&model, None), "none");
+        assert_eq!(effort(&model, Some(ThinkingLevel::Off)), "none");
+        model.reasoning = false;
+        assert_eq!(effort(&model, None), Value::Null);
+    }
+
     #[tokio::test]
     async fn http_errors_become_error_responses() {
         let transport = transport(
