@@ -124,8 +124,20 @@ pub fn record(session: &AgentSession) -> Arc<Mutex<Vec<String>>> {
                 follow_up,
             } => format!("queue:{}:{}", steering.len(), follow_up.len()),
             AgentSessionEvent::CompactionStart { reason } => format!("compaction_start:{reason:?}"),
-            AgentSessionEvent::CompactionEnd { reason, error, .. } => {
-                format!("compaction_end:{reason:?}:{}", error.is_none())
+            AgentSessionEvent::CompactionEnd {
+                reason,
+                error,
+                aborted,
+                will_retry,
+                ..
+            } => {
+                let outcome = match (aborted, error) {
+                    (true, _) => "aborted",
+                    (false, None) => "ok",
+                    (false, Some(_)) => "failed",
+                };
+                let retry = if *will_retry { ":retry" } else { "" };
+                format!("compaction_end:{reason:?}:{outcome}{retry}")
             }
             AgentSessionEvent::RetryStart { attempt, .. } => format!("retry_start:{attempt}"),
             AgentSessionEvent::RetryEnd {

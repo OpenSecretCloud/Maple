@@ -7,14 +7,14 @@ use common::{Harness, echo_tool, entry_kinds, last_assistant_text, record};
 use pi_agent_core::{
     AfterToolCallResult, AgentEvent, AgentToolResult, BeforeToolCallResult, FnTool,
 };
-use pi_ai::faux::FauxProvider;
+use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, ThinkingLevel, Tool, content_text};
 use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
     AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult,
     Context, ContextWithSystem, CustomMessageDraft, Input, InputAction, MessageEnd,
-    SessionBeforeCompact, SessionInfoChanged, SessionStart, SlashCommandInfo, SlashCommandSource,
-    ToolCall, ToolPrompt, ToolResult, extension,
+    SessionBeforeCompact, SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionStart,
+    SlashCommandInfo, SlashCommandSource, ToolCall, ToolPrompt, ToolResult, extension,
 };
 use pi_coding_agent::session::{EntryKind, SessionManager};
 use pi_coding_agent::store::JsonlStore;
@@ -668,6 +668,203 @@ fn roles_of(session: &pi_coding_agent::AgentSession) -> Vec<&'static str> {
         .iter()
         .map(SessionMessage::role)
         .collect()
+}
+
+/// An extension that writes every compaction itself, recording what it is told.
+fn compacting_extension(
+    seen: Arc<Mutex<Vec<String>>>,
+    cancel: bool,
+) -> Arc<dyn pi_coding_agent::extensions::Extension> {
+    extension("compactor", move |api| {
+        let (before, after, failed) = (seen.clone(), seen.clone(), seen.clone());
+        api.on(move |event: SessionBeforeCompact, _ctx| {
+            let before = before.clone();
+            async move {
+                before.lock().unwrap().push(format!(
+                    "before:{:?}:{}:{}",
+                    event.reason,
+                    event.will_retry,
+                    !event.branch_entries.is_empty()
+                ));
+                Ok(BeforeCompactResult {
+                    cancel,
+                    compaction: Some(CompactionResult {
+                        summary: "summary from the extension".into(),
+                        first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                        tokens_before: event.preparation.tokens_before,
+                        estimated_tokens_after: None,
+                        usage: Default::default(),
+                        details: None,
+                    }),
+                })
+            }
+        });
+        api.on(move |event: SessionCompact, _ctx| {
+            let after = after.clone();
+            async move {
+                after
+                    .lock()
+                    .unwrap()
+                    .push(format!("compact:{:?}:{}", event.reason, event.will_retry));
+                Ok(())
+            }
+        });
+        api.on(move |event: SessionCompactFailed, _ctx| {
+            let failed = failed.clone();
+            async move {
+                failed.lock().unwrap().push(format!(
+                    "failed:{:?}:{}:{}",
+                    event.reason,
+                    event.aborted,
+                    event.error_message.unwrap_or_default()
+                ));
+                Ok(())
+            }
+        });
+    })
+}
+
+/// Two turns of about a hundred tokens each, to compact.
+async fn history(harness: &Harness, session: &pi_coding_agent::AgentSession) {
+    for turn in 0..2 {
+        harness
+            .faux
+            .push_text(&format!("reply {turn} {}", "x".repeat(400)));
+        session
+            .prompt(&format!("question {turn}"), PromptOptions::default())
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_reply_cut_short_is_compacted_and_asked_again_once() {
+    let harness = Harness::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let session = harness
+        .session_with(|options| {
+            options.extensions = vec![compacting_extension(seen.clone(), false)];
+            options.settings.compaction.keep_recent_tokens = 50;
+        })
+        .await;
+    history(&harness, &session).await;
+    let events = record(&session);
+    // Cut short well below the model's output limit, twice.
+    let cut = || {
+        let mut reply = faux_message(vec![AssistantContent::text("partial")]);
+        reply.stop_reason = pi_ai::StopReason::Length;
+        reply.usage.output = 100;
+        reply
+    };
+    harness.faux.push_reply(cut());
+    harness.faux.push_reply(cut());
+    session
+        .prompt("question 2", PromptOptions::default())
+        .await
+        .unwrap();
+
+    // As in Pi, the first is compacted and asked again; the second is reported.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            "before:Overflow:true:true",
+            "compact:Overflow:true",
+            "failed:Overflow:false:Truncated response recovery failed after one compact-and-retry attempt."
+        ]
+    );
+    let events = events.lock().unwrap();
+    assert!(events.contains(&"compaction_end:Overflow:ok:retry".to_string()));
+    assert!(events.contains(&"compaction_end:Overflow:failed".to_string()));
+    assert_eq!(harness.faux.requests().len(), 4);
+}
+
+#[tokio::test]
+async fn a_prompt_after_a_switch_to_a_smaller_model_compacts_first() {
+    let harness = Harness::new();
+    let mut small = FauxProvider::default_model();
+    small.id = "small".into();
+    // Just over the default reserve, so a few hundred tokens are over the threshold.
+    small.context_window = 16_500;
+    harness.models.register_models([small.clone()]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let session = harness
+        .session_with(|options| {
+            options.extensions = vec![compacting_extension(seen.clone(), false)];
+            options.settings.compaction.keep_recent_tokens = 50;
+        })
+        .await;
+    history(&harness, &session).await;
+    assert!(seen.lock().unwrap().is_empty());
+
+    // The context fits the old window but not the new one's threshold, so the prompt
+    // compacts first, as Pi's prompt checks before it sends.
+    session.set_model(small).await;
+    harness.faux.push_text("answered");
+    session
+        .prompt("question 2", PromptOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["before:Threshold:false:true", "compact:Threshold:false"]
+    );
+    // The request for the new prompt already carries the summary.
+    let request = &harness.faux.requests()[2].context.messages;
+    assert!(request.iter().any(|message| matches!(
+        message,
+        Message::User(user) if content_text(&user.content).contains("summary from the extension")
+    )));
+    assert!(harness.sent_text(2).contains("question 2"));
+}
+
+#[tokio::test]
+async fn a_cancelled_compaction_is_reported_as_stopped() {
+    let harness = Harness::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let session = harness
+        .session_with(|options| {
+            options.extensions = vec![compacting_extension(seen.clone(), true)];
+            options.settings.compaction.keep_recent_tokens = 50;
+        })
+        .await;
+    history(&harness, &session).await;
+    let events = record(&session);
+    assert!(matches!(
+        session.compact(None).await,
+        Err(AgentSessionError::Cancelled)
+    ));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["before:Manual:false:true", "failed:Manual:true:"]
+    );
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"compaction_end:Manual:aborted".to_string())
+    );
+}
+
+#[tokio::test]
+async fn nothing_to_compact_automatically_reports_nothing() {
+    // A tiny window puts every reply over the threshold, but there is nothing to cut.
+    let mut small = FauxProvider::default_model();
+    small.context_window = 10;
+    let harness = Harness::with_model(small);
+    harness.faux.push_text("short");
+    let session = harness.session().await;
+    let events = record(&session);
+    session
+        .prompt("hi", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("compaction"))
+    );
 }
 
 #[tokio::test]

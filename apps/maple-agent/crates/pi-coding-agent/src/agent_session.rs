@@ -23,8 +23,9 @@ use pi_agent_core::{
 };
 use pi_ai::transcript::current_system_message;
 use pi_ai::{
-    Content, ImageContent, Message, Model, StreamOptions, SystemMessage, ThinkingLevel,
-    UserMessage, content_text, is_context_overflow, is_retryable_error, now_ms, retry_delay_ms,
+    AssistantMessage, Content, ImageContent, Message, Model, StreamOptions, SystemMessage,
+    ThinkingLevel, UserMessage, content_text, is_context_overflow, is_recoverable_length,
+    is_retryable_error, now_ms, retry_delay_ms,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -32,17 +33,18 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bash_executor::{BashResult, OnChunk, execute_bash_with_operations};
 use crate::compaction::{
-    CompactionResult, Summarizer, compact, estimate_projected_context_tokens, estimate_tokens,
-    prepare_compaction, should_compact, summarize_branch,
+    CompactionPreparation, CompactionResult, Summarizer, compact,
+    estimate_projected_context_tokens, estimate_tokens, prepare_compaction, should_compact,
+    summarize_branch,
 };
 use crate::extensions::{
     AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderRequest, CommandContext,
     CustomMessageDraft, Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner,
     ExtensionUi, ForkPosition, Input, InputAction, InputSource, MessageEnd, ModelSelect,
     RegisteredTool, SessionBeforeCompact, SessionBeforeFork, SessionBeforeTree, SessionCompact,
-    SessionInfoChanged, SessionShutdown, SessionStart, SessionStartReason, SessionTree,
-    SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt,
-    ToolResult, TreePreparation, TreeSummary,
+    SessionCompactFailed, SessionInfoChanged, SessionShutdown, SessionStart, SessionStartReason,
+    SessionTree, SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo,
+    ToolPrompt, ToolResult, TreePreparation, TreeSummary,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -137,9 +139,14 @@ pub enum AgentSessionEvent {
     CompactionStart {
         reason: CompactionReason,
     },
+    /// As Pi's `compaction_end`: `aborted` when it was stopped or an extension cancelled
+    /// it, which leaves `error` empty, and `will_retry` when the interrupted reply is asked
+    /// again.
     CompactionEnd {
         reason: CompactionReason,
         result: Option<CompactionResult>,
+        aborted: bool,
+        will_retry: bool,
         error: Option<String>,
     },
     RetryStart {
@@ -390,7 +397,9 @@ impl Drop for CompactionGuard<'_> {
             self.core.emit(AgentSessionEvent::CompactionEnd {
                 reason: self.reason,
                 result: None,
-                error: Some("Compaction was cancelled".into()),
+                aborted: true,
+                will_retry: false,
+                error: None,
             });
         }
     }
@@ -811,7 +820,7 @@ impl AgentSession {
         };
         self.core
             .clone()
-            .compact(CompactionReason::Manual, custom_instructions)
+            .compact(CompactionReason::Manual, custom_instructions, false)
             .await
     }
 
@@ -1660,6 +1669,17 @@ impl SessionCore {
         if self.model().is_none() {
             return Err(AgentSessionError::NoModel);
         }
+        // As in Pi, a stopped run, or a switch to a smaller model, can leave a context to
+        // compact before the new prompt, which is the one that runs next.
+        let last = self.agent.with_messages(|messages| {
+            messages.iter().rev().find_map(|message| match message {
+                SessionMessage::Llm(Message::Assistant(assistant)) => Some(assistant.clone()),
+                _ => None,
+            })
+        });
+        if let Some(last) = last {
+            self.check_compaction(&last, false).await;
+        }
 
         let base = self.prompt_options();
         let event = BeforeAgentStart {
@@ -1824,7 +1844,8 @@ impl SessionCore {
         }
     }
 
-    /// Decide what follows a finished run. True when the agent should continue.
+    /// Decide what follows a finished run, as Pi's `_handlePostAgentRun` does: a retry, a
+    /// compaction, or the queued messages. True when the agent should continue.
     async fn handle_post_run(self: &Arc<Self>) -> bool {
         let last = self.agent.with_messages(|messages| {
             messages.iter().rev().find_map(|message| match message {
@@ -1838,30 +1859,13 @@ impl SessionCore {
         if last.stop_reason == pi_ai::StopReason::Aborted {
             return false;
         }
-        let Some(model) = self.model() else {
-            return false;
-        };
         let settings = lock(&self.settings).clone();
-
-        let overflow = is_context_overflow(&last, Some(model.context_window));
-        let recovered = std::mem::replace(&mut lock(&self.run).overflow_recovery_attempted, true);
-        if overflow && settings.compaction.enabled && !recovered {
-            // An error, or a reply cut off before any output, leaves the prompt unanswered:
-            // the reply leaves the context and the prompt runs again after compaction.
-            let unanswered = last.is_failure() || last.stop_reason == pi_ai::StopReason::Length;
-            if unanswered {
-                self.omit_last_assistant();
-            }
-            return match self.clone().compact(CompactionReason::Overflow, None).await {
-                Ok(_) => unanswered || self.agent.has_queued_messages(),
-                Err(_) => false,
-            };
-        }
-        if !overflow {
-            lock(&self.run).overflow_recovery_attempted = recovered;
-        }
-
-        if is_retryable_error(&last) && settings.retry.enabled {
+        let window = self.model().map(|model| model.context_window);
+        // An overflow is compacted, never retried.
+        if is_retryable_error(&last)
+            && !is_context_overflow(&last, window)
+            && settings.retry.enabled
+        {
             let attempt = {
                 let mut run = lock(&self.run);
                 run.retry_attempt += 1;
@@ -1882,17 +1886,129 @@ impl SessionCore {
                 error: last.error_message.clone(),
             });
         }
-
-        if !last.is_failure() {
-            let tokens = self.context_tokens();
-            if should_compact(tokens, model.context_window, &settings.compaction) {
-                let _ = self
-                    .clone()
-                    .compact(CompactionReason::Threshold, None)
-                    .await;
-            }
+        if self.check_compaction(&last, true).await {
+            return !self.abort_requested();
         }
         self.agent.has_queued_messages()
+    }
+
+    /// Compact when `last` calls for it, as Pi's `_checkCompaction` decides. True when the
+    /// agent should continue: to ask an interrupted reply again, or for queued messages.
+    ///
+    /// An overflow, or a reply cut short below the model's output limit, is compacted and
+    /// asked again once; a complete reply over the window is compacted and kept; a context
+    /// near its limit is compacted. A reply from another model, or from before the latest
+    /// compaction, is left alone. `skip_aborted` passes over a stopped reply, which the
+    /// check before a prompt looks at.
+    async fn check_compaction(
+        self: &Arc<Self>,
+        last: &AssistantMessage,
+        skip_aborted: bool,
+    ) -> bool {
+        let settings = lock(&self.settings).compaction.clone();
+        if !settings.enabled || (skip_aborted && last.stop_reason == pi_ai::StopReason::Aborted) {
+            return false;
+        }
+        let Some(model) = self.model() else {
+            return false;
+        };
+        let same_model = last.provider == model.provider && last.model == model.id;
+        let (stale, edited_after) = {
+            let session = lock(&self.session);
+            let branch = session.branch();
+            let position = branch.iter().rposition(|entry| {
+                matches!(
+                    &entry.kind,
+                    EntryKind::Message {
+                        message: SessionMessage::Llm(Message::Assistant(assistant)),
+                    } if assistant == last
+                )
+            });
+            let is_compaction =
+                |entry: &SessionEntry| matches!(entry.kind, EntryKind::Compaction { .. });
+            // A reply from before the latest compaction is stale, as in Pi. Pi compares
+            // timestamps; the reply's place in the branch says it exactly, and the
+            // timestamps decide only for a reply the branch does not hold.
+            let stale = match position {
+                Some(position) => branch[position + 1..]
+                    .iter()
+                    .any(|entry| is_compaction(entry)),
+                None => branch
+                    .iter()
+                    .rev()
+                    .find(|entry| is_compaction(entry))
+                    .is_some_and(|compaction| last.timestamp <= compaction.timestamp),
+            };
+            let edited_after = position.is_some_and(|position| {
+                branch[position + 1..]
+                    .iter()
+                    .any(|entry| matches!(entry.kind, EntryKind::ContextEdit { .. }))
+            });
+            (stale, edited_after)
+        };
+        if stale {
+            return false;
+        }
+        let explicit_overflow =
+            last.stop_reason == pi_ai::StopReason::Error && is_context_overflow(last, None);
+        // A silent overflow is read from the reply's usage, which an edit since has changed.
+        let overflow = same_model
+            && (explicit_overflow
+                || (!edited_after && is_context_overflow(last, Some(model.context_window))));
+        let recoverable_length = same_model && is_recoverable_length(last, model.max_tokens);
+        if overflow || recoverable_length {
+            let will_retry = last.stop_reason != pi_ai::StopReason::Stop;
+            if !will_retry {
+                // A complete reply cannot be continued: compact and keep it.
+                return self
+                    .clone()
+                    .compact(CompactionReason::Overflow, None, false)
+                    .await
+                    .is_ok_and(|_| self.agent.has_queued_messages());
+            }
+            if std::mem::replace(&mut lock(&self.run).overflow_recovery_attempted, true) {
+                let error = if overflow {
+                    "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+                } else {
+                    "Truncated response recovery failed after one compact-and-retry attempt."
+                };
+                self.emit(AgentSessionEvent::CompactionEnd {
+                    reason: CompactionReason::Overflow,
+                    result: None,
+                    aborted: false,
+                    will_retry: false,
+                    error: Some(error.to_string()),
+                });
+                self.runner
+                    .emit(
+                        &SessionCompactFailed {
+                            reason: CompactionReason::Overflow,
+                            error_message: Some(error.to_string()),
+                            aborted: false,
+                            will_retry: false,
+                            from_extension: false,
+                        },
+                        &self.weak,
+                    )
+                    .await;
+                return false;
+            }
+            // The reply leaves the context and is asked again after compaction.
+            self.omit_last_assistant();
+            return self
+                .clone()
+                .compact(CompactionReason::Overflow, None, true)
+                .await
+                .is_ok();
+        }
+        if should_compact(self.context_tokens(), model.context_window, &settings) {
+            return self
+                .clone()
+                .compact(CompactionReason::Threshold, None, false)
+                .await
+                .is_ok_and(|_| self.agent.has_queued_messages());
+        }
+        false
     }
 
     /// Wait out the backoff, keeping the failed attempt in the tree but out of the context.
@@ -1999,11 +2115,26 @@ impl SessionCore {
         self.report_persistence();
     }
 
+    /// Compact the current branch, as Pi's `compact` and `_runAutoCompaction` do. An
+    /// automatic compaction with nothing to compact reports nothing, as in Pi.
     async fn compact(
         self: Arc<Self>,
         reason: CompactionReason,
         custom_instructions: Option<&str>,
+        will_retry: bool,
     ) -> Result<CompactionResult, AgentSessionError> {
+        let settings = lock(&self.settings).clone();
+        let (preparation, branch_entries) = {
+            let session = lock(&self.session);
+            let branch = session.branch();
+            (
+                prepare_compaction(&branch, &settings.compaction),
+                branch.into_iter().cloned().collect::<Vec<_>>(),
+            )
+        };
+        if preparation.is_none() && reason != CompactionReason::Manual {
+            return Err(AgentSessionError::NothingToCompact);
+        }
         let token = {
             let mut run = lock(&self.run);
             if run.compaction_cancel.is_some() {
@@ -2019,35 +2150,89 @@ impl SessionCore {
             reason,
             ended: false,
         };
-        let result = self.compact_inner(custom_instructions, token).await;
+        let mut from_extension = false;
+        let result = match preparation {
+            Some(preparation) => {
+                self.compact_inner(
+                    preparation,
+                    branch_entries,
+                    reason,
+                    custom_instructions,
+                    will_retry,
+                    &token,
+                    &mut from_extension,
+                )
+                .await
+            }
+            None => Err(AgentSessionError::NothingToCompact),
+        };
         running.ended = true;
         drop(running);
-        self.emit(AgentSessionEvent::CompactionEnd {
-            reason,
-            result: result.as_ref().ok().cloned(),
-            error: result.as_ref().err().map(ToString::to_string),
-        });
+        match &result {
+            Ok(result) => self.emit(AgentSessionEvent::CompactionEnd {
+                reason,
+                result: Some(result.clone()),
+                aborted: false,
+                will_retry,
+                error: None,
+            }),
+            Err(error) => {
+                let aborted = token.is_cancelled() || matches!(error, AgentSessionError::Cancelled);
+                // Pi's words for a failure, and none for a stop.
+                let error_message = (!aborted).then(|| match reason {
+                    CompactionReason::Manual => format!("Compaction failed: {error}"),
+                    CompactionReason::Overflow => {
+                        format!("Context overflow recovery failed: {error}")
+                    }
+                    CompactionReason::Threshold => format!("Auto-compaction failed: {error}"),
+                });
+                self.emit(AgentSessionEvent::CompactionEnd {
+                    reason,
+                    result: None,
+                    aborted,
+                    will_retry: false,
+                    error: error_message.clone(),
+                });
+                self.runner
+                    .emit(
+                        &SessionCompactFailed {
+                            reason,
+                            error_message,
+                            aborted,
+                            will_retry: false,
+                            from_extension,
+                        },
+                        &self.weak,
+                    )
+                    .await;
+            }
+        }
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn compact_inner(
         &self,
+        preparation: CompactionPreparation,
+        branch_entries: Vec<SessionEntry>,
+        reason: CompactionReason,
         custom_instructions: Option<&str>,
-        cancel: CancellationToken,
+        will_retry: bool,
+        cancel: &CancellationToken,
+        from_extension: &mut bool,
     ) -> Result<CompactionResult, AgentSessionError> {
         let model = self.model().ok_or(AgentSessionError::NoModel)?;
         let settings = lock(&self.settings).clone();
-        let preparation = {
-            let session = lock(&self.session);
-            prepare_compaction(&session.branch(), &settings.compaction)
-        }
-        .ok_or(AgentSessionError::NothingToCompact)?;
         let before = self
             .runner
             .before_compact(
                 SessionBeforeCompact {
                     preparation: preparation.clone(),
+                    branch_entries,
                     custom_instructions: custom_instructions.map(str::to_string),
+                    reason,
+                    will_retry,
+                    signal: cancel.clone(),
                 },
                 &self.weak,
             )
@@ -2055,8 +2240,11 @@ impl SessionCore {
         if before.cancel {
             return Err(AgentSessionError::Cancelled);
         }
-        let (mut result, from_extension) = match before.compaction {
-            Some(result) => (result, true),
+        let mut result = match before.compaction {
+            Some(result) => {
+                *from_extension = true;
+                result
+            }
             None => {
                 let stream_fn = self.models.stream_fn();
                 let summarizer = Summarizer {
@@ -2066,25 +2254,27 @@ impl SessionCore {
                         api_key: self.models.api_key(&model.provider).await,
                         reasoning: Some(self.agent.thinking_level()),
                         session_id: Some(self.session_id()),
-                        cancel,
+                        cancel: cancel.clone(),
                         ..StreamOptions::default()
                     },
                     max_retries: settings.retry.max_retries,
                     retry_base_ms: settings.retry.base_delay_ms,
                 };
-                let result = compact(&preparation, &summarizer, custom_instructions)
+                compact(&preparation, &summarizer, custom_instructions)
                     .await
-                    .map_err(AgentSessionError::Failed)?;
-                (result, false)
+                    .map_err(AgentSessionError::Failed)?
             }
         };
+        if cancel.is_cancelled() {
+            return Err(AgentSessionError::Cancelled);
+        }
         let entry_id = lock(&self.session).append_compaction(
             result.summary.clone(),
             Some(result.first_kept_entry_id.clone()),
             result.tokens_before,
             result.details.clone(),
             Some(result.usage),
-            from_extension,
+            *from_extension,
         );
         self.report_persistence();
         self.rebuild_messages();
@@ -2096,7 +2286,9 @@ impl SessionCore {
             .emit(
                 &SessionCompact {
                     entry_id,
-                    from_extension,
+                    from_extension: *from_extension,
+                    reason,
+                    will_retry,
                 },
                 &self.weak,
             )
@@ -2515,7 +2707,7 @@ impl AgentHooks<SessionMessage> for SessionHooks {
             && should_compact(tokens, model.context_window, &settings)
             && core
                 .clone()
-                .compact(CompactionReason::Threshold, None)
+                .compact(CompactionReason::Threshold, None, false)
                 .await
                 .is_ok();
         // The next request uses the session's current model, thinking level, tools and
@@ -2570,6 +2762,7 @@ impl AgentListener<SessionMessage> for SessionListener {
             } => {
                 let text = content_text(&user.content);
                 let mut run = lock(&core.run);
+                run.overflow_recovery_attempted = false;
                 let removed = if let Some(index) =
                     run.steering_texts.iter().position(|queued| *queued == text)
                 {
@@ -2600,6 +2793,12 @@ impl AgentListener<SessionMessage> for SessionListener {
             }
             AgentEvent::MessageEnd { message } => {
                 core.persist(message);
+                if let SessionMessage::Llm(Message::Assistant(assistant)) = message
+                    && assistant.stop_reason != pi_ai::StopReason::Error
+                    && assistant.stop_reason != pi_ai::StopReason::Length
+                {
+                    lock(&core.run).overflow_recovery_attempted = false;
+                }
                 if let SessionMessage::Llm(Message::Assistant(assistant)) = message
                     && !assistant.is_failure()
                 {

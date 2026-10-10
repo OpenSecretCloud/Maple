@@ -265,7 +265,7 @@ async fn an_overflow_is_compacted_and_the_request_retried() {
         events
             .lock()
             .unwrap()
-            .contains(&"compaction_end:Overflow:true".to_string())
+            .contains(&"compaction_end:Overflow:ok:retry".to_string())
     );
     let messages = session.messages();
     assert!(
@@ -308,7 +308,7 @@ async fn a_context_near_its_limit_is_compacted_after_the_turn() {
         events
             .lock()
             .unwrap()
-            .contains(&"compaction_end:Threshold:true".to_string())
+            .contains(&"compaction_end:Threshold:ok".to_string())
     );
     assert!(entry_kinds(&session).contains(&"compaction".to_string()));
 }
@@ -1345,7 +1345,7 @@ async fn a_dropped_compaction_does_not_leave_the_session_busy() {
         events
             .lock()
             .unwrap()
-            .contains(&"compaction_end:Manual:false".to_string())
+            .contains(&"compaction_end:Manual:aborted".to_string())
     );
     harness.faux.push_text("## Goal\nanswer questions");
     harness.faux.push_text("## Original Request\nquestion 1");
@@ -1387,7 +1387,7 @@ async fn a_reply_cut_off_by_a_full_context_is_compacted_and_asked_again() {
         events
             .lock()
             .unwrap()
-            .contains(&"compaction_end:Overflow:true".to_string())
+            .contains(&"compaction_end:Overflow:ok:retry".to_string())
     );
 }
 

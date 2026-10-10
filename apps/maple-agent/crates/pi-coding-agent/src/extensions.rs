@@ -31,7 +31,7 @@ use pi_ai::{Content, ImageContent, Message, Model, StreamFn, ThinkingLevel, Usag
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_session::{SessionCore, StreamingBehavior};
+use crate::agent_session::{CompactionReason, SessionCore, StreamingBehavior};
 use crate::compaction::{CompactionPreparation, CompactionResult};
 use crate::messages::SessionMessage;
 use crate::session::SessionEntry;
@@ -211,10 +211,18 @@ pub struct BeforeProviderRequest {
     pub payload: Value,
 }
 
+/// A compaction about to happen, as Pi's `session_before_compact` describes it.
 #[derive(Clone, Debug)]
 pub struct SessionBeforeCompact {
     pub preparation: CompactionPreparation,
+    /// The current branch, root first.
+    pub branch_entries: Vec<SessionEntry>,
     pub custom_instructions: Option<String>,
+    pub reason: CompactionReason,
+    /// Whether the interrupted reply is asked again once compacted.
+    pub will_retry: bool,
+    /// Cancelled when the session is stopped, for a handler that summarizes itself.
+    pub signal: CancellationToken,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -227,6 +235,19 @@ pub struct BeforeCompactResult {
 #[derive(Clone, Debug)]
 pub struct SessionCompact {
     pub entry_id: String,
+    pub from_extension: bool,
+    pub reason: CompactionReason,
+    pub will_retry: bool,
+}
+
+/// A compaction that failed or was stopped, as Pi's `session_compact_failed`.
+#[derive(Clone, Debug)]
+pub struct SessionCompactFailed {
+    pub reason: CompactionReason,
+    /// `None` when it was stopped or an extension cancelled it.
+    pub error_message: Option<String>,
+    pub aborted: bool,
+    pub will_retry: bool,
     pub from_extension: bool,
 }
 
@@ -319,6 +340,7 @@ events! {
     BeforeProviderRequest => Option<Value>, "before_provider_request";
     SessionBeforeCompact => BeforeCompactResult, "session_before_compact";
     SessionCompact => (), "session_compact";
+    SessionCompactFailed => (), "session_compact_failed";
     SessionBeforeFork => BeforeForkResult, "session_before_fork";
     SessionBeforeTree => BeforeTreeResult, "session_before_tree";
     SessionTree => (), "session_tree";
