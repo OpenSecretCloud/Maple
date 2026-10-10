@@ -136,15 +136,17 @@ async fn run(
         }
     };
     if !(200..300).contains(&response.status) {
-        let detail = tokio::select! {
+        let text = tokio::select! {
             _ = cancel.cancelled() => {
                 builder.fail(StopReason::Aborted, ABORTED);
                 return;
             }
-            detail = read_error_body(response.body) => detail,
+            text = read_error_body(response.body) => text,
         };
-        let error = format!("{} {}", response.status, detail);
-        builder.fail(StopReason::Error, error.trim());
+        builder.fail(
+            StopReason::Error,
+            http_error_message(response.status, &text),
+        );
         return;
     }
     read_events(model, response.body, builder, &cancel).await;
@@ -165,7 +167,7 @@ fn request_headers(options: &StreamOptions) -> Vec<(String, String)> {
     headers
 }
 
-/// How much of an error body is kept for the message.
+/// How much of an error body is read for the message.
 const ERROR_TEXT_LIMIT: usize = 4_096;
 
 async fn read_error_body(mut body: BoxStream<'static, Result<Bytes, String>>) -> String {
@@ -177,7 +179,82 @@ async fn read_error_body(mut body: BoxStream<'static, Result<Bytes, String>>) ->
             break;
         }
     }
-    error_detail(String::from_utf8_lossy(&bytes).trim())
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+/// How much of an error object a message keeps, in characters, as in Pi.
+const ERROR_BODY_CHARS: usize = 4_000;
+
+/// The message for an error response, composed as Pi composes it from the OpenAI SDK's
+/// error: the status and the provider's whole error object, or the body text when it is
+/// not JSON, followed by OpenRouter's `metadata.raw`.
+fn http_error_message(status: u16, text: &str) -> String {
+    // The SDK keeps the body's `error` field, or the whole body when it has none.
+    let error = match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(body)) => {
+            let inner = body.get("error").filter(|error| !error.is_null()).cloned();
+            inner.unwrap_or(Value::Object(body))
+        }
+        Ok(list @ Value::Array(_)) => list,
+        _ if text.is_empty() => return format!("{status} status code (no body)"),
+        _ => return format!("{status} {text}"),
+    };
+    let message = format!("{status} {}", error_object_message(&error));
+    let message = match error.as_object().filter(|object| !object.is_empty()) {
+        Some(_) => {
+            let body = truncate_error_text(&error.to_string());
+            if message.contains(&body) {
+                message
+            } else {
+                format!("{status}: {body}")
+            }
+        }
+        None => message,
+    };
+    with_raw_metadata(message, &error)
+}
+
+/// The SDK's text for an error object: its `message`, or the object as JSON.
+fn error_object_message(error: &Value) -> String {
+    match error.get("message").filter(|message| is_set(message)) {
+        Some(Value::String(message)) => message.clone(),
+        Some(message) => message.to_string(),
+        None => error.to_string(),
+    }
+}
+
+/// Add OpenRouter's `metadata.raw`, the upstream provider's own error, when the message
+/// does not show it yet.
+fn with_raw_metadata(mut message: String, error: &Value) -> String {
+    if let Some(raw) = error.pointer("/metadata/raw").and_then(Value::as_str)
+        && !raw.is_empty()
+        && !message.contains(raw)
+    {
+        message.push('\n');
+        message.push_str(raw);
+    }
+    message
+}
+
+fn truncate_error_text(text: &str) -> String {
+    let length = text.chars().count();
+    if length <= ERROR_BODY_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(ERROR_BODY_CHARS).collect();
+    format!("{kept}... [truncated {} chars]", length - ERROR_BODY_CHARS)
+}
+
+/// Whether a value counts as given, as a JavaScript condition reads it: not null, false,
+/// zero or empty text.
+fn is_set(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_f64() != Some(0.0),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
 }
 
 /// The provider's own message when `text` is the usual error object, otherwise `text`.
@@ -543,12 +620,8 @@ async fn read_events(
             let Ok(event) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
-            if let Some(error) = event.get("error") {
-                let message = error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| error.to_string());
+            if let Some(error) = event.get("error").filter(|error| is_set(error)) {
+                let message = with_raw_metadata(error_object_message(error), error);
                 builder.fail(StopReason::Error, message);
                 return;
             }
@@ -1015,8 +1088,76 @@ mod tests {
         assert_eq!(message.stop_reason, StopReason::Error);
         assert_eq!(
             message.error_message.as_deref(),
-            Some("429 Rate limit reached")
+            Some("429: {\"message\":\"Rate limit reached\"}")
         );
+    }
+
+    async fn http_error(status: u16, body: &'static str) -> AssistantMessage {
+        OpenAiCompletions::new(transport(status, vec![body]))
+            .stream(&model(), Context::default(), StreamOptions::default())
+            .result()
+            .await
+    }
+
+    #[tokio::test]
+    async fn error_messages_keep_the_whole_error_as_pis_do() {
+        let error = |message: AssistantMessage| message.error_message.unwrap_or_default();
+        // OpenRouter wraps an upstream overflow; its raw error follows the object.
+        let raw = "{\"error\":{\"message\":\"This endpoint's maximum context length is 131072 tokens. However, you requested about 140000 tokens\"}}";
+        let wrapped = http_error(
+            400,
+            "{\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"This endpoint's maximum context length is 131072 tokens. However, you requested about 140000 tokens\\\"}}\",\"provider_name\":\"DeepInfra\"}}}",
+        )
+        .await;
+        assert!(is_context_overflow(&wrapped, None));
+        let text = error(wrapped);
+        assert!(
+            text.starts_with("400: {\"message\":\"Provider returned error\",\"code\":400"),
+            "{text}"
+        );
+        assert!(text.ends_with(&format!("\n{raw}")), "{text}");
+
+        // A body without an `error` field is the error object itself.
+        assert_eq!(
+            error(http_error(400, "{\"object\":\"error\",\"message\":\"bad request\"}").await),
+            "400: {\"object\":\"error\",\"message\":\"bad request\"}"
+        );
+        // Without a message, the object is the message.
+        assert_eq!(
+            error(http_error(400, "{\"error\":{\"code\":\"invalid\"}}").await),
+            "400 {\"code\":\"invalid\"}"
+        );
+        assert_eq!(
+            error(http_error(403, "{\"error\":\"blocked by gateway\"}").await),
+            "403 \"blocked by gateway\""
+        );
+        assert_eq!(
+            error(http_error(502, "Bad gateway").await),
+            "502 Bad gateway"
+        );
+        assert_eq!(
+            error(http_error(413, "").await),
+            "413 status code (no body)"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_errors_carry_the_upstream_error_and_a_null_error_is_none() {
+        let failed = reply_to(vec![
+            "data: {\"error\":{\"message\":\"Provider returned error\",\"metadata\":{\"raw\":\"upstream overloaded\"}}}\n\n",
+        ])
+        .await;
+        assert_eq!(
+            failed.error_message.as_deref(),
+            Some("Provider returned error\nupstream overloaded")
+        );
+
+        let fine = reply_to(vec![
+            "data: {\"error\":null,\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+        ])
+        .await;
+        assert_eq!(fine.stop_reason, StopReason::Stop);
+        assert_eq!(fine.text(), "ok");
     }
 
     #[tokio::test]
