@@ -241,6 +241,23 @@ impl FileOperations {
         }
     }
 
+    /// Add the file lists an earlier summary kept in its details.
+    fn add_details(&mut self, details: &Value) {
+        for (key, set) in [
+            ("readFiles", &mut self.read),
+            ("modifiedFiles", &mut self.modified),
+        ] {
+            set.extend(
+                details[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string),
+            );
+        }
+    }
+
     /// Files only read, and files changed.
     pub fn lists(&self) -> (Vec<String>, Vec<String>) {
         let read = self.read.difference(&self.modified).cloned().collect();
@@ -327,19 +344,7 @@ pub fn prepare_compaction(
         ..
     }) = previous.map(|entry| &entry.kind)
     {
-        for (key, set) in [
-            ("readFiles", &mut file_operations.read),
-            ("modifiedFiles", &mut file_operations.modified),
-        ] {
-            set.extend(
-                details[key]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string),
-            );
-        }
+        file_operations.add_details(details);
     }
     for message in messages_to_summarize.iter().chain(&turn_prefix_messages) {
         file_operations.record(message, settings);
@@ -391,6 +396,9 @@ const UPDATE_PROMPT: &str = "The messages above are NEW conversation messages to
 const TURN_PREFIX_PROMPT: &str = "The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.\n\nCreate a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.\n\n## Original Request\n[What did the user ask for?]\n\n## Progress So Far\n- [Key decisions and work completed in these messages]\n\n## Context Needed to Continue\n- [Information from these messages needed to understand the later work]\n\nOnly summarize information explicitly present above. Do not infer or recreate later messages.";
 
 const BRANCH_PROMPT: &str = "Create a structured summary of this conversation branch for context when returning later.\n\nUse this EXACT format:\n\n## Goal\n[What was the user trying to accomplish in this branch?]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Work that was started but not finished]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [What should happen next to continue this work]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
+
+/// Leads a branch summary, so the model knows where it comes from.
+const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n";
 
 const TOOL_RESULT_MAX_CHARS: usize = 2_000;
 
@@ -578,26 +586,68 @@ pub async fn compact(
     })
 }
 
-/// Summarize the entries of a branch being left, newest first within `token_budget`, as
-/// the context showed them: edited or omitted content stays out. With nothing to
-/// summarize, the summary is empty and no request is made.
+/// A summary of a branch being left, with the files the branch read and changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BranchSummaryResult {
+    pub summary: String,
+    pub usage: Usage,
+    pub read_files: Vec<String>,
+    pub modified_files: Vec<String>,
+}
+
+/// Summarize the entries of a branch being left, as the context showed them: edited or
+/// omitted content stays out, and so do tool results, which their calls describe.
+/// Entries are taken newest first while they fit `token_budget` (0 for no limit); an
+/// earlier summary that does not fit is still taken while most of the budget is free.
+/// With nothing to summarize, the summary is empty and no request is made.
 pub async fn summarize_branch(
     entries: &[&SessionEntry],
     summarizer: &Summarizer<'_>,
+    settings: &CompactionSettings,
     token_budget: u64,
     custom_instructions: Option<&str>,
-) -> Result<(String, Usage), String> {
+) -> Result<BranchSummaryResult, String> {
+    let mut file_operations = FileOperations::default();
+    // Earlier summaries' file lists count, also for entries that do not fit.
+    for entry in entries {
+        if let EntryKind::BranchSummary {
+            details: Some(details),
+            from_extension: false,
+            ..
+        } = &entry.kind
+        {
+            file_operations.add_details(details);
+        }
+    }
     let edits = ContextEdits::of(entries);
     let mut newest_first: Vec<Vec<SessionMessage>> = Vec::new();
-    let mut used = 0;
+    let mut used: u64 = 0;
     for entry in entries.iter().rev() {
         let entry_messages: Vec<SessionMessage> = edits
             .messages(entry)
             .into_iter()
-            .filter(|message| !matches!(message.as_message(), Some(Message::System(_))))
+            .filter(|message| {
+                !matches!(
+                    message.as_message(),
+                    Some(Message::System(_) | Message::ToolResult(_))
+                )
+            })
             .collect();
+        if entry_messages.is_empty() {
+            continue;
+        }
+        for message in &entry_messages {
+            file_operations.record(message, settings);
+        }
         let tokens: u64 = entry_messages.iter().map(estimate_tokens).sum();
-        if used + tokens > token_budget && !newest_first.is_empty() {
+        if token_budget > 0 && used + tokens > token_budget {
+            let is_summary = matches!(
+                entry.kind,
+                EntryKind::Compaction { .. } | EntryKind::BranchSummary { .. }
+            );
+            if is_summary && used.saturating_mul(10) < token_budget.saturating_mul(9) {
+                newest_first.push(entry_messages);
+            }
             break;
         }
         used += tokens;
@@ -606,14 +656,22 @@ pub async fn summarize_branch(
     let messages: Vec<SessionMessage> = newest_first.into_iter().rev().flatten().collect();
     let conversation = serialize_conversation(&llm_messages(&messages));
     if conversation.is_empty() {
-        return Ok((String::new(), Usage::default()));
+        return Ok(BranchSummaryResult::default());
     }
     let focus = custom_instructions
         .map(|instructions| format!("\n\nAdditional focus: {instructions}"))
         .unwrap_or_default();
     let prompt =
         format!("<conversation>\n{conversation}\n</conversation>\n\n{BRANCH_PROMPT}{focus}");
-    summarize(summarizer, prompt, 2_048, "Branch summarization").await
+    let (text, usage) = summarize(summarizer, prompt, 4_096, "Branch summarization").await?;
+    let (read_files, modified_files) = file_operations.lists();
+    let files = format_file_operations(&read_files, &modified_files);
+    Ok(BranchSummaryResult {
+        summary: format!("{BRANCH_SUMMARY_PREAMBLE}{text}{files}"),
+        usage,
+        read_files,
+        modified_files,
+    })
 }
 
 #[cfg(test)]
@@ -888,25 +946,168 @@ mod tests {
             max_retries: 0,
             retry_base_ms: 1,
         };
-        summarize_branch(&session.branch(), &summarizer, 10_000, None)
+        summarize_branch(&session.branch(), &summarizer, &settings(1), 10_000, None)
             .await
             .unwrap();
-        let Message::User(prompt) = faux.requests()[0].context.messages.last().unwrap().clone()
-        else {
-            panic!()
-        };
-        let prompt = content_text(&prompt.content);
+        let prompt = last_prompt(&faux);
         assert!(prompt.contains("[User]: [redacted]"), "{prompt}");
         assert!(!prompt.contains("hunter2"));
 
         // A branch without messages makes no request.
         let mut settings_only = SessionManager::in_memory("/work");
         settings_only.append_model_change("faux", "faux-2");
-        let (summary, _) = summarize_branch(&settings_only.branch(), &summarizer, 10_000, None)
+        let result = summarize_branch(
+            &settings_only.branch(),
+            &summarizer,
+            &settings(1),
+            10_000,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, BranchSummaryResult::default());
+        assert_eq!(faux.requests().len(), 1);
+    }
+
+    fn last_prompt(faux: &FauxProvider) -> String {
+        let requests = faux.requests();
+        let Some(Message::User(prompt)) = requests.last().unwrap().context.messages.last() else {
+            panic!()
+        };
+        content_text(&prompt.content)
+    }
+
+    #[tokio::test]
+    async fn a_branch_summary_keeps_its_files_and_leaves_tool_results_out() {
+        let mut session = SessionManager::in_memory("/work");
+        let start = session.append_message(user("look around"));
+        // An earlier summary's files count; an extension's do not.
+        let earlier = session
+            .branch_with_summary(
+                Some(&start),
+                "looked at the notes".into(),
+                Some(json!({ "readFiles": ["notes.md"], "modifiedFiles": [] })),
+                None,
+                false,
+            )
+            .unwrap();
+        session
+            .branch_with_summary(
+                Some(&earlier),
+                "an extension's summary".into(),
+                Some(json!({ "readFiles": ["secret.md"], "modifiedFiles": [] })),
+                None,
+                true,
+            )
+            .unwrap();
+        session.append_message(user("fix the parser"));
+        let read = faux_tool_call("read", json!({ "path": "src/parser.rs" }));
+        let AssistantContent::ToolCall(call) = &read else {
+            unreachable!()
+        };
+        let call_id = call.id.clone();
+        let edit = faux_tool_call("edit", json!({ "path": "src/lexer.rs" }));
+        session.append_message(assistant(vec![read, edit]));
+        session.append_message(SessionMessage::Llm(Message::ToolResult(
+            ToolResultMessage {
+                tool_call_id: call_id,
+                tool_name: "read".into(),
+                content: vec![Content::text("fn parse() {}")],
+                details: None,
+                usage: None,
+                is_error: false,
+                timestamp: 0,
+            },
+        )));
+
+        let faux = FauxProvider::new();
+        faux.push_text("## Goal\nFix the parser");
+        let model = faux.model();
+        let summarizer = Summarizer {
+            model: &model,
+            stream_fn: &faux,
+            options: StreamOptions::default(),
+            max_retries: 0,
+            retry_base_ms: 1,
+        };
+        let result = summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None)
             .await
             .unwrap();
-        assert!(summary.is_empty());
-        assert_eq!(faux.requests().len(), 1);
+        assert_eq!(result.read_files, ["notes.md", "src/parser.rs"]);
+        assert_eq!(result.modified_files, ["src/lexer.rs"]);
+        assert_eq!(
+            result.summary,
+            format!(
+                "{BRANCH_SUMMARY_PREAMBLE}## Goal\nFix the parser\n\n<read-files>\nnotes.md\nsrc/parser.rs\n</read-files>\n\n<modified-files>\nsrc/lexer.rs\n</modified-files>"
+            )
+        );
+        let prompt = last_prompt(&faux);
+        assert!(
+            prompt.contains(
+                "[Assistant tool calls]: read(path=\"src/parser.rs\"); edit(path=\"src/lexer.rs\")"
+            ),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("[Tool result]") && !prompt.contains("fn parse"));
+        assert_eq!(faux.requests()[0].options.max_tokens, Some(4_096));
+
+        // The output cap is the model's when that is lower.
+        let mut small = FauxProvider::default_model();
+        small.max_tokens = 1_024;
+        let faux = FauxProvider::with_model(small.clone());
+        faux.push_text("## Goal\nFix the parser");
+        let summarizer = Summarizer {
+            model: &small,
+            stream_fn: &faux,
+            options: StreamOptions::default(),
+            max_retries: 0,
+            retry_base_ms: 1,
+        };
+        summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None)
+            .await
+            .unwrap();
+        assert_eq!(faux.requests()[0].options.max_tokens, Some(1_024));
+    }
+
+    #[tokio::test]
+    async fn a_branch_summary_takes_the_newest_entries_that_fit() {
+        // Oldest first: a question, an earlier compaction's summary of about 200 tokens, a
+        // long question and a short answer.
+        let branch = |long: usize| {
+            let mut session = SessionManager::in_memory("/work");
+            let first = session.append_message(user("an old question"));
+            session.append_compaction("summary ".repeat(100), Some(first), 0, None, None, false);
+            session.append_message(user(&"x".repeat(long)));
+            session.append_message(assistant(vec![AssistantContent::text("short answer")]));
+            session
+        };
+        let faux = FauxProvider::new();
+        let model = faux.model();
+        let summarizer = Summarizer {
+            model: &model,
+            stream_fn: &faux,
+            options: StreamOptions::default(),
+            max_retries: 0,
+            retry_base_ms: 1,
+        };
+        let prompt = async |session: &SessionManager, budget: u64| {
+            faux.push_text("## Goal\nsummary");
+            summarize_branch(&session.branch(), &summarizer, &settings(1), budget, None)
+                .await
+                .unwrap();
+            last_prompt(&faux)
+        };
+
+        // The summary does not fit after about 800 tokens, but most of the budget is free.
+        let text = prompt(&branch(3_200), 1_000).await;
+        assert!(text.contains("summary summary") && text.contains("short answer"));
+        assert!(!text.contains("an old question"));
+        // After about 900, it is left out.
+        let text = prompt(&branch(3_600), 1_000).await;
+        assert!(text.contains("short answer") && !text.contains("summary summary"));
+        // Without a limit, everything is taken.
+        let text = prompt(&branch(3_600), 0).await;
+        assert!(text.contains("summary summary") && text.contains("an old question"));
     }
 
     #[tokio::test]

@@ -376,9 +376,55 @@ async fn navigating_the_tree_can_summarize_the_branch_left_behind() {
         roles(&messages),
         ["system", "user", "assistant", "branchSummary"]
     );
-    assert!(messages[3].text().contains("explored a second question"));
+    let summary = messages[3].text();
+    assert!(
+        summary.starts_with(
+            "The user explored a different conversation branch before returning here.\n"
+        )
+    );
+    assert!(summary.contains("explored a second question"));
     // The abandoned branch is still in the tree.
     assert_eq!(session.with_session(|tree| tree.children(&target).len()), 2);
+    // The entry keeps the branch's file lists.
+    let details =
+        session.with_session(
+            |tree| match &tree.entry(tree.leaf_id().unwrap()).unwrap().kind {
+                EntryKind::BranchSummary { details, .. } => details.clone(),
+                other => panic!("{other:?}"),
+            },
+        );
+    assert_eq!(
+        details,
+        Some(json!({ "readFiles": [], "modifiedFiles": [] }))
+    );
+}
+
+#[tokio::test]
+async fn a_branch_summary_fits_the_window_less_the_reserve() {
+    // A model that does not say its window gets Pi's 128k.
+    let mut model = FauxProvider::default_model();
+    model.context_window = 0;
+    let harness = Harness::with_model(model);
+    for answer in ["first answer", "second answer", "third answer"] {
+        harness.faux.push_text(answer);
+    }
+    harness.faux.push_text("## Goal\nlong questions");
+    let session = harness.session().await;
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    let target = session.with_session(|tree| tree.leaf_id().unwrap().to_string());
+    for question in ["a", "b"] {
+        session
+            .prompt(&question.repeat(12_000), PromptOptions::default())
+            .await
+            .unwrap();
+    }
+
+    session.navigate_tree(&target, true, None).await.unwrap();
+    let prompt = harness.sent_text(3);
+    assert!(prompt.contains(&"a".repeat(100)) && prompt.contains(&"b".repeat(100)));
 }
 
 #[tokio::test]

@@ -1770,7 +1770,7 @@ impl SessionCore {
             return Err(AgentSessionError::Cancelled);
         }
         let summary = match before.summary {
-            Some(summary) => Some((summary, None, true)),
+            Some(summary) => Some((summary, None, None, true)),
             None if summarize && !abandoned.is_empty() => {
                 let model = self.model().ok_or(AgentSessionError::NoModel)?;
                 let settings = lock(&self.settings).clone();
@@ -1790,30 +1790,43 @@ impl SessionCore {
                     max_retries: settings.retry.max_retries,
                     retry_base_ms: settings.retry.base_delay_ms,
                 };
-                let budget = model
-                    .context_window
-                    .saturating_sub(settings.compaction.reserve_tokens)
-                    .max(4_096);
+                // The window, or Pi's 128k when it is unknown, less the reserve; with
+                // nothing left, there is no limit.
+                let window = match model.context_window {
+                    0 => 128_000,
+                    window => window,
+                };
+                let budget = window.saturating_sub(settings.compaction.reserve_tokens);
                 let entries: Vec<_> = abandoned.iter().collect();
-                let summary =
-                    summarize_branch(&entries, &summarizer, budget, custom_instructions).await;
+                let summary = summarize_branch(
+                    &entries,
+                    &summarizer,
+                    &settings.compaction,
+                    budget,
+                    custom_instructions,
+                )
+                .await;
                 lock(&self.run).branch_summary_cancel = None;
                 // A stopped summary leaves the session where it was.
                 if cancel.is_cancelled() {
                     return Err(AgentSessionError::Cancelled);
                 }
-                let (text, usage) = summary.map_err(AgentSessionError::Failed)?;
-                Some((text, Some(usage), false))
+                let result = summary.map_err(AgentSessionError::Failed)?;
+                let details = serde_json::json!({
+                    "readFiles": result.read_files,
+                    "modifiedFiles": result.modified_files,
+                });
+                Some((result.summary, Some(details), Some(result.usage), false))
             }
             None => None,
         };
         let summary_entry_id = {
             let mut session = lock(&self.session);
             match summary {
-                Some((text, usage, from_extension)) => Some(session.branch_with_summary(
+                Some((text, details, usage, from_extension)) => Some(session.branch_with_summary(
                     Some(target_id),
                     text,
-                    None,
+                    details,
                     usage,
                     from_extension,
                 )?),
