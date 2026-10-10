@@ -13,6 +13,8 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use regex::Regex;
 use serde_json::Value;
 
+use crate::settings::Settings;
+
 /// Where resources live.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResourcePaths {
@@ -305,19 +307,22 @@ fn project_agents_skill_dirs(cwd: &Path, paths: &ResourcePaths) -> Vec<PathBuf> 
     dirs
 }
 
-/// Skills from the project's and the user's folders and any extra paths, in that order:
-/// the project folder's `skills` and `.agents/skills` from the working directory up
-/// (only for a trusted project), the agent folder's `skills`, `~/.agents/skills`, then
-/// the extra paths. The first skill with a name wins, so a project's skill overrides the
+/// Skills in the order Pi's resource loader takes them: the `listed` paths the settings
+/// name (see [`Settings::load`]), the project folder's `skills` and `.agents/skills`
+/// from the working directory up (only for a trusted project), the agent folder's
+/// `skills`, `~/.agents/skills`, then the `extra` paths the host adds. The first skill
+/// with a name wins, so a listed skill overrides the folders' and a project's skill the
 /// user's; later ones are reported as collisions.
 pub fn load_skills(
     cwd: &Path,
     paths: &ResourcePaths,
+    listed: &[PathBuf],
     extra: &[PathBuf],
     project_trusted: bool,
 ) -> (Vec<Skill>, Vec<Diagnostic>) {
     let mut found = Vec::new();
     let mut diagnostics = Vec::new();
+    scan_skill_paths(cwd, listed, &mut found, &mut diagnostics);
     if project_trusted {
         scan_skills(
             &paths.project_dir(cwd).join("skills"),
@@ -356,30 +361,7 @@ pub fn load_skills(
             &mut diagnostics,
         );
     }
-    for path in extra {
-        let path = if path.is_absolute() {
-            path.clone()
-        } else {
-            cwd.join(path)
-        };
-        if path.is_dir() {
-            scan_skills(
-                &path,
-                ResourceSource::Path,
-                LooseSkills::TopLevel,
-                true,
-                &mut found,
-                &mut diagnostics,
-            );
-        } else if path.is_file() && path.extension().is_some_and(|extension| extension == "md") {
-            found.extend(load_skill(&path, ResourceSource::Path, &mut diagnostics));
-        } else {
-            diagnostics.push(diagnostic(
-                &path,
-                "skill path does not exist or is not a Markdown file",
-            ));
-        }
-    }
+    scan_skill_paths(cwd, extra, &mut found, &mut diagnostics);
     let mut skills: Vec<Skill> = Vec::new();
     let mut files = HashSet::new();
     for skill in found {
@@ -401,6 +383,35 @@ pub fn load_skills(
         }
     }
     (skills, diagnostics)
+}
+
+/// Skill files and folders given by path; a relative one is relative to `cwd`.
+fn scan_skill_paths(
+    cwd: &Path,
+    given: &[PathBuf],
+    found: &mut Vec<Skill>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for path in given {
+        let path = cwd.join(path);
+        if path.is_dir() {
+            scan_skills(
+                &path,
+                ResourceSource::Path,
+                LooseSkills::TopLevel,
+                true,
+                found,
+                diagnostics,
+            );
+        } else if path.is_file() && path.extension().is_some_and(|extension| extension == "md") {
+            found.extend(load_skill(&path, ResourceSource::Path, diagnostics));
+        } else {
+            diagnostics.push(diagnostic(
+                &path,
+                "skill path does not exist or is not a Markdown file",
+            ));
+        }
+    }
 }
 
 fn escape_xml(text: &str) -> String {
@@ -640,18 +651,23 @@ fn load_templates_in(
     }
 }
 
-/// Templates from the project's (only when trusted) and the user's `prompts` folders,
-/// whose own files count, and any extra files or folders, searched with their
-/// subfolders. The first template with a name wins, so a project's template overrides
-/// the user's; later ones are reported as collisions.
+/// Templates in the order Pi's resource loader takes them: the `listed` files and
+/// folders the settings name (see [`Settings::load`]), the project's (only when
+/// trusted) and the user's `prompts` folders, whose own files count, then the `extra`
+/// files and folders the host adds. Folders given by path are searched with their
+/// subfolders. The first template with a name wins, so a listed template overrides the
+/// folders' and a project's template the user's; later ones are reported as
+/// collisions.
 pub fn load_prompt_templates(
     cwd: &Path,
     paths: &ResourcePaths,
+    listed: &[PathBuf],
     extra: &[PathBuf],
     project_trusted: bool,
 ) -> (Vec<PromptTemplate>, Vec<Diagnostic>) {
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
+    load_template_paths(cwd, listed, &mut templates, &mut diagnostics);
     if project_trusted {
         load_templates_in(
             &paths.project_dir(cwd).join("prompts"),
@@ -668,24 +684,7 @@ pub fn load_prompt_templates(
         &mut templates,
         &mut diagnostics,
     );
-    for path in extra {
-        let path = if path.is_absolute() {
-            path.clone()
-        } else {
-            cwd.join(path)
-        };
-        if path.is_file() && path.extension().is_some_and(|extension| extension == "md") {
-            templates.extend(load_template(&path, ResourceSource::Path, &mut diagnostics));
-        } else {
-            load_templates_in(
-                &path,
-                ResourceSource::Path,
-                true,
-                &mut templates,
-                &mut diagnostics,
-            );
-        }
-    }
+    load_template_paths(cwd, extra, &mut templates, &mut diagnostics);
     let mut unique: Vec<PromptTemplate> = Vec::new();
     for template in templates {
         if let Some(winner) = unique
@@ -705,6 +704,23 @@ pub fn load_prompt_templates(
         }
     }
     (unique, diagnostics)
+}
+
+/// Template files and folders given by path; a relative one is relative to `cwd`.
+fn load_template_paths(
+    cwd: &Path,
+    given: &[PathBuf],
+    templates: &mut Vec<PromptTemplate>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for path in given {
+        let path = cwd.join(path);
+        if path.is_file() && path.extension().is_some_and(|extension| extension == "md") {
+            templates.extend(load_template(&path, ResourceSource::Path, diagnostics));
+        } else {
+            load_templates_in(&path, ResourceSource::Path, true, templates, diagnostics);
+        }
+    }
 }
 
 /// Split arguments on whitespace, keeping quoted strings together.
@@ -840,18 +856,22 @@ pub struct Resources {
 }
 
 impl Resources {
-    /// The resources for `cwd`. A project that is not trusted contributes only its
+    /// The resources for `cwd`: the skills and templates `settings` list come first,
+    /// then the folders', then the host's `skill_paths` and `prompt_paths`, as Pi's
+    /// resource loader orders them. A project that is not trusted contributes only its
     /// context files.
     pub fn load(
         cwd: &Path,
         paths: &ResourcePaths,
+        settings: &Settings,
         skill_paths: &[PathBuf],
         prompt_paths: &[PathBuf],
         project_trusted: bool,
     ) -> Self {
-        let (skills, mut diagnostics) = load_skills(cwd, paths, skill_paths, project_trusted);
+        let (skills, mut diagnostics) =
+            load_skills(cwd, paths, &settings.skills, skill_paths, project_trusted);
         let (prompt_templates, template_diagnostics) =
-            load_prompt_templates(cwd, paths, prompt_paths, project_trusted);
+            load_prompt_templates(cwd, paths, &settings.prompts, prompt_paths, project_trusted);
         diagnostics.extend(template_diagnostics);
         let system_prompt =
             load_prompt_file(cwd, paths, "SYSTEM.md", project_trusted, &mut diagnostics);
@@ -951,7 +971,7 @@ mod tests {
             "---\ndescription: Write a commit message\n---\n",
         );
 
-        let (skills, diagnostics) = load_skills(&cwd, &paths, &[], true);
+        let (skills, diagnostics) = load_skills(&cwd, &paths, &[], &[], true);
         let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
         assert_eq!(names, ["commit", "Deploy_It", "review"]);
         // The project's skill overrides the user's.
@@ -980,7 +1000,7 @@ mod tests {
             &paths.project_dir(&cwd).join("skills/review/SKILL.md"),
             "---\ndescription: Review\n---\nCheck the diff.\n",
         );
-        let (skills, _) = load_skills(&cwd, &paths, &[], true);
+        let (skills, _) = load_skills(&cwd, &paths, &[], &[], true);
         let expanded = expand_skill_command("/skill:review src/lib.rs", &skills);
         assert!(expanded.starts_with("<skill name=\"review\""));
         assert!(expanded.contains("Check the diff.\n</skill>\n\nsrc/lib.rs"));
@@ -988,6 +1008,55 @@ mod tests {
             expand_skill_command("/skill:missing", &skills),
             "/skill:missing"
         );
+    }
+
+    #[test]
+    fn listed_paths_come_before_the_folders_and_extra_paths_after_them() {
+        let (root, cwd, paths) = layout();
+        let project = paths.project_dir(&cwd);
+        let listed = root.path().join("listed");
+        let extra = root.path().join("extra");
+        for (folder, text) in [
+            (&project, "Project"),
+            (&listed, "Listed"),
+            (&extra, "Extra"),
+        ] {
+            write(&folder.join("prompts/review.md"), text);
+            write(&folder.join("prompts/deploy.md"), text);
+            write(
+                &folder.join("skills/check/SKILL.md"),
+                &format!("---\ndescription: {text}\n---\n"),
+            );
+        }
+        fs::remove_file(listed.join("prompts/deploy.md")).unwrap();
+
+        // As in Pi, what the settings list wins over the folders, and the folders win
+        // over what the host adds.
+        let (templates, diagnostics) = load_prompt_templates(
+            &cwd,
+            &paths,
+            &[listed.join("prompts")],
+            &[extra.join("prompts")],
+            true,
+        );
+        let found: Vec<(&str, &str)> = templates
+            .iter()
+            .map(|template| (template.name.as_str(), template.content.as_str()))
+            .collect();
+        assert_eq!(found, [("review", "Listed"), ("deploy", "Project")]);
+        assert_eq!(diagnostics.len(), 3);
+        let (skills, _) = load_skills(
+            &cwd,
+            &paths,
+            &[listed.join("skills")],
+            &[extra.join("skills")],
+            true,
+        );
+        let found: Vec<&str> = skills
+            .iter()
+            .map(|skill| skill.description.as_str())
+            .collect();
+        assert_eq!(found, ["Listed"]);
     }
 
     #[test]
@@ -1022,7 +1091,7 @@ mod tests {
             &paths.project_dir(&cwd).join("prompts/explain.md"),
             "Explain $@ in detail",
         );
-        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[], true);
+        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[], &[], true);
         let names: Vec<&str> = templates
             .iter()
             .map(|template| template.name.as_str())
@@ -1066,7 +1135,7 @@ mod tests {
         write(&prompts.join(".fdignore"), "wip.md\n");
         // The folder's parent has no say.
         write(&paths.agent_dir.join(".gitignore"), "prompts\nreview.md\n");
-        let (templates, _) = load_prompt_templates(&cwd, &paths, &[], true);
+        let (templates, _) = load_prompt_templates(&cwd, &paths, &[], &[], true);
         assert_eq!(template_names(&templates), ["review"]);
     }
 
@@ -1089,7 +1158,7 @@ mod tests {
         write(&extra.join(".ignore"), "*.draft.md\n");
         // A nested folder's rules are its own, as Pi reads them: anchored to it.
         write(&extra.join("nested/.ignore"), "skip-*.md\n");
-        let (templates, _) = load_prompt_templates(&cwd, &paths, &[extra], true);
+        let (templates, _) = load_prompt_templates(&cwd, &paths, &[], &[extra], true);
         assert_eq!(template_names(&templates), ["deep", "skip-b", "top"]);
     }
 
@@ -1100,7 +1169,7 @@ mod tests {
         let extra = root.path().join("extra");
         write(&extra.join("top.md"), "Do it");
         std::os::unix::fs::symlink(&extra, extra.join("again")).unwrap();
-        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[extra], true);
+        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[], &[extra], true);
         assert_eq!(template_names(&templates), ["top"]);
         assert!(diagnostics.is_empty());
     }
@@ -1117,7 +1186,7 @@ mod tests {
             &prompts.join("hinted.md"),
             "---\nargument-hint: \"[instructions]\"\n---\nDo $ARGUMENTS",
         );
-        let (templates, _) = load_prompt_templates(&cwd, &paths, &[], true);
+        let (templates, _) = load_prompt_templates(&cwd, &paths, &[], &[], true);
         let hints: Vec<(&str, Option<&str>)> = templates
             .iter()
             .map(|template| (template.name.as_str(), template.argument_hint.as_deref()))
@@ -1136,6 +1205,7 @@ mod tests {
         let (templates, diagnostics) = load_prompt_templates(
             &cwd,
             &paths,
+            &[],
             &[
                 extra.join("review.md"),
                 extra.join("notes.txt"),
@@ -1181,7 +1251,7 @@ mod tests {
             &skill("Mine"),
         );
 
-        let (skills, _) = load_skills(&cwd, &paths, &[], true);
+        let (skills, _) = load_skills(&cwd, &paths, &[], &[], true);
         let found: Vec<(&str, ResourceSource)> = skills
             .iter()
             .map(|skill| (skill.name.as_str(), skill.source))
@@ -1195,7 +1265,7 @@ mod tests {
                 ("mine", ResourceSource::User),
             ]
         );
-        let (skills, _) = load_skills(&cwd, &paths, &[], false);
+        let (skills, _) = load_skills(&cwd, &paths, &[], &[], false);
         let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
         assert_eq!(names, ["mine"]);
     }
@@ -1214,7 +1284,7 @@ mod tests {
         write(&paths.agent_dir.join("SYSTEM.md"), "User system");
         write(&paths.agent_dir.join("APPEND_SYSTEM.md"), "User append");
 
-        let trusted = Resources::load(&cwd, &paths, &[], &[], true);
+        let trusted = Resources::load(&cwd, &paths, &Settings::default(), &[], &[], true);
         let text = |file: &Option<ContextFile>| file.as_ref().map(|file| file.content.clone());
         assert_eq!(
             text(&trusted.system_prompt).as_deref(),
@@ -1227,7 +1297,7 @@ mod tests {
         assert_eq!(trusted.skills.len(), 1);
         assert_eq!(trusted.prompt_templates.len(), 1);
 
-        let untrusted = Resources::load(&cwd, &paths, &[], &[], false);
+        let untrusted = Resources::load(&cwd, &paths, &Settings::default(), &[], &[], false);
         assert_eq!(
             text(&untrusted.system_prompt).as_deref(),
             Some("User system")

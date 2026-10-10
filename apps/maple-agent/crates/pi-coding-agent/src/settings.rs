@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use pi_agent_core::{QueueMode, ToolExecutionMode};
 use pi_ai::ThinkingLevel;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::compaction::CompactionSettings;
+use crate::tools::resolve_to_cwd;
 use crate::trust::DefaultProjectTrust;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,9 +55,10 @@ pub struct Settings {
     pub follow_up_mode: QueueMode,
     pub tool_execution: ToolExecutionMode,
     pub default_thinking_level: Option<ThinkingLevel>,
-    /// Extra skill files or folders.
+    /// Skill files or folders the settings list, the project's before the user's.
+    /// [`Settings::load`] resolves each against its own file's folder.
     pub skills: Vec<PathBuf>,
-    /// Extra prompt template files or folders.
+    /// Prompt template files or folders the settings list, kept as `skills` are.
     pub prompts: Vec<PathBuf>,
     /// Text added to the system prompt, in place of `APPEND_SYSTEM.md`.
     pub append_system_prompt: Option<String>,
@@ -108,40 +110,89 @@ fn read_json(path: &Path) -> io::Result<Option<Value>> {
     }
 }
 
-/// `merged` with the settings file at `path` over it, and the settings they give.
-fn overlay(merged: &Value, path: &Path, is_project: bool) -> io::Result<Option<(Value, Settings)>> {
+/// The skill and prompt template paths one settings file lists.
+#[derive(Default)]
+struct ListedPaths {
+    skills: Vec<PathBuf>,
+    prompts: Vec<PathBuf>,
+}
+
+/// `merged` with the settings file at `path` over it, the settings they give, and the
+/// paths the file lists, which do not replace the other file's.
+fn overlay(
+    merged: &Value,
+    path: &Path,
+    is_project: bool,
+) -> io::Result<Option<(Value, Settings, ListedPaths)>> {
     let Some(mut value) = read_json(path)? else {
         return Ok(None);
     };
-    if is_project && let Some(object) = value.as_object_mut() {
-        // A project cannot decide how far it is trusted.
-        object.remove("defaultProjectTrust");
+    let mut listed = ListedPaths::default();
+    if let Some(object) = value.as_object_mut() {
+        if is_project {
+            // A project cannot decide how far it is trusted.
+            object.remove("defaultProjectTrust");
+        }
+        let folder = path.parent().unwrap_or(Path::new(""));
+        listed.skills = take_listed(object, "skills", folder)?;
+        listed.prompts = take_listed(object, "prompts", folder)?;
     }
     let mut next = merged.clone();
     merge_json(&mut next, value);
     let settings = Settings::deserialize(&next)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok(Some((next, settings)))
+    Ok(Some((next, settings, listed)))
+}
+
+/// The paths a settings file lists under `key`, taken out of it and resolved against
+/// `folder`, the file's own.
+fn take_listed(
+    object: &mut Map<String, Value>,
+    key: &str,
+    folder: &Path,
+) -> io::Result<Vec<PathBuf>> {
+    let Some(value) = object.remove(key) else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<String> = serde_json::from_value(value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{key}: {error}")))?;
+    Ok(entries
+        .iter()
+        .map(|entry| resolve_to_cwd(entry.trim(), folder))
+        .collect())
 }
 
 impl Settings {
     /// Load user settings overlaid with project settings. Missing and empty files are
     /// skipped. A file that cannot be read, does not parse or holds a value of the wrong
     /// type is left out and returned with its error.
+    ///
+    /// The skills and prompt templates the files list are kept from both, the
+    /// project's first, as Pi's resource loader takes them. Each path is resolved as
+    /// Pi resolves it: `~` is the home folder, and a relative path is relative to the
+    /// folder of the file that lists it.
     pub fn load(user: Option<&Path>, project: Option<&Path>) -> (Self, Vec<SettingsError>) {
         let mut settings = Settings::default();
         let mut merged = serde_json::to_value(&settings).expect("settings serialize");
         let mut errors = Vec::new();
+        let mut listed = Vec::new();
         for (path, is_project) in [(user, false), (project, true)] {
             let Some(path) = path else { continue };
             match overlay(&merged, path, is_project) {
-                Ok(Some((next, loaded))) => (merged, settings) = (next, loaded),
+                Ok(Some((next, loaded, paths))) => {
+                    (merged, settings) = (next, loaded);
+                    listed.push(paths);
+                }
                 Ok(None) => {}
                 Err(error) => errors.push(SettingsError {
                     path: path.to_path_buf(),
                     error,
                 }),
             }
+        }
+        for paths in listed.into_iter().rev() {
+            settings.skills.extend(paths.skills);
+            settings.prompts.extend(paths.prompts);
         }
         (settings, errors)
     }
@@ -208,6 +259,46 @@ mod tests {
         assert_eq!(settings.default_project_trust, DefaultProjectTrust::Never);
         let (settings, _) = Settings::load(None, Some(&project));
         assert_eq!(settings.default_project_trust, DefaultProjectTrust::Ask);
+    }
+
+    #[test]
+    fn listed_paths_resolve_against_their_own_file_and_both_files_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("agent/settings.json");
+        let project = dir.path().join("repo/.maple/settings.json");
+        fs::create_dir_all(user.parent().unwrap()).unwrap();
+        fs::create_dir_all(project.parent().unwrap()).unwrap();
+        fs::write(
+            &user,
+            json!({ "skills": ["~/shared-skills", "mine"], "prompts": ["prompts/../more"] })
+                .to_string(),
+        )
+        .unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        fs::write(
+            &project,
+            json!({ "skills": [" team ", elsewhere] }).to_string(),
+        )
+        .unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert!(errors.is_empty());
+        let home = std::env::home_dir().unwrap();
+        assert_eq!(
+            settings.skills,
+            [
+                dir.path().join("repo/.maple/team"),
+                elsewhere,
+                home.join("shared-skills"),
+                dir.path().join("agent/mine"),
+            ]
+        );
+        assert_eq!(settings.prompts, [dir.path().join("agent/more")]);
+
+        // A list that is not paths leaves out its file, as any wrong type does.
+        fs::write(&project, json!({ "prompts": [5] }).to_string()).unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(settings.prompts, [dir.path().join("agent/more")]);
     }
 
     #[test]
