@@ -756,6 +756,12 @@ fn apply_chunk(
     let Some(choice) = event.pointer("/choices/0") else {
         return;
     };
+    // Moonshot reports usage in the choice instead.
+    if event.get("usage").is_none_or(|usage| !is_set(usage))
+        && let Some(reported) = choice.get("usage").filter(|usage| usage.is_object())
+    {
+        builder.set_usage(parse_usage(model, reported));
+    }
     if let Some(delta) = choice.get("delta") {
         // Servers name the reasoning field differently, and some fill in two of them.
         if let Some((field, text)) = REASONING_FIELDS.iter().find_map(|field| {
@@ -860,27 +866,26 @@ fn tool_call_id(builder: &AssistantMessageBuilder, index: usize) -> Option<&str>
     }
 }
 
-/// Reported usage, priced with the model's costs.
+/// Reported usage, priced with the model's costs. OpenAI and OpenRouter report cache
+/// hits in `prompt_tokens_details`, DeepSeek as `prompt_cache_hit_tokens` and Kimi at the
+/// top; OpenRouter reports cache writes beside its hits. Both are part of the prompt.
 fn parse_usage(model: &Model, reported: &Value) -> Usage {
-    let number = |pointer: &str| {
-        reported
-            .pointer(pointer)
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-    };
-    let prompt = number("/prompt_tokens");
-    let completion = number("/completion_tokens");
-    let cached = number("/prompt_tokens_details/cached_tokens").min(prompt);
-    let reasoning = reported
-        .pointer("/completion_tokens_details/reasoning_tokens")
-        .and_then(Value::as_u64);
+    let number = |pointer: &str| reported.pointer(pointer).and_then(Value::as_u64);
+    let prompt = number("/prompt_tokens").unwrap_or(0);
+    let output = number("/completion_tokens").unwrap_or(0);
+    let cache_read = number("/prompt_tokens_details/cached_tokens")
+        .or_else(|| number("/prompt_cache_hit_tokens"))
+        .or_else(|| number("/cached_tokens"))
+        .unwrap_or(0);
+    let cache_write = number("/prompt_tokens_details/cache_write_tokens").unwrap_or(0);
+    let input = prompt.saturating_sub(cache_read + cache_write);
     let mut usage = Usage {
-        input: prompt - cached,
-        output: completion,
-        cache_read: cached,
-        cache_write: 0,
-        reasoning,
-        total_tokens: prompt + completion,
+        input,
+        output,
+        cache_read,
+        cache_write,
+        reasoning: number("/completion_tokens_details/reasoning_tokens"),
+        total_tokens: input + output + cache_read + cache_write,
         ..Usage::default()
     };
     model.apply_cost(&mut usage);
@@ -1367,6 +1372,53 @@ mod tests {
             .stream(&model(), Context::default(), StreamOptions::default())
             .result()
             .await
+    }
+
+    #[tokio::test]
+    async fn usage_reads_each_servers_cache_fields() {
+        let mut model = model();
+        model.cost.cache_read = 0.5;
+        model.cost.cache_write = 4.0;
+        let usage_of = |chunk: &'static str| {
+            let transport = transport(200, vec![chunk]);
+            let model = model.clone();
+            async move {
+                OpenAiCompletions::new(transport)
+                    .stream(&model, Context::default(), StreamOptions::default())
+                    .result()
+                    .await
+                    .usage
+            }
+        };
+        let deepseek = usage_of(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_cache_hit_tokens\":60,\"prompt_cache_miss_tokens\":40}}\n\n",
+        )
+        .await;
+        assert_eq!((deepseek.input, deepseek.cache_read), (40, 60));
+        let kimi = usage_of(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"cached_tokens\":30}}\n\n",
+        )
+        .await;
+        assert_eq!((kimi.input, kimi.cache_read), (70, 30));
+        let openrouter = usage_of(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_tokens_details\":{\"cached_tokens\":20,\"cache_write_tokens\":50}}}\n\n",
+        )
+        .await;
+        assert_eq!(
+            (
+                openrouter.input,
+                openrouter.cache_read,
+                openrouter.cache_write,
+                openrouter.total_tokens
+            ),
+            (30, 20, 50, 110)
+        );
+        assert_eq!(openrouter.cost.cache_write, 4.0 * 50.0 / 1_000_000.0);
+        let moonshot = usage_of(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}]}\n\n",
+        )
+        .await;
+        assert_eq!((moonshot.input, moonshot.output), (12, 3));
     }
 
     #[tokio::test]
