@@ -4,6 +4,7 @@
 //! [`HttpTransport`] and turns the server-sent events into an assistant stream. The
 //! transport is the host's: a plain HTTP client, an in-process proxy or a test double.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -410,7 +411,8 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
     } else {
         collapse_system_messages(context)
     };
-    let system_role = if model.compat.supports_developer_role {
+    // Reasoning models take the system prompt as developer instructions.
+    let system_role = if model.reasoning && model.compat.supports_developer_role {
         "developer"
     } else {
         "system"
@@ -432,10 +434,12 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                     out.push(json!({ "role": system_role, "content": text }));
                 }
             }
-            Message::User(user) => out.push(json!({
-                "role": "user",
-                "content": user_content(model, &user.content),
-            })),
+            Message::User(user) => {
+                let content = user_content(model, &user.content);
+                if !content.is_empty() {
+                    out.push(json!({ "role": "user", "content": content }));
+                }
+            }
             Message::Assistant(assistant) => {
                 // A model gets its own reasoning back, in the field it came in. Another
                 // model's reasoning goes back as plain text.
@@ -447,7 +451,9 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                 let mut reasoning_field = None;
                 for block in &assistant.content {
                     match block {
-                        AssistantContent::Text(text) => text_parts.push(text.text.as_str()),
+                        AssistantContent::Text(text) if !text.text.trim().is_empty() => {
+                            text_parts.push(text.text.as_str())
+                        }
                         AssistantContent::Thinking(thinking)
                             if !thinking.redacted && !thinking.thinking.trim().is_empty() =>
                         {
@@ -462,7 +468,8 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                         _ => {}
                     }
                 }
-                let text = text_parts.join("\n");
+                // The blocks are pieces of one reply, so they join without a separator.
+                let text = text_parts.concat();
                 let calls: Vec<Value> = assistant
                     .tool_calls()
                     .map(|call| {
@@ -491,18 +498,18 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                 out.push(entry);
             }
             Message::ToolResult(result) => {
-                let text = crate::types::content_text(&result.content);
-                let has_images = result
-                    .content
+                let content = downgrade_images(model, &result.content, TOOL_IMAGE_PLACEHOLDER);
+                let text = crate::types::content_text(&content);
+                let has_images = content
                     .iter()
                     .any(|block| matches!(block, Content::Image(_)));
-                if has_images && model.supports_images() {
-                    images_from_tools.extend(result.content.iter().filter_map(image_part));
+                if has_images {
+                    images_from_tools.extend(content.iter().filter_map(image_part));
                 }
                 let text = match (text.is_empty(), has_images) {
                     (false, _) => text,
                     (true, true) => "(see attached image)".to_string(),
-                    (true, false) => "(no output)".to_string(),
+                    (true, false) => "(no tool output)".to_string(),
                 };
                 out.push(json!({
                     "role": "tool",
@@ -536,24 +543,49 @@ fn image_part(block: &Content) -> Option<Value> {
     }
 }
 
-fn user_content(model: &Model, content: &[Content]) -> Value {
-    if content
+/// The parts of a user message. Empty text is left out; a message left with no parts is
+/// not sent.
+fn user_content(model: &Model, content: &[Content]) -> Vec<Value> {
+    downgrade_images(model, content, USER_IMAGE_PLACEHOLDER)
         .iter()
-        .all(|block| matches!(block, Content::Text(_)))
-    {
-        return json!(crate::types::content_text(content));
-    }
-    let parts: Vec<Value> = content
-        .iter()
-        .map(|block| match block {
-            Content::Text(text) => json!({ "type": "text", "text": text.text }),
-            Content::Image(_) if !model.supports_images() => {
-                json!({ "type": "text", "text": "(image omitted: this model does not accept images)" })
-            }
-            Content::Image(_) => image_part(block).unwrap_or(Value::Null),
+        .filter_map(|block| match block {
+            Content::Text(text) if text.text.is_empty() => None,
+            Content::Text(text) => Some(json!({ "type": "text", "text": text.text })),
+            Content::Image(_) => image_part(block),
         })
-        .collect();
-    Value::Array(parts)
+        .collect()
+}
+
+const USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
+const TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: model does not support images)";
+
+/// `content` for a model without image input: each run of images is replaced by one
+/// placeholder, where the images were.
+fn downgrade_images<'a>(
+    model: &Model,
+    content: &'a [Content],
+    placeholder: &str,
+) -> Cow<'a, [Content]> {
+    if model.supports_images() {
+        return Cow::Borrowed(content);
+    }
+    let mut downgraded = Vec::with_capacity(content.len());
+    let mut after_placeholder = false;
+    for block in content {
+        match block {
+            Content::Image(_) => {
+                if !after_placeholder {
+                    downgraded.push(Content::text(placeholder));
+                }
+                after_placeholder = true;
+            }
+            Content::Text(text) => {
+                after_placeholder = text.text == placeholder;
+                downgraded.push(block.clone());
+            }
+        }
+    }
+    Cow::Owned(downgraded)
 }
 
 /// The message for a stream that ends, at `[DONE]` or not, without a finish reason.
@@ -1007,7 +1039,7 @@ mod tests {
         );
         assert_eq!(
             body["messages"][1],
-            json!({ "role": "user", "content": "hi" })
+            json!({ "role": "user", "content": [{ "type": "text", "text": "hi" }] })
         );
     }
 
@@ -1520,8 +1552,106 @@ mod tests {
             Message::Assistant(earlier),
         ]);
         let messages = convert_messages(&model, &context);
-        assert_eq!(messages[1]["content"], "plan\nanswer");
+        // Text blocks join without a separator.
+        assert_eq!(messages[1]["content"], "plananswer");
         assert!(messages[1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn the_developer_role_is_for_reasoning_models() {
+        let mut model = model();
+        model.compat.supports_developer_role = true;
+        let context = Context::new("sys", vec![], vec![Message::User(UserMessage::text("hi"))]);
+        assert_eq!(convert_messages(&model, &context)[0]["role"], "developer");
+        model.reasoning = false;
+        assert_eq!(convert_messages(&model, &context)[0]["role"], "system");
+    }
+
+    fn tool_exchange(results: Vec<Vec<Content>>) -> Vec<Message> {
+        let model = model();
+        let mut call = AssistantMessage::empty(&model);
+        call.content = (0..results.len())
+            .map(|index| AssistantContent::tool_call(format!("c{index}"), "read", json!({})))
+            .collect();
+        let mut messages = vec![Message::User(UserMessage::text("look")), call.into()];
+        for (index, content) in results.into_iter().enumerate() {
+            messages.push(Message::ToolResult(ToolResultMessage {
+                tool_call_id: format!("c{index}"),
+                tool_name: "read".into(),
+                content,
+                details: None,
+                usage: None,
+                is_error: false,
+                timestamp: 0,
+            }));
+        }
+        messages
+    }
+
+    #[test]
+    fn a_model_without_image_input_gets_placeholders_where_the_images_were() {
+        let mut model = model();
+        model.input = vec![crate::types::InputModality::Text];
+        let image = || Content::image("AAAA", "image/png");
+        let mut messages = vec![Message::User(UserMessage {
+            content: vec![
+                Content::text("compare"),
+                image(),
+                image(),
+                Content::text("and"),
+                image(),
+            ],
+            timestamp: 0,
+        })];
+        messages.extend(tool_exchange(vec![
+            vec![Content::text("shot"), image()],
+            vec![image()],
+        ]));
+        let messages = convert_messages(&model, &Context::from_messages(messages));
+        let user = "(image omitted: model does not support images)";
+        assert_eq!(
+            messages[0]["content"],
+            json!([
+                { "type": "text", "text": "compare" },
+                { "type": "text", "text": user },
+                { "type": "text", "text": "and" },
+                { "type": "text", "text": user },
+            ])
+        );
+        let tool = "(tool image omitted: model does not support images)";
+        assert_eq!(messages[3]["content"], format!("shot\n{tool}"));
+        assert_eq!(messages[4]["content"], tool);
+        // Nothing is attached after the results.
+        assert_eq!(messages.len(), 5);
+    }
+
+    #[test]
+    fn blank_text_is_left_out() {
+        let model = model();
+        let mut reply = AssistantMessage::empty(&model);
+        reply.content = vec![
+            AssistantContent::text("a"),
+            AssistantContent::text(" \n"),
+            AssistantContent::text("b"),
+        ];
+        let mut messages = vec![
+            Message::User(UserMessage {
+                content: vec![Content::text(""), Content::image("AAAA", "image/png")],
+                timestamp: 0,
+            }),
+            reply.into(),
+            Message::User(UserMessage::text("")),
+        ];
+        messages.extend(tool_exchange(vec![vec![Content::text("")]]));
+        let messages = convert_messages(&model, &Context::from_messages(messages));
+        assert_eq!(
+            messages[0]["content"],
+            json!([{ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }])
+        );
+        assert_eq!(messages[1]["content"], "ab");
+        // A user message with nothing in it is not sent.
+        assert_eq!(messages[2]["content"][0]["text"], "look");
+        assert_eq!(messages[4]["content"], "(no tool output)");
     }
 
     #[test]
