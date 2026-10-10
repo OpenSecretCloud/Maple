@@ -79,7 +79,17 @@ function rememberHandledDeepLink(url: string): void {
 
 function wasDeepLinkHandled(url: string): boolean {
   const key = deepLinkKey(url);
-  return key !== null && (deepLinksHandledThisPage.has(key) || readHandledDeepLinks().includes(key));
+  return (
+    key !== null && (deepLinksHandledThisPage.has(key) || readHandledDeepLinks().includes(key))
+  );
+}
+
+function navigatePaymentReturn(destination: string): void {
+  // If replay storage is unavailable, the launch URL is read after every
+  // reload. Once at its destination, avoid starting another reload.
+  if (`${window.location.pathname}${window.location.search}` !== destination) {
+    window.location.href = destination;
+  }
 }
 
 export function DeepLinkHandler({
@@ -144,7 +154,10 @@ export function DeepLinkHandler({
               const callbackScheme = `${nativeCallbackScheme(appVariant)}:`;
               // The dev app owns only its dev scheme, including payment returns.
               if (appVariant === "dev" && urlObj.protocol !== callbackScheme) return;
-              if (appVariant === "production" && urlObj.protocol === `${nativeCallbackScheme("dev")}:`) {
+              if (
+                appVariant === "production" &&
+                urlObj.protocol === `${nativeCallbackScheme("dev")}:`
+              ) {
                 return;
               }
               // The URL path structure will be: cloud.opensecret.maple://path?params
@@ -246,17 +259,17 @@ export function DeepLinkHandler({
                 if (isCreditSuccess) {
                   // Keep the established root callback contract; the home route bridges it into
                   // the dedicated API credits settings page.
-                  window.location.href = "/?credits_success=true";
+                  navigatePaymentReturn("/?credits_success=true");
                 } else if (isSuccess) {
                   // Navigate to the success page or show a success message
-                  window.location.href = "/pricing?success=true";
+                  navigatePaymentReturn("/pricing?success=true");
                 } else if (isCanceled) {
                   // Navigate to the canceled page or show a canceled message
-                  window.location.href = "/pricing?canceled=true";
+                  navigatePaymentReturn("/pricing?canceled=true");
                 } else {
                   // Handle unknown payment status
                   console.warn("[Deep Link] Unknown payment status in callback");
-                  window.location.href = "/pricing";
+                  navigatePaymentReturn("/pricing");
                 }
               } else {
                 console.warn("[Deep Link] Unknown deep link type:", firstPathPart);

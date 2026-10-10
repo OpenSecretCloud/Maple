@@ -716,6 +716,42 @@ describe("DeepLinkHandler launch links", () => {
     expect(location.href).toBe("tauri://localhost/");
   });
 
+  test("the same live link works again after navigating away", async () => {
+    const url = "cloud.opensecret.maple://payment-canceled?case=repeat";
+    await render();
+    await flushDeepLink(url);
+    expect(location.href).toBe("/pricing?canceled=true");
+    location.href = "tauri://localhost/";
+    await flushDeepLink(url);
+    expect(location.href).toBe("/pricing?canceled=true");
+  });
+
+  test("does not reload its payment destination when replay storage is unavailable", async () => {
+    const url = "cloud.opensecret.maple://payment-canceled?case=storage-failure";
+    storage.setItem = () => {
+      throw new Error("storage unavailable");
+    };
+    launchUrls = async () => [url];
+    await render();
+    expect(location.href).toBe("/pricing?canceled=true");
+    act(() => renderer?.unmount());
+    renderer = null;
+    const reloadedLocation = {
+      pathname: "/pricing",
+      search: "?canceled=true",
+      href: "tauri://localhost/pricing?canceled=true"
+    };
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { sessionStorage: storage, location: reloadedLocation },
+      writable: true
+    });
+    // An unremembered delivery represents a new page after a failed write.
+    launchUrls = async () => [url + "&delivery=reload"];
+    await render();
+    expect(reloadedLocation.href).toBe("tauri://localhost/pricing?canceled=true");
+  });
+
   test("never stores an auth grant", async () => {
     await render();
     await flushDeepLink(`cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`);
