@@ -181,6 +181,8 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                     self.assertEqual(job["permissions"], {
                         "contents": "read", "attestations": "read",
                     })
+                elif name == "changes":
+                    self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
                 else:
                     self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
                 if name != "macos":
@@ -191,6 +193,12 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                             self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
                             if name == "verify-linux":
                                 self.assertIn(self.MASTER_GUARD, " ".join(step["if"].split()))
+                        elif name == "changes" and step.get("id") == "master":
+                            self.assertEqual(step["if"],
+                                             "${{ github.repository == 'MaplePrivacyLabs/Maple' && "
+                                             "github.ref == 'refs/heads/master' && github.event_name == 'push' }}")
+                            self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
+                            self.assertIn("agent_master_selection.py", step["run"])
                         else:
                             for value in strings(step):
                                 self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
@@ -237,19 +245,24 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                       if "./scripts/verify-release.sh" in step.get("run", ""))
         self.assertIn("--unsigned", verify["run"])
 
-    def test_master_and_manual_packaging_do_not_depend_on_available_diff_history(self):
+    def test_master_selection_and_manual_force_fall_back_to_building(self):
         classify = next(step for step in workflow(self.WORKFLOW)["jobs"]["changes"]["steps"]
                         if step.get("id") == "classify")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "outputs"
-            for event in ("push", "workflow_dispatch"):
-                with self.subTest(event=event):
+            for event, selected, expected in (
+                ("push", "", "true"), ("push", "true", "true"),
+                ("push", "unknown", "true"), ("push", "false", "false"),
+                ("workflow_dispatch", "", "true"), ("workflow_dispatch", "false", "true"),
+            ):
+                with self.subTest(event=event, selected=selected):
                     output.unlink(missing_ok=True)
                     subprocess.run(["bash", "-c", classify["run"]], check=True,
                                    capture_output=True, cwd=directory,
                                    env={**os.environ, "GITHUB_EVENT_NAME": event,
-                                        "GITHUB_OUTPUT": str(output), "BASE_SHA": "", "HEAD_SHA": ""})
-                    self.assertEqual(output.read_text(), "agent=true\n")
+                                        "GITHUB_OUTPUT": str(output), "BASE_SHA": "", "HEAD_SHA": "",
+                                        "MASTER_AGENT": selected})
+                    self.assertEqual(output.read_text(), f"agent={expected}\n")
 
     def test_profiles_and_artifacts_keep_platform_variant_and_run_identity(self):
         jobs = workflow(self.WORKFLOW)["jobs"]

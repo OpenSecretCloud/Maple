@@ -28,6 +28,7 @@ SHARED_INPUTS = frozenset(
         ".github/workflows/agent-ci.yml",
         ".github/workflows/agent-desktop-build.yml",
         "scripts/ci/agent_change_detection.py",
+        "scripts/ci/agent_master_selection.py",
         "scripts/ci/change_detection.py",
         "scripts/ci/verify-agent-rust-deps.py",
         "scripts/ci/apple-toolchain.json",

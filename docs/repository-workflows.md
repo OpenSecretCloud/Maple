@@ -36,6 +36,11 @@ its table-driven tests when the dependency graph or component layout changes.
 The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
 same checkout. Backend changes do not imply Research or Agent packaging.
+Agent desktop packages compare master against the last successful ancestor run
+with all four Dev/Prod macOS/Linux download verifiers completed; selector-only
+and failed runs do not consume outstanding changes. Unrelated master pushes skip
+Agent packages. Manual master dispatch always builds both profiles. PR previews
+keep their merge-base selection and signing stays confined to trusted master.
 The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
 same-repository PRs changing measured inputs without editing PCR approvals;
 these diagnostic builds do not publish an artifact. It compares measurements
