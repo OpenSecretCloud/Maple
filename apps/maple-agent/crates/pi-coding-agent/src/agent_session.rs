@@ -42,7 +42,7 @@ use crate::extensions::{
     RegisteredTool, SessionBeforeCompact, SessionBeforeFork, SessionBeforeTree, SessionCompact,
     SessionInfoChanged, SessionShutdown, SessionStart, SessionStartReason, SessionTree,
     SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt,
-    ToolResult,
+    ToolResult, TreePreparation, TreeSummary,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -229,6 +229,29 @@ pub enum Delivery {
     FollowUp,
     /// Send it with the next prompt.
     NextTurn,
+}
+
+/// How [`AgentSession::navigate_tree`] moves, as Pi's `navigateTree` options say.
+#[derive(Clone, Debug, Default)]
+pub struct TreeNavigation {
+    /// Summarize the branch being left.
+    pub summarize: bool,
+    /// Instructions for that summary, added to the default ones.
+    pub custom_instructions: Option<String>,
+    /// The custom instructions replace the default ones instead.
+    pub replace_instructions: bool,
+    /// A label for the summary, or for the target when there is none.
+    pub label: Option<String>,
+}
+
+/// Where a move in the tree left the session.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TreeMove {
+    /// The text of the user or custom message moved to, for the editor: the session now
+    /// stands before it, so sending it again starts another branch there.
+    pub editor_text: Option<String>,
+    /// The summary of the branch left, when one was written.
+    pub summary_entry: Option<SessionEntry>,
 }
 
 /// Token totals of a session.
@@ -792,21 +815,20 @@ impl AgentSession {
             .await
     }
 
-    /// Move to another point of the tree, optionally summarizing the branch being left.
+    /// Move to another point of the tree, as Pi's `navigateTree` does: optionally
+    /// summarizing the branch being left, and standing before a user or custom message
+    /// moved to, whose text comes back to be edited. The target branch's tools become
+    /// the active ones. Extensions can cancel the move or change how it goes.
     pub async fn navigate_tree(
         &self,
         target_id: &str,
-        summarize: bool,
-        custom_instructions: Option<&str>,
-    ) -> Result<(), AgentSessionError> {
+        options: TreeNavigation,
+    ) -> Result<TreeMove, AgentSessionError> {
         let _maintenance = self
             .core
             .begin(Activity::Maintenance)
             .ok_or(AgentSessionError::Busy)?;
-        self.core
-            .clone()
-            .navigate_tree(target_id, summarize, custom_instructions)
-            .await
+        self.core.clone().navigate_tree(target_id, options).await
     }
 
     /// Continue in a new session holding only the path to `entry_id`, as Pi's `fork` does.
@@ -2085,33 +2107,82 @@ impl SessionCore {
     async fn navigate_tree(
         self: Arc<Self>,
         target_id: &str,
-        summarize: bool,
-        custom_instructions: Option<&str>,
-    ) -> Result<(), AgentSessionError> {
-        let (old_leaf, abandoned) = {
+        options: TreeNavigation,
+    ) -> Result<TreeMove, AgentSessionError> {
+        let (old_leaf, common_ancestor, abandoned) = {
             let session = lock(&self.session);
             if session.entry(target_id).is_none() {
                 return Err(SessionError::NotFound(target_id.into()).into());
             }
+            let old_leaf = session.leaf_id().map(str::to_string);
+            if old_leaf.as_deref() == Some(target_id) {
+                return Ok(TreeMove::default());
+            }
+            // As Pi collects them: the branch left, back to the deepest entry both
+            // positions share.
             let target_path: Vec<String> = session
                 .branch_to(target_id)
                 .iter()
                 .map(|entry| entry.id.clone())
                 .collect();
-            let abandoned: Vec<_> = session
-                .branch()
+            let branch = session.branch();
+            let common_ancestor = branch
+                .iter()
+                .rev()
+                .find(|entry| target_path.contains(&entry.id))
+                .map(|entry| entry.id.clone());
+            let abandoned: Vec<SessionEntry> = branch
                 .into_iter()
                 .filter(|entry| !target_path.contains(&entry.id))
                 .cloned()
                 .collect();
-            (session.leaf_id().map(str::to_string), abandoned)
+            (old_leaf, common_ancestor, abandoned)
         };
+        if options.summarize && self.model().is_none() {
+            return Err(AgentSessionError::NoModel);
+        }
+        // Registered so that stopping the session stops a summary too, the extensions'
+        // included.
+        let cancel = CancellationToken::new();
+        lock(&self.run).branch_summary_cancel = Some(cancel.clone());
+        let result = self
+            .move_in_tree(
+                target_id,
+                options,
+                old_leaf,
+                common_ancestor,
+                abandoned,
+                &cancel,
+            )
+            .await;
+        lock(&self.run).branch_summary_cancel = None;
+        result
+    }
+
+    async fn move_in_tree(
+        &self,
+        target_id: &str,
+        options: TreeNavigation,
+        old_leaf: Option<String>,
+        common_ancestor: Option<String>,
+        abandoned: Vec<SessionEntry>,
+        cancel: &CancellationToken,
+    ) -> Result<TreeMove, AgentSessionError> {
         let before = self
             .runner
             .before_tree(
                 SessionBeforeTree {
-                    target_id: target_id.to_string(),
-                    old_leaf_id: old_leaf.clone(),
+                    preparation: TreePreparation {
+                        target_id: target_id.to_string(),
+                        old_leaf_id: old_leaf.clone(),
+                        common_ancestor_id: common_ancestor,
+                        entries_to_summarize: abandoned.clone(),
+                        user_wants_summary: options.summarize,
+                        custom_instructions: options.custom_instructions.clone(),
+                        replace_instructions: options.replace_instructions,
+                        label: options.label.clone(),
+                    },
+                    signal: cancel.clone(),
                 },
                 &self.weak,
             )
@@ -2119,15 +2190,18 @@ impl SessionCore {
         if before.cancel {
             return Err(AgentSessionError::Cancelled);
         }
-        let summary = match before.summary {
-            Some(summary) => Some((summary, None, None, true)),
-            None if summarize && !abandoned.is_empty() => {
+        let custom_instructions = before.custom_instructions.or(options.custom_instructions);
+        let replace_instructions = before
+            .replace_instructions
+            .unwrap_or(options.replace_instructions);
+        let label = before.label.or(options.label);
+
+        let summary = match before.summary.filter(|_| options.summarize) {
+            Some(summary) => Some((summary, true)),
+            None if options.summarize && !abandoned.is_empty() => {
                 let model = self.model().ok_or(AgentSessionError::NoModel)?;
                 let settings = lock(&self.settings).clone();
                 let stream_fn = self.models.stream_fn();
-                // Registered so that stopping the session stops the summary too.
-                let cancel = CancellationToken::new();
-                lock(&self.run).branch_summary_cancel = Some(cancel.clone());
                 let summarizer = Summarizer {
                     model: &model,
                     stream_fn: &*stream_fn,
@@ -2153,10 +2227,10 @@ impl SessionCore {
                     &summarizer,
                     &settings.compaction,
                     budget,
-                    custom_instructions,
+                    custom_instructions.as_deref(),
+                    replace_instructions,
                 )
                 .await;
-                lock(&self.run).branch_summary_cancel = None;
                 // A stopped summary leaves the session where it was.
                 if cancel.is_cancelled() {
                     return Err(AgentSessionError::Cancelled);
@@ -2166,40 +2240,102 @@ impl SessionCore {
                     "readFiles": result.read_files,
                     "modifiedFiles": result.modified_files,
                 });
-                Some((result.summary, Some(details), Some(result.usage), false))
+                Some((
+                    TreeSummary {
+                        summary: result.summary,
+                        details: Some(details),
+                        usage: Some(result.usage),
+                    },
+                    false,
+                ))
             }
             None => None,
         };
-        let summary_entry_id = {
+        if cancel.is_cancelled() {
+            return Err(AgentSessionError::Cancelled);
+        }
+
+        let (summary_entry, from_extension, editor_text) = {
             let mut session = lock(&self.session);
-            match summary {
-                Some((text, details, usage, from_extension)) => Some(session.branch_with_summary(
-                    Some(target_id),
-                    text,
-                    details,
-                    usage,
-                    from_extension,
-                )?),
-                None => {
-                    session.set_leaf(target_id)?;
-                    None
+            let target = session
+                .entry(target_id)
+                .ok_or_else(|| SessionError::NotFound(target_id.into()))?;
+            // As in Pi: moving to a user or custom message stands before it, with its text
+            // for the editor; anything else becomes the leaf.
+            let (new_leaf, editor_text) = match &target.kind {
+                EntryKind::Message {
+                    message: SessionMessage::Llm(Message::User(user)),
+                } => (target.parent_id.clone(), Some(content_text(&user.content))),
+                EntryKind::CustomMessage { content, .. } => {
+                    (target.parent_id.clone(), Some(content_text(content)))
                 }
-            }
+                _ => (Some(target.id.clone()), None),
+            };
+            let (summary_entry, from_extension) = match summary {
+                Some((summary, from_extension)) => {
+                    let id = session.branch_with_summary(
+                        new_leaf.as_deref(),
+                        summary.summary,
+                        summary.details,
+                        summary.usage,
+                        from_extension,
+                    )?;
+                    if let Some(label) = &label {
+                        session.append_label(&id, Some(label.clone()))?;
+                    }
+                    (session.entry(&id).cloned(), Some(from_extension))
+                }
+                None => {
+                    match &new_leaf {
+                        Some(leaf) => session.set_leaf(leaf)?,
+                        None => session.reset_leaf(),
+                    }
+                    if let Some(label) = &label {
+                        session.append_label(target_id, Some(label.clone()))?;
+                    }
+                    (None, None)
+                }
+            };
+            (summary_entry, from_extension, editor_text)
         };
         self.report_persistence();
         self.rebuild_messages();
+        self.restore_tools_from_transcript();
         let new_leaf = lock(&self.session).leaf_id().map(str::to_string);
         self.runner
             .emit(
                 &SessionTree {
                     new_leaf_id: new_leaf,
                     old_leaf_id: old_leaf,
-                    summary_entry_id,
+                    summary_entry: summary_entry.clone(),
+                    from_extension,
                 },
                 &self.weak,
             )
             .await;
-        Ok(())
+        Ok(TreeMove {
+            editor_text,
+            summary_entry,
+        })
+    }
+
+    /// Make the tools the transcript declares the active ones, as Pi does after a move in
+    /// the tree; a transcript that declares none leaves them as they are.
+    fn restore_tools_from_transcript(&self) {
+        let declared = self.agent.with_messages(|messages| {
+            current_system_message(messages.iter().filter_map(AgentMessage::as_message)).map(
+                |system| {
+                    system
+                        .tools_added
+                        .iter()
+                        .map(|tool| tool.name.clone())
+                        .collect::<Vec<_>>()
+                },
+            )
+        });
+        if let Some(names) = declared {
+            self.set_active_tools(&names);
+        }
     }
 
     /// As Pi's `setModel`: the settings' default level applies again, or else the current
@@ -2758,12 +2894,9 @@ impl CommandContext {
     pub async fn navigate_tree(
         &self,
         target_id: &str,
-        summarize: bool,
-        custom_instructions: Option<&str>,
-    ) -> Result<(), AgentSessionError> {
-        self.session()?
-            .navigate_tree(target_id, summarize, custom_instructions)
-            .await
+        options: TreeNavigation,
+    ) -> Result<TreeMove, AgentSessionError> {
+        self.session()?.navigate_tree(target_id, options).await
     }
 
     /// Fork the session, as Pi's `fork`, into `store`.

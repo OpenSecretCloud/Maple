@@ -13,15 +13,15 @@ use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
 use pi_coding_agent::compaction::estimate_tokens;
 use pi_coding_agent::extensions::{
-    BeforeForkResult, CustomMessageDraft, ForkPosition, Input, InputAction, ModelSelect,
-    SessionBeforeFork, SlashCommandSource, extension,
+    BeforeForkResult, BeforeTreeResult, CustomMessageDraft, ForkPosition, Input, InputAction,
+    ModelSelect, SessionBeforeFork, SessionBeforeTree, SlashCommandSource, extension,
 };
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources, Skill};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
 use pi_coding_agent::store::{JsonlStore, MemoryStore, SessionStore};
 use pi_coding_agent::{
     AgentSession, AgentSessionError, AgentSessionEvent, PromptOptions, PromptOutcome,
-    SessionMessage, StreamingBehavior,
+    SessionMessage, StreamingBehavior, TreeMove, TreeNavigation,
 };
 use serde_json::json;
 
@@ -221,6 +221,13 @@ async fn retries_give_up_after_the_budget() {
 }
 
 /// Two exchanges with long replies, so compaction has something to summarize.
+fn summarized() -> TreeNavigation {
+    TreeNavigation {
+        summarize: true,
+        ..TreeNavigation::default()
+    }
+}
+
 async fn with_history(harness: &Harness, session: &AgentSession) {
     for turn in 0..2 {
         harness
@@ -403,7 +410,7 @@ async fn compaction_thinks_at_the_sessions_level_and_a_branch_summary_does_not()
     harness
         .faux
         .push_text("## Goal\nexplored a second question");
-    session.navigate_tree(&target, true, None).await.unwrap();
+    session.navigate_tree(&target, summarized()).await.unwrap();
     let requests = harness.faux.requests();
     assert_eq!(requests.len(), 5);
     assert_eq!(requests[4].options.reasoning, None);
@@ -428,7 +435,7 @@ async fn navigating_the_tree_can_summarize_the_branch_left_behind() {
         .await
         .unwrap();
 
-    session.navigate_tree(&target, true, None).await.unwrap();
+    session.navigate_tree(&target, summarized()).await.unwrap();
     let messages = session.messages();
     assert_eq!(
         roles(&messages),
@@ -480,9 +487,123 @@ async fn a_branch_summary_fits_the_window_less_the_reserve() {
             .unwrap();
     }
 
-    session.navigate_tree(&target, true, None).await.unwrap();
+    session.navigate_tree(&target, summarized()).await.unwrap();
     let prompt = harness.sent_text(3);
     assert!(prompt.contains(&"a".repeat(100)) && prompt.contains(&"b".repeat(100)));
+}
+
+#[tokio::test]
+async fn moving_to_a_user_message_stands_before_it_as_in_pi() {
+    let harness = Harness::new();
+    harness.faux.push_text("first answer");
+    harness.faux.push_text("second answer");
+    harness.faux.push_text("third answer");
+    let session = harness
+        .session_with(|options| options.tools = vec![echo_tool(true)])
+        .await;
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    // The second branch runs without the tool.
+    session.set_active_tools(&[]);
+    session
+        .prompt("second", PromptOptions::default())
+        .await
+        .unwrap();
+    let find = |text: &str| {
+        session.with_session(|tree| {
+            tree.branch()
+                .iter()
+                .find(|entry| matches!(&entry.kind, EntryKind::Message { message } if message.text() == text))
+                .unwrap()
+                .id
+                .clone()
+        })
+    };
+    let (first_answer, second) = (find("first answer"), find("second"));
+
+    // Moving to the first answer brings back the tools that branch declared, as in Pi.
+    let moved = session
+        .navigate_tree(&first_answer, TreeNavigation::default())
+        .await
+        .unwrap();
+    assert_eq!(moved, TreeMove::default());
+    assert_eq!(session.active_tools(), ["echo"]);
+
+    let moved = session
+        .navigate_tree(
+            &second,
+            TreeNavigation {
+                label: Some("retry here".into()),
+                ..TreeNavigation::default()
+            },
+        )
+        .await
+        .unwrap();
+    // The message's text comes back for the editor, and the session stands before it.
+    assert_eq!(moved.editor_text.as_deref(), Some("second"));
+    assert_eq!(moved.summary_entry, None);
+    assert_eq!(last_assistant_text(&session), "first answer");
+    assert_eq!(
+        session.with_session(|tree| tree.label(&second).map(str::to_string)),
+        Some("retry here".into())
+    );
+    // Before the second prompt, the tool it was sent without is off again.
+    assert!(session.active_tools().is_empty());
+
+    // Sending again starts a branch there, with no two user messages in a row.
+    session
+        .prompt("second, again", PromptOptions::default())
+        .await
+        .unwrap();
+    let roles = roles(&session.messages());
+    assert!(
+        !roles.windows(2).any(|pair| pair == ["user", "user"]),
+        "{roles:?}"
+    );
+}
+
+#[tokio::test]
+async fn extensions_change_how_a_tree_move_goes() {
+    let harness = Harness::new();
+    let tree = extension("tree", |api| {
+        api.on(|event: SessionBeforeTree, _ctx| async move {
+            assert!(event.preparation.user_wants_summary);
+            assert!(!event.preparation.entries_to_summarize.is_empty());
+            Ok(BeforeTreeResult {
+                custom_instructions: Some("Only list the decisions.".into()),
+                replace_instructions: Some(true),
+                label: Some("decided".into()),
+                ..BeforeTreeResult::default()
+            })
+        });
+    });
+    let session = harness.session_with_extensions(vec![tree]).await;
+    harness.faux.push_text("first answer");
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    let target = session.with_session(|tree| tree.leaf_id().unwrap().to_string());
+    harness.faux.push_text("second answer");
+    session
+        .prompt("second", PromptOptions::default())
+        .await
+        .unwrap();
+    harness.faux.push_text("- decided things");
+
+    let moved = session.navigate_tree(&target, summarized()).await.unwrap();
+    // The handler's instructions replace the default ones, and its label goes on the
+    // summary, as in Pi.
+    let prompt = harness.sent_text(2);
+    assert!(prompt.ends_with("Only list the decisions."), "{prompt}");
+    assert!(!prompt.contains("Additional focus"));
+    let summary = moved.summary_entry.unwrap();
+    assert_eq!(
+        session.with_session(|tree| tree.label(&summary.id).map(str::to_string)),
+        Some("decided".into())
+    );
 }
 
 #[tokio::test]
@@ -1333,7 +1454,7 @@ async fn stopping_cancels_a_branch_summary() {
 
     let navigator = session.clone();
     let navigation =
-        tokio::spawn(async move { navigator.navigate_tree(&target, true, None).await });
+        tokio::spawn(async move { navigator.navigate_tree(&target, summarized()).await });
     while harness.faux.requests().len() < 3 {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }

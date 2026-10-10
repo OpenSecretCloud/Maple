@@ -29,10 +29,12 @@ use pi_agent_core::{
 use pi_ai::transcript::current_system_message;
 use pi_ai::{Content, ImageContent, Message, Model, StreamFn, ThinkingLevel, Usage};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent_session::{SessionCore, StreamingBehavior};
 use crate::compaction::{CompactionPreparation, CompactionResult};
 use crate::messages::SessionMessage;
+use crate::session::SessionEntry;
 use crate::system_prompt::SystemPromptOptions;
 
 pub type ExtensionError = Box<dyn std::error::Error + Send + Sync>;
@@ -228,24 +230,56 @@ pub struct SessionCompact {
     pub from_extension: bool,
 }
 
+/// What a move in the tree is about to do, as Pi's `TreePreparation` describes it.
 #[derive(Clone, Debug)]
-pub struct SessionBeforeTree {
+pub struct TreePreparation {
     pub target_id: String,
     pub old_leaf_id: Option<String>,
+    /// The deepest entry the old and the new position share.
+    pub common_ancestor_id: Option<String>,
+    /// The branch being left, oldest first.
+    pub entries_to_summarize: Vec<SessionEntry>,
+    pub user_wants_summary: bool,
+    pub custom_instructions: Option<String>,
+    pub replace_instructions: bool,
+    pub label: Option<String>,
+}
+
+/// A move in the tree about to happen.
+#[derive(Clone, Debug)]
+pub struct SessionBeforeTree {
+    pub preparation: TreePreparation,
+    /// Cancelled when the session is stopped, for a handler that summarizes itself.
+    pub signal: CancellationToken,
+}
+
+/// A summary of the branch being left that an extension wrote.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TreeSummary {
+    pub summary: String,
+    pub details: Option<Value>,
+    pub usage: Option<Usage>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct BeforeTreeResult {
     pub cancel: bool,
-    /// Use this summary of the branch being left instead of generating one.
-    pub summary: Option<String>,
+    /// Use this summary of the branch being left, when the user wants one, instead of
+    /// generating one.
+    pub summary: Option<TreeSummary>,
+    /// Override the instructions and the label, as in Pi.
+    pub custom_instructions: Option<String>,
+    pub replace_instructions: Option<bool>,
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SessionTree {
     pub new_leaf_id: Option<String>,
     pub old_leaf_id: Option<String>,
-    pub summary_entry_id: Option<String>,
+    pub summary_entry: Option<SessionEntry>,
+    /// Whether an extension wrote the summary; `None` without one.
+    pub from_extension: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -936,6 +970,11 @@ impl ExtensionRunner {
         {
             outcome.cancel |= answer.cancel;
             outcome.summary = answer.summary.or(outcome.summary);
+            outcome.custom_instructions =
+                answer.custom_instructions.or(outcome.custom_instructions);
+            outcome.replace_instructions =
+                answer.replace_instructions.or(outcome.replace_instructions);
+            outcome.label = answer.label.or(outcome.label);
         }
         outcome
     }

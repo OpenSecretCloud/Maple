@@ -670,6 +670,7 @@ pub async fn summarize_branch(
     settings: &CompactionSettings,
     token_budget: u64,
     custom_instructions: Option<&str>,
+    replace_instructions: bool,
 ) -> Result<BranchSummaryResult, String> {
     let mut file_operations = FileOperations::default();
     // Earlier summaries' file lists count, also for entries that do not fit.
@@ -722,11 +723,13 @@ pub async fn summarize_branch(
     if conversation.is_empty() {
         return Ok(BranchSummaryResult::default());
     }
-    let focus = custom_instructions
-        .map(|instructions| format!("\n\nAdditional focus: {instructions}"))
-        .unwrap_or_default();
-    let prompt =
-        format!("<conversation>\n{conversation}\n</conversation>\n\n{BRANCH_PROMPT}{focus}");
+    // As in Pi, custom instructions add a focus, or replace the default ones when asked.
+    let instructions = match custom_instructions {
+        Some(custom) if replace_instructions => custom.to_string(),
+        Some(custom) => format!("{BRANCH_PROMPT}\n\nAdditional focus: {custom}"),
+        None => BRANCH_PROMPT.to_string(),
+    };
+    let prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n{instructions}");
     let (text, usage) = summarize(summarizer, prompt, 4_096, "Branch summarization").await?;
     let (read_files, modified_files) = file_operations.lists();
     let files = format_file_operations(&read_files, &modified_files);
@@ -1166,9 +1169,16 @@ mod tests {
             max_retries: 0,
             retry_base_ms: 1,
         };
-        summarize_branch(&session.branch(), &summarizer, &settings(1), 10_000, None)
-            .await
-            .unwrap();
+        summarize_branch(
+            &session.branch(),
+            &summarizer,
+            &settings(1),
+            10_000,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
         let prompt = last_prompt(&faux);
         assert!(prompt.contains("[User]: [redacted]"), "{prompt}");
         assert!(!prompt.contains("hunter2"));
@@ -1182,6 +1192,7 @@ mod tests {
             &settings(1),
             10_000,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -1250,7 +1261,7 @@ mod tests {
             max_retries: 0,
             retry_base_ms: 1,
         };
-        let result = summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None)
+        let result = summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None, false)
             .await
             .unwrap();
         assert_eq!(result.read_files, ["notes.md", "src/parser.rs"]);
@@ -1283,7 +1294,7 @@ mod tests {
             max_retries: 0,
             retry_base_ms: 1,
         };
-        summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None)
+        summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None, false)
             .await
             .unwrap();
         assert_eq!(faux.requests()[0].options.max_tokens, Some(1_024));
@@ -1312,9 +1323,16 @@ mod tests {
         };
         let prompt = async |session: &SessionManager, budget: u64| {
             faux.push_text("## Goal\nsummary");
-            summarize_branch(&session.branch(), &summarizer, &settings(1), budget, None)
-                .await
-                .unwrap();
+            summarize_branch(
+                &session.branch(),
+                &summarizer,
+                &settings(1),
+                budget,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
             last_prompt(&faux)
         };
 
