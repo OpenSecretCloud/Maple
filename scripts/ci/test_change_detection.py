@@ -3,7 +3,7 @@
 
 import unittest
 
-from change_detection import IOS_ONNX_INPUTS, OUTPUTS, classify_paths
+from change_detection import OUTPUTS, classify_paths
 
 
 def enabled(*names: str) -> dict[str, bool]:
@@ -137,7 +137,7 @@ class ChangeDetectionTests(unittest.TestCase):
         self.assert_routes(["apps/maple-research/frontend/src-tauri/resources/windows/install-dlls.nsh"], "windows")
         self.assert_routes(["apps/maple-research/frontend/src-tauri/tauri.macos.conf.json"], "macos")
 
-    def test_ios_onnx_inputs_mark_the_cache_warmer(self) -> None:
+    def test_onnxruntime_pins_select_native_builds(self) -> None:
         self.assert_routes(
             ["apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh"],
             "macos",
@@ -145,7 +145,6 @@ class ChangeDetectionTests(unittest.TestCase):
             "windows",
             "ios",
             "android",
-            "ios_onnx",
         )
 
     def test_ios_variants_only_select_ios_and_dev_workflow_keeps_its_own_trigger(self) -> None:
@@ -156,17 +155,16 @@ class ChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_routes([path], "ios")
         # The new workflow always builds master; editing it alone does not
-        # select an unrelated production app package or ONNX cache warmer.
+        # select an unrelated production app package.
         self.assert_routes([".github/workflows/ios-dev-testflight.yml"])
 
-    def test_apple_toolchain_inputs_select_apple_builds_and_onnx_cache_warmer(self) -> None:
+    def test_apple_toolchain_inputs_select_apple_builds(self) -> None:
         for path in (
             "scripts/ci/apple-toolchain.json",
             "scripts/ci/select-xcode.py",
         ):
             with self.subTest(path=path):
-                self.assert_routes([path], "macos", "ios", "ios_onnx")
-                self.assertIn(path, IOS_ONNX_INPUTS)
+                self.assert_routes([path], "macos", "ios")
 
     def test_research_dev_packaging_scripts_select_macos(self) -> None:
         for path in (

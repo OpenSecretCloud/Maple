@@ -98,7 +98,7 @@ class AgentChangeDetectionTests(unittest.TestCase):
         for path in ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"):
             with self.subTest(path=path):
                 self.assertTrue(affects_agent(path))
-                self.assertEqual(research_routes(path), frozenset({"macos", "ios", "ios_onnx"}))
+                self.assertEqual(research_routes(path), frozenset({"macos", "ios"}))
 
     def test_unknown_roots_and_invalid_paths_fail_safe(self):
         for path in ("new-build-config.toml", "", "/tmp/file", "../file",

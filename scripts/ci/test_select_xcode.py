@@ -167,7 +167,6 @@ resolve_xcode_developer_dir
             ("ios-dev-testflight.yml", "submit-ios-dev-testflight"),
             ("mobile-build.yml", "build-ios"),
             ("mobile-build.yml", "submit-ios-testflight"),
-            ("mobile-build.yml", "warm-ios-pr-onnx-cache"),
             ("mobile-pr-build.yml", "build-ios"),
             ("release.yml", "build-tauri"),
             ("release.yml", "build-ios"),

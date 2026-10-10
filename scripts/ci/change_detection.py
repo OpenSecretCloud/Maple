@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterable
 
 
-OUTPUTS = ("frontend", "macos", "linux", "windows", "ios", "android", "ios_onnx")
+OUTPUTS = ("frontend", "macos", "linux", "windows", "ios", "android")
 NATIVE_PLATFORMS = frozenset({"macos", "linux", "windows", "ios", "android"})
 DESKTOP_PLATFORMS = frozenset({"macos", "linux", "windows"})
 ALL_OUTPUTS = frozenset(OUTPUTS)
@@ -58,33 +58,19 @@ PROXY_INERT_FILES = frozenset(
     }
 )
 
-IOS_ONNX_INPUTS = frozenset(
-    {
-        "flake.lock",
-        "flake.nix",
-        "scripts/ci/apple-toolchain.json",
-        "scripts/ci/_common.sh",
-        "scripts/ci/ios-onnxruntime.sh",
-        "scripts/ci/select-xcode.py",
-        "apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh",
-        "apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py",
-        "apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh",
-    }
-)
-
 WORKFLOW_ROUTES = {
     ".github/workflows/android-build.yml": frozenset({"android"}),
     ".github/workflows/android-pr-build.yml": frozenset({"android"}),
     ".github/workflows/app-change-detection.yml": NATIVE_PLATFORMS,
     ".github/workflows/desktop-build.yml": DESKTOP_PLATFORMS,
     ".github/workflows/desktop-pr-build.yml": DESKTOP_PLATFORMS,
-    ".github/workflows/mobile-build.yml": frozenset({"ios", "ios_onnx"}),
+    ".github/workflows/mobile-build.yml": frozenset({"ios"}),
     ".github/workflows/mobile-pr-build.yml": frozenset({"ios"}),
 }
 
 CI_SCRIPT_ROUTES = {
-    "scripts/ci/_common.sh": frozenset({"frontend", *NATIVE_PLATFORMS, "ios_onnx"}),
-    "scripts/ci/apple-toolchain.json": frozenset({"macos", "ios", "ios_onnx"}),
+    "scripts/ci/_common.sh": frozenset({"frontend", *NATIVE_PLATFORMS}),
+    "scripts/ci/apple-toolchain.json": frozenset({"macos", "ios"}),
     "scripts/ci/android-pr.sh": frozenset({"android"}),
     "scripts/ci/android-release.sh": frozenset({"android"}),
     "scripts/ci/attestation-manifest.sh": NATIVE_PLATFORMS,
@@ -97,14 +83,14 @@ CI_SCRIPT_ROUTES = {
     "scripts/ci/frontend.sh": frozenset({"frontend"}),
     "scripts/ci/install-windows-artifact-signing.ps1": frozenset({"windows"}),
     "scripts/ci/install-windows-minisign.ps1": frozenset({"windows"}),
-    "scripts/ci/ios-onnxruntime.sh": frozenset({"ios", "ios_onnx"}),
+    "scripts/ci/ios-onnxruntime.sh": frozenset({"ios"}),
     "scripts/ci/ios-build-profile.py": frozenset({"ios"}),
     "scripts/ci/ios-pr.sh": frozenset({"ios"}),
     "scripts/ci/ios-release.sh": frozenset({"ios"}),
     "scripts/ci/ios-variant.sh": frozenset({"ios"}),
     "scripts/ci/research-dev-desktop.sh": frozenset({"macos"}),
     "scripts/ci/research-dev-profile.py": frozenset({"macos"}),
-    "scripts/ci/select-xcode.py": frozenset({"macos", "ios", "ios_onnx"}),
+    "scripts/ci/select-xcode.py": frozenset({"macos", "ios"}),
     "scripts/ci/verify-release-artifacts.sh": NATIVE_PLATFORMS,
     "scripts/ci/web.sh": frozenset({"frontend"}),
     "scripts/ci/windows-artifact-sign.ps1": frozenset({"windows"}),
@@ -150,10 +136,7 @@ def _native_path_routes(path: str) -> frozenset[str]:
         if "android" in filename:
             return frozenset({"android"})
         if "ios" in filename or "apple" in filename or filename == "canonicalize-static-archive.py":
-            routes = {"ios"}
-            if path in IOS_ONNX_INPUTS:
-                routes.add("ios_onnx")
-            return frozenset(routes)
+            return frozenset({"ios"})
         if "windows" in filename:
             return frozenset({"windows"})
         if "linux" in filename:
@@ -163,7 +146,7 @@ def _native_path_routes(path: str) -> frozenset[str]:
         if filename == "run-with-desktop-onnxruntime.sh":
             return DESKTOP_PLATFORMS
         if filename == "onnxruntime-pins.sh":
-            return frozenset({*NATIVE_PLATFORMS, "ios_onnx"})
+            return NATIVE_PLATFORMS
 
     # Unknown files inside the native application remain fail-safe for every target.
     return NATIVE_PLATFORMS

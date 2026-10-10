@@ -21,9 +21,6 @@ on:
       android:
         description: Whether Android-native inputs changed
         value: ${{ jobs.detect.outputs.android }}
-      ios_onnx:
-        description: Whether the iOS ONNX Runtime cache inputs changed
-        value: ${{ jobs.detect.outputs.ios_onnx }}
 
 permissions:
   contents: read
@@ -38,7 +35,6 @@ jobs:
       windows: ${{ steps.classify.outputs.windows }}
       ios: ${{ steps.classify.outputs.ios }}
       android: ${{ steps.classify.outputs.android }}
-      ios_onnx: ${{ steps.classify.outputs.ios_onnx }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -54,7 +50,7 @@ jobs:
           set -euo pipefail
 
           enable_all() {
-            for output in frontend macos linux windows ios android ios_onnx; do
+            for output in frontend macos linux windows ios android; do
               printf '%s=true\n' "${output}" >> "${GITHUB_OUTPUT}"
             done
           }
