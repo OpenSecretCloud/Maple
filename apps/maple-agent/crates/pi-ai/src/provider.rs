@@ -18,7 +18,8 @@ pub struct StreamOptions {
     pub api_key: Option<String>,
     /// Requested reasoning effort; `None` or `Off` leaves reasoning off.
     pub reasoning: Option<ThinkingLevel>,
-    /// Output token cap; providers default to the model's `max_tokens`.
+    /// Output token cap; providers default to the model's `max_tokens`, and lower it so
+    /// the estimated input and the output fit in the context window.
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
     /// Identifies the conversation to providers that route or cache by session.

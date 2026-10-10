@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::constrained::{make_strict_json_schema, resolve_strict_sampling};
+use crate::estimate::clamp_max_tokens_to_context;
 use crate::provider::{StreamFn, StreamOptions};
 use crate::stream::{AssistantMessageBuilder, AssistantMessageStream};
 use crate::transcript::{
@@ -310,7 +311,11 @@ pub fn build_request_body(
     if compat.supports_usage_in_streaming {
         body.insert("stream_options".into(), json!({ "include_usage": true }));
     }
-    let max_tokens = options.max_tokens.unwrap_or(model.max_tokens);
+    let max_tokens = clamp_max_tokens_to_context(
+        model,
+        context,
+        options.max_tokens.unwrap_or(model.max_tokens),
+    );
     if max_tokens > 0 {
         let field = match compat.max_tokens_field {
             MaxTokensField::MaxCompletionTokens => "max_completion_tokens",
@@ -1079,6 +1084,24 @@ mod tests {
             body(&model(), &require).unwrap_err(),
             "Tool \"read\" requires JSON-schema constrained sampling, but strict tools are unsupported."
         );
+    }
+
+    #[test]
+    fn the_output_cap_is_fitted_to_the_context_window() {
+        let mut model = model();
+        model.context_window = 10_000;
+        model.max_tokens = 8_000;
+        let context = Context::new("sys", vec![], vec![Message::User(UserMessage::text("hi"))]);
+        let cap = |options: &StreamOptions| {
+            build_request_body(&model, &context, options).unwrap()["max_completion_tokens"].clone()
+        };
+        // The window less two estimated tokens and the 4,096 kept free.
+        assert_eq!(cap(&StreamOptions::default()), 5_902);
+        let small = StreamOptions {
+            max_tokens: Some(1_000),
+            ..StreamOptions::default()
+        };
+        assert_eq!(cap(&small), 1_000);
     }
 
     #[test]

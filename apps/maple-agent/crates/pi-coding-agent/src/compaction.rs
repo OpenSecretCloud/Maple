@@ -11,7 +11,7 @@ use std::time::Duration;
 use pi_agent_core::AgentMessage;
 use pi_ai::{
     AssistantContent, Context, Message, Model, StopReason, StreamFn, StreamOptions, Usage,
-    UserMessage, content_text, estimate_message_tokens, is_retryable_error, retry_delay_ms,
+    UserMessage, content_text, is_retryable_error, retry_delay_ms,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -54,8 +54,58 @@ pub fn should_compact(
         && context_tokens > context_window.saturating_sub(settings.reserve_tokens)
 }
 
+/// A message's size as Pi's compaction estimates it: its characters over four, which
+/// overestimates. Request fitting in `pi-ai` counts its own way.
 pub fn estimate_tokens(message: &SessionMessage) -> u64 {
-    estimate_message_tokens(&message.to_llm())
+    let chars = match message {
+        SessionMessage::Llm(Message::System(system)) => {
+            let sections: usize = system
+                .sections
+                .values()
+                .flatten()
+                .map(|text| text.chars().count())
+                .sum();
+            let tools = if system.tools_added.is_empty() {
+                0
+            } else {
+                serde_json::to_string(&system.tools_added).map_or(0, |json| json.chars().count())
+            };
+            system.content.chars().count() + sections + tools
+        }
+        SessionMessage::Llm(Message::User(user)) => content_chars(&user.content),
+        SessionMessage::Llm(Message::ToolResult(result)) => content_chars(&result.content),
+        SessionMessage::Custom(custom) => content_chars(&custom.content),
+        SessionMessage::Llm(Message::Assistant(assistant)) => assistant
+            .content
+            .iter()
+            .map(|block| match block {
+                AssistantContent::Text(text) => text.text.chars().count(),
+                AssistantContent::Thinking(thinking) => thinking.thinking.chars().count(),
+                AssistantContent::ToolCall(call) => {
+                    call.name.chars().count()
+                        + serde_json::to_string(&call.arguments)
+                            .map_or(0, |json| json.chars().count())
+                }
+            })
+            .sum(),
+        SessionMessage::BashExecution(bash) => {
+            bash.command.chars().count() + bash.output.chars().count()
+        }
+        SessionMessage::CompactionSummary(summary) => summary.summary.chars().count(),
+        SessionMessage::BranchSummary(summary) => summary.summary.chars().count(),
+    };
+    chars.div_ceil(4) as u64
+}
+
+/// Text characters, and 4,800 for each image.
+fn content_chars(content: &[pi_ai::Content]) -> usize {
+    content
+        .iter()
+        .map(|block| match block {
+            pi_ai::Content::Text(text) => text.text.chars().count(),
+            pi_ai::Content::Image(_) => 4_800,
+        })
+        .sum()
 }
 
 /// The context size: the last reported usage plus estimates for what came after it.
