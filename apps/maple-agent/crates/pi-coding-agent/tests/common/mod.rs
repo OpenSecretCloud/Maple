@@ -144,6 +144,13 @@ pub fn record(session: &AgentSession) -> Arc<Mutex<Vec<String>>> {
                 success, attempt, ..
             } => format!("retry_end:{success}:{attempt}"),
             AgentSessionEvent::ThinkingLevelChanged { level } => format!("thinking:{level:?}"),
+            AgentSessionEvent::SummarizationRetryScheduled { attempt, .. } => {
+                format!("summary_retry:{attempt}")
+            }
+            AgentSessionEvent::SummarizationRetryAttemptStart { source } => {
+                format!("summary_retry_start:{source:?}")
+            }
+            AgentSessionEvent::SummarizationRetryFinished => "summary_retry_end".into(),
             AgentSessionEvent::ExtensionError(report) => {
                 format!("extension_error:{}:{}", report.extension, report.event)
             }

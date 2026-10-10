@@ -445,9 +445,29 @@ pub struct Summarizer<'a> {
     /// Credentials, routing and cancellation for the requests, and the thinking level to
     /// summarize at, which goes only to a model that reasons.
     pub options: StreamOptions,
-    /// Retries for transient failures.
+    /// Retries for transient failures: none when 0. Each delay doubles the first, up to
+    /// the longest.
     pub max_retries: u32,
     pub retry_base_ms: u64,
+    pub retry_max_ms: u64,
+    /// Told of each retry, as Pi's summarization retry callbacks are.
+    pub on_retry: Option<&'a (dyn Fn(SummaryRetry) + Send + Sync)>,
+}
+
+/// A summary request's retry, as Pi's `RetryCallbacks` report it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SummaryRetry {
+    /// A transient failure; the request goes out again after the delay.
+    Scheduled {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error: String,
+    },
+    /// The delay is over and the request goes out again.
+    AttemptStart,
+    /// The retries are over, whether the request then succeeded or not.
+    Finished,
 }
 
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
@@ -548,6 +568,11 @@ async fn summarize(
     } else {
         max_tokens
     };
+    let report = |event: SummaryRetry| {
+        if let Some(on_retry) = summarizer.on_retry {
+            on_retry(event);
+        }
+    };
     let mut attempt = 0;
     loop {
         let options = StreamOptions {
@@ -563,16 +588,35 @@ async fn summarize(
             .stream(summarizer.model, context.clone(), options)
             .result()
             .await;
+        // As Pi's retryAssistantCall: a transient failure is tried again while the
+        // budget lasts, and the end of the retries is reported however it ends.
         if is_retryable_error(&response)
             && attempt < summarizer.max_retries
             && !summarizer.options.cancel.is_cancelled()
         {
             attempt += 1;
-            let delay = retry_delay_ms(summarizer.retry_base_ms, 60_000, attempt);
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(delay)) => continue,
-                _ = summarizer.options.cancel.cancelled() => {}
+            let delay_ms =
+                retry_delay_ms(summarizer.retry_base_ms, summarizer.retry_max_ms, attempt);
+            report(SummaryRetry::Scheduled {
+                attempt,
+                max_attempts: summarizer.max_retries,
+                delay_ms,
+                error: response
+                    .error_message
+                    .clone()
+                    .unwrap_or_else(|| "Unknown error".into()),
+            });
+            let waited = tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => true,
+                _ = summarizer.options.cancel.cancelled() => false,
+            };
+            if waited {
+                report(SummaryRetry::AttemptStart);
+                continue;
             }
+        }
+        if attempt > 0 {
+            report(SummaryRetry::Finished);
         }
         return match response.stop_reason {
             StopReason::Error | StopReason::Aborted => Err(format!(
@@ -1041,6 +1085,8 @@ mod tests {
             options: StreamOptions::default(),
             max_retries: 0,
             retry_base_ms: 1,
+            retry_max_ms: 60_000,
+            on_retry: None,
         };
         let result = compact(&preparation, &summarizer, Some("keep paths"))
             .await
@@ -1081,6 +1127,8 @@ mod tests {
             options: StreamOptions::default(),
             max_retries: 0,
             retry_base_ms: 1,
+            retry_max_ms: 60_000,
+            on_retry: None,
         };
         compact(&preparation, &summarizer, Some("keep paths"))
             .await
@@ -1136,6 +1184,8 @@ mod tests {
                 },
                 max_retries: 0,
                 retry_base_ms: 1,
+                retry_max_ms: 60_000,
+                on_retry: None,
             };
             compact(&preparation, &summarizer, None).await.unwrap();
             // The history and the turn's start alike.
@@ -1168,6 +1218,8 @@ mod tests {
             options: StreamOptions::default(),
             max_retries: 0,
             retry_base_ms: 1,
+            retry_max_ms: 60_000,
+            on_retry: None,
         };
         summarize_branch(
             &session.branch(),
@@ -1260,6 +1312,8 @@ mod tests {
             options: StreamOptions::default(),
             max_retries: 0,
             retry_base_ms: 1,
+            retry_max_ms: 60_000,
+            on_retry: None,
         };
         let result = summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None, false)
             .await
@@ -1293,6 +1347,8 @@ mod tests {
             options: StreamOptions::default(),
             max_retries: 0,
             retry_base_ms: 1,
+            retry_max_ms: 60_000,
+            on_retry: None,
         };
         summarize_branch(&session.branch(), &summarizer, &settings(1), 0, None, false)
             .await
@@ -1320,6 +1376,8 @@ mod tests {
             options: StreamOptions::default(),
             max_retries: 0,
             retry_base_ms: 1,
+            retry_max_ms: 60_000,
+            on_retry: None,
         };
         let prompt = async |session: &SessionManager, budget: u64| {
             faux.push_text("## Goal\nsummary");
@@ -1363,6 +1421,8 @@ mod tests {
             options: StreamOptions::default(),
             max_retries: 0,
             retry_base_ms: 1,
+            retry_max_ms: 60_000,
+            on_retry: None,
         };
         let error = compact(&preparation, &summarizer, None).await.unwrap_err();
         assert!(error.contains("token cap"), "{error}");

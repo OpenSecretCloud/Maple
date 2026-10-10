@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bash_executor::{BashResult, OnChunk, execute_bash_with_operations};
 use crate::compaction::{
-    CompactionPreparation, CompactionResult, Summarizer, compact,
+    CompactionPreparation, CompactionResult, Summarizer, SummaryRetry, compact,
     estimate_projected_context_tokens, estimate_tokens, prepare_compaction, should_compact,
     summarize_branch,
 };
@@ -160,6 +160,20 @@ pub enum AgentSessionEvent {
         attempt: u32,
         error: Option<String>,
     },
+    /// A summary request failed for a moment and goes out again after `delay_ms`, as
+    /// Pi's `summarization_retry_scheduled`.
+    SummarizationRetryScheduled {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error: String,
+    },
+    /// The retried summary request goes out.
+    SummarizationRetryAttemptStart {
+        source: SummarySource,
+    },
+    /// The summary request's retries are over.
+    SummarizationRetryFinished,
     /// The thinking level changed, also when a new model needed another one.
     ThinkingLevelChanged {
         level: ThinkingLevel,
@@ -223,6 +237,13 @@ pub enum PromptOutcome {
     Queued,
     /// A command or extension handled it; nothing was sent.
     Handled,
+}
+
+/// What a summary request is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SummarySource {
+    Compaction(CompactionReason),
+    BranchSummary,
 }
 
 /// How an extension message is delivered.
@@ -1264,6 +1285,15 @@ impl AgentSession {
     }
 }
 
+/// Summary requests retry as runs do, and not at all with retries off, as in Pi.
+fn summary_retries(settings: &Settings) -> u32 {
+    if settings.retry.enabled {
+        settings.retry.max_retries
+    } else {
+        0
+    }
+}
+
 /// Whether `message` is a reply whose usage measured the context, as Pi counts one.
 fn measures_context(message: &SessionMessage) -> bool {
     matches!(
@@ -1608,6 +1638,30 @@ impl SessionCore {
         self.runner
             .emit(&SessionInfoChanged { name }, &self.weak)
             .await;
+    }
+
+    /// What tells the host of a summary request's retries, as Pi's summarization retry
+    /// callbacks do.
+    fn summary_retries(&self, source: SummarySource) -> impl Fn(SummaryRetry) + Send + Sync + '_ {
+        move |retry| {
+            self.emit(match retry {
+                SummaryRetry::Scheduled {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error,
+                } => AgentSessionEvent::SummarizationRetryScheduled {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error,
+                },
+                SummaryRetry::AttemptStart => {
+                    AgentSessionEvent::SummarizationRetryAttemptStart { source }
+                }
+                SummaryRetry::Finished => AgentSessionEvent::SummarizationRetryFinished,
+            })
+        }
     }
 
     /// The current branch's context size, from usage the branch has not changed since.
@@ -2283,6 +2337,7 @@ impl SessionCore {
             }
             None => {
                 let stream_fn = self.models.stream_fn();
+                let report = self.summary_retries(SummarySource::Compaction(reason));
                 let summarizer = Summarizer {
                     model: &model,
                     stream_fn: &*stream_fn,
@@ -2293,8 +2348,10 @@ impl SessionCore {
                         cancel: cancel.clone(),
                         ..StreamOptions::default()
                     },
-                    max_retries: settings.retry.max_retries,
+                    max_retries: summary_retries(&settings),
                     retry_base_ms: settings.retry.base_delay_ms,
+                    retry_max_ms: settings.retry.max_delay_ms,
+                    on_retry: Some(&report),
                 };
                 compact(&preparation, &summarizer, custom_instructions)
                     .await
@@ -2430,6 +2487,7 @@ impl SessionCore {
                 let model = self.model().ok_or(AgentSessionError::NoModel)?;
                 let settings = lock(&self.settings).clone();
                 let stream_fn = self.models.stream_fn();
+                let report = self.summary_retries(SummarySource::BranchSummary);
                 let summarizer = Summarizer {
                     model: &model,
                     stream_fn: &*stream_fn,
@@ -2439,8 +2497,10 @@ impl SessionCore {
                         cancel: cancel.clone(),
                         ..StreamOptions::default()
                     },
-                    max_retries: settings.retry.max_retries,
+                    max_retries: summary_retries(&settings),
                     retry_base_ms: settings.retry.base_delay_ms,
+                    retry_max_ms: settings.retry.max_delay_ms,
+                    on_retry: Some(&report),
                 };
                 // The window, or Pi's 128k when it is unknown, less the reserve; with
                 // nothing left, there is no limit.

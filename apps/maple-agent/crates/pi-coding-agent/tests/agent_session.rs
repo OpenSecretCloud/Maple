@@ -344,6 +344,36 @@ async fn manual_compaction_summarizes_the_older_turns() {
 }
 
 #[tokio::test]
+async fn a_summary_request_that_fails_for_a_moment_is_retried_and_reported() {
+    let harness = Harness::new();
+    let session = harness
+        .session_with(|options| options.settings.compaction.keep_recent_tokens = 50)
+        .await;
+    with_history(&harness, &session).await;
+    let events = record(&session);
+    harness.faux.push_error("503 Service Unavailable");
+    harness.faux.push_text("## Goal\nanswer questions");
+    harness.faux.push_text("## Original Request\nquestion 1");
+
+    let result = session.compact(None).await.unwrap();
+    assert!(result.summary.starts_with("## Goal"));
+    // As Pi reports a summary request's retries.
+    let events = events.lock().unwrap();
+    let retries: Vec<&String> = events
+        .iter()
+        .filter(|event| event.starts_with("summary_retry"))
+        .collect();
+    assert_eq!(
+        retries,
+        [
+            "summary_retry:1",
+            "summary_retry_start:Compaction(Manual)",
+            "summary_retry_end"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn manual_compaction_stops_a_run_first() {
     let harness = Harness::new();
     let session = harness
