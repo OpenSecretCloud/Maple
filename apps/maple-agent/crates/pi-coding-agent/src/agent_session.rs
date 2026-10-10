@@ -1696,6 +1696,7 @@ impl SessionCore {
                     stream_fn: &*stream_fn,
                     options: StreamOptions {
                         api_key: self.models.api_key(&model.provider).await,
+                        reasoning: Some(self.agent.thinking_level()),
                         session_id: Some(self.session_id()),
                         cancel,
                         ..StreamOptions::default()

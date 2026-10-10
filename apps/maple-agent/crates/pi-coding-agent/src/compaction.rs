@@ -372,7 +372,8 @@ pub struct CompactionResult {
 pub struct Summarizer<'a> {
     pub model: &'a Model,
     pub stream_fn: &'a dyn StreamFn,
-    /// Credentials, routing and cancellation for the requests.
+    /// Credentials, routing and cancellation for the requests, and the thinking level to
+    /// summarize at, which goes only to a model that reasons.
     pub options: StreamOptions,
     /// Retries for transient failures.
     pub max_retries: u32,
@@ -480,6 +481,10 @@ async fn summarize(
     loop {
         let options = StreamOptions {
             max_tokens: Some(max_tokens),
+            reasoning: summarizer
+                .options
+                .reasoning
+                .filter(|level| summarizer.model.reasoning && *level != pi_ai::ThinkingLevel::Off),
             ..summarizer.options.clone()
         };
         let response = summarizer
@@ -812,6 +817,57 @@ mod tests {
         let prompt = content_text(&prompt.content);
         assert!(prompt.contains("[User]: edit main.rs"));
         assert!(prompt.contains("Additional focus: keep paths"));
+    }
+
+    #[tokio::test]
+    async fn summaries_think_at_the_given_level_on_a_model_that_reasons() {
+        use pi_ai::ThinkingLevel;
+        let preparation = CompactionPreparation {
+            first_kept_entry_id: "kept".into(),
+            messages_to_summarize: vec![user("an older question")],
+            turn_prefix_messages: vec![user("the start of a long task")],
+            tokens_before: 100,
+            previous_summary: None,
+            file_operations: FileOperations::default(),
+            settings: settings(20),
+        };
+        let mut plain = FauxProvider::default_model();
+        plain.reasoning = false;
+        let cases = [
+            (
+                FauxProvider::default_model(),
+                ThinkingLevel::Medium,
+                Some(ThinkingLevel::Medium),
+            ),
+            (FauxProvider::default_model(), ThinkingLevel::Off, None),
+            (plain, ThinkingLevel::Medium, None),
+        ];
+        for (model, level, sent) in cases {
+            let faux = FauxProvider::with_model(model.clone());
+            faux.push_text("## Goal\nhistory");
+            faux.push_text("## Original Request\ntask");
+            let summarizer = Summarizer {
+                model: &model,
+                stream_fn: &faux,
+                options: StreamOptions {
+                    reasoning: Some(level),
+                    ..StreamOptions::default()
+                },
+                max_retries: 0,
+                retry_base_ms: 1,
+            };
+            compact(&preparation, &summarizer, None).await.unwrap();
+            // The history and the turn's start alike.
+            let requests = faux.requests();
+            assert_eq!(requests.len(), 2);
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.options.reasoning == sent),
+                "{level:?} on {}",
+                model.id
+            );
+        }
     }
 
     #[tokio::test]

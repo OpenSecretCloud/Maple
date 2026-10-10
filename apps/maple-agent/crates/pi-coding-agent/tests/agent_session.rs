@@ -313,6 +313,45 @@ async fn manual_compaction_summarizes_the_older_turns() {
 }
 
 #[tokio::test]
+async fn compaction_thinks_at_the_sessions_level_and_a_branch_summary_does_not() {
+    let harness = Harness::new();
+    let session = harness
+        .session_with(|options| options.settings.compaction.keep_recent_tokens = 50)
+        .await;
+    with_history(&harness, &session).await;
+    session.set_thinking_level(ThinkingLevel::High).await;
+    harness.faux.push_text("## Goal\nanswer questions");
+    harness.faux.push_text("## Original Request\nquestion 1");
+    session.compact(None).await.unwrap();
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[2..]
+            .iter()
+            .all(|request| request.options.reasoning == Some(ThinkingLevel::High))
+    );
+
+    // As in Pi, a branch summary is written without thinking.
+    let target = session.with_session(|tree| {
+        tree.branch()
+            .iter()
+            .find(|entry| {
+                matches!(&entry.kind, EntryKind::Message { message } if message.role() == "assistant")
+            })
+            .unwrap()
+            .id
+            .clone()
+    });
+    harness
+        .faux
+        .push_text("## Goal\nexplored a second question");
+    session.navigate_tree(&target, true, None).await.unwrap();
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[4].options.reasoning, None);
+}
+
+#[tokio::test]
 async fn navigating_the_tree_can_summarize_the_branch_left_behind() {
     let harness = Harness::new();
     harness.faux.push_text("first answer");
