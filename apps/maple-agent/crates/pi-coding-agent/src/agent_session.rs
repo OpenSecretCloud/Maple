@@ -696,16 +696,29 @@ impl AgentSession {
         Ok(PromptOutcome::Completed)
     }
 
-    /// Deliver `text` and `images` after the current turn's tool calls.
-    pub fn steer(&self, text: &str, images: Vec<ImageContent>) {
+    /// Deliver `text` and `images` after the current turn's tool calls. As in Pi's
+    /// `steer`, input handlers, skills and templates apply first, and an extension
+    /// command is refused, since it cannot wait in the queue.
+    pub async fn steer(
+        &self,
+        text: &str,
+        images: Vec<ImageContent>,
+    ) -> Result<PromptOutcome, AgentSessionError> {
         self.core
-            .queue(StreamingBehavior::Steer, user_message(text, images));
+            .queue_input(text, images, StreamingBehavior::Steer)
+            .await
     }
 
-    /// Deliver `text` and `images` once the agent would otherwise stop.
-    pub fn follow_up(&self, text: &str, images: Vec<ImageContent>) {
+    /// Deliver `text` and `images` once the agent would otherwise stop, after the same
+    /// steps as [`Self::steer`], as Pi's `followUp` does.
+    pub async fn follow_up(
+        &self,
+        text: &str,
+        images: Vec<ImageContent>,
+    ) -> Result<PromptOutcome, AgentSessionError> {
         self.core
-            .queue(StreamingBehavior::FollowUp, user_message(text, images));
+            .queue_input(text, images, StreamingBehavior::FollowUp)
+            .await
     }
 
     /// Remove queued messages; returns the steering and follow-up texts.
@@ -1477,6 +1490,9 @@ impl SessionCore {
             text: text.to_string(),
             images: options.images.clone(),
             source: options.source,
+            streaming_behavior: options
+                .streaming_behavior
+                .filter(|_| self.activity() == Activity::Prompt),
         };
         let (mut text, images) = match self.runner.input(input, &self.weak).await {
             InputAction::Handled => return Ok(PromptOutcome::Handled),
@@ -1484,11 +1500,7 @@ impl SessionCore {
             InputAction::Continue => (text.to_string(), options.images.clone()),
         };
         if options.expand {
-            let resources = lock(&self.resources).clone();
-            text = expand_prompt_template(
-                &expand_skill_command(&text, &resources.skills),
-                &resources.prompt_templates,
-            );
+            text = self.expand(&text);
         }
         let activity = loop {
             if let Some(activity) = self.begin(Activity::Prompt) {
@@ -1539,6 +1551,53 @@ impl SessionCore {
         messages.extend(drafts.into_iter().map(custom_message));
         self.run_prompt(activity, messages).await?;
         Ok(PromptOutcome::Completed)
+    }
+
+    /// Expand a skill command, then a prompt template.
+    fn expand(&self, text: &str) -> String {
+        let resources = lock(&self.resources);
+        expand_prompt_template(
+            &expand_skill_command(text, &resources.skills),
+            &resources.prompt_templates,
+        )
+    }
+
+    /// Queue typed input as Pi's `steer` and `followUp` do.
+    async fn queue_input(
+        &self,
+        text: &str,
+        images: Vec<ImageContent>,
+        behavior: StreamingBehavior,
+    ) -> Result<PromptOutcome, AgentSessionError> {
+        if let Some(command) = text.strip_prefix('/') {
+            let name = command
+                .split(char::is_whitespace)
+                .next()
+                .unwrap_or_default();
+            if self
+                .runner
+                .commands()
+                .iter()
+                .any(|known| known.name == name)
+            {
+                return Err(AgentSessionError::Failed(format!(
+                    "Extension command \"/{name}\" cannot be queued; send it as a prompt"
+                )));
+            }
+        }
+        let input = Input {
+            text: text.to_string(),
+            images: images.clone(),
+            source: InputSource::Interactive,
+            streaming_behavior: (self.activity() == Activity::Prompt).then_some(behavior),
+        };
+        let (text, images) = match self.runner.input(input, &self.weak).await {
+            InputAction::Handled => return Ok(PromptOutcome::Handled),
+            InputAction::Transform { text, images } => (text, images),
+            InputAction::Continue => (text.to_string(), images),
+        };
+        self.queue(behavior, user_message(&self.expand(&text), images));
+        Ok(PromptOutcome::Queued)
     }
 
     /// Start a run with a message an extension sent, bringing the prompt up to date first.
@@ -2469,26 +2528,23 @@ impl ExtensionContext {
         });
     }
 
-    /// Send a user message. It always leads to a turn: now when idle, going through input
-    /// handlers like a typed prompt, otherwise as steering or a follow-up.
-    pub fn send_user_message(&self, text: &str, delivery: Delivery) {
+    /// Send a user message, as Pi's `sendUserMessage` does. It always leads to a turn:
+    /// it goes through input handlers like a typed prompt and runs now when idle,
+    /// otherwise as steering or a follow-up.
+    pub fn send_user_message(&self, text: &str, images: Vec<ImageContent>, delivery: Delivery) {
         let Some(core) = self.core() else { return };
         let behavior = if delivery == Delivery::FollowUp {
             StreamingBehavior::FollowUp
         } else {
             StreamingBehavior::Steer
         };
-        if core.activity() == Activity::Prompt {
-            core.queue(behavior, user_message(text, Vec::new()));
-            return;
-        }
         let (text, extension) = (text.to_string(), self.extension.clone());
         tokio::spawn(async move {
             let options = PromptOptions {
+                images,
                 streaming_behavior: Some(behavior),
                 expand: false,
                 source: InputSource::Extension,
-                ..PromptOptions::default()
             };
             if let Err(error) = core.clone().prompt(&text, options).await {
                 core.runner.report(&extension, "send_user_message", error);

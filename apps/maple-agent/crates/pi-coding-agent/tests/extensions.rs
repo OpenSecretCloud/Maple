@@ -8,7 +8,7 @@ use pi_agent_core::{
     AfterToolCallResult, AgentEvent, AgentToolResult, BeforeToolCallResult, FnTool,
 };
 use pi_ai::faux::FauxProvider;
-use pi_ai::{AssistantContent, Content, Message, ThinkingLevel, Tool, content_text};
+use pi_ai::{AssistantContent, Content, ImageContent, Message, ThinkingLevel, Tool, content_text};
 use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
     AgentEventSeen, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult, Context,
@@ -587,7 +587,11 @@ async fn a_user_message_from_an_extension_is_a_full_prompt() {
     harness.faux.push_text("reviewed");
     let review = extension("review", |api| {
         api.register_command("review", "Review the diff", |_args, ctx| async move {
-            ctx.send_user_message("Review the diff", Delivery::Steer);
+            let screenshot = ImageContent {
+                data: "aW1n".into(),
+                mime_type: "image/png".into(),
+            };
+            ctx.send_user_message("Review the diff", vec![screenshot], Delivery::Steer);
             Ok(())
         });
     });
@@ -608,6 +612,11 @@ async fn a_user_message_from_an_extension_is_a_full_prompt() {
             .contains("inside Maple")
     );
     assert_eq!(harness.sent_text(0), "Review the diff");
+    // Its images go with it, as with Pi's sendUserMessage.
+    assert!(request.context.messages.iter().any(|message| matches!(
+        message,
+        Message::User(user) if matches!(user.content.last(), Some(Content::Image(image)) if image.data == "aW1n")
+    )));
     assert_eq!(last_assistant_text(&session), "reviewed");
 }
 

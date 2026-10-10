@@ -8,10 +8,13 @@ use std::time::Duration;
 use common::{Harness, echo_tool, entry_kinds, last_assistant_text, record, roles};
 use pi_agent_core::AgentEvent;
 use pi_agent_core::QueueMode;
+use pi_agent_core::{AgentToolResult, FnTool};
 use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
 use pi_coding_agent::compaction::estimate_tokens;
-use pi_coding_agent::extensions::{CustomMessageDraft, ModelSelect, SlashCommandSource, extension};
+use pi_coding_agent::extensions::{
+    CustomMessageDraft, Input, InputAction, ModelSelect, SlashCommandSource, extension,
+};
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources, Skill};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
 use pi_coding_agent::store::{JsonlStore, MemoryStore, SessionStore};
@@ -507,8 +510,44 @@ async fn the_host_can_steer_and_queue_follow_ups_during_a_run() {
     faux.push_tool_call("echo", json!({ "text": "a" }));
     faux.push_text("steered");
     faux.push_text("followed up");
+    // The tool waits until the host has queued its messages.
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mut waiting = echo_tool(true);
+    let tool_release = release.clone();
+    waiting.tool = FnTool::new(waiting.tool.declaration().clone(), move |_invocation| {
+        let release = tool_release.clone();
+        async move {
+            release.notified().await;
+            Ok(AgentToolResult::text("a"))
+        }
+    })
+    .shared();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let behaviors = seen.clone();
+    let input = extension("input", move |api| {
+        let behaviors = behaviors.clone();
+        api.on(move |event: Input, _ctx| {
+            let behaviors = behaviors.clone();
+            async move {
+                behaviors.lock().unwrap().push(event.streaming_behavior);
+                Ok(InputAction::Continue)
+            }
+        });
+        api.register_command("note", "Add a note", |_args, _ctx| async { Ok(()) });
+    });
     let session = harness
-        .session_with(|options| options.tools = vec![echo_tool(true)])
+        .session_with(|options| {
+            options.tools = vec![waiting];
+            options.extensions = vec![input];
+            options.resources.prompt_templates = vec![PromptTemplate {
+                name: "fix".into(),
+                description: "Fix an issue".into(),
+                argument_hint: None,
+                content: "Fix issue $1 carefully.".into(),
+                file_path: "/work/.maple/prompts/fix.md".into(),
+                source: ResourceSource::Project,
+            }];
+        })
         .await;
     let events = record(&session);
     let host = session.clone();
@@ -519,14 +558,21 @@ async fn the_host_can_steer_and_queue_follow_ups_during_a_run() {
             AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart { .. })
         ) && !queued.swap(true, Ordering::SeqCst)
         {
-            host.steer(
-                "use b",
-                vec![ImageContent {
+            let (host, release) = (host.clone(), release.clone());
+            tokio::spawn(async move {
+                // As in Pi, an extension command cannot wait in the queue.
+                assert!(host.steer("/note later", Vec::new()).await.is_err());
+                let image = ImageContent {
                     data: "aW1n".into(),
                     mime_type: "image/png".into(),
-                }],
-            );
-            host.follow_up("then summarize", Vec::new());
+                };
+                assert_eq!(
+                    host.steer("/fix 7", vec![image]).await.unwrap(),
+                    PromptOutcome::Queued
+                );
+                host.follow_up("then summarize", Vec::new()).await.unwrap();
+                release.notify_one();
+            });
         }
     });
 
@@ -540,7 +586,17 @@ async fn the_host_can_steer_and_queue_follow_ups_during_a_run() {
         .filter(|m| m.role() == "user")
         .map(SessionMessage::text)
         .collect();
-    assert_eq!(texts, ["go", "use b", "then summarize"]);
+    // Templates expand in steering, as in a prompt.
+    assert_eq!(texts, ["go", "Fix issue 7 carefully.", "then summarize"]);
+    // Input handlers see how each message waits for the run.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            None,
+            Some(StreamingBehavior::Steer),
+            Some(StreamingBehavior::FollowUp)
+        ]
+    );
     // The steered image reaches the model with its text.
     let steered = harness.faux.requests()[1]
         .context

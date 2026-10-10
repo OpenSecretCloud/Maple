@@ -29,7 +29,7 @@ use pi_ai::transcript::current_system_message;
 use pi_ai::{Content, ImageContent, Message, Model, StreamFn, ThinkingLevel, Usage};
 use serde_json::Value;
 
-use crate::agent_session::SessionCore;
+use crate::agent_session::{SessionCore, StreamingBehavior};
 use crate::compaction::{CompactionPreparation, CompactionResult};
 use crate::messages::SessionMessage;
 use crate::system_prompt::SystemPromptOptions;
@@ -71,6 +71,8 @@ pub struct Input {
     pub text: String,
     pub images: Vec<ImageContent>,
     pub source: InputSource,
+    /// How the input waits for the run in progress; `None` when none is.
+    pub streaming_behavior: Option<StreamingBehavior>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
