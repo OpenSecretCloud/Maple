@@ -24,7 +24,13 @@ async fn a_session_starts_with_read_bash_edit_and_write() {
     let harness = Harness::new();
     let session = harness.session_with(with_builtins).await;
     assert_eq!(session.active_tools(), ["read", "bash", "edit", "write"]);
-    assert!(session.tool_names().contains(&"powershell".to_string()));
+    let powershell = session
+        .all_tools()
+        .into_iter()
+        .find(|tool| tool.name == "powershell")
+        .unwrap();
+    assert!(!powershell.active);
+    assert_eq!(powershell.extension, None);
 
     let prompt = session.extension_context().next_system_prompt();
     assert!(prompt.contains("- read: Read file contents"), "{prompt}");
@@ -37,7 +43,10 @@ async fn a_session_starts_with_read_bash_edit_and_write() {
 
     // grep, find and ls are there to turn on; with them, the shell rule goes.
     for name in ["grep", "find", "ls"] {
-        assert!(session.tool_names().contains(&name.to_string()), "{name}");
+        assert!(
+            session.all_tools().iter().any(|tool| tool.name == name),
+            "{name}"
+        );
     }
     session.set_active_tools(&["read", "bash", "grep", "find", "ls"].map(String::from));
     let prompt = session.extension_context().next_system_prompt();

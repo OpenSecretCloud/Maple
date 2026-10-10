@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use common::{Harness, echo_tool, entry_kinds, last_assistant_text, record, roles};
 use pi_agent_core::AgentEvent;
+use pi_agent_core::QueueMode;
 use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
 use pi_coding_agent::compaction::estimate_tokens;
-use pi_coding_agent::extensions::{CustomMessageDraft, ModelSelect, extension};
-use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources};
+use pi_coding_agent::extensions::{CustomMessageDraft, ModelSelect, SlashCommandSource, extension};
+use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources, Skill};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
 use pi_coding_agent::store::{JsonlStore, MemoryStore, SessionStore};
 use pi_coding_agent::{
@@ -739,6 +740,80 @@ async fn a_model_switch_applies_the_default_thinking_level_again() {
     // As in Pi, the settings' default wins over the level the last model had.
     session.set_model(other).await;
     assert_eq!(session.thinking_level(), ThinkingLevel::Low);
+}
+
+#[tokio::test]
+async fn retry_compaction_and_queue_modes_change_for_the_session() {
+    let harness = Harness::new();
+    harness.faux.push_error("503 Service Unavailable");
+    let session = harness.session().await;
+    let events = record(&session);
+    assert!(session.auto_retry_enabled() && session.auto_compaction_enabled());
+    session.set_auto_retry_enabled(false);
+    session.set_auto_compaction_enabled(false);
+    session.set_steering_mode(QueueMode::All);
+    session.set_follow_up_mode(QueueMode::All);
+    assert_eq!(
+        (session.steering_mode(), session.follow_up_mode()),
+        (QueueMode::All, QueueMode::All)
+    );
+    assert!(!session.settings().retry.enabled && !session.settings().compaction.enabled);
+
+    // With retries off, a transient error ends the run.
+    session
+        .prompt("go", PromptOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(harness.faux.requests().len(), 1);
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("retry"))
+    );
+}
+
+#[tokio::test]
+async fn commands_list_templates_and_skills_after_extension_commands() {
+    let harness = Harness::new();
+    let commands = extension("commands", |api| {
+        api.register_command("note", "Add a note", |_args, _ctx| async { Ok(()) });
+    });
+    let session = harness
+        .session_with(|options| {
+            options.extensions = vec![commands];
+            options.resources.prompt_templates = vec![PromptTemplate {
+                name: "fix".into(),
+                description: "Fix an issue".into(),
+                argument_hint: None,
+                content: "Fix it.".into(),
+                file_path: "/work/.maple/prompts/fix.md".into(),
+                source: ResourceSource::Project,
+            }];
+            options.resources.skills = vec![Skill {
+                name: "review".into(),
+                description: "Review changes".into(),
+                file_path: "/work/.maple/skills/review/SKILL.md".into(),
+                base_dir: "/work/.maple/skills/review".into(),
+                source: ResourceSource::Project,
+                disable_model_invocation: false,
+            }];
+        })
+        .await;
+    let listed: Vec<(String, SlashCommandSource)> = session
+        .commands()
+        .into_iter()
+        .map(|command| (command.name, command.source))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("note".to_string(), SlashCommandSource::Extension),
+            ("fix".to_string(), SlashCommandSource::Prompt),
+            ("skill:review".to_string(), SlashCommandSource::Skill),
+        ]
+    );
 }
 
 #[tokio::test]

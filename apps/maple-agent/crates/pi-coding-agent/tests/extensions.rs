@@ -13,7 +13,8 @@ use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
     AgentEventSeen, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult, Context,
     ContextWithSystem, CustomMessageDraft, Input, InputAction, MessageEnd, SessionBeforeCompact,
-    SessionStart, ToolCall, ToolPrompt, ToolResult, extension,
+    SessionStart, SlashCommandInfo, SlashCommandSource, ToolCall, ToolPrompt, ToolResult,
+    extension,
 };
 use pi_coding_agent::session::{EntryKind, SessionManager};
 use pi_coding_agent::store::JsonlStore;
@@ -230,7 +231,11 @@ async fn commands_run_in_place_of_a_prompt_and_can_add_messages() {
     let session = harness.session_with_extensions(vec![commands]).await;
     assert_eq!(
         session.commands(),
-        [("note".to_string(), "Add a note".to_string())]
+        [SlashCommandInfo {
+            name: "note".into(),
+            description: "Add a note".into(),
+            source: SlashCommandSource::Extension,
+        }]
     );
     assert_eq!(
         session
@@ -423,7 +428,13 @@ async fn extensions_register_tools_and_providers() {
     });
     let session = harness.session_with_extensions(vec![tools]).await;
     // The built-in tools stay registered, turned off.
-    assert!(session.tool_names().contains(&"lookup".to_string()));
+    let lookup = session
+        .all_tools()
+        .into_iter()
+        .find(|tool| tool.name == "lookup")
+        .unwrap();
+    assert!(lookup.active);
+    assert_eq!(lookup.extension.as_deref(), Some("tools"));
     assert_eq!(session.active_tools(), ["lookup"]);
 
     session.set_model(provider.model()).await;
@@ -829,7 +840,7 @@ async fn an_extension_registers_tools_it_finds_later() {
     let context = kept.lock().unwrap().clone().unwrap();
     let echo = echo_tool(true);
     context.register_tool(echo.tool, echo.prompt, true);
-    assert!(context.tool_names().contains(&"echo".to_string()));
+    assert!(context.all_tools().iter().any(|tool| tool.name == "echo"));
     assert!(session.active_tools().contains(&"echo".to_string()));
     session
         .prompt("two", PromptOptions::default())

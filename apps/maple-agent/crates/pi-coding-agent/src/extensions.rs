@@ -272,6 +272,38 @@ pub struct RegisteredTool {
     pub extension: Option<String>,
 }
 
+/// A registered tool, as Pi's `getAllTools` describes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: String,
+    /// The JSON schema of its arguments.
+    pub parameters: Value,
+    /// The rules it adds to the prompt while it is active.
+    pub guidelines: Vec<String>,
+    /// Whether the model is offered it.
+    pub active: bool,
+    /// The extension that registered it; `None` for the built-in tools and the host's.
+    pub extension: Option<String>,
+}
+
+/// Where a slash command comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlashCommandSource {
+    Extension,
+    Prompt,
+    Skill,
+}
+
+/// Something a prompt starting with `/` runs, as Pi's `getCommands` lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlashCommandInfo {
+    /// The name after the slash; `skill:<name>` for a skill.
+    pub name: String,
+    pub description: String,
+    pub source: SlashCommandSource,
+}
+
 #[derive(Clone)]
 pub struct RegisteredCommand {
     pub name: String,

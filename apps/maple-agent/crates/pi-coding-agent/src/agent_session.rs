@@ -19,7 +19,7 @@ use futures_util::FutureExt;
 use pi_agent_core::{
     AfterToolCall, AfterToolCallResult, Agent, AgentContext, AgentError, AgentEvent, AgentHooks,
     AgentListener, AgentMessage, AgentOptions, AgentTool, BeforeToolCall, BeforeToolCallResult,
-    ToolError, TurnContext, TurnUpdate,
+    QueueMode, ToolError, TurnContext, TurnUpdate,
 };
 use pi_ai::transcript::current_system_message;
 use pi_ai::{
@@ -40,7 +40,8 @@ use crate::extensions::{
     ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, Input, InputAction,
     InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact, SessionBeforeTree,
     SessionCompact, SessionShutdown, SessionStart, SessionStartReason, SessionTree,
-    ThinkingLevelSelect, ToolCall, ToolPrompt, ToolResult,
+    SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt,
+    ToolResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -851,22 +852,15 @@ impl AgentSession {
         self.core.register_tool(tool);
     }
 
-    /// Every registered tool's name.
-    pub fn tool_names(&self) -> Vec<String> {
-        lock(&self.core.tools)
-            .iter()
-            .map(|tool| tool.tool.name().to_string())
-            .collect()
+    /// Every registered tool, as Pi's `getAllTools` describes it.
+    pub fn all_tools(&self) -> Vec<ToolInfo> {
+        self.core.all_tools()
     }
 
-    /// Extension commands as `(name, description)`.
-    pub fn commands(&self) -> Vec<(String, String)> {
-        self.core
-            .runner
-            .commands()
-            .iter()
-            .map(|command| (command.name.clone(), command.description.clone()))
-            .collect()
+    /// What a prompt starting with `/` runs, as Pi's `getCommands` lists it: extension
+    /// commands, prompt templates, and skills as `skill:<name>`.
+    pub fn commands(&self) -> Vec<SlashCommandInfo> {
+        self.core.commands()
     }
 
     pub fn resources(&self) -> Resources {
@@ -886,6 +880,47 @@ impl AgentSession {
 
     pub fn settings(&self) -> Settings {
         lock(&self.core.settings).clone()
+    }
+
+    /// Turn automatic compaction on or off for this session, as Pi's
+    /// `setAutoCompactionEnabled` does. The settings files are the host's to change.
+    pub fn set_auto_compaction_enabled(&self, enabled: bool) {
+        lock(&self.core.settings).compaction.enabled = enabled;
+    }
+
+    pub fn auto_compaction_enabled(&self) -> bool {
+        lock(&self.core.settings).compaction.enabled
+    }
+
+    /// Turn automatic retries on or off for this session, as Pi's `setAutoRetryEnabled`
+    /// does.
+    pub fn set_auto_retry_enabled(&self, enabled: bool) {
+        lock(&self.core.settings).retry.enabled = enabled;
+    }
+
+    pub fn auto_retry_enabled(&self) -> bool {
+        lock(&self.core.settings).retry.enabled
+    }
+
+    /// Deliver steering all at once or one message per turn, as Pi's `setSteeringMode`
+    /// sets it.
+    pub fn set_steering_mode(&self, mode: QueueMode) {
+        lock(&self.core.settings).steering_mode = mode;
+        self.core.agent.set_steering_mode(mode);
+    }
+
+    pub fn steering_mode(&self) -> QueueMode {
+        lock(&self.core.settings).steering_mode
+    }
+
+    /// Deliver follow-ups all at once or one per turn, as Pi's `setFollowUpMode` sets it.
+    pub fn set_follow_up_mode(&self, mode: QueueMode) {
+        lock(&self.core.settings).follow_up_mode = mode;
+        self.core.agent.set_follow_up_mode(mode);
+    }
+
+    pub fn follow_up_mode(&self) -> QueueMode {
+        lock(&self.core.settings).follow_up_mode
     }
 
     pub fn context_usage(&self) -> Option<ContextUsage> {
@@ -1197,6 +1232,51 @@ impl SessionCore {
 
     fn sync_tools(&self) {
         self.agent.set_tools(self.executable_tools());
+    }
+
+    fn all_tools(&self) -> Vec<ToolInfo> {
+        let active = lock(&self.active_tools).clone();
+        lock(&self.tools)
+            .iter()
+            .map(|tool| {
+                let declaration = tool.tool.declaration();
+                ToolInfo {
+                    name: declaration.name.clone(),
+                    description: declaration.description.clone(),
+                    parameters: declaration.parameters.clone(),
+                    guidelines: tool.prompt.guidelines.clone(),
+                    active: active.contains(&declaration.name),
+                    extension: tool.extension.clone(),
+                }
+            })
+            .collect()
+    }
+
+    fn commands(&self) -> Vec<SlashCommandInfo> {
+        let resources = lock(&self.resources);
+        let commands = self
+            .runner
+            .commands()
+            .iter()
+            .map(|command| SlashCommandInfo {
+                name: command.name.clone(),
+                description: command.description.clone(),
+                source: SlashCommandSource::Extension,
+            });
+        let templates = resources
+            .prompt_templates
+            .iter()
+            .map(|template| SlashCommandInfo {
+                name: template.name.clone(),
+                description: template.description.clone(),
+                source: SlashCommandSource::Prompt,
+            });
+        let skills = resources.skills.iter().map(|skill| SlashCommandInfo {
+            name: format!("skill:{}", skill.name),
+            description: skill.description.clone(),
+            source: SlashCommandSource::Skill,
+        });
+        commands.chain(templates).chain(skills).collect()
     }
 
     fn register_tool(&self, tool: RegisteredTool) {
@@ -2322,15 +2402,20 @@ impl ExtensionContext {
         }
     }
 
-    /// Every registered tool's name.
-    pub fn tool_names(&self) -> Vec<String> {
+    /// Every registered tool, as Pi's `getAllTools` describes it.
+    pub fn all_tools(&self) -> Vec<ToolInfo> {
+        self.core().map(|core| core.all_tools()).unwrap_or_default()
+    }
+
+    /// What a prompt starting with `/` runs, as Pi's `getCommands` lists it.
+    pub fn commands(&self) -> Vec<SlashCommandInfo> {
+        self.core().map(|core| core.commands()).unwrap_or_default()
+    }
+
+    /// The session's settings, as Pi's `getSettings` gives them.
+    pub fn settings(&self) -> Settings {
         self.core()
-            .map(|core| {
-                lock(&core.tools)
-                    .iter()
-                    .map(|tool| tool.tool.name().to_string())
-                    .collect()
-            })
+            .map(|core| lock(&core.settings).clone())
             .unwrap_or_default()
     }
 
