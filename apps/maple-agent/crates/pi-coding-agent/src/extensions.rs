@@ -17,6 +17,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
@@ -53,6 +54,31 @@ pub enum SessionStartReason {
 #[derive(Clone, Debug)]
 pub struct SessionStart {
     pub reason: SessionStartReason,
+    /// The file of the session a fork came from, when its store kept one.
+    pub previous_session_file: Option<PathBuf>,
+}
+
+/// Where a fork starts, as Pi's `fork` takes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ForkPosition {
+    /// Before a user message: the new session holds the path up to it, and its text
+    /// comes back to be edited. Pi's default.
+    #[default]
+    Before,
+    /// At an entry: the new session holds the path up to and including it.
+    At,
+}
+
+/// A fork about to happen. Return `cancel` to refuse it.
+#[derive(Clone, Debug)]
+pub struct SessionBeforeFork {
+    pub entry_id: String,
+    pub position: ForkPosition,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BeforeForkResult {
+    pub cancel: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +131,8 @@ pub enum InputAction {
 #[derive(Clone, Debug)]
 pub struct BeforeAgentStart {
     pub prompt: String,
+    /// The images attached to the prompt.
+    pub images: Vec<ImageContent>,
     pub system_prompt: String,
     pub options: SystemPromptOptions,
 }
@@ -257,6 +285,7 @@ events! {
     BeforeProviderRequest => Option<Value>, "before_provider_request";
     SessionBeforeCompact => BeforeCompactResult, "session_before_compact";
     SessionCompact => (), "session_compact";
+    SessionBeforeFork => BeforeForkResult, "session_before_fork";
     SessionBeforeTree => BeforeTreeResult, "session_before_tree";
     SessionTree => (), "session_tree";
     ModelSelect => (), "model_select";
@@ -864,6 +893,19 @@ impl ExtensionRunner {
             outcome.compaction = answer.compaction.or(outcome.compaction);
         }
         outcome
+    }
+
+    pub async fn before_fork(
+        &self,
+        event: SessionBeforeFork,
+        core: &Weak<SessionCore>,
+    ) -> BeforeForkResult {
+        let cancel = self
+            .emit_until_cancel(event, core, |answer: &BeforeForkResult| answer.cancel)
+            .await
+            .iter()
+            .any(|answer| answer.cancel);
+        BeforeForkResult { cancel }
     }
 
     pub async fn before_tree(

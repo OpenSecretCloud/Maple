@@ -783,23 +783,26 @@ impl SessionManager {
         build(self, &children, None)
     }
 
-    /// Turn this into a new session holding only the path to `leaf_id`, stored in
-    /// `store`. Labels on the path are carried over. A failed write is reported by
+    /// Turn this into a new session holding only the path to `leaf_id`, or nothing for
+    /// `None`, stored in `store`. Labels on the path are carried over. A failed write is reported by
     /// [`Self::take_persist_error`], like any other.
     pub fn fork(
         &mut self,
-        leaf_id: &str,
+        leaf_id: Option<&str>,
         store: Box<dyn SessionStore>,
     ) -> Result<(), SessionError> {
-        if !self.index.contains_key(leaf_id) {
+        if let Some(leaf_id) = leaf_id
+            && !self.index.contains_key(leaf_id)
+        {
             return Err(SessionError::NotFound(leaf_id.into()));
         }
+        let path = leaf_id.map_or_else(Vec::new, |leaf_id| self.branch_to(leaf_id));
         let mut entries: Vec<SessionEntry> = Vec::new();
         // Label entries are rewritten at the end. A compaction that keeps entries from a
         // label on keeps them from the next entry instead.
         let mut dropped_labels: Vec<String> = Vec::new();
         let mut kept_from: HashMap<String, String> = HashMap::new();
-        for entry in self.branch_to(leaf_id) {
+        for entry in path {
             if matches!(entry.kind, EntryKind::Label { .. }) {
                 dropped_labels.push(entry.id.clone());
                 continue;
@@ -1053,7 +1056,7 @@ mod tests {
         session.append_message(assistant("other answer"));
         let original = session.id().to_string();
 
-        session.fork(&answer, Box::new(MemoryStore)).unwrap();
+        session.fork(Some(&answer), Box::new(MemoryStore)).unwrap();
         assert_eq!(
             session.header().parent_session.as_deref(),
             Some(original.as_str())
@@ -1081,7 +1084,7 @@ mod tests {
             ["summary", "recent question", "recent answer", "next"]
         );
 
-        session.fork(&leaf, Box::new(MemoryStore)).unwrap();
+        session.fork(Some(&leaf), Box::new(MemoryStore)).unwrap();
         assert_eq!(texts(&session), before);
     }
 

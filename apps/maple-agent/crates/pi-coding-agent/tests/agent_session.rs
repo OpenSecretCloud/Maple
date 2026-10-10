@@ -13,7 +13,8 @@ use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
 use pi_coding_agent::compaction::estimate_tokens;
 use pi_coding_agent::extensions::{
-    CustomMessageDraft, Input, InputAction, ModelSelect, SlashCommandSource, extension,
+    BeforeForkResult, CustomMessageDraft, ForkPosition, Input, InputAction, ModelSelect,
+    SessionBeforeFork, SlashCommandSource, extension,
 };
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources, Skill};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
@@ -502,7 +503,7 @@ async fn a_fork_continues_in_a_new_session_with_the_path_only() {
     let original = session.session_id();
 
     session
-        .fork(&fork_point, Box::new(MemoryStore))
+        .fork(&fork_point, ForkPosition::At, Box::new(MemoryStore))
         .await
         .unwrap();
     assert_ne!(session.session_id(), original);
@@ -510,6 +511,63 @@ async fn a_fork_continues_in_a_new_session_with_the_path_only() {
     assert_eq!(
         session.with_session(|tree| tree.header().parent_session.clone()),
         Some(original)
+    );
+}
+
+#[tokio::test]
+async fn a_fork_before_a_user_message_gives_its_text_back() {
+    let harness = Harness::new();
+    harness.faux.push_text("first answer");
+    harness.faux.push_text("second answer");
+    let refusals = Arc::new(AtomicBool::new(true));
+    let refuse = refusals.clone();
+    let guard = extension("guard", move |api| {
+        let refuse = refuse.clone();
+        api.on(move |event: SessionBeforeFork, _ctx| {
+            let refuse = refuse.clone();
+            async move {
+                assert_eq!(event.position, ForkPosition::Before);
+                Ok(BeforeForkResult {
+                    cancel: refuse.swap(false, Ordering::SeqCst),
+                })
+            }
+        });
+    });
+    let session = harness.session_with_extensions(vec![guard]).await;
+    for text in ["first", "second"] {
+        session
+            .prompt(text, PromptOptions::default())
+            .await
+            .unwrap();
+    }
+    let second = session.with_session(|tree| {
+        tree.branch()
+            .iter()
+            .rev()
+            .find(|entry| matches!(&entry.kind, EntryKind::Message { message } if message.text() == "second"))
+            .unwrap()
+            .id
+            .clone()
+    });
+
+    // An extension can refuse a fork, as in Pi.
+    assert!(matches!(
+        session
+            .fork(&second, ForkPosition::Before, Box::new(MemoryStore))
+            .await,
+        Err(AgentSessionError::Cancelled)
+    ));
+    let edited = session
+        .fork(&second, ForkPosition::Before, Box::new(MemoryStore))
+        .await
+        .unwrap();
+    assert_eq!(edited.as_deref(), Some("second"));
+    assert_eq!(last_assistant_text(&session), "first answer");
+    assert!(
+        !session
+            .messages()
+            .iter()
+            .any(|message| message.text() == "second")
     );
 }
 
@@ -1243,7 +1301,7 @@ async fn a_fork_that_cannot_be_written_still_moves_the_conversation() {
     let events = record(&session);
 
     session
-        .fork(&fork_point, Box::new(ReadOnlyStore))
+        .fork(&fork_point, ForkPosition::At, Box::new(ReadOnlyStore))
         .await
         .unwrap();
     assert_eq!(last_assistant_text(&session), "first answer");

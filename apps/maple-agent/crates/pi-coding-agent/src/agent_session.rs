@@ -37,11 +37,11 @@ use crate::compaction::{
 };
 use crate::extensions::{
     AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderRequest, CustomMessageDraft,
-    Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, Input,
-    InputAction, InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact,
-    SessionBeforeTree, SessionCompact, SessionInfoChanged, SessionShutdown, SessionStart,
-    SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect,
-    ToolCall, ToolInfo, ToolPrompt, ToolResult,
+    Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, ForkPosition,
+    Input, InputAction, InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact,
+    SessionBeforeFork, SessionBeforeTree, SessionCompact, SessionInfoChanged, SessionShutdown,
+    SessionStart, SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource,
+    ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -659,6 +659,7 @@ impl AgentSession {
             .emit(
                 &SessionStart {
                     reason: SessionStartReason::Startup,
+                    previous_session_file: None,
                 },
                 &core.weak,
             )
@@ -801,17 +802,63 @@ impl AgentSession {
             .await
     }
 
-    /// Continue in a new session holding only the path to `entry_id`.
+    /// Continue in a new session holding only the path to `entry_id`, as Pi's `fork` does.
+    ///
+    /// As in Pi, a fork before a user message holds the path up to it and gives back its
+    /// text to edit, and a fork at an entry holds the path up to and including it.
+    /// Extensions can cancel it; a run in progress is stopped first. The session goes on
+    /// in this same object, its extensions with it, so they hear of a fork as a
+    /// [`SessionStart`] with no shutdown before.
     pub async fn fork(
         &self,
         entry_id: &str,
+        position: ForkPosition,
         store: Box<dyn SessionStore>,
-    ) -> Result<(), AgentSessionError> {
-        let _maintenance = self
+    ) -> Result<Option<String>, AgentSessionError> {
+        let before = self
             .core
-            .begin(Activity::Maintenance)
-            .ok_or(AgentSessionError::Busy)?;
-        lock(&self.core.session).fork(entry_id, store)?;
+            .runner
+            .before_fork(
+                SessionBeforeFork {
+                    entry_id: entry_id.to_string(),
+                    position,
+                },
+                &self.core.weak,
+            )
+            .await;
+        if before.cancel {
+            return Err(AgentSessionError::Cancelled);
+        }
+        let _maintenance = loop {
+            if let Some(maintenance) = self.core.begin(Activity::Maintenance) {
+                break maintenance;
+            }
+            self.core.abort();
+            self.wait_for_idle().await;
+        };
+        let (previous_session_file, edited_text) = {
+            let mut session = lock(&self.core.session);
+            let entry = session
+                .entry(entry_id)
+                .ok_or_else(|| SessionError::NotFound(entry_id.into()))?;
+            let (leaf, edited_text) = match (position, &entry.kind) {
+                (ForkPosition::At, _) => (Some(entry.id.clone()), None),
+                (
+                    ForkPosition::Before,
+                    EntryKind::Message {
+                        message: SessionMessage::Llm(Message::User(user)),
+                    },
+                ) => (entry.parent_id.clone(), Some(content_text(&user.content))),
+                (ForkPosition::Before, _) => {
+                    return Err(AgentSessionError::Failed(
+                        "Only a user message can be forked before".into(),
+                    ));
+                }
+            };
+            let previous = session.session_file().map(Path::to_path_buf);
+            session.fork(leaf.as_deref(), store)?;
+            (previous, edited_text)
+        };
         self.core.report_persistence();
         self.core.rebuild_messages();
         self.core
@@ -819,11 +866,12 @@ impl AgentSession {
             .emit(
                 &SessionStart {
                     reason: SessionStartReason::Fork,
+                    previous_session_file,
                 },
                 &self.core.weak,
             )
             .await;
-        Ok(())
+        Ok(edited_text)
     }
 
     pub async fn set_model(&self, model: Model) {
@@ -1587,6 +1635,7 @@ impl SessionCore {
         let base = self.prompt_options();
         let event = BeforeAgentStart {
             prompt: text.clone(),
+            images: images.clone(),
             system_prompt: render(&base).unwrap_or_default(),
             options: base.clone(),
         };
