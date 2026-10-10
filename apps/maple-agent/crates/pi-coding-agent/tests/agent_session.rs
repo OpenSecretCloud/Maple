@@ -322,6 +322,40 @@ async fn manual_compaction_summarizes_the_older_turns() {
 }
 
 #[tokio::test]
+async fn manual_compaction_stops_a_run_first() {
+    let harness = Harness::new();
+    let session = harness
+        .session_with(|options| options.settings.compaction.keep_recent_tokens = 50)
+        .await;
+    with_history(&harness, &session).await;
+    harness.faux.push_hang();
+    let runner = session.clone();
+    let run =
+        tokio::spawn(async move { runner.prompt("question 2", PromptOptions::default()).await });
+    while harness.faux.requests().len() < 3 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    harness.faux.push_text("## Goal\nanswer questions");
+    harness.faux.push_text("## Original Request\nquestion 2");
+
+    // As in Pi, the run is stopped rather than the compaction refused.
+    let result = session.compact(None).await.unwrap();
+    assert!(result.summary.starts_with("## Goal"));
+    run.await.unwrap().unwrap();
+    assert!(!session.is_streaming());
+    assert_eq!(
+        roles(&session.messages())[..2],
+        ["system", "compactionSummary"]
+    );
+    // The stopped turn is not continued.
+    let Some(SessionMessage::Llm(Message::Assistant(last))) = session.messages().last().cloned()
+    else {
+        panic!()
+    };
+    assert_eq!(last.stop_reason, StopReason::Aborted);
+}
+
+#[tokio::test]
 async fn compaction_thinks_at_the_sessions_level_and_a_branch_summary_does_not() {
     let harness = Harness::new();
     let session = harness
@@ -894,10 +928,6 @@ async fn a_retry_keeps_the_session_busy() {
     assert!(session.is_streaming());
     assert!(matches!(
         session.prompt("second", PromptOptions::default()).await,
-        Err(AgentSessionError::Busy)
-    ));
-    assert!(matches!(
-        session.compact(None).await,
         Err(AgentSessionError::Busy)
     ));
     let follow_up = PromptOptions {

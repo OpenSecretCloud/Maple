@@ -733,15 +733,19 @@ impl AgentSession {
             .await;
     }
 
-    /// Compact the current branch.
+    /// Compact the current branch. As in Pi, whatever the session is doing is stopped
+    /// first, and a stopped run is not continued.
     pub async fn compact(
         &self,
         custom_instructions: Option<&str>,
     ) -> Result<CompactionResult, AgentSessionError> {
-        let _maintenance = self
-            .core
-            .begin(Activity::Maintenance)
-            .ok_or(AgentSessionError::Busy)?;
+        let _maintenance = loop {
+            if let Some(maintenance) = self.core.begin(Activity::Maintenance) {
+                break maintenance;
+            }
+            self.core.abort();
+            self.wait_for_idle().await;
+        };
         self.core
             .clone()
             .compact(CompactionReason::Manual, custom_instructions)
