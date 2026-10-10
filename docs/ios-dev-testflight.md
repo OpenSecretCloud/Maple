@@ -81,7 +81,8 @@ a master-only manual dispatch to force a fresh production build.
 The development workflow calls the shared `scripts/ci/ios-release.sh` with
 `MAPLE_IOS_VARIANT=dev`. Omitting that variable continues to build production
 Maple. It uses the repository-pinned Nix Apple shell, separate development Xcode
-and ONNX cache keys, and a separate artifact and proof directory:
+app caches, the shared unsigned ONNX dependency cache, and a separate artifact
+and proof directory:
 
 ```text
 apps/maple-research/frontend/src-tauri/target/ios-dev/Maple-Dev.ipa

@@ -118,16 +118,15 @@ class SigningWorkflowTests(unittest.TestCase):
             "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
         )
         jobs = config["jobs"]
-        for name in ("changes", "build-ios", "submit-ios-testflight", "warm-ios-pr-onnx-cache"):
+        for name in ("changes", "build-ios", "submit-ios-testflight"):
             self.assertIn(guard, " ".join(jobs[name]["if"].split()))
         self.assertEqual(jobs["build-ios"]["needs"], "changes")
         self.assertEqual(jobs["verify-ios-artifacts"]["needs"], "build-ios")
         self.assertEqual(jobs["submit-ios-testflight"]["needs"], "verify-ios-artifacts")
         for job in jobs.values():
             self.assertNotIn("concurrency", job)
-        for name in ("build-ios", "warm-ios-pr-onnx-cache"):
-            self.assertIn("always() && !cancelled()", jobs[name]["if"])
-            self.assertIn("needs.changes.result != 'success'", jobs[name]["if"])
+        self.assertIn("always() && !cancelled()", jobs["build-ios"]["if"])
+        self.assertIn("needs.changes.result != 'success'", jobs["build-ios"]["if"])
 
     def test_manual_testflight_dispatch_forces_a_fresh_build_without_a_path_diff(self):
         steps = workflows()["app-change-detection.yml"]["jobs"]["detect"]["steps"]
@@ -138,7 +137,7 @@ class SigningWorkflowTests(unittest.TestCase):
                            cwd=directory, env={**os.environ, "GITHUB_EVENT_NAME": "workflow_dispatch",
                                                "GITHUB_OUTPUT": str(output), "BASE_SHA": "", "HEAD_SHA": ""})
             self.assertEqual(dict(line.split("=", 1) for line in output.read_text().splitlines()), {
-                name: "true" for name in ("frontend", "macos", "linux", "windows", "ios", "android", "ios_onnx")
+                name: "true" for name in ("frontend", "macos", "linux", "windows", "ios", "android")
             })
 
     def test_windows_oidc_keeps_its_federated_environment_identity(self):
@@ -196,9 +195,32 @@ class SigningWorkflowTests(unittest.TestCase):
         self.assertIn("apps/maple-research/frontend/src-tauri/target/ios-dev/ios-build-profile.json", paths)
         self.assertTrue(all("/ios-dev/" in path for path in paths))
         for step in job["steps"]:
-            if "key" in step.get("with", {}):
+            if step.get("uses", "").startswith("irgaly/xcode-cache@"):
                 self.assertTrue(step["with"]["key"].startswith("maple-dev-"))
                 self.assertTrue(all(key.startswith("maple-dev-") for key in step["with"]["restore-keys"].splitlines()))
+
+    def test_unsigned_onnx_cache_has_trusted_writers_and_restore_only_prs(self):
+        caches = {}
+        for name, job_id in (
+            ("mobile-build.yml", "build-ios"),
+            ("ios-dev-testflight.yml", "build-ios-dev"),
+            ("release.yml", "build-ios"),
+            ("mobile-pr-build.yml", "build-ios"),
+        ):
+            job = workflows()[name]["jobs"][job_id]
+            cache = next(step for step in job["steps"]
+                         if step.get("with", {}).get("path", "").strip()
+                         == "apps/maple-research/frontend/src-tauri/onnxruntime-ios")
+            caches[name] = cache
+            action = "actions/cache/restore@" if name == "mobile-pr-build.yml" else "actions/cache@"
+            self.assertTrue(cache["uses"].startswith(action), name)
+            prepare = next(step for step in job["steps"]
+                           if "./scripts/ci/ios-onnxruntime.sh" in step.get("run", ""))
+            self.assertLess(job["steps"].index(cache), job["steps"].index(prepare))
+        master = caches["mobile-build.yml"]["with"]
+        for name, cache in caches.items():
+            self.assertEqual(cache["with"]["key"], master["key"], name)
+            self.assertEqual(cache["with"]["restore-keys"], master["restore-keys"], name)
 
     def test_dev_testflight_verifies_exact_download_before_exposing_upload_credentials(self):
         job = workflows()["ios-dev-testflight.yml"]["jobs"]["submit-ios-dev-testflight"]

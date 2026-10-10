@@ -48,7 +48,7 @@ jobs:
           set -euo pipefail
           printf 'build_number=%s.%s\n' "${RUN_NUMBER}" "${RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
 
-      # Match the existing production lane without sharing app build caches.
+      # Share the unsigned ONNX dependency; keep app build caches separate.
       - name: Select pinned Xcode
         id: select_xcode
         run: python3 scripts/ci/select-xcode.py
@@ -65,13 +65,13 @@ jobs:
           restore-keys: |
             maple-dev-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
 
-      - name: Cache Maple Dev ONNX Runtime iOS artifact
+      - name: Cache ONNX Runtime iOS artifact
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: apps/maple-research/frontend/src-tauri/onnxruntime-ios
-          key: maple-dev-onnxruntime-ios-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/apple-toolchain.json', 'scripts/ci/select-xcode.py', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+          key: release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/apple-toolchain.json', 'scripts/ci/select-xcode.py', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
           restore-keys: |
-            maple-dev-onnxruntime-ios-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
+            release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
 
       - name: Prepare ONNX Runtime iOS artifact
         run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh

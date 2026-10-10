@@ -80,7 +80,7 @@ remain separate measurements.
 
 ## macOS runners and Apple toolchain
 
-Research desktop/iOS builds, iOS ONNX cache warming, Agent release-binary jobs
+Research desktop/iOS builds, Agent release-binary jobs
 and native proxy macOS archives use ARM64 `blacksmith-6vcpu-macos-26` runners.
 Artifact verifiers, TestFlight uploads, and Agent preview packaging/protected
 signing use standard GitHub `macos-26` runners. Research signed builders retain
@@ -104,6 +104,12 @@ rebuilding and reviewing those hashes, keeping cache keys tied to the selected
 version/build and artifact inputs, and validating desktop and iOS packaging.
 Retiring a CI host image does not raise the shipped client's deployment
 targets: Research still supports macOS 13.4 and iOS 16.0.
+
+iOS builds share the unsigned ONNX dependency cache written by trusted master
+and release jobs. PRs only restore it; a miss builds locally and never saves a
+PR cache. Every restored artifact is checked against the pinned Xcode and ONNX
+hashes before use. Dev and Prod app build caches, signing and publication remain
+independent; there is no separate ONNX cache warmer.
 
 ## Windows runner pilot
 
