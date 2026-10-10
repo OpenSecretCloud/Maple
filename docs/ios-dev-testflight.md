@@ -17,56 +17,54 @@ The development profile uses the existing development services:
 | Enclave approval environment | `development` |
 | Billing | `https://billing-dev.opensecret.cloud` |
 | Feature flags | `https://flags-dev.opensecret.cloud` |
+| Hosted native authentication | `https://auth-dev.maple.ai` |
 
 The profile is fixed at build time. It is not a user-selectable backend switch.
 Development and production accounts remain in their respective existing
 services; this app does not require another authentication or billing deployment.
 All `VITE_*` values are public configuration and must never contain secrets.
 
-The stable Research development website is `https://app-dev.trymaple.ai`. Its
-Pages custom domain targets the `master` development preview and is protected by
-Cloudflare Access; browser validation requires an authorized Access session.
-The public repository variable `MAPLE_IOS_DEV_AUTH_ORIGIN` selects this canonical
-HTTPS origin, with no path, query, fragment, or credentials. The native build
-requires the variable and has no fallback to the production website. The
-development Pages build receives the same value as `VITE_MAPLE_DEV_AUTH_ORIGIN`;
-production builds remove that development setting. An unset variable preserves
-ordinary web previews but blocks a Maple Dev native build. Setting the variable
-does not deploy the site or validate its OAuth and native callback flows.
+The stable Research development website is `https://app-dev.trymaple.ai`.
+Hosted native sign-in uses the separate Auth application at
+`https://auth-dev.maple.ai`. Both sites are protected by Cloudflare Access;
+browser validation requires an authorized Access session.
 
-Existing services still need to recognize the separate client identity before
-all authentication paths work. Native Sign in with Apple requires deployment of
-the optional per-project native audience support and configuration of the
-development project's allowed `cloud.opensecret.maple.dev` audience. The existing
-web Apple client ID remains unchanged. Browser-based OAuth also requires the
-development callback site to deploy support for the separate app callback
-scheme. Those backend and callback deployments are separate rollout gates;
-building this app does not apply them automatically.
+Set the public repository variable `MAPLE_IOS_DEV_AUTH_ORIGIN` to
+`https://auth-dev.maple.ai`, exactly as pinned in the Dev profile in
+`scripts/ci/ios-build-profile.py`. The native build requires this variable and
+compiles it as `VITE_MAPLE_DEV_AUTH_ORIGIN`; a missing or different value fails
+before dependency installation and signing setup. Artifact verification also
+checks against the committed profile, even if the supplied variable and embedded
+profile agree on the same wrong host. There is no production fallback.
+Changing this destination requires a reviewed profile update and a new Dev
+TestFlight build; neither a variable change nor a source change alters installed
+apps. The development Pages build also receives this value; production builds
+remove it. An unset variable preserves ordinary web previews but blocks a Maple
+Dev native build.
 
-The current Dev entry targets Research's built-in `/desktop-auth` flow. The
-standalone `apps/maple-auth` application currently accepts only the original
-native target and returns the production callback scheme; it needs explicit Dev
-target support before its origin can be selected here. Publishing that separate
-auth site alone does not complete Maple Dev's sign-in integration.
+For Google and GitHub, Maple Dev opens Auth's `/desktop-auth` entry with
+`native_app_variant=dev`. The standalone `apps/maple-auth` application supports
+that target and returns through `cloud.opensecret.maple.dev://auth`. Auth selects
+its own `<origin>/auth/<provider>/callback` explicitly. Register those exact
+callbacks with the providers and in the development project's backend callback
+allowlists, then validate the hosted flow before distributing the native build.
+Publishing Auth or setting the build variable does not configure these callbacks.
+Native iOS Sign in with Apple uses the development project's allowed
+`cloud.opensecret.maple.dev` audience and does not use this browser entry.
 
-Research currently pins `@mapleai/sdk` 4.0.1. Its provider initiation does not
-select a `redirect_url`, so each enabled provider's existing development-project
-default callback must return to this exact origin. Adding an
-`additional_redirect_urls` entry alone does not select it. The SDK continuation
-and native handoff use the initiating tab's `sessionStorage`; returning to
-another origin cannot complete that flow. Prefer the development site's verified
-current callback origin, and assess other development clients before changing
-any shared default. Verify the same callback in the provider console, including
-the existing Apple web Services ID's `<origin>/auth/apple/callback`. Selecting a
-non-default callback would require a separate SDK and caller upgrade. See the
-[backend callback contract](../services/opensecret/docs/oauth-callbacks.md).
+Research's built-in web authentication remains separate. Its provider
+initiation omits `redirect_url`, so it continues to use the development project's
+existing default callbacks. Moving native entry to standalone Auth does not
+require changing those defaults or upgrading Research's frontend SDK. Preserve
+any defaults still needed by web clients; add Auth's callbacks through
+`additional_redirect_urls`. The SDK continuation and native handoff depend on
+the initiating browser tab's state, so callbacks must return to the origin that
+started that flow. See the [backend callback contract](../services/opensecret/docs/oauth-callbacks.md).
 
-Once these shared development defaults move, new OAuth attempts from arbitrary
-PR preview origins cannot retain their cross-origin continuation state. Use the
-stable development site for OAuth testing; previews can still serve other branch
-validation. Production callback settings remain separate. Publish the compatible
-hosted development flow before enabling native browser sign-in, and retain that
-web-before-native ordering for future handoff protocol changes.
+Use the stable Auth origin for native OAuth testing and the stable Research
+website for web OAuth testing. Arbitrary PR preview origins are not implicitly
+registered OAuth callback sites. Keep production callback settings separate,
+and retain hosted-flow-before-native-build ordering for future handoff changes.
 
 ## Build and upload workflow
 
@@ -97,6 +95,15 @@ the selected environment and frontend input hash; it does not by itself prove
 the running application's network behavior. A failed verification stops
 the upload. Credentials are introduced only in the signing and final upload
 steps, within the existing protected `apple-signing` environment.
+
+Before device testing, inspect `environment.VITE_MAPLE_DEV_AUTH_ORIGIN` in the
+artifact's `ios-build-profile.json` and the IPA's embedded
+`Payload/<app>.app/assets/maple-build-profile.json`. The committed expected Auth
+origin is `https://auth-dev.maple.ai`; passing the profile checks proves this
+configuration matches, not that provider callbacks or device handoff work.
+Record the exact source commit and installed TestFlight build number, then
+confirm Google/GitHub actually visit Auth and return to Maple Dev. Native Apple
+success does not validate this hosted Google/GitHub path.
 
 The development export sets `testFlightInternalTestingOnly=true`, which prevents
 the IPA from being used for external TestFlight or App Store distribution. IPA

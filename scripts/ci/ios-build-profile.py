@@ -54,6 +54,7 @@ PROFILES = {
             "VITE_MAPLE_BILLING_API_URL": "https://billing-dev.opensecret.cloud",
             "VITE_CLIENT_ID": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
             "VITE_MAPLE_APP_VARIANT": "dev",
+            "VITE_MAPLE_DEV_AUTH_ORIGIN": "https://auth-dev.maple.ai",
         },
     },
 }
@@ -89,6 +90,9 @@ def validate_auth_origin(value):
     canonical = f"https://{parsed.hostname}"
     if value != canonical:
         raise ValueError("MAPLE_IOS_DEV_AUTH_ORIGIN must use its canonical HTTPS origin spelling")
+    expected = PROFILES["dev"]["environment"]["VITE_MAPLE_DEV_AUTH_ORIGIN"]
+    if canonical != expected:
+        raise ValueError(f"MAPLE_IOS_DEV_AUTH_ORIGIN must match the committed Dev profile: {expected}")
     return canonical
 
 
@@ -96,8 +100,7 @@ def make_profile(variant, source_sha, build_number, frontend_hash, environment):
     expected = dict(profile_for(variant))
     expected["environment"] = dict(expected["environment"])
     if variant == "dev":
-        expected["environment"]["VITE_MAPLE_DEV_AUTH_ORIGIN"] = validate_auth_origin(
-            environment.get("VITE_MAPLE_DEV_AUTH_ORIGIN", ""))
+        validate_auth_origin(environment.get("VITE_MAPLE_DEV_AUTH_ORIGIN", ""))
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise ValueError("source commit must be a full Git SHA")
     if not re.fullmatch(r"[0-9a-f]{64}", frontend_hash):
@@ -214,7 +217,8 @@ def verify_bundle(info, embedded, variant, source_sha, build_number, *, auth_ori
     expected = profile_for(variant)
     environment = dict(expected["environment"])
     if variant == "dev":
-        environment["VITE_MAPLE_DEV_AUTH_ORIGIN"] = validate_auth_origin(auth_origin)
+        # The supplied value is an assertion, not the source of the expectation.
+        validate_auth_origin(auth_origin)
     expected_profile = make_profile(
         variant, source_sha, build_number,
         embedded.get("frontend_tree_sha256", ""), environment,
