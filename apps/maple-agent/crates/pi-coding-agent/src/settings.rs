@@ -88,36 +88,62 @@ pub fn merge_json(base: &mut Value, overlay: Value) {
     }
 }
 
+/// A settings file that could not be loaded. Loading goes on without it, as in Pi, so
+/// the other file still applies and the host can show the problem.
+#[derive(Debug)]
+pub struct SettingsError {
+    pub path: PathBuf,
+    pub error: io::Error,
+}
+
+/// A missing or empty file has no settings. A leading byte order mark is skipped.
 fn read_json(path: &Path) -> io::Result<Option<Value>> {
     match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).map(Some).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{}: {error}", path.display()),
-            )
-        }),
+        Ok(text) if text.is_empty() => Ok(None),
+        Ok(text) => serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text))
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
 
+/// `merged` with the settings file at `path` over it, and the settings they give.
+fn overlay(merged: &Value, path: &Path, is_project: bool) -> io::Result<Option<(Value, Settings)>> {
+    let Some(mut value) = read_json(path)? else {
+        return Ok(None);
+    };
+    if is_project && let Some(object) = value.as_object_mut() {
+        // A project cannot decide how far it is trusted.
+        object.remove("defaultProjectTrust");
+    }
+    let mut next = merged.clone();
+    merge_json(&mut next, value);
+    let settings = Settings::deserialize(&next)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(Some((next, settings)))
+}
+
 impl Settings {
-    /// Load user settings overlaid with project settings. Missing files are skipped; a
-    /// file that does not parse is an error rather than silently ignored.
-    pub fn load(user: Option<&Path>, project: Option<&Path>) -> io::Result<Self> {
-        let mut merged = serde_json::to_value(Settings::default())?;
+    /// Load user settings overlaid with project settings. Missing and empty files are
+    /// skipped. A file that cannot be read, does not parse or holds a value of the wrong
+    /// type is left out and returned with its error.
+    pub fn load(user: Option<&Path>, project: Option<&Path>) -> (Self, Vec<SettingsError>) {
+        let mut settings = Settings::default();
+        let mut merged = serde_json::to_value(&settings).expect("settings serialize");
+        let mut errors = Vec::new();
         for (path, is_project) in [(user, false), (project, true)] {
             let Some(path) = path else { continue };
-            if let Some(mut value) = read_json(path)? {
-                if is_project && let Some(object) = value.as_object_mut() {
-                    // A project cannot decide how far it is trusted.
-                    object.remove("defaultProjectTrust");
-                }
-                merge_json(&mut merged, value);
+            match overlay(&merged, path, is_project) {
+                Ok(Some((next, loaded))) => (merged, settings) = (next, loaded),
+                Ok(None) => {}
+                Err(error) => errors.push(SettingsError {
+                    path: path.to_path_buf(),
+                    error,
+                }),
             }
         }
-        serde_json::from_value(merged)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        (settings, errors)
     }
 }
 
@@ -139,7 +165,8 @@ mod tests {
         )
         .unwrap();
 
-        let settings = Settings::load(Some(&user), Some(&project)).unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert!(errors.is_empty());
         assert_eq!(settings.compaction.reserve_tokens, 1000);
         assert_eq!(settings.compaction.keep_recent_tokens, 9);
         assert!(settings.compaction.enabled);
@@ -159,21 +186,76 @@ mod tests {
             json!({ "defaultProjectTrust": "always" }).to_string(),
         )
         .unwrap();
-        let settings = Settings::load(Some(&user), Some(&project)).unwrap();
+        let (settings, _) = Settings::load(Some(&user), Some(&project));
         assert_eq!(settings.default_project_trust, DefaultProjectTrust::Never);
-        let settings = Settings::load(None, Some(&project)).unwrap();
+        let (settings, _) = Settings::load(None, Some(&project));
         assert_eq!(settings.default_project_trust, DefaultProjectTrust::Ask);
     }
 
     #[test]
-    fn missing_files_give_defaults_and_broken_files_are_errors() {
+    fn missing_and_empty_files_give_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            Settings::load(Some(&dir.path().join("none.json")), None).unwrap(),
-            Settings::default()
+        let empty = dir.path().join("empty.json");
+        fs::write(&empty, "").unwrap();
+        let (settings, errors) = Settings::load(Some(&dir.path().join("none.json")), Some(&empty));
+        assert_eq!(settings, Settings::default());
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user.json");
+        let project = dir.path().join("project.json");
+        fs::write(
+            &user,
+            format!("\u{feff}{}", json!({ "steeringMode": "all" })),
+        )
+        .unwrap();
+        fs::write(
+            &project,
+            format!("\u{feff}{}", json!({ "defaultThinkingLevel": "high" })),
+        )
+        .unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert!(errors.is_empty());
+        assert_eq!(settings.steering_mode, QueueMode::All);
+        assert_eq!(settings.default_thinking_level, Some(ThinkingLevel::High));
+    }
+
+    #[test]
+    fn a_broken_file_is_reported_and_the_other_still_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user.json");
+        let project = dir.path().join("project.json");
+        fs::write(&user, "{ invalid user json").unwrap();
+        fs::write(&project, "{ invalid project json").unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert_eq!(settings, Settings::default());
+        let paths: Vec<&Path> = errors.iter().map(|error| error.path.as_path()).collect();
+        assert_eq!(paths, [user.as_path(), project.as_path()]);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.error.kind() == io::ErrorKind::InvalidData)
         );
-        let broken = dir.path().join("broken.json");
-        fs::write(&broken, "{ nope").unwrap();
-        assert!(Settings::load(Some(&broken), None).is_err());
+
+        fs::write(&user, json!({ "steeringMode": "all" }).to_string()).unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert_eq!(settings.steering_mode, QueueMode::All);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].path, project);
+
+        // A value of the wrong type spoils its own file only.
+        fs::write(
+            &project,
+            json!({ "retry": { "maxRetries": "three" } }).to_string(),
+        )
+        .unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert_eq!(settings.steering_mode, QueueMode::All);
+        assert_eq!(settings.retry, RetrySettings::default());
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].path, project);
     }
 }
