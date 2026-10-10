@@ -18,9 +18,87 @@ import {
   type MapleAppVariant
 } from "@/config/mapleAppVariant";
 
-// For direct deep link handling, we'll listen to our custom event
-// If we had the types installed, we would use:
-// import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
+// Rust forwards each deep link as a "deep-link-received" event. A link that
+// launches the app arrives before this component is listening, so that event
+// is dropped; the deep-link plugin keeps the launch URL, and we read it with
+// getCurrent() once the listener is attached.
+//
+// getCurrent() keeps returning that URL for the whole app session, and
+// handling a link reloads the page, so remember what's been handled. Auth
+// links use their pending-attempt fence instead; never store credential-bearing URLs.
+const HANDLED_DEEP_LINKS_KEY = "maple.handledDeepLinks";
+const MAX_HANDLED_DEEP_LINKS = 20;
+const deepLinksHandledThisPage = new Set<string>();
+
+function deepLinkKey(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const firstPathPart = parsed.pathname.split("/").filter(Boolean)[0] || parsed.hostname;
+    if (
+      firstPathPart === "auth" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.hash ||
+      ["handoff_grant", "access_token", "refresh_token", "cache_namespace_root"].some((name) =>
+        parsed.searchParams.has(name)
+      )
+    ) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function readHandledDeepLinks(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(sessionStorage.getItem(HANDLED_DEEP_LINKS_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberHandledDeepLink(url: string): void {
+  const key = deepLinkKey(url);
+  if (key === null) return;
+  deepLinksHandledThisPage.add(key);
+  try {
+    const handled = readHandledDeepLinks().filter((k) => k !== key);
+    handled.push(key);
+    sessionStorage.setItem(
+      HANDLED_DEEP_LINKS_KEY,
+      JSON.stringify(handled.slice(-MAX_HANDLED_DEEP_LINKS))
+    );
+  } catch {
+    // Without storage, a reload may see the launch link again. The handlers
+    // below still reject replays (auth needs a pending attempt).
+  }
+}
+
+function wasDeepLinkHandled(url: string): boolean {
+  const key = deepLinkKey(url);
+  return (
+    key !== null && (deepLinksHandledThisPage.has(key) || readHandledDeepLinks().includes(key))
+  );
+}
+
+function navigatePaymentReturn(destination: string, launch: boolean): void {
+  // If replay storage is unavailable, the launch URL is read after every
+  // reload. Once at its destination, avoid starting another reload.
+  // Credits and Team success routes replace their initial callback URL.
+  if (
+    launch &&
+    ((destination === "/?credits_success=true" && window.location.pathname === "/settings/api") ||
+      (destination === "/pricing?success=true" && window.location.pathname === "/settings/team"))
+  ) {
+    return;
+  }
+  if (`${window.location.pathname}${window.location.search}` !== destination) {
+    window.location.href = destination;
+  }
+}
 
 export function DeepLinkHandler({
   tauri = isTauri(),
@@ -73,7 +151,7 @@ export function DeepLinkHandler({
         if (tauri) {
           console.log("[Deep Link] Setting up handler for Tauri app");
 
-          const handleUrl = async (url: string) => {
+          const handleDeepLink = async (url: string, launch = false) => {
             if (disposed) return;
             let isAuthenticationCallback = false;
             console.log("[Deep Link] Received callback");
@@ -84,6 +162,12 @@ export function DeepLinkHandler({
               const callbackScheme = `${nativeCallbackScheme(appVariant)}:`;
               // The dev app owns only its dev scheme, including payment returns.
               if (appVariant === "dev" && urlObj.protocol !== callbackScheme) return;
+              if (
+                appVariant === "production" &&
+                urlObj.protocol === `${nativeCallbackScheme("dev")}:`
+              ) {
+                return;
+              }
               // The URL path structure will be: cloud.opensecret.maple://path?params
               const pathParts = urlObj.pathname.split("/").filter(Boolean);
               const firstPathPart = pathParts[0] || urlObj.hostname;
@@ -149,6 +233,15 @@ export function DeepLinkHandler({
                   }
                 }
               } else if (
+                urlObj.username ||
+                urlObj.password ||
+                urlObj.hash ||
+                ["handoff_grant", "access_token", "refresh_token", "cache_namespace_root"].some(
+                  (name) => urlObj.searchParams.has(name)
+                )
+              ) {
+                return;
+              } else if (
                 firstPathPart === "payment" ||
                 firstPathPart === "payment-success" ||
                 firstPathPart === "payment-success-credits" ||
@@ -183,17 +276,17 @@ export function DeepLinkHandler({
                 if (isCreditSuccess) {
                   // Keep the established root callback contract; the home route bridges it into
                   // the dedicated API credits settings page.
-                  window.location.href = "/?credits_success=true";
+                  navigatePaymentReturn("/?credits_success=true", launch);
                 } else if (isSuccess) {
                   // Navigate to the success page or show a success message
-                  window.location.href = "/pricing?success=true";
+                  navigatePaymentReturn("/pricing?success=true", launch);
                 } else if (isCanceled) {
                   // Navigate to the canceled page or show a canceled message
-                  window.location.href = "/pricing?canceled=true";
+                  navigatePaymentReturn("/pricing?canceled=true", launch);
                 } else {
                   // Handle unknown payment status
                   console.warn("[Deep Link] Unknown payment status in callback");
-                  window.location.href = "/pricing";
+                  navigatePaymentReturn("/pricing", launch);
                 }
               } else {
                 console.warn("[Deep Link] Unknown deep link type:", firstPathPart);
@@ -213,22 +306,30 @@ export function DeepLinkHandler({
               }
             }
           };
-          // Subscribe before reading the launch URL so callbacks during startup
-          // use the same account/attempt fence as already-running returns.
-          unlisten = await listen<string>("deep-link-received", (event) =>
-            handleUrl(event.payload)
-          );
+
+          // Listen for the custom event we emit from Rust
+          unlisten = await listen<string>("deep-link-received", async (event) => {
+            if (disposed) return;
+            rememberHandledDeepLink(event.payload);
+            await handleDeepLink(event.payload);
+          });
 
           if (disposed) {
             unlisten();
             return;
           }
 
-          if (desktopDev && appVariant === "dev") {
-            for (const url of (await getCurrent()) ?? []) {
-              await handleUrl(url);
-            }
+          const launchUrls = await getCurrent().catch((error: unknown) => {
+            console.warn("[Deep Link] Could not read the launch link:", error);
+            return null;
+          });
+          for (const url of launchUrls ?? []) {
+            if (disposed) return;
+            if (wasDeepLinkHandled(url)) continue;
+            rememberHandledDeepLink(url);
+            await handleDeepLink(url, true);
           }
+
           console.log("[Deep Link] Handler setup complete");
         }
       } catch (error) {
