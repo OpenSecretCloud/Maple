@@ -479,10 +479,10 @@ fn user_content(model: &Model, content: &[Content]) -> Value {
     Value::Array(parts)
 }
 
-/// The message for a body that ends with neither `[DONE]` nor a finish reason.
+/// The message for a stream that ends, at `[DONE]` or not, without a finish reason.
 const STREAM_CUT_OFF: &str = "Provider stream ended without a finish reason";
 
-/// What a streamed completion has reported besides content.
+/// What a streamed completion has reported besides content and usage.
 #[derive(Default)]
 struct StreamState {
     /// The builder index of each tool call, by the provider's index.
@@ -492,7 +492,6 @@ struct StreamState {
     /// Tool calls with a made-up id because the server had not sent one yet.
     made_up_ids: HashSet<usize>,
     finish_reason: Option<String>,
-    usage: Option<Usage>,
 }
 
 /// Read the server-sent events of a streamed completion into `builder`.
@@ -508,7 +507,7 @@ async fn read_events(
     // Lines that are not server-sent events, such as a JSON error body.
     let mut stray = String::new();
     let mut ended = false;
-    while !ended {
+    'read: while !ended {
         let chunk = tokio::select! {
             _ = cancel.cancelled() => {
                 builder.fail(StopReason::Aborted, ABORTED);
@@ -539,7 +538,7 @@ async fn read_events(
             };
             let data = data.trim();
             if data == "[DONE]" {
-                return finish(model, builder, state.finish_reason, state.usage);
+                break 'read;
             }
             let Ok(event) = serde_json::from_str::<Value>(data) else {
                 continue;
@@ -553,10 +552,10 @@ async fn read_events(
                 builder.fail(StopReason::Error, message);
                 return;
             }
-            apply_chunk(&event, &mut builder, &mut state);
+            apply_chunk(model, &event, &mut builder, &mut state);
         }
     }
-    if state.finish_reason.is_none() {
+    let Some(finish_reason) = state.finish_reason else {
         // The response was cut off. Its tool calls could carry half their arguments.
         let detail = error_detail(stray.trim());
         let error = if detail.is_empty() {
@@ -566,8 +565,16 @@ async fn read_events(
         };
         builder.fail(StopReason::Error, error);
         return;
+    };
+    match stop_reason(&finish_reason) {
+        Ok(stop_reason) => {
+            let usage = builder.partial().usage;
+            builder.finish(stop_reason, usage);
+        }
+        Err(error) => {
+            builder.fail(StopReason::Error, error);
+        }
     }
-    finish(model, builder, state.finish_reason, state.usage);
 }
 
 /// Blank lines, comments and the server-sent event fields other than `data:`.
@@ -590,14 +597,19 @@ fn push_capped(text: &mut String, line: &str) {
     }
 }
 
-fn apply_chunk(event: &Value, builder: &mut AssistantMessageBuilder, state: &mut StreamState) {
+fn apply_chunk(
+    model: &Model,
+    event: &Value,
+    builder: &mut AssistantMessageBuilder,
+    state: &mut StreamState,
+) {
     if builder.partial().response_id.is_none()
         && let Some(id) = event.get("id").and_then(Value::as_str)
     {
         builder.set_response_id(id);
     }
     if let Some(reported) = event.get("usage").filter(|usage| usage.is_object()) {
-        state.usage = Some(parse_usage(reported));
+        builder.set_usage(parse_usage(model, reported));
     }
     let Some(choice) = event.pointer("/choices/0") else {
         return;
@@ -706,7 +718,8 @@ fn tool_call_id(builder: &AssistantMessageBuilder, index: usize) -> Option<&str>
     }
 }
 
-fn parse_usage(reported: &Value) -> Usage {
+/// Reported usage, priced with the model's costs.
+fn parse_usage(model: &Model, reported: &Value) -> Usage {
     let number = |pointer: &str| {
         reported
             .pointer(pointer)
@@ -719,7 +732,7 @@ fn parse_usage(reported: &Value) -> Usage {
     let reasoning = reported
         .pointer("/completion_tokens_details/reasoning_tokens")
         .and_then(Value::as_u64);
-    Usage {
+    let mut usage = Usage {
         input: prompt - cached,
         output: completion,
         cache_read: cached,
@@ -727,31 +740,21 @@ fn parse_usage(reported: &Value) -> Usage {
         reasoning,
         total_tokens: prompt + completion,
         ..Usage::default()
-    }
+    };
+    model.apply_cost(&mut usage);
+    usage
 }
 
-fn finish(
-    model: &Model,
-    builder: AssistantMessageBuilder,
-    finish_reason: Option<String>,
-    usage: Option<Usage>,
-) {
-    let has_tool_calls = builder.partial().tool_calls().next().is_some();
-    let stop_reason = match finish_reason.as_deref() {
-        Some("length") => StopReason::Length,
-        Some("content_filter") => {
-            builder.fail(
-                StopReason::Error,
-                "The provider stopped the response: content_filter",
-            );
-            return;
-        }
-        _ if has_tool_calls => StopReason::ToolUse,
-        _ => StopReason::Stop,
-    };
-    let mut usage = usage.unwrap_or_default();
-    model.apply_cost(&mut usage);
-    builder.finish(stop_reason, usage);
+/// The stop reason a finish reason stands for, or the error it is, as Pi maps them.
+fn stop_reason(finish_reason: &str) -> Result<StopReason, String> {
+    match finish_reason {
+        "stop" | "end" => Ok(StopReason::Stop),
+        "length" => Ok(StopReason::Length),
+        "function_call" | "tool_calls" => Ok(StopReason::ToolUse),
+        // Such as content_filter, network_error or z.ai's model_context_window_exceeded,
+        // which the overflow and retry checks read.
+        other => Err(format!("Provider finish_reason: {other}")),
+    }
 }
 
 /// Decodes UTF-8 across chunk boundaries.
@@ -805,7 +808,7 @@ impl HttpTransport for ReqwestTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::overflow::is_retryable_error;
+    use crate::overflow::{is_context_overflow, is_retryable_error};
     use crate::types::{SystemMessage, ThinkingContent, Tool, UserMessage};
     use std::sync::Mutex;
 
@@ -1059,6 +1062,91 @@ mod tests {
             message.error_message.as_deref(),
             Some("Provider stream ended without a finish reason: Upstream gave up")
         );
+    }
+
+    async fn reply_to(chunks: Vec<&'static str>) -> AssistantMessage {
+        OpenAiCompletions::new(transport(200, chunks))
+            .stream(&model(), Context::default(), StreamOptions::default())
+            .result()
+            .await
+    }
+
+    #[tokio::test]
+    async fn done_without_a_finish_reason_is_a_retryable_error() {
+        let message = reply_to(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+        assert_eq!(message.stop_reason, StopReason::Error);
+        assert_eq!(message.error_message.as_deref(), Some(STREAM_CUT_OFF));
+        assert_eq!(message.text(), "partial");
+        assert!(is_retryable_error(&message));
+    }
+
+    #[tokio::test]
+    async fn finish_reasons_map_as_pis_and_unknown_ones_are_errors() {
+        let text = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n";
+        let call = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}}]}\n\n";
+        for (chunks, expected) in [
+            (
+                vec![
+                    text,
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"end\"}]}\n\n",
+                ],
+                StopReason::Stop,
+            ),
+            // The reason decides, not the content.
+            (
+                vec![
+                    call,
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                ],
+                StopReason::Stop,
+            ),
+            (
+                vec![
+                    text,
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"function_call\"}]}\n\n",
+                ],
+                StopReason::ToolUse,
+            ),
+        ] {
+            assert_eq!(reply_to(chunks).await.stop_reason, expected);
+        }
+
+        let network = reply_to(vec![
+            text,
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"network_error\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+        assert_eq!(network.stop_reason, StopReason::Error);
+        assert_eq!(
+            network.error_message.as_deref(),
+            Some("Provider finish_reason: network_error")
+        );
+        assert!(is_retryable_error(&network));
+        // A failed response keeps what was reported before it failed.
+        assert_eq!(network.text(), "ok");
+        assert_eq!((network.usage.input, network.usage.output), (10, 2));
+        assert!(network.usage.cost.total > 0.0);
+
+        let overflow = reply_to(vec![
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"model_context_window_exceeded\"}]}\n\n",
+        ])
+        .await;
+        assert!(is_context_overflow(&overflow, None));
+
+        let filtered = reply_to(vec![
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+        ])
+        .await;
+        assert_eq!(
+            filtered.error_message.as_deref(),
+            Some("Provider finish_reason: content_filter")
+        );
+        assert!(!is_retryable_error(&filtered));
     }
 
     async fn tool_calls_of(chunks: Vec<&'static str>) -> Vec<(String, String, Value)> {

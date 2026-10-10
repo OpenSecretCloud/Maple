@@ -230,6 +230,11 @@ impl AssistantMessageBuilder {
         self.partial.response_id = Some(id.into());
     }
 
+    /// Record the usage the provider reported. A response that fails later keeps it.
+    pub fn set_usage(&mut self, usage: Usage) {
+        self.partial.usage = usage;
+    }
+
     fn send(&self, event: AssistantMessageEvent) {
         // A dropped receiver means nobody is listening any more; the provider task
         // notices through its cancellation token, not through send errors.
