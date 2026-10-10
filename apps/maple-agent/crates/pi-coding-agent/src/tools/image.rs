@@ -10,7 +10,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
-use pi_ai::Content;
+use pi_ai::{Content, ImageContent};
 use tokio::io::AsyncReadExt;
 
 /// Enough of a file to recognize its image type.
@@ -385,6 +385,45 @@ pub async fn normalize_tool_result_images(
         .await
         .ok()
         .flatten()
+}
+
+/// The images attached to a prompt made ready for the model, as Pi's prompt makes them:
+/// each converted and resized by [`process_image`], with its notes. An image that cannot
+/// be used is left out and the note saying so kept, so the model knows.
+pub async fn normalize_prompt_images(
+    images: Vec<ImageContent>,
+    auto_resize: bool,
+) -> (Vec<ImageContent>, Vec<String>) {
+    if images.is_empty() {
+        return (images, Vec::new());
+    }
+    tokio::task::spawn_blocking(move || {
+        let options = ImageResizeOptions::default();
+        let mut usable = Vec::with_capacity(images.len());
+        let mut hints = Vec::new();
+        for image in images {
+            let processed = BASE64
+                .decode(&image.data)
+                .map_err(|_| {
+                    "[Image omitted: could not be converted to a supported inline image format.]"
+                        .to_string()
+                })
+                .and_then(|bytes| process_image(&bytes, &image.mime_type, auto_resize, &options));
+            match processed {
+                Ok(processed) => {
+                    usable.push(ImageContent {
+                        data: processed.data,
+                        mime_type: processed.mime_type,
+                    });
+                    hints.extend(processed.hints);
+                }
+                Err(note) => hints.push(note),
+            }
+        }
+        (usable, hints)
+    })
+    .await
+    .unwrap_or_default()
 }
 
 fn normalize_images(content: &[Content], auto_resize: bool) -> Option<Vec<Content>> {

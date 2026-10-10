@@ -21,6 +21,16 @@ use pi_coding_agent::store::JsonlStore;
 use pi_coding_agent::{AgentSessionError, Delivery, PromptOptions, PromptOutcome, SessionMessage};
 use serde_json::json;
 
+/// A small PNG, which the session sends on as it is.
+fn tiny_png() -> String {
+    use base64::Engine;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    base64::engine::general_purpose::STANDARD.encode(png)
+}
+
 fn tool_result_text(session: &pi_coding_agent::AgentSession) -> String {
     session
         .messages()
@@ -710,7 +720,7 @@ async fn a_user_message_from_an_extension_is_a_full_prompt() {
     let review = extension("review", |api| {
         api.register_command("review", "Review the diff", |_args, ctx| async move {
             let screenshot = ImageContent {
-                data: "aW1n".into(),
+                data: tiny_png(),
                 mime_type: "image/png".into(),
             };
             ctx.send_user_message("Review the diff", vec![screenshot], Delivery::Steer);
@@ -737,7 +747,7 @@ async fn a_user_message_from_an_extension_is_a_full_prompt() {
     // Its images go with it, as with Pi's sendUserMessage.
     assert!(request.context.messages.iter().any(|message| matches!(
         message,
-        Message::User(user) if matches!(user.content.last(), Some(Content::Image(image)) if image.data == "aW1n")
+        Message::User(user) if matches!(user.content.last(), Some(Content::Image(image)) if image.data == tiny_png())
     )));
     assert_eq!(last_assistant_text(&session), "reviewed");
 }

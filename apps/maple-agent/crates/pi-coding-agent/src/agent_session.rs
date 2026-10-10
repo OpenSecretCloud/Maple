@@ -55,7 +55,7 @@ use crate::system_prompt::{
 };
 use crate::tools::{
     BashOperations, DEFAULT_TOOL_NAMES, LocalShellOperations, ToolContext, ToolsOptions,
-    create_all_tools, expand_path, normalize_tool_result_images,
+    create_all_tools, expand_path, normalize_prompt_images, normalize_tool_result_images,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1661,6 +1661,13 @@ impl SessionCore {
             .system_update(&self.run_prompt_options())?
             .into_iter()
             .collect();
+        // As in Pi, attached images are made to fit, after the handlers, with notes on
+        // what was done; one that cannot be used is left out, its note kept.
+        let auto_resize = lock(&self.settings).images.auto_resize;
+        let (images, hints) = normalize_prompt_images(images, auto_resize).await;
+        if !hints.is_empty() {
+            text = format!("{text}\n\n{}", hints.join("\n"));
+        }
         messages.push(user_message(&text, images));
         {
             let mut run = lock(&self.run);

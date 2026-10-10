@@ -1517,6 +1517,63 @@ async fn images_a_tool_returns_are_made_to_fit_before_the_model_sees_them() {
 }
 
 #[tokio::test]
+async fn images_attached_to_a_prompt_are_made_to_fit_with_notes() {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(3000, 10))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let harness = Harness::new();
+    harness.faux.push_text("A dark strip.");
+    let session = harness.session().await;
+    let options = PromptOptions {
+        images: vec![
+            ImageContent {
+                data: BASE64.encode(png),
+                mime_type: "image/png".into(),
+            },
+            ImageContent {
+                data: BASE64.encode(b"not an image"),
+                mime_type: "image/png".into(),
+            },
+        ],
+        ..PromptOptions::default()
+    };
+    session.prompt("What is this?", options).await.unwrap();
+
+    let user = harness.faux.requests()[0]
+        .context
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            Message::User(user) => Some(user.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    // As in Pi, the image that fits is sent resized, the one that cannot be used is left
+    // out, and the text carries both notes.
+    let images: Vec<&ImageContent> = user
+        .iter()
+        .filter_map(|block| match block {
+            Content::Image(image) => Some(image),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 1);
+    let bytes = BASE64.decode(&images[0].data).unwrap();
+    let (width, _) = image::load_from_memory(&bytes)
+        .unwrap()
+        .to_rgb8()
+        .dimensions();
+    assert!(width <= 2000, "{width}");
+    let text = pi_ai::content_text(&user);
+    assert!(text.starts_with("What is this?\n\n"), "{text}");
+    assert!(text.contains("[Image omitted:"), "{text}");
+}
+
+#[tokio::test]
 async fn session_stats_count_messages_and_add_up_usage() {
     let harness = Harness::new();
     let usage = |input, output, cost| pi_ai::Usage {
