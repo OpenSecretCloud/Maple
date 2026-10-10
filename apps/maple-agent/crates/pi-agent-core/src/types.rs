@@ -153,7 +153,7 @@ pub enum ToolExecutionMode {
 
 /// How queued steering and follow-up messages are drained.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum QueueMode {
     All,
     #[default]

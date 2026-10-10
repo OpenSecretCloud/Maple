@@ -176,6 +176,24 @@ mod tests {
     }
 
     #[test]
+    fn queue_modes_are_spelled_as_in_pi() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user.json");
+        fs::write(
+            &user,
+            json!({ "steeringMode": "one-at-a-time", "followUpMode": "all" }).to_string(),
+        )
+        .unwrap();
+        let (settings, errors) = Settings::load(Some(&user), None);
+        assert!(errors.is_empty());
+        assert_eq!(settings.steering_mode, QueueMode::OneAtATime);
+        assert_eq!(settings.follow_up_mode, QueueMode::All);
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved["steeringMode"], "one-at-a-time");
+        assert_eq!(saved["followUpMode"], "all");
+    }
+
+    #[test]
     fn only_the_user_sets_the_default_project_trust() {
         let dir = tempfile::tempdir().unwrap();
         let user = dir.path().join("user.json");
