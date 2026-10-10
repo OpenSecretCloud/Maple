@@ -29,7 +29,9 @@ mod validation;
 
 pub use estimate::{estimate_message_tokens, estimate_text_tokens, estimate_tool_tokens};
 pub use json::parse_streaming_json;
-pub use overflow::{is_context_overflow, is_retryable_error, retry_delay_ms};
+pub use overflow::{
+    is_context_overflow, is_recoverable_length, is_retryable_error, retry_delay_ms,
+};
 pub use provider::{ApiRegistry, PayloadHook, StreamFn, StreamOptions, error_stream};
 pub use stream::{
     AssistantMessageBuilder, AssistantMessageEvent, AssistantMessageStream, AssistantStreamSender,

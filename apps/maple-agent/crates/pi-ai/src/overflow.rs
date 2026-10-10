@@ -12,21 +12,22 @@ static OVERFLOW: LazyLock<RegexSet> = LazyLock::new(|| {
         r"(?i)request_too_large",
         r"(?i)input is too long for requested model",
         r"(?i)exceeds the context window",
-        r"(?i)exceeds (?:the )?(?:model'?s )?maximum context length",
+        r"(?i)exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))",
         r"(?i)input token count.*exceeds the maximum",
         r"(?i)maximum prompt length is \d+",
         r"(?i)reduce the length of the messages",
         r"(?i)maximum context length is \d+ tokens",
-        r"(?i)exceeds (?:the )?maximum allowed input length",
-        r"(?i)is longer than the model'?s context length",
+        r"(?i)exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?",
+        r"(?i)input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)",
         r"(?i)exceeds the limit of \d+",
         r"(?i)exceeds the available context size",
         r"(?i)greater than the context length",
         r"(?i)context window exceeds limit",
         r"(?i)exceeded model token limit",
         r"(?i)too large for model with \d+ maximum context length",
-        r"(?i)but the configured context size is",
+        r"(?i)prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?",
         r"(?i)model_context_window_exceeded",
+        r"(?i)prompt too long; exceeded (?:max )?context length",
         r"(?i)range of input length should be",
         r"(?i)context[_ ]length[_ ]exceeded",
         r"(?i)too many tokens",
@@ -35,23 +36,33 @@ static OVERFLOW: LazyLock<RegexSet> = LazyLock::new(|| {
     .expect("overflow patterns compile")
 });
 
-/// Rate limits can mention tokens without being overflow. Errors start with the HTTP
-/// status when there is one.
+/// Cerebras answers an overflow with a 400 or 413 that has no body.
+static CEREBRAS_BODYLESS_OVERFLOW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^4(?:00|13)\s*(?:status code)?\s*\(no body\)").expect("pattern compiles")
+});
+
+/// Rate limits can mention tokens without being overflow: Bedrock's throttling and
+/// availability errors, rate limits, and any 429. Errors start with the HTTP status when
+/// there is one.
 static NOT_OVERFLOW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)rate.?limit|too many requests|throttl|service.?unavailable|^429\b")
-        .expect("pattern compiles")
+    Regex::new(
+        r"(?i)^(?:Throttling error|Service unavailable):|rate limit|too many requests|^429\b",
+    )
+    .expect("pattern compiles")
 });
 
 /// Whether a response failed, or silently degraded, because the context was too large.
 ///
-/// Error responses are matched against the known provider texts. With `context_window`,
-/// a successful response whose input already filled the window counts too, for providers
-/// that truncate instead of failing.
+/// Error responses are matched against the known provider texts, and from Cerebras a
+/// 400 or 413 without a body counts too. With `context_window`, a successful response
+/// whose input exceeded the window counts, and so does a length stop without output whose
+/// input filled it, for providers that truncate instead of failing.
 pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u64>) -> bool {
     if message.stop_reason == StopReason::Error
         && let Some(error) = &message.error_message
         && !NOT_OVERFLOW.is_match(error)
-        && OVERFLOW.is_match(error)
+        && (OVERFLOW.is_match(error)
+            || (message.provider == "cerebras" && CEREBRAS_BODYLESS_OVERFLOW.is_match(error)))
     {
         return true;
     }
@@ -61,10 +72,21 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
     let input = message.usage.input + message.usage.cache_read;
     match message.stop_reason {
         StopReason::Stop => input > window,
-        // Some servers truncate the input to fill the window and then stop at once.
-        StopReason::Length => message.usage.output == 0 && input >= window,
+        // Some servers truncate the input to fill the window and then stop at once. What
+        // they count as full can fall a little short of it.
+        StopReason::Length => message.usage.output == 0 && input as f64 >= window as f64 * 0.99,
         _ => false,
     }
+}
+
+/// Whether a length stop ended before the output limit the caller wanted. Context
+/// pressure or a provider's own cut can end a reply early, so the caller can compact and
+/// retry once. `desired_max_output` is the limit before it was fitted to the context,
+/// such as the model's `max_tokens`.
+pub fn is_recoverable_length(message: &AssistantMessage, desired_max_output: u64) -> bool {
+    message.stop_reason == StopReason::Length
+        && desired_max_output > 0
+        && message.usage.output < desired_max_output
 }
 
 /// Account limits: an exhausted quota, budget or balance, or a usage limit that resets
@@ -80,7 +102,8 @@ static ACCOUNT_LIMIT: LazyLock<Regex> = LazyLock::new(|| {
 
 static RETRYABLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?i)overloaded|high demand|at capacity|rate.?limit|too many requests",
+        r"(?i)overloaded|server_busy|servers are currently busy|high demand|at capacity",
+        r"|rate.?limit|too many requests",
         r"|\b(?:429|500|502|503|504|520|524)\b|service.?unavailable|server.?error|internal.?error",
         r"|provider.?returned.?error|exceeded request buffer limit while retrying upstream",
         r"|network.?error|connection.?(?:error|refused|lost|reset)",
@@ -143,8 +166,24 @@ mod tests {
             "This model's maximum context length is 131072 tokens. However, you requested 140000",
             "Input length (265330) exceeds model's maximum context length (262144).",
             "the request exceeds the available context size, try increasing it",
+            "400 `prompt too long; exceeded max context length by 100918 tokens`",
+            "400 {\"code\":\"1261\",\"message\":\"Prompt too long\"}",
+            "400 {\"code\":\"1261\",\"message\":\"Prompt exceeds max length\"}",
+            "400 The input (516368 tokens) is longer than the model's context length (262144 tokens).",
+            "Error: 503 litellm.ServiceUnavailableError: litellm.MidStreamFallbackError: litellm.APIConnectionError: APIConnectionError: OpenAIException - Requested token count exceeds the model's maximum context length of 131072 tokens.",
+            "Provider returned error: Input length 131393 exceeds the maximum allowed input length of 131040 tokens.",
+            "400 Prompt has 256468 tokens, but the configured context size is 256000 tokens",
+            "Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens",
         ] {
             assert!(is_context_overflow(&failed(error), None), "{error}");
+        }
+        // The phrases count only with the sizes Pi's patterns ask for.
+        for error in [
+            "500 `model runner crashed unexpectedly`",
+            "max_tokens exceeds the model's maximum context length",
+            "the request is longer than the model's context length",
+        ] {
+            assert!(!is_context_overflow(&failed(error), None), "{error}");
         }
         assert!(is_context_overflow(
             &failed("400 Too many tokens: 140000 > 128000"),
@@ -153,6 +192,11 @@ mod tests {
         for throttled in [
             "ThrottlingException: Too many tokens, rate limit",
             "429 Too many tokens, please wait before trying again.",
+            "429: {\"message\":\"Too many tokens per minute\"}",
+            "Throttling error: Too many tokens, please wait before trying again.",
+            "Service unavailable: The service is temporarily unavailable.",
+            "Rate limit exceeded, please retry after 30 seconds.",
+            "Too many requests. Please slow down.",
         ] {
             assert!(
                 !is_context_overflow(&failed(throttled), None),
@@ -160,6 +204,17 @@ mod tests {
             );
         }
         assert!(!is_context_overflow(&failed("invalid api key"), None));
+    }
+
+    #[test]
+    fn bodyless_400_and_413_errors_are_overflow_only_from_cerebras() {
+        for error in ["400 status code (no body)", "413 status code (no body)"] {
+            let mut message = failed(error);
+            message.provider = "cerebras".into();
+            assert!(is_context_overflow(&message, Some(131_072)), "{error}");
+            message.provider = "opencode-go".into();
+            assert!(!is_context_overflow(&message, Some(1_000_000)), "{error}");
+        }
     }
 
     #[test]
@@ -174,6 +229,45 @@ mod tests {
         assert!(!is_context_overflow(&message, Some(1_000)));
     }
 
+    fn length_stop(input: u64, cache_read: u64, output: u64) -> AssistantMessage {
+        let mut message = failed("");
+        message.stop_reason = StopReason::Length;
+        message.error_message = None;
+        message.usage = Usage {
+            input,
+            cache_read,
+            output,
+            total_tokens: input + cache_read + output,
+            ..Usage::default()
+        };
+        message
+    }
+
+    #[test]
+    fn a_length_stop_without_output_that_fills_the_window_is_overflow() {
+        // Xiaomi's cut leaves the input a little short of the window.
+        assert!(is_context_overflow(
+            &length_stop(58, 1_048_512, 0),
+            Some(1_048_576)
+        ));
+        assert!(!is_context_overflow(
+            &length_stop(1_000, 0, 4_096),
+            Some(200_000)
+        ));
+        assert!(!is_context_overflow(&length_stop(100, 0, 0), Some(200_000)));
+    }
+
+    #[test]
+    fn a_length_stop_below_the_wanted_output_is_recoverable() {
+        assert!(is_recoverable_length(&length_stop(3, 253_584, 16), 128_000));
+        assert!(!is_recoverable_length(&length_stop(4_062, 0, 1_024), 1_024));
+        assert!(is_recoverable_length(&length_stop(100, 0, 0), 128_000));
+        assert!(!is_recoverable_length(&length_stop(100, 0, 0), 0));
+        let mut stopped = length_stop(100, 0, 0);
+        stopped.stop_reason = StopReason::Stop;
+        assert!(!is_recoverable_length(&stopped, 128_000));
+    }
+
     #[test]
     fn transient_errors_are_retryable_and_others_are_not() {
         for error in [
@@ -183,6 +277,8 @@ mod tests {
             "error sending request for url",
             "connection reset by peer",
             "Request timed out",
+            "{\"code\":\"server_busy\",\"message\":\"Busy\"}",
+            "Our servers are currently busy, please come back later",
         ] {
             assert!(is_retryable_error(&failed(error)), "{error}");
         }
