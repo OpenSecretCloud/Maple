@@ -538,6 +538,10 @@ pub struct ModelCompat {
     /// Send tools that ask for constrained sampling in strict mode. Being compatible
     /// with OpenAI does not imply it, so it is off unless a model turns it on.
     pub supports_strict_mode: bool,
+    /// Send the request's session id in session-affinity headers, so the provider routes
+    /// a session's requests to where its prompt is cached.
+    pub send_session_affinity_headers: bool,
+    pub session_affinity_format: SessionAffinityFormat,
 }
 
 impl Default for ModelCompat {
@@ -549,8 +553,25 @@ impl Default for ModelCompat {
             supports_reasoning_effort: true,
             supports_mid_conversation_system_messages: false,
             supports_strict_mode: false,
+            send_session_affinity_headers: false,
+            session_affinity_format: SessionAffinityFormat::OpenAi,
         }
     }
+}
+
+/// The session-affinity headers a provider reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionAffinityFormat {
+    /// `session_id`, `x-client-request-id` and `x-session-affinity`.
+    #[default]
+    #[serde(rename = "openai")]
+    OpenAi,
+    /// `x-client-request-id` and `x-session-affinity`.
+    #[serde(rename = "openai-nosession")]
+    OpenAiNoSession,
+    /// `x-session-id`.
+    #[serde(rename = "openrouter")]
+    OpenRouter,
 }
 
 fn default_input() -> Vec<InputModality> {
@@ -765,6 +786,26 @@ mod tests {
         assert_eq!(model.thinking_levels(), [Low, Medium, High]);
         assert_eq!(model.clamp_thinking_level(Off), Low);
         assert_eq!(model.provider_thinking_value(Off), None);
+    }
+
+    #[test]
+    fn session_affinity_settings_read_as_pis() {
+        let compat: ModelCompat = serde_json::from_value(json!({
+            "sendSessionAffinityHeaders": true,
+            "sessionAffinityFormat": "openai-nosession",
+        }))
+        .unwrap();
+        assert!(compat.send_session_affinity_headers);
+        assert_eq!(
+            compat.session_affinity_format,
+            SessionAffinityFormat::OpenAiNoSession
+        );
+        let default = ModelCompat::default();
+        assert!(!default.send_session_affinity_headers);
+        assert_eq!(
+            default.session_affinity_format,
+            SessionAffinityFormat::OpenAi
+        );
     }
 
     #[test]

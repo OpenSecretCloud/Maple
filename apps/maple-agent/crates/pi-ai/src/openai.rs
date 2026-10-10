@@ -24,7 +24,7 @@ use crate::transcript::{
 };
 use crate::types::{
     AssistantContent, AssistantMessage, Content, Context, MaxTokensField, Message, Model,
-    StopReason, ThinkingLevel, Tool, ToolResultMessage, Usage,
+    SessionAffinityFormat, StopReason, ThinkingLevel, Tool, ToolResultMessage, Usage,
 };
 
 pub const API: &str = "openai-completions";
@@ -120,7 +120,7 @@ async fn run(
     }
     let request = HttpRequest {
         url: format!("{}/chat/completions", model.base_url.trim_end_matches('/')),
-        headers: request_headers(&options),
+        headers: request_headers(model, &options),
         body: serde_json::to_vec(&body).unwrap_or_default(),
     };
     let response = tokio::select! {
@@ -154,13 +154,31 @@ async fn run(
     read_events(model, response.body, builder, &cancel).await;
 }
 
-fn request_headers(options: &StreamOptions) -> Vec<(String, String)> {
+fn request_headers(model: &Model, options: &StreamOptions) -> Vec<(String, String)> {
     let mut headers = vec![
         ("content-type".to_string(), "application/json".to_string()),
         ("accept".to_string(), "text/event-stream".to_string()),
     ];
     if let Some(key) = &options.api_key {
         headers.push(("authorization".to_string(), format!("Bearer {key}")));
+    }
+    if model.compat.send_session_affinity_headers
+        && let Some(session_id) = session_id(options)
+    {
+        let names: &[&str] = match model.compat.session_affinity_format {
+            SessionAffinityFormat::OpenAi => {
+                &["session_id", "x-client-request-id", "x-session-affinity"]
+            }
+            SessionAffinityFormat::OpenAiNoSession => {
+                &["x-client-request-id", "x-session-affinity"]
+            }
+            SessionAffinityFormat::OpenRouter => &["x-session-id"],
+        };
+        headers.extend(
+            names
+                .iter()
+                .map(|name| (name.to_string(), session_id.to_string())),
+        );
     }
     for (name, value) in &options.headers {
         headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
@@ -293,6 +311,13 @@ fn tool_declaration(tool: &Tool, supports_strict_mode: bool) -> Result<Value, St
     Ok(json!({ "type": "function", "function": function }))
 }
 
+/// OpenAI's limit for `prompt_cache_key`.
+const PROMPT_CACHE_KEY_CHARS: usize = 64;
+
+fn session_id(options: &StreamOptions) -> Option<&str> {
+    options.session_id.as_deref().filter(|id| !id.is_empty())
+}
+
 /// Build the Chat Completions request body for `context`. It fails only for a tool that
 /// requires strict mode where it cannot have it.
 pub fn build_request_body(
@@ -308,6 +333,13 @@ pub fn build_request_body(
         Value::Array(convert_messages(model, context)),
     );
     body.insert("stream".into(), json!(true));
+    // OpenAI caches a session's prompts together under its key.
+    if model.base_url.contains("api.openai.com")
+        && let Some(session_id) = session_id(options)
+    {
+        let key: String = session_id.chars().take(PROMPT_CACHE_KEY_CHARS).collect();
+        body.insert("prompt_cache_key".into(), json!(key));
+    }
     if compat.supports_usage_in_streaming {
         body.insert("stream_options".into(), json!({ "include_usage": true }));
     }
@@ -1084,6 +1116,76 @@ mod tests {
             body(&model(), &require).unwrap_err(),
             "Tool \"read\" requires JSON-schema constrained sampling, but strict tools are unsupported."
         );
+    }
+
+    fn in_session(id: &str) -> StreamOptions {
+        StreamOptions {
+            session_id: Some(id.into()),
+            ..StreamOptions::default()
+        }
+    }
+
+    #[test]
+    fn openai_caches_a_sessions_prompts_under_its_id() {
+        let key = |model: &Model, options: &StreamOptions| {
+            build_request_body(model, &Context::default(), options).unwrap()["prompt_cache_key"]
+                .clone()
+        };
+        let mut openai = model();
+        openai.base_url = "https://api.openai.com/v1".into();
+        assert_eq!(key(&openai, &in_session("session-123")), "session-123");
+        // Cut to OpenAI's limit.
+        assert_eq!(
+            key(&openai, &in_session(&"x".repeat(67))),
+            json!("x".repeat(64))
+        );
+        assert_eq!(key(&openai, &StreamOptions::default()), Value::Null);
+        // Other endpoints get no key.
+        assert_eq!(key(&model(), &in_session("session-123")), Value::Null);
+    }
+
+    #[test]
+    fn session_affinity_headers_follow_the_models_compat() {
+        let sent = |model: &Model, options: &StreamOptions| {
+            let headers = request_headers(model, options);
+            [
+                "session_id",
+                "x-client-request-id",
+                "x-session-affinity",
+                "x-session-id",
+            ]
+            .into_iter()
+            .filter(|name| headers.iter().any(|(sent, _)| sent == name))
+            .collect::<Vec<_>>()
+        };
+        let options = in_session("s1");
+        let mut model = model();
+        assert!(sent(&model, &options).is_empty());
+        model.compat.send_session_affinity_headers = true;
+        assert_eq!(
+            sent(&model, &options),
+            ["session_id", "x-client-request-id", "x-session-affinity"]
+        );
+        assert!(
+            request_headers(&model, &options).contains(&("x-session-affinity".into(), "s1".into()))
+        );
+        assert!(sent(&model, &StreamOptions::default()).is_empty());
+        model.compat.session_affinity_format = SessionAffinityFormat::OpenAiNoSession;
+        assert_eq!(
+            sent(&model, &options),
+            ["x-client-request-id", "x-session-affinity"]
+        );
+        model.compat.session_affinity_format = SessionAffinityFormat::OpenRouter;
+        assert_eq!(sent(&model, &options), ["x-session-id"]);
+
+        // A request's own headers win.
+        let overridden = StreamOptions {
+            headers: [("X-Session-Id".to_string(), "mine".to_string())].into(),
+            ..options
+        };
+        let headers = request_headers(&model, &overridden);
+        assert!(headers.contains(&("X-Session-Id".into(), "mine".into())));
+        assert!(!headers.iter().any(|(name, _)| name == "x-session-id"));
     }
 
     #[test]
