@@ -621,6 +621,58 @@ async fn a_session_resumes_with_a_model_an_extension_provides() {
 }
 
 #[tokio::test]
+async fn prompt_options_from_before_agent_start_last_for_one_run() {
+    let harness = Harness::new();
+    harness.faux.push_tool_call("echo", json!({ "text": "a" }));
+    harness.faux.push_text("one");
+    harness.faux.push_text("two");
+    let notes = extension("notes", |api| {
+        api.on(|event: BeforeAgentStart, _ctx| async move {
+            if event.prompt != "with notes" {
+                return Ok(BeforeAgentStartResult::default());
+            }
+            let mut options = event.options;
+            options
+                .sections
+                .insert("notes".into(), "Remember the deadline.".into());
+            // Listing other tools changes which are active, beyond this run.
+            options.tools.retain(|tool| tool.name != "echo");
+            Ok(BeforeAgentStartResult {
+                options: Some(options),
+                ..BeforeAgentStartResult::default()
+            })
+        });
+    });
+    let session = harness
+        .session_with(|options| {
+            options.tools = vec![echo_tool(true), echo_tool(true)];
+            options.tools[1].tool = FnTool::new(
+                Tool::new("other", "Other", json!({ "type": "object" })),
+                |_| async { Ok(AgentToolResult::text("other")) },
+            )
+            .shared();
+            options.extensions = vec![notes];
+        })
+        .await;
+    session
+        .prompt("with notes", PromptOptions::default())
+        .await
+        .unwrap();
+    let prompt = |index: usize| {
+        pi_ai::transcript::current_system_prompt(&harness.faux.requests()[index].context.messages)
+    };
+    // Every request of the run has the run's prompt.
+    assert!(prompt(0).contains("Remember the deadline."));
+    assert!(prompt(1).contains("Remember the deadline."));
+    session
+        .prompt("plain", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(!prompt(2).contains("Remember the deadline."));
+    assert_eq!(session.active_tools(), ["other"]);
+}
+
+#[tokio::test]
 async fn prompt_options_that_cannot_build_a_prompt_are_refused() {
     let harness = Harness::new();
     harness.faux.push_text("one");

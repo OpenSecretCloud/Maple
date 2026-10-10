@@ -359,6 +359,8 @@ struct RunState {
     overflow_recovery_attempted: bool,
     /// A complete system prompt that replaces the transcript's for the current run.
     forced_prompt: Option<String>,
+    /// The prompt options a `before_agent_start` handler chose for the current run.
+    prompt_options: Option<SystemPromptOptions>,
     next_turn_messages: Vec<SessionMessage>,
     /// Extension messages waiting for the current turn to end.
     pending_custom: Vec<SessionMessage>,
@@ -1248,6 +1250,29 @@ impl SessionCore {
         options
     }
 
+    /// The prompt options for the current run: those a `before_agent_start` handler chose,
+    /// with the active tools, whose texts from the handler win, as in Pi; without one, the
+    /// session's own.
+    fn run_prompt_options(&self) -> SystemPromptOptions {
+        let live = self.prompt_options();
+        let Some(mut options) = lock(&self.run).prompt_options.clone() else {
+            return live;
+        };
+        options.tools = live
+            .tools
+            .into_iter()
+            .map(|tool| {
+                options
+                    .tools
+                    .iter()
+                    .find(|chosen| chosen.name == tool.name)
+                    .cloned()
+                    .unwrap_or(tool)
+            })
+            .collect();
+        options
+    }
+
     /// The system message that brings the transcript's prompt up to date, if needed.
     fn system_update(
         &self,
@@ -1408,13 +1433,19 @@ impl SessionCore {
         };
         let (prompt_options, drafts, forced) =
             self.runner.before_agent_start(event, &self.weak).await;
-        if prompt_options != base {
-            let mut stored = prompt_options.clone();
-            stored.tools = Vec::new();
-            *lock(&self.prompt_base) = stored;
+        // As in Pi, the handlers' options hold for this run only, except that listing other
+        // tools changes which are active.
+        let names = |options: &SystemPromptOptions| -> Vec<String> {
+            options.tools.iter().map(|tool| tool.name.clone()).collect()
+        };
+        if names(&prompt_options) != names(&base) {
+            self.set_active_tools(&names(&prompt_options));
         }
-        let mut messages: Vec<SessionMessage> =
-            self.system_update(&prompt_options)?.into_iter().collect();
+        lock(&self.run).prompt_options = (prompt_options != base).then(|| prompt_options.clone());
+        let mut messages: Vec<SessionMessage> = self
+            .system_update(&self.run_prompt_options())?
+            .into_iter()
+            .collect();
         messages.push(user_message(&text, images));
         {
             let mut run = lock(&self.run);
@@ -1461,7 +1492,11 @@ impl SessionCore {
         self.flush_pending_bash();
         self.flush_pending_custom();
         self.end_retry();
-        lock(&self.run).forced_prompt = None;
+        {
+            let mut run = lock(&self.run);
+            run.forced_prompt = None;
+            run.prompt_options = None;
+        }
         drop(activity);
         self.emit(AgentSessionEvent::Settled);
         result
@@ -2084,7 +2119,11 @@ impl AgentHooks<SessionMessage> for SessionHooks {
         } else {
             None
         };
-        messages.extend(core.system_update(&core.prompt_options()).ok().flatten());
+        messages.extend(
+            core.system_update(&core.run_prompt_options())
+                .ok()
+                .flatten(),
+        );
         Some(TurnUpdate {
             context,
             messages,

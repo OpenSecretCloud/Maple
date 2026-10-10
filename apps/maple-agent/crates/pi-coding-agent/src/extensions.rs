@@ -103,7 +103,7 @@ pub struct CustomMessageDraft {
 pub struct BeforeAgentStartResult {
     /// Sent with the prompt.
     pub message: Option<CustomMessageDraft>,
-    /// The prompt options for this and later prompts.
+    /// The prompt options for this run. Listing other tools changes which are active.
     pub options: Option<SystemPromptOptions>,
     /// The complete system prompt for this run only.
     pub system_prompt: Option<String>,
