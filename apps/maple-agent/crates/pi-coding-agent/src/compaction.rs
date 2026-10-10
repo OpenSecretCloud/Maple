@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::messages::SessionMessage;
-use crate::session::{ContextEdits, EntryKind, ProjectedEntry, SessionEntry, project};
+use crate::session::{
+    ContextEdits, EntryKind, ProjectedEntry, SessionEntry, SessionProjection, project,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -139,6 +141,63 @@ pub fn estimate_context_tokens(messages: &[SessionMessage]) -> u64 {
         }
         None => messages.iter().map(estimate_tokens).sum(),
     }
+}
+
+/// The context size of a branch's projection: the last reported usage plus estimates for
+/// what came after it, unless a context edit or compaction on `branch` came after that
+/// usage, so that it measured a context that is gone. Then the projection is estimated
+/// instead, its prompt and tools once.
+pub fn estimate_projected_context_tokens(
+    projection: &SessionProjection,
+    branch: &[&SessionEntry],
+) -> u64 {
+    let messages = &projection.messages;
+    let last_usage = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| match message {
+            SessionMessage::Llm(Message::Assistant(assistant))
+                if !assistant.is_failure() && assistant.usage.context_tokens() > 0 =>
+            {
+                Some((index, assistant.usage.context_tokens()))
+            }
+            _ => None,
+        });
+    if let Some((index, tokens)) = last_usage {
+        let mut end = 0;
+        let source = projection.entries.iter().find(|entry| {
+            end += entry.messages.len();
+            index < end
+        });
+        let measured_at =
+            source.and_then(|source| branch.iter().position(|entry| entry.id == source.entry_id));
+        let changed_at = branch.iter().rposition(|entry| {
+            matches!(
+                entry.kind,
+                EntryKind::ContextEdit { .. } | EntryKind::Compaction { .. }
+            )
+        });
+        if measured_at > changed_at {
+            return tokens
+                + messages[index + 1..]
+                    .iter()
+                    .map(estimate_tokens)
+                    .sum::<u64>();
+        }
+    }
+    let prompt = pi_ai::transcript::current_system_message(
+        messages.iter().filter_map(AgentMessage::as_message),
+    )
+    .map_or(0, |system| {
+        estimate_tokens(&SessionMessage::Llm(Message::System(system)))
+    });
+    prompt
+        + messages
+            .iter()
+            .filter(|message| !matches!(message.as_message(), Some(Message::System(_))))
+            .map(estimate_tokens)
+            .sum::<u64>()
 }
 
 fn is_cut_point(message: &SessionMessage) -> bool {
@@ -353,7 +412,7 @@ pub fn prepare_compaction(
         first_kept_entry_id,
         messages_to_summarize,
         turn_prefix_messages,
-        tokens_before: estimate_context_tokens(&projection.messages),
+        tokens_before: estimate_projected_context_tokens(&projection, path),
         previous_summary,
         file_operations,
         settings: settings.clone(),
@@ -367,6 +426,10 @@ pub struct CompactionResult {
     pub summary: String,
     pub first_kept_entry_id: String,
     pub tokens_before: u64,
+    /// The estimated context size once the compaction is recorded. The session fills
+    /// it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens_after: Option<u64>,
     #[serde(default)]
     pub usage: Usage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -581,6 +644,7 @@ pub async fn compact(
         summary,
         first_kept_entry_id: preparation.first_kept_entry_id.clone(),
         tokens_before: preparation.tokens_before,
+        estimated_tokens_after: None,
         usage,
         details: Some(json!({ "readFiles": read, "modifiedFiles": modified })),
     })
@@ -754,6 +818,92 @@ mod tests {
             user("abcdefgh"),
         ];
         assert!(estimate_context_tokens(&messages) < 1_000);
+    }
+
+    fn reply(text: &str, context_tokens: u64) -> SessionMessage {
+        let mut reply = AssistantMessage::empty(&FauxProvider::default_model());
+        reply.content = vec![AssistantContent::text(text)];
+        reply.usage.total_tokens = context_tokens;
+        SessionMessage::Llm(Message::Assistant(reply))
+    }
+
+    fn projected_tokens(session: &SessionManager) -> u64 {
+        estimate_projected_context_tokens(&session.projection(), &session.branch())
+    }
+
+    #[test]
+    fn usage_from_before_a_later_context_edit_is_not_trusted() {
+        let mut session = SessionManager::in_memory("/work");
+        let large = session.append_message(user(&"discarded input ".repeat(2_000)));
+        let answer = session.append_message(reply("small answer", 10_001));
+        session.append_context_edit(&large, None).unwrap();
+        assert!(projected_tokens(&session) < 100);
+        session.append_context_edit(&answer, None).unwrap();
+        assert_eq!(projected_tokens(&session), 0);
+    }
+
+    #[test]
+    fn usage_from_after_the_latest_context_edit_is_trusted() {
+        let mut session = SessionManager::in_memory("/work");
+        let question = session.append_message(user("original"));
+        session
+            .append_context_edit(&question, Some(vec![Content::text("edited")]))
+            .unwrap();
+        session.append_message(reply("answer", 4_100));
+        session.append_message(user("next"));
+        assert_eq!(projected_tokens(&session), 4_101);
+    }
+
+    #[test]
+    fn usage_from_before_a_later_compaction_is_not_trusted() {
+        let mut session = SessionManager::in_memory("/work");
+        let question = session.append_message(user("small input"));
+        session
+            .append_context_edit(&question, Some(vec![Content::text("edited input")]))
+            .unwrap();
+        session.append_message(reply("answer", 50_001));
+        session.append_compaction(
+            "small summary".into(),
+            Some(question),
+            50_001,
+            None,
+            None,
+            false,
+        );
+        assert!(projected_tokens(&session) < 100);
+    }
+
+    #[test]
+    fn an_estimate_includes_the_prompt_and_its_tools() {
+        let mut session = SessionManager::in_memory("/work");
+        session.append_message(SessionMessage::Llm(Message::System(pi_ai::SystemMessage {
+            content: "system prompt ".repeat(3_000),
+            tools_added: vec![pi_ai::Tool::new(
+                "example",
+                "tool declaration ".repeat(100),
+                json!({ "type": "object", "properties": {} }),
+            )],
+            ..pi_ai::SystemMessage::default()
+        })));
+        let question = session.append_message(user("ask"));
+        session.append_message(reply("done", 11));
+        session
+            .append_context_edit(&question, Some(vec![Content::text("ask")]))
+            .unwrap();
+        assert!(projected_tokens(&session) > 10_000);
+    }
+
+    #[test]
+    fn tokens_before_leaves_out_usage_a_later_edit_changed() {
+        let mut session = SessionManager::in_memory("/work");
+        let large = session.append_message(user(&"discarded input ".repeat(2_000)));
+        session.append_message(reply("first answer", 10_001));
+        session.append_message(user("second question"));
+        session.append_message(reply("second answer", 20_000));
+        session.append_context_edit(&large, None).unwrap();
+        let preparation = prepare_compaction(&session.branch(), &settings(1)).unwrap();
+        assert!(preparation.tokens_before < 100);
+        assert_eq!(preparation.tokens_before, projected_tokens(&session));
     }
 
     #[test]

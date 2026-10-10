@@ -32,8 +32,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bash_executor::{BashResult, OnChunk, execute_bash_with_operations};
 use crate::compaction::{
-    CompactionResult, Summarizer, compact, estimate_context_tokens, prepare_compaction,
-    should_compact, summarize_branch,
+    CompactionResult, Summarizer, compact, estimate_projected_context_tokens, estimate_tokens,
+    prepare_compaction, should_compact, summarize_branch,
 };
 use crate::extensions::{
     AgentEventSeen, BeforeAgentStart, BeforeProviderRequest, Context, CustomMessageDraft,
@@ -1297,9 +1297,15 @@ impl SessionCore {
         lock(&self.run).abort_requested
     }
 
+    /// The current branch's context size, from usage the branch has not changed since.
+    fn context_tokens(&self) -> u64 {
+        let session = lock(&self.session);
+        estimate_projected_context_tokens(&session.projection(), &session.branch())
+    }
+
     fn context_usage(&self) -> Option<ContextUsage> {
         let model = self.model()?;
-        let tokens = self.agent.with_messages(estimate_context_tokens);
+        let tokens = self.context_tokens();
         let window = model.context_window;
         Some(ContextUsage {
             tokens,
@@ -1520,7 +1526,7 @@ impl SessionCore {
         }
 
         if !last.is_failure() {
-            let tokens = self.agent.with_messages(estimate_context_tokens);
+            let tokens = self.context_tokens();
             if should_compact(tokens, model.context_window, &settings.compaction) {
                 let _ = self
                     .clone()
@@ -1687,7 +1693,7 @@ impl SessionCore {
         if before.cancel {
             return Err(AgentSessionError::Cancelled);
         }
-        let (result, from_extension) = match before.compaction {
+        let (mut result, from_extension) = match before.compaction {
             Some(result) => (result, true),
             None => {
                 let stream_fn = self.models.stream_fn();
@@ -1720,6 +1726,10 @@ impl SessionCore {
         );
         self.report_persistence();
         self.rebuild_messages();
+        result.estimated_tokens_after = Some(
+            self.agent
+                .with_messages(|messages| messages.iter().map(estimate_tokens).sum()),
+        );
         self.runner
             .emit(
                 &SessionCompact {
@@ -2004,7 +2014,7 @@ impl AgentHooks<SessionMessage> for SessionHooks {
         let mut messages = std::mem::take(&mut lock(&core.run).pending_custom);
         let model = core.model()?;
         let settings = lock(&core.settings).compaction.clone();
-        let tokens = estimate_context_tokens(&turn.context.messages);
+        let tokens = core.context_tokens();
         // A long tool loop can outgrow the context within one run. An aborted run ends
         // with its next request, so it is not compacted first.
         let compacted = !cancel.is_cancelled()

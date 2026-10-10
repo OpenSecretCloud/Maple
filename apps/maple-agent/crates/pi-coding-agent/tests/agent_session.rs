@@ -2,12 +2,14 @@ mod common;
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::{Harness, echo_tool, entry_kinds, last_assistant_text, record, roles};
 use pi_agent_core::AgentEvent;
 use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
+use pi_coding_agent::compaction::estimate_tokens;
 use pi_coding_agent::extensions::CustomMessageDraft;
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
@@ -730,6 +732,89 @@ async fn context_usage_reports_the_last_known_size() {
     let usage = session.context_usage().unwrap();
     assert_eq!((usage.tokens, usage.context_window), (1_280, 128_000));
     assert!((usage.percent - 1.0).abs() < 0.001);
+}
+
+#[tokio::test]
+async fn a_compaction_reports_the_size_it_leaves() {
+    let harness = Harness::new();
+    let session = harness
+        .session_with(|options| options.settings.compaction.keep_recent_tokens = 50)
+        .await;
+    for turn in 0..2 {
+        let mut reply = faux_message(vec![AssistantContent::text(format!(
+            "reply {turn} {}",
+            "x".repeat(400)
+        ))]);
+        reply.usage = Usage {
+            input: 90_000,
+            total_tokens: 90_000,
+            ..Usage::default()
+        };
+        harness.faux.push_reply(reply);
+        session
+            .prompt(&format!("question {turn}"), PromptOptions::default())
+            .await
+            .unwrap();
+    }
+    harness.faux.push_text("## Goal\nanswer questions");
+    harness.faux.push_text("## Original Request\nquestion 1");
+    let ended = Arc::new(Mutex::new(Vec::new()));
+    let sink = ended.clone();
+    session.subscribe(move |event| {
+        if let AgentSessionEvent::CompactionEnd {
+            result: Some(result),
+            ..
+        } = event
+        {
+            sink.lock().unwrap().push(result.estimated_tokens_after);
+        }
+    });
+
+    let result = session.compact(None).await.unwrap();
+    let estimate: u64 = session.messages().iter().map(estimate_tokens).sum();
+    assert_eq!(result.estimated_tokens_after, Some(estimate));
+    assert_eq!(*ended.lock().unwrap(), [Some(estimate)]);
+    // The kept reply's usage measured the context before the compaction.
+    let usage = session.context_usage().unwrap();
+    assert!(usage.tokens < 10_000, "{usage:?}");
+}
+
+#[tokio::test]
+async fn usage_from_before_a_context_edit_is_not_the_context_size() {
+    let harness = Harness::new();
+    let mut reply = faux_message(vec![AssistantContent::text("ok")]);
+    reply.usage = Usage {
+        input: 50_000,
+        total_tokens: 50_000,
+        ..Usage::default()
+    };
+    harness.faux.push_reply(reply);
+    harness.faux.push_error("503 Service Unavailable");
+    harness.faux.push_text("recovered");
+    let session = harness
+        .session_with(|options| options.settings.retry.base_delay_ms = 500)
+        .await;
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(session.context_usage().unwrap().tokens, 50_000);
+
+    let events = record(&session);
+    let runner = session.clone();
+    let run = tokio::spawn(async move { runner.prompt("second", PromptOptions::default()).await });
+    while !events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.starts_with("retry_start"))
+    {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    // The failed attempt is omitted from the context by an edit made after that usage.
+    let usage = session.context_usage().unwrap();
+    assert!(usage.tokens < 10_000, "{usage:?}");
+    run.await.unwrap().unwrap();
 }
 
 #[tokio::test]

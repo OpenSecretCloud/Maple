@@ -448,6 +448,7 @@ async fn extensions_can_cancel_or_supply_a_compaction() {
                     summary: "summary from the extension".into(),
                     first_kept_entry_id: event.preparation.first_kept_entry_id,
                     tokens_before: event.preparation.tokens_before,
+                    estimated_tokens_after: None,
                     usage: Default::default(),
                     details: None,
                 }),
