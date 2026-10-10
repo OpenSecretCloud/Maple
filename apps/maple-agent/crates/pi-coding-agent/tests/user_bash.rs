@@ -124,6 +124,36 @@ async fn a_command_joins_the_conversation_with_its_output_cleaned() {
 }
 
 #[tokio::test]
+async fn a_colour_code_split_between_chunks_is_removed_whole() {
+    let harness = Harness::new();
+    let session = harness.session().await;
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let sink = updates.clone();
+    session.subscribe(move |event| {
+        if let AgentSessionEvent::BashExecutionUpdate { delta, .. } = event {
+            sink.lock().unwrap().push(delta.clone());
+        }
+    });
+    let shell = Scripted::new(
+        vec![
+            b"\x1b[1;3",
+            b"1mred\x1b[0m\n\x1b]8;;https://x",
+            b"\x07link\x1b]8;;\x07\ndone\x1b[",
+        ],
+        Some(0),
+    );
+    let options = BashCommandOptions {
+        operations: Some(shell),
+        ..BashCommandOptions::default()
+    };
+    let result = session.execute_bash("make", options).await.unwrap();
+
+    // What is still held back at the end is cleaned as it is.
+    assert_eq!(result.output, "red\nlink\ndone[");
+    assert_eq!(*updates.lock().unwrap(), ["red\n", "link\ndone", "["]);
+}
+
+#[tokio::test]
 async fn a_bang_bang_command_is_kept_but_the_model_never_sees_it() {
     let harness = Harness::new();
     let session = harness.session().await;

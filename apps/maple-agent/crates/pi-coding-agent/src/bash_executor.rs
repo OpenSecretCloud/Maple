@@ -38,6 +38,37 @@ static ANSI: LazyLock<Regex> = LazyLock::new(|| {
     .expect("pattern compiles")
 });
 
+/// An escape sequence the text ends in the middle of: an OSC string without its
+/// terminator (a last ESC may start ESC \), or a CSI sequence without its final byte.
+static UNFINISHED_ANSI: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?:\x1B\](?:[^\x07\x{9C}\x1B]|\x1B+[^\\\x07\x{9C}\x1B])*\x1B*",
+        r"|[\x1B\x{9B}][\[\]()#;?]*(?:[0-9]{1,4}(?:[;:][0-9]{0,4})*)?)$",
+    ))
+    .expect("pattern compiles")
+});
+
+/// The longest unfinished sequence held back for the next chunk, in characters.
+const MAX_PENDING_ANSI: usize = 256;
+
+/// Split `text` before an escape sequence it ends in the middle of, which the next chunk
+/// completes. Only its last [`MAX_PENDING_ANSI`] characters are searched, so a longer
+/// sequence is cleaned as it is.
+fn split_unfinished_ansi(text: &str) -> (&str, &str) {
+    if !text.contains(['\x1B', '\u{9B}']) {
+        return (text, "");
+    }
+    let window = text
+        .char_indices()
+        .rev()
+        .nth(MAX_PENDING_ANSI - 1)
+        .map_or(0, |(index, _)| index);
+    match UNFINISHED_ANSI.find(&text[window..]) {
+        Some(found) => text.split_at(window + found.start()),
+        None => (text, ""),
+    }
+}
+
 /// Control characters other than tab and newline, carriage returns, and interlinear
 /// annotation marks.
 static CONTROL: LazyLock<Regex> = LazyLock::new(|| {
@@ -58,7 +89,28 @@ pub fn sanitize_output(text: &str) -> String {
 struct Collected {
     /// Bytes of a character split between chunks.
     pending: Vec<u8>,
+    /// An escape sequence split between chunks.
+    pending_ansi: String,
     output: OutputAccumulator,
+}
+
+impl Collected {
+    /// The cleaned text of `data` and what came before it. Unless `finish`, a character
+    /// or escape sequence `data` ends in the middle of waits for the next chunk.
+    fn take_text(&mut self, data: &[u8], finish: bool) -> String {
+        self.pending.extend_from_slice(data);
+        let mut text = std::mem::take(&mut self.pending_ansi);
+        text.push_str(&decode_available(&mut self.pending, finish));
+        let (complete, pending) = if finish {
+            (text.as_str(), "")
+        } else {
+            split_unfinished_ansi(&text)
+        };
+        self.pending_ansi = pending.to_string();
+        let text = sanitize_output(complete);
+        self.output.append(text.as_bytes());
+        text
+    }
 }
 
 fn lock(collected: &Mutex<Collected>) -> std::sync::MutexGuard<'_, Collected> {
@@ -78,18 +130,14 @@ pub async fn execute_bash_with_operations(
 ) -> Result<BashResult, String> {
     let collected = Arc::new(Mutex::new(Collected {
         pending: Vec::new(),
+        pending_ansi: String::new(),
         output: OutputAccumulator::new(file_prefix),
     }));
     let on_data: OnData = {
         let collected = collected.clone();
+        let on_chunk = on_chunk.clone();
         Arc::new(move |data: &[u8]| {
-            let text = {
-                let mut collected = lock(&collected);
-                collected.pending.extend_from_slice(data);
-                let text = sanitize_output(&decode_available(&mut collected.pending, false));
-                collected.output.append(text.as_bytes());
-                text
-            };
+            let text = lock(&collected).take_text(data, false);
             if let Some(on_chunk) = &on_chunk
                 && !text.is_empty()
             {
@@ -119,9 +167,14 @@ pub async fn execute_bash_with_operations(
         Err(ExecError::Failed(message)) => return Err(message),
     };
 
+    // What was held back for a next chunk goes out now.
+    let rest = lock(&collected).take_text(&[], true);
+    if let Some(on_chunk) = &on_chunk
+        && !rest.is_empty()
+    {
+        on_chunk(&rest);
+    }
     let mut collected = lock(&collected);
-    let rest = sanitize_output(&decode_available(&mut collected.pending, true));
-    collected.output.append(rest.as_bytes());
     collected.output.finish();
     let snapshot = collected.output.snapshot(true);
     // A full-output file that could not be written leaves the tail, which is kept.
@@ -148,5 +201,26 @@ mod tests {
             "red and link"
         );
         assert_eq!(sanitize_output("a\r\nb\x07\x00c\u{FFF9}"), "a\nbc");
+    }
+
+    #[test]
+    fn an_unfinished_sequence_at_the_end_waits_for_the_next_chunk() {
+        assert_eq!(split_unfinished_ansi("red\x1B[1;3"), ("red", "\x1B[1;3"));
+        assert_eq!(split_unfinished_ansi("a\x1B["), ("a", "\x1B["));
+        assert_eq!(
+            split_unfinished_ansi("a\x1B]8;;https://x"),
+            ("a", "\x1B]8;;https://x")
+        );
+        // A last ESC may start the ESC \ that ends the string.
+        assert_eq!(
+            split_unfinished_ansi("a\x1B]0;t\x1B"),
+            ("a", "\x1B]0;t\x1B")
+        );
+        for complete in ["plain", "a\x1B[31mb", "a\x1B]0;t\x07b", "a\x1B]0;t\x1B\\b"] {
+            assert_eq!(split_unfinished_ansi(complete), (complete, ""));
+        }
+        // A longer one is not held back.
+        let long = format!("\x1B]{}", "x".repeat(MAX_PENDING_ANSI));
+        assert_eq!(split_unfinished_ansi(&long), (long.as_str(), ""));
     }
 }
