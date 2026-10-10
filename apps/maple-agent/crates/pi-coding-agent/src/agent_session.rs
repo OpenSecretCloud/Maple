@@ -36,11 +36,11 @@ use crate::compaction::{
     prepare_compaction, should_compact, summarize_branch,
 };
 use crate::extensions::{
-    AgentEventSeen, BeforeAgentStart, BeforeProviderRequest, Context, CustomMessageDraft,
-    Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, Input,
-    InputAction, InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact,
-    SessionBeforeTree, SessionCompact, SessionShutdown, SessionStart, SessionStartReason,
-    SessionTree, ThinkingLevelSelect, ToolCall, ToolPrompt, ToolResult,
+    AgentEventSeen, BeforeAgentStart, BeforeProviderRequest, CustomMessageDraft, Extension,
+    ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, Input, InputAction,
+    InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact, SessionBeforeTree,
+    SessionCompact, SessionShutdown, SessionStart, SessionStartReason, SessionTree,
+    ThinkingLevelSelect, ToolCall, ToolPrompt, ToolResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -2001,15 +2001,17 @@ impl AgentHooks<SessionMessage> for SessionHooks {
     ) -> Option<Vec<SessionMessage>> {
         let core = self.core.upgrade()?;
         let forced = lock(&core.run).forced_prompt.clone();
-        if forced.is_none() && !core.runner.has::<Context>() {
+        let handled = core.runner.has_context_handlers();
+        if forced.is_none() && !handled {
             return None;
         }
         let mut messages = messages.to_vec();
+        if handled {
+            messages = core.runner.context_messages(messages, &self.core).await;
+        }
+        // After the handlers, as in Pi, so they see the transcript's own prompt.
         if let Some(prompt) = forced {
             force_prompt(&mut messages, &prompt);
-        }
-        if core.runner.has::<Context>() {
-            messages = core.runner.context_messages(messages, &self.core).await;
         }
         Some(messages)
     }

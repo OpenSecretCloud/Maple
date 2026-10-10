@@ -12,8 +12,8 @@ use pi_ai::{AssistantContent, Content, Message, ThinkingLevel, Tool, content_tex
 use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
     AgentEventSeen, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult, Context,
-    CustomMessageDraft, Input, InputAction, MessageEnd, SessionBeforeCompact, SessionStart,
-    ToolCall, ToolPrompt, ToolResult, extension,
+    ContextWithSystem, CustomMessageDraft, Input, InputAction, MessageEnd, SessionBeforeCompact,
+    SessionStart, ToolCall, ToolPrompt, ToolResult, extension,
 };
 use pi_coding_agent::session::{EntryKind, SessionManager};
 use pi_coding_agent::store::JsonlStore;
@@ -312,7 +312,7 @@ async fn context_handlers_reshape_requests_without_touching_the_session() {
     harness.faux.push_text("one");
     harness.faux.push_text("two");
     let trim = extension("trim", |api| {
-        api.on(|event: Context, _ctx| async move {
+        api.on(|event: ContextWithSystem, _ctx| async move {
             let mut messages = event.messages;
             let last = messages.pop();
             messages.retain(|message| message.role() == "system");
@@ -336,6 +336,57 @@ async fn context_handlers_reshape_requests_without_touching_the_session() {
         .map(Message::role)
         .collect();
     assert_eq!(roles, ["system", "user"]);
+    assert_eq!(session.messages().len(), 5);
+}
+
+#[tokio::test]
+async fn context_handlers_see_the_conversation_and_keep_the_prompt() {
+    let harness = Harness::new();
+    harness.faux.push_text("one");
+    harness.faux.push_text("two");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let roles_seen = seen.clone();
+    let trim = extension("trim", move |api| {
+        let roles_seen = roles_seen.clone();
+        api.on(move |event: Context, _ctx| {
+            let roles_seen = roles_seen.clone();
+            async move {
+                roles_seen.lock().unwrap().push(
+                    event
+                        .messages
+                        .iter()
+                        .map(SessionMessage::role)
+                        .collect::<Vec<_>>(),
+                );
+                // Dropping everything but the newest message cannot drop the prompt.
+                Ok(event.messages.last().cloned().map(|last| vec![last]))
+            }
+        });
+    });
+    let session = harness
+        .session_with(|options| {
+            options.tools = vec![echo_tool(true)];
+            options.extensions = vec![trim];
+        })
+        .await;
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    session
+        .prompt("second", PromptOptions::default())
+        .await
+        .unwrap();
+    // As in Pi, the handler sees no system messages.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [vec!["user"], vec!["user", "assistant", "user"]]
+    );
+    let request = &harness.faux.requests()[1].context.messages;
+    let roles: Vec<&str> = request.iter().map(Message::role).collect();
+    assert_eq!(roles, ["system", "user"]);
+    assert!(pi_ai::transcript::current_system_prompt(request).contains("inside Maple"));
+    assert_eq!(pi_ai::transcript::current_tools(request)[0].name, "echo");
     assert_eq!(session.messages().len(), 5);
 }
 

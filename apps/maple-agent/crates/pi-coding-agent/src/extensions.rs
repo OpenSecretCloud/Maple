@@ -8,8 +8,9 @@
 //! - observers ([`SessionStart`], [`AgentEventSeen`], ...) all run, and a failing handler
 //!   is reported without affecting the others;
 //! - a [`ToolCall`] gate stops at the first block, and a failing gate blocks the call;
-//! - rewrites ([`ToolResult`], [`MessageEnd`], [`Context`], [`BeforeProviderRequest`],
-//!   [`Input`], [`BeforeAgentStart`]) chain, each handler seeing the previous one's output;
+//! - rewrites ([`ToolResult`], [`MessageEnd`], [`Context`], [`ContextWithSystem`],
+//!   [`BeforeProviderRequest`], [`Input`], [`BeforeAgentStart`]) chain, each handler seeing
+//!   the previous one's output;
 //! - `before` events ([`SessionBeforeCompact`], [`SessionBeforeTree`]) stop at the first
 //!   cancellation.
 
@@ -21,8 +22,11 @@ use std::sync::{Arc, Mutex, Weak};
 use async_trait::async_trait;
 use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
-use pi_agent_core::{AfterToolCallResult, AgentEvent, AgentTool, BeforeToolCallResult};
-use pi_ai::{Content, ImageContent, Model, StreamFn, ThinkingLevel, Usage};
+use pi_agent_core::{
+    AfterToolCallResult, AgentEvent, AgentMessage, AgentTool, BeforeToolCallResult,
+};
+use pi_ai::transcript::current_system_message;
+use pi_ai::{Content, ImageContent, Message, Model, StreamFn, ThinkingLevel, Usage};
 use serde_json::Value;
 
 use crate::agent_session::SessionCore;
@@ -139,10 +143,20 @@ pub struct ToolResult {
     pub usage: Option<Usage>,
 }
 
-/// The transcript about to be sent, system messages included. A replacement must keep
-/// the leading system message, which carries the prompt and tools.
+/// The conversation about to be sent, without its system messages, as Pi's `context`
+/// event has it. The prompt and tools are the session's: they are put back in front of
+/// a handler's replacement, so a handler cannot drop them.
 #[derive(Clone, Debug)]
 pub struct Context {
+    pub messages: Vec<SessionMessage>,
+}
+
+/// The transcript about to be sent, system messages included, after every [`Context`]
+/// handler, as Pi's `context_with_system` event has it. The handler owns the prompt and
+/// tool declarations: a replacement is sent as returned and must keep the leading system
+/// message, which carries them.
+#[derive(Clone, Debug)]
+pub struct ContextWithSystem {
     pub messages: Vec<SessionMessage>,
 }
 
@@ -222,6 +236,7 @@ events! {
     ToolCall => Option<BeforeToolCallResult>, "tool_call";
     ToolResult => Option<AfterToolCallResult>, "tool_result";
     Context => Option<Vec<SessionMessage>>, "context";
+    ContextWithSystem => Option<Vec<SessionMessage>>, "context_with_system";
     BeforeProviderRequest => Option<Value>, "before_provider_request";
     SessionBeforeCompact => BeforeCompactResult, "session_before_compact";
     SessionCompact => (), "session_compact";
@@ -402,6 +417,19 @@ impl ExtensionApi<'_> {
             .providers
             .push(ProviderRegistration { models, api });
     }
+}
+
+/// `conversation` behind one system message holding the prompt and tools `transcript`
+/// declares, as Pi restores them after a `context` handler.
+fn with_current_system(
+    transcript: &[SessionMessage],
+    conversation: Vec<SessionMessage>,
+) -> Vec<SessionMessage> {
+    let head = current_system_message(transcript.iter().filter_map(AgentMessage::as_message));
+    head.map(|system| SessionMessage::Llm(Message::System(system)))
+        .into_iter()
+        .chain(conversation)
+        .collect()
 }
 
 /// A plugin.
@@ -636,7 +664,13 @@ impl ExtensionRunner {
         current
     }
 
-    /// Chain transcript rewrites for one request.
+    pub fn has_context_handlers(&self) -> bool {
+        self.has::<Context>() || self.has::<ContextWithSystem>()
+    }
+
+    /// Chain transcript rewrites for one request, as Pi does in two phases: [`Context`]
+    /// handlers see the conversation alone and the prompt and tools are put back after
+    /// each, then [`ContextWithSystem`] handlers see everything and are taken as returned.
     pub async fn context_messages(
         &self,
         messages: Vec<SessionMessage>,
@@ -644,11 +678,32 @@ impl ExtensionRunner {
     ) -> Vec<SessionMessage> {
         let mut current = messages;
         for (extension, handler) in self.handlers::<Context>() {
+            let visible: Vec<SessionMessage> = current
+                .iter()
+                .filter(|message| message.role() != "system")
+                .cloned()
+                .collect();
+            match handler(
+                Context {
+                    messages: visible.clone(),
+                },
+                self.context(core, &extension),
+            )
+            .await
+            {
+                Ok(Some(replacement)) if replacement != visible => {
+                    current = with_current_system(&current, replacement);
+                }
+                Ok(_) => {}
+                Err(error) => self.report(&extension, Context::NAME, error),
+            }
+        }
+        for (extension, handler) in self.handlers::<ContextWithSystem>() {
             let had_leading_system = current
                 .first()
                 .is_some_and(|message| message.role() == "system");
             match handler(
-                Context {
+                ContextWithSystem {
                     messages: current.clone(),
                 },
                 self.context(core, &extension),
@@ -661,12 +716,12 @@ impl ExtensionRunner {
                             .first()
                             .is_none_or(|message| message.role() != "system")
                     {
-                        self.report(&extension, Context::NAME, "the handler removed the leading system message, which carries the prompt and tools");
+                        self.report(&extension, ContextWithSystem::NAME, "the handler removed the leading system message, which carries the prompt and tools");
                     }
                     current = replacement;
                 }
                 Ok(None) => {}
-                Err(error) => self.report(&extension, Context::NAME, error),
+                Err(error) => self.report(&extension, ContextWithSystem::NAME, error),
             }
         }
         current
