@@ -485,6 +485,49 @@ pub struct PromptTemplate {
     pub source: ResourceSource,
 }
 
+fn load_template(
+    path: &Path,
+    source: ResourceSource,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<PromptTemplate> {
+    let parsed = fs::read_to_string(path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| parse_frontmatter(&text));
+    let (frontmatter, body) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            diagnostics.push(diagnostic(path, error));
+            return None;
+        }
+    };
+    let description = match frontmatter["description"].as_str() {
+        Some(description) => description.to_string(),
+        None => {
+            let first = body
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default();
+            let short: String = first.chars().take(60).collect();
+            if first.chars().count() > 60 {
+                format!("{short}...")
+            } else {
+                short
+            }
+        }
+    };
+    Some(PromptTemplate {
+        name: path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        description,
+        argument_hint: frontmatter["argument-hint"].as_str().map(str::to_string),
+        content: body,
+        file_path: path.to_path_buf(),
+        source,
+    })
+}
+
 fn load_templates_in(
     dir: &Path,
     source: ResourceSource,
@@ -501,48 +544,13 @@ fn load_templates_in(
         .collect();
     paths.sort();
     for path in paths {
-        let parsed = fs::read_to_string(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|text| parse_frontmatter(&text));
-        let (frontmatter, body) = match parsed {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                diagnostics.push(diagnostic(&path, error));
-                continue;
-            }
-        };
-        let description = match frontmatter["description"].as_str() {
-            Some(description) => description.to_string(),
-            None => {
-                let first = body
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or_default();
-                let short: String = first.chars().take(60).collect();
-                if first.chars().count() > 60 {
-                    format!("{short}...")
-                } else {
-                    short
-                }
-            }
-        };
-        templates.push(PromptTemplate {
-            name: path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            description,
-            argument_hint: frontmatter["argument-hint"].as_str().map(str::to_string),
-            content: body,
-            file_path: path,
-            source,
-        });
+        templates.extend(load_template(&path, source, diagnostics));
     }
 }
 
 /// Templates from the project's (only when trusted) and the user's `prompts` folders and
-/// any extra folders. The first template with a name wins, so a project's template
-/// overrides the user's; later ones are reported as collisions.
+/// any extra files or folders. The first template with a name wins, so a project's
+/// template overrides the user's; later ones are reported as collisions.
 pub fn load_prompt_templates(
     cwd: &Path,
     paths: &ResourcePaths,
@@ -571,12 +579,16 @@ pub fn load_prompt_templates(
         } else {
             cwd.join(path)
         };
-        load_templates_in(
-            &path,
-            ResourceSource::Path,
-            &mut templates,
-            &mut diagnostics,
-        );
+        if path.is_file() && path.extension().is_some_and(|extension| extension == "md") {
+            templates.extend(load_template(&path, ResourceSource::Path, &mut diagnostics));
+        } else {
+            load_templates_in(
+                &path,
+                ResourceSource::Path,
+                &mut templates,
+                &mut diagnostics,
+            );
+        }
     }
     let mut unique: Vec<PromptTemplate> = Vec::new();
     for template in templates {
@@ -932,6 +944,38 @@ mod tests {
             expand_prompt_template("/unknown x", &templates),
             "/unknown x"
         );
+    }
+
+    #[test]
+    fn an_extra_template_path_can_name_one_file() {
+        let (root, cwd, paths) = layout();
+        let extra = root.path().join("extra");
+        write(&extra.join("review.md"), "Review $1");
+        write(&extra.join("other.md"), "Other");
+        write(&extra.join("notes.txt"), "Not a template");
+        write(&root.path().join("folder/deploy.md"), "Deploy $@");
+        let (templates, diagnostics) = load_prompt_templates(
+            &cwd,
+            &paths,
+            &[
+                extra.join("review.md"),
+                extra.join("notes.txt"),
+                root.path().join("folder"),
+            ],
+            true,
+        );
+        let found: Vec<(&str, ResourceSource)> = templates
+            .iter()
+            .map(|template| (template.name.as_str(), template.source))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("review", ResourceSource::Path),
+                ("deploy", ResourceSource::Path)
+            ]
+        );
+        assert!(diagnostics.is_empty());
     }
 
     #[test]

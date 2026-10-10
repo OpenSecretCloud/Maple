@@ -56,7 +56,7 @@ pub struct Settings {
     pub default_thinking_level: Option<ThinkingLevel>,
     /// Extra skill files or folders.
     pub skills: Vec<PathBuf>,
-    /// Extra prompt template folders.
+    /// Extra prompt template files or folders.
     pub prompts: Vec<PathBuf>,
     /// Text added to the system prompt, in place of `APPEND_SYSTEM.md`.
     pub append_system_prompt: Option<String>,
