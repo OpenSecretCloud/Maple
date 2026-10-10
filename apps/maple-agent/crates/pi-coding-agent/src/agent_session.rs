@@ -541,13 +541,17 @@ impl AgentSession {
             .and_then(|(provider, id)| models.find(provider, id))
             .or(options.model.clone());
         // As Pi restores a session: one with a conversation keeps the level it recorded;
-        // anything else starts at the settings' default level, or else at Pi's.
+        // a new one starts at its model's own level, and anything else at the settings'
+        // default level, or else at Pi's.
+        let model_level = model
+            .as_ref()
+            .filter(|_| !has_messages)
+            .and_then(|model| options.settings.model_thinking_level(model));
         let requested_thinking_level = if has_messages && has_thinking_entry {
             projection.thinking_level
         } else {
-            options
-                .settings
-                .default_thinking_level
+            model_level
+                .or(options.settings.default_thinking_level)
                 .unwrap_or(DEFAULT_THINKING_LEVEL)
         };
         let thinking_level = model.as_ref().map_or(ThinkingLevel::Off, |model| {
@@ -2626,12 +2630,17 @@ impl SessionCore {
         }
     }
 
-    /// As Pi's `setModel`: the settings' default level applies again, or else the current
-    /// one, clamped to the new model. Extensions hear of a model that really changed.
+    /// As Pi's `setModel`: the model's own level from the settings applies, or else the
+    /// settings' default, or else the current level, clamped to the new model. Extensions
+    /// hear of a model that really changed.
     async fn set_model(&self, model: Model) {
-        let level = lock(&self.settings)
-            .default_thinking_level
-            .unwrap_or_else(|| self.agent.thinking_level());
+        let level = {
+            let settings = lock(&self.settings);
+            settings
+                .model_thinking_level(&model)
+                .or(settings.default_thinking_level)
+        }
+        .unwrap_or_else(|| self.agent.thinking_level());
         let previous = lock(&self.model).replace(model.clone());
         self.agent.set_model(model.clone());
         lock(&self.session).append_model_change(&model.provider, &model.id);

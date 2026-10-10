@@ -1018,6 +1018,31 @@ async fn a_model_switch_applies_the_default_thinking_level_again() {
 }
 
 #[tokio::test]
+async fn a_model_with_its_own_level_starts_and_switches_at_it() {
+    let harness = Harness::new();
+    let mut other = FauxProvider::default_model();
+    other.id = "other".into();
+    harness.models.register_models([other.clone()]);
+    let faux = harness.faux.model();
+    let session = harness
+        .session_with(|options| {
+            options.settings.default_thinking_level = Some(ThinkingLevel::Low);
+            options.settings.model_thinking_levels.insert(
+                format!("{}/{}", faux.provider, faux.id),
+                ThinkingLevel::High,
+            );
+        })
+        .await;
+    // As in Pi, a model's own level wins over the default, when a session starts with
+    // it and when it switches to it.
+    assert_eq!(session.thinking_level(), ThinkingLevel::High);
+    session.set_model(other).await;
+    assert_eq!(session.thinking_level(), ThinkingLevel::Low);
+    session.set_model(faux).await;
+    assert_eq!(session.thinking_level(), ThinkingLevel::High);
+}
+
+#[tokio::test]
 async fn retry_compaction_and_queue_modes_change_for_the_session() {
     let harness = Harness::new();
     harness.faux.push_error("503 Service Unavailable");

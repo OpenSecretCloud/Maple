@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use pi_agent_core::{QueueMode, ToolExecutionMode};
-use pi_ai::ThinkingLevel;
+use pi_ai::{Model, ThinkingLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -55,6 +56,10 @@ pub struct Settings {
     pub follow_up_mode: QueueMode,
     pub tool_execution: ToolExecutionMode,
     pub default_thinking_level: Option<ThinkingLevel>,
+    /// Levels for particular models, by `provider/model-id`, as Pi's
+    /// `modelThinkingLevels`. A model's own level wins over `default_thinking_level`
+    /// when a new session starts with the model and when a session switches to it.
+    pub model_thinking_levels: BTreeMap<String, ThinkingLevel>,
     /// Skill files or folders the settings list, the project's before the user's.
     /// [`Settings::load`] resolves each against its own file's folder.
     pub skills: Vec<PathBuf>,
@@ -163,6 +168,13 @@ fn take_listed(
 }
 
 impl Settings {
+    /// The level `model_thinking_levels` gives `model`, as Pi's `getModelThinkingLevel`.
+    pub fn model_thinking_level(&self, model: &Model) -> Option<ThinkingLevel> {
+        self.model_thinking_levels
+            .get(&format!("{}/{}", model.provider, model.id))
+            .copied()
+    }
+
     /// Load user settings overlaid with project settings. Missing and empty files are
     /// skipped. A file that cannot be read, does not parse or holds a value of the wrong
     /// type is left out and returned with its error.
@@ -299,6 +311,41 @@ mod tests {
         let (settings, errors) = Settings::load(Some(&user), Some(&project));
         assert_eq!(errors.len(), 1);
         assert_eq!(settings.prompts, [dir.path().join("agent/more")]);
+    }
+
+    #[test]
+    fn levels_for_particular_models_merge_model_by_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user.json");
+        let project = dir.path().join("project.json");
+        fs::write(
+            &user,
+            json!({ "modelThinkingLevels": { "maple/a": "high", "maple/b": "low" } }).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            &project,
+            json!({ "modelThinkingLevels": { "maple/b": "minimal" } }).to_string(),
+        )
+        .unwrap();
+        let (settings, errors) = Settings::load(Some(&user), Some(&project));
+        assert!(errors.is_empty());
+        let model = |id: &str| -> Model {
+            serde_json::from_value(json!({
+                "id": id, "name": id, "api": "x", "provider": "maple",
+                "contextWindow": 1000, "maxTokens": 100,
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            settings.model_thinking_level(&model("a")),
+            Some(ThinkingLevel::High)
+        );
+        assert_eq!(
+            settings.model_thinking_level(&model("b")),
+            Some(ThinkingLevel::Minimal)
+        );
+        assert_eq!(settings.model_thinking_level(&model("c")), None);
     }
 
     #[test]
