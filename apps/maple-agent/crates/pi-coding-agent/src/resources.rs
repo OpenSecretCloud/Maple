@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use regex::Regex;
 use serde_json::Value;
 
@@ -531,29 +532,118 @@ fn load_template(
     })
 }
 
+/// The ignore files whose rules a resource folder follows.
+const IGNORE_FILE_NAMES: [&str; 3] = [".gitignore", ".ignore", ".fdignore"];
+
+/// A line of an ignore file in `prefix` below the folder searched, rewritten as a rule
+/// of that folder as Pi rewrites it; `None` for a blank line or a comment.
+fn prefix_ignore_rule(line: &str, prefix: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || (trimmed.starts_with('#') && !trimmed.starts_with("\\#")) {
+        return None;
+    }
+    let (negated, rule) = match line.strip_prefix('!') {
+        Some(rule) => (true, rule),
+        None => (
+            false,
+            line.strip_prefix('\\')
+                .filter(|rule| rule.starts_with('!'))
+                .unwrap_or(line),
+        ),
+    };
+    let rule = rule.strip_prefix('/').unwrap_or(rule);
+    Some(format!("{}{prefix}{rule}", if negated { "!" } else { "" }))
+}
+
+/// The Markdown files in `root` that can be templates, as Pi finds them: names starting
+/// with `.` and `node_modules` are passed over, and so is what the ignore files of each
+/// folder searched leave out. With `recursive`, subfolders are searched too.
+fn template_files(root: &Path, recursive: bool) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut rules = Vec::new();
+    let mut seen = HashSet::new();
+    find_template_files(root, root, recursive, &mut rules, &mut seen, &mut files);
+    files
+}
+
+fn find_template_files(
+    dir: &Path,
+    root: &Path,
+    recursive: bool,
+    rules: &mut Vec<String>,
+    seen: &mut HashSet<PathBuf>,
+    files: &mut Vec<PathBuf>,
+) {
+    // A folder linked from inside itself is searched once.
+    if !seen.insert(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())) {
+        return;
+    }
+    let prefix: String = dir
+        .strip_prefix(root)
+        .map(|relative| {
+            relative
+                .components()
+                .map(|part| format!("{}/", part.as_os_str().to_string_lossy()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in IGNORE_FILE_NAMES {
+        if let Ok(text) = fs::read_to_string(dir.join(name)) {
+            rules.extend(
+                text.lines()
+                    .filter_map(|line| prefix_ignore_rule(line, &prefix)),
+            );
+        }
+    }
+    let mut builder = GitignoreBuilder::new(root);
+    // Pi's matcher ignores case.
+    let _ = builder.case_insensitive(true);
+    for rule in rules.iter() {
+        // A rule that does not parse matches nothing.
+        let _ = builder.add_line(None, rule);
+    }
+    let ignored = builder.build().unwrap_or_else(|_| Gitignore::empty());
+    let Ok(read) = fs::read_dir(dir) else { return };
+    let mut paths: Vec<PathBuf> = read.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name.starts_with('.') || name == "node_modules" {
+            continue;
+        }
+        let is_dir = path.is_dir();
+        if ignored.matched(&path, is_dir).is_ignore() {
+            continue;
+        }
+        if is_dir {
+            if recursive {
+                find_template_files(&path, root, recursive, rules, seen, files);
+            }
+        } else if path.is_file() && name.ends_with(".md") {
+            files.push(path);
+        }
+    }
+}
+
 fn load_templates_in(
     dir: &Path,
     source: ResourceSource,
+    recursive: bool,
     templates: &mut Vec<PromptTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let Ok(read) = fs::read_dir(dir) else { return };
-    let mut paths: Vec<PathBuf> = read
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file() && path.extension().is_some_and(|extension| extension == "md")
-        })
-        .collect();
-    paths.sort();
-    for path in paths {
+    for path in template_files(dir, recursive) {
         templates.extend(load_template(&path, source, diagnostics));
     }
 }
 
-/// Templates from the project's (only when trusted) and the user's `prompts` folders and
-/// any extra files or folders. The first template with a name wins, so a project's
-/// template overrides the user's; later ones are reported as collisions.
+/// Templates from the project's (only when trusted) and the user's `prompts` folders,
+/// whose own files count, and any extra files or folders, searched with their
+/// subfolders. The first template with a name wins, so a project's template overrides
+/// the user's; later ones are reported as collisions.
 pub fn load_prompt_templates(
     cwd: &Path,
     paths: &ResourcePaths,
@@ -566,6 +656,7 @@ pub fn load_prompt_templates(
         load_templates_in(
             &paths.project_dir(cwd).join("prompts"),
             ResourceSource::Project,
+            false,
             &mut templates,
             &mut diagnostics,
         );
@@ -573,6 +664,7 @@ pub fn load_prompt_templates(
     load_templates_in(
         &paths.agent_dir.join("prompts"),
         ResourceSource::User,
+        false,
         &mut templates,
         &mut diagnostics,
     );
@@ -588,6 +680,7 @@ pub fn load_prompt_templates(
             load_templates_in(
                 &path,
                 ResourceSource::Path,
+                true,
                 &mut templates,
                 &mut diagnostics,
             );
@@ -947,6 +1040,69 @@ mod tests {
             expand_prompt_template("/unknown x", &templates),
             "/unknown x"
         );
+    }
+
+    fn template_names(templates: &[PromptTemplate]) -> Vec<&str> {
+        templates
+            .iter()
+            .map(|template| template.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_prompts_folder_offers_its_own_files_less_what_it_ignores() {
+        let (_root, cwd, paths) = layout();
+        let prompts = paths.agent_dir.join("prompts");
+        for name in [
+            "review.md",
+            ".hidden.md",
+            "draft.md",
+            "wip.md",
+            "nested/deep.md",
+        ] {
+            write(&prompts.join(name), "Do it");
+        }
+        write(&prompts.join(".gitignore"), "# drafts\nDRAFT.md\n");
+        write(&prompts.join(".fdignore"), "wip.md\n");
+        // The folder's parent has no say.
+        write(&paths.agent_dir.join(".gitignore"), "prompts\nreview.md\n");
+        let (templates, _) = load_prompt_templates(&cwd, &paths, &[], true);
+        assert_eq!(template_names(&templates), ["review"]);
+    }
+
+    #[test]
+    fn an_extra_prompts_folder_is_searched_with_its_subfolders() {
+        let (root, cwd, paths) = layout();
+        let extra = root.path().join("extra");
+        for name in [
+            "top.md",
+            "idea.draft.md",
+            "nested/deep.md",
+            "nested/later.draft.md",
+            "nested/skip-a.md",
+            "nested/deeper/skip-b.md",
+            ".private/secret.md",
+            "node_modules/package.md",
+        ] {
+            write(&extra.join(name), "Do it");
+        }
+        write(&extra.join(".ignore"), "*.draft.md\n");
+        // A nested folder's rules are its own, as Pi reads them: anchored to it.
+        write(&extra.join("nested/.ignore"), "skip-*.md\n");
+        let (templates, _) = load_prompt_templates(&cwd, &paths, &[extra], true);
+        assert_eq!(template_names(&templates), ["deep", "skip-b", "top"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_linked_from_inside_itself_is_searched_once() {
+        let (root, cwd, paths) = layout();
+        let extra = root.path().join("extra");
+        write(&extra.join("top.md"), "Do it");
+        std::os::unix::fs::symlink(&extra, extra.join("again")).unwrap();
+        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[extra], true);
+        assert_eq!(template_names(&templates), ["top"]);
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
