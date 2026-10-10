@@ -137,7 +137,18 @@ pub fn record(session: &AgentSession) -> Arc<Mutex<Vec<String>>> {
             }
             AgentSessionEvent::PersistenceError(_) => "persistence_error".into(),
             AgentSessionEvent::BashExecutionUpdate { delta, .. } => format!("bash:{delta}"),
-            AgentSessionEvent::Settled => "settled".into(),
+            AgentSessionEvent::Settled { aborted: false } => "settled".into(),
+            AgentSessionEvent::Settled { aborted: true } => "settled:aborted".into(),
+            AgentSessionEvent::AgentEnd { will_retry, .. } => format!("agent_end:{will_retry}"),
+            AgentSessionEvent::EntryAppended { entry } => format!(
+                "entry:{}",
+                serde_json::to_value(&entry.kind).unwrap()["type"]
+                    .as_str()
+                    .unwrap_or_default()
+            ),
+            AgentSessionEvent::SessionInfoChanged { name } => {
+                format!("name:{}", name.as_deref().unwrap_or_default())
+            }
         };
         sink.lock().unwrap().push(name);
     });

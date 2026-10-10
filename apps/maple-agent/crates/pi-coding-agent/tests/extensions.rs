@@ -11,10 +11,10 @@ use pi_ai::faux::FauxProvider;
 use pi_ai::{AssistantContent, Content, ImageContent, Message, ThinkingLevel, Tool, content_text};
 use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
-    AgentEventSeen, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult, Context,
-    ContextWithSystem, CustomMessageDraft, Input, InputAction, MessageEnd, SessionBeforeCompact,
-    SessionStart, SlashCommandInfo, SlashCommandSource, ToolCall, ToolPrompt, ToolResult,
-    extension,
+    AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult,
+    Context, ContextWithSystem, CustomMessageDraft, Input, InputAction, MessageEnd,
+    SessionBeforeCompact, SessionInfoChanged, SessionStart, SlashCommandInfo, SlashCommandSource,
+    ToolCall, ToolPrompt, ToolResult, extension,
 };
 use pi_coding_agent::session::{EntryKind, SessionManager};
 use pi_coding_agent::store::JsonlStore;
@@ -539,13 +539,64 @@ async fn extensions_can_cancel_or_supply_a_compaction() {
 }
 
 #[tokio::test]
+async fn names_entries_and_settling_are_reported_as_in_pi() {
+    let harness = Harness::new();
+    harness.faux.push_hang();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let observer = extension("observer", move |api| {
+        let (names, settles) = (sink.clone(), sink.clone());
+        api.on(move |event: SessionInfoChanged, _ctx| {
+            let names = names.clone();
+            async move {
+                names.lock().unwrap().push(format!("name:{:?}", event.name));
+                Ok(())
+            }
+        });
+        api.on(move |event: AgentSettled, _ctx| {
+            let settles = settles.clone();
+            async move {
+                settles
+                    .lock()
+                    .unwrap()
+                    .push(format!("settled:{}", event.aborted));
+                Ok(())
+            }
+        });
+    });
+    let session = harness.session_with_extensions(vec![observer]).await;
+    let events = record(&session);
+
+    session.set_session_name("Planning").await;
+    assert_eq!(session.session_name().as_deref(), Some("Planning"));
+    session
+        .extension_context()
+        .append_entry("state", Some(json!({ "count": 1 })));
+    let runner = session.clone();
+    let run = tokio::spawn(async move { runner.prompt("go", PromptOptions::default()).await });
+    while harness.faux.requests().is_empty() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    session.abort();
+    run.await.unwrap().unwrap();
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["name:Some(\"Planning\")", "settled:true"]
+    );
+    let events = events.lock().unwrap();
+    assert_eq!(events[..2], ["name:Planning", "entry:custom"]);
+    assert_eq!(events.last().map(String::as_str), Some("settled:aborted"));
+}
+
+#[tokio::test]
 async fn context_actions_reach_the_session() {
     let harness = Harness::new();
     harness.faux.push_text("ok");
     let actions = extension("actions", |api| {
         api.on(|_event: SessionStart, ctx| async move {
             ctx.append_entry("state", Some(json!({ "count": 1 })));
-            ctx.set_session_name("Planning");
+            ctx.set_session_name("Planning").await;
             ctx.send_message(
                 CustomMessageDraft {
                     custom_type: "reminder".into(),

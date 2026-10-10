@@ -173,6 +173,16 @@ async fn transient_errors_are_retried_and_the_failed_attempt_leaves_the_context(
     let events = events.lock().unwrap();
     assert!(events.contains(&"retry_start:1".to_string()));
     assert!(events.contains(&"retry_end:true:1".to_string()));
+    // As in Pi, the failed attempt's run says a retry follows, and the edit that hides
+    // the attempt is reported.
+    let ends: Vec<&String> = events
+        .iter()
+        .filter(|event| event.starts_with("agent_end") || event.starts_with("entry"))
+        .collect();
+    assert_eq!(
+        ends,
+        ["agent_end:true", "entry:context_edit", "agent_end:false"]
+    );
     // The tree keeps the failed attempt and the edit that hides it.
     assert_eq!(
         entry_kinds(&session)[2..],

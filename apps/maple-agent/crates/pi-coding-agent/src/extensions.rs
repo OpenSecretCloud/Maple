@@ -58,6 +58,19 @@ pub struct SessionStart {
 #[derive(Clone, Debug)]
 pub struct SessionShutdown;
 
+/// The session's name changed; `None` when it was cleared.
+#[derive(Clone, Debug)]
+pub struct SessionInfoChanged {
+    pub name: Option<String>,
+}
+
+/// A prompt's run, its retries and compactions are over, as Pi's `agent_settled`.
+#[derive(Clone, Debug)]
+pub struct AgentSettled {
+    /// Whether it was stopped.
+    pub aborted: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InputSource {
     #[default]
@@ -231,6 +244,8 @@ macro_rules! events {
 events! {
     SessionStart => (), "session_start";
     SessionShutdown => (), "session_shutdown";
+    SessionInfoChanged => (), "session_info_changed";
+    AgentSettled => (), "agent_settled";
     Input => InputAction, "input";
     BeforeAgentStart => BeforeAgentStartResult, "before_agent_start";
     AgentEventSeen => (), "agent_event";

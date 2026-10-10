@@ -36,17 +36,17 @@ use crate::compaction::{
     prepare_compaction, should_compact, summarize_branch,
 };
 use crate::extensions::{
-    AgentEventSeen, BeforeAgentStart, BeforeProviderRequest, CustomMessageDraft, Extension,
-    ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, Input, InputAction,
-    InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact, SessionBeforeTree,
-    SessionCompact, SessionShutdown, SessionStart, SessionStartReason, SessionTree,
-    SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt,
-    ToolResult,
+    AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderRequest, CustomMessageDraft,
+    Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, Input,
+    InputAction, InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact,
+    SessionBeforeTree, SessionCompact, SessionInfoChanged, SessionShutdown, SessionStart,
+    SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect,
+    ToolCall, ToolInfo, ToolPrompt, ToolResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
 use crate::resources::{Resources, expand_prompt_template, expand_skill_command};
-use crate::session::{EntryKind, SessionError, SessionManager};
+use crate::session::{EntryKind, SessionEntry, SessionError, SessionManager};
 use crate::settings::Settings;
 use crate::store::SessionStore;
 use crate::system_prompt::{
@@ -121,7 +121,14 @@ pub enum CompactionReason {
 /// What a session reports to its host.
 #[derive(Clone, Debug)]
 pub enum AgentSessionEvent {
+    /// The agent's events, except the end of its run, which is [`Self::AgentEnd`].
     Agent(AgentEvent<SessionMessage>),
+    /// The agent's run ended, with the messages it added. As in Pi, it says whether a
+    /// retry follows.
+    AgentEnd {
+        messages: Vec<SessionMessage>,
+        will_retry: bool,
+    },
     QueueUpdate {
         steering: Vec<String>,
         follow_up: Vec<String>,
@@ -149,6 +156,15 @@ pub enum AgentSessionEvent {
     ThinkingLevelChanged {
         level: ThinkingLevel,
     },
+    /// An entry outside the conversation's flow was added: an extension's own entry, or
+    /// the edit that takes a failed attempt out of the context, as Pi reports them.
+    EntryAppended {
+        entry: SessionEntry,
+    },
+    /// The session's name changed; `None` when it was cleared.
+    SessionInfoChanged {
+        name: Option<String>,
+    },
     ExtensionError(ExtensionErrorReport),
     /// Writing the session failed; the conversation goes on in memory.
     PersistenceError(String),
@@ -158,8 +174,10 @@ pub enum AgentSessionEvent {
         id: Option<String>,
         delta: String,
     },
-    /// The run, its retries and compactions are over.
-    Settled,
+    /// The run, its retries and compactions are over. `aborted` when it was stopped.
+    Settled {
+        aborted: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -838,6 +856,16 @@ impl AgentSession {
         self.core.session_id()
     }
 
+    /// Name the session, as Pi's `setSessionName` does.
+    pub async fn set_session_name(&self, name: &str) {
+        self.core.set_session_name(name).await;
+    }
+
+    /// The session's latest name, as Pi's `getSessionName` gives it.
+    pub fn session_name(&self) -> Option<String> {
+        lock(&self.core.session).session_name().map(str::to_string)
+    }
+
     /// Read the session tree.
     pub fn with_session<T>(&self, read: impl FnOnce(&SessionManager) -> T) -> T {
         read(&lock(&self.core.session))
@@ -1447,6 +1475,41 @@ impl SessionCore {
         lock(&self.run).abort_requested
     }
 
+    /// Whether a retry follows a run that added `messages`, as Pi decides it for its
+    /// `agent_end` event.
+    fn will_retry(&self, messages: &[SessionMessage]) -> bool {
+        let retry = lock(&self.settings).retry.clone();
+        if self.abort_requested()
+            || !retry.enabled
+            || lock(&self.run).retry_attempt >= retry.max_retries
+        {
+            return false;
+        }
+        let window = self.model().map(|model| model.context_window);
+        messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                SessionMessage::Llm(Message::Assistant(assistant)) => Some(assistant),
+                _ => None,
+            })
+            .is_some_and(|last| is_retryable_error(last) && !is_context_overflow(last, window))
+    }
+
+    /// Name the session, as Pi's `setSessionName` does, and tell listeners.
+    async fn set_session_name(&self, name: &str) {
+        let name = {
+            let mut session = lock(&self.session);
+            session.append_session_info(Some(name.to_string()));
+            session.session_name().map(str::to_string)
+        };
+        self.report_persistence();
+        self.emit(AgentSessionEvent::SessionInfoChanged { name: name.clone() });
+        self.runner
+            .emit(&SessionInfoChanged { name }, &self.weak)
+            .await;
+    }
+
     /// The current branch's context size, from usage the branch has not changed since.
     fn context_tokens(&self) -> u64 {
         let session = lock(&self.session);
@@ -1635,13 +1698,17 @@ impl SessionCore {
         self.flush_pending_bash();
         self.flush_pending_custom();
         self.end_retry();
-        {
+        let aborted = {
             let mut run = lock(&self.run);
             run.forced_prompt = None;
             run.prompt_options = None;
-        }
+            run.abort_requested
+        };
         drop(activity);
-        self.emit(AgentSessionEvent::Settled);
+        self.runner
+            .emit(&AgentSettled { aborted }, &self.weak)
+            .await;
+        self.emit(AgentSessionEvent::Settled { aborted });
         result
     }
 
@@ -1777,7 +1844,7 @@ impl SessionCore {
 
     /// Omit the latest assistant message from the context with a context edit.
     fn omit_last_assistant(&self) {
-        {
+        let edit = {
             let mut session = lock(&self.session);
             let target = session
                 .branch()
@@ -1789,12 +1856,16 @@ impl SessionCore {
                     } => Some(entry.id.clone()),
                     _ => None,
                 });
-            if let Some(target) = target {
-                let _ = session.append_context_edit(&target, None);
-            }
-        }
+            target.and_then(|target| {
+                let id = session.append_context_edit(&target, None).ok()?;
+                session.entry(&id).cloned()
+            })
+        };
         self.report_persistence();
         self.rebuild_messages();
+        if let Some(entry) = edit {
+            self.emit(AgentSessionEvent::EntryAppended { entry });
+        }
     }
 
     fn flush_pending_bash(&self) {
@@ -2320,6 +2391,14 @@ impl AgentListener<SessionMessage> for SessionListener {
                     core.emit_queue();
                 }
             }
+            AgentEvent::AgentEnd { messages } => {
+                let will_retry = core.will_retry(messages);
+                core.emit(AgentSessionEvent::AgentEnd {
+                    messages: messages.clone(),
+                    will_retry,
+                });
+                return;
+            }
             AgentEvent::MessageEnd { message } => {
                 core.persist(message);
                 if let SessionMessage::Llm(Message::Assistant(assistant)) = message
@@ -2414,16 +2493,26 @@ impl ExtensionContext {
     /// Store extension state in the session. It is never sent to the model.
     pub fn append_entry(&self, custom_type: &str, data: Option<Value>) {
         if let Some(core) = self.core() {
-            lock(&core.session).append_custom_entry(custom_type, data);
+            let entry = {
+                let mut session = lock(&core.session);
+                let id = session.append_custom_entry(custom_type, data);
+                session.entry(&id).cloned()
+            };
             core.report_persistence();
+            if let Some(entry) = entry {
+                core.emit(AgentSessionEvent::EntryAppended { entry });
+            }
         }
     }
 
-    pub fn set_session_name(&self, name: &str) {
+    pub async fn set_session_name(&self, name: &str) {
         if let Some(core) = self.core() {
-            lock(&core.session).append_session_info(Some(name.to_string()));
-            core.report_persistence();
+            core.set_session_name(name).await;
         }
+    }
+
+    pub fn session_name(&self) -> Option<String> {
+        self.read_session(|session| session.session_name().map(str::to_string))?
     }
 
     pub fn set_label(&self, entry_id: &str, label: Option<&str>) -> Result<(), SessionError> {
