@@ -52,6 +52,11 @@ pub struct ToolCall {
     pub name: String,
     #[serde(default)]
     pub arguments: Map<String, Value>,
+    /// The argument JSON received so far, while [`crate::apply_event`] follows the call
+    /// as it streams; `arguments` holds its parse. `None` once the call has ended. Never
+    /// saved.
+    #[serde(skip)]
+    pub partial_json: Option<String>,
 }
 
 /// Content of user messages and tool results.
@@ -119,6 +124,7 @@ impl AssistantContent {
             id: id.into(),
             name: name.into(),
             arguments,
+            partial_json: None,
         })
     }
 }

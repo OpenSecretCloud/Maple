@@ -890,6 +890,7 @@ async fn run_tool_call_applies_the_same_gates_outside_the_loop() {
         id: "nested/1".into(),
         name: "echo".into(),
         arguments: json!({ "text": "hi" }).as_object().cloned().unwrap(),
+        partial_json: None,
     };
     let allowed = run_tool_call(
         &call,

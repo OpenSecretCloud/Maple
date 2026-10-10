@@ -290,6 +290,7 @@ mod tests {
             id: "c1".into(),
             name: "read".into(),
             arguments: arguments.as_object().cloned().unwrap(),
+            partial_json: None,
         }
     }
 

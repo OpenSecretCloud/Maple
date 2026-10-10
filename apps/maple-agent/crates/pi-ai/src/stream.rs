@@ -72,6 +72,10 @@ impl AssistantMessageEvent {
 }
 
 /// Apply a block event to a response in progress.
+///
+/// A tool call that is still streaming keeps the argument JSON received so far in
+/// `partial_json`, and its `arguments` are what that JSON parses to. A fragment that
+/// arrives after its call ended shows in the final message.
 pub fn apply_event(partial: &mut AssistantMessage, event: &AssistantMessageEvent) {
     match event {
         AssistantMessageEvent::Start { message }
@@ -86,7 +90,16 @@ pub fn apply_event(partial: &mut AssistantMessage, event: &AssistantMessageEvent
                 id: id.clone(),
                 name: name.clone(),
                 arguments: Map::new(),
+                partial_json: Some(String::new()),
             }))
+        }
+        AssistantMessageEvent::ToolCallDelta { index, delta } => {
+            if let Some(AssistantContent::ToolCall(call)) = partial.content.get_mut(*index)
+                && let Some(json) = &mut call.partial_json
+            {
+                json.push_str(delta);
+                call.arguments = parse_streaming_json(json);
+            }
         }
         AssistantMessageEvent::TextDelta { index, delta } => {
             if let Some(AssistantContent::Text(text)) = partial.content.get_mut(*index) {
@@ -103,9 +116,7 @@ pub fn apply_event(partial: &mut AssistantMessage, event: &AssistantMessageEvent
                 *block = AssistantContent::ToolCall(tool_call.clone());
             }
         }
-        AssistantMessageEvent::TextEnd { .. }
-        | AssistantMessageEvent::ThinkingEnd { .. }
-        | AssistantMessageEvent::ToolCallDelta { .. } => {}
+        AssistantMessageEvent::TextEnd { .. } | AssistantMessageEvent::ThinkingEnd { .. } => {}
     }
 }
 
@@ -317,6 +328,7 @@ impl AssistantMessageBuilder {
                 id: id.clone(),
                 name: name.clone(),
                 arguments: Map::new(),
+                partial_json: None,
             }));
         self.arguments.push((index, String::new()));
         self.open = Some(OpenBlock::ToolCall(index));
@@ -432,7 +444,7 @@ impl AssistantMessageBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn model() -> Model {
         serde_json::from_value(json!({
@@ -499,6 +511,50 @@ mod tests {
             apply_event(&mut partial, event);
         }
         assert_eq!(partial.content, message.content);
+    }
+
+    #[tokio::test]
+    async fn applied_events_parse_a_calls_arguments_as_they_stream() {
+        let (sender, stream) = AssistantMessageStream::channel();
+        let mut builder = AssistantMessageBuilder::new(sender, &model());
+        let call = builder.tool_call_start("c1", "write");
+        builder.tool_call_delta(call, "{\"path\":\"a.t");
+        builder.tool_call_delta(call, "xt\",\"content\":\"hi");
+        // Text closes the call; a fragment after that shows in the final message.
+        builder.text_delta("ok");
+        builder.tool_call_delta(call, "!\"}");
+        let message = builder.finish(StopReason::ToolUse, Usage::default());
+
+        let mut partial = AssistantMessage::empty(&model());
+        let mut seen = Vec::new();
+        for event in collect(stream).await {
+            apply_event(&mut partial, &event);
+            if let Some(AssistantContent::ToolCall(call)) = partial.content.first() {
+                seen.push((
+                    Value::Object(call.arguments.clone()),
+                    call.partial_json.clone(),
+                ));
+            }
+        }
+        let sent = json!({ "path": "a.txt", "content": "hi" });
+        assert_eq!(
+            seen[..4],
+            [
+                (json!({}), Some(String::new())),
+                (json!({ "path": "a.t" }), Some("{\"path\":\"a.t".into())),
+                (
+                    sent.clone(),
+                    Some("{\"path\":\"a.txt\",\"content\":\"hi".into())
+                ),
+                (sent.clone(), None),
+            ]
+        );
+        assert_eq!(seen[seen.len() - 2], (sent, None));
+        assert_eq!(partial, message);
+        assert_eq!(
+            message.tool_calls().next().unwrap().arguments["content"],
+            "hi!"
+        );
     }
 
     #[tokio::test]
