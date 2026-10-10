@@ -239,7 +239,8 @@ fn error_object_message(error: &Value) -> String {
     match error.get("message").filter(|message| is_set(message)) {
         Some(Value::String(message)) => message.clone(),
         Some(message) => message.to_string(),
-        None => error.to_string(),
+        None if is_set(error) => error.to_string(),
+        None => "(no status code or body)".into(),
     }
 }
 
@@ -626,7 +627,10 @@ fn downgrade_images<'a>(
 }
 
 /// The message for a stream that ends, at `[DONE]` or not, without a finish reason.
-const STREAM_CUT_OFF: &str = "Provider stream ended without a finish reason";
+const STREAM_CUT_OFF: &str = "Stream ended without finish_reason";
+
+/// The SDK's error for an event whose data is not JSON.
+const MALFORMED_EVENT: &str = "Error reading response: malformed server-sent event JSON.";
 
 /// What a streamed completion has reported besides content and usage.
 #[derive(Default)]
@@ -647,11 +651,9 @@ async fn read_events(
     mut builder: AssistantMessageBuilder,
     cancel: &CancellationToken,
 ) {
-    let mut buffer = String::new();
     let mut decoder = Utf8Decoder::default();
+    let mut events = EventReader::default();
     let mut state = StreamState::default();
-    // Lines that are not server-sent events, such as a JSON error body.
-    let mut stray = String::new();
     let mut ended = false;
     'read: while !ended {
         let chunk = tokio::select! {
@@ -662,44 +664,43 @@ async fn read_events(
             chunk = body.next() => chunk,
         };
         match chunk {
-            None => {
-                ended = true;
-                // The last line may come without its newline.
-                buffer.push('\n');
-            }
+            None => ended = true,
             Some(Err(error)) => {
                 builder.fail(StopReason::Error, error);
                 return;
             }
-            Some(Ok(chunk)) => buffer.push_str(&decoder.decode(&chunk)),
+            Some(Ok(chunk)) => events.push(&decoder.decode(&chunk)),
         }
-        while let Some(end) = buffer.find('\n') {
-            let line = buffer[..end].trim_end_matches('\r').to_string();
-            buffer.drain(..=end);
-            let Some(data) = line.strip_prefix("data:") else {
-                if !is_event_field(&line) {
-                    push_capped(&mut stray, &line);
-                }
-                continue;
-            };
-            let data = data.trim();
-            if data == "[DONE]" {
+        while let Some(event) = events.next(ended) {
+            if event.data == "[DONE]" {
                 break 'read;
             }
-            let Ok(event) = serde_json::from_str::<Value>(data) else {
-                continue;
+            // As the OpenAI SDK reads an event: its data must be JSON, an `error` event
+            // fails with its error, and so does a chunk whose error is set.
+            let Ok(chunk) = serde_json::from_str::<Value>(&event.data) else {
+                builder.fail(StopReason::Error, MALFORMED_EVENT);
+                return;
             };
-            if let Some(error) = event.get("error").filter(|error| is_set(error)) {
+            let error = match event.name.as_deref() {
+                Some("error") => Some(
+                    chunk
+                        .get("error")
+                        .filter(|error| !error.is_null())
+                        .unwrap_or(&chunk),
+                ),
+                _ => chunk.get("error").filter(|error| is_set(error)),
+            };
+            if let Some(error) = error {
                 let message = with_raw_metadata(error_object_message(error), error);
                 builder.fail(StopReason::Error, message);
                 return;
             }
-            apply_chunk(model, &event, &mut builder, &mut state);
+            apply_chunk(model, &chunk, &mut builder, &mut state);
         }
     }
     let Some(finish_reason) = state.finish_reason else {
         // The response was cut off. Its tool calls could carry half their arguments.
-        let detail = error_detail(stray.trim());
+        let detail = error_detail(events.stray.trim());
         let error = if detail.is_empty() {
             STREAM_CUT_OFF.to_string()
         } else {
@@ -719,13 +720,88 @@ async fn read_events(
     }
 }
 
-/// Blank lines, comments and the server-sent event fields other than `data:`.
-fn is_event_field(line: &str) -> bool {
-    line.is_empty()
-        || line.starts_with(':')
-        || ["event:", "id:", "retry:"]
-            .iter()
-            .any(|field| line.starts_with(field))
+/// One server-sent event.
+struct ServerEvent {
+    name: Option<String>,
+    data: String,
+}
+
+/// Reads server-sent events as the OpenAI SDK's decoder does: lines end at `\n`, `\r\n`
+/// or `\r`, an event's `data:` lines join until a blank line, and an event left open
+/// when the stream ends still counts.
+#[derive(Default)]
+struct EventReader {
+    text: String,
+    /// The last line ended at a `\r` that ended the text, so a `\n` next belongs to it.
+    after_return: bool,
+    name: Option<String>,
+    data: Vec<String>,
+    /// Lines that are not server-sent events, such as a JSON error body.
+    stray: String,
+}
+
+impl EventReader {
+    fn push(&mut self, mut text: &str) {
+        if self.after_return && !text.is_empty() {
+            self.after_return = false;
+            text = text.strip_prefix('\n').unwrap_or(text);
+        }
+        self.text.push_str(text);
+    }
+
+    /// The next whole event, or once the stream has `ended` the one it left open.
+    fn next(&mut self, ended: bool) -> Option<ServerEvent> {
+        while let Some(line) = self.next_line(ended) {
+            if line.is_empty() {
+                if let Some(event) = self.dispatch() {
+                    return Some(event);
+                }
+            } else {
+                self.field(&line);
+            }
+        }
+        if ended { self.dispatch() } else { None }
+    }
+
+    fn next_line(&mut self, ended: bool) -> Option<String> {
+        let Some(end) = self.text.find(['\r', '\n']) else {
+            // The last line may come without its newline.
+            return (ended && !self.text.is_empty()).then(|| std::mem::take(&mut self.text));
+        };
+        let line = self.text[..end].to_string();
+        let rest = &self.text[end..];
+        let newline = if rest.starts_with("\r\n") { 2 } else { 1 };
+        self.after_return = rest == "\r";
+        self.text.drain(..end + newline);
+        Some(line)
+    }
+
+    fn field(&mut self, line: &str) {
+        if line.starts_with(':') {
+            return;
+        }
+        let (field, value) = line.split_once(':').unwrap_or((line, ""));
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        match field {
+            "event" => self.name = Some(value.to_string()),
+            "data" => self.data.push(value.to_string()),
+            "id" | "retry" => {}
+            _ => push_capped(&mut self.stray, line),
+        }
+    }
+
+    /// The event gathered so far, when it has a name or data.
+    fn dispatch(&mut self) -> Option<ServerEvent> {
+        if self.name.as_deref().is_none_or(str::is_empty) && self.data.is_empty() {
+            self.name = None;
+            return None;
+        }
+        let data = std::mem::take(&mut self.data).join("\n");
+        Some(ServerEvent {
+            name: self.name.take(),
+            data,
+        })
+    }
 }
 
 fn push_capped(text: &mut String, line: &str) {
@@ -1363,8 +1439,44 @@ mod tests {
             .await;
         assert_eq!(
             message.error_message.as_deref(),
-            Some("Provider stream ended without a finish reason: Upstream gave up")
+            Some("Stream ended without finish_reason: Upstream gave up")
         );
+    }
+
+    #[tokio::test]
+    async fn events_are_read_as_the_sdk_reads_them() {
+        // Data over two lines joins, `\r` and `\r\n` end lines, also across chunks and an
+        // empty one, and the last event needs no blank line after it.
+        let joined = reply_to(vec![
+            "data: {\"choices\":[{\"delta\":\r\ndata: {\"content\":\"o\"}}]}\r\n\r\n",
+            "event: message\rdata: {\"choices\":[{\"delta\":\r",
+            "",
+            "\ndata: {\"content\":\"k\"}}]}\r\n\r\n: comment\nid: 7\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}",
+        ])
+        .await;
+        assert_eq!(joined.stop_reason, StopReason::Stop);
+        assert_eq!(joined.text(), "ok");
+
+        let malformed = reply_to(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            "data: {\"choices\":[\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        ])
+        .await;
+        assert_eq!(malformed.stop_reason, StopReason::Error);
+        assert_eq!(malformed.error_message.as_deref(), Some(MALFORMED_EVENT));
+
+        let error_event = reply_to(vec![
+            "event: error\ndata: {\"message\":\"Overloaded\",\"metadata\":{\"raw\":\"try later\"}}\n\n",
+        ])
+        .await;
+        assert_eq!(
+            error_event.error_message.as_deref(),
+            Some("Overloaded\ntry later")
+        );
+        let wrapped = reply_to(vec!["event: error\ndata: {\"error\":{\"code\":503}}\n\n"]).await;
+        assert_eq!(wrapped.error_message.as_deref(), Some("{\"code\":503}"));
     }
 
     async fn reply_to(chunks: Vec<&'static str>) -> AssistantMessage {
