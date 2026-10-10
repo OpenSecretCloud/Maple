@@ -1135,8 +1135,8 @@ async fn context_usage_reports_the_last_known_size() {
         .await
         .unwrap();
     let usage = session.context_usage().unwrap();
-    assert_eq!((usage.tokens, usage.context_window), (1_280, 128_000));
-    assert!((usage.percent - 1.0).abs() < 0.001);
+    assert_eq!((usage.tokens, usage.context_window), (Some(1_280), 128_000));
+    assert!((usage.percent.unwrap() - 1.0).abs() < 0.001);
 }
 
 #[tokio::test]
@@ -1179,9 +1179,16 @@ async fn a_compaction_reports_the_size_it_leaves() {
     let estimate: u64 = session.messages().iter().map(estimate_tokens).sum();
     assert_eq!(result.estimated_tokens_after, Some(estimate));
     assert_eq!(*ended.lock().unwrap(), [Some(estimate)]);
-    // The kept reply's usage measured the context before the compaction.
+    // As in Pi, the size is unknown until a reply measures the context again: the kept
+    // reply's usage measured it before the compaction.
     let usage = session.context_usage().unwrap();
-    assert!(usage.tokens < 10_000, "{usage:?}");
+    assert_eq!((usage.tokens, usage.percent), (None, None));
+    harness.faux.push_text("measured");
+    session
+        .prompt("question 2", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(session.context_usage().unwrap().tokens.is_some());
 }
 
 #[tokio::test]
@@ -1203,7 +1210,7 @@ async fn usage_from_before_a_context_edit_is_not_the_context_size() {
         .prompt("first", PromptOptions::default())
         .await
         .unwrap();
-    assert_eq!(session.context_usage().unwrap().tokens, 50_000);
+    assert_eq!(session.context_usage().unwrap().tokens, Some(50_000));
 
     let events = record(&session);
     let runner = session.clone();
@@ -1218,7 +1225,7 @@ async fn usage_from_before_a_context_edit_is_not_the_context_size() {
     }
     // The failed attempt is omitted from the context by an edit made after that usage.
     let usage = session.context_usage().unwrap();
-    assert!(usage.tokens < 10_000, "{usage:?}");
+    assert!(usage.tokens.unwrap() < 10_000, "{usage:?}");
     run.await.unwrap().unwrap();
 }
 

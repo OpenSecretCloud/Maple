@@ -288,11 +288,14 @@ pub struct SessionStats {
     pub context_usage: Option<ContextUsage>,
 }
 
+/// How full the model's context window is, as Pi's `getContextUsage` reports it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContextUsage {
-    pub tokens: u64,
+    /// The estimated context size. After a compaction it is unknown until a reply
+    /// measures the context again, as in Pi.
+    pub tokens: Option<u64>,
     pub context_window: u64,
-    pub percent: f64,
+    pub percent: Option<f64>,
 }
 
 /// What to build a session from.
@@ -1261,6 +1264,17 @@ impl AgentSession {
     }
 }
 
+/// Whether `message` is a reply whose usage measured the context, as Pi counts one.
+fn measures_context(message: &SessionMessage) -> bool {
+    matches!(
+        message,
+        SessionMessage::Llm(Message::Assistant(assistant))
+            if assistant.stop_reason != pi_ai::StopReason::Aborted
+                && assistant.stop_reason != pi_ai::StopReason::Error
+                && assistant.usage.context_tokens() > 0
+    )
+}
+
 fn user_message(text: &str, images: Vec<ImageContent>) -> SessionMessage {
     let mut content = vec![Content::text(text)];
     content.extend(images.into_iter().map(Content::Image));
@@ -1603,17 +1617,39 @@ impl SessionCore {
     }
 
     fn context_usage(&self) -> Option<ContextUsage> {
-        let model = self.model()?;
-        let tokens = self.context_tokens();
-        let window = model.context_window;
+        let window = self.model()?.context_window;
+        if window == 0 {
+            return None;
+        }
+        let tokens = {
+            let session = lock(&self.session);
+            let projection = session.projection();
+            let branch = session.branch();
+            // As in Pi: the usage from before a compaction measured the old context, so
+            // only a reply since then, still in the context, can tell its size.
+            let measured = match branch
+                .iter()
+                .rposition(|entry| matches!(entry.kind, EntryKind::Compaction { .. }))
+            {
+                None => true,
+                Some(compaction) => {
+                    let measuring: Vec<&str> = projection
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.messages.iter().any(measures_context))
+                        .map(|entry| entry.entry_id.as_str())
+                        .collect();
+                    branch[compaction + 1..]
+                        .iter()
+                        .any(|entry| measuring.contains(&entry.id.as_str()))
+                }
+            };
+            measured.then(|| estimate_projected_context_tokens(&projection, &branch))
+        };
         Some(ContextUsage {
             tokens,
             context_window: window,
-            percent: if window > 0 {
-                tokens as f64 * 100.0 / window as f64
-            } else {
-                0.0
-            },
+            percent: tokens.map(|tokens| tokens as f64 * 100.0 / window as f64),
         })
     }
 
