@@ -229,7 +229,7 @@ fn completion_response(outcome: Result<bool, ()>) -> String {
     // Hashes authorize only the template's exact script/style contents. Update
     // the corresponding hash when editing either inline block in the template.
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-TT2/B5X4kutghZnTdCndWuEaf6uS6wbgBxuJIAzSdos='; style-src 'sha256-2osWjhMb3Z2/my0VDrETS+S9sT2pKj/fNwUzMomQyCo='; frame-ancestors 'none'; base-uri 'none'\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-TT2/B5X4kutghZnTdCndWuEaf6uS6wbgBxuJIAzSdos='; style-src 'sha256-bEU9dVwNDbkfogept6azK2Ull7VrNOlUgl+5AqGnEOA='; frame-ancestors 'none'; base-uri 'none'\r\n\r\n{body}",
         body.len()
     )
 }
