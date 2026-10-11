@@ -22,7 +22,8 @@ it before mint/open. Do not accept arbitrary URLs, schemes, or query-selected
 backend configuration. Agent uses a separate `/agent/start` contract with a
 canonical port and random return state, fixed `127.0.0.1` callback path, and
 compiled environment label. Bind all target fields through callback and mint.
-Require a second user click for loopback return and enforce the issuer's grant
+After explicit account confirmation, attempt the loopback return automatically
+and retain a manual fallback using the same grant. Enforce the issuer's grant
 expiry. Research's automatic return remains unchanged.
 
 Preserve V2-only route parsing, same-origin OAuth callbacks, popup-only Apple,

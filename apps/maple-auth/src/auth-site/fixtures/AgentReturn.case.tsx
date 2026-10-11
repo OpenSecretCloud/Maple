@@ -89,6 +89,9 @@ describe("Agent loopback return with the real SDK credential fence", () => {
   let now: number;
   let expiresAt: number;
   let clock: ReturnType<typeof spyOn<typeof Date, "now">>;
+  let navigations: string[];
+  let blockNavigation: boolean;
+  let throwNavigation: boolean;
 
   const installCredentials = () => {
     const prepared = prepareNativeOAuthHandoff(client.apiUrl);
@@ -127,13 +130,27 @@ describe("Agent loopback return with the real SDK credential fence", () => {
     now = 1_900_000_000_000;
     expiresAt = now / 1000 + 60;
     clock = spyOn(Date, "now").mockImplementation(() => now);
+    navigations = [];
+    blockNavigation = false;
+    throwNavigation = false;
+    let currentUrl = startUrl;
     local = new MemoryStorage();
     const session = new MemoryStorage();
     for (const [key, value] of Object.entries({
       window: {
         localStorage: local,
         sessionStorage: session,
-        location: { origin: "https://auth.example.test", href: startUrl }
+        location: {
+          origin: "https://auth.example.test",
+          get href() {
+            return currentUrl;
+          },
+          set href(url: string) {
+            navigations.push(url);
+            if (throwNavigation) throw new Error(`Navigation rejected: ${url}`);
+            if (!blockNavigation) currentUrl = url;
+          }
+        }
       },
       localStorage: local,
       sessionStorage: session
@@ -176,6 +193,10 @@ describe("Agent loopback return with the real SDK credential fence", () => {
   const approve = async () => {
     await act(async () => continueButton().props.onClick());
   };
+  const approveWithBlockedNavigation = async () => {
+    blockNavigation = true;
+    await approve();
+  };
   const expectCredentialsRetained = (before: [string, string][]) => {
     expect([...local.values]).toEqual(before);
     expect(readNativeUserAuth(client.apiUrl).principalId).toBe(fixtureUser.id);
@@ -197,31 +218,62 @@ describe("Agent loopback return with the real SDK credential fence", () => {
     });
   }
 
-  test("mints once and waits for a second explicit click before the fixed loopback return", async () => {
-    const before = [...local.values];
-    await renderConfirmation();
-    const confirm = continueButton().props.onClick;
-    await act(async () => {
-      await Promise.all([confirm(), confirm()]);
+  for (const provider of ["github", "google", "apple"] as const) {
+    test(`${provider} confirms once and automatically returns to the fixed loopback address`, async () => {
+      markTransportV2DesktopOAuth({ ...nativeTarget, provider });
+      target = readTransportV2DesktopOAuth(provider)!;
+      const before = [...local.values];
+      await renderConfirmation();
+      const confirm = continueButton().props.onClick;
+      await act(async () => {
+        await Promise.all([confirm(), confirm()]);
+      });
+      expect(mint).toHaveBeenCalledTimes(1);
+      expect(mint).toHaveBeenCalledWith(nativeTarget.nativeSessionId, nativeTarget.nativeRequestId);
+      expect(returnButton()).toBeDefined();
+      expect(button("Open Maple")).toBeUndefined();
+      expect(readTransportV2DesktopOAuth()).toBeNull();
+      expect(window.location.href).toBe(
+        `http://127.0.0.1:${nativeTarget.returnPort}/auth/callback?handoff_grant=aaa.bbb.ccc&return_state=${nativeTarget.returnState}`
+      );
+      expect(mint).toHaveBeenCalledTimes(1);
+      expect(navigations).toHaveLength(1);
+      expect(JSON.stringify(renderer!.toJSON())).toContain(`Returning to ${appLabel}`);
+      expectCredentialsRetained(before);
     });
-    expect(mint).toHaveBeenCalledTimes(1);
-    expect(mint).toHaveBeenCalledWith(nativeTarget.nativeSessionId, nativeTarget.nativeRequestId);
+  }
+
+  test("blocked automatic navigation keeps a manual fallback without minting again", async () => {
+    await renderConfirmation();
+    await approveWithBlockedNavigation();
     expect(window.location.href).toBe(startUrl);
-    expect(returnButton()).toBeDefined();
-    expect(button("Open Maple")).toBeUndefined();
-    expect(readTransportV2DesktopOAuth()).toBeNull();
+    expect(JSON.stringify(renderer!.toJSON())).toContain("use the return button below");
+    expect(navigations).toHaveLength(1);
+    blockNavigation = false;
     act(() => returnButton().props.onClick());
-    expect(window.location.href).toBe(
-      `http://127.0.0.1:${nativeTarget.returnPort}/auth/callback?handoff_grant=aaa.bbb.ccc&return_state=${nativeTarget.returnState}`
-    );
+    expect(window.location.href).toBe(navigations[0]);
+    expect(navigations).toHaveLength(2);
     expect(mint).toHaveBeenCalledTimes(1);
-    expectCredentialsRetained(before);
+  });
+
+  test("a navigation exception offers a safe retry without exposing the grant", async () => {
+    throwNavigation = true;
+    await renderConfirmation();
+    await approve();
+    const rendered = JSON.stringify(renderer!.toJSON());
+    expect(rendered).toContain("Your browser could not return");
+    expect(rendered).not.toContain("aaa.bbb.ccc");
+    expect(returnButton()).toBeDefined();
+    throwNavigation = false;
+    act(() => returnButton().props.onClick());
+    expect(window.location.href).toBe(navigations[0]);
+    expect(mint).toHaveBeenCalledTimes(1);
   });
 
   test("issuer expiry at the exact boundary blocks the manual return even while the native attempt is fresh", async () => {
     const before = [...local.values];
     await renderConfirmation();
-    await approve();
+    await approveWithBlockedNavigation();
     now = expiresAt * 1000;
     act(() => returnButton().props.onClick());
     expect(window.location.href).toBe(startUrl);
@@ -234,7 +286,7 @@ describe("Agent loopback return with the real SDK credential fence", () => {
     test(`a newer flow with changed ${Object.keys(replacement)[0]} blocks the old manual return`, async () => {
       const before = [...local.values];
       await renderConfirmation();
-      await approve();
+      await approveWithBlockedNavigation();
       markTransportV2DesktopOAuth({ ...nativeTarget, ...replacement });
       const newer = readTransportV2DesktopOAuth();
       act(() => returnButton().props.onClick());
@@ -247,7 +299,7 @@ describe("Agent loopback return with the real SDK credential fence", () => {
 
   test("a newer credential revision blocks manual return even for the same account", async () => {
     await renderConfirmation();
-    await approve();
+    await approveWithBlockedNavigation();
     const previous = readNativeUserAuth(client.apiUrl);
     const current = advanceCredentialRevision();
     expect(current.revision).not.toBe(previous.revision);
@@ -273,7 +325,7 @@ describe("Agent loopback return with the real SDK credential fence", () => {
   test("cancellation after minting discards the return without clearing browser credentials", async () => {
     const before = [...local.values];
     await renderConfirmation();
-    await approve();
+    await approveWithBlockedNavigation();
     act(() => button("Cancel")!.props.onClick());
     expect(window.location.href).toBe(startUrl);
     expect(returnButton()).toBeUndefined();
@@ -297,6 +349,8 @@ describe("Agent loopback return with the real SDK credential fence", () => {
       });
       expect(mint).toHaveBeenCalledTimes(1);
       expect(window.location.href).toBe(startUrl);
+      expect(button("Continuing…")!.props.disabled).toBe(true);
+      expect(JSON.stringify(renderer!.toJSON())).toContain("Preparing your sign-in");
       let newer: TransportV2DesktopOAuthState | null = null;
       if (invalidation === "cancel") act(() => button("Cancel")!.props.onClick());
       if (invalidation === "replacement") {

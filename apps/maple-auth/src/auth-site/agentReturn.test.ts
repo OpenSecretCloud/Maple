@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
 const appDirectory = fileURLToPath(new URL("../..", import.meta.url));
-const cases = 16;
+const cases = 20;
 
 describe("Agent return UI with the real SDK context", () => {
   for (const environment of ["production", "development"]) {
