@@ -1,5 +1,6 @@
-//! Maple's model provider: Pi's Chat Completions API over OpenSecret's
-//! encrypted transport, and Maple's model catalog as Pi models.
+//! Maple's model provider: Pi's Chat Completions API and System One
+//! classifier over OpenSecret's encrypted transport, and Maple's model catalog
+//! as Pi models.
 //!
 //! Pi's session owns retries and context-overflow recovery, and it decides
 //! both by reading the error text of a failed response. This adapter turns
@@ -20,9 +21,10 @@ use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use maple_sdk::{InferenceRequest, InferenceResponse, OpenSecretClient, OpenSecretResponseBody};
 use pi_ai::openai::{HttpRequest, HttpResponse, HttpTransport, OpenAiCompletions};
+use pi_ai::system_one::{self, SystemOne};
 use pi_ai::{
-    AssistantContent, AssistantMessageEvent, AssistantMessageStream, Content, Context,
-    InputModality, MaxTokensField, Message, Model, ModelCompat, StreamFn, StreamOptions,
+    AssistantContent, AssistantMessageEvent, AssistantMessageStream, ClassifierModel, Content,
+    Context, InputModality, MaxTokensField, Message, Model, ModelCompat, StreamFn, StreamOptions,
     ThinkingLevel,
 };
 use pi_coding_agent::{ApiKeySource, ModelRegistry};
@@ -34,9 +36,14 @@ pub(crate) const MAPLE_PROVIDER: &str = "maple";
 /// The API name Maple's stream function is registered under.
 pub(crate) const MAPLE_API: &str = "maple";
 /// The base URL of Maple's models. OpenSecret routes by path, so the
-/// transport only ever sends to [`CHAT_COMPLETIONS_PATH`].
+/// transport only ever sends to [`CHAT_COMPLETIONS_PATH`] and
+/// [`SYSTEM_ONE_PATH`].
 const MAPLE_BASE_URL: &str = "/v1";
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
+/// Where Pi's System One classifier posts: `{base_url}/systemone`.
+const SYSTEM_ONE_PATH: &str = "/v1/systemone";
+/// The model System One answers with, the only one Maple's API serves.
+pub(crate) const SYSTEM_ONE_MODEL_ID: &str = "glm-5-3-flash";
 
 pub(crate) const AUTHENTICATION_ERROR_MESSAGE: &str = "Maple authentication failed";
 pub(crate) const CREDITS_EXHAUSTED_MESSAGE: &str = "Maple credits are exhausted";
@@ -121,15 +128,41 @@ impl MapleInferenceTransport for OpenSecretClient {
 }
 
 /// The registry of Maple's models for one account: Maple's stream function
-/// over that account's transport, and the catalog's models.
+/// and System One over that account's transport, the catalog's models, and
+/// System One's model.
 pub(crate) fn maple_model_registry(
     transport: Arc<dyn MapleInferenceTransport>,
     models: impl IntoIterator<Item = Model>,
 ) -> ModelRegistry {
     let registry = ModelRegistry::new(Arc::new(NoKeys));
-    registry.register_api(MAPLE_API, Arc::new(MapleStreamFn::new(transport)));
+    registry.register_api(
+        MAPLE_API,
+        Arc::new(MapleStreamFn::new(Arc::clone(&transport))),
+    );
     registry.register_models(models);
+    registry.register_classifier_api(
+        system_one::API,
+        Arc::new(SystemOne::new(Arc::new(MapleTransport { transport }))),
+    );
+    registry.register_classifier_models([system_one_model()]);
     registry
+}
+
+/// Maple's System One as a Pi classifier model: it judges text and images.
+/// The context window is only described; System One's requests are bounded
+/// by its question and image limits instead.
+pub(crate) fn system_one_model() -> ClassifierModel {
+    ClassifierModel {
+        id: SYSTEM_ONE_MODEL_ID.to_string(),
+        name: "System One".to_string(),
+        api: system_one::API.to_string(),
+        provider: MAPLE_PROVIDER.to_string(),
+        base_url: MAPLE_BASE_URL.to_string(),
+        input: vec![InputModality::Text, InputModality::Image],
+        cost: Default::default(),
+        context_window: DEFAULT_CONTEXT_WINDOW,
+        headers: Default::default(),
+    }
 }
 
 /// OpenSecret authenticates the account itself; Pi passes no key.
@@ -415,10 +448,13 @@ impl HttpTransport for MapleTransport {
         request: HttpRequest,
         cancel: CancellationToken,
     ) -> Result<HttpResponse, String> {
-        if request.url != CHAT_COMPLETIONS_PATH {
-            return Err(PREPARE_ERROR_MESSAGE.to_string());
-        }
-        let inference = inference_request(request.body);
+        // A completion streams its events; System One answers with one JSON body.
+        let (path, accept) = match request.url.as_str() {
+            CHAT_COMPLETIONS_PATH => (CHAT_COMPLETIONS_PATH, "text/event-stream"),
+            SYSTEM_ONE_PATH => (SYSTEM_ONE_PATH, "application/json"),
+            _ => return Err(PREPARE_ERROR_MESSAGE.to_string()),
+        };
+        let inference = inference_request(path, accept, request.body);
         // The send runs in its own task. The transport owns credential
         // reconciliation and must get to finish it even when the run is
         // stopped, or a rotated token would be stranded in the SDK's memory:
@@ -454,14 +490,13 @@ impl HttpTransport for MapleTransport {
     }
 }
 
-fn inference_request(body: Vec<u8>) -> InferenceRequest {
+fn inference_request(path: &'static str, accept: &'static str, body: Vec<u8>) -> InferenceRequest {
     let mut request = InferenceRequest::new(body.into());
     *request.method_mut() = http::Method::POST;
-    *request.uri_mut() = http::Uri::from_static(CHAT_COMPLETIONS_PATH);
-    request.headers_mut().insert(
-        http::header::ACCEPT,
-        http::HeaderValue::from_static("text/event-stream"),
-    );
+    *request.uri_mut() = http::Uri::from_static(path);
+    request
+        .headers_mut()
+        .insert(http::header::ACCEPT, http::HeaderValue::from_static(accept));
     request.headers_mut().insert(
         http::header::CONTENT_TYPE,
         http::HeaderValue::from_static("application/json"),
@@ -476,10 +511,11 @@ async fn into_http_response(
     cancel: CancellationToken,
 ) -> Result<HttpResponse, String> {
     let status = response.status();
+    let headers = response_headers(response.headers());
     if status.is_success() {
         return Ok(HttpResponse {
             status: status.as_u16(),
-            headers: Vec::new(),
+            headers,
             body: guarded_body(response.into_body(), cancel),
         });
     }
@@ -490,7 +526,7 @@ async fn into_http_response(
     let message = http_error_message(status, error_message(&body).as_deref());
     Ok(HttpResponse {
         status: status.as_u16(),
-        headers: Vec::new(),
+        headers,
         body: futures_util::stream::once(async move {
             Ok(Bytes::from(
                 json!({ "error": { "message": message } }).to_string(),
@@ -498,6 +534,17 @@ async fn into_http_response(
         })
         .boxed(),
     })
+}
+
+/// The response's headers, for Pi's response hook and its retries: names in
+/// lowercase, values that are text.
+fn response_headers(headers: &http::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
+        })
+        .collect()
 }
 
 /// The decrypted body with an idle timeout per chunk and fixed error texts.

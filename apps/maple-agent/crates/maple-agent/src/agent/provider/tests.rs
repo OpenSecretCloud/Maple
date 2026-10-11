@@ -176,6 +176,127 @@ async fn requests_go_to_chat_completions_and_stream_back() {
     assert!(request.body.get("max_completion_tokens").is_none());
 }
 
+fn json_reply(
+    status: u16,
+    headers: Vec<(&'static str, &'static str)>,
+    body: &'static str,
+) -> Reply {
+    Reply::Response {
+        status,
+        headers,
+        chunks: vec![Ok(body)],
+        stall_after: false,
+    }
+}
+
+#[tokio::test]
+async fn a_response_carries_its_headers_to_pi() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let transport = FakeTransport::new(vec![Reply::Response {
+        status: 200,
+        headers: vec![("X-Request-Id", "r1")],
+        chunks: TEXT_STREAM.iter().map(|chunk| Ok(*chunk)).collect(),
+        stall_after: false,
+    }]);
+    let options = StreamOptions {
+        on_response: Some(Arc::new(move |response| {
+            sink.lock().unwrap().push(response);
+            Box::pin(async {})
+        })),
+        ..StreamOptions::default()
+    };
+    let message = MapleStreamFn::new(transport)
+        .stream(&model("glm-5-3"), context("hi"), options)
+        .result()
+        .await;
+    assert_eq!(message.stop_reason, StopReason::Stop);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].status, 200);
+    assert_eq!(
+        seen[0].headers.get("x-request-id").map(String::as_str),
+        Some("r1")
+    );
+}
+
+const SYSTEM_ONE_REPLY: &str = r#"{"id":"so_1","model":"glm-5-3-flash","answers":{"urgent":{"type":"noul","noul":0.9,"temperature":1.0,"option_mass":0.98}},"usage":{"input_tokens":120,"output_tokens":1,"cached_tokens":20,"requests":1}}"#;
+
+fn urgent_ticket() -> pi_ai::ClassifierContext {
+    pi_ai::ClassifierContext {
+        state: json!({ "ticket": "Charged twice" }),
+        images: Vec::new(),
+        questions: [(
+            "urgent".to_string(),
+            pi_ai::ClassifierQuestion::bool("Is it urgent?"),
+        )]
+        .into_iter()
+        .collect(),
+    }
+}
+
+#[tokio::test]
+async fn system_one_classifies_over_the_accounts_transport() {
+    let transport = FakeTransport::new(vec![
+        // A rate limit that names its wait is sent again after it.
+        json_reply(
+            429,
+            vec![("retry-after-ms", "1")],
+            r#"{"error":{"message":"slow down"}}"#,
+        ),
+        json_reply(200, Vec::new(), SYSTEM_ONE_REPLY),
+    ]);
+    let registry = maple_model_registry(transport.clone(), []);
+    let model = registry
+        .find_classifier(MAPLE_PROVIDER, SYSTEM_ONE_MODEL_ID)
+        .expect("System One is registered");
+    assert!(model.supports_images());
+    let result = registry
+        .classify(&model, urgent_ticket(), pi_ai::ClassifierOptions::default())
+        .await;
+    assert!(!result.is_failure(), "{result:?}");
+    assert!(matches!(
+        result.answers["urgent"],
+        pi_ai::ClassifierAnswer::Bool { probability, .. } if probability == 0.9
+    ));
+    assert_eq!(result.response_id.as_deref(), Some("so_1"));
+    let usage = result.usage.expect("usage");
+    assert_eq!((usage.input, usage.cache_read, usage.output), (100, 20, 1));
+
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.uri, SYSTEM_ONE_PATH);
+        assert_eq!(request.accept.as_deref(), Some("application/json"));
+    }
+    assert_eq!(requests[1].body["model"], SYSTEM_ONE_MODEL_ID);
+    assert_eq!(requests[1].body["questions"]["urgent"]["type"], "noul");
+}
+
+#[tokio::test]
+async fn a_failed_system_one_request_keeps_its_body_out_of_the_error() {
+    let transport = FakeTransport::new(vec![json_reply(
+        422,
+        Vec::new(),
+        r#"{"error":{"message":"the state mentions a secret","code":"system_one_too_many_questions"}}"#,
+    )]);
+    let registry = maple_model_registry(transport, []);
+    let model = registry
+        .find_classifier(MAPLE_PROVIDER, SYSTEM_ONE_MODEL_ID)
+        .unwrap();
+    let result = registry
+        .classify(&model, urgent_ticket(), pi_ai::ClassifierOptions::default())
+        .await;
+    assert!(result.is_failure());
+    let error = result.error_message.unwrap();
+    assert!(error.starts_with("System One API error (422)"), "{error}");
+    assert!(
+        error.contains("Maple rejected the inference request (status 422)"),
+        "{error}"
+    );
+    assert!(!error.contains("secret"), "{error}");
+}
+
 #[tokio::test]
 async fn http_errors_become_fixed_messages_pi_classifies() {
     struct Case {
