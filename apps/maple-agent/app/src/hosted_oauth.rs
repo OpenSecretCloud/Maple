@@ -203,24 +203,38 @@ impl CompletionResponse {
     /// committed session, and never causes another redemption or redirect.
     pub(crate) fn finish(self, outcome: Result<bool, ()>) {
         tokio::spawn(async move {
-            let message = match outcome {
-                Ok(true) => "Signed in to Maple Agent. You can close this tab.",
-                Ok(false) => {
-                    "Signed in to Maple Agent, but the session could not be saved. You will need to sign in again when you restart the app."
-                }
-                Err(()) => "Sign-in could not finish. Return to Maple Agent and start again.",
-            };
-            let body = format!(
-                "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Maple Agent sign-in</title><script>history.replaceState(null, \"\", \"/auth/callback\");</script><p>{message}</p></html>"
-            );
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-TT2/B5X4kutghZnTdCndWuEaf6uS6wbgBxuJIAzSdos='; frame-ancestors 'none'; base-uri 'none'\r\n\r\n{body}",
-                body.len()
-            );
+            let response = completion_response(outcome);
             let mut stream = self.0;
             let _ = tokio::time::timeout(READ_TIMEOUT, stream.write_all(response.as_bytes())).await;
         });
     }
+}
+
+fn completion_response(outcome: Result<bool, ()>) -> String {
+    // Only fixed outcome text enters the document, never request or account data.
+    let (title, message) = match outcome {
+        Ok(true) => (
+            "Signed in to Maple Agent",
+            "Return to the app to continue. You can close this tab.",
+        ),
+        Ok(false) => (
+            "Signed in to Maple Agent",
+            "Your session could not be saved. You will need to sign in again when you restart the app. You can close this tab.",
+        ),
+        Err(()) => (
+            "Sign-in could not finish",
+            "Return to Maple Agent and start again. You can close this tab.",
+        ),
+    };
+    let body = include_str!("hosted_oauth_complete.html")
+        .replace("{{title}}", title)
+        .replace("{{message}}", message);
+    // Hashes authorize only the template's exact script/style contents. Update
+    // the corresponding hash when editing either inline block in the template.
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-TT2/B5X4kutghZnTdCndWuEaf6uS6wbgBxuJIAzSdos='; style-src 'sha256-q/K1QjCxYb76PRYej2toNxbj00lzn2jtSDdYi0iIQQA='; frame-ancestors 'none'; base-uri 'none'\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 #[cfg(test)]
