@@ -128,6 +128,25 @@
                     "keyboardRestorationPreservesMarkedAndRevokedOwners",
                     keyboardRestorationPreservesMarkedAndRevokedOwners
                 ),
+                ("compactInteractionReclaimsRetainedKeyboardFocus", compactInteractionReclaimsRetainedKeyboardFocus),
+                ("compactInteractionSurvivesSameOwnerRender", compactInteractionSurvivesSameOwnerRender),
+                (
+                    "compactInteractionStartsUnfocusedEditorWithExactInput",
+                    compactInteractionStartsUnfocusedEditorWithExactInput
+                ),
+                (
+                    "compactInteractionCannotReclaimRevokedPresentation",
+                    compactInteractionCannotReclaimRevokedPresentation
+                ),
+                (
+                    "lateNativeFocusCallbacksCannotReopenOrDismissEditor",
+                    lateNativeFocusCallbacksCannotReopenOrDismissEditor
+                ),
+                (
+                    "unrequestedNativeFocusCannotReopenDismissedComposer",
+                    unrequestedNativeFocusCannotReopenDismissedComposer
+                ),
+                ("nativeTextInsetsKeepCaretAndPlaceholderAligned", nativeTextInsetsKeepCaretAndPlaceholderAligned),
             ]
             return cases.map { name, exercise in
                 var failures = 0
@@ -1536,6 +1555,311 @@
                 if !revoked { check(harness.view.markedTextRange != nil) }
                 check(harness.capture.submitted == ["abc"])
             }
+        }
+
+        private static func compactInteractionReclaimsRetainedKeyboardFocus(_ check: (Bool) -> Void) {
+            let harness = Harness(text: "abc", marker: 3, focus: true)
+            defer { harness.close() }
+            wireNativeInput(harness)
+            var interactions = 0
+            var editor = harness.coordinator.parent
+            editor.isCompact = true
+            editor.onEditingInteraction = {
+                interactions += 1; return true
+            }
+            harness.coordinator.install(editor, in: harness.view)
+            check(harness.view.isFirstResponder && !harness.view.softwareKeyboardSuppressed)
+            var reloads = 0
+            harness.view.beforeReloadInputViewsForProbe = {
+                harness.view.beforeReloadInputViewsForProbe = nil
+                reloads += 1
+                harness.view.insertText("d")
+            }
+            harness.view.showSoftwareKeyboardForInteraction()
+            check(interactions == 1 && reloads == 1 && harness.capture.focused)
+            check(harness.view.text == "abcd" && harness.capture.text == "abcd")
+            check(harness.capture.edits.map(\.replacement) == ["d"] && harness.capture.rebaseFailures == 0)
+            check(harness.capture.submitted.isEmpty && harness.view.markedTextRange == nil)
+        }
+
+        private static func compactInteractionStartsUnfocusedEditorWithExactInput(_ check: (Bool) -> Void) {
+            let harness = Harness(text: "abc", marker: 3, focus: true)
+            defer { harness.close() }
+            wireNativeInput(harness)
+            harness.view.resignFirstResponder()
+            check(!harness.capture.focused && !harness.view.isFirstResponder)
+            var interactions = 0
+            var editor = harness.coordinator.parent
+            editor.isCompact = true
+            editor.onEditingInteraction = {
+                interactions += 1; return true
+            }
+            harness.coordinator.install(editor, in: harness.view)
+            harness.view.beforeBecomeFirstResponderForProbe = {
+                harness.view.beforeBecomeFirstResponderForProbe = nil
+                harness.view.insertText("d")
+            }
+            harness.view.showSoftwareKeyboardForInteraction()
+            check(interactions == 1 && harness.capture.focused && harness.view.isFirstResponder)
+            check(harness.view.text == "abcd" && harness.capture.text == "abcd")
+            check(harness.capture.edits.map(\.replacement) == ["d"] && harness.capture.rebaseFailures == 0)
+            check(harness.capture.submitted.isEmpty && !harness.view.softwareKeyboardSuppressed)
+        }
+
+        private static func compactInteractionSurvivesSameOwnerRender(_ check: (Bool) -> Void) {
+            for startsFocused in [false, true] {
+                let harness = Harness(text: "abc", marker: 3, focus: true)
+                defer { harness.close() }
+                wireNativeInput(harness)
+                if !startsFocused { harness.view.resignFirstResponder() }
+                var interactions = 0
+                var editor = harness.coordinator.parent
+                editor.isCompact = true
+                editor.onEditingInteraction = {
+                    interactions += 1
+                    var refreshed = harness.coordinator.parent
+                    refreshed.isCompact = false
+                    harness.coordinator.install(refreshed, in: harness.view)
+                    return true
+                }
+                editor = ComposerEditor(
+                    text: editor.$text,
+                    focused: Binding(
+                        get: { harness.capture.focused },
+                        set: { value in
+                            harness.capture.focused = value
+                            harness.coordinator.install(harness.coordinator.parent, in: harness.view)
+                        }),
+                    ownerID: editor.ownerID, accountGeneration: editor.accountGeneration,
+                    isCurrentOwner: editor.isCurrentOwner, isCurrentPresentation: editor.isCurrentPresentation,
+                    placeholder: editor.placeholder,
+                    isCompact: editor.isCompact, accessibilityIdentifier: editor.accessibilityIdentifier,
+                    externalSelection: editor.externalSelection, onChange: editor.onChange,
+                    onEditingInteraction: editor.onEditingInteraction,
+                    refreshAfterSubmit: editor.refreshAfterSubmit, onSubmit: editor.onSubmit)
+                harness.coordinator.install(editor, in: harness.view)
+                var reloads = 0
+                harness.view.beforeReloadInputViewsForProbe = { reloads += 1 }
+                harness.view.showSoftwareKeyboardForInteraction()
+                check(interactions == 1 && harness.capture.focused && harness.view.isFirstResponder)
+                check(reloads == (startsFocused ? 1 : 0))
+                check(harness.view.text == "abc" && harness.capture.text == "abc")
+                check(harness.capture.edits.isEmpty && harness.capture.submitted.isEmpty)
+            }
+        }
+
+        private static func compactInteractionCannotReclaimRevokedPresentation(_ check: (Bool) -> Void) {
+            for replacesOwner in [false, true] {
+                let harness = Harness(text: "abc", marker: 3, focus: true)
+                defer { harness.close() }
+                wireNativeInput(harness)
+                harness.view.resignFirstResponder()
+                let nextID = UUID()
+                var editor = harness.coordinator.parent
+                editor.isCompact = true
+                editor.onEditingInteraction = {
+                    if replacesOwner {
+                        let next = ComposerEditor(
+                            text: .constant("next"), focused: .constant(false), ownerID: nextID,
+                            accountGeneration: UUID(), placeholder: "Next", onSubmit: {})
+                        harness.coordinator.install(next, in: harness.view)
+                        return true
+                    }
+                    return false
+                }
+                harness.coordinator.install(editor, in: harness.view)
+                var reloads = 0
+                harness.view.beforeReloadInputViewsForProbe = { reloads += 1 }
+                harness.view.showSoftwareKeyboardForInteraction()
+                check(reloads == 0 && !harness.view.isFirstResponder && !harness.capture.focused)
+                check(harness.capture.submitted.isEmpty && harness.capture.edits.isEmpty)
+                check(harness.view.text == (replacesOwner ? "next" : "abc"))
+                if replacesOwner { check(harness.coordinator.owner?.draft == nextID) }
+            }
+        }
+
+        private static func lateNativeFocusCallbacksCannotReopenOrDismissEditor(_ check: (Bool) -> Void) {
+            let harness = Harness(text: "abc", marker: 3, focus: true)
+            defer { harness.close() }
+            wireNativeInput(harness)
+            harness.view.resignFirstResponder()
+            check(!harness.capture.focused && !harness.view.isFirstResponder)
+
+            // Model the actual queued Begin observed after menu navigation had
+            // already resigned the retained native editor. It must not refocus.
+            harness.coordinator.textViewDidBeginEditing(harness.view)
+            check(!harness.capture.focused && !harness.view.isFirstResponder)
+            harness.coordinator.install(harness.coordinator.parent, in: harness.view)
+            check(!harness.capture.focused && !harness.view.isFirstResponder)
+
+            harness.capture.focused = true
+            harness.coordinator.install(harness.coordinator.parent, in: harness.view)
+            check(harness.capture.focused && harness.view.isFirstResponder)
+            // A queued End from that earlier resignation also cannot dismiss
+            // a native editor that the current owned projection reacquired.
+            harness.coordinator.textViewDidEndEditing(harness.view)
+            check(harness.capture.focused && harness.view.isFirstResponder)
+
+            harness.coordinator.parent.isCurrentOwner = { false }
+            harness.capture.focused = false
+            harness.coordinator.textViewDidBeginEditing(harness.view)
+            check(!harness.capture.focused && harness.view.isFirstResponder)
+            harness.view.resignFirstResponder()
+            harness.capture.focused = true
+            harness.coordinator.textViewDidEndEditing(harness.view)
+            check(harness.capture.focused && !harness.view.isFirstResponder)
+            check(harness.view.text == "abc" && harness.capture.text == "abc")
+            check(harness.capture.edits.isEmpty && harness.capture.submitted.isEmpty)
+        }
+
+        private static func unrequestedNativeFocusCannotReopenDismissedComposer(_ check: (Bool) -> Void) {
+            for cachedFocusRead in [false, true] {
+                let harness = Harness(text: "abc", marker: 3, focus: true)
+                defer { harness.close() }
+                wireNativeInput(harness)
+                harness.view.resignFirstResponder()
+                check(!harness.capture.focused && !harness.view.isFirstResponder)
+                var interactions = 0
+                let previous = harness.coordinator.parent
+                let focused: Binding<Bool> =
+                    cachedFocusRead
+                    ? Binding(get: { false }, set: { harness.capture.focused = $0 }) : previous.$focused
+                let editor = ComposerEditor(
+                    text: previous.$text, focused: focused, ownerID: previous.ownerID,
+                    accountGeneration: previous.accountGeneration, isCurrentOwner: previous.isCurrentOwner,
+                    isCurrentPresentation: previous.isCurrentPresentation,
+                    placeholder: previous.placeholder, isCompact: true,
+                    accessibilityIdentifier: previous.accessibilityIdentifier,
+                    externalSelection: previous.externalSelection, onChange: previous.onChange,
+                    onEditingInteraction: {
+                        interactions += 1; return true
+                    },
+                    refreshAfterSubmit: previous.refreshAfterSubmit, onSubmit: previous.onSubmit)
+                harness.coordinator.install(editor, in: harness.view)
+
+                // Model the same UIKit acquisition that occurred on retained
+                // navigation reattachment, without a user touch or focus request.
+                check(!harness.view.becomeFirstResponder())
+                check(!harness.view.isFirstResponder && !harness.capture.focused && interactions == 0)
+
+                // The real restoration gesture calls this exact production
+                // admission before native acquisition. A SwiftUI binding whose
+                // cached getter still says false must not reject the owned tap.
+                check(harness.view.showSoftwareKeyboardForInteraction())
+                check(harness.view.isFirstResponder && harness.capture.focused && interactions == 1)
+                check(harness.view.text == "abc" && harness.capture.text == "abc")
+                check(harness.capture.edits.isEmpty && harness.capture.submitted.isEmpty)
+
+                harness.view.resignFirstResponder()
+                check(!harness.view.isFirstResponder)
+                harness.capture.focused = true
+                harness.coordinator.parent.isCurrentPresentation = { false }
+                check(!harness.view.becomeFirstResponder())
+                check(!harness.view.isFirstResponder && interactions == 1)
+                harness.coordinator.parent.isCurrentPresentation = { true }
+                harness.coordinator.parent.isCurrentOwner = { false }
+                check(!harness.view.becomeFirstResponder())
+                check(!harness.view.isFirstResponder && interactions == 1)
+            }
+        }
+
+        private static func nativeTextInsetsKeepCaretAndPlaceholderAligned(_ check: (Bool) -> Void) {
+            // Caret geometry must come from the same owned, hosted native editor
+            // as real input. A detached UITextView can defer its text layout.
+            let harness = Harness(text: "", marker: 0, focus: true)
+            defer { harness.close() }
+            let view = harness.view
+            labeledCheck(view.window != nil, label: "geometry.hostedWindow", check: check)
+            labeledCheck(view.isFirstResponder, label: "geometry.nativeFocus", check: check)
+            view.frame.size = CGSize(width: 240, height: 44)
+            view.font = .preferredFont(forTextStyle: .body)
+            view.textContainer.lineFragmentPadding = 0
+            view.placeholderLabel.text = "Message Maple"
+            view.placeholderLabel.font = view.font
+            let lineHeight = view.font?.lineHeight ?? 22
+
+            func layoutNativeText() {
+                view.setNeedsLayout()
+                view.layoutIfNeeded()
+                // Prefer TextKit 2: accessing layoutManager would otherwise
+                // force UIKit's production editor to fall back to TextKit 1.
+                if let manager = view.textLayoutManager, let range = manager.textContentManager?.documentRange {
+                    manager.ensureLayout(for: range)
+                } else {
+                    view.layoutManager.ensureLayout(for: view.textContainer)
+                }
+                view.layoutIfNeeded()
+            }
+
+            for (iteration, compact) in [true, false, true].enumerated() {
+                view.isCompact = compact
+                view.frame.size.height = compact ? 44 : 110
+                view.text = ""
+                view.selectedRange = NSRange(location: 0, length: 0)
+                layoutNativeText()
+                let caret = view.caretRect(for: view.beginningOfDocument)
+                let geometry =
+                    "iteration=\(iteration);compact=\(compact);bounds=\(String(describing: view.bounds));"
+                    + "placeholder=\(String(describing: view.placeholderLabel.frame));caret=\(String(describing: caret));"
+                    + "insets=\(String(describing: view.textContainerInset))"
+                labeledCheck(
+                    view.textContainerInset.left == 8 && view.textContainerInset.right == 8,
+                    label: "geometry.horizontalInsets[\(geometry)]", check: check)
+                labeledCheck(
+                    abs(view.placeholderLabel.frame.minX - 8) < 0.5,
+                    label: "geometry.placeholderLeading[\(geometry)]", check: check)
+                labeledCheck(
+                    view.placeholderLabel.frame.maxX <= view.bounds.width - 8 + 0.5,
+                    label: "geometry.placeholderTrailing[\(geometry)]", check: check)
+                labeledCheck(
+                    // UIKit centers its two-point caret stroke on the glyph's
+                    // insertion position; its left edge is one point earlier.
+                    abs(caret.midX - view.placeholderLabel.frame.minX) < 0.5,
+                    label: "geometry.caretInsertionPosition[\(geometry)]", check: check)
+                if compact {
+                    labeledCheck(
+                        abs(view.placeholderLabel.frame.midY - view.bounds.midY) < 1,
+                        label: "geometry.compactPlaceholderCentered[\(geometry)]", check: check)
+                    labeledCheck(
+                        caret.minY >= 6 && caret.maxY <= view.bounds.height,
+                        label: "geometry.compactCaretBounds[\(geometry)]", check: check)
+                } else {
+                    labeledCheck(
+                        view.textContainerInset.top == 6 && view.textContainerInset.bottom == 6,
+                        label: "geometry.expandedVerticalInsets[\(geometry)]", check: check)
+                    labeledCheck(
+                        abs(view.placeholderLabel.frame.minY - 6) < 0.5,
+                        label: "geometry.expandedPlaceholderTop[\(geometry)]", check: check)
+                }
+                view.text = "Synthetic text"
+                view.selectedRange = NSRange(location: 0, length: 0)
+                layoutNativeText()
+                view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
+                labeledCheck(
+                    view.markedTextRange != nil, label: "geometry.\(iteration).markedInputRetained", check: check)
+                labeledCheck(
+                    view.textContainerInset.left == 8 && view.textContainerInset.right == 8,
+                    label: "geometry.\(iteration).markedHorizontalInsets", check: check)
+                view.unmarkText()
+                labeledCheck(
+                    view.text == "にSynthetic text" && view.selectedRange.location == 1,
+                    label: "geometry.\(iteration).committedInputAndSelection", check: check)
+            }
+            view.font = .systemFont(ofSize: 44)
+            view.placeholderLabel.font = view.font
+            view.isCompact = true
+            view.frame.size.height = ComposerEditorMetrics.preferredHeight(
+                lineHeight: view.font?.lineHeight ?? lineHeight, contentHeight: 0, compact: true)
+            layoutNativeText()
+            let largeGeometry =
+                "bounds=\(String(describing: view.bounds));placeholder=\(String(describing: view.placeholderLabel.frame));"
+                + "insets=\(String(describing: view.textContainerInset))"
+            labeledCheck(
+                view.textContainerInset.top >= 6 && view.textContainerInset.bottom >= 6,
+                label: "geometry.largeFontVerticalInsets[\(largeGeometry)]", check: check)
+            labeledCheck(
+                abs(view.placeholderLabel.frame.midY - view.bounds.midY) < 1,
+                label: "geometry.largeFontPlaceholderCentered[\(largeGeometry)]", check: check)
         }
 
         @MainActor private final class Capture {

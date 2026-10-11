@@ -15,7 +15,7 @@
                     ForEach(library.visibleConversations, id: \.id) { conversation in
                         LibrarySelectableConversationRow(
                             conversation: conversation, library: library, selectionLibrary: library,
-                            selecting: selecting, onSelect: onSelectChat)
+                            selecting: $selecting, onSelect: onSelectChat)
                     }
                     if library.hasMore {
                         Button {
@@ -45,9 +45,13 @@
         let conversation: Conversation
         @Bindable var library: LibraryModel
         @Bindable var selectionLibrary: LibraryModel
-        let selecting: Bool
+        @Binding var selecting: Bool
         let onSelect: @MainActor (String) -> Void
         var onMutation: (@MainActor () async -> Void)? = nil
+        var leadingInset: CGFloat = 20
+        var dragContext: LibraryChatDragContext? = nil
+        var dragEnabled = true
+        var dropDestination: LibraryConversationDestination? = nil
         var body: some View {
             Group {
                 if selecting {
@@ -58,22 +62,41 @@
                             selectionLibrary.selectedIDs.insert(conversation.id)
                         }
                     } label: {
-                        HStack {
+                        HStack(spacing: 12) {
                             Image(
                                 systemName: selectionLibrary.selectedIDs.contains(conversation.id)
                                     ? "checkmark.circle.fill" : "circle")
                             ConversationTitle(conversation: conversation)
-                        }.foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 50).contentShape(Rectangle()).foregroundStyle(.primary)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("library.chat." + conversation.id)
                     .accessibilityAddTraits(selectionLibrary.selectedIDs.contains(conversation.id) ? [.isSelected] : [])
                     .disabled(library.isMutating || selectionLibrary.isMutating)
                 } else {
                     ConversationLibraryRow(
-                        conversation: conversation, library: library, onSelect: onSelect, onMutation: onMutation)
+                        conversation: conversation, library: library, onSelect: onSelect, onMutation: onMutation,
+                        onSelectForSelection: {
+                            selectionLibrary.selectedIDs.insert(conversation.id); selecting = true
+                        }, leadingInset: leadingInset, contextMenuEnabled: dragContext == nil || !dragEnabled)
                 }
             }
-            .listRowSeparator(.hidden).listRowBackground(Color.clear)
+            .modifier(
+                LibraryChatDragSource(
+                    context: dragContext, library: library, id: conversation.id,
+                    enabled: dragEnabled && !selecting && !selectionLibrary.isMutating)
+            )
+            .modifier(
+                LibraryChatDropTarget(
+                    context: dragContext, library: selectionLibrary, destination: dropDestination,
+                    enabled: dragEnabled && !selecting, onMutation: onMutation)
+            )
+            .listRowInsets(.vertical, 0)
+            .listRowInsets(.leading, leadingInset).listRowInsets(.trailing, 12)
+            .listRowSeparatorTint(MapleSurface.border.opacity(0.28))
+            .listRowSeparator(.visible).listRowBackground(Color.clear)
         }
     }
 
@@ -87,31 +110,49 @@
         @State private var deletingAll = false
         func body(content: Content) -> some View {
             content
+                .modifier(LibraryChatDeletionConfirmation())
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: .principal) {
                         Menu {
-                            if let onSettings {
-                                Button(action: onSettings) {
+                            Section {
+                                if let onSettings {
+                                    Button(action: onSettings) {
+                                        Label {
+                                            libraryText("Settings")
+                                        } icon: {
+                                            Image(systemName: "gearshape")
+                                        }
+                                    }
+                                    .accessibilityIdentifier("library.settings")
+                                }
+                                Button {
+                                    selecting.toggle(); if !selecting { library.selectedIDs = [] }
+                                } label: {
                                     Label {
-                                        libraryText("Settings")
+                                        libraryText(selecting ? "Done selecting" : "Select chats")
                                     } icon: {
-                                        Image(systemName: "gearshape")
+                                        Image(systemName: selecting ? "checkmark" : "checkmark.circle")
                                     }
                                 }
-                                .accessibilityIdentifier("library.settings")
                             }
-                            Button {
-                                selecting.toggle(); if !selecting { library.selectedIDs = [] }
-                            } label: {
-                                libraryText(selecting ? "Done selecting" : "Select chats")
-                            }
-                            Button(role: .destructive) {
-                                deletingAll = true
-                            } label: {
-                                libraryText("Delete all chats")
+                            Section {
+                                Button(role: .destructive) {
+                                    deletingAll = true
+                                } label: {
+                                    Label {
+                                        libraryText("Delete all chats")
+                                    } icon: {
+                                        Image(systemName: "trash")
+                                    }
+                                }
                             }
                         } label: {
                             MapleWordmark().frame(width: 103, height: 20)
+                                .overlay(alignment: .trailing) {
+                                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                                        .foregroundStyle(MapleAccent.action).offset(x: 29).accessibilityHidden(true)
+                                }
+                                .padding(.horizontal, 30)
                                 .frame(minHeight: 44).contentShape(Rectangle())
                         }
                         .menuStyle(.button)
@@ -120,6 +161,18 @@
                         .accessibilityLabel(libraryText("Maple menu"))
                         .accessibilityIdentifier("library.actions")
                         .disabled(library.isMutating)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                    if selecting {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                selecting = false; library.selectedIDs = []
+                            } label: {
+                                libraryText("Done")
+                            }
+                            .accessibilityIdentifier("library.selection-done")
+                            .disabled(library.isMutating)
+                        }
                     }
                 }
                 .safeAreaInset(edge: .bottom) {
@@ -197,29 +250,98 @@
         }
     }
 
+    /// A swipe cell can be recycled as its actions close. Keep confirmation on
+    /// the list host, and capture the exact account owner before presenting it.
+    @MainActor fileprivate struct LibraryChatDeletionRequest {
+        let id: String
+        let library: LibraryModel
+        let onMutation: (@MainActor () async -> Void)?
+    }
+
+    private struct LibraryChatDeletionRequestKey: EnvironmentKey {
+        static let defaultValue: @MainActor @Sendable (LibraryChatDeletionRequest) -> Void = { _ in }
+    }
+
+    extension EnvironmentValues {
+        fileprivate var requestChatDeletion: @MainActor @Sendable (LibraryChatDeletionRequest) -> Void {
+            get { self[LibraryChatDeletionRequestKey.self] }
+            set { self[LibraryChatDeletionRequestKey.self] = newValue }
+        }
+    }
+
+    struct LibraryChatDeletionConfirmation: ViewModifier {
+        @State private var pending: LibraryChatDeletionRequest?
+        func body(content: Content) -> some View {
+            content
+                .environment(\.requestChatDeletion) { request in
+                    guard pending == nil, request.library.isActive, !request.library.isMutating else { return }
+                    pending = request
+                }
+                .alert(
+                    Text("Delete chat?", tableName: "Library", bundle: .module),
+                    isPresented: Binding(
+                        get: { pending != nil }, set: { if !$0 { pending = nil } }),
+                    presenting: pending
+                ) { request in
+                    Button(role: .cancel) {
+                        pending = nil
+                    } label: {
+                        libraryText("Cancel")
+                    }
+                    Button(role: .destructive) {
+                        pending = nil
+                        Task {
+                            guard request.library.isActive else { return }
+                            await request.library.deleteConversations(ids: [request.id])
+                            if request.library.isActive, request.library.issue == nil { await request.onMutation?() }
+                        }
+                    } label: {
+                        libraryText("Delete")
+                    }
+                } message: { _ in
+                    libraryText("Deleted chats cannot be restored.")
+                }
+                .onChange(of: pending?.library.isActive) { _, active in
+                    if active == false { pending = nil }
+                }
+                .onDisappear { pending = nil }
+        }
+    }
+
     struct ConversationLibraryRow: View {
         let conversation: Conversation
         @Bindable var library: LibraryModel
         let onSelect: @MainActor (String) -> Void
         var onMutation: (@MainActor () async -> Void)? = nil
+        var onSelectForSelection: (@MainActor () -> Void)? = nil
+        var leadingInset: CGFloat = 20
+        var contextMenuEnabled = true
+        @Environment(\.requestChatDeletion) private var requestChatDeletion
         @State private var renaming = false
         @State private var name = ""
         @State private var moving = false
-        @State private var deleting = false
         var body: some View {
-            Button {
-                onSelect(conversation.id)
-            } label: {
-                ConversationTitle(conversation: conversation)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle()).foregroundStyle(.primary)
+            HStack(spacing: 0) {
+                titleButton
+                Menu {
+                    actions
+                } label: {
+                    Image(systemName: "ellipsis").font(.body.weight(.semibold)).foregroundStyle(MapleAccent.action)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .menuStyle(.button).buttonStyle(.plain)
+                .accessibilityLabel(libraryText("Chat actions"))
+                .accessibilityIdentifier("library.chat-actions." + conversation.id)
             }
-            .listRowSeparator(.hidden).listRowBackground(Color.clear)
-            .accessibilityIdentifier("library.chat." + conversation.id)
-            .contextMenu { actions }
-            .swipeActions(edge: .trailing) {
-                Button(role: .destructive) {
-                    deleting = true
+            .listRowInsets(.vertical, 0)
+            .listRowInsets(.leading, leadingInset).listRowInsets(.trailing, 12)
+            .listRowSeparatorTint(MapleSurface.border.opacity(0.28))
+            .listRowSeparator(.visible).listRowBackground(Color.clear)
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                // A destructive swipe role optimistically removes its cell.
+                // Only the separate confirmation action may delete anything.
+                Button {
+                    requestDeletion()
                 } label: {
                     Label {
                         libraryText("Delete")
@@ -227,6 +349,8 @@
                         Image(systemName: "trash")
                     }
                 }
+                .tint(.red)
+                .accessibilityIdentifier("library.swipe-delete." + conversation.id)
                 Button {
                     name = LibraryModel.title(conversation); renaming = true
                 } label: {
@@ -234,19 +358,6 @@
                         libraryText("Rename")
                     } icon: {
                         Image(systemName: "pencil")
-                    }
-                }
-            }
-            .swipeActions(edge: .leading) {
-                Button {
-                    Task {
-                        await library.setPinned(id: conversation.id, pinned: !conversation.pinned); await changed()
-                    }
-                } label: {
-                    Label {
-                        libraryText(conversation.pinned ? "Unpin" : "Pin")
-                    } icon: {
-                        Image(systemName: conversation.pinned ? "pin.slash" : "pin")
                     }
                 }
             }
@@ -266,32 +377,38 @@
                 }
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .confirmationDialog(
-                Text("Delete chat?", tableName: "Library", bundle: .module), isPresented: $deleting,
-                titleVisibility: .visible
-            ) {
-                Button(role: .destructive) {
-                    Task {
-                        await library.deleteConversations(ids: [conversation.id]); await changed()
-                    }
-                } label: {
-                    libraryText("Delete")
-                }
-            } message: {
-                libraryText("Deleted chats cannot be restored.")
-            }
             .sheet(isPresented: $moving, onDismiss: { Task { await changed() } }) {
                 NavigationStack { MoveChatsView(library: library, ids: [conversation.id]) }
             }
         }
-        @ViewBuilder private var actions: some View {
+        @ViewBuilder private var titleButton: some View {
+            if contextMenuEnabled {
+                conversationButton.contextMenu { actions }
+            } else {
+                // The row's long press starts a drag. Its visible ellipsis and
+                // swipe actions remain available without a competing menu.
+                conversationButton
+            }
+        }
+        private var conversationButton: some View {
             Button {
-                name = LibraryModel.title(conversation); renaming = true
+                onSelect(conversation.id)
             } label: {
-                Label {
-                    libraryText("Rename")
-                } icon: {
-                    Image(systemName: "pencil")
+                ConversationTitle(conversation: conversation)
+                    .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+                    .contentShape(Rectangle()).foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("library.chat." + conversation.id)
+        }
+        @ViewBuilder private var actions: some View {
+            if let onSelectForSelection {
+                Button(action: onSelectForSelection) {
+                    Label {
+                        libraryText("Select")
+                    } icon: {
+                        Image(systemName: "checkmark.circle")
+                    }
                 }
             }
             Button {
@@ -302,7 +419,7 @@
                 Label {
                     libraryText(conversation.pinned ? "Unpin" : "Pin")
                 } icon: {
-                    Image(systemName: "pin")
+                    Image(systemName: conversation.pinned ? "pin.slash" : "pin")
                 }
             }
             Button {
@@ -314,8 +431,17 @@
                     Image(systemName: "folder")
                 }
             }
+            Button {
+                name = LibraryModel.title(conversation); renaming = true
+            } label: {
+                Label {
+                    libraryText("Rename")
+                } icon: {
+                    Image(systemName: "pencil")
+                }
+            }
             Button(role: .destructive) {
-                deleting = true
+                requestDeletion()
             } label: {
                 Label {
                     libraryText("Delete")
@@ -323,6 +449,10 @@
                     Image(systemName: "trash")
                 }
             }
+        }
+        private func requestDeletion() {
+            requestChatDeletion(
+                LibraryChatDeletionRequest(id: conversation.id, library: library, onMutation: onMutation))
         }
         private func changed() async { if library.issue == nil { await onMutation?() } }
     }

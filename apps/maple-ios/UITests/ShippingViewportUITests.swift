@@ -4,23 +4,135 @@ import XCTest
 /// are the production ChatDetail. This does not claim a local backend round trip.
 @MainActor
 final class ShippingViewportUITests: XCTestCase {
+    @MainActor func testLaunchCentersBrandAndHandsLockToNativeToolbar() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--maple-launch-transition-fixture"]
+        app.launch()
+        let logo = app.images["startup.logo"], lock = app.images["startup.lock"]
+        XCTAssertTrue(logo.waitForExistence(timeout: 15))
+        XCTAssertTrue(lock.exists)
+        let window = app.windows.firstMatch.frame
+        XCTAssertEqual(logo.frame.midX, window.midX, accuracy: 2)
+        XCTAssertEqual(logo.frame.midY, window.midY, accuracy: 2)
+        XCTAssertEqual(lock.frame.midX, logo.frame.midX, accuracy: 2)
+        XCTAssertGreaterThan(lock.frame.midY, logo.frame.maxY)
+        app.buttons["startup.fixture.continue"].tap()
+        XCTAssertTrue(app.staticTexts["startup.fixture.complete"].waitForExistence(timeout: 5))
+        let toolbarLock = app.images["chat.privacy"]
+        XCTAssertTrue(toolbarLock.exists)
+        XCTAssertLessThan(toolbarLock.frame.midY, window.minY + window.height * 0.2)
+        XCTAssertFalse(logo.exists)
+    }
     private var app: XCUIApplication!
 
-    private func launchFixture(windowProof: Bool = false) {
+    private func launchFixture(windowProof: Bool = false, pickerProof: Bool = false, followScrollProof: Bool = false) {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["--maple-shipping-viewport-fixture"]
         if windowProof { app.launchArguments.append("--maple-shipping-window-proof") }
+        if pickerProof { app.launchArguments.append("--maple-shipping-picker-proof") }
+        if followScrollProof { app.launchArguments.append("--maple-shipping-follow-scroll-proof") }
         app.launch()
         waitSummary("Ready 1; older 0; messages 8")
         XCTAssertTrue(app.textViews["chat.composer"].exists)
-        XCTAssertFalse(app.buttons["chat.model"].exists, "An existing chat starts with its compact composer")
+        XCTAssertTrue(app.buttons["chat.model"].exists, "Chat options remain available in the compact composer")
+        XCTAssertLessThanOrEqual(app.textViews["chat.composer"].frame.height, 60)
         XCTAssertTrue(app.buttons["message.copy.viewport-user-20"].exists)
         XCTAssertTrue(app.buttons["message.speak.viewport-assistant-20"].exists)
     }
 
+    func testUserMessagesStayOnRightAndWebToolRowsRemainVisibleWithDetails() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-transcript-rows-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+
+        let bubble = app.otherElements["message.bubble.viewport-user-20"]
+        let assistant = app.otherElements["assistant.message.viewport-assistant-20"]
+        let transcript = app.scrollViews["chat.transcript"]
+        XCTAssertTrue(bubble.waitForExistence(timeout: 10))
+        XCTAssertTrue(assistant.exists)
+        XCTAssertTrue(transcript.exists)
+        // AX containers follow the rendered glyphs/actions, so an assistant's
+        // right edge is not the available transcript edge. Measure the centered
+        // column (850-point cap, 20-point inset) in the actual scroll viewport;
+        // this also checks the same trailing alignment in wide iPad windows.
+        let columnWidth = min(transcript.frame.width, 850)
+        let contentLeading = transcript.frame.midX - columnWidth / 2 + 20
+        let contentTrailing = transcript.frame.midX + columnWidth / 2 - 20
+        XCTAssertEqual(assistant.frame.minX, contentLeading, accuracy: 2)
+        XCTAssertGreaterThan(bubble.frame.minX, contentLeading + 24)
+        XCTAssertEqual(bubble.frame.maxX, contentTrailing, accuracy: 2)
+        XCTAssertTrue(app.buttons["message.copy.viewport-user-20"].exists)
+        XCTAssertGreaterThan(
+            app.buttons["message.copy.viewport-user-20"].frame.midX, bubble.frame.midX,
+            "The user's copy action follows the trailing message bubble")
+
+        let search = app.buttons["tool.activity.viewport-search-20"]
+        let nativeSearch = app.buttons["tool.activity.viewport-native-search-20"]
+        let openedPages = app.buttons["tool.activity.viewport-open-20"]
+        for row in [search, nativeSearch, openedPages] {
+            XCTAssertTrue(row.exists && row.isHittable, "Tools have visible interactive rows without ordinary text")
+            XCTAssertGreaterThanOrEqual(row.frame.height, 44)
+            XCTAssertEqual(row.value as? String, "Collapsed")
+        }
+        XCTAssertTrue(search.label.contains("Search results"))
+        XCTAssertTrue(nativeSearch.label.contains("Search results"))
+        XCTAssertTrue(openedPages.label.contains("Opened pages"))
+        XCTAssertFalse(app.buttons["tool.activity.viewport-search-result-20"].exists)
+        XCTAssertFalse(app.buttons["tool.activity.viewport-open-result-20"].exists)
+        capture("Trailing user bubble and all retained web tool rows are visible")
+
+        search.tap()
+        let searchDetails = app.descendants(matching: .any)["tool.details.viewport-search-20"].firstMatch
+        XCTAssertTrue(searchDetails.waitForExistence(timeout: 10))
+        // Textual's paragraphs render as SwiftUI.Text (StaticText.label),
+        // with a separate native selection overlay rather than a UITextView.
+        let resultText = searchDetails.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Synthetic searchable garden result")
+        ).firstMatch
+        XCTAssertTrue(resultText.waitForExistence(timeout: 10))
+        XCTAssertTrue(resultText.isHittable)
+        XCTAssertGreaterThan(resultText.frame.height, 0)
+        XCTAssertFalse(
+            searchDetails.staticTexts.matching(
+                NSPredicate(format: "label CONTAINS %@", "Synthetic opened page contents")
+            ).firstMatch.exists,
+            "Search details contain only their matching tool result")
+        XCTAssertEqual(search.value as? String, "Expanded")
+        capture("Search opens the exact paired result details")
+        search.tap()
+        XCTAssertFalse(searchDetails.exists)
+
+        nativeSearch.tap()
+        XCTAssertTrue(app.staticTexts["No tool details available."].waitForExistence(timeout: 10))
+        nativeSearch.tap()
+        XCTAssertFalse(app.staticTexts["No tool details available."].exists)
+
+        openedPages.tap()
+        let pageDetails = app.descendants(matching: .any)["tool.details.viewport-open-20"].firstMatch
+        XCTAssertTrue(pageDetails.waitForExistence(timeout: 10))
+        let pageText = pageDetails.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Synthetic opened page contents")
+        ).firstMatch
+        XCTAssertTrue(pageText.waitForExistence(timeout: 10))
+        XCTAssertTrue(pageText.isHittable)
+        XCTAssertGreaterThan(pageText.frame.height, 0)
+        XCTAssertFalse(
+            pageDetails.staticTexts.matching(
+                NSPredicate(format: "label CONTAINS %@", "Synthetic searchable garden result")
+            ).firstMatch.exists,
+            "Opened pages contain only their matching tool result")
+        capture("Opened pages keeps its exact paired result accessible")
+        openedPages.tap()
+        XCTAssertEqual(openedPages.value as? String, "Collapsed")
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
+    }
+
     func testExistingChatComposerExpandsWithoutReplacingDraftAndPickerKeepsWidth() throws {
-        launchFixture()
+        launchFixture(pickerProof: true)
         defer { app.terminate() }
         let composer = app.textViews["chat.composer"]
         XCTAssertLessThanOrEqual(composer.frame.height, 60)
@@ -41,22 +153,217 @@ final class ShippingViewportUITests: XCTestCase {
         XCTAssertTrue(app.switches["model.web-search"].exists)
         XCTAssertFalse(app.buttons["Done"].exists)
         XCTAssertFalse(app.navigationBars["Default model"].exists)
-        let width = picker.frame.width
-        XCTAssertGreaterThan(width, 250)
+        let initialFrame = picker.frame
+        XCTAssertGreaterThan(initialFrame.width, 250)
+        XCTAssertGreaterThan(initialFrame.minY - app.windows.firstMatch.frame.minY, 44)
+        XCTAssertTrue(app.buttons["chat-options.project"].exists && app.buttons["chat-options.project"].isHittable)
+        for id in ["auto:quick", "auto:powerful"] {
+            let option = app.buttons["settings.model.\(id)"]
+            XCTAssertTrue(option.exists && option.isHittable, "The initial sheet exposes project and primary choices")
+        }
+        let lastAdvanced = app.buttons["settings.model.synthetic-advanced-4"]
+        XCTAssertFalse(
+            lastAdvanced.exists && lastAdvanced.isHittable, "Additional models remain below the initial view")
+        capture("Partial Chat options sheet exposes Project, Web Search, Quick and Powerful")
         picker.swipeUp(velocity: .slow)
-        XCTAssertEqual(picker.frame.width, width, accuracy: 1)
-        capture("Model picker uses plain rows and a stable presentation width")
-        // The native grabber is eight points below this sheet's measured top.
-        // Drag the sheet itself; a gesture inside its List scrolls the models.
+        let expanded = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                picker.exists && picker.frame.height > initialFrame.height + 60
+                    && abs(picker.frame.width - initialFrame.width) <= 1
+            }, object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 10), .completed)
+        XCTAssertEqual(picker.frame.width, initialFrame.width, accuracy: 1)
+        capture("Model picker expands without changing its presentation width")
+        // Dismiss through UIKit's own grabber. Actual model selection is tested
+        // with a signed-in local account; this isolated environment has no auth.
         let grabber = picker.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
             .withOffset(CGVector(dx: 0, dy: 8))
         let away = picker.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
         grabber.press(forDuration: 0.15, thenDragTo: away)
-        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
-        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
+        waitForModelPickerDismissal(picker)
         XCTAssertTrue(composer.exists)
         XCTAssertEqual(composer.value as? String, draft)
         XCTAssertFalse(app.activityIndicators.firstMatch.exists)
+    }
+
+    func testModelPickerOutsideTapDismissesAndReopensWithoutChangingDraft() throws {
+        launchFixture(pickerProof: true)
+        defer { app.terminate() }
+        let composer = app.textViews["chat.composer"]
+        let draft = "Synthetic draft survives outside taps and reopening the model picker"
+        try replaceSyntheticText(composer, with: draft, in: app)
+        let model = app.buttons["chat.model"]
+        for attempt in 1...2 {
+            if !model.exists || !model.isHittable { composer.tap() }
+            XCTAssertTrue(model.waitForExistence(timeout: 10))
+            XCTAssertTrue(model.isHittable)
+            model.tap()
+            let picker = app.collectionViews["settings.models"]
+            XCTAssertTrue(picker.waitForExistence(timeout: 10))
+            let keyboardDismissed = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in !self.app.keyboards.firstMatch.exists }, object: app)
+            XCTAssertEqual(XCTWaiter.wait(for: [keyboardDismissed], timeout: 10), .completed)
+            // A real control inside the sheet must still receive its tap.
+            let webSearch = app.switches["model.web-search"]
+            XCTAssertTrue(webSearch.exists && webSearch.isHittable)
+            let previousValue = try XCTUnwrap(webSearch.value as? String)
+            tapWebSearchSwitch(webSearch)
+            let changed = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in webSearch.exists && webSearch.value as? String != previousValue },
+                object: webSearch)
+            XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 10), .completed)
+            XCTAssertTrue(picker.exists)
+            let window = app.windows.firstMatch.frame
+            let outsideHeight = picker.frame.minY - window.minY
+            XCTAssertGreaterThan(outsideHeight, 44)
+            let outside = app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(
+                    dx: window.midX - app.frame.minX,
+                    dy: window.minY + outsideHeight / 2 - app.frame.minY))
+            outside.tap()
+            waitForModelPickerDismissal(picker)
+            XCTAssertTrue(composer.exists)
+            XCTAssertEqual(composer.value as? String, draft)
+            capture("Outside tap dismisses model picker and preserves draft — attempt \(attempt)")
+        }
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
+    }
+
+    func testExistingComposerTapAndEdgeSwipeRecoverAfterModelPickerDismissal() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = [
+            "--maple-shipping-viewport-fixture", "--maple-shipping-pagination-menu-proof",
+            "--maple-shipping-picker-proof",
+        ]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let composer = app.textViews["chat.composer"]
+        let model = app.buttons["chat.model"]
+        var draft = "Synthetic first character and draft survive picker and edge navigation"
+        XCTAssertTrue(composer.exists)
+        XCTAssertTrue(model.exists && model.isHittable)
+        XCTAssertLessThanOrEqual(composer.frame.height, 60)
+        try replaceSyntheticText(
+            composer, with: draft, in: app, centeredNativeFocus: true,
+            beforeTyping: { self.waitForExpandedSoftwareKeyboard(composer: composer, model: model) })
+
+        for attempt in 1...2 {
+            XCTAssertEqual(composer.value as? String, draft)
+            model.tap()
+            let picker = app.collectionViews["settings.models"]
+            XCTAssertTrue(picker.waitForExistence(timeout: 10))
+            let project = app.buttons["chat-options.project"]
+            XCTAssertTrue(project.exists && project.isEnabled && project.isHittable)
+            project.tap()
+            let noProject = app.buttons["project-picker.project.none"]
+            XCTAssertTrue(noProject.waitForExistence(timeout: 10))
+            let back = app.navigationBars.buttons.firstMatch
+            XCTAssertTrue(back.exists && back.isEnabled && back.isHittable)
+            back.tap()
+            XCTAssertTrue(project.waitForExistence(timeout: 10))
+            project.tap()
+            let selection = app.buttons["project-picker.project." + (attempt == 1 ? "fixture-project" : "none")]
+            XCTAssertTrue(selection.waitForExistence(timeout: 10))
+            XCTAssertTrue(selection.isEnabled && selection.isHittable); selection.tap()
+            XCTAssertTrue(picker.waitForExistence(timeout: 10), "Project selection returns to the same options sheet")
+            XCTAssertTrue(app.switches["model.web-search"].exists)
+            let window = app.windows.firstMatch.frame
+            let outsideHeight = picker.frame.minY - window.minY
+            XCTAssertGreaterThan(outsideHeight, 44)
+            app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(
+                    dx: window.midX - app.frame.minX,
+                    dy: window.minY + outsideHeight / 2 - app.frame.minY)
+            ).tap()
+            waitForModelPickerDismissal(picker)
+            XCTAssertEqual(composer.value as? String, draft)
+
+            let transcript = app.scrollViews["chat.transcript"]
+            XCTAssertTrue(transcript.exists)
+            let start = app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
+            start.press(
+                forDuration: 0.1,
+                thenDragTo: start.withOffset(
+                    CGVector(dx: app.frame.width * 0.65, dy: 0)))
+            let close = app.buttons["shipping-pagination.close"]
+            XCTAssertTrue(
+                close.waitForExistence(timeout: 15),
+                "A fresh physical-left contact must work after picker dismissal")
+            XCTAssertTrue(app.otherElements["shipping-pagination.library"].exists)
+            close.tap()
+            XCTAssertTrue(composer.waitForExistence(timeout: 15))
+            XCTAssertEqual(composer.value as? String, draft)
+            let compact = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    composer.exists && composer.isHittable && composer.frame.height <= 60
+                        && !self.app.keyboards.firstMatch.exists
+                }, object: composer)
+            XCTAssertEqual(XCTWaiter.wait(for: [compact], timeout: 10), .completed)
+
+            // One ordinary touch must restore the expanded editor and keyboard;
+            // no second focus tap or simulated binding change is permitted.
+            composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            waitForExpandedSoftwareKeyboard(composer: composer, model: model)
+            let suffix = " \(attempt)"
+            composer.typeText(suffix)
+            draft += suffix
+            XCTAssertEqual(composer.value as? String, draft)
+            capture("Existing composer and edge navigation recover after picker — attempt \(attempt)")
+        }
+    }
+
+    private func waitForExpandedSoftwareKeyboard(composer: XCUIElement, model: XCUIElement) {
+        let expanded = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                guard composer.exists, composer.isHittable, model.exists, model.isHittable,
+                    self.app.keyboards.firstMatch.exists
+                else { return false }
+                return composer.frame.maxY <= self.app.keyboards.firstMatch.frame.minY
+            }, object: composer)
+        let outcome = XCTWaiter.wait(for: [expanded], timeout: 10)
+        if outcome != .completed {
+            capture("Single-tap composer focus failure")
+        }
+        XCTAssertEqual(
+            outcome, .completed,
+            "A single native touch must expand the editor above the software keyboard; "
+                + "composer=\(composer.exists), model=\(model.exists), "
+                + "keyboard=\(app.keyboards.firstMatch.exists)")
+    }
+
+    private func waitForModelPickerDismissal(_ picker: XCUIElement) {
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
+    }
+
+    private func tapWebSearchSwitch(_ row: XCUIElement) {
+        XCTAssertTrue(row.isEnabled)
+        let frame = row.frame
+        XCTAssertGreaterThanOrEqual(frame.width, 160)
+        XCTAssertTrue((28...120).contains(frame.height))
+        let nativeSwitches = row.switches.allElementsBoundByIndex.filter {
+            $0.exists && $0.isHittable && (20...100).contains($0.frame.width)
+                && (20...100).contains($0.frame.height) && frame.contains($0.frame)
+        }
+        XCTAssertLessThanOrEqual(nativeSwitches.count, 1)
+        let target: XCUICoordinate
+        let point: CGPoint
+        if let native = nativeSwitches.first {
+            point = CGPoint(x: native.frame.midX, y: native.frame.midY)
+            target = native.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        } else {
+            // The English/LTR row is a full-width accessibility Switch. Its
+            // center misses the native trailing toggle, as in the reference suite.
+            point = CGPoint(x: frame.maxX - 48, y: frame.midY)
+            target = row.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                .withOffset(CGVector(dx: -48, dy: 0))
+        }
+        XCTAssertTrue(frame.contains(point))
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(point))
+        target.tap()
     }
 
     func testShippingComposerWaitsForLoadedDraftAndRetainsNativeEdits() throws {
@@ -381,6 +688,67 @@ final class ShippingViewportUITests: XCTestCase {
         capture("Shipping stream and completion retain earlier reading anchor")
     }
 
+    func testNewStreamingReplyItemsFollowTheBottomAndRespectEarlierReading() throws {
+        launchFixture(followScrollProof: true)
+        defer { app.terminate() }
+        app.buttons["shipping-viewport.start"].tap()
+        waitSummary("running 1")
+        let emit = app.buttons["shipping-viewport.emit"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: emit)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        emit.tap()
+        waitSummary("chunks 40; running 1")
+        let transcript = app.scrollViews["chat.transcript"]
+        let tail = app.buttons["message.copy.viewport-live-assistant"]
+        XCTAssertTrue(
+            app.staticTexts["shipping-viewport.scroll-metrics"].exists,
+            "This fixture must expose native geometry before testing scrolling")
+        func distanceFromBottom() -> Double? {
+            let element = app.staticTexts["shipping-viewport.scroll-metrics"]
+            guard element.exists, let value = element.value as? String,
+                let data = value.data(using: .utf8),
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Double]
+            else { return nil }
+            return object["distanceFromBottom"]
+        }
+        for _ in 0..<16 where !(distanceFromBottom().map { $0 < 30 } ?? false) {
+            transcript.swipeUp(velocity: .slow)
+        }
+        let beforeAppend = XCTAttachment(
+            string: app.staticTexts["shipping-viewport.scroll-metrics"].value as? String ?? "missing")
+        beforeAppend.name = "Actual viewport metrics before append"; beforeAppend.lifetime = .keepAlways;
+        add(beforeAppend)
+        XCTAssertLessThan(
+            try XCTUnwrap(distanceFromBottom()), 30, "The reader must actually be near the native viewport bottom")
+        XCTAssertTrue(tail.exists && tail.isHittable && transcript.frame.contains(tail.frame))
+        let append = app.buttons["shipping-viewport.append-item"]
+        XCTAssertTrue(append.exists && append.isEnabled)
+        append.tap()
+        let appendedTail = app.buttons["message.copy.viewport-follow-item-0"]
+        let followed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                appendedTail.exists && appendedTail.isHittable && transcript.frame.contains(appendedTail.frame)
+                    && (distanceFromBottom().map { $0 < 30 } ?? false)
+            }, object: appendedTail)
+        XCTAssertEqual(XCTWaiter.wait(for: [followed], timeout: 10), .completed)
+        capture("New streaming reply item follows the reader at the bottom")
+
+        let anchor = readingAnchor(20)
+        for _ in 0..<16 where !(anchor.exists && anchor.isHittable) { transcript.swipeDown(velocity: .slow) }
+        waitForReadingAnchor(anchor, index: 20)
+        let before = anchor.frame.midY
+        XCTAssertGreaterThan(try XCTUnwrap(distanceFromBottom()), 100)
+        append.tap()
+        let count = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", "messages 12"),
+            object: app.staticTexts["shipping-viewport.summary"])
+        XCTAssertEqual(XCTWaiter.wait(for: [count], timeout: 10), .completed)
+        waitForReadingAnchor(anchor, index: 20)
+        XCTAssertEqual(anchor.frame.midY, before, accuracy: 3)
+        XCTAssertFalse(app.buttons["message.copy.viewport-follow-item-1"].isHittable)
+        capture("Appended streaming reply leaves an earlier reading anchor unchanged")
+    }
+
     /// Uses the system handle observed in the full-screen iPad simulator,
     /// not a synthetic SwiftUI frame or a rotation. The dedicated iPad starts
     /// portrait at 834 x 1210 points; keep the window in that state for other tests.
@@ -494,7 +862,9 @@ final class ShippingViewportUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(target.width, 44)
             XCTAssertTrue(frame.insetBy(dx: -1, dy: -1).contains(target))
         }
-        XCTAssertFalse(app.buttons["chat.model"].exists, "The keyboard-hidden composer remains compact after resizing")
+        XCTAssertTrue(app.buttons["chat.model"].exists)
+        XCTAssertLessThanOrEqual(
+            composer.frame.height, 60, "The keyboard-hidden composer remains compact after resizing")
         XCTAssertFalse(app.buttons["chat.stop"].exists)
     }
 

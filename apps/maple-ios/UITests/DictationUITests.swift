@@ -68,6 +68,32 @@ import XCTest
         screenshot.name = "Dictation permission recovery"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
 
+    func testMicrophoneRespondsAcrossItsFullIconTargetAndDeniedRecoveryStaysVisible() {
+        launchFixture()
+        let start = app.buttons["dictation.start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        for _ in 0..<6 where !start.isHittable { app.swipeUp() }
+        XCTAssertTrue(start.isHittable)
+        XCTAssertGreaterThanOrEqual(start.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(start.frame.height, 44)
+        // These points lie outside the small mic glyph, inside its full button.
+        start.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5)).tap()
+        waitForPhase("recording")
+        let stop = app.buttons["dictation.stop"]
+        XCTAssertTrue(stop.isHittable)
+        stop.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        waitForPhase("transcribing")
+        tap("dictation.discard"); waitForPhase("idle")
+        tap("dictation.fixture.deny")
+        let deniedStart = app.buttons["dictation.start"]
+        XCTAssertTrue(deniedStart.isHittable)
+        deniedStart.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+        XCTAssertTrue(app.buttons["Open Settings"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Dismiss"].isHittable)
+        XCTAssertEqual(composer.value as? String, "Keep this draft")
+        XCTAssertTrue(app.buttons["dictation.fixture.send"].isEnabled)
+    }
+
     func testMarkedHeldDraftReceivesResultAfterQueueEditorSwitch() {
         launchFixture(); composer.tap()
         tap("dictation.start"); waitForPhase("recording")

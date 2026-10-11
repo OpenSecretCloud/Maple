@@ -18,6 +18,22 @@ private final class LibraryObservationChanges: Sendable {
         let deletion = ChatDeletionCoordinator(scope: scope, retained: [], service: chat, persistence: store)
         return (LibraryModel(scope: scope, service: service, deletions: deletion), service, deletion, chat, store)
     }
+    @Test func emptyFirstPageCompletionNotifiesReadinessObservers() async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
+        await service.configure(conversations: [], listGate: gate)
+        let load = Task { await model.load(.project("project")) }
+        await gate.waitForArrival()
+        let changes = LibraryObservationChanges()
+        let initiallyReady = withObservationTracking {
+            model.hasLoadedConversations
+        } onChange: {
+            changes.record()
+        }
+        #expect(!initiallyReady && changes.value == 0)
+        await gate.release(); await load.value
+        #expect(model.hasLoadedConversations && changes.value == 1)
+        #expect(model.conversations.isEmpty && !model.hasMore && model.issue == nil)
+    }
     @Test func searchUsesLoadedTitlesAndPagingPreservesUniqueRows() async {
         let (model, service, _, _, _) = fixture()
         await service.configure(conversations: (0..<102).map { libraryConversation(String($0)) })
@@ -48,7 +64,8 @@ private final class LibraryObservationChanges: Sendable {
         let rows = (0..<45).map { libraryConversation(String($0)) }, ids = Set(rows.map(\.id))
         await service.configure(conversations: rows, failedDeletes: ["3"])
         await model.load(); model.selectedIDs = ids
-        await model.moveConversations(ids: ids, projectID: "project")
+        let moved = await model.moveConversations(ids: ids, projectID: "project")
+        #expect(moved)
         #expect(await service.moveCalls.map(\.count) == [20, 20, 5])
         #expect(model.conversations.allSatisfy { $0.projectId == "project" })
         model.selectedIDs = ids
@@ -90,6 +107,17 @@ private final class LibraryObservationChanges: Sendable {
         #expect(await service.updateMetadata == nil)
         deletion.release(lease)
     }
+
+    @Test func projectMoveReturnsFalseForFailedOrRetiredAcknowledgements() async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
+        await service.configureMove(failedCall: 1)
+        let failed = await model.moveConversations(ids: ["chat"], projectID: "project")
+        #expect(!failed && model.issue == .connection)
+        await service.configureMove(gate: gate)
+        let moving = Task { await model.moveConversations(ids: ["chat"], projectID: "project") }
+        await gate.waitForArrival(); model.invalidate(); await gate.release()
+        #expect(await moving.value == false)
+    }
     @Test func retiredHistoryResultCannotPublish() async {
         let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
         await service.configure(conversations: [libraryConversation("a")], listGate: gate)
@@ -115,6 +143,41 @@ private final class LibraryObservationChanges: Sendable {
         pinned.pinned = false
         model.receiveConversationUpdate(pinned, from: model.scope)
         #expect(model.visibleConversations.map(\.id) == ["recent"])
+    }
+
+    @Test func recentMatchesWebDesktopTwentyThenTenCursorPagination() async {
+        let (model, service, _, _, _) = fixture()
+        let rows = (0..<37).map { libraryConversation(String($0)) }
+        await service.configure(conversations: rows + [libraryConversation("pin", pinned: true)])
+        await model.load(.recent)
+        #expect(model.conversations == Array(rows.prefix(20)) && model.hasMore)
+        await model.loadMoreIfNeeded(visibleID: "0")
+        #expect(await service.conversationListCalls.count == 1)
+        await model.loadMoreIfNeeded(visibleID: "19")
+        #expect(model.conversations == Array(rows.prefix(30)) && model.hasMore)
+        await model.loadMoreIfNeeded(visibleID: "29")
+        #expect(model.conversations == rows && !model.hasMore)
+        #expect(await service.conversationListCalls.map(\.page.limit) == [20, 10, 10])
+        #expect(await service.conversationListCalls.map(\.page.after) == [nil, "19", "29"])
+        #expect(await service.conversationListCalls.allSatisfy { $0.pinned == false && $0.unassignedProject == true })
+    }
+
+    @Test func recentVisibleBoundaryDeduplicatesOverlapAndDoesNotAutoPageSearch() async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
+        let rows = (0..<35).map { libraryConversation(String($0)) }
+        await service.configure(conversations: rows)
+        await model.load(.recent)
+        model.searchText = "19"
+        await model.loadMoreIfNeeded(visibleID: "19")
+        #expect(await service.conversationListCalls.count == 1)
+        model.searchText = ""
+        await service.configure(listGate: gate)
+        let first = Task { await model.loadMoreIfNeeded(visibleID: "19") }
+        await gate.waitForArrival()
+        await model.loadMoreIfNeeded(visibleID: "18")
+        await gate.release(); await first.value
+        #expect(model.conversations.count == 30 && Set(model.conversations.map(\.id)).count == 30)
+        #expect(await service.conversationListCalls.map(\.page.after) == [nil, "19"])
     }
 
     @Test func movingLastProjectChatRemovesItsCachedMembershipImmediately() async {

@@ -3,6 +3,20 @@
     import SwiftUI
     import UIKit
 
+    #if DEBUG
+        @MainActor enum ComposerFocusTrace {
+            static func record(_ state: String) {
+                let arguments = ProcessInfo.processInfo.arguments
+                guard arguments.contains("--maple-shipping-viewport-fixture"),
+                    arguments.contains("--maple-shipping-focus-trace")
+                else { return }
+                // Only focus and lifecycle booleans supplied below. No account,
+                // content, input ranges or service data belongs in this trace.
+                NSLog("MapleComposerFocus %@", state)
+            }
+        }
+    #endif
+
     /// A narrow native input surface: SwiftUI owns its chrome and account/draft lifecycle.
     /// UIKit supplies exact edits and marked-text ranges unavailable from TextField bindings.
     struct ComposerEditor: UIViewRepresentable {
@@ -11,11 +25,13 @@
         let ownerID: UUID
         var accountGeneration: UUID? = nil
         var isCurrentOwner: () -> Bool = { true }
+        var isCurrentPresentation: () -> Bool = { true }
         let placeholder: String
         var isCompact = false
         var accessibilityIdentifier = "chat.composer"
         var externalSelection: DictationEditorState? = nil
         var onChange: (DictationEditorState, [DictationTextEdit]) -> Void = { _, _ in }
+        var onEditingInteraction: () -> Bool = { true }
         var refreshAfterSubmit: (() -> ComposerEditor?)? = nil
         var onSubmit: () -> Void
 
@@ -27,7 +43,9 @@
             view.font = .preferredFont(forTextStyle: .body)
             view.adjustsFontForContentSizeCategory = true
             view.textColor = .label
-            view.textContainerInset = .zero
+            view.textContainerInset = UIEdgeInsets(
+                top: ComposerEditorMetrics.verticalInset, left: ComposerEditorMetrics.horizontalInset,
+                bottom: ComposerEditorMetrics.verticalInset, right: ComposerEditorMetrics.horizontalInset)
             view.textContainer.lineFragmentPadding = 0
             view.autocapitalizationType = .sentences
             view.returnKeyType = .default
@@ -61,12 +79,20 @@
             guard let width = proposal.width else { return nil }
             let line = uiView.font?.lineHeight ?? 22
             let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+            let placeholderHeight = uiView.placeholderLabel.sizeThatFits(
+                CGSize(
+                    width: max(0, width - ComposerEditorMetrics.horizontalInset * 2), height: .greatestFiniteMagnitude)
+            ).height
             // Keep the normal tap surface and eight-line cap, then honor the
             // composer budget without reducing the native font. UITextView scrolls
             // its remaining content when chrome and the keyboard need more room.
-            let preferred = isCompact ? max(44, line) : min(max(44, max(line, size.height)), max(44, line * 8))
+            let preferred = ComposerEditorMetrics.preferredHeight(
+                lineHeight: line,
+                contentHeight: max(
+                    size.height, text.isEmpty ? placeholderHeight + ComposerEditorMetrics.verticalInset * 2 : 0),
+                compact: isCompact)
             let available = proposal.height.flatMap { $0.isFinite ? max(0, $0) : nil }
-            let minimum = max(44, line)
+            let minimum = ComposerEditorMetrics.preferredHeight(lineHeight: line, contentHeight: 0, compact: true)
             return CGSize(width: width, height: min(preferred, max(minimum, available ?? preferred)))
         }
 
@@ -118,6 +144,13 @@
                 let window: UIWindow
             }
             private var hardwareResignation: HardwareResignation?
+            private struct NativeFocusAcquisition {
+                let owner: Owner
+                let installation: UUID
+                let action: UUID
+                let window: UIWindow
+            }
+            private var nativeFocusAcquisition: NativeFocusAcquisition?
             private final class SubmitInstallation {
                 let owner: Owner
                 let baseline: String
@@ -157,7 +190,19 @@
             #endif
             init(_ parent: ComposerEditor) { self.parent = parent }
 
+            #if DEBUG
+                fileprivate func traceFocus(_ event: String) {
+                    ComposerFocusTrace.record(
+                        "\(event); focused=\(parent.focused); first=\(view?.isFirstResponder == true); "
+                            + "compact=\(view?.isCompact == true); suppressed=\(view?.softwareKeyboardSuppressed == true); "
+                            + "attached=\(view?.window != nil); installing=\(installing); valid=\(valid)")
+                }
+            #endif
+
             func install(_ parent: ComposerEditor, in view: ComposerTextView) {
+                #if DEBUG
+                    traceFocus("install; incomingFocused=\(parent.focused); incomingCompact=\(parent.isCompact)")
+                #endif
                 let admittedRevision = installationRevision
                 guard valid, self.view === view, parent.isCurrentOwner(), installationRevision == admittedRevision
                 else { return }
@@ -253,7 +298,8 @@
             /// above; Send has already committed or retained that model content.
             private func apply(
                 _ parent: ComposerEditor, in view: ComposerTextView, preservingPostSubmitInput: Bool = false,
-                restoringHardwareFocus: Bool = false, suppressSoftwareKeyboard: Bool? = nil
+                restoringHardwareFocus: Bool = false, suppressSoftwareKeyboard: Bool? = nil,
+                reloadSoftwareKeyboard: Bool = false, restoringInteractionFocus: Bool = false
             ) {
                 let admittedRevision = installationRevision
                 guard valid, self.view === view, parent.isCurrentOwner(), installationRevision == admittedRevision
@@ -294,6 +340,8 @@
                     view.textContainer.lineBreakMode = parent.isCompact ? .byTruncatingTail : .byWordWrapping
                 }
                 view.placeholderLabel.numberOfLines = parent.isCompact ? 1 : 0
+                view.isCompact = parent.isCompact
+                view.updateKeyboardRestorationGesture()
                 if ownerChanged {
                     view.invalidateReturnCommands()
                     owner = nextOwner
@@ -347,14 +395,18 @@
                 }
                 let presentationActionRevision = view.returnActionRevision
                 let presentationChanged = requestedPresentation.map { view.setSoftwareKeyboardSuppressed($0) } ?? false
-                if presentationChanged {
+                let reloadsPresentation =
+                    reloadSoftwareKeyboard && !presentationChanged && view.isFirstResponder
+                    && !view.softwareKeyboardSuppressed
+                if reloadsPresentation { view.reloadInputViews() }
+                if presentationChanged || reloadsPresentation {
                     let current = parent.isCurrentOwner()
                     guard current, valid, self.view === view, view.window === focusWindow, owner == nextOwner,
                         installationRevision == revision, view.returnActionRevision == presentationActionRevision,
                         transaction?.replacementRevokesInput != true
                     else { return }
                 }
-                if restoringHardwareFocus {
+                if restoringHardwareFocus || restoringInteractionFocus {
                     // The successor's owner and baseline are already installed.
                     // Keep the native installation transaction open while focus
                     // resumes, so received input cannot target the retired draft.
@@ -366,11 +418,20 @@
                         view.markedTextRange == nil
                     else { return }
                 }
-                if (restoringHardwareFocus || parent.focused), !view.isFirstResponder {
-                    view.becomeFirstResponder()
-                } else if !restoringHardwareFocus, !parent.focused, view.isFirstResponder {
+                if (restoringHardwareFocus || restoringInteractionFocus || parent.focused), !view.isFirstResponder {
+                    if let window = focusWindow, view.window === window {
+                        let previous = nativeFocusAcquisition
+                        nativeFocusAcquisition = NativeFocusAcquisition(
+                            owner: nextOwner, installation: revision, action: view.returnActionRevision, window: window)
+                        defer { nativeFocusAcquisition = previous }
+                        view.becomeFirstResponder()
+                    }
+                } else if !restoringHardwareFocus, !restoringInteractionFocus, !parent.focused, view.isFirstResponder {
                     _ = view.resignFirstResponder()
                 }
+                #if DEBUG
+                    traceFocus("apply.afterFocus")
+                #endif
                 if transaction == nil { schedulePublication() }
             }
 
@@ -486,14 +547,77 @@
                 #endif
                 publish()
             }
+
+            private func admitsNativeFocusCallback(_ textView: UITextView, firstResponder: Bool) -> Bool {
+                let revision = installationRevision
+                let destinationOwner = owner
+                let actionRevision = view?.returnActionRevision
+                let window = textView.window
+                func matches() -> Bool {
+                    valid && !installing && view === textView && window != nil && textView.window === window
+                        && owner == destinationOwner && parent.ownerID == destinationOwner?.draft
+                        && parent.accountGeneration == destinationOwner?.generation
+                        && installationRevision == revision && view?.returnActionRevision == actionRevision
+                        && textView.isFirstResponder == firstResponder
+                }
+                return matches() && parent.isCurrentOwner() && matches()
+                    && (!firstResponder || (parent.isCurrentPresentation() && matches()))
+            }
+
+            func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
+                let revision = installationRevision
+                let destinationOwner = owner
+                let actionRevision = view?.returnActionRevision
+                let window = textView.window
+                func matches() -> Bool {
+                    guard valid, view === textView, let window, textView.window === window,
+                        owner == destinationOwner, parent.ownerID == destinationOwner?.draft,
+                        parent.accountGeneration == destinationOwner?.generation,
+                        installationRevision == revision, view?.returnActionRevision == actionRevision,
+                        submitInstallation?.replacementRevokesInput != true
+                    else { return false }
+                    if parent.focused { return true }
+                    // An admitted native touch may write SwiftUI's focus binding
+                    // before its cached getter sees that write. Only the exact
+                    // synchronous acquisition transaction may bridge that render.
+                    guard let acquisition = nativeFocusAcquisition else { return false }
+                    return acquisition.owner == destinationOwner && acquisition.installation == revision
+                        && acquisition.action == actionRevision && acquisition.window === window
+                }
+                let admitted =
+                    matches() && parent.isCurrentOwner() && matches()
+                    && parent.isCurrentPresentation() && matches()
+                #if DEBUG
+                    traceFocus("native.shouldBegin=\(admitted)")
+                #endif
+                return admitted
+            }
+
             func textViewDidBeginEditing(_ textView: UITextView) {
-                if !installing { parent.focused = true }
+                #if DEBUG
+                    traceFocus("native.didBegin.before")
+                #endif
+                // UIKit can deliver a queued Begin after navigation has already
+                // resigned this exact view. Only its current native focus may
+                // publish editing intent and reopen keyboard presentation.
+                if admitsNativeFocusCallback(textView, firstResponder: true) { parent.focused = true }
+                #if DEBUG
+                    traceFocus("native.didBegin.after")
+                #endif
                 schedulePublication()
             }
             func textViewDidEndEditing(_ textView: UITextView) {
-                if !installing, (textView as? ComposerTextView)?.hardwareReturnInProgress != true {
+                #if DEBUG
+                    traceFocus("native.didEnd.before")
+                #endif
+                if (textView as? ComposerTextView)?.hardwareReturnInProgress != true,
+                    admitsNativeFocusCallback(textView, firstResponder: false)
+                {
                     parent.focused = false
                 }
+                #if DEBUG
+                    traceFocus("native.didEnd.after")
+                #endif
                 schedulePublication()
             }
 
@@ -736,9 +860,12 @@
                     suppressSoftwareKeyboard: dismissSoftwareKeyboard ? true : nil)
             }
 
-            fileprivate func showSoftwareKeyboard(in view: ComposerTextView) {
+            @discardableResult fileprivate func showSoftwareKeyboard(in view: ComposerTextView) -> Bool {
+                #if DEBUG
+                    traceFocus("interaction.begin")
+                #endif
                 view.cancelHardwareReturn()
-                let revision = installationRevision
+                var revision = installationRevision
                 let destinationOwner = owner
                 let actionRevision = view.returnActionRevision
                 let window = view.window
@@ -749,20 +876,73 @@
                         && !installing && !view.performingInputOperation && !view.hardwareReturnInProgress
                         && view.markedTextRange == nil && !view.textStorage.editedMask.contains(.editedCharacters)
                 }
-                guard matches(), parent.isCurrentOwner(), matches() else { return }
+                func refreshAfterInteraction() -> Bool {
+                    // Rendering an admitted focus/presentation change may
+                    // synchronously refresh this same editor. Its new callbacks
+                    // can continue only with the exact installed owner/baseline.
+                    let nextRevision = installationRevision
+                    func sameInput() -> Bool {
+                        valid && self.view === view && view.window === window && window != nil
+                            && owner == destinationOwner && parent.ownerID == destinationOwner?.draft
+                            && parent.accountGeneration == destinationOwner?.generation
+                            && installationRevision == nextRevision && view.returnActionRevision == actionRevision
+                            && !installing && !view.performingInputOperation && !view.hardwareReturnInProgress
+                            && view.markedTextRange == nil && !view.textStorage.editedMask.contains(.editedCharacters)
+                            && parent.text == view.text && reportedText == view.text
+                    }
+                    guard sameInput(), parent.isCurrentOwner(), sameInput(), parent.isCurrentPresentation(), sameInput()
+                    else { return false }
+                    revision = nextRevision
+                    return true
+                }
+                guard matches(), parent.isCurrentOwner(), matches(), parent.isCurrentPresentation(), matches()
+                else { return false }
                 publish()
-                guard matches(), parent.isCurrentOwner(), matches(), parent.text == view.text,
+                guard matches(), parent.isCurrentOwner(), matches(), parent.isCurrentPresentation(), matches(),
+                    parent.text == view.text,
                     reportedText == view.text
-                else { return }
+                else { return false }
+                // A keyboard hide can retain the native first responder while
+                // SwiftUI collapses this existing-chat editor. An explicit tap
+                // begins editing again even when custom hardware suppression
+                // was never installed. Presentation admission can revoke it.
+                let reloadsPresentation =
+                    view.isCompact && !view.softwareKeyboardSuppressed && view.isFirstResponder
+                let interactionAdmitted = parent.onEditingInteraction()
+                #if DEBUG
+                    traceFocus("interaction.admitted=\(interactionAdmitted)")
+                #endif
+                guard interactionAdmitted, refreshAfterInteraction() else { return false }
+                if !parent.focused { parent.focused = true }
+                #if DEBUG
+                    traceFocus("interaction.focusWritten")
+                #endif
+                guard refreshAfterInteraction() else { return false }
                 // Keep reload callbacks in the same exact-input transaction used
                 // for successor focus, without committing marked text.
-                apply(parent, in: view, preservingPostSubmitInput: true, suppressSoftwareKeyboard: false)
+                apply(
+                    parent, in: view, preservingPostSubmitInput: true, suppressSoftwareKeyboard: false,
+                    reloadSoftwareKeyboard: reloadsPresentation, restoringInteractionFocus: true)
+                return view.isFirstResponder && refreshAfterInteraction()
             }
         }
     }
 
     @MainActor final class ComposerTextView: UITextView {
         let placeholderLabel = UILabel()
+        var isCompact = false {
+            didSet {
+                if isCompact != oldValue {
+                    updateKeyboardRestorationGesture()
+                    updateVerticalAlignment()
+                    setNeedsLayout()
+                    #if DEBUG
+                        (delegate as? ComposerEditor.Coordinator)?.traceFocus("compact.changed")
+                    #endif
+                }
+            }
+        }
+        private var placeholderTopConstraint: NSLayoutConstraint?
         var changed: (() -> Void)?
         var submit: (() -> Void)?
         var willReplace: ((String, NSRange, String) -> Void)?
@@ -786,7 +966,16 @@
             weak var view: ComposerTextView?
             func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
                 guard let view else { return false }
-                return gestureRecognizer === view.keyboardRestorationTap && view.softwareKeyboardSuppressed
+                #if DEBUG
+                    (view.delegate as? ComposerEditor.Coordinator)?.traceFocus("tap.shouldBegin")
+                #endif
+                guard gestureRecognizer === view.keyboardRestorationTap, view.needsEditingInteraction else {
+                    return false
+                }
+                // Admit this real touch before UIKit requests native focus. A
+                // retained NavigationStack can otherwise restore its old text
+                // responder without a touch even after the app dismissed it.
+                return view.showSoftwareKeyboardForInteraction()
             }
             func gestureRecognizer(
                 _ gestureRecognizer: UIGestureRecognizer,
@@ -805,7 +994,9 @@
             guard recognizer === keyboardRestorationTap, recognizer.view === self,
                 recognizer.state == .ended
             else { return }
-            showSoftwareKeyboardForInteraction()
+            #if DEBUG
+                (delegate as? ComposerEditor.Coordinator)?.traceFocus("tap.ended")
+            #endif
         }
 
         fileprivate func removeKeyboardRestorationGesture() {
@@ -819,15 +1010,24 @@
         @discardableResult fileprivate func setSoftwareKeyboardSuppressed(_ suppressed: Bool) -> Bool {
             guard softwareKeyboardSuppressed != suppressed else { return false }
             softwareKeyboardSuppressed = suppressed
-            keyboardRestorationTap.isEnabled = suppressed
+            updateKeyboardRestorationGesture()
             inputView = suppressed ? suppressedInputView : nil
             if isFirstResponder { reloadInputViews() }
             return true
         }
 
-        func showSoftwareKeyboardForInteraction() {
-            guard softwareKeyboardSuppressed else { return }
-            (delegate as? ComposerEditor.Coordinator)?.showSoftwareKeyboard(in: self)
+        fileprivate var needsEditingInteraction: Bool {
+            softwareKeyboardSuppressed || isCompact
+                || (delegate as? ComposerEditor.Coordinator)?.parent.focused == false
+        }
+
+        fileprivate func updateKeyboardRestorationGesture() {
+            keyboardRestorationTap.isEnabled = needsEditingInteraction
+        }
+
+        @discardableResult func showSoftwareKeyboardForInteraction() -> Bool {
+            guard needsEditingInteraction else { return false }
+            return (delegate as? ComposerEditor.Coordinator)?.showSoftwareKeyboard(in: self) ?? false
         }
 
         override func accessibilityActivate() -> Bool {
@@ -930,6 +1130,9 @@
             super.paste(sender)
         }
         override func resignFirstResponder() -> Bool {
+            #if DEBUG
+                (delegate as? ComposerEditor.Coordinator)?.traceFocus("native.resign")
+            #endif
             let expected = expectedHardwareResignation
             expectedHardwareResignation = false
             let revision = returnActionRevision
@@ -946,6 +1149,7 @@
             var beforeBecomeFirstResponderForProbe: (() -> Void)?
             var refuseResignationForProbe = false
             override func becomeFirstResponder() -> Bool {
+                (delegate as? ComposerEditor.Coordinator)?.traceFocus("native.become")
                 beforeBecomeFirstResponderForProbe?()
                 return super.becomeFirstResponder()
             }
@@ -1001,13 +1205,37 @@
             placeholderLabel.isAccessibilityElement = false
             placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
             addSubview(placeholderLabel)
+            let placeholderTop = placeholderLabel.topAnchor.constraint(equalTo: topAnchor)
+            placeholderTopConstraint = placeholderTop
             NSLayoutConstraint.activate([
-                placeholderLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
-                placeholderLabel.topAnchor.constraint(equalTo: topAnchor),
-                placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+                placeholderLabel.leadingAnchor.constraint(
+                    equalTo: leadingAnchor, constant: ComposerEditorMetrics.horizontalInset),
+                placeholderTop,
+                placeholderLabel.trailingAnchor.constraint(
+                    lessThanOrEqualTo: trailingAnchor, constant: -ComposerEditorMetrics.horizontalInset),
             ])
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+        override func layoutSubviews() {
+            updateVerticalAlignment()
+            super.layoutSubviews()
+        }
+
+        private func updateVerticalAlignment() {
+            // The collapsed editor keeps its 44-point tap surface, with its
+            // single native line and placeholder centered beside the controls.
+            // Expanded drafts keep UITextView's normal top-aligned layout.
+            let lineHeight = font?.lineHeight ?? placeholderLabel.font.lineHeight
+            let inset = ComposerEditorMetrics.topInset(
+                height: bounds.height, lineHeight: lineHeight, compact: isCompact)
+            let insets = UIEdgeInsets(
+                top: inset, left: ComposerEditorMetrics.horizontalInset,
+                bottom: inset, right: ComposerEditorMetrics.horizontalInset)
+            if textContainerInset != insets { textContainerInset = insets }
+            placeholderTopConstraint?.constant = ComposerEditorMetrics.topInset(
+                height: bounds.height, lineHeight: placeholderLabel.intrinsicContentSize.height, compact: isCompact)
+        }
 
         override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
             cancelHardwareReturn()

@@ -70,6 +70,7 @@
                     DictationControls(coordinator: model.coordinator, runtime: model.runtime)
                     HStack {
                         DictationMicrophoneButton(coordinator: model.coordinator, runtime: model.runtime)
+                            .labelStyle(.iconOnly).buttonStyle(.plain)
                         Button("Send") { model.sends += 1 }
                             .disabled(!model.runtime.canSend).accessibilityIdentifier("dictation.fixture.send")
                     }.buttonStyle(.bordered)

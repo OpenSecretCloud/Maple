@@ -106,7 +106,7 @@ import Testing
         model.selectedIDs = ["selected"]
         let moving = Task { await model.moveConversations(ids: ["selected"], projectID: "destination") }
         await gate.waitForArrival(); model.invalidate()
-        await gate.release(); await moving.value
+        await gate.release(); #expect(await moving.value == false)
         #expect(callbacks == 0 && model.selectedIDs.isEmpty && !model.isMutating)
     }
 

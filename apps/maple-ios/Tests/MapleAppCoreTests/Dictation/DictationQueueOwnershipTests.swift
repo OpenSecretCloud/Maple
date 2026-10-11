@@ -8,12 +8,12 @@ import Testing
         runtime.draftText = "Queued A"; #expect(runtime.enqueueDraft())
         let queued = try #require(runtime.queuedTurns.first)
         runtime.draftText = "Held B"; let ownerB = runtime.snapshot.draft.id
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
         #expect(runtime.beginQueueEdit(id: queued.id))
         #expect(capture.active == nil && capture.stops == 1)
         #expect(runtime.snapshot.draft.text == "Queued A" && !runtime.busyDraftIDs.contains(runtime.snapshot.draft.id))
-        await service.waitForCalls(); await service.complete(text: "voice B")
-        await dictationWait { dictation.statuses.isEmpty }
+        try await service.waitForCalls(); await service.complete(text: "voice B")
+        try await dictationWait { dictation.statuses.isEmpty }
         #expect(runtime.snapshot.draft.text == "Queued A")
         #expect(runtime.snapshot.queue?.edit?.heldDraft.text == "Held B voice B")
         #expect(runtime.snapshot.queue?.edit?.heldDraft.id == ownerB)
@@ -27,13 +27,13 @@ import Testing
         runtime.draftText = "Queued A"; #expect(runtime.enqueueDraft())
         let queued = try #require(runtime.queuedTurns.first)
         runtime.draftText = "Held B"; let ownerB = runtime.snapshot.draft.id
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        #expect(runtime.beginQueueEdit(id: queued.id)); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        #expect(runtime.beginQueueEdit(id: queued.id)); try await service.waitForCalls()
         runtime.draftText = "Edited A"
         #expect(runtime.saveQueueEdit())
         #expect(runtime.queuedTurns.first?.draft.text == "Edited A" && runtime.snapshot.draft.id == ownerB)
         #expect(!runtime.canSend)
-        await service.complete(text: "voice B"); await dictationWait { dictation.statuses.isEmpty }
+        await service.complete(text: "voice B"); try await dictationWait { dictation.statuses.isEmpty }
         #expect(runtime.draftText == "Held B voice B" && runtime.canSend)
         #expect(runtime.queuedTurns.first?.draft.text == "Edited A" && runtime.isQueuePaused)
         dictation.invalidate(); runtime.invalidate()
@@ -45,16 +45,16 @@ import Testing
         runtime.draftText = "Queued A"; #expect(runtime.enqueueDraft())
         let queued = try #require(runtime.queuedTurns.first)
         runtime.draftText = "Held B"
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        #expect(runtime.beginQueueEdit(id: queued.id)); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        #expect(runtime.beginQueueEdit(id: queued.id)); try await service.waitForCalls()
         let ownerA = runtime.snapshot.draft.id
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 2 }
-        dictation.stop(runtime: runtime); await service.waitForCalls(2)
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 2 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls(2)
         #expect(!runtime.saveQueueEdit())
         if delete { runtime.deleteQueuedTurn(id: queued.id) } else { runtime.cancelQueueEdit() }
         #expect(!runtime.busyDraftIDs.contains(ownerA) && !runtime.canSend)
         await service.complete(1, text: "Late A"); await service.complete(0, text: "voice B")
-        await dictationWait { dictation.statuses.isEmpty }
+        try await dictationWait { dictation.statuses.isEmpty }
         #expect(runtime.draftText == "Held B voice B")
         #expect(runtime.queuedTurns == (delete ? [] : [queued]))
         dictation.invalidate(); runtime.invalidate()
@@ -65,9 +65,9 @@ import Testing
         runtime.draftText = "Queued A"; #expect(runtime.enqueueDraft())
         let queued = try #require(runtime.queuedTurns.first)
         runtime.draftText = "Held B"; #expect(runtime.beginQueueEdit(id: queued.id))
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stopCaptureForNavigation(); await service.waitForCalls()
-        await service.complete(text: "voice A"); await dictationWait { dictation.statuses.isEmpty }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stopCaptureForNavigation(); try await service.waitForCalls()
+        await service.complete(text: "voice A"); try await dictationWait { dictation.statuses.isEmpty }
         #expect(runtime.isEditingQueue && runtime.queuedTurns == [queued])
         #expect(runtime.draftText == "Queued A voice A")
         await runtime.saveDraft()

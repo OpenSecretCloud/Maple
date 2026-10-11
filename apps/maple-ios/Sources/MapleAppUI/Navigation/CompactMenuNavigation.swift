@@ -252,7 +252,7 @@
 
     @MainActor
     final class CompactMenuController<Library: View, Chat: View>: UINavigationController,
-        UINavigationControllerDelegate, UIGestureRecognizerDelegate
+        UINavigationControllerDelegate
     {
         let scope: AccountScope
         let ownership = UUID()
@@ -268,6 +268,7 @@
         private let blockPresentation: @MainActor (UUID, Bool) -> Void
         private let chatShown: @MainActor (CompactMenuChatReturn) -> Void
         private let edge = UIScreenEdgePanGestureRecognizer()
+        private lazy var edgeDelegate = EdgeDelegate(owner: self)
         private var requestedMenu = false
         private var reduceMotion = false
         private var retired = false
@@ -282,6 +283,38 @@
         private var edgeContactActive = false
         private var operation: Operation?
 
+        /// Own only this controller's menu edge. UIKit's navigation controller
+        /// delegate filters belong to its stock recognizers, not this gesture.
+        @MainActor private final class EdgeDelegate: NSObject, UIGestureRecognizerDelegate {
+            private weak var owner: CompactMenuController?
+
+            init(owner: CompactMenuController) { self.owner = owner }
+
+            func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+                guard let owner, owner.acceptsEdgeDelegate(gestureRecognizer) else { return false }
+                return owner.gestureRecognizerShouldBegin(gestureRecognizer)
+            }
+
+            func gestureRecognizer(
+                _ gestureRecognizer: UIGestureRecognizer,
+                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+            ) -> Bool {
+                guard let owner, owner.acceptsEdgeDelegate(gestureRecognizer) else { return false }
+                return owner.gestureRecognizer(gestureRecognizer, shouldRecognizeSimultaneouslyWith: other)
+            }
+
+            func gestureRecognizer(
+                _ gestureRecognizer: UIGestureRecognizer,
+                shouldBeRequiredToFailBy other: UIGestureRecognizer
+            ) -> Bool {
+                guard let owner, owner.acceptsEdgeDelegate(gestureRecognizer) else { return false }
+                return owner.gestureRecognizer(gestureRecognizer, shouldBeRequiredToFailBy: other)
+            }
+        }
+
+        private func acceptsEdgeDelegate(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            gestureRecognizer === edge && !retired && current
+        }
         @MainActor private final class Operation {
             let width: CGFloat
             let interactive: Bool
@@ -353,7 +386,7 @@
             super.viewDidLoad()
             setNavigationBarHidden(true, animated: false)
             setToolbarHidden(true, animated: false)
-            edge.edges = .left; edge.delegate = self; edge.isEnabled = false
+            edge.edges = .left; edge.delegate = edgeDelegate; edge.isEnabled = false
             edge.addTarget(self, action: #selector(handleEdge(_:)))
             view.addGestureRecognizer(edge)
             disableStockGestures()
@@ -475,7 +508,12 @@
                 }
             }
             disableStockGestures()
-            edge.isEnabled = admitted
+            // Keep the recognizer ready on the owned Chat route. A sheet or
+            // keyboard can finish without another outer navigation layout;
+            // disabling here for a transient presentation would strand the
+            // next edge contact. Admission still checks current account,
+            // presentation and transition ownership at gesture start.
+            edge.isEnabled = stableChat && !requestedMenu
             guard !ownedPresentation else { return }
             if requestedMenu, stableChat {
                 startNavigation(menu: true)
@@ -769,7 +807,7 @@
             self.recordVisualProxy = recordVisualProxy; self.mayRestoreVisualSource = mayRestoreVisualSource
         }
         func transitionDuration(using transitionContext: (any UIViewControllerContextTransitioning)?) -> TimeInterval {
-            reduceMotion ? 0.15 : 0.35
+            reduceMotion ? 0.15 : 0.30
         }
         func animateTransition(using context: any UIViewControllerContextTransitioning) {
             interruptibleAnimator(using: context).startAnimation()
@@ -779,8 +817,15 @@
             -> any UIViewImplicitlyAnimating
         {
             if let animator { return animator }
+            let timing: any UITimingCurveProvider =
+                context.isInteractive || reduceMotion
+                ? UICubicTimingParameters(animationCurve: context.isInteractive ? .linear : .easeOut)
+                : UISpringTimingParameters(dampingRatio: 0.88)
             let animator = UIViewPropertyAnimator(
-                duration: transitionDuration(using: context), curve: context.isInteractive ? .linear : .easeInOut)
+                duration: transitionDuration(using: context), timingParameters: timing)
+            // Direct manipulation stays linear with the finger; the release
+            // eases to rest. Button navigation uses the native spring feel.
+            animator.scrubsLinearly = true
             self.animator = animator
             guard let from = context.view(forKey: .from), let to = context.view(forKey: .to),
                 let fromController = context.viewController(forKey: .from),
@@ -808,11 +853,12 @@
             to.bounds = toBounds; to.center = toCenter
             let proxy: CompactMenuVisualProxy?
             if operation == .pop {
-                // Occlusion already ends composer focus. Resign only this owned
-                // source before copying its currently painted appearance.
-                _ = from.endEditing(true)
+                // Preserve the currently painted chat before its keyboard
+                // changes the layout. Resignation and horizontal navigation
+                // then share this transition rather than showing two steps.
                 proxy = CompactMenuVisualProxy(
                     source: from, container: container, mayRestoreSource: mayRestoreVisualSource)
+                _ = from.endEditing(true)
             } else {
                 proxy = nil
             }

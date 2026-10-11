@@ -24,6 +24,8 @@ actor LibraryFixture: LibraryServing {
     var deleteAllCalls = 0
     var instructionChanges: [String] = []
     var updateMetadata: [String: JSONValue]?
+    var conversationUpdateIDs: [String] = []
+    var malformedConversationUpdate = false
     var failedDeletes: Set<String> = []
     var failList = false
     var failDelete = false
@@ -39,10 +41,12 @@ actor LibraryFixture: LibraryServing {
         ConversationProjectListItem(id: "project", object: "project", name: "Project", createdAt: 0, updatedAt: 0)
     ]
     var projectsGate: ChatTestGate?
+    var projectListCalls: [ListParameters] = []
     func configureProjects(_ values: [ConversationProjectListItem], gate: ChatTestGate? = nil) {
         projects = values; projectsGate = gate
     }
     func holdUpdate(_ gate: ChatTestGate?) { updateGate = gate }
+    func returnMalformedConversationUpdate() { malformedConversationUpdate = true }
     func configureMove(gate: ChatTestGate? = nil, failedCall: Int? = nil) {
         moveGate = gate; failedMoveCall = failedCall
     }
@@ -87,6 +91,7 @@ actor LibraryFixture: LibraryServing {
     func updateConversation(
         id: String, metadata: [String: JSONValue]?, projectId: NullableUpdate<String>, pinned: Bool?
     ) async throws -> Conversation {
+        conversationUpdateIDs.append(id)
         if let updateGate { await updateGate.hold() }
         let index = try require(conversations.firstIndex { $0.id == id })
         updateMetadata = metadata
@@ -97,6 +102,7 @@ actor LibraryFixture: LibraryServing {
         case .set(let id): conversations[index].projectId = id;
         case .unchanged: break
         }
+        if malformedConversationUpdate { return libraryConversation("wrong-id") }
         return conversations[index]
     }
     func deleteConversation(id: String) throws -> DeletedObject {
@@ -128,6 +134,7 @@ actor LibraryFixture: LibraryServing {
         return BatchUpdateProjectResponse(success: true)
     }
     func listProjects(_ parameters: ListParameters) async -> APIPage<ConversationProjectListItem> {
+        projectListCalls.append(parameters)
         let result = page(projects, ids: projects.map(\.id), parameters: parameters)
         if let projectsGate { await projectsGate.hold() }
         return result

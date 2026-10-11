@@ -12,6 +12,8 @@
     @MainActor final class LibraryContext {
         let root: LibraryModel
         let scope: AccountScope
+        let projectExpansion: LibraryProjectExpansionController
+        let menu: LibraryMenuModel
         private let service: SDKLibraryService
         private let deletions: ChatDeletionCoordinator
         private var active = true
@@ -22,10 +24,28 @@
         var onConversationProjectUpdated: ((Set<String>, String?) -> Void)?
         var onProjectDeleted: ((String) -> Void)?
 
-        init(scope: AccountScope, api: ResearchAPI, deletions: ChatDeletionCoordinator) {
-            self.scope = scope; service = SDKLibraryService(api: api); self.deletions = deletions
-            root = LibraryModel(scope: scope, service: service, deletions: deletions)
-            attach(root)
+        init(
+            scope: AccountScope, api: ResearchAPI, deletions: ChatDeletionCoordinator,
+            projectExpansion: LibraryProjectExpansionController
+        ) {
+            let service = SDKLibraryService(api: api)
+            self.scope = scope; self.service = service; self.deletions = deletions
+            self.projectExpansion = projectExpansion
+            let root = LibraryModel(scope: scope, service: service, deletions: deletions)
+            self.root = root
+            menu = LibraryMenuModel(root: root) {
+                LibraryModel(scope: scope, service: service, deletions: deletions)
+            }
+            attach(root); attach(menu.pinned); attach(menu.recent)
+            menu.onModelCreated = { [weak self] model in self?.attach(model) }
+        }
+
+        func prepareMenu() async {
+            await menu.prepare { [weak projectExpansion] in projectExpansion?.isExpanded(id: $0) ?? false }
+        }
+
+        func refreshMenu() async {
+            await menu.refresh { [weak projectExpansion] in projectExpansion?.isExpanded(id: $0) ?? false }
         }
 
         func makeLibrary() -> LibraryModel {
@@ -44,6 +64,8 @@
 
         func invalidate() {
             active = false
+            menu.invalidate()
+            projectExpansion.invalidate()
             for model in models { model.value?.invalidate() }
             for editor in editors { editor.value?.invalidate() }
             models.removeAll(); editors.removeAll()
@@ -76,6 +98,7 @@
             }
             model.onProjectDeleted = { [weak self, weak model] id in
                 guard let self, active else { return }
+                projectExpansion.setExpanded(id: id, expanded: false)
                 for other in models.compactMap(\.value) where other !== model {
                     other.receiveProjectDeletion(id, from: scope)
                 }

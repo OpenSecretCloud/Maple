@@ -11,6 +11,7 @@
         @ObservationIgnored private let accountLinkInbox: AccountLinkInbox
         let client: MapleClient
         let storage: ProtectedChatStore
+        let projectExpansionStore: LibraryProjectExpansionStore
         let speechFiles: TemporarySpeechStore
         let session: SessionController
         let signIn: NativeSignInCoordinator
@@ -21,9 +22,12 @@
         private(set) var entitlements: AccountEntitlements?
         private(set) var deletion: ChatDeletionCoordinator?
         private(set) var preferences: PreferencesController?
+        private(set) var projectExpansion: LibraryProjectExpansionController?
         private(set) var library: LibraryModel?
         private(set) var libraryContext: LibraryContext?
+        private(set) var readyScope: AccountScope?
         private(set) var conversationDetails: [String: Conversation] = [:]
+        private var conversationDetailTickets: [String: UUID] = [:]
         var accountFlow: AccountFlow? { didSet { updatePresentationVisibility() } }
         var menuPresented = false {
             didSet {
@@ -50,10 +54,15 @@
         private var retainedSnapshots: [ChatSnapshot] = []
         private var navigation = UUID()
         private var activatingScope: AccountScope?
+        private(set) var activationFailedScope: AccountScope?
         private var accountCeremonies: [AuthCeremonies] = []
         var foreground = true {
             didSet {
-                if !foreground { dictation?.stopCaptureForNavigation() }
+                if !foreground {
+                    dictation?.stopCaptureForNavigation()
+                    let projectExpansion = self.projectExpansion
+                    Task { await projectExpansion?.flush() }
+                }
                 for runtime in chats.values { runtime.isForeground = foreground }
                 updatePresentationVisibility()
                 if foreground && !oldValue { reconcileAfterForeground() }
@@ -77,11 +86,15 @@
             storage = ProtectedChatStore(
                 root: support.appendingPathComponent("ProtectedDrafts", isDirectory: true),
                 protectionAvailable: UIApplication.shared.isProtectedDataAvailable)
+            projectExpansionStore = LibraryProjectExpansionStore(
+                root: support.appendingPathComponent("LibraryPresentation", isDirectory: true),
+                protectionAvailable: UIApplication.shared.isProtectedDataAvailable)
             speechFiles = TemporarySpeechStore(
                 root: support.appendingPathComponent("TemporarySpeech", isDirectory: true))
             session = SessionController(
                 service: SDKSessionService(client: client),
-                storage: NativeAccountDataLifecycle(drafts: storage, speech: speechFiles))
+                storage: NativeAccountDataLifecycle(
+                    drafts: storage, speech: speechFiles, projectExpansion: projectExpansionStore))
             signIn = NativeSignInCoordinator(
                 session: session,
                 ceremonies: AuthCeremonies(
@@ -100,7 +113,11 @@
                 self.menuPresented = false; self.settingsPresented = false; self.projectSelections = [:]
                 self.deletion?.invalidate(); self.deletion = nil
                 self.libraryContext?.invalidate(); self.libraryContext = nil; self.library = nil
+                self.readyScope = nil
+                let projectExpansion = self.projectExpansion; self.projectExpansion = nil
+                projectExpansion?.invalidate()
                 self.conversationDetails = [:]
+                self.conversationDetailTickets = [:]
                 self.dictation?.invalidate(); self.dictation = nil
                 self.dictationSend.reset()
                 #if DEBUG
@@ -112,6 +129,7 @@
                 self.chats.removeAll(); self.accountAPI = nil; self.selectedKey = ChatSnapshot.newChatKey
                 self.retainedSnapshots = []; self.navigation = UUID()
                 self.activatingScope = nil
+                self.activationFailedScope = nil
                 let details = self.entitlements; self.entitlements = nil
                 let preferences = self.preferences; self.preferences = nil
                 if let listening = self.listening { self.audioRetirements.append(listening) }
@@ -124,6 +142,7 @@
                     } catch { audioFailed = true }
                 }
                 try? await preferences?.retire()
+                try? await projectExpansion?.retire()
                 await details?.retire()
                 if audioFailed { throw ChatStorageError.cleanupRequired }
             }
@@ -158,8 +177,12 @@
         var selectedChat: ChatRuntime? { chats[selectedKey] }
 
         func activate(_ account: AccountSession) async {
-            guard accountAPI == nil, activatingScope != account.scope else { return }
+            guard session.phase == .signedIn, session.account?.scope == account.scope,
+                accountAPI == nil, activatingScope != account.scope
+            else { return }
             activatingScope = account.scope
+            activationFailedScope = nil
+            issue = nil
             defer { if activatingScope == account.scope { activatingScope = nil } }
             do {
                 let api = try await client.accountAPI()
@@ -187,6 +210,11 @@
                 let preferences = PreferencesController(scope: account.scope, store: preferenceStore)
                 self.preferences = preferences
                 await preferences.load()
+                guard session.account?.scope == account.scope else { return }
+                let projectExpansion = LibraryProjectExpansionController(
+                    scope: account.scope, store: projectExpansionStore)
+                self.projectExpansion = projectExpansion
+                await projectExpansion.load()
                 guard session.account?.scope == account.scope else { return }
                 let details = AccountEntitlements(
                     scope: account.scope, isGuest: account.user.loginMethod == "guest",
@@ -255,20 +283,27 @@
                     }
                 }
                 self.dictation = dictation
-                let context = LibraryContext(scope: account.scope, api: api, deletions: coordinator)
+                let context = LibraryContext(
+                    scope: account.scope, api: api, deletions: coordinator,
+                    projectExpansion: projectExpansion)
                 self.libraryContext = context; self.library = context.root
                 context.onConversationsDeleted = { [weak self] ids, all in
                     guard let self, self.session.account?.scope == account.scope else { return }
                     self.retainedSnapshots.removeAll { all || $0.conversationID.map(ids.contains) == true }
                     self.conversationDetails = self.conversationDetails.filter { !all && !ids.contains($0.key) }
+                    self.conversationDetailTickets = self.conversationDetailTickets.filter {
+                        !all && !ids.contains($0.key)
+                    }
                 }
                 context.onConversationUpdated = { [weak self] conversation in
                     guard let self, self.session.account?.scope == account.scope else { return }
                     self.conversationDetails[conversation.id] = conversation
+                    self.conversationDetailTickets[conversation.id] = UUID()
                 }
                 context.onConversationProjectUpdated = { [weak self] ids, projectID in
                     guard let self, self.session.account?.scope == account.scope else { return }
-                    for id in ids where self.conversationDetails[id] != nil {
+                    for id in ids {
+                        self.conversationDetailTickets[id] = UUID()
                         self.conversationDetails[id]?.projectId = projectID
                     }
                 }
@@ -281,11 +316,21 @@
                     let runtime = makeRuntime(account: account, api: api, id: nil)
                     if runtime.loadRecovered(snapshot) { chats[snapshot.storageKey] = runtime }
                 }
+                // Publish the interactive scene only after its first menu pages
+                // and account presentation are ready. Later refreshes retain
+                // these account-owned snapshots rather than rebuilding the menu.
+                async let menuReady: Void = context.prepareMenu()
+                async let detailsReady: Void = details.refresh()
                 await selectChat(nil)
-                await details.refresh()
+                _ = await (menuReady, detailsReady)
+                guard session.account?.scope == account.scope, libraryContext === context,
+                    !Task.isCancelled
+                else { return }
+                readyScope = account.scope
             } catch {
                 guard session.account?.scope == account.scope else { return }
                 issue = .signedOut
+                activationFailedScope = account.scope
             }
         }
 
@@ -328,13 +373,59 @@
         var selectedProjectID: String? {
             get {
                 guard let runtime = selectedChat else { return nil }
-                if let id = runtime.conversationID { return conversationDetails[id]?.projectId }
-                return projectSelections[runtime.snapshot.storageOwner]
+                return projectID(for: runtime)
             }
             set {
                 guard let runtime = selectedChat, runtime.conversationID == nil else { return }
                 projectSelections[runtime.snapshot.storageOwner] = newValue
             }
+        }
+
+        func projectID(for runtime: ChatRuntime) -> String? {
+            guard session.account?.scope == runtime.scope, !runtime.isRetired else { return nil }
+            if let id = runtime.conversationID {
+                if let details = conversationDetails[id] { return details.projectId }
+                if let context = libraryContext, context.scope == runtime.scope {
+                    let cached =
+                        [context.root, context.menu.pinned, context.menu.recent]
+                        + Array(context.menu.projects.values)
+                    for model in cached {
+                        if let conversation = model.conversations.first(where: { $0.id == id }) {
+                            return conversation.projectId
+                        }
+                    }
+                }
+            }
+            return projectSelections[runtime.snapshot.storageOwner]
+        }
+
+        @discardableResult
+        func selectProject(runtime: ChatRuntime, id: String?) async -> Bool {
+            guard let scope = session.account?.scope, runtime.scope == scope,
+                selectedChat === runtime, !runtime.isRetired,
+                let context = libraryContext, context.scope == scope
+            else { return false }
+            let owner = runtime.snapshot.storageOwner
+            if let conversationID = runtime.conversationID {
+                guard deletion?.isConversationDeleted(conversationID) != true else { return false }
+                guard await context.root.moveConversations(ids: [conversationID], projectID: id) else { return false }
+                guard session.account?.scope == scope, libraryContext === context,
+                    selectedChat === runtime, !runtime.isRetired,
+                    runtime.snapshot.storageOwner == owner, runtime.conversationID == conversationID,
+                    deletion?.isConversationDeleted(conversationID) != true, !Task.isCancelled
+                else { return false }
+                // The context callback updates every menu snapshot. A metadata
+                // fetch may still be absent after offline navigation, so keep
+                // this runtime's acknowledged destination available as well.
+                projectSelections[owner] = id
+                conversationDetailTickets[conversationID] = UUID()
+                conversationDetails[conversationID]?.projectId = id
+                return true
+            }
+            // Draft assignment has no suspension and belongs to this exact
+            // runtime, independently of another chat's project selection.
+            projectSelections[owner] = id
+            return true
         }
 
         func selectNewChat(projectID: String? = nil) async {
@@ -351,10 +442,13 @@
         }
 
         private func refreshConversationDetails(_ id: String, account: AccountSession, api: ResearchAPI) async {
+            guard session.account?.scope == account.scope, deletion?.isConversationDeleted(id) != true else { return }
+            let ticket = UUID()
+            conversationDetailTickets[id] = ticket
             do {
                 let conversation = try await api.getConversation(id: id)
                 guard session.account?.scope == account.scope, conversation.id == id,
-                    deletion?.isConversationDeleted(id) != true
+                    deletion?.isConversationDeleted(id) != true, conversationDetailTickets[id] == ticket
                 else { return }
                 conversationDetails[id] = conversation
                 deletion?.updateProject(conversationID: id, projectID: conversation.projectId)
@@ -542,6 +636,7 @@
                 scope: session.account?.scope, accountEmail: session.account?.user.email)
             if let scope = session.account?.scope {
                 let preferences = self.preferences
+                let projectExpansion = self.projectExpansion
                 for previous in accountCeremonies { previous.invalidate() }
                 accountCeremonies.removeAll()
                 accountCeremonies.append(ceremony)
@@ -556,7 +651,10 @@
                         throw AuthCeremonyIssue.changedAccount
                     }
                     let owned = try coordinator.begin(.all); lease = owned
-                    do { try await coordinator.quiesce(owned) } catch {
+                    do {
+                        try await coordinator.quiesce(owned)
+                        try await projectExpansion?.prepareAccountDeletion()
+                    } catch {
                         coordinator.release(owned); lease = nil; throw error
                     }
                 }
@@ -569,6 +667,11 @@
                     }
                     // The SDK already revoked confirmed-deleted authority. The
                     // session owns retryable file cleanup, including late success.
+                    if deleted {
+                        try? await projectExpansion?.retire(removePersisted: true)
+                    } else {
+                        try? await projectExpansion?.cancelAccountDeletion()
+                    }
                     if deleted, self?.session.account?.scope == scope {
                         try? await preferences?.retire(removePersisted: true)
                         await self?.session.signOut()
@@ -581,7 +684,11 @@
         func protectedDataChanged(_ available: Bool) async {
             if !available { dictation?.stopCaptureForNavigation() }
             await storage.setProtectedDataAvailable(available)
+            await projectExpansionStore.setProtectedDataAvailable(available)
             if available {
+                try? await projectExpansionStore.startupCleanup()
+                await projectExpansion?.load()
+                projectExpansion?.retrySave()
                 for runtime in chats.values { await runtime.saveDraft() }
             }
         }

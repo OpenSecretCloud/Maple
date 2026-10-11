@@ -1,6 +1,30 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Collapsed": {
+      "comment": "VoiceOver expansion state for a transcript tool details button.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapsed"
+          }
+        }
+      }
+    },
+    "Expanded": {
+      "comment": "VoiceOver expansion state for a transcript tool details button.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expanded"
+          }
+        }
+      }
+    },
     "Account access is unavailable. Your draft is preserved.": {
       "comment": "Account-access status shown beside the composer; preserve the distinction between unavailable details and a confirmed restriction.",
       "extractionState": "manual",
@@ -945,6 +969,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Preparing…"
+          }
+        }
+      }
+    },
+    "Private conversation": {
+      "comment": "VoiceOver label for the subtle lock beside the chat title. Describes a private conversation without adding visible explanatory text.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Private conversation"
           }
         }
       }

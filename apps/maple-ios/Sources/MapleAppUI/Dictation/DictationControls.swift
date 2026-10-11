@@ -45,6 +45,7 @@
                     Button(action: { coordinator.cancel(runtime: runtime) }) {
                         Image(systemName: "xmark")
                             .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityLabel(Text("Discard", tableName: "Dictation", bundle: .module))
                     .accessibilityIdentifier("dictation.discard")
@@ -118,6 +119,8 @@
                 } icon: {
                     Image(systemName: recording ? "stop.fill" : "mic")
                 }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .disabled(
                 !isEnabled

@@ -15,12 +15,16 @@
         @State private var secureStorageFailed = false
         @State private var keychainDiagnostic: OSStatus?
         @Environment(\.scenePhase) private var scenePhase
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var launchTransition = MapleLaunchTransition()
 
         public init() {}
 
         public var body: some View {
             #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--maple-renderer-fixture") {
+                if ProcessInfo.processInfo.arguments.contains("--maple-launch-transition-fixture") {
+                    MapleLaunchTransitionFixture()
+                } else if ProcessInfo.processInfo.arguments.contains("--maple-renderer-fixture") {
                     RendererFixtureView()
                 } else if ProcessInfo.processInfo.arguments.contains("--maple-shipping-viewport-fixture") {
                     ShippingViewportFixtureView()
@@ -112,6 +116,26 @@
             .font(MapleTypography.body)
             .tint(MapleAccent.foreground)
             .background(MapleSurface.canvas.ignoresSafeArea())
+            .environment(\.mapleLaunchTransition, launchTransition)
+            .overlay {
+                if !launchTransition.finished { MapleLaunchOverlay(launch: launchTransition) }
+            }
+            .onChange(of: environment?.readyScope) { _, scope in
+                launchTransition.accountReady(
+                    scope != nil && scope == environment?.session.account?.scope,
+                    reduceMotion: reduceMotion)
+            }
+            .onChange(of: environment?.session.phase) { _, phase in
+                if phase == .signedOut || phase == .unavailable { launchTransition.finishWithoutChat() }
+            }
+            .onChange(of: configurationFailed) { _, failed in
+                if failed { launchTransition.finishWithoutChat() }
+            }
+            .onChange(of: environment?.activationFailedScope) { _, scope in
+                if scope != nil, scope == environment?.session.account?.scope {
+                    launchTransition.finishWithoutChat()
+                }
+            }
             .task {
                 guard environment == nil, !configurationFailed else { return }
                 do {
@@ -192,10 +216,37 @@
             Group {
                 switch environment.session.phase {
                 case .signedIn:
-                    ChatScreen(environment: environment)
-                        .task(id: environment.session.account?.scope) {
-                            if let account = environment.session.account { await environment.activate(account) }
+                    Group {
+                        if environment.readyScope == environment.session.account?.scope,
+                            environment.readyScope != nil
+                        {
+                            ChatScreen(environment: environment)
+                        } else if let account = environment.session.account,
+                            environment.activationFailedScope == account.scope
+                        {
+                            ContentUnavailableView {
+                                Label(
+                                    MapleStrings.text("Unable to open your account"),
+                                    systemImage: "wifi.exclamationmark")
+                            } description: {
+                                Text(
+                                    MapleStrings.text(
+                                        "Your saved work is preserved. Try again when your connection and protected storage are available."
+                                    ))
+                            } actions: {
+                                Button(MapleStrings.text("Try again")) {
+                                    Task { await environment.activate(account) }
+                                }
+                                .buttonStyle(MaplePrimaryButtonStyle())
+                                .accessibilityIdentifier("startup.retry")
+                            }
+                        } else {
+                            MapleLaunchSurface()
                         }
+                    }
+                    .task(id: environment.session.account?.scope) {
+                        if let account = environment.session.account { await environment.activate(account) }
+                    }
                 case .signedOut, .authenticating:
                     SignInView(
                         session: environment.session, coordinator: environment.signIn,
@@ -238,13 +289,4 @@
         }
     }
 
-    private struct MapleLaunchSurface: View {
-        var body: some View {
-            MapleWordmark()
-                .frame(width: 130, height: 28)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(MapleSurface.canvas.ignoresSafeArea())
-                .accessibilityLabel(Text(verbatim: "Maple"))
-        }
-    }
 #endif

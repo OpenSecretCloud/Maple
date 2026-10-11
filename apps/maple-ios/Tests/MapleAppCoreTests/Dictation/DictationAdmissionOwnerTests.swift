@@ -19,7 +19,7 @@ import Testing
         #expect(!coordinator.start(runtime: runtime))
         #expect(owners.count == 1)
         await permission.release()
-        await dictationWait { coordinator.statuses.isEmpty }
+        try await dictationWait { coordinator.statuses.isEmpty }
         #expect(capture.starts == 0 && owners == [expected])
         #expect(runtime.draftText == "Owned B")
         coordinator.invalidate(); runtime.invalidate()

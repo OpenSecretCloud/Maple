@@ -3,14 +3,29 @@
     import UIKit
 
     @MainActor enum MapleAccent {
-        // Maple 500 is the fill. Dark text keeps that exact brand color readable.
+        // https://www.trymaple.ai/brand: Maple 500 is the core accent. Use
+        // supplied logo colors for contrast instead of a darker primary shade.
         static let prominent = Color(red: 1, green: 151 / 255, blue: 113 / 255)
         static let onProminent = Color(red: 23 / 255, green: 23 / 255, blue: 23 / 255)
-        static let foreground = adaptive(light: 0xA8_35_15, dark: 0xFF_97_71)
+        static let foreground = prominent
+        static let action = actionColor()
 
-        // System-owned filled controls choose their own white label. Keep their
-        // behavior and use the contrast-safe darker member of the same palette.
-        static let nativeFilled = Color(red: 168 / 255, green: 53 / 255, blue: 21 / 255)
+        // System-owned filled controls can choose a white label. Use the
+        // documented dark ground there; custom primary buttons use peach with
+        // dark text. Both treatments preserve readable labels.
+        static let nativeFilled = onProminent
+
+        nonisolated private static func actionColor() -> Color {
+            Color(
+                uiColor: UIColor { traits in
+                    if traits.accessibilityContrast == .high {
+                        return traits.userInterfaceStyle == .dark
+                            ? UIColor(red: 247 / 255, green: 247 / 255, blue: 249 / 255, alpha: 1)
+                            : UIColor(red: 23 / 255, green: 23 / 255, blue: 23 / 255, alpha: 1)
+                    }
+                    return UIColor(red: 1, green: 151 / 255, blue: 113 / 255, alpha: 1)
+                })
+        }
 
         // UIKit may resolve this pure color provider during background rendering.
         // Keep its closure free of inherited main-actor isolation.
@@ -71,7 +86,7 @@
         var body: some View {
             Image("MapleWordmark", bundle: .module)
                 .renderingMode(.template).resizable().scaledToFit()
-                .foregroundStyle(.primary)
+                .foregroundStyle(MapleAccent.adaptive(light: 0x17_17_17, dark: 0xF7_F7_F9))
         }
     }
 #endif

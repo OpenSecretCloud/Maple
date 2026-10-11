@@ -46,85 +46,107 @@ import Testing
 }
 
 @MainActor @Suite struct DictationWorkflowTests {
-    @Test func pendingTextUsesStopMarkerDespiteLaterCaretAndEditsAndNeverSends() async {
+    @Test func pendingTextUsesStopMarkerDespiteLaterCaretAndEditsAndNeverSends() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Hello world"; dictationEditor(runtime, dictation, offset: 5)
         #expect(dictation.start(runtime: runtime)); #expect(!runtime.canSend)
-        await dictationWait { capture.starts == 1 }
+        try await dictationWait { capture.starts == 1 }
         runtime.draftText = "Hello great world"; dictationEditor(runtime, dictation, offset: 11)
         dictation.stop(runtime: runtime); #expect(capture.stops == 1)
-        await service.waitForCalls()
+        try await service.waitForCalls()
         runtime.draftText = "Dear Hello great world"; dictationEditor(runtime, dictation, offset: 0)
         await service.complete(text: "voice")
-        await dictationWait { dictation.statuses.isEmpty }
+        try await dictationWait { dictation.statuses.isEmpty }
         #expect(runtime.draftText == "Dear Hello great voice world")
         #expect(runtime.canSend && !runtime.hasUnresolvedRun)
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func completedResultWaitsForIMECommitAndRebasesCommittedSelectionReplacement() async {
+    @Test func completedResultWaitsForIMECommitAndRebasesCommittedSelectionReplacement() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Before after"; dictationEditor(runtime, dictation, offset: 6)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls()
         runtime.draftText = "前 after"
         dictationEditor(runtime, dictation, offset: 1, marked: NSRange(location: 0, length: 1))
         await service.complete(text: "voice")
-        await dictationWait { dictation.status(for: runtime)?.phase == .waitingForComposition }
+        try await dictationWait { dictation.status(for: runtime)?.phase == .waitingForComposition }
         #expect(runtime.draftText == "前 after" && !runtime.canSend)
         runtime.draftText = "前文 after"; dictationEditor(runtime, dictation, offset: 2)
         #expect(runtime.draftText == "前文 voice after" && runtime.canSend)
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func cancellationRejectsLateResultWithoutChangingTextImagesOrAnotherBusyOwner() async {
+    @Test func cancellationRejectsLateResultWithoutChangingTextImagesOrAnotherBusyOwner() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.updateDraft(
             ChatDraft(
                 id: runtime.snapshot.draft.id, text: "Keep",
                 images: [ChatImageAttachment(data: Data([1]), contentType: "image/png")]))
         let before = runtime.snapshot.draft; let unrelated = UUID(); runtime.busyDraftIDs.insert(unrelated)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls()
         dictation.cancel(runtime: runtime); await service.complete()
         for _ in 0..<20 { await Task.yield() }
         #expect(runtime.snapshot.draft == before && runtime.busyDraftIDs == [unrelated])
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func permissionDenialAndNavigationDuringPromptNeverStartCapture() async {
+    @Test func permissionDenialAndNavigationDuringPromptNeverStartCapture() async throws {
         let (runtime, dictation, capture, _, _) = dictationFixture()
         let gate = ChatTestGate(); capture.permissionGate = gate; runtime.draftText = "Keep"
         #expect(dictation.start(runtime: runtime)); await gate.waitForArrival()
         dictation.stopCaptureForNavigation(); await gate.release()
-        await dictationWait { dictation.statuses.isEmpty }
+        try await dictationWait { dictation.statuses.isEmpty }
         #expect(capture.starts == 0 && runtime.canSend)
         capture.permissionGate = nil; capture.permission = false
-        #expect(dictation.start(runtime: runtime)); await dictationWait { dictation.statuses.isEmpty }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { dictation.statuses.isEmpty }
         #expect(dictation.lastIssue == .permissionDenied && capture.starts == 0 && runtime.draftText == "Keep")
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func retryUsesSameMemoryClipAndDiscardReleasesOwner() async {
+    @Test func retryUsesSameMemoryClipAndDiscardReleasesOwner() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Keep"
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls(); await service.complete(fails: true)
-        await dictationWait { dictation.status(for: runtime)?.phase == .failed }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls(); await service.complete(fails: true)
+        try await dictationWait { dictation.status(for: runtime)?.phase == .failed }
         #expect(runtime.draftText == "Keep" && !runtime.canSend)
-        dictation.retry(runtime: runtime); await service.waitForCalls(2)
-        let clips = await service.clips; #expect(clips[0] == clips[1] && capture.starts == 1)
+        dictation.retry(runtime: runtime); try await service.waitForCalls(2)
+        let clips = await service.clips; try #require(clips.count == 2)
+        #expect(clips[0] == clips[1] && capture.starts == 1)
         dictation.cancel(runtime: runtime); await service.complete(1)
         #expect(runtime.canSend && runtime.draftText == "Keep")
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func limitStopsOnceAndLogoutRejectsPendingResultAndSameUserRelogin() async {
+    @Test func failedMicrophoneStartHasDraftScopedRecoveryAndReleasesItsBusyOwner() async throws {
+        let (runtime, dictation, capture, service, _) = dictationFixture()
+        runtime.draftText = "Keep this draft"
+        let draft = runtime.snapshot.draft
+        let unrelated = UUID(); runtime.busyDraftIDs.insert(unrelated)
+        capture.failStart = true
+        #expect(dictation.start(runtime: runtime))
+        try await dictationWait { dictation.statuses.isEmpty }
+        #expect(dictation.issue(for: runtime) == .captureUnavailable)
+        #expect(runtime.snapshot.draft == draft && runtime.busyDraftIDs == [unrelated])
+        #expect(capture.active == nil)
+        #expect(await service.clips.isEmpty)
+        dictation.dismissIssue(); capture.failStart = false
+        #expect(dictation.start(runtime: runtime))
+        try await dictationWait { capture.starts == 1 }
+        #expect(dictation.issue(for: runtime) == nil && capture.active != nil)
+        dictation.cancel(runtime: runtime)
+        #expect(runtime.snapshot.draft == draft && runtime.busyDraftIDs == [unrelated])
+        dictation.invalidate(); runtime.invalidate()
+    }
+
+    @Test func limitStopsOnceAndLogoutRejectsPendingResultAndSameUserRelogin() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Old account draft"
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
         capture.limits?(); capture.limits?(); #expect(capture.stops == 1)
-        await service.waitForCalls()
+        try await service.waitForCalls()
         dictation.invalidate(); runtime.invalidate()
         let (replacement, _, _) = ChatRuntimeTests().fixture()
         replacement.draftText = "New account generation"
@@ -135,13 +157,13 @@ import Testing
         replacement.invalidate()
     }
 
-    @Test func protectedSaveFailureKeepsInsertedResultInMemoryWithoutSavingAudio() async {
+    @Test func protectedSaveFailureKeepsInsertedResultInMemoryWithoutSavingAudio() async throws {
         let (runtime, dictation, capture, service, store) = dictationFixture()
         runtime.draftText = "Keep"; await runtime.saveDraft()
         await store.configure(fail: true)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls(); await service.complete(text: "voice")
-        await dictationWait { dictation.statuses.isEmpty }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls(); await service.complete(text: "voice")
+        try await dictationWait { dictation.statuses.isEmpty }
         await runtime.saveDraft()
         #expect(runtime.draftText == "Keep voice" && runtime.lastIssue == .storageUnavailable)
         #expect(await store.recorded("conversation")?.draft.text == "Keep")
@@ -150,34 +172,34 @@ import Testing
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func staleEditorSnapshotsCannotMoveStopMarker() async {
+    @Test func staleEditorSnapshotsCannotMoveStopMarker() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Before after"; dictationEditor(runtime, dictation, offset: 6)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls()
         dictation.updateEditor(
             runtime: runtime, draftID: runtime.snapshot.draft.id,
             state: DictationEditorState(text: "Outdated", selectionUTF16: NSRange(location: 0, length: 0)))
-        await service.complete(text: "voice"); await dictationWait { dictation.statuses.isEmpty }
+        await service.complete(text: "voice"); try await dictationWait { dictation.statuses.isEmpty }
         #expect(runtime.draftText == "Before voice after")
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func retiredRuntimeCannotStartMicrophoneAfterPermissionFinishes() async {
+    @Test func retiredRuntimeCannotStartMicrophoneAfterPermissionFinishes() async throws {
         let (runtime, dictation, capture, _, _) = dictationFixture()
         let gate = ChatTestGate(); capture.permissionGate = gate
         runtime.draftText = "Retired"
         #expect(dictation.start(runtime: runtime)); await gate.waitForArrival()
         runtime.invalidate(); await gate.release()
-        await dictationWait { dictation.statuses.isEmpty }
+        try await dictationWait { dictation.statuses.isEmpty }
         #expect(capture.starts == 0 && !dictation.start(runtime: runtime))
         dictation.invalidate()
     }
 
-    @Test func runtimeRetirementSynchronouslyStopsCaptureAndMatchedDeletionCancelsOnlyItsOwner() async {
+    @Test func runtimeRetirementSynchronouslyStopsCaptureAndMatchedDeletionCancelsOnlyItsOwner() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Local draft"
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
         let fence = UUID(); runtime.beginDeletionFence(fence)
         #expect(capture.active != nil)
         runtime.onQuiesceForDeletion = {
@@ -187,17 +209,17 @@ import Testing
         #expect(capture.active == nil && dictation.statuses.isEmpty)
         #expect(await service.clips.isEmpty)
         runtime.releaseDeletionFence(fence)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 2 }
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 2 }
         runtime.invalidate()
         #expect(capture.active == nil && dictation.statuses.isEmpty)
         dictation.invalidate()
     }
 
-    @Test func exactCoalescedEditsCommitCompositionBeforeResultInsertion() async {
+    @Test func exactCoalescedEditsCommitCompositionBeforeResultInsertion() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "aaaa"; dictationEditor(runtime, dictation, offset: 2)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls()
         runtime.draftText = "aaa"
         dictation.updateEditor(
             runtime: runtime, draftID: runtime.snapshot.draft.id,
@@ -207,7 +229,7 @@ import Testing
             edits: [DictationTextEdit(beforeText: "aaaa", rangeUTF16: NSRange(location: 0, length: 1), replacement: "")]
         )
         await service.complete(text: "voice")
-        await dictationWait { dictation.status(for: runtime)?.phase == .waitingForComposition }
+        try await dictationWait { dictation.status(for: runtime)?.phase == .waitingForComposition }
         runtime.draftText = "前aaa"
         dictation.updateEditor(
             runtime: runtime, draftID: runtime.snapshot.draft.id,
@@ -220,11 +242,11 @@ import Testing
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func unmatchedInteractiveTransactionRequiresExplicitPositionInsteadOfGuessing() async {
+    @Test func unmatchedInteractiveTransactionRequiresExplicitPositionInsteadOfGuessing() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "aaaa"; dictationEditor(runtime, dictation, offset: 2)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls()
         runtime.draftText = "aaa"
         dictation.updateEditor(
             runtime: runtime, draftID: runtime.snapshot.draft.id,
@@ -234,14 +256,14 @@ import Testing
                     beforeText: "aaaa", rangeUTF16: NSRange(location: NSNotFound, length: 0), replacement: "")
             ])
         await service.complete(text: "voice")
-        await dictationWait { dictation.status(for: runtime)?.phase == .waitingForInsertionPoint }
+        try await dictationWait { dictation.status(for: runtime)?.phase == .waitingForInsertionPoint }
         #expect(runtime.draftText == "aaa" && !runtime.canSend)
         dictation.insertAtCurrentPosition(runtime: runtime)
         #expect(runtime.draftText == "voice aaa" && runtime.canSend)
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func retainedClipsAreBoundedAndForeignAccountCannotUseTheCapture() async {
+    @Test func retainedClipsAreBoundedAndForeignAccountCannotUseTheCapture() async throws {
         let (first, dictation, capture, service, store) = dictationFixture()
         var runtimes = [first]
         for index in 1...4 {
@@ -253,8 +275,8 @@ import Testing
         for index in 0..<4 {
             runtimes[index].draftText = "Preserve \(index)"
             #expect(dictation.start(runtime: runtimes[index]))
-            await dictationWait { capture.starts == index + 1 }
-            dictation.stop(runtime: runtimes[index]); await service.waitForCalls(index + 1)
+            try await dictationWait { capture.starts == index + 1 }
+            dictation.stop(runtime: runtimes[index]); try await service.waitForCalls(index + 1)
         }
         runtimes[4].draftText = "Keep fifth draft"
         #expect(!dictation.start(runtime: runtimes[4]))
@@ -264,32 +286,32 @@ import Testing
         foreign.draftText = "Other account generation"
         #expect(!dictation.start(runtime: foreign))
         for index in 0..<4 { await service.complete(index, fails: true) }
-        await dictationWait { dictation.statuses.values.allSatisfy { $0.phase == .failed } }
+        try await dictationWait { dictation.statuses.values.allSatisfy { $0.phase == .failed } }
         dictation.invalidate()
         #expect(runtimes.allSatisfy { $0.busyDraftIDs.isEmpty } && capture.active == nil)
         for runtime in runtimes { runtime.invalidate() }; foreign.invalidate()
     }
 
-    @Test func insertionPreservesTheCaretMovedAfterStopRelativeToItsSurroundingText() async {
+    @Test func insertionPreservesTheCaretMovedAfterStopRelativeToItsSurroundingText() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Hello world"; let owner = runtime.snapshot.draft.id
         dictationEditor(runtime, dictation, offset: 5)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls()
         dictationEditor(runtime, dictation, offset: 11)
-        await service.complete(text: "voice"); await dictationWait { dictation.statuses.isEmpty }
+        await service.complete(text: "voice"); try await dictationWait { dictation.statuses.isEmpty }
         let editor = dictation.editorState(runtime: runtime, draftID: owner)
         #expect(runtime.draftText == "Hello voice world")
         #expect(editor?.text == runtime.draftText && editor?.selectionUTF16 == NSRange(location: 17, length: 0))
         dictation.invalidate(); runtime.invalidate()
     }
 
-    @Test func anotherRuntimeWithClonedDraftCannotRedirectTheEditorOrItsMarker() async {
+    @Test func anotherRuntimeWithClonedDraftCannotRedirectTheEditorOrItsMarker() async throws {
         let (runtime, dictation, capture, service, store) = dictationFixture()
         runtime.draftText = "Hello world"; let owner = runtime.snapshot.draft.id
         dictationEditor(runtime, dictation, offset: 5)
-        #expect(dictation.start(runtime: runtime)); await dictationWait { capture.starts == 1 }
-        dictation.stop(runtime: runtime); await service.waitForCalls()
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls()
         let clone = ChatRuntime(scope: runtime.scope, service: ChatFixtureService(store: store), persistence: store)
         #expect(clone.loadRetainedSnapshot(runtime.snapshot))
         dictation.updateEditor(
@@ -298,7 +320,7 @@ import Testing
                 text: runtime.draftText, selectionUTF16: NSRange(location: 0, length: 0),
                 markedRangeUTF16: NSRange(location: 0, length: 1)))
         #expect(dictation.editorState(runtime: clone, draftID: owner) == nil)
-        await service.complete(text: "voice"); await dictationWait { dictation.statuses.isEmpty }
+        await service.complete(text: "voice"); try await dictationWait { dictation.statuses.isEmpty }
         #expect(runtime.draftText == "Hello voice world" && clone.draftText == "Hello world")
         dictation.invalidate(); runtime.invalidate(); clone.invalidate()
     }

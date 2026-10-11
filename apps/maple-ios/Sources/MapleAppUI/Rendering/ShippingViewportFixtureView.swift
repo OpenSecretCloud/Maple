@@ -34,6 +34,7 @@
                 }
             }
             .font(.custom("Manrope-Regular", size: 17, relativeTo: .body))
+            .tint(MapleAccent.foreground)
             .task {
                 guard model == nil, !failed else { return }
                 do {
@@ -62,6 +63,13 @@
                                     account: model.account, preferences: model.preferences,
                                     fixtureProjectionIsCurrent: { [weak model] scope, owner in
                                         model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
+                                    }, fixtureOptions: model.optionsContext,
+                                    fixtureScrollMetricsChanged: { [weak model] metrics in
+                                        guard
+                                            ProcessInfo.processInfo.arguments.contains(
+                                                "--maple-shipping-follow-scroll-proof")
+                                        else { return }
+                                        model?.scrollMetrics = metrics
                                     }
                                 )
                             }
@@ -127,7 +135,7 @@
                         account: model.account, preferences: model.preferences,
                         fixtureProjectionIsCurrent: { [weak model] scope, owner in
                             model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
-                        }
+                        }, fixtureOptions: model.optionsContext
                     )
                     .id(owner)
                     .background(MapleSurface.canvas)
@@ -214,7 +222,7 @@
                         account: model.account, preferences: model.preferences,
                         fixtureProjectionIsCurrent: { [weak model] scope, owner in
                             model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
-                        }
+                        }, fixtureOptions: model.optionsContext
                     )
                     .id(selected.snapshot.storageOwner)
                 }
@@ -290,16 +298,28 @@
                     Button("Finish") { Task { await model.finish() } }
                         .accessibilityIdentifier("shipping-viewport.finish")
                         .disabled(model.chunks != 40 || model.emitting || !model.runtime.hasUnresolvedRun)
+                    if ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof") {
+                        Button("Append item") { Task { await model.appendReplyItem() } }
+                            .accessibilityIdentifier("shipping-viewport.append-item")
+                            .disabled(model.chunks != 40 || model.emitting || !model.runtime.hasUnresolvedRun)
+                    }
                 }.font(.caption)
                 Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
                     .accessibilityIdentifier("shipping-viewport.summary")
+                if ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof") {
+                    Text("Synthetic native viewport geometry").font(.caption2)
+                        .accessibilityIdentifier("shipping-viewport.scroll-metrics")
+                        .accessibilityValue(model.scrollMetricsJSON)
+                }
                 if resizeProof {
                     Text("Window ownership").font(.caption2)
                         .accessibilityIdentifier("shipping-window.ownership")
                         .accessibilityValue(model.windowOwnership)
                 }
             }
-            .frame(height: resizeProof ? 80 : 60)
+            .frame(
+                height: resizeProof
+                    || ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof") ? 80 : 60)
         }
     }
 
@@ -323,8 +343,13 @@
         let runtime: ChatRuntime
         let account: AccountEntitlements
         let preferences: PreferencesController
+        let optionsLibrary: LibraryModel
+        private let optionsService: LibraryControlsFixtureService
+        private var optionsEditors: [InstructionEditor] = []
+        private var selectedOptionsProjects: [UUID: String] = [:]
         private let service = ShippingViewportService(
-            complexMarkup: ProcessInfo.processInfo.arguments.contains("--maple-shipping-complex-markdown-proof"))
+            complexMarkup: ProcessInfo.processInfo.arguments.contains("--maple-shipping-complex-markdown-proof"),
+            transcriptRows: ProcessInfo.processInfo.arguments.contains("--maple-shipping-transcript-rows-proof"))
         private let store: ShippingViewportStore
         let draftLoadProof: Bool
         let compactProjectionProof: Bool
@@ -340,6 +365,8 @@
         var started = false
         var emitting = false
         var chunks = 0
+        var appendedItems = 0
+        var scrollMetrics: TranscriptViewportMetrics?
         var failed = false
         @ObservationIgnored private var streamTask: Task<Void, Never>?
 
@@ -371,17 +398,47 @@
             let entitlements = ShippingViewportEntitlements()
             account = AccountEntitlements(scope: scope, isGuest: false, billing: entitlements, catalog: entitlements)
             preferences = PreferencesController(scope: scope, store: ShippingViewportPreferences())
+            let optionsService = LibraryControlsFixtureService(
+                failPage: false, failDelete: false, dragProof: false, optionsProof: true)
+            self.optionsService = optionsService
+            optionsLibrary = LibraryModel(
+                scope: scope, service: optionsService,
+                deletions: ChatDeletionCoordinator(
+                    scope: scope, retained: [], service: optionsService, persistence: store))
             runtime.isVisible = true
+        }
+
+        var optionsContext: ChatOptionsFixtureContext {
+            let scope = account.scope, service = optionsService, owner = selectedProjection.snapshot.storageOwner
+            return ChatOptionsFixtureContext(
+                library: optionsLibrary,
+                projectID: { [weak self] in self?.selectedOptionsProjects[owner] },
+                makeInstructionEditor: { [weak self] destination in
+                    let editor = InstructionEditor(scope: scope, destination: destination, service: service)
+                    guard let self, projectionIsCurrent(scope: scope, storageOwner: owner) else {
+                        editor.invalidate(); return editor
+                    }
+                    optionsEditors.append(editor); return editor
+                },
+                selectProject: { [weak self] id in
+                    guard let self, projectionIsCurrent(scope: scope, storageOwner: owner) else { return false }
+                    selectedOptionsProjects[owner] = id; return true
+                })
         }
 
         var summary: String {
             "Ready \(ready ? 1 : 0); older \(runtime.isLoadingOlder ? 1 : 0); messages \(runtime.messages.count); chunks \(chunks); running \(runtime.hasUnresolvedRun ? 1 : 0); failed \(failed ? 1 : 0)"
+        }
+        var scrollMetricsJSON: String {
+            guard let scrollMetrics, let data = try? JSONEncoder().encode(scrollMetrics) else { return "{}" }
+            return String(data: data, encoding: .utf8) ?? "{}"
         }
         func prepare() async {
             guard !retired else { return }
             await preferences.load()
             guard !retired, !Task.isCancelled else { return }
             await account.refresh()
+            await optionsLibrary.loadProjects()
             guard !retired, !Task.isCancelled else { return }
             if draftLoadProof {
                 await store.seed(
@@ -497,10 +554,22 @@
         func finish() async {
             do { try await service.finish() } catch { failed = true }
         }
+        func appendReplyItem() async {
+            guard ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof"),
+                !retired, !emitting, chunks == 40, runtime.phase == .streaming
+            else { return }
+            do {
+                try await service.appendReplyItem(index: appendedItems)
+                appendedItems += 1
+            } catch { failed = true }
+        }
         func retire() {
             guard !retired else { return }
             retired = true; draftLoadTask?.cancel(); streamTask?.cancel(); runtime.invalidate()
             cachedProjection?.invalidate()
+            optionsLibrary.invalidate()
+            for editor in optionsEditors { editor.invalidate() }
+            optionsEditors.removeAll()
             Task {
                 await store.cancelInitialLoad(); await service.abort()
             }
@@ -510,12 +579,15 @@
     private actor ShippingViewportService: ChatServing {
         static let chatID = "synthetic-viewport-chat"
         private let complexMarkup: Bool
+        private let transcriptRows: Bool
         private var older: CheckedContinuation<APIPage<ConversationItem>, Error>?
         private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
         private var text = "Synthetic live reply."
         private var retired = false
 
-        init(complexMarkup: Bool = false) { self.complexMarkup = complexMarkup }
+        init(complexMarkup: Bool = false, transcriptRows: Bool = false) {
+            self.complexMarkup = complexMarkup; self.transcriptRows = transcriptRows
+        }
 
         func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) throws
             -> Conversation
@@ -529,13 +601,47 @@
             guard !retired, conversationId == Self.chatID, parameters.order == .desc else {
                 throw ChatIssue.historyUnavailable
             }
-            if parameters.after == nil { return Self.page(20..<24, hasMore: true, complexMarkup: complexMarkup) }
+            if parameters.after == nil {
+                return transcriptRows
+                    ? try Self.transcriptPage() : Self.page(20..<24, hasMore: true, complexMarkup: complexMarkup)
+            }
             guard parameters.after == "viewport-user-20", older == nil else { throw ChatIssue.historyUnavailable }
             return try await withCheckedThrowingContinuation { older = $0 }
         }
         func releaseOlder() {
             let pending = older; older = nil
             pending?.resume(returning: Self.page(10..<20, hasMore: false, complexMarkup: complexMarkup))
+        }
+        /// Decode both API representations through the SDK item model. A
+        /// conversation page uses function_call; retrieved Responses output
+        /// uses tool_call. Both preserve string arguments and call_id pairing.
+        private static func transcriptPage() throws -> APIPage<ConversationItem> {
+            let json = #"""
+                [
+                  {"id":"viewport-user-20","type":"message","status":"completed","role":"user",
+                   "content":[{"type":"input_text","text":"A synthetic message on the right"}]},
+                  {"id":"viewport-reasoning-20","type":"reasoning","status":"completed",
+                   "content":[{"type":"reasoning_text","text":"Synthetic tool research reasoning"}]},
+                  {"id":"viewport-search-20","response_id":"synthetic-response","type":"function_call",
+                   "status":"completed","role":"assistant","call_id":"synthetic-search","name":"web_search",
+                   "arguments":"{\"query\":\"synthetic garden\"}"},
+                  {"id":"viewport-search-result-20","response_id":"synthetic-response","type":"function_call_output",
+                   "status":"completed","call_id":"synthetic-search","output":"Synthetic searchable garden result"},
+                  {"id":"viewport-native-search-20","type":"web_search_call","status":"completed","role":"assistant"},
+                  {"id":"viewport-open-20","response_id":"synthetic-response","type":"tool_call",
+                   "status":"completed","role":"assistant","call_id":"synthetic-open","name":"open_urls",
+                   "arguments":"{\"urls\":[\"https://example.com/garden\"]}"},
+                  {"id":"viewport-open-result-20","response_id":"synthetic-response","type":"tool_output",
+                   "status":"completed","call_id":"synthetic-open","output":"Synthetic opened page contents"},
+                  {"id":"viewport-assistant-20","type":"message","status":"completed","role":"assistant",
+                   "content":[{"type":"output_text","text":"The synthetic research reply stays on the left."}]}
+                ]
+                """#
+            let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let ascending = try decoder.decode([ConversationItem].self, from: Data(json.utf8))
+            return APIPage(
+                data: Array(ascending.reversed()), firstId: ascending.last?.id,
+                lastId: ascending.first?.id, hasMore: false)
         }
         private static func page(_ indices: Range<Int>, hasMore: Bool, complexMarkup: Bool) -> APIPage<ConversationItem>
         {
@@ -620,6 +726,21 @@
             guard !retired, let current = stream else { throw CancellationError() }
             current.yield(.completed(try lifecycle(status: .completed, output: [assistant(status: "completed")])))
             current.finish(); stream = nil
+        }
+        func appendReplyItem(index: Int) throws {
+            guard !retired, let stream else { throw CancellationError() }
+            let item = ConversationItem(
+                id: "viewport-follow-item-\(index)", responseId: "viewport-response", type: "message",
+                status: "in_progress", role: "assistant",
+                content: [
+                    MessageContent(
+                        type: "output_text",
+                        text: String(
+                            repeating: "A synthetic appended reply block verifies following at the bottom. ", count: 12)
+                    )
+                ])
+            struct Item: Encodable { let outputIndex: Int; let item: ConversationItem }
+            stream.yield(.outputItemAdded(try event(Item(outputIndex: index + 1, item: item))))
         }
         private func assistant(status: String) -> ConversationItem {
             ConversationItem(
@@ -709,21 +830,42 @@
             try decode(["has_team_subscription": false, "team_created": false])
         }
         func fetchCatalog() -> ModelCatalog {
-            let capabilities = ModelCapabilities(chat: true, vision: false, reasoning: true, toolUse: false)
+            let pickerProof =
+                ProcessInfo.processInfo.arguments.contains("--maple-shipping-viewport-fixture")
+                && ProcessInfo.processInfo.arguments.contains("--maple-shipping-picker-proof")
+            let capabilities = ModelCapabilities(chat: true, vision: false, reasoning: true, toolUse: pickerProof)
+            let choices = [
+                ("synthetic-quick", "Quick target", "Quick"),
+                ("synthetic-powerful", "Powerful target", "Powerful"),
+                ("synthetic-advanced-1", "Synthetic advanced 1", "Advanced 1"),
+                ("synthetic-advanced-2", "Synthetic advanced 2", "Advanced 2"),
+                ("synthetic-advanced-3", "Synthetic advanced 3", "Advanced 3"),
+                ("synthetic-advanced-4", "Synthetic advanced 4", "Advanced 4"),
+            ]
             return ModelCatalog(
                 object: "list",
-                data: [
+                data: choices.enumerated().filter { pickerProof || $0.offset == 0 }.map { index, choice in
                     ModelCatalogItem(
-                        id: "synthetic-quick", object: "model", created: 0,
-                        ownedBy: "synthetic", displayName: "Quick target", shortName: "Quick", contextWindow: 32768,
+                        id: choice.0, object: "model", created: 0,
+                        ownedBy: "synthetic", displayName: choice.1, shortName: choice.2,
+                        description: pickerProof ? "Synthetic model choice for picker interaction" : nil,
+                        contextWindow: 32768,
                         maxContextTokens: 32768,
-                        access: "free", capabilities: capabilities, enabled: true, deprecated: false)
-                ],
+                        access: "free", capabilities: capabilities, enabled: true, deprecated: false,
+                        sortOrder: pickerProof ? index : nil)
+                },
                 aliases: [
                     ModelAlias(
                         id: .quick, label: "Quick", shortName: "Quick", description: "Synthetic quick model",
                         targetModel: "synthetic-quick", access: "free", capabilities: capabilities)
-                ],
+                ]
+                    + (pickerProof
+                        ? [
+                            ModelAlias(
+                                id: .powerful, label: "Powerful", shortName: "Powerful",
+                                description: "Synthetic powerful model",
+                                targetModel: "synthetic-powerful", access: "free", capabilities: capabilities)
+                        ] : []),
                 defaults: ModelDefaults(quick: .quick, powerful: .powerful),
                 audio: AudioModelCatalog(
                     transcription: AudioModelAvailability(available: true, model: "synthetic-stt"),

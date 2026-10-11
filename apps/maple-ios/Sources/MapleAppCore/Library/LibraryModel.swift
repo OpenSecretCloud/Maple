@@ -27,7 +27,7 @@ import Observation
     @ObservationIgnored private var revision: UInt64 = 0
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored private var cursors: Set<String> = []
-    @ObservationIgnored private var loadedPages = 0
+    private var loadedPages = 0
 
     public init(scope: AccountScope, service: any LibraryServing, deletions: ChatDeletionCoordinator) {
         self.scope = scope; self.service = service; self.deletions = deletions
@@ -54,6 +54,18 @@ import Observation
             return title
         }
         return ""
+    }
+
+    public var hasLoadedConversations: Bool { loadedPages > 0 }
+    public var isActive: Bool { valid }
+
+    /// The menu observes the actual trailing row's visibility. Search remains
+    /// local to loaded titles and never drains every page as a side effect.
+    public func loadMoreIfNeeded(visibleID: String) async {
+        guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            visibleConversations.suffix(3).contains(where: { $0.id == visibleID }), issue == nil
+        else { return }
+        await loadMore()
     }
 
     public func load(_ filter: LibraryFilter = .all) async {
@@ -174,8 +186,45 @@ import Observation
             try check(); guard updated.id == id else { throw LibraryIssue.invalidResponse }; publish(updated)
         }
     }
-    public func moveConversations(ids: Set<String>, projectID: String?) async {
-        guard !ids.isEmpty, ids.count <= 10_000 else { issue = .invalidInput; return }
+    public func relocateConversation(
+        id: String, to destination: LibraryConversationDestination, from owner: AccountScope
+    ) async {
+        guard owner == scope else { return }
+        guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            issue = .invalidInput; return
+        }
+        let project: NullableUpdate<String>, pinned: Bool
+        switch destination {
+        case .project(let id):
+            guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                issue = .invalidInput; return
+            }
+            project = .set(id); pinned = false
+        case .pinned:
+            project = .unchanged; pinned = true
+        case .recent:
+            project = .clear; pinned = false
+        }
+        await mutate { [self] in
+            // One authenticated update prevents an intermediate project/pin
+            // combination and uses the same revocable owner as other actions.
+            let updated = try await service.updateConversation(
+                id: id, metadata: nil, projectId: project, pinned: pinned)
+            try check()
+            guard updated.id == id, updated.pinned == pinned else { throw LibraryIssue.invalidResponse }
+            switch project {
+            case .set(let expected):
+                guard updated.projectId == expected else { throw LibraryIssue.invalidResponse }
+            case .clear:
+                guard updated.projectId == nil else { throw LibraryIssue.invalidResponse }
+            case .unchanged: break
+            }
+            publish(updated); selectedIDs.remove(id)
+        }
+    }
+    @discardableResult public func moveConversations(ids: Set<String>, projectID: String?) async -> Bool {
+        guard !ids.isEmpty, ids.count <= 10_000 else { issue = .invalidInput; return false }
+        var completed = false
         await mutate { [self] in
             for batch in Self.batches(ids) {
                 let result = try await service.batchUpdateConversationProject(ids: batch, projectId: projectID)
@@ -192,7 +241,9 @@ import Observation
                 // Publish acknowledged membership even when this owner has no row snapshot.
                 onConversationProjectUpdated?(changed, projectID)
             }
+            completed = true
         }
+        return completed && valid
     }
     public func createProject(name: String) async -> ConversationProject? {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { issue = .invalidInput; return nil }
@@ -347,7 +398,10 @@ import Observation
         }
     }
     private func parameters(_ filter: LibraryFilter, after: String?) -> ConversationsListParameters {
-        let page = ListParameters(limit: 100, after: after, order: .desc)
+        // Research's shared web/desktop sidebar starts with twenty recent
+        // chats and requests ten older chats after the oldest loaded ID.
+        let limit = filter == .recent ? (after == nil ? 20 : 10) : 100
+        let page = ListParameters(limit: limit, after: after, order: .desc)
         switch filter {
         case .all: return .init(page: page)
         case .pinned: return .init(page: page, pinned: true)

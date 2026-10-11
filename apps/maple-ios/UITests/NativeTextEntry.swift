@@ -1,5 +1,29 @@
 import XCTest
 
+/// A SwiftUI Form exposes the full toggle row as an accessibility switch.
+/// Its center can be the label, so target the actual trailing native control.
+@MainActor func tapNativeSwitch(_ row: XCUIElement, in app: XCUIApplication) {
+    XCTAssertTrue(row.isEnabled && row.isHittable)
+    let frame = row.frame
+    if (20...100).contains(frame.width), (20...100).contains(frame.height) {
+        row.tap(); return
+    }
+    let children = row.switches.allElementsBoundByIndex.filter {
+        $0.isHittable && (20...100).contains($0.frame.width)
+            && (20...100).contains($0.frame.height) && frame.contains($0.frame)
+    }
+    XCTAssertLessThanOrEqual(children.count, 1)
+    if let control = children.first {
+        control.tap()
+    } else {
+        XCTAssertGreaterThanOrEqual(frame.width, 160)
+        let point = CGPoint(x: frame.maxX - 48, y: frame.midY)
+        XCTAssertTrue(frame.contains(point) && app.windows.firstMatch.frame.contains(point))
+        row.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+            .withOffset(CGVector(dx: -48, dy: 0)).tap()
+    }
+}
+
 enum NativeTextEntryIssue: Error { case unavailable, selectionUnavailable, clearFailed, replacementFailed }
 
 /// Only synthetic fixture text belongs here. Credentials use the separate private

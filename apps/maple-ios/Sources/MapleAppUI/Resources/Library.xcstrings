@@ -25,6 +25,18 @@
         }
       }
     },
+    "Chat actions": {
+      "comment": "Accessibility label for the trailing ellipsis on a chat row. Opens select, pin, move, rename and delete actions for that chat.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat actions"
+          }
+        }
+      }
+    },
     "Chat name": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -61,6 +73,18 @@
         }
       }
     },
+    "Clear search": {
+      "comment": "Accessibility label for clearing the main menu title search field.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear search"
+          }
+        }
+      }
+    },
     "Close menu": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -69,6 +93,30 @@
           "stringUnit": {
             "state": "translated",
             "value": "Close menu"
+          }
+        }
+      }
+    },
+    "Close settings": {
+      "comment": "Accessibility label for the close button on full-screen settings in regular-width layouts.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close settings"
+          }
+        }
+      }
+    },
+    "Collapsed": {
+      "comment": "Accessibility state of a collapsed project folder.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapsed"
           }
         }
       }
@@ -194,6 +242,18 @@
         }
       }
     },
+    "Done": {
+      "comment": "Visible navigation-bar button that exits chat selection and clears the selection, without changing any chats.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
     "Done selecting": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -202,6 +262,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Done selecting"
+          }
+        }
+      }
+    },
+    "Expanded": {
+      "comment": "Accessibility state of an expanded project folder.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expanded"
           }
         }
       }
@@ -286,6 +358,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Maple could not verify the service response. Refresh before trying again."
+          }
+        }
+      }
+    },
+    "Maple menu": {
+      "comment": "Accessibility label for the Maple wordmark button opening Settings and chat management actions.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maple menu"
           }
         }
       }
@@ -398,6 +482,18 @@
         }
       }
     },
+    "Project": {
+      "comment": "Project destination row in the chat options sheet; the current project name is displayed separately.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project"
+          }
+        }
+      }
+    },
     "Project actions": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -506,6 +602,18 @@
         }
       }
     },
+    "Search chats": {
+      "comment": "Floating Library search field. Searches titles already loaded in this account; keep concise.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search chats"
+          }
+        }
+      }
+    },
     "Search loaded titles": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -514,6 +622,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Search loaded titles"
+          }
+        }
+      }
+    },
+    "Select": {
+      "comment": "Chat-row menu action that enters selection mode with this chat selected.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select"
           }
         }
       }
@@ -646,90 +766,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your sign-in changed. Reopen this screen to continue."
-          }
-        }
-      }
-    },
-    "Close settings": {
-      "comment": "Accessibility label for the close button on full-screen settings in regular-width layouts.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Close settings"
-          }
-        }
-      }
-    },
-    "Chat actions": {
-      "comment": "Accessibility label for the main menu actions: selection, moving and deleting chats.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chat actions"
-          }
-        }
-      }
-    },
-    "Clear search": {
-      "comment": "Accessibility label for clearing the main menu title search field.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Clear search"
-          }
-        }
-      }
-    },
-    "Collapsed": {
-      "comment": "Accessibility state of a collapsed project folder.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Collapsed"
-          }
-        }
-      }
-    },
-    "Expanded": {
-      "comment": "Accessibility state of an expanded project folder.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Expanded"
-          }
-        }
-      }
-    },
-    "Maple menu": {
-      "comment": "Accessibility label for the Maple wordmark button opening Settings and chat management actions.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maple menu"
-          }
-        }
-      }
-    },
-    "Search chats": {
-      "comment": "Floating Library search field. Searches titles already loaded in this account; keep concise.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Search chats"
           }
         }
       }

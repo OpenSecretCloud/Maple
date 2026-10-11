@@ -7,14 +7,25 @@ struct ChatTranscriptRow: Identifiable {
     let order: Int
     var id: String { item.id }
 
+    // Conversation pages use function_call/function_call_output, while a
+    // retrieved Responses run uses tool_call/tool_output. Keep presentation
+    // admission consistent for both SDK-decoded representations.
+    static func isToolCall(_ item: ConversationItem) -> Bool {
+        ["function_call", "tool_call", "web_search_call"].contains(item.type)
+    }
+    static func isToolOutput(_ item: ConversationItem) -> Bool {
+        ["function_call_output", "tool_output"].contains(item.type)
+    }
+    static func isTool(_ item: ConversationItem) -> Bool { isToolCall(item) || isToolOutput(item) }
+
     static func rows(_ items: [ConversationItem]) -> [Self] {
         let calls = Dictionary(
             grouping: items.indices.filter {
-                ["function_call", "web_search_call"].contains(items[$0].type) && usableCallID(items[$0])
+                isToolCall(items[$0]) && usableCallID(items[$0])
             }, by: { items[$0].callId! })
         let results = Dictionary(
             grouping: items.indices.filter {
-                items[$0].type == "function_call_output" && usableCallID(items[$0])
+                isToolOutput(items[$0]) && usableCallID(items[$0])
             }, by: { items[$0].callId! })
         var paired: [Int: Int] = [:]
         for (callID, callIndices) in calls {
@@ -54,6 +65,7 @@ enum ChatComposerPresentation {
         @Bindable var environment: AppEnvironment
         @Environment(\.horizontalSizeClass) private var sizeClass
         @Environment(\.layoutDirection) private var layoutDirection
+        @Environment(\.mapleLaunchTransition) private var launchTransition
         @State private var columns: NavigationSplitViewVisibility = .all
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @AccessibilityFocusState private var menuButtonFocused: Bool
@@ -104,6 +116,7 @@ enum ChatComposerPresentation {
                         detail.safeAreaInset(edge: .bottom) { audioPlayer }
                     }
                     .environment(\.layoutDirection, layoutDirection)
+                    .environment(\.mapleLaunchTransition, launchTransition)
                     .environment(\.compactMenuChatState) { [weak compactMenuLease] scope, owner in
                         compactMenuLease?.state(scope: scope, storageOwner: owner) ?? CompactMenuChatState()
                     }
@@ -176,6 +189,14 @@ enum ChatComposerPresentation {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(removing: .sidebarToggle)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 6) {
+                        if !chatTitle.isEmpty {
+                            Text(chatTitle).font(.headline).lineLimit(1)
+                        }
+                        MaplePrivacyLock()
+                    }
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         showMenu()
@@ -230,6 +251,8 @@ enum ChatComposerPresentation {
                         }
                     },
                     settings: { AnyView(SettingsScreen(environment: environment, context: context)) },
+                    projectExpansion: context.projectExpansion,
+                    menu: context.menu,
                     onClose: wide
                         ? nil
                         : { @MainActor @Sendable in
@@ -316,20 +339,33 @@ enum ChatComposerPresentation {
         }
     }
 
+    #if DEBUG
+        /// Isolated UI fixtures supply library services without restoring or
+        /// activating the SDK client. Their existing projection fence remains
+        /// required for every interaction and asynchronous completion.
+        struct ChatOptionsFixtureContext {
+            let library: LibraryModel
+            let projectID: @MainActor () -> String?
+            let makeInstructionEditor: @MainActor (InstructionDestination) -> InstructionEditor
+            let selectProject: @MainActor (String?) async -> Bool
+        }
+    #endif
+
     struct ChatDetail: View {
         @Bindable var environment: AppEnvironment
         @Environment(\.layoutDirection) private var layoutDirection
+        @Environment(\.horizontalSizeClass) private var sizeClass
         @Environment(\.compactMenuChatState) private var compactMenuState
         @Bindable var runtime: ChatRuntime
         @Bindable var account: AccountEntitlements
         @Bindable var preferences: PreferencesController
         #if DEBUG
             var fixtureProjectionIsCurrent: (@MainActor @Sendable (AccountScope, UUID) -> Bool)? = nil
+            var fixtureOptions: ChatOptionsFixtureContext? = nil
+            var fixtureScrollMetricsChanged: (@MainActor (TranscriptViewportMetrics) -> Void)? = nil
         #endif
         @State private var queuePresented = false
         @State private var modelPresented = false
-        @State private var projectPresented = false
-        @State private var projectPresentationID = UUID()
         @State private var externalLink: URL?
         @State private var browserPresentationID = UUID()
         @State private var mediaNotice: MediaFeature?
@@ -344,6 +380,12 @@ enum ChatComposerPresentation {
         @State private var pendingScrollMessage: String?
         @State private var pendingScrollToken = UUID()
         @State private var transcriptSpace = UUID()
+        @State private var followPolicy = TranscriptScrollPolicy()
+        @State private var userScrollPhase = false
+        @State private var followTasks: [UUID: Task<Void, Never>] = [:]
+        @State private var appendFollowTask: Task<Void, Never>?
+        @State private var pendingAppendFollow: AppendFollowRequest?
+        @State private var scrollGestureRevision = 0
 
         private struct ReadingAnchor {
             let token = UUID()
@@ -352,15 +394,36 @@ enum ChatComposerPresentation {
             var restoring = false
             var corrections = 0
         }
+        private struct AppendFollowRequest {
+            let id = UUID()
+            let lastItemID: String
+            let storageOwner: UUID
+            let returnRevision: Int
+            let gestureRevision: Int
+        }
         private struct TranscriptScrollMetrics: Equatable {
             var offset: CGFloat = 0
             var topInset: CGFloat = 0
+            var bottomInset: CGFloat = 0
+            var contentHeight: CGFloat = 0
             var height: CGFloat = 0
+            var visibleMinY: CGFloat = 0
+            var visibleHeight: CGFloat = 0
+            var boundsMinY: CGFloat = 0
+            var boundsHeight: CGFloat = 0
             let returnRevision: Int
+            var maximumOffset: CGFloat? {
+                TranscriptScrollPolicy.maximumOffset(
+                    contentHeight: contentHeight, viewportHeight: height)
+            }
+            var distanceFromBottom: CGFloat {
+                maximumOffset.map { max(0, $0 - offset - topInset) } ?? .infinity
+            }
         }
         private struct TranscriptTurnGeometry: Equatable {
             let contentFrame: CGRect
             let firstMessageID: String?
+            let lastMessageID: String?
             let returnRevision: Int
         }
 
@@ -378,6 +441,86 @@ enum ChatComposerPresentation {
         private var productionCurrentProjection: Bool {
             environment.session.account?.scope == runtime.scope && runtime.scope == account.scope
                 && environment.selectedChat?.snapshot.storageOwner == runtime.snapshot.storageOwner
+        }
+
+        private var transcriptMutation: TranscriptScrollPolicy.Mutation {
+            .init(
+                lastItemID: runtime.messages.last?.id,
+                lastItemIsAssistant: runtime.messages.last.map { $0.type != "message" || $0.role != "user" } ?? false,
+                hasStreamingMessage: runtime.hasUnresolvedRun
+                    && runtime.messages.contains {
+                        $0.type == "message" && $0.role != "user"
+                            && ["streaming", "in_progress"].contains($0.status ?? "")
+                    })
+        }
+
+        private func cancelFollowTasks() {
+            for task in followTasks.values { task.cancel() }
+            followTasks.removeAll()
+            appendFollowTask?.cancel(); appendFollowTask = nil; pendingAppendFollow = nil
+        }
+
+        private func scheduleAppendFollow() {
+            guard let request = pendingAppendFollow else { return }
+            appendFollowTask?.cancel()
+            appendFollowTask = Task { @MainActor in
+                await Task.yield()
+                guard !Task.isCancelled, pendingAppendFollow?.id == request.id,
+                    currentProjection, !menuState.occluded,
+                    runtime.snapshot.storageOwner == request.storageOwner,
+                    menuState.returnRevision == request.returnRevision,
+                    scrollGestureRevision == request.gestureRevision, !followPolicy.isUserScrolling,
+                    !runtime.isLoadingOlder, readingAnchor == nil, !userScrollPhase,
+                    runtime.messages.last?.id == request.lastItemID,
+                    let lastTurnID = turns.last?.id, let sample = turnFrames[lastTurnID],
+                    sample.returnRevision == request.returnRevision,
+                    let target = TranscriptScrollPolicy.appendedItemOffset(
+                        expectedItemID: request.lastItemID, renderedItemID: sample.lastMessageID,
+                        tailBottom: sample.contentFrame.maxY,
+                        viewportHeight: scrollMetrics.height)
+                else { return }
+                // Layout, not Task.yield(), proves the appended item has joined
+                // the transcript. Consume this once so later text growth cannot
+                // keep dragging the reader to a moving bottom anchor.
+                pendingAppendFollow = nil
+                withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(y: target) }
+            }
+        }
+
+        private func followAppendedReplies(_ mutation: TranscriptScrollPolicy.Mutation) {
+            let requests = followPolicy.receive(mutation)
+            guard currentProjection, !menuState.occluded, !runtime.isLoadingOlder, readingAnchor == nil else { return }
+            for request in requests {
+                if request == .appendedItem, let lastItemID = mutation.lastItemID {
+                    pendingAppendFollow = AppendFollowRequest(
+                        lastItemID: lastItemID, storageOwner: runtime.snapshot.storageOwner,
+                        returnRevision: menuState.returnRevision, gestureRevision: scrollGestureRevision)
+                    scheduleAppendFollow()
+                    continue
+                }
+                let id = UUID(), owner = runtime.snapshot.storageOwner
+                let returnRevision = menuState.returnRevision, gestureRevision = scrollGestureRevision
+                followTasks[id] = Task { @MainActor in
+                    defer { followTasks.removeValue(forKey: id) }
+                    try? await Task.sleep(for: .milliseconds(100))
+                    guard !Task.isCancelled, currentProjection, !menuState.occluded,
+                        runtime.snapshot.storageOwner == owner, menuState.returnRevision == returnRevision,
+                        scrollGestureRevision == gestureRevision, !followPolicy.isUserScrolling,
+                        !runtime.isLoadingOlder, readingAnchor == nil, !userScrollPhase,
+                        let maximum = scrollMetrics.maximumOffset
+                    else { return }
+                    let target: CGFloat?
+                    switch request {
+                    case .appendedItem: target = maximum
+                    case .streamingStarted:
+                        guard transcriptMutation.hasStreamingMessage else { return }
+                        target = TranscriptScrollPolicy.streamStartOffset(
+                            current: scrollMetrics.offset + scrollMetrics.topInset, maximum: maximum)
+                    }
+                    guard let target else { return }
+                    withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(y: target) }
+                }
+            }
         }
 
         private var retainsMessageRendering: @MainActor @Sendable () -> Bool {
@@ -447,6 +590,9 @@ enum ChatComposerPresentation {
                         pendingScrollMessage == message
                     else { return }
                     readingAnchor = nil; correctionTask?.cancel()
+                    // Sending a new turn opts back into following newly appended
+                    // reply items, just as Research's forced user-send scroll does.
+                    followPolicy.readerScrolled(distanceFromBottom: 0)
                     reader.scrollTo(message, anchor: .top)
                     pendingScrollMessage = nil
                 }
@@ -482,6 +628,7 @@ enum ChatComposerPresentation {
                                 if runtime.hasOlderMessages {
                                     Button(MapleStrings.text("Load earlier messages")) {
                                         guard !runtime.isLoadingOlder else { return }
+                                        cancelFollowTasks()
                                         let previousFirst = runtime.messages.first?.id
                                         let returnRevision = menuState.returnRevision
                                         let visible = turnFrames.filter {
@@ -525,6 +672,11 @@ enum ChatComposerPresentation {
                                             .font(MapleTypography.display)
                                             .foregroundStyle(MapleSurface.displayText)
                                     }
+                                    .padding(.bottom, 24)
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        minHeight: max(0, geometry.size.height - 40), alignment: .bottomLeading
+                                    )
                                     .accessibilityElement(children: .combine)
                                 }
                                 ForEach(turns) { turn in
@@ -555,11 +707,13 @@ enum ChatComposerPresentation {
                                     .onGeometryChange(for: TranscriptTurnGeometry.self) {
                                         [
                                             transcriptSpace, firstMessageID = runtime.messages.first?.id,
+                                            lastMessageID = runtime.messages.last?.id,
                                             returnRevision = menuState.returnRevision
                                         ] in
                                         TranscriptTurnGeometry(
                                             contentFrame: $0.frame(in: .named(transcriptSpace)),
-                                            firstMessageID: firstMessageID, returnRevision: returnRevision)
+                                            firstMessageID: firstMessageID, lastMessageID: lastMessageID,
+                                            returnRevision: returnRevision)
                                     } action: { sample in
                                         guard !menuState.occluded, sample.firstMessageID == runtime.messages.first?.id,
                                             sample.returnRevision == menuState.returnRevision,
@@ -567,6 +721,7 @@ enum ChatComposerPresentation {
                                         else { return }
                                         turnFrames[turn.id] = sample
                                         scheduleAnchorCorrection()
+                                        scheduleAppendFollow()
                                     }
                                     .onDisappear {
                                         if !menuState.occluded, turnFrames[turn.id] != nil {
@@ -586,17 +741,47 @@ enum ChatComposerPresentation {
                             [returnRevision = menuState.returnRevision] geometry in
                             TranscriptScrollMetrics(
                                 offset: geometry.contentOffset.y, topInset: geometry.contentInsets.top,
-                                height: geometry.containerSize.height, returnRevision: returnRevision)
+                                bottomInset: geometry.contentInsets.bottom, contentHeight: geometry.contentSize.height,
+                                height: geometry.containerSize.height,
+                                visibleMinY: geometry.visibleRect.minY, visibleHeight: geometry.visibleRect.height,
+                                boundsMinY: geometry.bounds.minY, boundsHeight: geometry.bounds.height,
+                                returnRevision: returnRevision)
                         } action: { _, metrics in
                             guard !menuState.occluded, metrics.returnRevision == menuState.returnRevision else {
                                 return
                             }
                             scrollMetrics = metrics
+                            #if DEBUG
+                                if metrics.distanceFromBottom.isFinite {
+                                    fixtureScrollMetricsChanged?(
+                                        .init(
+                                            offset: metrics.offset + metrics.topInset,
+                                            distanceFromBottom: metrics.distanceFromBottom,
+                                            viewportHeight: metrics.height, rawOffset: metrics.offset,
+                                            topInset: metrics.topInset, bottomInset: metrics.bottomInset,
+                                            contentHeight: metrics.contentHeight, visibleMinY: metrics.visibleMinY,
+                                            visibleHeight: metrics.visibleHeight,
+                                            visibleMaxY: metrics.visibleMinY + metrics.visibleHeight,
+                                            boundsMinY: metrics.boundsMinY, boundsHeight: metrics.boundsHeight))
+                                }
+                            #endif
+                            if userScrollPhase {
+                                followPolicy.readerScrolled(distanceFromBottom: metrics.distanceFromBottom)
+                            }
                             scheduleAnchorCorrection()
+                            scheduleAppendFollow()
                         }
                         .onScrollPhaseChange { _, phase in
                             if !menuState.occluded, phase == .tracking || phase == .interacting {
                                 readingAnchor = nil; correctionTask?.cancel()
+                                scrollGestureRevision += 1; cancelFollowTasks()
+                            }
+                            if !menuState.occluded {
+                                let wasUserScrolling = userScrollPhase
+                                userScrollPhase = phase == .tracking || phase == .interacting || phase == .decelerating
+                                if userScrollPhase || wasUserScrolling {
+                                    followPolicy.readerScrolled(distanceFromBottom: scrollMetrics.distanceFromBottom)
+                                }
                             }
                         }
                         .accessibilityIdentifier("chat.transcript")
@@ -610,6 +795,9 @@ enum ChatComposerPresentation {
                         .onChange(of: menuState.returnRevision) { _, _ in
                             resumeReadingAfterMenu(reader: reader)
                         }
+                        .onChange(of: transcriptMutation) { _, mutation in
+                            followAppendedReplies(mutation)
+                        }
                         .onAppear { resumeReadingAfterMenu(reader: reader) }
                     }
                 }
@@ -618,22 +806,24 @@ enum ChatComposerPresentation {
             .onDisappear {
                 correctionTask?.cancel(); correctionTask = nil
                 acceptedTurnScrollTask?.cancel(); acceptedTurnScrollTask = nil
+                cancelFollowTasks()
                 if !menuState.occluded { readingAnchor = nil; pendingScrollMessage = nil }
             }
             .environment(\.retainedMessageRendering, retainsMessageRendering)
-            .tracksChatPresentation(queuePresented || modelPresented || projectPresented || mediaNotice != nil)
+            .tracksChatPresentation(queuePresented || modelPresented || mediaNotice != nil)
             .environment(\.chatPresentationChanged) { id, presented in
                 environment.setPresentationBlocked(presented, id: id, scope: runtime.scope)
             }
-            .onChange(of: environment.menuPresented) { _, presented in
-                if presented { composerFocused = false }
-            }
             .onChange(of: composerFocused) { _, focused in
+                #if DEBUG
+                    ComposerFocusTrace.record("shipping.focusChanged=\(focused)")
+                #endif
                 if !focused { softwareKeyboardVisible = nil }
             }
             .onChange(of: menuState.occluded) { _, occluded in
                 if occluded {
                     composerFocused = false; correctionTask?.cancel(); acceptedTurnScrollTask?.cancel()
+                    cancelFollowTasks(); userScrollPhase = false
                 }
             }
             .onChange(of: menuState.returnRevision) { _, _ in
@@ -653,41 +843,46 @@ enum ChatComposerPresentation {
             }
             .sheet(isPresented: $modelPresented) {
                 let scope = runtime.scope, owner = runtime.snapshot.storageOwner
-                NavigationStack {
-                    SettingsModelPicker(
-                        entitlements: account,
-                        webSearchPreference: Binding(
-                            get: { preferences.value.webSearchPreferred },
-                            set: { preferences.setWebSearchPreferred($0) }),
-                        webSearchPreferences: preferences
-                    ) { id in
-                        guard environment.session.account?.scope == scope, runtime.scope == scope,
-                            runtime.snapshot.storageOwner == owner, currentProjection
-                        else { return }
-                        preferences.setSelectedModelID(id); modelPresented = false
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .presentationDetents([.large]).presentationDragIndicator(.visible)
-                .presentationSizing(.page).presentationBackground(MapleSurface.canvas)
-            }
-            .sheet(isPresented: $projectPresented) {
-                let scope = runtime.scope, owner = runtime.snapshot.storageOwner
-                let presentationID = projectPresentationID
-                NavigationStack {
-                    if let library = environment.library, library.scope == scope {
-                        ProjectPickerView(library: library, selectedProjectID: environment.selectedProjectID) { id in
-                            guard projectPresented, projectPresentationID == presentationID,
-                                environment.session.account?.scope == scope, runtime.scope == scope,
-                                runtime.snapshot.storageOwner == owner, currentProjection
+                if let context = environment.libraryContext, context.scope == scope {
+                    ChatOptionsSheet(
+                        entitlements: account, preferences: preferences, library: context.root,
+                        regularWidth: sizeClass == .regular,
+                        selectedProjectID: environment.projectID(for: runtime),
+                        makeInstructionEditor: context.makeInstructionEditor,
+                        isCurrent: {
+                            modelPresented && environment.session.account?.scope == scope && runtime.scope == scope
+                                && runtime.snapshot.storageOwner == owner && currentProjection
+                        },
+                        onSelectProject: { id in await environment.selectProject(runtime: runtime, id: id) },
+                        onSelectModel: { id in
+                            guard modelPresented, environment.session.account?.scope == scope,
+                                runtime.scope == scope, runtime.snapshot.storageOwner == owner, currentProjection
                             else { return }
-                            environment.selectedProjectID = id; projectPresented = false
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
+                            preferences.setSelectedModelID(id); modelPresented = false
+                        })
                 }
-                .presentationDetents([.large]).presentationDragIndicator(.visible)
-                .presentationSizing(.page).presentationBackground(MapleSurface.canvas)
+                #if DEBUG
+                    if environment.libraryContext == nil, let fixtureOptions, fixtureOptions.library.scope == scope,
+                        fixtureProjectionIsCurrent != nil
+                    {
+                        ChatOptionsSheet(
+                            entitlements: account, preferences: preferences, library: fixtureOptions.library,
+                            regularWidth: sizeClass == .regular,
+                            selectedProjectID: fixtureOptions.projectID(),
+                            makeInstructionEditor: fixtureOptions.makeInstructionEditor,
+                            isCurrent: {
+                                modelPresented && runtime.scope == scope && account.scope == scope
+                                    && runtime.snapshot.storageOwner == owner && currentProjection
+                            },
+                            onSelectProject: fixtureOptions.selectProject,
+                            onSelectModel: { id in
+                                guard modelPresented, runtime.scope == scope, account.scope == scope,
+                                    runtime.snapshot.storageOwner == owner, currentProjection
+                                else { return }
+                                preferences.setSelectedModelID(id); modelPresented = false
+                            })
+                    }
+                #endif
             }
             .onDisappear {
                 // Outer navigation hides this exact retained projection temporarily.
@@ -762,14 +957,7 @@ enum ChatComposerPresentation {
                             composerEditor(owner: owner)
                         }
                     }.layoutValue(key: ComposerInputRoleKey.self, value: .editor)
-                    // Keep the native editor's preceding slot unchanged while
-                    // removing collapsed controls from the accessibility tree.
-                    Group {
-                        if composerExpanded {
-                            modelButton.layoutValue(key: ComposerInputRoleKey.self, value: .model)
-                            projectButton.layoutValue(key: ComposerInputRoleKey.self, value: .project)
-                        }
-                    }
+                    modelButton.layoutValue(key: ComposerInputRoleKey.self, value: .model)
                     microphoneButton.layoutValue(key: ComposerInputRoleKey.self, value: .microphone)
                     primaryAction.layoutValue(key: ComposerInputRoleKey.self, value: .action)
                 }
@@ -809,12 +997,28 @@ enum ChatComposerPresentation {
                 isCurrentOwner: {
                     runtime.scope == account.scope && runtime.snapshot.draft.id == owner
                 },
+                isCurrentPresentation: { currentProjection && !menuState.occluded },
                 placeholder: MapleStrings.text("Message Maple"),
                 isCompact: !composerExpanded,
                 externalSelection: environment.dictation?.editorState(runtime: runtime, draftID: owner),
                 onChange: { state, edits in
                     environment.dictation?.updateEditor(
                         runtime: runtime, draftID: owner, state: state, edits: edits)
+                },
+                onEditingInteraction: {
+                    guard runtime.scope == account.scope,
+                        runtime.snapshot.draft.id == owner, currentProjection, !menuState.occluded
+                    else {
+                        #if DEBUG
+                            ComposerFocusTrace.record("shipping.interactionRejected")
+                        #endif
+                        return false
+                    }
+                    softwareKeyboardVisible = nil
+                    #if DEBUG
+                        ComposerFocusTrace.record("shipping.interactionAdmitted; focused=\(composerFocused)")
+                    #endif
+                    return true
                 },
                 refreshAfterSubmit: {
                     guard environment.session.account?.scope == runtime.scope else { return nil }
@@ -836,26 +1040,16 @@ enum ChatComposerPresentation {
         }
         private var modelButton: some View {
             Button {
+                environment.dictation?.stopCaptureForNavigation()
+                composerFocused = false
                 modelPresented = true
             } label: {
-                Text(account.selectedModel?.shortName ?? MapleStrings.text("Model"))
-                    .lineLimit(1)
+                Image(systemName: "slider.horizontal.3")
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }
+            .accessibilityLabel(Text("Chat options", tableName: "Settings", bundle: .module))
             .accessibilityIdentifier("chat.model")
-        }
-        @ViewBuilder private var projectButton: some View {
-            if runtime.conversationID == nil {
-                Button(
-                    MapleStrings.text("Project"),
-                    systemImage: environment.selectedProjectID == nil ? "folder" : "folder.fill"
-                ) {
-                    projectPresentationID = UUID(); projectPresented = true
-                }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
-                .accessibilityIdentifier("chat.project")
-            }
         }
         @ViewBuilder private var microphoneButton: some View {
             if let dictation = environment.dictation {
@@ -867,8 +1061,10 @@ enum ChatComposerPresentation {
                         mediaNotice = .dictation
                     } label: {
                         Label(MapleStrings.text("Dictate"), systemImage: "mic")
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .labelStyle(.iconOnly)
                     .accessibilityValue(MapleStrings.text("Unavailable"))
                     .accessibilityHint(MapleStrings.text("Learn why this feature is unavailable."))
                     .accessibilityIdentifier("dictation.start")
@@ -928,14 +1124,45 @@ enum ChatComposerPresentation {
         }
         private var revealsContent: Bool {
             ["user", "assistant"].contains(item.role ?? "")
-                && !["function_call", "web_search_call", "function_call_output"].contains(item.type)
+                && !ChatTranscriptRow.isTool(item)
         }
 
+        private var isUserMessage: Bool { item.role == "user" && item.type == "message" }
+
         var body: some View {
-            VStack(alignment: .leading, spacing: 8) {
-                if item.role == "user" {
-                    Text(MapleStrings.text("You")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 0) {
+                if isUserMessage { Spacer(minLength: 36) }
+                VStack(alignment: isUserMessage ? .trailing : .leading, spacing: 8) {
+                    if isUserMessage {
+                        messageContent
+                            .padding(12)
+                            .background(MapleSurface.card, in: RoundedRectangle(cornerRadius: 18))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 18)
+                                    .strokeBorder(MapleSurface.border.opacity(0.3), lineWidth: 0.5)
+                            }
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel(Text("You", bundle: .module))
+                            .accessibilityIdentifier("message.bubble." + item.id)
+                    } else {
+                        messageContent
+                    }
+                    if item.type != "reasoning", !ChatTranscriptRow.isTool(item), !text.isEmpty {
+                        messageActions
+                    }
                 }
+                .frame(maxWidth: isUserMessage ? 650 : .infinity, alignment: isUserMessage ? .trailing : .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
+            .opacity(revealsContent && !appeared && !reduceMotion ? 0 : 1)
+            .onAppear { revealContent() }
+            .onChange(of: readableContent) { _, _ in revealContent() }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier((item.role == "assistant" ? "assistant.message." : "message.") + item.id)
+        }
+
+        private var messageContent: some View {
+            VStack(alignment: .leading, spacing: 8) {
                 if (item.content ?? []).contains(where: { $0.imageUrl != nil }) {
                     MessageImages(content: item.content ?? [])
                 }
@@ -944,48 +1171,43 @@ enum ChatComposerPresentation {
                         MessageView(
                             text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
                     }
-                } else if item.type == "function_call" || item.type == "web_search_call"
-                    || item.type == "function_call_output"
-                {
+                } else if ChatTranscriptRow.isTool(item) {
                     ToolActivityView(
                         item: item, result: toolResult, theme: theme, font: font, generation: generation,
                         onOpenLink: onOpenLink)
                 } else if !text.isEmpty {
                     MessageView(
                         text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
-                    HStack(spacing: 8) {
-                        Button(MapleStrings.text("Copy message"), systemImage: "doc.on.doc") {
-                            UIPasteboard.general.setItems(
-                                [[UTType.utf8PlainText.identifier: text]],
-                                options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
-                        }.labelStyle(.iconOnly).buttonStyle(.borderless).frame(minWidth: 44, minHeight: 44)
-                            .accessibilityIdentifier("message.copy." + item.id)
-                        if item.role == "assistant" {
-                            Button(
-                                MapleStrings.text("Read reply aloud"), systemImage: "speaker.wave.2",
-                                action: speechAccess == .allowed ? onReadAloud : onSpeechUnavailable
-                            )
-                            .labelStyle(.iconOnly).buttonStyle(.borderless).frame(minWidth: 44, minHeight: 44)
-                            .disabled(!isReplyReady)
-                            .accessibilityValue(speechAccess == .allowed ? "" : MapleStrings.text("Unavailable"))
-                            .accessibilityHint(
-                                !isReplyReady
-                                    ? MapleStrings.text("Available after this reply finishes.")
-                                    : speechAccess == .allowed
-                                        ? ""
-                                        : MapleStrings.text("Learn why this feature is unavailable.")
-                            )
-                            .accessibilityIdentifier("message.speak." + item.id)
-                        }
-                    }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .opacity(revealsContent && !appeared && !reduceMotion ? 0 : 1)
-            .onAppear { revealContent() }
-            .onChange(of: readableContent) { _, _ in revealContent() }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier((item.role == "assistant" ? "assistant.message." : "message.") + item.id)
+        }
+
+        private var messageActions: some View {
+            HStack(spacing: 8) {
+                Button(MapleStrings.text("Copy message"), systemImage: "doc.on.doc") {
+                    UIPasteboard.general.setItems(
+                        [[UTType.utf8PlainText.identifier: text]],
+                        options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+                }.labelStyle(.iconOnly).buttonStyle(.borderless).frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("message.copy." + item.id)
+                if item.role == "assistant" {
+                    Button(
+                        MapleStrings.text("Read reply aloud"), systemImage: "speaker.wave.2",
+                        action: speechAccess == .allowed ? onReadAloud : onSpeechUnavailable
+                    )
+                    .labelStyle(.iconOnly).buttonStyle(.borderless).frame(minWidth: 44, minHeight: 44)
+                    .disabled(!isReplyReady)
+                    .accessibilityValue(speechAccess == .allowed ? "" : MapleStrings.text("Unavailable"))
+                    .accessibilityHint(
+                        !isReplyReady
+                            ? MapleStrings.text("Available after this reply finishes.")
+                            : speechAccess == .allowed
+                                ? ""
+                                : MapleStrings.text("Learn why this feature is unavailable.")
+                    )
+                    .accessibilityIdentifier("message.speak." + item.id)
+                }
+            }
         }
         private func revealContent() {
             guard !appeared, readableContent else { return }
@@ -1011,26 +1233,44 @@ enum ChatComposerPresentation {
             [item.status, result?.status].contains(where: { ["failed", "error"].contains($0 ?? "") })
         }
         var body: some View {
-            DisclosureGroup(isExpanded: $expanded) {
-                if !details.isEmpty {
-                    MessageView(
-                        text: details, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
-                } else {
-                    Text(MapleStrings.text("No tool details available.")).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    expanded.toggle()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(
+                            systemName: failed ? "exclamationmark.circle" : item.name == "open_urls" ? "link" : "globe"
+                        )
+                        .foregroundStyle(failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(MapleAccent.foreground))
+                        Text(title).foregroundStyle(.primary)
+                        Spacer(minLength: 8)
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    }
+                    .font(.footnote.weight(.medium))
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    Label(
-                        title,
-                        systemImage: failed ? "exclamationmark.circle" : "globe"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(failed ? AnyShapeStyle(MapleRedText()) : AnyShapeStyle(.secondary))
-                    Spacer(minLength: 0)
+                .buttonStyle(.plain)
+                .accessibilityValue(MapleStrings.text(expanded ? "Expanded" : "Collapsed"))
+                .accessibilityIdentifier("tool.activity." + item.id)
+                if expanded {
+                    Group {
+                        if !details.isEmpty {
+                            MessageView(
+                                text: details, theme: theme, font: font, accountGeneration: generation,
+                                onOpenLink: onOpenLink)
+                        } else {
+                            Text(MapleStrings.text("No tool details available.")).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("tool.details." + item.id)
                 }
-                .frame(minHeight: 44)
             }
-            .tint(MapleAccent.foreground.opacity(0.75))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(MapleSurface.border.opacity(0.25)).frame(height: 0.5)
+            }
             .onChange(of: failed, initial: true) { _, value in if value { expanded = true } }
             .onChange(of: item) { _, _ in detailsRevision = UUID() }
             .onChange(of: result) { _, _ in detailsRevision = UUID() }

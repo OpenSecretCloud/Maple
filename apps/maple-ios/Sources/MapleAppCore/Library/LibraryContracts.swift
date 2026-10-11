@@ -69,6 +69,11 @@ public struct SDKLibraryService: LibraryServing {
 }
 
 public enum LibraryFilter: Sendable, Equatable { case all, pinned, recent, unassigned, project(String) }
+/// A menu drop changes project membership and pinning together. Pinning keeps
+/// the existing project; the other destinations are mutually exclusive rows.
+public enum LibraryConversationDestination: Sendable, Equatable, Hashable {
+    case project(String), pinned, recent
+}
 public enum LibraryIssue: Error, Sendable, Equatable {
     case connection, invalidInput, invalidResponse, busy, retired, quiescence, cleanupRequired, partialMutation
     static func present(_ error: Error) -> LibraryIssue {

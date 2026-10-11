@@ -125,6 +125,11 @@ and `xcrun simctl launch SIMULATOR_UDID cloud.opensecret.maple.native.dev` to ta
 that exact build. Simulator runtime evidence and physical-device evidence
 must be recorded separately.
 
+The main menu remembers explicitly expanded projects in an account-scoped,
+protected local file excluded from backups. These presentation choices survive
+relaunch and sign-out, never sync to the server, and are removed after account
+deletion. Search can reveal project contents without changing the saved choice.
+
 ## Account status and catalog
 
 Billing status, team seats and the authenticated model catalog have independent

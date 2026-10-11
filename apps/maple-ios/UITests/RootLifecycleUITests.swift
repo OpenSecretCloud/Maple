@@ -5,6 +5,7 @@ import XCTest
 /// the same implementation used by the ordinary local build.
 @MainActor final class RootLifecycleUITests: XCTestCase {
     private var app: XCUIApplication!
+    private var liveWebSearchOriginal: String?
 
     private func launch() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MAPLE_RUN_LOCAL_UI"] == "1")
@@ -38,6 +39,107 @@ import XCTest
             }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [inserted], timeout: 15), .completed)
         XCTAssertFalse(app.buttons["dictation.discard"].exists)
+    }
+
+    private func tapLiveControl(_ identifier: String) {
+        let button = app.buttons[identifier].firstMatch
+        XCTAssertTrue(button.waitForExistence(timeout: 15))
+        XCTAssertTrue(button.isEnabled && button.isHittable, "Unavailable control: " + identifier)
+        button.tap()
+    }
+
+    private func waitForLiveUI(_ condition: @escaping @MainActor () -> Bool, timeout: TimeInterval = 15) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in condition() }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed)
+    }
+
+    private func restoreLiveWebSearchIfNeeded() {
+        guard let original = liveWebSearchOriginal else { return }
+        app.terminate(); app.launchArguments = []; app.launch()
+        guard app.buttons["chat.model"].waitForExistence(timeout: 30) else {
+            XCTFail("The local root was unavailable while restoring its preference"); return
+        }
+        tapLiveControl("chat.model")
+        let toggle = app.switches["model.web-search"]
+        guard toggle.waitForExistence(timeout: 15), toggle.isEnabled else {
+            XCTFail("The local web-search preference could not be restored"); return
+        }
+        if toggle.value as? String != original { tapNativeSwitch(toggle, in: app) }
+        waitForLiveUI { toggle.value as? String == original }
+        liveWebSearchOriginal = nil
+    }
+
+    /// Uses the ordinary signed-in compact root, retained UIKit navigation and
+    /// real local services. It creates no chat/project and never sends a turn.
+    func testRootChatOptionsProjectNavigationAndMenuSearchHitTargets() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MAPLE_RUN_LOCAL_UI"] == "1")
+        continueAfterFailure = false
+        app = XCUIApplication(); app.launchArguments = []; app.launch()
+        XCTAssertTrue(app.buttons["chat.new"].waitForExistence(timeout: 30))
+        tapLiveControl("chat.new")
+        XCTAssertEqual(app.buttons["chat.model"].label, "Chat options")
+        tapLiveControl("chat.model")
+        let project = app.buttons["chat-options.project"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15) && project.isEnabled)
+        tapLiveControl("chat-options.project")
+        XCTAssertTrue(app.buttons["project-picker.project.none"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["project-picker.new-project"].isEnabled)
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable); back.tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 15) && project.isEnabled)
+
+        let toggle = app.switches["model.web-search"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 15) && toggle.isEnabled)
+        let original = try XCTUnwrap(toggle.value as? String)
+        XCTAssertTrue(original == "0" || original == "1")
+        liveWebSearchOriginal = original
+        let restore: @MainActor @Sendable () -> Void = { [weak self] in self?.restoreLiveWebSearchIfNeeded() }
+        addTeardownBlock { await restore() }
+        tapNativeSwitch(toggle, in: app)
+        waitForLiveUI { toggle.value as? String == (original == "1" ? "0" : "1") }
+        tapNativeSwitch(toggle, in: app); waitForLiveUI { toggle.value as? String == original }
+        liveWebSearchOriginal = nil
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+        waitForLiveUI { !project.exists && self.app.buttons["chat.model"].isHittable }
+
+        tapLiveControl("chat.menu")
+        let search = app.textFields["library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 15) && search.isHittable)
+        // Enter near the field edge, then clear near the button edge rather
+        // than only testing the centered glyph's small visible footprint.
+        search.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.5)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        let query = "Native search no matching chat"
+        search.typeText(query)
+        waitForLiveUI { search.value as? String == query }
+        let clear = app.buttons["library.clear-search"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(clear.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(clear.frame.height, 44)
+        clear.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)).tap()
+        waitForLiveUI {
+            let value = search.value as? String
+            return value != nil && (value == "" || value == search.placeholderValue)
+                && !clear.exists && self.app.buttons["library.close"].isHittable
+        }
+        XCTAssertFalse(app.buttons["chat.model"].isHittable, "Clearing search must not open a chat behind it")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertLessThanOrEqual(search.frame.maxY, app.keyboards.firstMatch.frame.minY)
+
+        tapLiveControl("library.close")
+        waitForLiveUI { self.app.buttons["chat.model"].isHittable && !self.app.keyboards.firstMatch.exists }
+        tapLiveControl("chat.menu")
+        waitForLiveUI { search.isHittable && self.app.buttons["library.close"].isHittable }
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "A retained hidden menu must relinquish search focus")
+        search.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        waitForLiveUI { search.frame.maxY <= self.app.keyboards.firstMatch.frame.minY }
+        tapLiveControl("library.close")
+        waitForLiveUI { self.app.buttons["chat.model"].isHittable && !self.app.keyboards.firstMatch.exists }
+        XCTAssertFalse(app.buttons["chat.stop"].exists, "Options and searching must never dispatch a turn")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Actual local root after options and search navigation"
+        screenshot.lifetime = .keepAlways; add(screenshot)
     }
 
     func testRootOfflineAndReconnectPreserveUnsentDraftWithoutDispatch() throws {

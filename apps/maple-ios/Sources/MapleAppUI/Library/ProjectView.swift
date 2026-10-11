@@ -71,6 +71,7 @@
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(MapleSurface.sidebar)
+            .modifier(LibraryChatDeletionConfirmation())
             .navigationTitle(renamed ?? project.name)
             .navigationDestination(
                 isPresented: Binding(

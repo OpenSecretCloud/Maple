@@ -1022,6 +1022,13 @@ final class OwnedComposerUITests: XCTestCase {
             "ordinaryOwnerAndTeardownResetKeyboardPresentation",
             "keyboardPresentationReentryCannotReclaimReplacement",
             "keyboardRestorationPreservesMarkedAndRevokedOwners",
+            "compactInteractionReclaimsRetainedKeyboardFocus",
+            "compactInteractionSurvivesSameOwnerRender",
+            "compactInteractionStartsUnfocusedEditorWithExactInput",
+            "compactInteractionCannotReclaimRevokedPresentation",
+            "lateNativeFocusCallbacksCannotReopenOrDismissEditor",
+            "unrequestedNativeFocusCannotReopenDismissedComposer",
+            "nativeTextInsetsKeepCaretAndPlaceholderAligned",
         ]
         XCTAssertEqual(status.label, expectedCases.map { "\($0): passed" }.joined(separator: "\n"))
     }

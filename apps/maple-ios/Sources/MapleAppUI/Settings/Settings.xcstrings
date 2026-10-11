@@ -37,14 +37,14 @@
         }
       }
     },
-    "Advanced models": {
+    "All models": {
       "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Advanced models"
+            "value": "All models"
           }
         }
       }
@@ -117,6 +117,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chat font"
+          }
+        }
+      }
+    },
+    "Chat options": {
+      "comment": "Accessibility name for the static sliders button opening models, web search and project options.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat options"
           }
         }
       }
@@ -609,6 +621,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Read aloud voice"
+          }
+        }
+      }
+    },
+    "Recommended": {
+      "comment": "Model picker section heading above the Quick and Powerful choices. Keep the same visual hierarchy as All models.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recommended"
           }
         }
       }

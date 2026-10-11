@@ -4,6 +4,36 @@ import Testing
 @testable import MapleAppUI
 
 @Suite struct ComposerFlowTests {
+    @Test func nativeTextHeightIncludesPaddingAndPreservesAccessibilityLineHeight() {
+        #expect(ComposerEditorMetrics.preferredHeight(lineHeight: 22, contentHeight: 34, compact: false) == 44)
+        #expect(ComposerEditorMetrics.preferredHeight(lineHeight: 22, contentHeight: 1_000, compact: false) == 188)
+        #expect(ComposerEditorMetrics.preferredHeight(lineHeight: 52, contentHeight: 0, compact: true) == 64)
+        #expect(ComposerEditorMetrics.preferredHeight(lineHeight: 52, contentHeight: 0, compact: false) == 64)
+        #expect(ComposerEditorMetrics.topInset(height: 44, lineHeight: 22, compact: true) == 11)
+        #expect(ComposerEditorMetrics.topInset(height: 64, lineHeight: 52, compact: true) == 6)
+        #expect(ComposerEditorMetrics.topInset(height: 110, lineHeight: 22, compact: false) == 6)
+    }
+
+    @Test func optionsAndMicrophoneKeepFullTargetsInCompactAndNarrowComposers() {
+        let sizes = [44, 180, 44, 44, 44].map { CGSize(width: CGFloat($0), height: 44) }
+        for width in [CGFloat(180), 200, 320, 350, 850] {
+            for expanded in [false, true] {
+                let plan = ComposerInputPlan(
+                    sizes: sizes, editorIndex: 1, width: width, expanded: expanded, trailingIndices: [3, 4])
+                let frames = plan.frames.compactMap { $0 }
+                #expect(frames.count == sizes.count)
+                #expect(plan.frames[2]?.width == 44 && plan.frames[3]?.width == 44)
+                #expect(plan.frames[3]?.minY == plan.frames[4]?.minY)
+                #expect(plan.frames[4]?.maxX == width)
+                for (index, frame) in frames.enumerated() {
+                    #expect(frame.width >= 44 && frame.height >= 44)
+                    #expect(frame.minX >= 0 && frame.maxX <= width)
+                    for next in frames.dropFirst(index + 1) { #expect(!frame.intersects(next)) }
+                }
+            }
+        }
+    }
+
     @Test func compactActionsWrapWithoutOverlapOrDroppingIdentity() {
         let widths: [CGFloat] = [44, 128, 44, 44, 44, 82, 44]
         let sizes = widths.map { CGSize(width: $0, height: 44) }
@@ -142,6 +172,39 @@ import Testing
         let emptyCall = ConversationItem(id: "empty-call", type: "function_call", callId: "")
         let emptyResult = ConversationItem(id: "empty-result", type: "function_call_output", callId: "")
         #expect(ChatTranscriptRow.rows([emptyCall, emptyResult]).count == 2)
+    }
+
+    @Test func decodedConversationAndRetrievedResponseToolRepresentationsKeepIdenticalPairedRows() throws {
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let canonical = #"""
+            [
+              {"id":"call","response_id":"response","type":"function_call","status":"completed",
+               "call_id":"same","name":"open_urls","arguments":"{\"urls\":[\"https://example.com\"]}"},
+              {"id":"result","response_id":"response","type":"function_call_output","status":"completed",
+               "call_id":"same","output":"Synthetic opened page"},
+              {"id":"web","type":"web_search_call","status":"completed","role":"assistant"}
+            ]
+            """#
+        let retrieved = canonical.replacingOccurrences(of: "function_call_output", with: "tool_output")
+            .replacingOccurrences(of: "function_call", with: "tool_call")
+        let pageItems = try decoder.decode([ConversationItem].self, from: Data(canonical.utf8))
+        let responseItems = try decoder.decode([ConversationItem].self, from: Data(retrieved.utf8))
+        let pageRows = ChatTranscriptRow.rows(pageItems), responseRows = ChatTranscriptRow.rows(responseItems)
+        #expect(pageRows.map(\.id) == ["call", "web"] && responseRows.map(\.id) == pageRows.map(\.id))
+        #expect(responseRows[0].item.type == "tool_call" && responseRows[0].toolResult?.type == "tool_output")
+        #expect(responseRows[0].item.callId == pageRows[0].item.callId)
+        #expect(responseRows[0].item.arguments == pageRows[0].item.arguments)
+        #expect(responseRows[0].toolResult?.output == pageRows[0].toolResult?.output)
+        #expect(responseRows[0].item.responseId == "response" && responseRows[0].toolResult?.responseId == "response")
+        #expect(responseItems.allSatisfy(ChatTranscriptRow.isTool))
+        var assistantCall = responseItems[0]; assistantCall.role = "assistant"
+        #expect(ChatTranscriptRow.isTool(assistantCall) && assistantCall.content == nil)
+
+        // A duplicate call across the two representations is ambiguous. An
+        // unmatched persisted output also keeps its own visible details row.
+        #expect(ChatTranscriptRow.rows([pageItems[0], responseItems[0], responseItems[1]]).count == 3)
+        let orphan = ChatTranscriptRow.rows([responseItems[1]])
+        #expect(orphan.count == 1 && orphan[0].item.type == "tool_output" && orphan[0].toolResult == nil)
     }
 
 }

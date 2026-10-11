@@ -300,55 +300,78 @@
         @Bindable private var entitlements: AccountEntitlements
         private let webSearchPreference: Binding<Bool>?
         private let webSearchPreferences: PreferencesController?
+        private let projectRow: AnyView?
+        private let canInteract: @MainActor () -> Bool
         private let onSelection: (String) -> Void
         @State private var webSearchNoticePresented = false
 
         public init(
             entitlements: AccountEntitlements, webSearchPreference: Binding<Bool>? = nil,
-            webSearchPreferences: PreferencesController? = nil, onSelection: @escaping (String) -> Void
+            webSearchPreferences: PreferencesController? = nil, projectRow: AnyView? = nil,
+            canInteract: @escaping @MainActor () -> Bool = { true }, onSelection: @escaping (String) -> Void
         ) {
             self.entitlements = entitlements; self.webSearchPreference = webSearchPreference
-            self.webSearchPreferences = webSearchPreferences; self.onSelection = onSelection
+            self.webSearchPreferences = webSearchPreferences; self.projectRow = projectRow
+            self.canInteract = canInteract; self.onSelection = onSelection
         }
 
         public var body: some View {
             List {
-                if let webSearchPreference {
+                if hasOptionsGroup {
                     Section {
-                        Toggle(isOn: webSearchPreference) { settingsText("Web search") }
+                        if let projectRow {
+                            projectRow.padding(.top, 8)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                                .listRowSeparator(.hidden)
+                        }
+                        if let webSearchPreference {
+                            Toggle(isOn: webSearchPreference) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "globe")
+                                        .foregroundStyle(MapleAccent.foreground)
+                                        .accessibilityHidden(true)
+                                    settingsText("Web search")
+                                }
+                                .font(MapleTypography.button)
+                            }
+                            .modifier(OptionRowSpacing(pairedWithProject: projectRow != nil))
+                            .listRowSeparator(.hidden)
                             .disabled(
                                 (webSearchPreferences?.state ?? .ready) != .ready
                                     || entitlements.webSearchAccess != .allowed
                             )
                             .accessibilityIdentifier("model.web-search")
-                        if let preferences = webSearchPreferences {
-                            switch preferences.state {
-                            case .idle, .loading: EmptyView()
-                            case .failed:
-                                settingsText("Saved preferences could not be loaded.")
-                                Button {
-                                    Task { [weak preferences] in await preferences?.load() }
-                                } label: {
-                                    settingsText("Try again")
+                            if let preferences = webSearchPreferences {
+                                switch preferences.state {
+                                case .idle, .loading: EmptyView()
+                                case .failed:
+                                    settingsText("Saved preferences could not be loaded.")
+                                    Button {
+                                        Task { [weak preferences] in await preferences?.load() }
+                                    } label: {
+                                        settingsText("Try again")
+                                    }
+                                    .accessibilityIdentifier("model.preferences-retry")
+                                case .retired: settingsText("Sign in again to change preferences.")
+                                case .ready: EmptyView()
                                 }
-                                .accessibilityIdentifier("model.preferences-retry")
-                            case .retired: settingsText("Sign in again to change preferences.")
-                            case .ready: EmptyView()
                             }
-                        }
-                        if entitlements.webSearchAccess != .allowed {
-                            Button {
-                                webSearchNoticePresented = true
-                            } label: {
-                                Image(systemName: "info.circle")
+                            if entitlements.webSearchAccess != .allowed {
+                                Button {
+                                    webSearchNoticePresented = true
+                                } label: {
+                                    Image(systemName: "info.circle")
+                                }
+                                .frame(minWidth: 44, minHeight: 44)
+                                .accessibilityLabel(settingsText("Why is web search unavailable?"))
+                                .accessibilityValue(MapleStrings.text("Unavailable"))
+                                .accessibilityHint(MapleStrings.text("Learn why this feature is unavailable."))
+                                .accessibilityIdentifier("model.web-search-unavailable")
                             }
-                            .frame(minWidth: 44, minHeight: 44)
-                            .accessibilityLabel(settingsText("Why is web search unavailable?"))
-                            .accessibilityValue(MapleStrings.text("Unavailable"))
-                            .accessibilityHint(MapleStrings.text("Learn why this feature is unavailable."))
-                            .accessibilityIdentifier("model.web-search-unavailable")
                         }
                     }
+                    .listRowSeparator(.hidden)
+                    .listSectionSeparator(.hidden)
                 }
                 switch entitlements.catalog {
                 case .unknown, .loading: EmptyView()
@@ -360,45 +383,105 @@
                         settingsText("Try again")
                     }
                 case .loaded:
-                    Section { ForEach(entitlements.primaryModels) { modelRow($0) } }
-                    Section {
-                        ForEach(entitlements.advancedModels) { modelRow($0) }
-                    } header: {
-                        settingsText("Advanced models")
+                    if !entitlements.primaryModels.isEmpty {
+                        Section {
+                            ForEach(entitlements.primaryModels) { modelRow($0) }
+                        } header: {
+                            modelSectionHeader("Recommended", separated: hasOptionsGroup)
+                        }
+                        .listSectionSeparator(.hidden)
+                    }
+                    if !entitlements.advancedModels.isEmpty {
+                        Section {
+                            ForEach(entitlements.advancedModels) { modelRow($0) }
+                        } header: {
+                            modelSectionHeader(
+                                "All models", separated: hasOptionsGroup || !entitlements.primaryModels.isEmpty)
+                        }
+                        .listSectionSeparator(.hidden)
                     }
                     if entitlements.primaryModels.isEmpty && entitlements.advancedModels.isEmpty {
                         settingsText("No compatible models are currently available.")
                     }
                 }
             }
-            .listStyle(.plain)
-            .listRowBackground(Color.clear)
+            .listStyle(.insetGrouped)
+            .listRowSeparator(.hidden)
+            .listSectionSpacing(16)
+            .contentMargins(.top, 24, for: .scrollContent)
+            .contentMargins(.bottom, 12, for: .scrollContent)
+            .listRowBackground(MapleSurface.card)
             .scrollContentBackground(.hidden)
             .background(MapleSurface.canvas)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .disabled(!canInteract())
             .accessibilityIdentifier("settings.models")
             .sheet(isPresented: $webSearchNoticePresented) {
                 MediaFeatureNotice(feature: .webSearch, account: entitlements)
             }
         }
 
+        private var hasOptionsGroup: Bool { projectRow != nil || webSearchPreference != nil }
+
+        private struct OptionRowSpacing: ViewModifier {
+            let pairedWithProject: Bool
+            func body(content: Content) -> some View {
+                if pairedWithProject {
+                    content.frame(minHeight: 44).padding(.bottom, 8)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                } else {
+                    content.padding(.vertical, 8)
+                }
+            }
+        }
+
+        private func modelSectionHeader(_ title: String, separated: Bool) -> some View {
+            VStack(alignment: .leading, spacing: 12) {
+                if separated {
+                    Divider().overlay(MapleSurface.border).accessibilityHidden(true)
+                }
+                settingsText(title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .textCase(nil)
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+        }
+
         private func modelRow(_ model: AccountModelChoice) -> some View {
             Button {
+                guard canInteract() else { return }
                 if entitlements.selectModel(model.id) == .allowed { onSelection(model.id) }
             } label: {
-                HStack {
-                    Text(verbatim: model.label).foregroundStyle(.primary)
-                    Spacer()
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: model.label)
+                            .font(model.isAlias ? .title3.weight(.semibold) : MapleTypography.button)
+                            .foregroundStyle(.primary)
+                        if let description = model.description, !description.isEmpty {
+                            Text(verbatim: description)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 8)
                     if entitlements.modelAccess(model) != .allowed {
                         Image(systemName: "lock").foregroundStyle(.secondary)
                     }
                     if entitlements.selectedModelID == model.id {
-                        Image(systemName: "checkmark").foregroundStyle(MapleAccent.foreground)
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(MapleAccent.foreground)
                     }
                 }
-                .frame(minHeight: 44).contentShape(Rectangle())
+                .frame(minHeight: 48).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 12, leading: 24, bottom: 12, trailing: 24))
             .disabled(entitlements.modelAccess(model) != .allowed)
             .accessibilityAddTraits(entitlements.selectedModelID == model.id ? .isSelected : [])
             .accessibilityValue(

@@ -86,7 +86,7 @@
                         .textual.textSelection(.enabled)
                         .textual.inlineStyle(
                             .default.code(.font(MapleTypography.inlineCode))
-                                .link(.foregroundColor(MapleAccent.foreground))
+                                .link(.foregroundColor(.primary), .underlineStyle(.single))
                         )
                         .textual.imageAttachmentLoader(NoMessageAttachments())
                         .textual.emojiAttachmentLoader(NoMessageAttachments())

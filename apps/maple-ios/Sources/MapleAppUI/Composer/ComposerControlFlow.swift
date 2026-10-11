@@ -1,5 +1,21 @@
 import Foundation
 
+/// The native text, insertion caret and placeholder share one padded surface.
+/// Height proposals include that padding without squeezing Dynamic Type text.
+enum ComposerEditorMetrics {
+    static let horizontalInset: CGFloat = 8
+    static let verticalInset: CGFloat = 6
+
+    static func preferredHeight(lineHeight: CGFloat, contentHeight: CGFloat, compact: Bool) -> CGFloat {
+        let minimum = max(44, lineHeight + verticalInset * 2)
+        return compact ? minimum : min(max(minimum, contentHeight), max(minimum, lineHeight * 8 + verticalInset * 2))
+    }
+
+    static func topInset(height: CGFloat, lineHeight: CGFloat, compact: Bool) -> CGFloat {
+        compact ? max(verticalInset, (height - lineHeight) / 2) : verticalInset
+    }
+}
+
 /// Deterministic packing only; measurement and placement never publish view state.
 struct ComposerFlowPlan {
     let frames: [CGRect?]
@@ -29,7 +45,7 @@ struct ComposerFlowPlan {
             rowHeight = max(rowHeight, size.height)
         }
         // The trailing cluster stays together when it fits a row. Move it as a
-        // unit so project, microphone and the primary action share the same edge.
+        // unit so microphone and the primary action share the same edge.
         if let index = frames.lastIndex(where: { $0 != nil }), trailingIndices.contains(index),
             let frame = frames[index]
         {
@@ -136,7 +152,7 @@ struct ComposerInputPlan {
             }
             let hidden = Set(
                 subviews.indices.filter {
-                    !expanded && [.model, .project].contains(subviews[$0][ComposerInputRoleKey.self])
+                    !expanded && subviews[$0][ComposerInputRoleKey.self] == .project
                 })
             let trailing = Set(
                 subviews.indices.filter {

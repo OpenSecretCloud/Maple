@@ -51,22 +51,21 @@ import XCTest
     private func openMenu() {
         tap("chat.menu"); XCTAssertTrue(app.buttons["library.new-project"].waitForExistence(timeout: 20))
     }
-    private func createProject(_ name: String) {
+    private func createProject(_ name: String) throws {
         tap("library.new-project")
-        let alert = app.alerts["New project"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 10)); alert.textFields.firstMatch.tap()
-        alert.textFields.firstMatch.typeText(name)
-        referenceScreenshot("new-project dialog")
-        alert.buttons["Create"].tap()
-        let project = app.descendants(matching: .any).matching(
+        let field = app.textFields["project-editor.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["project-editor.save"].isEnabled)
+        field.tap(); field.typeText(name)
+        referenceScreenshot("new-project form")
+        tap("project-editor.save")
+        let project = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "library.project.", name)
         ).firstMatch
         XCTAssertTrue(project.waitForExistence(timeout: 20))
         let id = String(project.identifier.dropFirst("library.project.".count))
-        do {
-            try rememberProject(id)
-            currentProjectID = id
-        } catch { XCTFail("Could not durably record this test's project ID: \(error)") }
+        guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
+        try rememberProject(id); currentProjectID = id
         XCTAssertTrue(app.staticTexts[name].firstMatch.waitForExistence(timeout: 20))
     }
     private func openProject(_ name: String) {
@@ -90,13 +89,18 @@ import XCTest
         XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: 15))
     }
     private func deleteCurrentProject() {
-        tap("Project actions"); tap("Delete project")
+        tap("project-editor.delete")
         let confirmation = app.textFields["library.delete-confirmation"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["library.delete-confirm"].isEnabled)
         referenceScreenshot("project deletion warning before confirmation")
         confirmation.tap(); confirmation.typeText("DELETE"); tap("library.delete-confirm")
-        XCTAssertTrue(app.buttons["library.new-project"].waitForExistence(timeout: 30))
+        let deleted = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                self.app.buttons["library.new-project"].isHittable
+                    && self.currentProjectID.map { !self.app.buttons["library.project." + $0].exists } == true
+            }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [deleted], timeout: 30), .completed)
         XCTAssertFalse(app.staticTexts["library.error"].exists)
         if let currentProjectID {
             do { try forgetProject(currentProjectID) } catch {
@@ -110,6 +114,74 @@ import XCTest
         ).firstMatch
     }
 
+    private func dismissChatOptionsWithSelectedModel() throws {
+        // Re-select the existing model to verify dismissal without changing the
+        // account preference. The real-root acceptance tests outside dismissal.
+        let models = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "settings.model."))
+        guard let selected = models.allElementsBoundByIndex.first(where: { $0.isSelected && $0.isEnabled }) else {
+            throw LibraryCleanupIssue.inaccessibleControl
+        }
+        for _ in 0..<5 where !selected.isHittable { app.swipeUp() }
+        guard selected.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
+        selected.tap()
+        try cleanupWait {
+            !self.app.buttons["chat-options.project"].exists && self.app.buttons["chat.model"].isHittable
+        }
+    }
+
+    private func openChatActions(_ id: String) throws {
+        guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
+        let projects = try ownedJournal().projectIDs.sorted()
+        guard try MenuChatUI.find(id, in: app, projectIDs: projects, pageLimit: 20) != nil else {
+            throw LibraryCleanupIssue.inaccessibleControl
+        }
+        try cleanupTap("library.chat-actions." + id)
+    }
+
+    private func requireEmptyProject(_ id: String) throws {
+        guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
+        try MenuChatUI.expand(id, in: app, pageLimit: 20)
+        let probe = app.staticTexts["library.cleanup-project." + id]
+        guard probe.waitForExistence(timeout: 15) else { throw LibraryCleanupIssue.inaccessibleControl }
+        try cleanupWait { probe.label != "loading" || self.app.staticTexts["library.error"].exists }
+        guard probe.label != "error", !app.staticTexts["library.error"].exists else {
+            throw LibraryCleanupIssue.loadingFailed
+        }
+        // The raw owner includes pinned children and all page state. An empty
+        // filtered menu or collapsed folder alone is never deletion authority.
+        guard probe.label == "empty" else { throw LibraryCleanupIssue.unjournaledProjectChat }
+    }
+
+    private func soleProjectChat(_ id: String) throws -> XCUIElement {
+        try MenuChatUI.expand(id, in: app, pageLimit: 20)
+        let probe = app.staticTexts["library.cleanup-project." + id]
+        try cleanupWait { probe.exists && probe.label != "loading" }
+        guard probe.label == "nonempty", !app.staticTexts["library.error"].exists else {
+            throw LibraryCleanupIssue.loadingFailed
+        }
+        let root = app.collectionViews["library.sidebar-list"]
+        let folder = root.buttons["library.project." + id]
+        guard folder.exists, folder.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
+        let followingBoundary = root.descendants(matching: .any).allElementsBoundByIndex.filter { item in
+            let projectID = String(item.identifier.dropFirst("library.project.".count))
+            let isFolder = item.identifier.hasPrefix("library.project.") && UUID(uuidString: projectID) != nil
+            return item.exists
+                && (isFolder || item.identifier == "library.drop.pinned"
+                    || item.identifier == "library.drop.recent")
+                && item.frame.minY >= folder.frame.maxY
+        }.map(\.frame.minY).min()
+        guard let followingBoundary else { throw LibraryCleanupIssue.inaccessibleControl }
+        let children = root.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")
+        ).allElementsBoundByIndex.filter {
+            $0.exists && $0.frame.minY >= folder.frame.maxY && $0.frame.maxY <= followingBoundary
+        }
+        guard children.count == 1, let row = children.first,
+            UUID(uuidString: String(row.identifier.dropFirst("library.chat.".count))) != nil
+        else { throw LibraryCleanupIssue.unjournaledProjectChat }
+        return row
+    }
+
     func testLocalComposerProjectPickerCreatesSelectsClearsAndDeletesOwnedProject() throws {
         try launchLocal()
         let project = uniqueName("picker project")
@@ -117,24 +189,24 @@ import XCTest
         let composer = app.textViews["chat.composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
         let draft = try XCTUnwrap(composer.value as? String)
-        tap("chat.project")
+        tap("chat.model"); tap("chat-options.project")
         let picker = app.navigationBars["Projects"]
         XCTAssertTrue(picker.waitForExistence(timeout: 15))
         tap("project-picker.new-project")
-        let alert = app.alerts["New project"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 10))
-        XCTAssertFalse(alert.buttons["Create"].isEnabled)
-        alert.textFields.firstMatch.tap(); alert.textFields.firstMatch.typeText(project)
+        let field = app.textFields["project-editor.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["project-editor.save"].isEnabled)
+        field.tap(); field.typeText(project)
         referenceScreenshot("composer project picker create")
-        alert.buttons["Create"].tap()
-        let dismissed = XCTNSPredicateExpectation(
+        tap("project-editor.save")
+        let returned = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in
-                !picker.exists && !alert.exists && composer.exists && composer.isHittable
+                !picker.exists && !field.exists && self.app.buttons["chat-options.project"].isHittable
             }, object: app)
-        let creationDismissed = XCTWaiter.wait(for: [dismissed], timeout: 20)
+        let creationReturned = XCTWaiter.wait(for: [returned], timeout: 20)
         // Record the returned UUID before asserting dismissal/selection, so an
         // observed created project remains owned by the existing teardown.
-        if !picker.exists { tap("chat.project") }
+        if !picker.exists { tap("chat-options.project") }
         let createdRows = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "project-picker.project.", project))
         let created = createdRows.firstMatch
@@ -143,22 +215,22 @@ import XCTest
         let id = String(created.identifier.dropFirst("project-picker.project.".count))
         guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
         try rememberProject(id); currentProjectID = id
-        XCTAssertEqual(creationDismissed, .completed, "Creating a project must automatically dismiss the picker")
+        XCTAssertEqual(creationReturned, .completed, "Creating a project must return to Chat options")
         XCTAssertTrue(created.isSelected, "The returned project must be selected in the composer")
         referenceScreenshot("composer created project selected")
         tap("project-picker.project.none")
-        try cleanupWait { !picker.exists && composer.exists && composer.isHittable }
-        XCTAssertEqual(composer.value as? String, draft)
-        tap("chat.project")
+        try cleanupWait { !picker.exists && self.app.buttons["chat-options.project"].isHittable }
+        tap("chat-options.project")
         let none = app.buttons["project-picker.project.none"]
         XCTAssertTrue(none.waitForExistence(timeout: 15))
         XCTAssertTrue(none.isSelected, "No project selection must be retained after reopening")
         XCTAssertFalse(created.isSelected)
         referenceScreenshot("composer no project selected")
         tap("project-picker.project.none")
-        try cleanupWait { !picker.exists && composer.exists && composer.isHittable }
+        try cleanupWait { !picker.exists && self.app.buttons["chat-options.project"].isHittable }
+        try dismissChatOptionsWithSelectedModel()
         XCTAssertEqual(composer.value as? String, draft)
-        openMenu(); openProject(project); deleteCurrentProject()
+        openMenu(); try requireEmptyProject(id); openProject(project); deleteCurrentProject()
         XCTAssertFalse(app.buttons["library.project." + id].exists)
     }
 
@@ -167,14 +239,14 @@ import XCTest
         let project = uniqueName("project"), renamed = project + " renamed"
         openMenu()
         referenceScreenshot("sidebar before creating the owned project")
-        createProject(project); openProject(project)
-        tap("Project instructions")
+        try createProject(project); openProject(project)
+        tap("project-editor.instructions")
         let editor = app.textViews["library.instructions-text"]
         try replace(editor, with: "Use concise responses for this synthetic local project.")
         referenceScreenshot("project instructions editor before Save")
         tap("library.instructions-save")
         XCTAssertTrue(app.navigationBars[project].waitForExistence(timeout: 20))
-        tap("Project instructions")
+        tap("project-editor.instructions")
         XCTAssertTrue(editor.waitForExistence(timeout: 15))
         XCTAssertEqual(editor.value as? String, "Use concise responses for this synthetic local project.")
         try replace(editor, with: "This edit must be discarded.")
@@ -182,15 +254,14 @@ import XCTest
         XCTAssertTrue(app.buttons["Discard changes"].waitForExistence(timeout: 10))
         referenceScreenshot("unsaved instructions discard warning")
         tap("Discard changes")
-        tap("Project instructions")
+        tap("project-editor.instructions")
         XCTAssertTrue(editor.waitForExistence(timeout: 15))
         XCTAssertEqual(editor.value as? String, "Use concise responses for this synthetic local project.")
         tap("library.instructions-cancel")
-        tap("Project actions"); tap("Rename project")
-        let rename = app.alerts["Rename project"]
-        try replace(rename.textFields.firstMatch, with: renamed, presentedAlert: rename)
-        referenceScreenshot("rename-project dialog")
-        rename.buttons["Save"].tap()
+        tap("project-editor.rename")
+        try replace(app.textFields["project-editor.name"], with: renamed)
+        referenceScreenshot("rename-project form")
+        tap("project-editor.save")
         XCTAssertTrue(app.navigationBars[renamed].waitForExistence(timeout: 20))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Local native project and saved instructions"; screenshot.lifetime = .keepAlways;
@@ -202,10 +273,11 @@ import XCTest
     func testLocalProjectChatRenamePinMoveHistoryAndExactDeletion() throws {
         try launchLocal()
         let project = uniqueName("chat project"), chatName = uniqueName("chat")
-        openMenu(); createProject(project); openProject(project)
+        openMenu(); try createProject(project)
         guard let currentProjectID else { throw LibraryCleanupIssue.invalidJournal }
+        try requireEmptyProject(currentProjectID)
         try rememberPendingCreation(currentProjectID)
-        tap("New chat in project")
+        tap("library.project.new-chat." + currentProjectID)
         let composer = app.textViews["chat.composer"]
         try replace(composer, with: "Reply with exactly: Native library workflow passed.")
         tap("chat.send")
@@ -223,12 +295,11 @@ import XCTest
             }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 90), .completed)
         XCTAssertFalse(app.staticTexts["chat.error"].exists)
-        openMenu(); openProject(project)
-        let initial = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")).firstMatch
-        XCTAssertTrue(initial.waitForExistence(timeout: 20))
+        openMenu()
+        let initial = try soleProjectChat(currentProjectID)
         let chatID = String(initial.identifier.dropFirst("library.chat.".count))
         try rememberChat(chatID); currentChatID = chatID
-        initial.press(forDuration: 1)
+        try openChatActions(chatID)
         XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 10))
         referenceScreenshot("chat context menu")
         tap("Rename")
@@ -237,23 +308,22 @@ import XCTest
         referenceScreenshot("rename-chat dialog")
         rename.buttons["Save"].tap()
         let chat = row(named: chatName)
-        XCTAssertTrue(chat.waitForExistence(timeout: 20)); chat.press(forDuration: 1); tap("Pin")
-        chat.press(forDuration: 1); XCTAssertTrue(app.buttons["Unpin"].waitForExistence(timeout: 15))
+        XCTAssertTrue(chat.waitForExistence(timeout: 20)); try openChatActions(chatID); tap("Pin")
+        try openChatActions(chatID); XCTAssertTrue(app.buttons["Unpin"].waitForExistence(timeout: 15))
         referenceScreenshot("pinned chat context menu")
         tap("Unpin")
-        chat.press(forDuration: 1); tap("Move to project")
+        try openChatActions(chatID); tap("Move to project")
         XCTAssertTrue(app.buttons["No project"].waitForExistence(timeout: 10))
         referenceScreenshot("move-chat destination chooser")
         tap("No project")
-        let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !chat.exists }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 20), .completed)
+        try requireEmptyProject(currentProjectID)
         // The project now owns no chat, so its destructive cleanup is narrowly scoped.
-        deleteCurrentProject()
+        openProject(project); deleteCurrentProject()
         let search = app.textFields["library.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 15)); search.tap(); search.typeText(chatName)
         XCTAssertTrue(chat.waitForExistence(timeout: 20))
         referenceScreenshot("filtered Recent menu with the exact owned chat")
-        chat.press(forDuration: 1); tap("Delete")
+        try openChatActions(chatID); tap("Delete")
         let confirm = app.buttons["Delete"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         referenceScreenshot("chat deletion confirmation")
@@ -305,7 +375,7 @@ extension LibraryWorkflowUITests {
             value.owner.count == 64, value.owner.allSatisfy({ $0.isHexDigit }),
             value.projectIDs.count <= 64, value.chatIDs.count <= 64,
             value.pendingCreationProjectIDs.isSubset(of: value.projectIDs),
-            (value.projectIDs.union(value.chatIDs)).allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 })
+            (value.projectIDs.union(value.chatIDs)).allSatisfy({ UUID(uuidString: $0) != nil })
         else { throw LibraryCleanupIssue.invalidJournal }
         return value
     }
@@ -325,12 +395,12 @@ extension LibraryWorkflowUITests {
         return saved.owner == owner ? saved : LibraryCleanupJournal(owner: owner)
     }
     private func rememberProject(_ id: String) throws {
-        guard !id.isEmpty, id.utf8.count <= 256 else { throw LibraryCleanupIssue.invalidJournal }
+        guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
         var journal = try ownedJournal(); journal.projectIDs.insert(id)
         recordCleanupIDs(journal); try writeJournal(journal)
     }
     private func rememberChat(_ id: String) throws {
-        guard !id.isEmpty, id.utf8.count <= 256 else { throw LibraryCleanupIssue.invalidJournal }
+        guard UUID(uuidString: id) != nil else { throw LibraryCleanupIssue.invalidJournal }
         var journal = try ownedJournal(); journal.chatIDs.insert(id)
         if let currentProjectID { journal.pendingCreationProjectIDs.remove(currentProjectID) }
         recordCleanupIDs(journal); try writeJournal(journal)
@@ -380,31 +450,6 @@ extension LibraryWorkflowUITests {
             throw LibraryCleanupIssue.inaccessibleControl
         }
     }
-    private func waitForLibraryRows() throws {
-        try cleanupWait {
-            self.app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")).count > 0
-                || self.app.buttons["Load more"].exists || self.app.staticTexts["No chats yet"].exists
-                || self.app.staticTexts["library.error"].exists
-        }
-        if app.staticTexts["library.error"].exists { throw LibraryCleanupIssue.loadingFailed }
-    }
-    private func loadedRows() -> [XCUIElement] {
-        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")).allElementsBoundByIndex
-    }
-    private func loadAllHistoryPages() throws {
-        try waitForLibraryRows()
-        for _ in 0..<20 {
-            if app.staticTexts["library.error"].exists { throw LibraryCleanupIssue.loadingFailed }
-            guard app.buttons["Load more"].exists else { return }
-            let previous = Set(loadedRows().map(\.identifier))
-            try cleanupTap("Load more")
-            try cleanupWait {
-                !self.app.buttons["Load more"].exists || self.app.staticTexts["library.error"].exists
-                    || Set(self.loadedRows().map(\.identifier)) != previous
-            }
-        }
-        throw LibraryCleanupIssue.paginationLimit
-    }
     private func cleanupChat(_ id: String) throws {
         try cleanupRestart()
         let projects = try ownedJournal().projectIDs.sorted()
@@ -413,7 +458,7 @@ extension LibraryWorkflowUITests {
         }
         XCTAssertEqual(row.identifier, "library.chat." + id)
         guard row.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
-        row.press(forDuration: 1); try cleanupTap("Delete")
+        try cleanupTap("library.chat-actions." + id); try cleanupTap("Delete")
         guard app.staticTexts["Delete chat?"].waitForExistence(timeout: 10) else {
             throw LibraryCleanupIssue.inaccessibleControl
         }
@@ -437,18 +482,15 @@ extension LibraryWorkflowUITests {
         guard target.exists else { throw LibraryCleanupIssue.deletionUnconfirmed }
         for _ in 0..<20 where !target.isHittable { app.swipeUp() }
         guard target.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }
-        target.press(forDuration: 1); try cleanupTap("library.project.manage." + id)
-        try loadAllHistoryPages()
         // Every recorded chat is cleaned first. Refuse cascade deletion if the
         // project now contains any other chat, including an unrecorded test result.
-        guard loadedRows().isEmpty, app.staticTexts["No chats yet"].exists else {
-            throw LibraryCleanupIssue.unjournaledProjectChat
-        }
-        try cleanupTap("Project actions"); try cleanupTap("Delete project")
+        try requireEmptyProject(id)
+        target.press(forDuration: 1); try cleanupTap("library.project.manage." + id)
+        try cleanupTap("project-editor.delete")
         let field = app.textFields["library.delete-confirmation"]
         guard field.waitForExistence(timeout: 10) else { throw LibraryCleanupIssue.inaccessibleControl }
         field.tap(); field.typeText("DELETE"); try cleanupTap("library.delete-confirm")
-        try cleanupWait { self.app.buttons["library.new-project"].exists }
+        try cleanupWait { self.app.buttons["library.new-project"].isHittable && !target.exists }
         guard !app.staticTexts["library.error"].exists, !target.exists else {
             throw LibraryCleanupIssue.deletionUnconfirmed
         }
