@@ -40,18 +40,20 @@ use crate::compaction::{
 };
 use crate::extensions::{
     AfterProviderResponse, AgentEventSeen, AgentSettled, AutocompleteItem, BeforeAgentStart,
-    BeforeProviderHeaders, BeforeProviderRequest, CommandContext, CustomMessageDraft, Extension,
-    ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, ForkPosition, Input,
-    InputAction, InputSource, MessageEnd, ModelSelect, ProviderStreamEvent, RegisteredTool,
-    ResourcesDiscover, ResourcesDiscoverReason, ResourcesDiscoverResult, SessionBeforeCompact,
-    SessionBeforeFork, SessionBeforeTree, SessionCompact, SessionCompactFailed, SessionInfoChanged,
-    SessionShutdown, SessionStart, SessionStartReason, SessionTree, SlashCommandInfo,
-    SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult,
-    TreePreparation, TreeSummary, UserBash, UserBashResult,
+    BeforeForkResult, BeforeProviderHeaders, BeforeProviderRequest, BeforeSwitchResult,
+    CommandContext, CustomMessageDraft, Extension, ExtensionContext, ExtensionErrorReport,
+    ExtensionRunner, ExtensionUi, ForkPosition, Input, InputAction, InputSource, MessageEnd,
+    ModelSelect, ProviderStreamEvent, RegisteredTool, ResourcesDiscover, ResourcesDiscoverReason,
+    ResourcesDiscoverResult, SessionBeforeCompact, SessionBeforeFork, SessionBeforeSwitch,
+    SessionBeforeTree, SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionShutdown,
+    SessionStart, SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource,
+    ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult, TreePreparation, TreeSummary,
+    UserBash, UserBashResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
 use crate::resources::{Resources, expand_prompt_template, expand_skill_command};
+use crate::runtime::{ForkOptions, NewSessionOptions, SessionActions, SwitchSessionOptions};
 use crate::session::{EntryKind, SessionEntry, SessionError, SessionManager, file_timestamp};
 use crate::settings::Settings;
 use crate::store::SessionStore;
@@ -80,7 +82,22 @@ pub enum AgentSessionError {
     Cancelled,
     Agent(AgentError),
     Session(SessionError),
+    /// A stored session's working directory is gone, as Pi's `MissingSessionCwdError`;
+    /// the host can ask to continue elsewhere with a `cwd_override`.
+    MissingSessionCwd(SessionCwdIssue),
+    /// The file to import is not there, as Pi's `SessionImportFileNotFoundError`.
+    ImportFileNotFound(PathBuf),
     Failed(String),
+}
+
+/// A stored session whose working directory no longer exists, as Pi's
+/// `SessionCwdIssue`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionCwdIssue {
+    pub session_file: PathBuf,
+    pub session_cwd: String,
+    /// Where the host is now, which it can continue in instead.
+    pub fallback_cwd: PathBuf,
 }
 
 impl fmt::Display for AgentSessionError {
@@ -94,6 +111,16 @@ impl fmt::Display for AgentSessionError {
             Self::Cancelled => formatter.write_str("Cancelled"),
             Self::Agent(error) => error.fmt(formatter),
             Self::Session(error) => error.fmt(formatter),
+            Self::MissingSessionCwd(issue) => write!(
+                formatter,
+                "Stored session working directory does not exist: {}\nSession file: {}\nCurrent working directory: {}",
+                issue.session_cwd,
+                issue.session_file.display(),
+                issue.fallback_cwd.display()
+            ),
+            Self::ImportFileNotFound(path) => {
+                write!(formatter, "File not found: {}", path.display())
+            }
             Self::Failed(error) => formatter.write_str(error),
         }
     }
@@ -486,6 +513,8 @@ pub(crate) struct SessionCore {
     /// User shell commands running now, by a key of their own.
     bash_runs: Mutex<Vec<(u64, CancellationToken)>>,
     next_bash: AtomicU64,
+    /// What the session's commands replace it with: its runtime, when one owns it.
+    actions: Mutex<Option<Weak<dyn SessionActions>>>,
     weak: Weak<SessionCore>,
 }
 
@@ -626,6 +655,31 @@ impl StreamFn for SessionStream {
             core.request_options(model, &mut options);
         }
         self.inner.stream(model, context, options)
+    }
+}
+
+/// Where a fork at `entry_id` ends and the text it gives back to edit, as Pi's `fork`
+/// decides: at an entry, up to and including it; before a user message, up to it, with
+/// its text.
+pub(crate) fn fork_target(
+    session: &SessionManager,
+    entry_id: &str,
+    position: ForkPosition,
+) -> Result<(Option<String>, Option<String>), AgentSessionError> {
+    let entry = session
+        .entry(entry_id)
+        .ok_or_else(|| SessionError::NotFound(entry_id.into()))?;
+    match (position, &entry.kind) {
+        (ForkPosition::At, _) => Ok((Some(entry.id.clone()), None)),
+        (
+            ForkPosition::Before,
+            EntryKind::Message {
+                message: SessionMessage::Llm(Message::User(user)),
+            },
+        ) => Ok((entry.parent_id.clone(), Some(content_text(&user.content)))),
+        (ForkPosition::Before, _) => Err(AgentSessionError::Failed(
+            "Only a user message can be forked before".into(),
+        )),
     }
 }
 
@@ -800,6 +854,7 @@ impl AgentSession {
                 run: Mutex::new(RunState::default()),
                 bash_runs: Mutex::new(Vec::new()),
                 next_bash: AtomicU64::new(1),
+                actions: Mutex::new(None),
                 weak: weak.clone(),
             }
         });
@@ -1045,23 +1100,33 @@ impl AgentSession {
     /// text to edit, and a fork at an entry holds the path up to and including it.
     /// Extensions can cancel it; a run in progress is stopped first. The session goes on
     /// in this same object, its extensions with it, so they hear of a fork as a
-    /// [`SessionStart`] with no shutdown before.
+    /// [`SessionStart`] with no shutdown before. An
+    /// [`AgentSessionRuntime`](crate::runtime::AgentSessionRuntime) forks as Pi does
+    /// instead, replacing the session.
     pub async fn fork(
         &self,
         entry_id: &str,
         position: ForkPosition,
         store: Box<dyn SessionStore>,
     ) -> Result<Option<String>, AgentSessionError> {
+        self.fork_here(entry_id, position, |session, leaf| {
+            session.fork(leaf, store)
+        })
+        .await
+    }
+
+    /// [`Self::fork`], with `fork` turning the session into the fork.
+    pub(crate) async fn fork_here(
+        &self,
+        entry_id: &str,
+        position: ForkPosition,
+        fork: impl FnOnce(&mut SessionManager, Option<&str>) -> Result<(), SessionError>,
+    ) -> Result<Option<String>, AgentSessionError> {
         let before = self
-            .core
-            .runner
-            .before_fork(
-                SessionBeforeFork {
-                    entry_id: entry_id.to_string(),
-                    position,
-                },
-                &self.core.weak,
-            )
+            .before_fork(SessionBeforeFork {
+                entry_id: entry_id.to_string(),
+                position,
+            })
             .await;
         if before.cancel {
             return Err(AgentSessionError::Cancelled);
@@ -1075,25 +1140,9 @@ impl AgentSession {
         };
         let (previous_session_file, edited_text) = {
             let mut session = lock(&self.core.session);
-            let entry = session
-                .entry(entry_id)
-                .ok_or_else(|| SessionError::NotFound(entry_id.into()))?;
-            let (leaf, edited_text) = match (position, &entry.kind) {
-                (ForkPosition::At, _) => (Some(entry.id.clone()), None),
-                (
-                    ForkPosition::Before,
-                    EntryKind::Message {
-                        message: SessionMessage::Llm(Message::User(user)),
-                    },
-                ) => (entry.parent_id.clone(), Some(content_text(&user.content))),
-                (ForkPosition::Before, _) => {
-                    return Err(AgentSessionError::Failed(
-                        "Only a user message can be forked before".into(),
-                    ));
-                }
-            };
+            let (leaf, edited_text) = fork_target(&session, entry_id, position)?;
             let previous = session.session_file().map(Path::to_path_buf);
-            session.fork(leaf.as_deref(), store)?;
+            fork(&mut session, leaf.as_deref())?;
             (previous, edited_text)
         };
         self.core.report_persistence();
@@ -1109,6 +1158,38 @@ impl AgentSession {
             )
             .await;
         Ok(edited_text)
+    }
+
+    pub(crate) async fn before_fork(&self, event: SessionBeforeFork) -> BeforeForkResult {
+        self.core.runner.before_fork(event, &self.core.weak).await
+    }
+
+    pub(crate) async fn before_switch(&self, event: SessionBeforeSwitch) -> BeforeSwitchResult {
+        self.core.runner.before_switch(event, &self.core.weak).await
+    }
+
+    /// Let the session's commands replace it through `actions`.
+    pub(crate) fn bind_actions(&self, actions: Weak<dyn SessionActions>) {
+        *lock(&self.core.actions) = Some(actions);
+    }
+
+    pub(crate) fn unbind_actions(&self) {
+        *lock(&self.core.actions) = None;
+    }
+
+    /// Change the session tree with `setup` and go on from the result, as Pi's
+    /// `newSession` runs its `setup` and refreshes the context.
+    pub(crate) fn setup_session(&self, setup: impl FnOnce(&mut SessionManager)) {
+        setup(&mut lock(&self.core.session));
+        self.core.report_persistence();
+        self.core.rebuild_messages();
+    }
+
+    /// The file the session is kept in, when its store keeps one, as Pi's `sessionFile`.
+    pub fn session_file(&self) -> Option<PathBuf> {
+        lock(&self.core.session)
+            .session_file()
+            .map(Path::to_path_buf)
     }
 
     pub async fn set_model(&self, model: Model) {
@@ -1327,15 +1408,24 @@ impl AgentSession {
         }
     }
 
-    /// Tell extensions the session is ending.
+    /// The context command handlers get, as Pi's `createReplacedSessionContext` gives a
+    /// session that replaced another.
+    pub fn command_context(&self) -> CommandContext {
+        CommandContext::new(self.extension_context())
+    }
+
+    /// Tell extensions the session is ending because the host is done with it.
     pub async fn shutdown(&self) {
+        self.shutdown_with(SessionShutdown::default()).await;
+    }
+
+    /// Tell extensions the session is ending, and why, as Pi's `session_shutdown`. A
+    /// run, retry, compaction or shell command in progress is stopped first.
+    pub async fn shutdown_with(&self, event: SessionShutdown) {
         self.abort_bash();
         self.core.abort();
         self.wait_for_idle().await;
-        self.core
-            .runner
-            .emit(&SessionShutdown, &self.core.weak)
-            .await;
+        self.core.runner.emit(&event, &self.core.weak).await;
     }
 }
 
@@ -3591,14 +3681,64 @@ impl CommandContext {
         self.session()?.navigate_tree(target_id, options).await
     }
 
-    /// Fork the session, as Pi's `fork`, into `store`.
+    /// The runtime that owns the session, when one does.
+    fn actions(&self) -> Option<Arc<dyn SessionActions>> {
+        let core = self.core()?;
+        let actions = lock(&core.actions).clone()?;
+        actions.upgrade()
+    }
+
+    /// Start a new session in place of this one, as Pi's `newSession`. It is the
+    /// runtime's to do; without one, nothing happens, as in Pi.
+    pub async fn new_session(&self, options: NewSessionOptions) -> Result<(), AgentSessionError> {
+        match self.actions() {
+            Some(actions) => actions.new_session(options).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Go on with the session stored in `path` instead, as Pi's `switchSession`. It is
+    /// the runtime's to do; without one, nothing happens, as in Pi.
+    pub async fn switch_session(
+        &self,
+        path: &Path,
+        options: SwitchSessionOptions,
+    ) -> Result<(), AgentSessionError> {
+        match self.actions() {
+            Some(actions) => actions.switch_session(path, options).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Fork the session, as Pi's `fork`, and give back the text of a user message
+    /// forked before. A runtime replaces the session with the fork; without one, the
+    /// session goes on as the fork, as [`AgentSession::fork`] does, kept in a new file
+    /// next to its own or in memory.
     pub async fn fork(
         &self,
         entry_id: &str,
-        position: ForkPosition,
-        store: Box<dyn SessionStore>,
+        options: ForkOptions,
     ) -> Result<Option<String>, AgentSessionError> {
-        self.session()?.fork(entry_id, position, store).await
+        if let Some(actions) = self.actions() {
+            return actions.fork(entry_id, options).await;
+        }
+        let session = self.session()?;
+        let edited = session
+            .fork_here(entry_id, options.position, |tree, leaf| {
+                match tree
+                    .session_file()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                {
+                    Some(dir) => tree.fork_in(leaf, &dir),
+                    None => tree.fork(leaf, Box::new(crate::store::MemoryStore)),
+                }
+            })
+            .await?;
+        if let Some(with_session) = options.with_session {
+            with_session(session.command_context()).await;
+        }
+        Ok(edited)
     }
 
     /// The options the session builds its system prompt from, as Pi's

@@ -99,8 +99,51 @@ pub struct BeforeForkResult {
     pub cancel: bool,
 }
 
+/// Why a session ends, as Pi's `session_shutdown` gives it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionShutdownReason {
+    /// The host is done with it.
+    #[default]
+    Quit,
+    /// It is built again after the host reloaded what it is made of.
+    Reload,
+    /// A new session replaces it.
+    New,
+    /// A stored session replaces it.
+    Resume,
+    /// A fork of it replaces it.
+    Fork,
+}
+
+/// The session is ending, as Pi's `session_shutdown`.
+#[derive(Clone, Debug, Default)]
+pub struct SessionShutdown {
+    pub reason: SessionShutdownReason,
+    /// The file of the session that replaces this one, when its store keeps one.
+    pub target_session_file: Option<PathBuf>,
+}
+
+/// Why a session is about to be replaced, as Pi's `session_before_switch` gives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionSwitchReason {
+    /// By a new session.
+    New,
+    /// By a stored one.
+    Resume,
+}
+
+/// A session about to be replaced by a new or a stored one. Return `cancel` to keep it.
 #[derive(Clone, Debug)]
-pub struct SessionShutdown;
+pub struct SessionBeforeSwitch {
+    pub reason: SessionSwitchReason,
+    /// The file to switch to; none for a new session, as in Pi.
+    pub target_session_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BeforeSwitchResult {
+    pub cancel: bool,
+}
 
 /// The session's name changed; `None` when it was cleared.
 #[derive(Clone, Debug)]
@@ -430,6 +473,7 @@ events! {
     SessionBeforeCompact => BeforeCompactResult, "session_before_compact";
     SessionCompact => (), "session_compact";
     SessionCompactFailed => (), "session_compact_failed";
+    SessionBeforeSwitch => BeforeSwitchResult, "session_before_switch";
     SessionBeforeFork => BeforeForkResult, "session_before_fork";
     SessionBeforeTree => BeforeTreeResult, "session_before_tree";
     SessionTree => (), "session_tree";
@@ -652,6 +696,12 @@ impl ExtensionContext {
 #[derive(Clone)]
 pub struct CommandContext {
     context: ExtensionContext,
+}
+
+impl CommandContext {
+    pub(crate) fn new(context: ExtensionContext) -> Self {
+        Self { context }
+    }
 }
 
 impl std::ops::Deref for CommandContext {
@@ -1218,6 +1268,19 @@ impl ExtensionRunner {
             outcome.compaction = answer.compaction.or(outcome.compaction);
         }
         outcome
+    }
+
+    pub async fn before_switch(
+        &self,
+        event: SessionBeforeSwitch,
+        core: &Weak<SessionCore>,
+    ) -> BeforeSwitchResult {
+        let cancel = self
+            .emit_until_cancel(event, core, |answer: &BeforeSwitchResult| answer.cancel)
+            .await
+            .iter()
+            .any(|answer| answer.cancel);
+        BeforeSwitchResult { cancel }
     }
 
     pub async fn before_fork(

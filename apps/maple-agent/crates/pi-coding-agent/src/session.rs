@@ -400,6 +400,15 @@ pub(crate) fn file_timestamp(ms: i64) -> String {
     )
 }
 
+/// The file Pi keeps the session with `header` in, in `dir`: `<time>_<id>.jsonl`.
+fn session_file_in(dir: &Path, header: &SessionHeader) -> PathBuf {
+    dir.join(format!(
+        "{}_{}.jsonl",
+        file_timestamp(header.timestamp),
+        header.id
+    ))
+}
+
 /// The folder Pi keeps the session files of `cwd` in: `sessions/--<cwd>--` in the agent
 /// folder, the path's separators and colons as dashes, as Pi's `getDefaultSessionDir`
 /// names it.
@@ -470,12 +479,15 @@ impl SessionManager {
     /// written once there is a conversation.
     pub fn create_in(cwd: impl Into<String>, dir: &Path) -> Self {
         let mut manager = Self::in_memory(cwd);
-        manager.store = Box::new(JsonlStore::new(dir.join(format!(
-            "{}_{}.jsonl",
-            file_timestamp(manager.header.timestamp),
-            manager.header.id
-        ))));
+        manager.store = Box::new(JsonlStore::new(session_file_in(dir, &manager.header)));
         manager
+    }
+
+    /// Name `parent` as the session this one comes from, as Pi's `newSession` takes
+    /// `parentSession`. It is recorded with the header, so before the first write.
+    pub fn with_parent_session(mut self, parent: impl Into<String>) -> Self {
+        self.header.parent_session = Some(parent.into());
+        self
     }
 
     /// The session kept in `file`, as Pi's `SessionManager.open` opens one: read back,
@@ -912,6 +924,49 @@ impl SessionManager {
         leaf_id: Option<&str>,
         store: Box<dyn SessionStore>,
     ) -> Result<(), SessionError> {
+        self.fork_with(leaf_id, self.parent_name(), |_| store)
+    }
+
+    /// How a fork names this session as its parent: by its file, as Pi does.
+    fn parent_name(&self) -> Option<String> {
+        self.session_file()
+            .map(|file| file.to_string_lossy().into_owned())
+    }
+
+    /// [`Self::fork`] into a file of its own in `dir`, named as [`Self::create_in`]
+    /// names one, as Pi's `createBranchedSession` keeps a fork in the session's folder.
+    pub fn fork_in(&mut self, leaf_id: Option<&str>, dir: &Path) -> Result<(), SessionError> {
+        self.fork_with(leaf_id, self.parent_name(), |header| {
+            Box::new(JsonlStore::new(session_file_in(dir, header)))
+        })
+    }
+
+    /// A new session holding only the path to `leaf_id`, as [`Self::fork`] makes one,
+    /// leaving this one as it is. It is kept in `dir`, or in memory for `None`.
+    pub fn branched(
+        &self,
+        leaf_id: Option<&str>,
+        dir: Option<&Path>,
+    ) -> Result<SessionManager, SessionError> {
+        let mut copy = Self::from_parts(
+            self.header.clone(),
+            self.entries.clone(),
+            Box::new(MemoryStore),
+            true,
+        );
+        copy.fork_with(leaf_id, self.parent_name(), |header| match dir {
+            Some(dir) => Box::new(JsonlStore::new(session_file_in(dir, header))),
+            None => Box::new(MemoryStore),
+        })?;
+        Ok(copy)
+    }
+
+    fn fork_with(
+        &mut self,
+        leaf_id: Option<&str>,
+        parent_session: Option<String>,
+        store_for: impl FnOnce(&SessionHeader) -> Box<dyn SessionStore>,
+    ) -> Result<(), SessionError> {
         if let Some(leaf_id) = leaf_id
             && !self.index.contains_key(leaf_id)
         {
@@ -972,12 +1027,10 @@ impl SessionManager {
             id: new_session_id(),
             timestamp: now_ms(),
             cwd: self.header.cwd.clone(),
-            parent_session: self
-                .session_file()
-                .map(|file| file.to_string_lossy().into_owned()),
+            parent_session,
         };
         self.entries = entries;
-        self.store = store;
+        self.store = store_for(&self.header);
         self.flushed = false;
         self.rebuild_index();
         self.persist();

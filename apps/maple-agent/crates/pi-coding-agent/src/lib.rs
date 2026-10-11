@@ -16,7 +16,9 @@
 //! - [`AgentSession`]: an agent over a session with all of the above, plus retry and the
 //!   user's own shell commands ([`bash_executor`]);
 //! - [`sdk`]: a session set up in one call from the agent's folders, as Pi's
-//!   `createAgentSession`.
+//!   `createAgentSession`;
+//! - [`runtime`]: the session a host is on, replaced by a new, stored or forked one, as
+//!   Pi's `AgentSessionRuntime` replaces it.
 //!
 //! A session gets the built-in tools for its folder; hosts configure them, add their
 //! own, and replace one by registering a tool with its name.
@@ -29,6 +31,7 @@ mod ids;
 pub mod messages;
 pub mod models;
 pub mod resources;
+pub mod runtime;
 pub mod sdk;
 pub mod session;
 pub mod settings;
@@ -40,9 +43,13 @@ pub mod trust;
 pub use agent_session::{
     AgentSession, AgentSessionError, AgentSessionEvent, AgentSessionOptions, BashCommandOptions,
     CompactionReason, ContextUsage, DEFAULT_THINKING_LEVEL, Delivery, PromptOptions, PromptOutcome,
-    SessionStats, StreamingBehavior, SummarySource, TokenTotals, TreeMove, TreeNavigation,
+    SessionCwdIssue, SessionStats, StreamingBehavior, SummarySource, TokenTotals, TreeMove,
+    TreeNavigation,
 };
 pub use bash_executor::BashResult;
 pub use messages::SessionMessage;
 pub use models::{ApiKeySource, ModelRegistry, StaticKeys};
+pub use runtime::{
+    AgentSessionRuntime, RuntimeFactory, RuntimeTarget, create_agent_session_runtime,
+};
 pub use sdk::{CreateAgentSessionOptions, CreateAgentSessionResult, create_agent_session};
