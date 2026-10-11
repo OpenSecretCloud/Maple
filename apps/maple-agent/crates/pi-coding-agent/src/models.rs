@@ -11,6 +11,13 @@ use pi_ai::{
 #[async_trait]
 pub trait ApiKeySource: Send + Sync {
     async fn api_key(&self, provider: &str) -> Option<String>;
+
+    /// Whether `provider` has credentials, as Pi's `hasConfiguredAuth` asks before it
+    /// starts a session with one of its models: whether it has a key, unless the source
+    /// can tell more cheaply.
+    async fn has_configured_auth(&self, provider: &str) -> bool {
+        self.api_key(provider).await.is_some()
+    }
 }
 
 /// Fixed keys by provider.
@@ -148,5 +155,21 @@ impl ModelRegistry {
 
     pub async fn api_key(&self, provider: &str) -> Option<String> {
         self.keys.api_key(provider).await
+    }
+
+    pub async fn has_configured_auth(&self, provider: &str) -> bool {
+        self.keys.has_configured_auth(provider).await
+    }
+
+    /// The models whose providers have credentials, in the order they were added, as
+    /// Pi's `getAvailable`.
+    pub async fn available_models(&self) -> Vec<Model> {
+        let mut available = Vec::new();
+        for model in self.models() {
+            if self.has_configured_auth(&model.provider).await {
+                available.push(model);
+            }
+        }
+        available
     }
 }

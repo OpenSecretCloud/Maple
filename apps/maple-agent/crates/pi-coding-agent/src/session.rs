@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pi_agent_core::AgentMessage;
 use pi_ai::transcript::current_system_message;
@@ -372,6 +372,50 @@ fn is_conversation(entry: &SessionEntry) -> bool {
     )
 }
 
+/// `ms` as Pi puts it in a file name: its UTC ISO time with `:` and `.` as `-`, such
+/// as `2026-10-11T04-30-00-123Z`.
+pub(crate) fn file_timestamp(ms: i64) -> String {
+    let (days, rest) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
+    // Days to a civil date, after Howard Hinnant's `civil_from_days`.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}-{:02}-{:02}-{:03}Z",
+        rest / 3_600_000,
+        rest / 60_000 % 60,
+        rest / 1_000 % 60,
+        rest % 1_000
+    )
+}
+
+/// The folder Pi keeps the session files of `cwd` in: `sessions/--<cwd>--` in the agent
+/// folder, the path's separators and colons as dashes, as Pi's `getDefaultSessionDir`
+/// names it.
+pub fn default_session_dir(cwd: &Path, agent_dir: &Path) -> PathBuf {
+    let cwd = cwd.to_string_lossy();
+    let cwd = cwd.strip_prefix(['/', '\\']).unwrap_or(&cwd);
+    let name: String = cwd
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' => '-',
+            other => other,
+        })
+        .collect();
+    agent_dir.join("sessions").join(format!("--{name}--"))
+}
+
 /// The session tree of one conversation and where it is stored.
 pub struct SessionManager {
     header: SessionHeader,
@@ -419,6 +463,42 @@ impl SessionManager {
     /// A session that is never stored.
     pub fn in_memory(cwd: impl Into<String>) -> Self {
         Self::create(cwd, Box::new(MemoryStore))
+    }
+
+    /// A new session kept in a file of its own in `dir`, named as Pi names one: the
+    /// time it started and its id, `<time>_<id>.jsonl`. Like any session, the file is
+    /// written once there is a conversation.
+    pub fn create_in(cwd: impl Into<String>, dir: &Path) -> Self {
+        let mut manager = Self::in_memory(cwd);
+        manager.store = Box::new(JsonlStore::new(dir.join(format!(
+            "{}_{}.jsonl",
+            file_timestamp(manager.header.timestamp),
+            manager.header.id
+        ))));
+        manager
+    }
+
+    /// The session kept in `file`, as Pi's `SessionManager.open` opens one: read back,
+    /// or a new session to be kept there when the file is missing or empty. Its folder
+    /// is the one recorded, unless `cwd_override` replaces it. A file with content but
+    /// no session in it is an error.
+    pub fn open_file(file: &Path, cwd_override: Option<&str>) -> io::Result<Self> {
+        let store = Box::new(JsonlStore::new(file));
+        match JsonlStore::load(file)? {
+            Some((mut header, entries)) => {
+                if let Some(cwd) = cwd_override {
+                    header.cwd = cwd.to_string();
+                }
+                Ok(Self::open(header, entries, store))
+            }
+            None => {
+                let cwd = match cwd_override {
+                    Some(cwd) => cwd.to_string(),
+                    None => std::env::current_dir()?.to_string_lossy().into_owned(),
+                };
+                Ok(Self::create(cwd, store))
+            }
+        }
     }
 
     /// A stored session, read back. The leaf is its last entry.
@@ -1085,6 +1165,61 @@ mod tests {
         std::fs::write(&path, text).unwrap();
         let (_, entries) = JsonlStore::load(&path).unwrap().unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn file_names_carry_pis_timestamps() {
+        assert_eq!(file_timestamp(0), "1970-01-01T00-00-00-000Z");
+        assert_eq!(
+            file_timestamp(1_445_412_480_123),
+            "2015-10-21T07-28-00-123Z"
+        );
+        assert_eq!(file_timestamp(951_782_400_000), "2000-02-29T00-00-00-000Z");
+    }
+
+    #[test]
+    fn session_files_are_named_and_kept_as_pis() {
+        let agent = Path::new("/home/me/.agent");
+        assert_eq!(
+            default_session_dir(Path::new("/work/my app"), agent),
+            agent.join("sessions").join("--work-my app--")
+        );
+        assert_eq!(
+            default_session_dir(Path::new("C:\\Users\\me\\proj"), agent),
+            agent.join("sessions").join("--C--Users-me-proj--")
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = SessionManager::create_in("/work", dir.path());
+        let file = session.session_file().unwrap().to_path_buf();
+        assert_eq!(file.parent(), Some(dir.path()));
+        assert_eq!(
+            file.file_name().unwrap().to_string_lossy(),
+            format!(
+                "{}_{}.jsonl",
+                file_timestamp(session.header().timestamp),
+                session.id()
+            )
+        );
+        session.append_message(user("hello"));
+        let reopened = SessionManager::open_file(&file, None).unwrap();
+        assert_eq!(reopened.header(), session.header());
+        assert_eq!(texts(&reopened), ["hello"]);
+        assert_eq!(
+            SessionManager::open_file(&file, Some("/elsewhere"))
+                .unwrap()
+                .cwd(),
+            "/elsewhere"
+        );
+
+        // A missing file is a new session to be kept there.
+        let missing = dir.path().join("later.jsonl");
+        let fresh = SessionManager::open_file(&missing, Some("/work")).unwrap();
+        assert!(fresh.entries().is_empty());
+        assert_eq!(fresh.session_file(), Some(missing.as_path()));
+        // Content that is no session is refused.
+        std::fs::write(&missing, "{\"type\":\"message\"}\n").unwrap();
+        assert!(SessionManager::open_file(&missing, None).is_err());
     }
 
     #[test]

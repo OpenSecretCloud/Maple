@@ -52,16 +52,27 @@ pub trait ExtensionEvent: Clone + Send + Sync + 'static {
     type Output: Default + Send + 'static;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why a session starts, as Pi's `session_start` gives it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SessionStartReason {
+    /// The host's first session.
+    #[default]
     Startup,
+    /// The same session, built again after the host reloaded what it is made of.
+    Reload,
+    /// A new session in place of the one before.
+    New,
+    /// A stored session in place of the one before.
+    Resume,
+    /// A fork of the one before.
     Fork,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SessionStart {
     pub reason: SessionStartReason,
-    /// The file of the session a fork came from, when its store kept one.
+    /// The file of the session before, for a new, resumed or forked one, when its store
+    /// kept one.
     pub previous_session_file: Option<PathBuf>,
 }
 

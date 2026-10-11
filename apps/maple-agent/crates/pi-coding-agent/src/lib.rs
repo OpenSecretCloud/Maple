@@ -14,7 +14,9 @@
 //! - [`tools`]: Pi's built-in tools, `read`, `bash`, `edit`, `write`, `grep`, `find` and
 //!   `ls`, and `powershell`;
 //! - [`AgentSession`]: an agent over a session with all of the above, plus retry and the
-//!   user's own shell commands ([`bash_executor`]).
+//!   user's own shell commands ([`bash_executor`]);
+//! - [`sdk`]: a session set up in one call from the agent's folders, as Pi's
+//!   `createAgentSession`.
 //!
 //! A session gets the built-in tools for its folder; hosts configure them, add their
 //! own, and replace one by registering a tool with its name.
@@ -27,6 +29,7 @@ mod ids;
 pub mod messages;
 pub mod models;
 pub mod resources;
+pub mod sdk;
 pub mod session;
 pub mod settings;
 pub mod store;
@@ -42,3 +45,4 @@ pub use agent_session::{
 pub use bash_executor::BashResult;
 pub use messages::SessionMessage;
 pub use models::{ApiKeySource, ModelRegistry, StaticKeys};
+pub use sdk::{CreateAgentSessionOptions, CreateAgentSessionResult, create_agent_session};

@@ -52,7 +52,7 @@ use crate::extensions::{
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
 use crate::resources::{Resources, expand_prompt_template, expand_skill_command};
-use crate::session::{EntryKind, SessionEntry, SessionError, SessionManager};
+use crate::session::{EntryKind, SessionEntry, SessionError, SessionManager, file_timestamp};
 use crate::settings::Settings;
 use crate::store::SessionStore;
 use crate::system_prompt::{
@@ -355,6 +355,9 @@ pub struct AgentSessionOptions {
     /// The settings file the session saves what its setters change to, as Pi saves the
     /// user's settings file. Without one, changes stay in the session.
     pub settings_file: Option<PathBuf>,
+    /// What extensions hear as the session starts, as Pi's `sessionStartEvent`: a
+    /// startup unless the host says the session replaces another.
+    pub session_start: SessionStart,
 }
 
 impl AgentSessionOptions {
@@ -381,6 +384,7 @@ impl AgentSessionOptions {
             skill_load_hint: None,
             project_trusted: false,
             settings_file: None,
+            session_start: SessionStart::default(),
         }
     }
 }
@@ -561,34 +565,6 @@ fn write_settings(file: &Path, changes: Vec<(&[&str], Value)>) -> std::io::Resul
     std::fs::rename(&staging, file)
 }
 
-/// `ms` as Pi names an export: its UTC ISO time with `:` and `.` as `-`, such as
-/// `2026-10-11T04-30-00-123Z`.
-fn file_timestamp(ms: i64) -> String {
-    let (days, rest) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
-    // Days to a civil date, after Howard Hinnant's `civil_from_days`.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let day_of_era = z.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}-{:02}-{:02}-{:03}Z",
-        rest / 3_600_000,
-        rest / 60_000 % 60,
-        rest / 1_000 % 60,
-        rest % 1_000
-    )
-}
-
 /// What an image becomes when images are blocked, as in Pi.
 const IMAGES_BLOCKED: &str = "Image reading is disabled.";
 
@@ -673,8 +649,26 @@ fn placeholder_model() -> Model {
     }
 }
 
+/// The model and thinking level a session set up as Pi's `createAgentSession` asks to
+/// start with: [`crate::sdk::create_agent_session`].
+pub(crate) struct SetupChoice {
+    pub model: Option<Model>,
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
 impl AgentSession {
     pub async fn new(options: AgentSessionOptions) -> Result<Self, AgentSessionError> {
+        Ok(Self::start(options, None).await?.0)
+    }
+
+    /// Build the session. It starts with the model it recorded, when the registry has
+    /// it, or else the host's; with `setup`, as Pi's `createAgentSession` chooses, which
+    /// says why the session did not start with the model it recorded.
+    pub(crate) async fn start(
+        mut options: AgentSessionOptions,
+        setup: Option<SetupChoice>,
+    ) -> Result<(Self, Option<String>), AgentSessionError> {
+        let session_start = std::mem::take(&mut options.session_start);
         let projection = options.session.projection();
         let has_messages = !projection.messages.is_empty();
         let has_thinking_entry = options
@@ -822,18 +816,43 @@ impl AgentSession {
                 models.register_classifier_api(api, implementation.clone());
             }
         }
-        // A provider an extension registers can serve the session's model, so look it up
-        // again now that they are registered.
-        if let Some(model) = projection
-            .model
-            .as_ref()
-            .and_then(|(provider, id)| models.find(provider, id))
-        {
-            core.agent.set_model(model.clone());
-            core.agent
-                .set_thinking_level(model.clamp_thinking_level(requested_thinking_level));
-            *lock(&core.model) = Some(model);
-        }
+        // A provider an extension registers can serve the session's model, so the model
+        // is chosen again now that they are registered.
+        let model_fallback_message = match setup {
+            None => {
+                if let Some(model) = projection
+                    .model
+                    .as_ref()
+                    .and_then(|(provider, id)| models.find(provider, id))
+                {
+                    core.agent.set_model(model.clone());
+                    core.agent
+                        .set_thinking_level(model.clamp_thinking_level(requested_thinking_level));
+                    *lock(&core.model) = Some(model);
+                }
+                None
+            }
+            Some(SetupChoice {
+                model,
+                thinking_level,
+            }) => {
+                let settings = lock(&core.settings).clone();
+                let chosen = crate::sdk::choose_model(
+                    &models,
+                    &settings,
+                    &projection,
+                    has_thinking_entry,
+                    model,
+                    thinking_level,
+                )
+                .await;
+                core.agent
+                    .set_model(chosen.model.clone().unwrap_or_else(placeholder_model));
+                core.agent.set_thinking_level(chosen.thinking_level);
+                *lock(&core.model) = chosen.model;
+                chosen.fallback_message
+            }
+        };
         {
             // Recorded so a resumed session starts with the same model and level, as in Pi:
             // a new session records both, an older one the level it now has.
@@ -859,18 +878,15 @@ impl AgentSession {
             core: core.weak.clone(),
         }));
         core.sync_tools();
-        core.runner
-            .emit(
-                &SessionStart {
-                    reason: SessionStartReason::Startup,
-                    previous_session_file: None,
-                },
-                &core.weak,
-            )
-            .await;
-        core.discover_resources(ResourcesDiscoverReason::Startup)
-            .await;
-        Ok(Self { core })
+        // As in Pi, resources are discovered again after a reload, and as at startup
+        // for any other start.
+        let discover_reason = match session_start.reason {
+            SessionStartReason::Reload => ResourcesDiscoverReason::Reload,
+            _ => ResourcesDiscoverReason::Startup,
+        };
+        core.runner.emit(&session_start, &core.weak).await;
+        core.discover_resources(discover_reason).await;
+        Ok((Self { core }, model_fallback_message))
     }
 
     /// Ask extensions about a shell command the user runs, before it runs, as Pi's hosts
@@ -3598,16 +3614,6 @@ impl CommandContext {
 mod tests {
     use super::*;
     use pi_ai::transcript::system_message_text;
-
-    #[test]
-    fn export_names_carry_pis_timestamps() {
-        assert_eq!(file_timestamp(0), "1970-01-01T00-00-00-000Z");
-        assert_eq!(
-            file_timestamp(1_445_412_480_123),
-            "2015-10-21T07-28-00-123Z"
-        );
-        assert_eq!(file_timestamp(951_782_400_000), "2000-02-29T00-00-00-000Z");
-    }
 
     #[test]
     fn a_forced_prompt_replaces_text_but_keeps_tools() {
