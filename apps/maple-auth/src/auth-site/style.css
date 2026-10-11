@@ -14,12 +14,12 @@
 @layer base {
   :root {
     --app-font-family: "Manrope", sans-serif;
-    --background: 0 0% 98%;
-    --foreground: 0 0% 15%;
+    --background: 240 14% 97%;
+    --foreground: 234 9% 21%;
     --primary: 0 0% 9%;
     --primary-foreground: 0 0% 98%;
-    --muted-foreground: 0 0% 45%;
-    --ring: 17 100% 72%;
+    --muted-foreground: 236 8% 40%;
+    --ring: 13 79% 57%;
     --maple-primary: 17 100% 72%;
     --maple-primary-container: 17 100% 94%;
     --maple-secondary: 237 8% 57%;
@@ -30,27 +30,68 @@
     background: hsl(var(--background));
     color: hsl(var(--foreground));
     font-family: var(--app-font-family);
-    font-size: 14px;
+    font-size: 15px;
     line-height: 1.6;
   }
 }
 
+/* Card and action treatment follows marketing's newsletter/email-preferences pages.
+   Keep these assets/styles owned by Auth; there is no runtime marketing dependency. */
 @layer components {
   .auth-shell {
     display: grid;
+    min-height: 100vh;
     min-height: 100dvh;
     place-items: center;
     padding: 24px;
+    background: radial-gradient(ellipse at 50% 0%, rgb(255 151 113 / 12%), transparent 65%) #f7f7f9;
   }
 
   .auth-card {
     display: grid;
     gap: 24px;
-    width: min(100%, 448px);
-    padding: 32px;
-    border: 1px solid #e5e5e5;
-    border-radius: 16px;
+    width: min(100%, 480px);
+    padding: 40px;
+    border: 1px solid rgb(32 26 24 / 12%);
+    border-radius: 28px;
     background: #fff;
-    box-shadow: 0 12px 40px rgb(0 0 0 / 4%);
+    box-shadow: 0 10px 30px -10px rgb(34 26 24 / 18%);
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  .auth-logo {
+    width: 124px;
+    height: auto;
+    margin: 0 auto;
+  }
+
+  .auth-title {
+    color: #30313a;
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .auth-card p {
+    color: #5e5f6e;
+  }
+
+  .auth-card .font-medium {
+    color: #30313a;
+  }
+
+  @media (max-width: 480px) {
+    .auth-card {
+      padding: 32px 24px;
+    }
+
+    .auth-title {
+      font-size: 24px;
+    }
+
+    .auth-card button {
+      width: 100%;
+    }
   }
 }

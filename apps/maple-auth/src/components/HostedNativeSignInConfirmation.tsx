@@ -151,7 +151,7 @@ export function HostedNativeSignInConfirmation({
         Continue only if you started this login in {appLabel}.
         {!isAgent && " Check that Maple shows the same account before signing in there."}
       </p>
-      <div className="flex flex-wrap justify-end gap-2">
+      <div className="flex flex-wrap justify-center gap-2">
         <Button type="button" variant="outline" onClick={cancel}>
           Cancel
         </Button>
