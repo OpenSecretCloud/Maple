@@ -87,7 +87,7 @@ describe("desktop OAuth transport selection", () => {
     const authUrl = buildTransportV2DesktopAuthUrl(state);
     const parsed = new URL(authUrl);
 
-    expect(parsed.origin).toBe("https://trymaple.ai");
+    expect(parsed.origin).toBe("https://auth.maple.ai");
     expect(parsed.pathname).toBe("/desktop-auth");
     expect(parsed.searchParams.get("provider")).toBe("github");
     expect(parsed.searchParams.get("transport")).toBe("v2");

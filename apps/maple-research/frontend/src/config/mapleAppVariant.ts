@@ -32,7 +32,7 @@ export function nativeAuthOrigin(
   variant: MapleAppVariant,
   devOrigin: unknown = import.meta.env.VITE_MAPLE_DEV_AUTH_ORIGIN
 ): string {
-  return variant === "dev" ? parseDevAuthOrigin(devOrigin) : "https://trymaple.ai";
+  return variant === "dev" ? parseDevAuthOrigin(devOrigin) : "https://auth.maple.ai";
 }
 
 /** The hosted dev handoff is allowed only on the fixed dev site and backend. */

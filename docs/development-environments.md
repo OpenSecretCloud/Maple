@@ -119,13 +119,14 @@ That validates the produced artifact and is distinct from this interactive loop.
 In current Research, native OAuth's API URL and browser auth origin are separate:
 `startNativeOAuth` prepares against the configured API, while
 `buildTransportV2DesktopAuthUrl` selects `/desktop-auth` from the app variant's
-auth origin. The production variant uses `https://trymaple.ai`; Dev requires
+auth origin. The production native variant uses `https://auth.maple.ai`; Dev requires
 `VITE_MAPLE_DEV_AUTH_ORIGIN` and its hosted handoff accepts only the fixed
 development backend. Pointing `VITE_OPEN_SECRET_API_URL` at Local does **not**
 localize native OAuth. The Dev auth-origin parser requires canonical HTTPS;
 setting it to a loopback HTTP URL is not a supported local OAuth setup.
 
-Research keeps its built-in auth. The independent
+Research web keeps its built-in auth and existing callback defaults; changing the
+native entry does not move web sign-in or redirect older installed clients. The independent
 [Auth app](../apps/maple-auth/README.md) has its own SDK pin, configuration,
 routes, and publisher. Follow source and the applicable component guide for
 actual callback support rather than inferring it from a hostname.

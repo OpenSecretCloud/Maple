@@ -267,7 +267,7 @@ describe("native OAuth Transport V2 handoff", () => {
 
     const openerArgs = calls[1]?.args as { url: string };
     const opened = new URL(openerArgs.url);
-    expect(opened.origin).toBe("https://trymaple.ai");
+    expect(opened.origin).toBe("https://auth.maple.ai");
     expect(opened.pathname).toBe("/desktop-auth");
     const expectedEntries: [string, string][] = [
       ["native_request_id", REQUEST_ID],
