@@ -51,7 +51,7 @@ final class MessageRenderModel {
         }
     }
 
-    /// Retain only a completed projection during an owned temporary occlusion.
+    /// Retain only a completed projection during owned viewport removal or occlusion.
     /// Rotate the epoch even when work is complete: late tasks cannot publish.
     func suspend() {
         epoch = UUID()

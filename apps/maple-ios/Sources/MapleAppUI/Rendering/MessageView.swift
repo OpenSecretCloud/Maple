@@ -19,6 +19,19 @@
         }
     }
 
+    #if DEBUG
+        private struct MessageRenderDisappearanceDiagnosticKey: EnvironmentKey {
+            static let defaultValue: @MainActor @Sendable (Bool, Bool) -> Void = { _, _ in }
+        }
+
+        extension EnvironmentValues {
+            var messageRenderDisappearanceDiagnostic: @MainActor @Sendable (Bool, Bool) -> Void {
+                get { self[MessageRenderDisappearanceDiagnosticKey.self] }
+                set { self[MessageRenderDisappearanceDiagnosticKey.self] = newValue }
+            }
+        }
+    #endif
+
     /// Shared message surface for every supported iOS version. Its parser owns no network capability.
     public struct MessageView: View {
         private let text: String
@@ -34,6 +47,9 @@
         @Environment(\.scenePhase) private var scenePhase
         @Environment(\.legibilityWeight) private var legibilityWeight
         @Environment(\.retainedMessageRendering) private var retainsRendering
+        #if DEBUG
+            @Environment(\.messageRenderDisappearanceDiagnostic) private var disappearanceDiagnostic
+        #endif
         @State private var windowHost: EquationLifecycleWindowHost
         @State private var model: MessageRenderModel
 
@@ -156,8 +172,13 @@
             .onDisappear {
                 #if DEBUG
                     diagnosticAppearance?(false)
+                    let projection = model.generation == accountGeneration ? model.prepared?.presentationKey : nil
                 #endif
                 if retainsRendering() { model.suspend() } else { model.cancel() }
+                #if DEBUG
+                    disappearanceDiagnostic(
+                        projection != nil, projection != nil && projection == model.prepared?.presentationKey)
+                #endif
                 windowHost.renderer?.invalidate()
             }
         }

@@ -72,6 +72,10 @@
                                         model?.scrollMetrics = metrics
                                     }
                                 )
+                                .environment(\.messageRenderDisappearanceDiagnostic) {
+                                    [weak model] prepared, retained in
+                                    model?.recordRenderingDisappearance(prepared: prepared, retained: retained)
+                                }
                             }
                         }
                         .safeAreaInset(edge: .top, spacing: 0) {
@@ -260,7 +264,16 @@
         }
 
         @ViewBuilder private func controls(_ model: ShippingViewportFixtureModel) -> some View {
-            if model.draftLoadProof {
+            if model.historyRenderingProof {
+                VStack(spacing: 4) {
+                    Text(model.summary).font(.caption2)
+                        .accessibilityIdentifier("shipping-viewport.summary")
+                    Text("Synthetic completed render lifecycles").font(.caption2)
+                        .accessibilityIdentifier("shipping-history.render-lifecycles")
+                        .accessibilityValue(model.renderLifecyclesJSON)
+                }
+                .frame(maxWidth: .infinity).frame(height: 60)
+            } else if model.draftLoadProof {
                 VStack(spacing: 4) {
                     HStack {
                         Button("Release stored draft") { Task { await model.releaseDraftLoad() } }
@@ -349,10 +362,13 @@
         private var selectedOptionsProjects: [UUID: String] = [:]
         private let service = ShippingViewportService(
             complexMarkup: ProcessInfo.processInfo.arguments.contains("--maple-shipping-complex-markdown-proof"),
-            transcriptRows: ProcessInfo.processInfo.arguments.contains("--maple-shipping-transcript-rows-proof"))
+            transcriptRows: ProcessInfo.processInfo.arguments.contains("--maple-shipping-transcript-rows-proof"),
+            historyRendering: ProcessInfo.processInfo.arguments.contains("--maple-shipping-history-rendering-proof"))
         private let store: ShippingViewportStore
         let draftLoadProof: Bool
         let compactProjectionProof: Bool
+        let historyRenderingProof = ProcessInfo.processInfo.arguments.contains(
+            "--maple-shipping-history-rendering-proof")
         private let cachedProjection: ChatRuntime?
         private let cachedProjectionInstance = UUID()
         private(set) var projectionIsNewChat = true
@@ -367,6 +383,9 @@
         var chunks = 0
         var appendedItems = 0
         var scrollMetrics: TranscriptViewportMetrics?
+        private var preparedDisappeared = 0
+        private var preparedRetained = 0
+        private var preparedCleared = 0
         var failed = false
         @ObservationIgnored private var streamTask: Task<Void, Never>?
 
@@ -433,6 +452,20 @@
             guard let scrollMetrics, let data = try? JSONEncoder().encode(scrollMetrics) else { return "{}" }
             return String(data: data, encoding: .utf8) ?? "{}"
         }
+        var renderLifecyclesJSON: String {
+            let values = [
+                "preparedDisappeared": preparedDisappeared,
+                "preparedRetained": preparedRetained,
+                "preparedCleared": preparedCleared,
+            ]
+            guard let data = try? JSONEncoder().encode(values) else { return "{}" }
+            return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        func recordRenderingDisappearance(prepared: Bool, retained: Bool) {
+            guard historyRenderingProof, !retired, prepared else { return }
+            preparedDisappeared += 1
+            if retained { preparedRetained += 1 } else { preparedCleared += 1 }
+        }
         func prepare() async {
             guard !retired else { return }
             await preferences.load()
@@ -465,7 +498,9 @@
                 guard !retired, !Task.isCancelled else { return }
                 runtime.draftText = "Cached B draft stays separate"
             }
-            ready = preferences.state == .ready && account.chatAccess == .allowed && runtime.messages.count == 8
+            ready =
+                preferences.state == .ready && account.chatAccess == .allowed
+                && runtime.messages.count == (historyRenderingProof ? 12 : 8)
             failed = !ready
         }
         var selectedProjection: ChatRuntime {
@@ -580,13 +615,15 @@
         static let chatID = "synthetic-viewport-chat"
         private let complexMarkup: Bool
         private let transcriptRows: Bool
+        private let historyRendering: Bool
         private var older: CheckedContinuation<APIPage<ConversationItem>, Error>?
         private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
         private var text = "Synthetic live reply."
         private var retired = false
 
-        init(complexMarkup: Bool = false, transcriptRows: Bool = false) {
+        init(complexMarkup: Bool = false, transcriptRows: Bool = false, historyRendering: Bool = false) {
             self.complexMarkup = complexMarkup; self.transcriptRows = transcriptRows
+            self.historyRendering = historyRendering
         }
 
         func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) throws
@@ -602,6 +639,7 @@
                 throw ChatIssue.historyUnavailable
             }
             if parameters.after == nil {
+                if historyRendering { return Self.historyPage() }
                 return transcriptRows
                     ? try Self.transcriptPage() : Self.page(20..<24, hasMore: true, complexMarkup: complexMarkup)
             }
@@ -695,6 +733,62 @@
             This paragraph deliberately gives the accessibility container content beyond the visible viewport.
 
             Multilingual text remains selectable: مرحبا, こんにちは, שלום, 🌿.
+            """
+        }
+        /// A completed multi-turn topic keeps rich replies taller than the
+        /// viewport so ordinary history scrolling crosses lazy-row lifetimes.
+        /// No account, parser, publication deadline or renderer is substituted.
+        private static func historyPage() -> APIPage<ConversationItem> {
+            let ascending = (20..<26).flatMap { index in
+                [
+                    ConversationItem(
+                        id: "viewport-user-\(index)", type: "message", status: "completed", role: "user",
+                        content: [
+                            MessageContent(
+                                type: "input_text", text: "Continue the synthetic garden discussion, turn \(index).")
+                        ]),
+                    ConversationItem(
+                        id: "viewport-assistant-\(index)", type: "message", status: "completed", role: "assistant",
+                        content: [MessageContent(type: "output_text", text: historyReply(index))]),
+                ]
+            }
+            return APIPage(
+                data: Array(ascending.reversed()), firstId: ascending.last?.id,
+                lastId: ascending.first?.id, hasMore: false)
+        }
+        private static func historyReply(_ index: Int) -> String {
+            """
+            # Synthetic Garden Notes \(index)
+
+            This **synthetic garden** reply continues the same topic with *formatted* notes and `native code`.
+
+            [Garden reference \(index)](https://example.com/garden/\(index))
+
+            ```swift
+            let gardenTurn = \(index)
+            let readingEarlierNotes = true
+            ```
+
+            ## Soil and water
+
+            The earlier notes describe a small synthetic garden with several planting beds. Reading this discussion means moving between completed replies, comparing the soil notes, and returning to later details without losing the structure of either message.
+
+            - Compare the **earlier plan** with this turn's watering notes.
+            - Keep the *same topic* in view while checking another completed reply.
+            - Read `gardenTurn` as selectable code rather than its Markdown fence.
+
+            > Each follow-up adds more detail to the same synthetic discussion. A reader can pause anywhere in the transcript before continuing to an earlier or later turn.
+
+            ## Seasonal observations
+
+            A second long paragraph makes the reading target extend beyond the first screen on a phone. The synthetic beds have different shade and drainage, so the discussion records the same observations in several turns. These paragraphs exercise native text selection, wrapping, and ordinary vertical history scrolling.
+
+            | Bed | Observation |
+            |:---|:---|
+            | North | Morning shade and steady moisture |
+            | South | Afternoon sun and slower watering |
+
+            The final note for turn \(index) remains part of this completed reply when the reader revisits the conversation.
             """
         }
         func createResponse(_ request: ResponsesCreateRequest, maximumInferenceSends: Int) throws

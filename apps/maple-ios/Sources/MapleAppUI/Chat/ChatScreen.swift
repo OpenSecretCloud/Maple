@@ -530,20 +530,23 @@ enum ChatComposerPresentation {
             return {
                 [
                     weak environment, weak runtime, weak account, scope = runtime.scope,
-                    owner = runtime.snapshot.storageOwner, state = compactMenuState
+                    owner = runtime.snapshot.storageOwner
                 ] in
                 guard let environment, let runtime, let account,
                     account.scope == scope, runtime.scope == scope, runtime.snapshot.storageOwner == owner
                 else { return false }
                 #if DEBUG
                     if let fixtureProjection {
-                        return fixtureProjection(scope, owner) && state(scope, owner).occluded
+                        return fixtureProjection(scope, owner)
                     }
                 #endif
                 guard environment.session.account?.scope == scope,
                     environment.selectedChat?.snapshot.storageOwner == owner
                 else { return false }
-                return state(scope, owner).occluded
+                // Leaving the viewport is temporary too. Keep completed
+                // formatting while this exact chat/account owner is current,
+                // so lazy-row re-entry cannot replace it with raw Markdown.
+                return true
             }
         }
 

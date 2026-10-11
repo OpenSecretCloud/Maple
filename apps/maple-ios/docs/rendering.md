@@ -47,8 +47,12 @@ A message-owned actor parses Markdown away from the UI actor. A main-actor owner
 throttles publication without restarting its deadline for every streamed token.
 Equation enrichment is separate and canceled by a new revision. Generation
 revocation clears retained output and rejects late preparation/enrichment results.
-Disappearance cancels work and clears the message state. There is no document or
-formula cache shared across accounts.
+Disappearance cancels work. While the exact account generation and selected chat
+owner remain current, completed message-local projections survive lazy scrolling
+and temporary menu occlusion. Revisiting a completed reply reuses its formatting
+instead of switching to raw Markdown and changing its height. Incomplete work
+still restarts on return; replaced owners clear or release their view state.
+There is no document or formula cache shared across accounts.
 
 ## Equations
 
@@ -116,3 +120,9 @@ streamed append and code copy on the real app. Native simulator checks must also
 verify equation pixels, blocked network attempts, light/dark output, Dynamic
 Type, RTL and selection across paragraph/code/table boundaries. Build or unit
 success alone does not prove those runtime behaviors.
+
+`ShippingViewportUITests/testCompletedRichRepliesStayPreparedDuringRepeatedHistoryScrolling`
+uses six completed rich turns through the production chat screen. It checks
+repeated earlier/later scrolling, native code/link controls, settled geometry,
+and the exact prepared projection retained when a lazy row disappears. Its
+debug-only diagnostics contain counts and booleans, never message contents.

@@ -72,6 +72,57 @@ import Textual
         #expect(model.prepared == nil)
     }
 
+    @Test func completedHistoryRenderingSurvivesRepeatedOwnedScrollSuspension() async throws {
+        let clock = RenderTestClock(), worker = CountingMessagePreparation()
+        let model = MessageRenderModel(worker: worker, pause: { _ in try await clock.pause() })
+        defer { model.cancel() }
+        let owner = UUID()
+        let source = """
+            # Completed history reply
+
+            A **rich reply** with [a source](https://example.com/reference).
+
+            - First item
+            - Second item
+
+            ```swift
+            let historical = true
+            ```
+            """
+        model.submit(text: source, generation: owner)
+        try await eventually { await clock.count == 1 }
+        await clock.tick()
+        try await eventually { model.prepared?.revision == source }
+        let prepared = try #require(model.prepared)
+        #expect(!prepared.codeBlocks.isEmpty)
+        #expect(!String(prepared.content.characters).contains("**"))
+        #expect(await worker.preparationCount == 1)
+
+        // Lazy history rows repeatedly leave and re-enter the visible viewport
+        // while retaining the same conversation and account-generation owner.
+        for _ in 0..<8 {
+            model.suspend()
+            #expect(model.prepared?.presentationKey == prepared.presentationKey)
+            model.submit(text: source, generation: owner)
+            await Task.yield()
+            #expect(model.prepared?.presentationKey == prepared.presentationKey)
+            #expect(model.generation == owner)
+            #expect(await clock.count == 0, "Returning to completed history must not restart the throttle")
+            #expect(await worker.preparationCount == 1, "Returning to completed history must not parse again")
+        }
+
+        let replacement = UUID()
+        model.submit(text: source, generation: replacement)
+        #expect(model.prepared == nil, "The same source cannot reuse a retired generation's projection")
+        try await eventually { await clock.count == 1 }
+        await clock.tick()
+        try await eventually { model.prepared?.revision == source }
+        #expect(model.generation == replacement)
+        #expect(await worker.preparationCount == 2)
+        model.cancel()
+        #expect(model.prepared == nil, "Conversation retirement discards retained history rendering")
+    }
+
     @Test func suspensionRejectsLatePreparationAndRestartsTheSameIncompleteRequest() async throws {
         let clock = RenderTestClock(), worker = SuspendedPreparation()
         let model = MessageRenderModel(worker: worker, pause: { _ in try await clock.pause() })
@@ -187,6 +238,20 @@ private actor SuspendedPreparation: MessagePreparation {
         pending[source] = requests.isEmpty ? nil : requests
         continuation.resume(
             returning: .init(revision: source, content: AttributedString(source), codeBlocks: [:], formulas: []))
+    }
+}
+
+private actor CountingMessagePreparation: MessagePreparation {
+    private let worker = MessageDocumentWorker()
+    private(set) var preparationCount = 0
+
+    func prepare(_ source: String) async throws -> PreparedMessage {
+        preparationCount += 1
+        return try await worker.prepare(source)
+    }
+
+    func resolve(_ draft: PreparedMessage, equations: [String: AnyAttachment]) async throws -> PreparedMessage {
+        try await worker.resolve(draft, equations: equations)
     }
 }
 

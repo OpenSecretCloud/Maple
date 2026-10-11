@@ -660,6 +660,132 @@ final class ShippingViewportUITests: XCTestCase {
         capture("Cancelled edge preserves the retained assistant, draft and native composer")
     }
 
+    func testCompletedRichRepliesStayPreparedDuringRepeatedHistoryScrolling() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-history-rendering-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 12")
+        let transcript = app.scrollViews["chat.transcript"]
+        let composer = app.textViews["chat.composer"]
+        XCTAssertTrue(transcript.exists && composer.exists && composer.isHittable)
+        XCTAssertFalse(app.buttons["Load earlier messages"].exists)
+
+        func lifecycles() throws -> [String: Int] {
+            let diagnostic = app.staticTexts["shipping-history.render-lifecycles"]
+            XCTAssertTrue(diagnostic.exists)
+            let value = try XCTUnwrap(diagnostic.value as? String)
+            return try JSONDecoder().decode([String: Int].self, from: Data(value.utf8))
+        }
+        func visibleRegion() -> CGRect {
+            let frame = transcript.frame.intersection(app.windows.firstMatch.frame)
+            // The AX scroll-view frame includes its safe-area fixture inset.
+            // Start inside content, below the diagnostic controls covering it.
+            let top = max(frame.minY, app.staticTexts["shipping-history.render-lifecycles"].frame.maxY + 12)
+            return CGRect(
+                x: frame.minX, y: top, width: frame.width,
+                height: max(0, min(frame.maxY, composer.frame.minY) - top))
+        }
+        func scrollHistory(towardEarlier: Bool) {
+            let region = visibleRegion(), origin = transcript.coordinate(withNormalizedOffset: .zero)
+            XCTAssertGreaterThan(region.height, 200)
+            // Drag the transcript's padding, outside nested code/table scrollers.
+            let x = region.minX + 8 - transcript.frame.minX
+            let upper = origin.withOffset(
+                CGVector(dx: x, dy: region.minY + region.height * 0.2 - transcript.frame.minY))
+            let lower = origin.withOffset(
+                CGVector(dx: x, dy: region.minY + region.height * 0.8 - transcript.frame.minY))
+            (towardEarlier ? upper : lower).press(
+                forDuration: 0.05, thenDragTo: towardEarlier ? lower : upper,
+                withVelocity: .fast, thenHoldForDuration: 0)
+        }
+        func assertNoRawSource() {
+            // The fallback Text exposes the original Markdown as one label or
+            // selectable text value. Prepared output has neither these markers
+            // nor a link destination appended to the visible link label.
+            for source in ["**synthetic garden**", "[Garden reference", "```swift"] {
+                XCTAssertFalse(
+                    transcript.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", source)).firstMatch.exists,
+                    "Completed history must keep prepared output instead of showing Markdown source")
+                XCTAssertFalse(
+                    transcript.textViews.matching(NSPredicate(format: "value CONTAINS %@", source)).firstMatch.exists,
+                    "Native selection must remain attached to the prepared rich reply")
+            }
+        }
+        func revealPreparedReply(_ index: Int, towardEarlier: Bool) {
+            let owner = transcript.descendants(matching: .any).matching(
+                identifier: "assistant.message.viewport-assistant-\(index)"
+            ).firstMatch
+            let code = owner.buttons["Copy code"].firstMatch
+            let link = owner.links["Garden reference \(index)"].firstMatch
+            func controlsVisible() -> Bool {
+                guard owner.exists, code.exists, code.isHittable, link.exists else { return false }
+                let region = visibleRegion().insetBy(dx: 0, dy: 8)
+                return region.contains(code.frame) && region.contains(link.frame)
+            }
+            for _ in 0..<40 {
+                if controlsVisible() { break }
+                let region = visibleRegion()
+                let earlier =
+                    link.exists && link.frame.height > 0 && link.frame.minY < region.minY + 8
+                    ? true
+                    : code.exists && code.frame.height > 0 && code.frame.maxY > region.maxY - 8
+                        ? false : towardEarlier
+                scrollHistory(towardEarlier: earlier)
+            }
+            XCTAssertTrue(
+                controlsVisible(), "The code control and rendered link in completed turn \(index) must be reachable")
+            XCTAssertEqual(link.label, "Garden reference \(index)")
+            assertNoRawSource()
+
+            // Once scrolling settles, prepared content and native controls
+            // retain the same reading geometry.
+            let initial = [owner.frame, code.frame, link.frame, transcript.frame, composer.frame]
+            let began = ProcessInfo.processInfo.systemUptime
+            let stable = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    guard controlsVisible(), composer.exists, composer.isHittable else { return false }
+                    let actual = [owner.frame, code.frame, link.frame, transcript.frame, composer.frame]
+                    return zip(initial, actual).allSatisfy { before, after in
+                        abs(before.minX - after.minX) <= 1 && abs(before.minY - after.minY) <= 1
+                            && abs(before.width - after.width) <= 1 && abs(before.height - after.height) <= 1
+                    } && ProcessInfo.processInfo.systemUptime - began >= 1
+                }, object: owner)
+            XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 8), .completed)
+            assertNoRawSource()
+            capture("Completed rich history turn \(index) keeps link, code and idle geometry")
+        }
+        func assertRetainedLifecycles(after previousCount: Int) throws -> Int {
+            let values = try lifecycles()
+            let disappeared = try XCTUnwrap(values["preparedDisappeared"])
+            let retained = try XCTUnwrap(values["preparedRetained"])
+            let cleared = try XCTUnwrap(values["preparedCleared"])
+            let diagnostic = XCTAttachment(string: String(describing: values))
+            diagnostic.name = "Completed shipping renderers after history scrolling"
+            diagnostic.lifetime = .keepAlways; add(diagnostic)
+            XCTAssertGreaterThan(
+                disappeared, previousCount, "Actual lazy-row disappearance must be exercised on each trip")
+            XCTAssertEqual(
+                cleared, 0, "Scrolling a current conversation must never discard a completed prepared renderer")
+            XCTAssertEqual(
+                retained, disappeared, "Every disappearing completed renderer must keep the same prepared projection")
+            return disappeared
+        }
+
+        revealPreparedReply(20, towardEarlier: true)
+        var disappeared = try XCTUnwrap(lifecycles()["preparedDisappeared"])
+        for _ in 0..<2 {
+            revealPreparedReply(25, towardEarlier: false)
+            disappeared = try assertRetainedLifecycles(after: disappeared)
+            revealPreparedReply(20, towardEarlier: true)
+            disappeared = try assertRetainedLifecycles(after: disappeared)
+        }
+        waitSummary("Ready 1; older 0; messages 12")
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
+        XCTAssertTrue(composer.isHittable)
+    }
+
     func testShippingStreamPreservesEarlierReadingAnchor() {
         launchFixture()
         app.buttons["shipping-viewport.start"].tap()
