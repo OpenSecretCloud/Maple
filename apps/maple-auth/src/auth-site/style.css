@@ -49,8 +49,10 @@
 
   .auth-card {
     display: grid;
+    align-content: start;
     gap: 24px;
     width: min(100%, 480px);
+    min-height: 384px;
     padding: 40px;
     border: 1px solid rgb(32 26 24 / 12%);
     border-radius: 28px;
@@ -83,6 +85,7 @@
 
   @media (max-width: 480px) {
     .auth-card {
+      min-height: 440px;
       padding: 32px 24px;
     }
 

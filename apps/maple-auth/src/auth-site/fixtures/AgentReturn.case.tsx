@@ -43,7 +43,7 @@ class MemoryStorage implements Storage {
 }
 
 const originals = Object.fromEntries(
-  ["window", "localStorage", "sessionStorage"].map((key) => [
+  ["window", "localStorage", "sessionStorage", "setTimeout", "clearTimeout"].map((key) => [
     key,
     Object.getOwnPropertyDescriptor(globalThis, key)
   ])
@@ -92,6 +92,7 @@ describe("Agent loopback return with the real SDK credential fence", () => {
   let navigations: string[];
   let blockNavigation: boolean;
   let throwNavigation: boolean;
+  let timers: Map<number, { at: number; callback: () => void }>;
 
   const installCredentials = () => {
     const prepared = prepareNativeOAuthHandoff(client.apiUrl);
@@ -133,6 +134,8 @@ describe("Agent loopback return with the real SDK credential fence", () => {
     navigations = [];
     blockNavigation = false;
     throwNavigation = false;
+    timers = new Map();
+    let nextTimer = 0;
     let currentUrl = startUrl;
     local = new MemoryStorage();
     const session = new MemoryStorage();
@@ -153,7 +156,13 @@ describe("Agent loopback return with the real SDK credential fence", () => {
         }
       },
       localStorage: local,
-      sessionStorage: session
+      sessionStorage: session,
+      setTimeout: (callback: () => void, delay: number) => {
+        const id = ++nextTimer;
+        timers.set(id, { at: now + delay, callback });
+        return id;
+      },
+      clearTimeout: (id: number) => timers.delete(id)
     }))
       Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
     mint = mock(async () => ({ grant: "aaa.bbb.ccc", expires_at: expiresAt }));
@@ -187,15 +196,28 @@ describe("Agent loopback return with the real SDK credential fence", () => {
   };
 
   const button = (label: string) =>
-    renderer!.root.findAllByType("button").find((node) => node.children.join("") === label);
-  const continueButton = () => button(`Continue to ${appLabel}`)!;
+    renderer!.root
+      .findAllByType("button")
+      .find((node) => (node.props["aria-label"] ?? node.children.join("")) === label);
+  const continueButton = () => button("Continue")!;
   const returnButton = () => button(`Return to ${appLabel}`)!;
+  const advanceTime = (ms: number) => {
+    act(() => {
+      now += ms;
+      for (const [id, timer] of timers) {
+        if (timer.at > now) continue;
+        timers.delete(id);
+        timer.callback();
+      }
+    });
+  };
   const approve = async () => {
     await act(async () => continueButton().props.onClick());
   };
   const approveWithBlockedNavigation = async () => {
     blockNavigation = true;
     await approve();
+    advanceTime(3000);
   };
   const expectCredentialsRetained = (before: [string, string][]) => {
     expect([...local.values]).toEqual(before);
@@ -230,7 +252,7 @@ describe("Agent loopback return with the real SDK credential fence", () => {
       });
       expect(mint).toHaveBeenCalledTimes(1);
       expect(mint).toHaveBeenCalledWith(nativeTarget.nativeSessionId, nativeTarget.nativeRequestId);
-      expect(returnButton()).toBeDefined();
+      expect(returnButton()).toBeUndefined();
       expect(button("Open Maple")).toBeUndefined();
       expect(readTransportV2DesktopOAuth()).toBeNull();
       expect(window.location.href).toBe(
@@ -238,16 +260,22 @@ describe("Agent loopback return with the real SDK credential fence", () => {
       );
       expect(mint).toHaveBeenCalledTimes(1);
       expect(navigations).toHaveLength(1);
-      expect(JSON.stringify(renderer!.toJSON())).toContain(`Returning to ${appLabel}`);
+      expect(button("Signing in…")!.props.disabled).toBe(true);
       expectCredentialsRetained(before);
     });
   }
 
   test("blocked automatic navigation keeps a manual fallback without minting again", async () => {
     await renderConfirmation();
-    await approveWithBlockedNavigation();
+    blockNavigation = true;
+    await approve();
     expect(window.location.href).toBe(startUrl);
-    expect(JSON.stringify(renderer!.toJSON())).toContain("use the return button below");
+    expect(returnButton()).toBeUndefined();
+    expect(button("Signing in…")!.props.disabled).toBe(true);
+    advanceTime(2999);
+    expect(returnButton()).toBeUndefined();
+    advanceTime(1);
+    expect(returnButton()!.props.disabled).toBe(false);
     expect(navigations).toHaveLength(1);
     blockNavigation = false;
     act(() => returnButton().props.onClick());
@@ -261,7 +289,7 @@ describe("Agent loopback return with the real SDK credential fence", () => {
     await renderConfirmation();
     await approve();
     const rendered = JSON.stringify(renderer!.toJSON());
-    expect(rendered).toContain("Your browser could not return");
+    expect(rendered).toContain("Could not return");
     expect(rendered).not.toContain("aaa.bbb.ccc");
     expect(returnButton()).toBeDefined();
     throwNavigation = false;
@@ -349,8 +377,7 @@ describe("Agent loopback return with the real SDK credential fence", () => {
       });
       expect(mint).toHaveBeenCalledTimes(1);
       expect(window.location.href).toBe(startUrl);
-      expect(button("Continuing…")!.props.disabled).toBe(true);
-      expect(JSON.stringify(renderer!.toJSON())).toContain("Preparing your sign-in");
+      expect(button("Signing in…")!.props.disabled).toBe(true);
       let newer: TransportV2DesktopOAuthState | null = null;
       if (invalidation === "cancel") act(() => button("Cancel")!.props.onClick());
       if (invalidation === "replacement") {
@@ -387,5 +414,19 @@ describe("Agent loopback return with the real SDK credential fence", () => {
     expect(readTransportV2DesktopOAuth()).toBeNull();
     expect(mint).toHaveBeenCalledTimes(1);
     expectCredentialsRetained(before);
+  });
+
+  test("expiry before the fallback delay never exposes an expired return", async () => {
+    expiresAt = now / 1000 + 2;
+    blockNavigation = true;
+    await renderConfirmation();
+    await approve();
+    expect(button("Signing in…")!.props.disabled).toBe(true);
+    advanceTime(2000);
+    expect(JSON.stringify(renderer!.toJSON())).toContain("expired");
+    advanceTime(1000);
+    expect(returnButton()).toBeUndefined();
+    expect(navigations).toHaveLength(1);
+    expect(mint).toHaveBeenCalledTimes(1);
   });
 });

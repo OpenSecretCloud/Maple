@@ -22,8 +22,10 @@
       }
       section {
         display: grid;
+        align-content: start;
         gap: 24px;
         width: min(100%, 480px);
+        min-height: 384px;
         padding: 40px;
         border: 1px solid rgba(32, 26, 24, .12);
         border-radius: 28px;
@@ -35,7 +37,7 @@
       h1 { margin: 0; font-size: 28px; line-height: 1.25; font-weight: 600; }
       p { margin: 0; color: #5e5f6e; }
       @media (max-width: 480px) {
-        section { padding: 32px 24px; }
+        section { min-height: 440px; padding: 32px 24px; }
         h1 { font-size: 24px; }
       }
     </style>

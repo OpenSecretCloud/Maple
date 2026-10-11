@@ -213,10 +213,7 @@ impl CompletionResponse {
 fn completion_response(outcome: Result<bool, ()>) -> String {
     // Only fixed outcome text enters the document, never request or account data.
     let (title, message) = match outcome {
-        Ok(true) => (
-            "Signed in to Maple Agent",
-            "Return to the app to continue. You can close this tab.",
-        ),
+        Ok(true) => ("Signed in", "You can close this tab."),
         Ok(false) => (
             "Signed in to Maple Agent",
             "Your session could not be saved. You will need to sign in again when you restart the app. You can close this tab.",
@@ -232,7 +229,7 @@ fn completion_response(outcome: Result<bool, ()>) -> String {
     // Hashes authorize only the template's exact script/style contents. Update
     // the corresponding hash when editing either inline block in the template.
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-TT2/B5X4kutghZnTdCndWuEaf6uS6wbgBxuJIAzSdos='; style-src 'sha256-+lj/ozZ9Ct20gBoJER+T06cXO75oXd2bhVpqxGyRDSo='; frame-ancestors 'none'; base-uri 'none'\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-TT2/B5X4kutghZnTdCndWuEaf6uS6wbgBxuJIAzSdos='; style-src 'sha256-2osWjhMb3Z2/my0VDrETS+S9sT2pKj/fNwUzMomQyCo='; frame-ancestors 'none'; base-uri 'none'\r\n\r\n{body}",
         body.len()
     )
 }
@@ -329,7 +326,7 @@ mod tests {
         browser.read_to_string(&mut response).await.unwrap();
         task.await.unwrap();
         assert!(response.starts_with("HTTP/1.1 200"));
-        assert!(response.contains("Signed in to Maple Agent"));
+        assert!(response.contains("<h1 id=\"auth-title\">Signed in</h1>"));
         assert!(response.contains("Cache-Control: no-store"));
         assert!(response.contains("history.replaceState"));
         assert!(!response.contains(GRANT));
@@ -391,7 +388,7 @@ mod tests {
         let mut response = String::new();
         browser.read_to_string(&mut response).await.unwrap();
         assert!(response.contains("Sign-in could not finish"));
-        assert!(!response.contains("Signed in to"));
+        assert!(!response.contains("Signed in"));
         task.await.unwrap();
     }
 

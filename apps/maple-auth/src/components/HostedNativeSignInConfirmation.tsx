@@ -39,6 +39,7 @@ export function HostedNativeSignInConfirmation({
   const [status, setStatus] = useState<"confirm" | "minting" | "complete" | "closed">("confirm");
   const [message, setMessage] = useState<string | null>(null);
   const [handoff, setHandoff] = useState<NativeAuthReturn | null>(null);
+  const [showAgentReturn, setShowAgentReturn] = useState(false);
   const appLabel = nativeAppLabel(target);
   const isAgent = target.nativeApp === "agent";
 
@@ -91,6 +92,14 @@ export function HostedNativeSignInConfirmation({
     return () => clearTimeout(timer);
   }, [handoff, appLabel]);
 
+  useEffect(() => {
+    if (!isAgent || status !== "complete" || message) return;
+    // Keep the normal return in its busy state. Offer the same-grant fallback
+    // only when navigation has not left this page after a short grace period.
+    const timer = setTimeout(() => setShowAgentReturn(true), 3000);
+    return () => clearTimeout(timer);
+  }, [isAgent, status, message]);
+
   const cancel = () => {
     submitted.current = true;
     cancelled.current = true;
@@ -115,7 +124,7 @@ export function HostedNativeSignInConfirmation({
     } catch {
       // Keep the same grant available for a user-initiated retry. Never expose
       // the navigation exception: it may contain the credential-bearing URL.
-      setMessage(`Your browser could not return to ${appLabel}. Try the return button below.`);
+      setMessage(`Could not return to ${appLabel}.`);
     }
   };
 
@@ -163,6 +172,13 @@ export function HostedNativeSignInConfirmation({
   }
   if (status === "closed") return <p role="status">{message}</p>;
 
+  const agentBusy = status === "minting" || (status === "complete" && !showAgentReturn && !message);
+  const agentLabel = agentBusy
+    ? "Signing in…"
+    : status === "complete"
+      ? `Return to ${appLabel}`
+      : "Continue";
+
   return (
     <div className="space-y-4">
       <div>
@@ -170,35 +186,34 @@ export function HostedNativeSignInConfirmation({
         <p className="font-medium break-all">{account.email || `Account ${account.id}`}</p>
       </div>
       <p className="text-sm text-muted-foreground">
-        Continue only if you started this login in {appLabel}.
-        {!isAgent && " Check that Maple shows the same account before signing in there."}
+        {isAgent
+          ? "Continue only if you started this sign-in."
+          : `Continue only if you started this login in ${appLabel}. Check that Maple shows the same account before signing in there.`}
       </p>
-      {isAgent && (status === "minting" || status === "complete") && (
-        <div className="space-y-2 text-sm">
-          <p role="status" className="flex items-center justify-center gap-2">
-            {!message && (
-              <span
-                aria-hidden="true"
-                className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none"
-              />
-            )}
-            {message ||
-              (status === "minting" ? "Preparing your sign-in…" : `Returning to ${appLabel}…`)}
-          </p>
-          {status === "complete" && !message && (
-            <p className="text-muted-foreground">
-              If you are still here, use the return button below.
-            </p>
-          )}
-        </div>
-      )}
+      {isAgent && message && <p role="status">{message}</p>}
       <div className="flex flex-wrap justify-center gap-2">
         <Button type="button" variant="outline" onClick={cancel}>
           Cancel
         </Button>
-        {status === "complete" ? (
+        {isAgent ? (
+          <Button
+            type="button"
+            className="w-60 max-w-full gap-2"
+            aria-label={agentLabel}
+            onClick={status === "complete" ? openMaple : approve}
+            disabled={agentBusy || (status === "confirm" && !isCurrentDesktopOAuthTarget(target))}
+          >
+            {agentBusy && (
+              <span
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none"
+              />
+            )}
+            <span role="status">{agentLabel}</span>
+          </Button>
+        ) : status === "complete" ? (
           <Button type="button" onClick={openMaple}>
-            {isAgent ? `Return to ${appLabel}` : "Open Maple"}
+            Open Maple
           </Button>
         ) : (
           <Button
