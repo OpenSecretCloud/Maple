@@ -233,7 +233,8 @@ pub enum SystemOneAnswer {
         choice: String,
         /// Probability per option label, in the order the options were given.
         probabilities: OrderedEntries<f64>,
-        /// Peakedness of the distribution, from 0 (uniform) to 1 (certain).
+        /// TypeSafe's choice confidence, `(p_max - 1/n) / (1 - 1/n)`: 0 when the options are
+        /// equally likely, 1 when one option takes all the probability.
         confidence: f64,
         temperature: f64,
         option_mass: f64,
@@ -245,6 +246,9 @@ pub enum SystemOneAnswer {
         legend: OrderedEntries<Value>,
         /// Probability per level number.
         probabilities: OrderedEntries<f64>,
+        /// TypeSafe's score confidence, `1 - sum(p_i |i - m|) / MAD_unif` with `m` the most
+        /// likely level: 0 when the mass is spread like a uniform distribution, 1 when it sits
+        /// on one level.
         confidence: f64,
         temperature: f64,
         option_mass: f64,

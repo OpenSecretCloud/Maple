@@ -265,7 +265,8 @@ probabilities on Continuum GLM-5.3-Flash; request and response follow the
 TypeSafe System One schema, with optional `images` (`data:` URLs) and
 `temperature` fields. Rejections keep the backend's status and
 `x-opensecret-error-code` header, for example `422` with
-`system_one_too_many_questions`.
+`system_one_too_many_questions`, or `system_one_unknown_field` naming a
+misspelled key.
 
 This route needs the inference allowlist entry added in `maple-sdk` 4.1.0.
 `Cargo.toml` builds the in-tree SDK through a `[patch.crates-io]` entry, as do

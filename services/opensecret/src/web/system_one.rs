@@ -66,6 +66,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_json::{json, Map, Value};
+use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -93,6 +94,10 @@ const MAX_IMAGE_DATA_URL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_STATE_TOKENS: usize = 32_000;
 const MAX_QUESTION_TOKENS: usize = 16_000;
+/// Byte caps answered before any token counting, so counting cost stays bounded (real text
+/// this large is far over the token limits anyway).
+const MAX_STATE_BYTES: usize = 1024 * 1024;
+const MAX_QUESTION_BYTES: usize = 512 * 1024;
 /// Prompt tokens the request may send upstream in total, summed over every read of every
 /// question (preamble excluded).
 const MAX_UPSTREAM_PROMPT_TOKENS: usize = 200_000;
@@ -198,7 +203,7 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
             SYSTEM_ONE_PATH,
             post(system_one).layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
-                decrypt_request::<SystemOneRequest>,
+                decrypt_request::<SystemOneBody>,
             )),
         )
         .with_state(app_state)
@@ -209,10 +214,17 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
 // ---------------------------------------------------------------------------
 
 /// A request rejected before anything is sent upstream. Each rule has a fixed code and
-/// message so callers can tell them apart without caller-supplied text reaching the
-/// response or the logs. Schema rules answer 422 as TypeSafe's API does; size rules 413.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// message so callers can tell them apart. The shape rules name the caller's own field keys
+/// (never values) so a misspelled `images` is not silently dropped; no caller text reaches the
+/// logs. Schema rules answer 422 as TypeSafe's API does; size rules 413.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemOneRequestError {
+    /// serde's detail: the key, then the accepted keys at that level.
+    UnknownField(String),
+    /// serde's detail: the key.
+    MissingField(String),
+    UnknownQuestionType,
+    MalformedBody,
     UnsupportedModel,
     MissingState,
     StateTooLarge,
@@ -233,7 +245,7 @@ pub enum SystemOneRequestError {
 }
 
 impl SystemOneRequestError {
-    pub(crate) fn status(self) -> StatusCode {
+    pub(crate) fn status(&self) -> StatusCode {
         match self {
             Self::StateTooLarge
             | Self::QuestionTooLarge
@@ -243,8 +255,12 @@ impl SystemOneRequestError {
         }
     }
 
-    pub(crate) fn code(self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
+            Self::UnknownField(_) => "system_one_unknown_field",
+            Self::MissingField(_) => "system_one_missing_field",
+            Self::UnknownQuestionType => "system_one_unknown_question_type",
+            Self::MalformedBody => "system_one_malformed_body",
             Self::UnsupportedModel => "system_one_unsupported_model",
             Self::MissingState => "system_one_missing_state",
             Self::StateTooLarge => "system_one_state_too_large",
@@ -265,34 +281,39 @@ impl SystemOneRequestError {
         }
     }
 
-    pub(crate) fn message(self) -> &'static str {
+    pub(crate) fn message(&self) -> Cow<'static, str> {
+        let fixed = |text: &'static str| Cow::Borrowed(text);
         match self {
-            Self::UnsupportedModel => "Only the glm-5-3-flash model is supported.",
-            Self::MissingState => "A non-null state is required.",
-            Self::StateTooLarge => "The state exceeds 32,000 tokens.",
-            Self::NoQuestions => "At least one question is required.",
-            Self::TooManyQuestions => "At most 64 questions are allowed per request.",
-            Self::EmptyQuestionName => "Question names must be non-empty strings.",
-            Self::DuplicateQuestion => "Question names must be unique.",
-            Self::QuestionTooLarge => "A question with its criteria exceeds 16,000 tokens.",
-            Self::BadOptionCount => "A choice needs between 2 and 255 options.",
-            Self::EmptyOptionLabel => "Option labels must be non-empty strings.",
-            Self::DuplicateOption => "Option labels within a question must be unique.",
-            Self::BadLevelCount => "A score needs between 2 and 10 levels.",
-            Self::TooManyImages => "At most 4 images are allowed per request.",
-            Self::ImageNotDataUrl => "Images must be data:image/... URLs.",
-            Self::ImageTooLarge => "Images may be at most 4 MiB each and 8 MiB in total.",
-            Self::PromptBudgetExceeded => {
-                "The questions and state together exceed the 200,000 upstream prompt tokens one request may use. Send fewer questions or a smaller state."
-            }
-            Self::BadTemperature => "temperature must be a positive finite number.",
+            Self::UnknownField(detail) => Cow::Owned(format!("Unknown field {detail}.")),
+            Self::MissingField(detail) => Cow::Owned(format!("Missing field {detail}.")),
+            Self::UnknownQuestionType => fixed("Question type must be `noul`, `choice` or `score`."),
+            Self::MalformedBody => fixed("The request body does not match the System One schema."),
+            Self::UnsupportedModel => fixed("Only the glm-5-3-flash model is supported."),
+            Self::MissingState => fixed("A non-null state is required."),
+            Self::StateTooLarge => fixed("The state exceeds 32,000 tokens or 1 MiB."),
+            Self::NoQuestions => fixed("At least one question is required."),
+            Self::TooManyQuestions => fixed("At most 64 questions are allowed per request."),
+            Self::EmptyQuestionName => fixed("Question names must be non-empty strings."),
+            Self::DuplicateQuestion => fixed("Question names must be unique."),
+            Self::QuestionTooLarge => fixed("A question with its criteria exceeds 16,000 tokens or 512 KiB."),
+            Self::BadOptionCount => fixed("A choice needs between 2 and 255 options."),
+            Self::EmptyOptionLabel => fixed("Option labels must be non-empty strings."),
+            Self::DuplicateOption => fixed("Option labels within a question must be unique."),
+            Self::BadLevelCount => fixed("A score needs between 2 and 10 levels."),
+            Self::TooManyImages => fixed("At most 4 images are allowed per request."),
+            Self::ImageNotDataUrl => fixed("Images must be data:image/... URLs."),
+            Self::ImageTooLarge => fixed("Images may be at most 4 MiB each and 8 MiB in total."),
+            Self::PromptBudgetExceeded => fixed(
+                "The questions and state together exceed the 200,000 upstream prompt tokens one request may use. Send fewer questions or a smaller state.",
+            ),
+            Self::BadTemperature => fixed("temperature must be a positive finite number."),
         }
     }
 }
 
 impl fmt::Display for SystemOneRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message())
+        f.write_str(&self.message())
     }
 }
 
@@ -342,7 +363,49 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Entries<T> {
     }
 }
 
+/// The body as the middleware delivers it: raw JSON, parsed into `SystemOneRequest` by the
+/// handler so that shape errors answer 422 naming the field (the middleware's own parse
+/// failure is a bare 400, which is right for malformed JSON only).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+struct SystemOneBody(Box<RawValue>);
+
+/// Parses a body. Unknown keys at any level are errors, so a client that sends `files` for
+/// `images`, or `yes` for `true`, is told so instead of getting an answer about nothing.
+fn parse_request(body: &str) -> Result<SystemOneRequest, SystemOneRequestError> {
+    serde_json::from_str(body).map_err(|error| shape_error(&error))
+}
+
+/// Maps serde's error text onto typed errors. Only the "unknown field", "missing field" and
+/// "unknown variant" messages are classified by their detail, and only the first two forward
+/// it: they carry key names from the caller's own request. Anything else, such as
+/// `invalid type: string "..."`, would echo state or criteria text and gets a fixed message.
+fn shape_error(error: &serde_json::Error) -> SystemOneRequestError {
+    const MAX_DETAIL_CHARS: usize = 200;
+    let bounded = |detail: &str| {
+        let mut out: String = detail.chars().take(MAX_DETAIL_CHARS).collect();
+        if out.len() < detail.len() {
+            out.push_str("...");
+        }
+        out
+    };
+    let text = error.to_string();
+    let text = text
+        .rsplit_once(" at line ")
+        .map_or(text.as_str(), |(head, _)| head);
+    if let Some(detail) = text.strip_prefix("unknown field ") {
+        SystemOneRequestError::UnknownField(bounded(detail))
+    } else if let Some(detail) = text.strip_prefix("missing field ") {
+        SystemOneRequestError::MissingField(bounded(detail))
+    } else if text.starts_with("unknown variant ") {
+        SystemOneRequestError::UnknownQuestionType
+    } else {
+        SystemOneRequestError::MalformedBody
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SystemOneRequest {
     #[serde(default)]
     model: Option<String>,
@@ -360,7 +423,7 @@ pub(crate) struct SystemOneRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 enum Question {
     Noul {
         instructions: Value,
@@ -378,6 +441,7 @@ enum Question {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NoulCriteria {
     #[serde(rename = "true", default)]
     yes: Option<Value>,
@@ -481,6 +545,9 @@ fn prepare_request(request: &SystemOneRequest) -> Result<Prepared, SystemOneRequ
     if state.is_empty() || state == "null" {
         return Err(E::MissingState);
     }
+    if state.len() > MAX_STATE_BYTES {
+        return Err(E::StateTooLarge);
+    }
     let state_tokens = count_tokens(state);
     if state_tokens > MAX_STATE_TOKENS {
         return Err(E::StateTooLarge);
@@ -491,6 +558,9 @@ fn prepare_request(request: &SystemOneRequest) -> Result<Prepared, SystemOneRequ
     for question in &questions {
         let block =
             to_python_json(&QuestionBlock::of(question)).map_err(|_| E::QuestionTooLarge)?;
+        if block.len() > MAX_QUESTION_BYTES {
+            return Err(E::QuestionTooLarge);
+        }
         let question_tokens = count_tokens(&block);
         if question_tokens > MAX_QUESTION_TOKENS {
             return Err(E::QuestionTooLarge);
@@ -873,18 +943,42 @@ fn option_mass(logprobs: &[f64]) -> f64 {
     logprobs.iter().map(|lp| lp.exp()).sum::<f64>().min(1.0)
 }
 
-/// `1 - H(p) / ln(n)`: how peaked the distribution is, not whether the answer is right.
-fn confidence(probabilities: &[f64]) -> f64 {
+/// TypeSafe's choice confidence (docs.typesafe.ai/confidence): how far the top probability
+/// sits above a uniform guess, `(p_max - 1/n) / (1 - 1/n)`. Certainty about the answer's
+/// shape, not its correctness.
+fn choice_confidence(probabilities: &[f64]) -> f64 {
+    let n = probabilities.len() as f64;
+    if n < 2.0 {
+        return 1.0;
+    }
+    let p_max = probabilities.iter().cloned().fold(0.0, f64::max);
+    ((p_max - 1.0 / n) / (1.0 - 1.0 / n)).clamp(0.0, 1.0)
+}
+
+/// TypeSafe's score confidence: one minus the probability-weighted distance from the most
+/// likely level `m`, scaled by a uniform distribution's spread,
+/// `max(0, 1 - sum(p_i |i - m|) / MAD_unif)` with `MAD_unif = (1/n) sum |i - (n-1)/2|`.
+fn score_confidence(probabilities: &[f64]) -> f64 {
     let n = probabilities.len();
     if n < 2 {
         return 1.0;
     }
-    let entropy: f64 = probabilities
+    let mode = probabilities
         .iter()
-        .filter(|p| **p > 0.0)
-        .map(|p| -p * p.ln())
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map_or(0, |(level, _)| level);
+    let spread: f64 = probabilities
+        .iter()
+        .enumerate()
+        .map(|(level, p)| p * (level as f64 - mode as f64).abs())
         .sum();
-    (1.0 - entropy / (n as f64).ln()).clamp(0.0, 1.0)
+    let center = (n as f64 - 1.0) / 2.0;
+    let mad_uniform = (0..n)
+        .map(|level| (level as f64 - center).abs())
+        .sum::<f64>()
+        / n as f64;
+    (1.0 - spread / mad_uniform).clamp(0.0, 1.0)
 }
 
 fn round4(value: f64) -> f64 {
@@ -952,7 +1046,7 @@ fn answer_body(lowered: &Lowered, probabilities: &[f64], temperature: f64, mass:
                         .map(|((label, _), p)| (label.clone(), round4(*p)))
                         .collect(),
                 ),
-                confidence: round4(confidence(probabilities)),
+                confidence: round4(choice_confidence(probabilities)),
                 temperature,
                 option_mass,
             }
@@ -981,7 +1075,7 @@ fn answer_body(lowered: &Lowered, probabilities: &[f64], temperature: f64, mass:
                         .map(|(level, p)| (level.to_string(), round4(*p)))
                         .collect(),
                 ),
-                confidence: round4(confidence(probabilities)),
+                confidence: round4(score_confidence(probabilities)),
                 temperature,
                 option_mass,
             }
@@ -1551,9 +1645,10 @@ async fn system_one(
     axum::Extension(user): axum::Extension<User>,
     axum::Extension(auth_method): axum::Extension<AuthMethod>,
     cache_namespace_root: Option<axum::Extension<CacheNamespaceRoot>>,
-    Decrypted(request): Decrypted<SystemOneRequest>,
+    Decrypted(body): Decrypted<SystemOneBody>,
 ) -> Result<Response, ApiError> {
     // Cheap validation first: a malformed request never reaches billing or the provider.
+    let request = parse_request(body.0.get())?;
     let prepared = prepare_request(&request)?;
     let CompletionCaller {
         model_plan,
@@ -1830,6 +1925,23 @@ mod tests {
     }
 
     #[test]
+    fn byte_caps_reject_before_counting_tokens() {
+        use SystemOneRequestError as E;
+        let noul = json!({"type": "noul", "instructions": "x"});
+        assert_eq!(
+            prepare(json!({"state": "x".repeat(MAX_STATE_BYTES + 1), "questions": {"q": noul}}))
+                .err(),
+            Some(E::StateTooLarge)
+        );
+        let long_question =
+            json!({"type": "noul", "instructions": "y".repeat(MAX_QUESTION_BYTES + 1)});
+        assert_eq!(
+            prepare(json!({"state": "s", "questions": {"q": long_question}})).err(),
+            Some(E::QuestionTooLarge)
+        );
+    }
+
+    #[test]
     fn prompt_matches_the_reference_layout_byte_for_byte() {
         // The state is embedded as the caller sent it; the question block leads and closes
         // the prompt, rendered with Python's `json.dumps` separators.
@@ -1991,9 +2103,97 @@ mod tests {
         assert!(calibrated[0] < raw[0] && calibrated[0] > 0.5);
         assert!(calibrated[1] > raw[1]);
         assert!((option_mass(&logprobs) - (0.99 + 0.01 + 0.001)).abs() < 0.01);
-        assert!((confidence(&[1.0, 0.0, 0.0]) - 1.0).abs() < 1e-9);
-        assert!(confidence(&[1.0 / 3.0; 3]).abs() < 1e-9);
-        assert!(confidence(&calibrated) < confidence(&raw));
+        assert!((choice_confidence(&[1.0, 0.0, 0.0]) - 1.0).abs() < 1e-9);
+        assert!(choice_confidence(&[1.0 / 3.0; 3]).abs() < 1e-9);
+        assert!(choice_confidence(&calibrated) < choice_confidence(&raw));
+    }
+
+    #[test]
+    fn confidence_follows_the_typesafe_formulas() {
+        // docs.typesafe.ai/confidence: choice `(p_max - 1/n) / (1 - 1/n)`.
+        assert!((choice_confidence(&[0.86, 0.10, 0.04]) - 0.79).abs() < 0.005);
+        assert!((choice_confidence(&[0.9, 0.1]) - 0.8).abs() < 1e-9);
+        // Score `1 - sum p|i - m| / MAD_unif`; the spec's bug_severity example (0, 0.57, 0.43)
+        // gives about 0.35, and a 3-level MAD_unif is 2/3.
+        assert!((score_confidence(&[0.0, 0.57, 0.43]) - 0.355).abs() < 0.001);
+        assert!((score_confidence(&[0.12, 0.56, 0.32]) - 0.34).abs() < 0.001);
+        assert!((score_confidence(&[0.0, 1.0, 0.0]) - 1.0).abs() < 1e-9);
+        assert!(score_confidence(&[0.5, 0.5]) < 1e-9);
+        assert!(score_confidence(&[0.2; 5]) < 1e-9);
+    }
+
+    #[test]
+    fn shape_errors_name_the_field_and_never_echo_values() {
+        use SystemOneRequestError as E;
+        let parse = |text: &str| parse_request(text).expect_err("rejected");
+        let open = r#"{"state":{"a":1},"questions":{"q":{"type":"noul","instructions":"x"}}"#;
+        let top = parse(&format!(r#"{open},"files":["data:image/png;base64,AA"]}}"#));
+        assert_eq!(
+            top,
+            E::UnknownField(
+                "`files`, expected one of `model`, `state`, `questions`, `images`, `temperature`"
+                    .into()
+            )
+        );
+        assert_eq!(
+            top.to_string(),
+            "Unknown field `files`, expected one of `model`, `state`, `questions`, `images`, `temperature`."
+        );
+        assert_eq!(top.code(), "system_one_unknown_field");
+        assert_eq!(top.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let question = parse(
+            r#"{"state":1,"questions":{"q":{"type":"noul","instructions":"x","criterion":{}}}}"#,
+        );
+        assert!(
+            matches!(&question, E::UnknownField(d) if d.starts_with("`criterion`, expected `instructions` or `criteria`")),
+            "{question:?}"
+        );
+        let criteria = parse(
+            r#"{"state":1,"questions":{"q":{"type":"noul","instructions":"x","criteria":{"yes":"a"}}}}"#,
+        );
+        assert!(
+            matches!(&criteria, E::UnknownField(d) if d.starts_with("`yes`, expected `true` or `false`")),
+            "{criteria:?}"
+        );
+        let typo = parse(r#"{"state":1,"questions":{"q":{"type":"noul","instruction":"x"}}}"#);
+        assert!(
+            matches!(&typo, E::UnknownField(d) if d.starts_with("`instruction`")),
+            "{typo:?}"
+        );
+        let missing = parse(r#"{"state":1}"#);
+        assert_eq!(missing, E::MissingField("`questions`".into()));
+        assert_eq!(missing.to_string(), "Missing field `questions`.");
+        assert_eq!(missing.code(), "system_one_missing_field");
+        let no_type = parse(r#"{"state":1,"questions":{"q":{"instructions":"x"}}}"#);
+        assert_eq!(no_type, E::MissingField("`type`".into()));
+        let kind = parse(r#"{"state":1,"questions":{"q":{"type":"boolean","instructions":"x"}}}"#);
+        assert_eq!(kind, E::UnknownQuestionType);
+        assert_eq!(kind.code(), "system_one_unknown_question_type");
+        // A type mismatch would echo the caller's text through serde's message: fixed instead.
+        let mistyped = parse(
+            r#"{"state":1,"questions":{"q":{"type":"choice","instructions":"x","criteria":"SECRET"}}}"#,
+        );
+        assert_eq!(mistyped, E::MalformedBody);
+        assert!(!mistyped.to_string().contains("SECRET"));
+        assert_eq!(mistyped.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // Long keys are cut before they reach the message.
+        let long = parse(&format!(
+            r#"{{"state":1,"questions":{{}},"{}":1}}"#,
+            "k".repeat(1_000)
+        ));
+        assert!(
+            matches!(&long, E::UnknownField(d) if d.ends_with("...") && d.chars().count() < 210),
+            "{long:?}"
+        );
+        // The middleware's wrapper is transparent and the strict schema still takes every
+        // documented field.
+        let body: SystemOneBody = serde_json::from_str(
+            r#"{"model":"glm-5-3-flash","state":"s","images":[],"temperature":1,"questions":{"q":{"type":"noul","instructions":"x","criteria":{"true":"t","false":"f"}}}}"#,
+        )
+        .expect("body parses");
+        let request = parse_request(body.0.get()).expect("strict schema accepts documented fields");
+        assert_eq!(request.images.len(), 0);
+        assert_eq!(request.temperature, Some(1.0));
     }
 
     /// An answer as a client sees it, for field assertions (object order is checked on text).
