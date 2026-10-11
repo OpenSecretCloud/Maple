@@ -1812,3 +1812,37 @@ async fn session_stats_count_messages_and_add_up_usage() {
     );
     assert!((stats.cost - 0.75).abs() < 1e-9);
 }
+
+#[tokio::test]
+async fn the_sessions_requests_carry_its_id_and_provider_settings() {
+    let harness = Harness::new();
+    harness.faux.push_text("one");
+    harness.faux.push_text("two");
+    let session = harness.session().await;
+    session
+        .prompt("hi", PromptOptions::default())
+        .await
+        .unwrap();
+    let options = harness.faux.requests()[0].options.clone();
+    assert_eq!(options.session_id, Some(session.session_id()));
+    // Pi's five minutes for a response to start, and a minute's limit on a server's wait.
+    assert_eq!(options.timeout_ms, Some(300_000));
+    assert_eq!(options.max_retries, None);
+    assert_eq!(options.max_retry_delay_ms, Some(60_000));
+
+    let mut settings = harness.options().settings;
+    settings.retry.provider.timeout_ms = Some(5_000);
+    settings.retry.provider.max_retries = Some(2);
+    settings.retry.provider.max_retry_delay_ms = 0;
+    let mut options = harness.options();
+    options.settings = settings;
+    let session = AgentSession::new(options).await.unwrap();
+    session
+        .prompt("hi", PromptOptions::default())
+        .await
+        .unwrap();
+    let options = harness.faux.requests()[1].options.clone();
+    assert_eq!(options.timeout_ms, Some(5_000));
+    assert_eq!(options.max_retries, Some(2));
+    assert_eq!(options.max_retry_delay_ms, Some(0));
+}

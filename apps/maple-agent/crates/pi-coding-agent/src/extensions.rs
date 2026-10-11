@@ -9,13 +9,13 @@
 //!   is reported without affecting the others;
 //! - a [`ToolCall`] gate stops at the first block, and a failing gate blocks the call;
 //! - rewrites ([`ToolResult`], [`MessageEnd`], [`Context`], [`ContextWithSystem`],
-//!   [`BeforeProviderRequest`], [`Input`], [`BeforeAgentStart`]) chain, each handler seeing
-//!   the previous one's output;
+//!   [`BeforeProviderRequest`], [`BeforeProviderHeaders`], [`Input`], [`BeforeAgentStart`])
+//!   chain, each handler seeing the previous one's output;
 //! - `before` events ([`SessionBeforeCompact`], [`SessionBeforeTree`]) stop at the first
 //!   cancellation.
 
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -211,6 +211,32 @@ pub struct BeforeProviderRequest {
     pub payload: Value,
 }
 
+/// The headers of a session's provider request about to be sent, as Pi's
+/// `before_provider_headers` has them. A handler answers with the headers to send; a
+/// `None` value removes that header.
+#[derive(Clone, Debug)]
+pub struct BeforeProviderHeaders {
+    pub headers: BTreeMap<String, Option<String>>,
+}
+
+/// The start of a response to a session's provider request, before its body is read.
+#[derive(Clone, Debug)]
+pub struct AfterProviderResponse {
+    pub status: u16,
+    /// Header names are in lowercase.
+    pub headers: BTreeMap<String, String>,
+}
+
+/// An event a provider streamed in reply to a session's request, as the provider parsed
+/// it, before it is read.
+#[derive(Clone, Debug)]
+pub struct ProviderStreamEvent {
+    pub provider: String,
+    pub api: String,
+    pub model: String,
+    pub data: Value,
+}
+
 /// A compaction about to happen, as Pi's `session_before_compact` describes it.
 #[derive(Clone, Debug)]
 pub struct SessionBeforeCompact {
@@ -338,6 +364,9 @@ events! {
     Context => Option<Vec<SessionMessage>>, "context";
     ContextWithSystem => Option<Vec<SessionMessage>>, "context_with_system";
     BeforeProviderRequest => Option<Value>, "before_provider_request";
+    BeforeProviderHeaders => Option<BTreeMap<String, Option<String>>>, "before_provider_headers";
+    AfterProviderResponse => (), "after_provider_response";
+    ProviderStreamEvent => (), "provider_stream_event";
     SessionBeforeCompact => BeforeCompactResult, "session_before_compact";
     SessionCompact => (), "session_compact";
     SessionCompactFailed => (), "session_compact_failed";
@@ -891,6 +920,30 @@ impl ExtensionRunner {
                 Ok(Some(replacement)) => current = replacement,
                 Ok(None) => {}
                 Err(error) => self.report(&extension, BeforeProviderRequest::NAME, error),
+            }
+        }
+        current
+    }
+
+    /// Chain header rewrites; each handler sees the headers the last one left.
+    pub async fn provider_headers(
+        &self,
+        headers: BTreeMap<String, Option<String>>,
+        core: &Weak<SessionCore>,
+    ) -> BTreeMap<String, Option<String>> {
+        let mut current = headers;
+        for (extension, handler) in self.handlers::<BeforeProviderHeaders>() {
+            match handler(
+                BeforeProviderHeaders {
+                    headers: current.clone(),
+                },
+                self.context(core, &extension),
+            )
+            .await
+            {
+                Ok(Some(replacement)) => current = replacement,
+                Ok(None) => {}
+                Err(error) => self.report(&extension, BeforeProviderHeaders::NAME, error),
             }
         }
         current

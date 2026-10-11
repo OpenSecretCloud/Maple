@@ -11,10 +11,11 @@ use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, ThinkingLevel, Tool, content_text};
 use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
-    AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult,
-    Context, ContextWithSystem, CustomMessageDraft, Input, InputAction, MessageEnd,
-    SessionBeforeCompact, SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionStart,
-    SlashCommandInfo, SlashCommandSource, ToolCall, ToolPrompt, ToolResult, extension,
+    AfterProviderResponse, AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeAgentStartResult,
+    BeforeCompactResult, BeforeProviderHeaders, Context, ContextWithSystem, CustomMessageDraft,
+    Input, InputAction, MessageEnd, ProviderStreamEvent, SessionBeforeCompact, SessionCompact,
+    SessionCompactFailed, SessionInfoChanged, SessionStart, SlashCommandInfo, SlashCommandSource,
+    ToolCall, ToolPrompt, ToolResult, extension,
 };
 use pi_coding_agent::session::{EntryKind, SessionManager};
 use pi_coding_agent::store::JsonlStore;
@@ -1192,4 +1193,93 @@ async fn an_extension_registers_tools_it_finds_later() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn provider_events_see_and_change_the_sessions_requests() {
+    let harness = Harness::new();
+    harness.faux.push_text("one");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let watcher = extension("watcher", move |api| {
+        api.on(|event: BeforeProviderHeaders, _ctx| async move {
+            let mut headers = event.headers;
+            headers.insert("x-trace".into(), Some("abc".into()));
+            headers.insert("x-drop".into(), None);
+            Ok(Some(headers))
+        });
+        let responses = log.clone();
+        api.on(move |event: AfterProviderResponse, _ctx| {
+            let responses = responses.clone();
+            async move {
+                responses
+                    .lock()
+                    .unwrap()
+                    .push(format!("response {} {:?}", event.status, event.headers));
+                Ok(())
+            }
+        });
+        let events = log.clone();
+        api.on(move |event: ProviderStreamEvent, _ctx| {
+            let events = events.clone();
+            async move {
+                events.lock().unwrap().push(format!(
+                    "event {}/{} {} {}",
+                    event.provider, event.model, event.api, event.data
+                ));
+                Ok(())
+            }
+        });
+    });
+    let session = harness.session_with_extensions(vec![watcher]).await;
+    session
+        .prompt("hi", PromptOptions::default())
+        .await
+        .unwrap();
+
+    // The faux provider calls no hooks; call them as a provider would.
+    let options = harness.faux.requests()[0].options.clone();
+    let headers = (options.transform_headers.expect("a header hook"))(
+        [("x-keep".to_string(), Some("1".to_string()))].into(),
+    )
+    .await;
+    assert_eq!(
+        headers,
+        [
+            ("x-drop".to_string(), None),
+            ("x-keep".to_string(), Some("1".to_string())),
+            ("x-trace".to_string(), Some("abc".to_string())),
+        ]
+        .into()
+    );
+    (options.on_response.expect("a response hook"))(pi_ai::ProviderResponse {
+        status: 200,
+        headers: [("x-request-id".to_string(), "r1".to_string())].into(),
+    })
+    .await;
+    (options.on_provider_stream_event.expect("an event hook"))(json!({ "id": "c1" })).await;
+    let model = harness.faux.model();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            "response 200 {\"x-request-id\": \"r1\"}".to_string(),
+            format!(
+                "event {}/{} {} {}",
+                model.provider, model.id, model.api, "{\"id\":\"c1\"}"
+            ),
+        ]
+    );
+    // Without handlers, no hooks are set.
+    let plain = Harness::new();
+    plain.faux.push_text("one");
+    let session = plain.session().await;
+    session
+        .prompt("hi", PromptOptions::default())
+        .await
+        .unwrap();
+    let options = plain.faux.requests()[0].options.clone();
+    assert!(options.transform_headers.is_none());
+    assert!(options.on_response.is_none());
+    assert!(options.on_provider_stream_event.is_none());
+    assert!(options.on_payload.is_none());
 }

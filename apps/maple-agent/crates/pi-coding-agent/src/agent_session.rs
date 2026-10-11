@@ -23,9 +23,10 @@ use pi_agent_core::{
 };
 use pi_ai::transcript::current_system_message;
 use pi_ai::{
-    AssistantMessage, Content, ImageContent, Message, Model, StreamOptions, SystemMessage,
-    ThinkingLevel, UserMessage, content_text, is_context_overflow, is_recoverable_length,
-    is_retryable_error, now_ms, retry_delay_ms,
+    AssistantMessage, AssistantMessageStream, Content, Context, ImageContent, Message, Model,
+    ProviderResponse, StreamFn, StreamOptions, SystemMessage, ThinkingLevel, UserMessage,
+    content_text, is_context_overflow, is_recoverable_length, is_retryable_error, now_ms,
+    retry_delay_ms,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -38,10 +39,11 @@ use crate::compaction::{
     summarize_branch,
 };
 use crate::extensions::{
-    AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderRequest, CommandContext,
-    CustomMessageDraft, Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner,
-    ExtensionUi, ForkPosition, Input, InputAction, InputSource, MessageEnd, ModelSelect,
-    RegisteredTool, SessionBeforeCompact, SessionBeforeFork, SessionBeforeTree, SessionCompact,
+    AfterProviderResponse, AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderHeaders,
+    BeforeProviderRequest, CommandContext, CustomMessageDraft, Extension, ExtensionContext,
+    ExtensionErrorReport, ExtensionRunner, ExtensionUi, ForkPosition, Input, InputAction,
+    InputSource, MessageEnd, ModelSelect, ProviderStreamEvent, RegisteredTool,
+    SessionBeforeCompact, SessionBeforeFork, SessionBeforeTree, SessionCompact,
     SessionCompactFailed, SessionInfoChanged, SessionShutdown, SessionStart, SessionStartReason,
     SessionTree, SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo,
     ToolPrompt, ToolResult, TreePreparation, TreeSummary,
@@ -508,6 +510,28 @@ impl HostPrompt {
     }
 }
 
+/// The session's own requests go out through this, as Pi's session stream function
+/// sends them, with [`SessionCore::request_options`]. Compaction and summaries go to
+/// the models directly, as in Pi.
+struct SessionStream {
+    core: Weak<SessionCore>,
+    inner: Arc<dyn StreamFn>,
+}
+
+impl StreamFn for SessionStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: Context,
+        mut options: StreamOptions,
+    ) -> AssistantMessageStream {
+        if let Some(core) = self.core.upgrade() {
+            core.request_options(model, &mut options);
+        }
+        self.inner.stream(model, context, options)
+    }
+}
+
 fn placeholder_model() -> Model {
     Model {
         id: "none".into(),
@@ -571,13 +595,16 @@ impl AgentSession {
             ..SystemPromptOptions::default()
         };
         host_prompt.apply(&mut prompt_base, &options.resources);
-        let session_id = options.session.id().to_string();
 
         let core = Arc::new_cyclic(|weak: &Weak<SessionCore>| {
             let runner = ExtensionRunner::load(&options.extensions, weak.clone());
+            let stream = SessionStream {
+                core: weak.clone(),
+                inner: models.stream_fn(),
+            };
             let mut agent_options = AgentOptions::new(
                 model.clone().unwrap_or_else(placeholder_model),
-                models.stream_fn(),
+                Arc::new(stream),
             );
             agent_options.thinking_level = thinking_level;
             agent_options.messages = projection.messages.clone();
@@ -585,10 +612,6 @@ impl AgentSession {
             agent_options.steering_mode = options.settings.steering_mode;
             agent_options.follow_up_mode = options.settings.follow_up_mode;
             agent_options.hooks = Arc::new(SessionHooks { core: weak.clone() });
-            agent_options.stream_options = StreamOptions {
-                session_id: Some(session_id),
-                ..StreamOptions::default()
-            };
             let context = ExtensionContext {
                 core: weak.clone(),
                 extension: Arc::from("builtin"),
@@ -703,24 +726,6 @@ impl AgentSession {
                 core.emit(AgentSessionEvent::ExtensionError(report));
             }
         }));
-        if core.runner.has::<BeforeProviderRequest>() {
-            let weak = core.weak.clone();
-            let mut stream_options = StreamOptions {
-                session_id: Some(core.session_id()),
-                ..StreamOptions::default()
-            };
-            stream_options.on_payload = Some(Arc::new(move |payload: Value| {
-                let weak = weak.clone();
-                async move {
-                    match weak.upgrade() {
-                        Some(core) => core.runner.provider_payload(payload, &weak).await,
-                        None => payload,
-                    }
-                }
-                .boxed()
-            }));
-            core.agent.set_stream_options(stream_options);
-        }
         core.agent.subscribe(Arc::new(SessionListener {
             core: core.weak.clone(),
         }));
@@ -1332,6 +1337,83 @@ fn custom_message(draft: CustomMessageDraft) -> SessionMessage {
 }
 
 impl SessionCore {
+    /// The options of the session's own request to `model`, as Pi's session gives them:
+    /// the session's id, the provider settings (`buildRequestOptions`), and hooks for
+    /// the provider events extensions handle. They are read as the request goes out.
+    fn request_options(&self, model: &Model, options: &mut StreamOptions) {
+        if options.session_id.is_none() {
+            options.session_id = Some(self.session_id());
+        }
+        let settings = lock(&self.settings).clone();
+        let provider = &settings.retry.provider;
+        options.timeout_ms = options.timeout_ms.or(Some(settings.request_timeout_ms()));
+        options.max_retries = options.max_retries.or(provider.max_retries);
+        options.max_retry_delay_ms = options
+            .max_retry_delay_ms
+            .or(Some(provider.max_retry_delay_ms));
+        if self.runner.has::<BeforeProviderHeaders>() {
+            let weak = self.weak.clone();
+            options.transform_headers = Some(Arc::new(move |headers| {
+                let weak = weak.clone();
+                async move {
+                    match weak.upgrade() {
+                        Some(core) => core.runner.provider_headers(headers, &weak).await,
+                        None => headers,
+                    }
+                }
+                .boxed()
+            }));
+        }
+        if self.runner.has::<BeforeProviderRequest>() {
+            let weak = self.weak.clone();
+            options.on_payload = Some(Arc::new(move |payload: Value| {
+                let weak = weak.clone();
+                async move {
+                    match weak.upgrade() {
+                        Some(core) => core.runner.provider_payload(payload, &weak).await,
+                        None => payload,
+                    }
+                }
+                .boxed()
+            }));
+        }
+        if self.runner.has::<AfterProviderResponse>() {
+            let weak = self.weak.clone();
+            options.on_response = Some(Arc::new(move |response: ProviderResponse| {
+                let weak = weak.clone();
+                async move {
+                    if let Some(core) = weak.upgrade() {
+                        let event = AfterProviderResponse {
+                            status: response.status,
+                            headers: response.headers,
+                        };
+                        core.runner.emit(&event, &weak).await;
+                    }
+                }
+                .boxed()
+            }));
+        }
+        if self.runner.has::<ProviderStreamEvent>() {
+            let weak = self.weak.clone();
+            let (provider, api, id) = (model.provider.clone(), model.api.clone(), model.id.clone());
+            options.on_provider_stream_event = Some(Arc::new(move |data: Value| {
+                let weak = weak.clone();
+                let event = ProviderStreamEvent {
+                    provider: provider.clone(),
+                    api: api.clone(),
+                    model: id.clone(),
+                    data,
+                };
+                async move {
+                    if let Some(core) = weak.upgrade() {
+                        core.runner.emit(&event, &weak).await;
+                    }
+                }
+                .boxed()
+            }));
+        }
+    }
+
     fn activity(&self) -> Activity {
         *self.activity.borrow()
     }
@@ -2112,7 +2194,7 @@ impl SessionCore {
     async fn retry(&self, attempt: u32, settings: &Settings, error: &str) -> bool {
         let delay_ms = retry_delay_ms(
             settings.retry.base_delay_ms,
-            settings.retry.max_delay_ms,
+            settings.retry.max_agent_delay_ms,
             attempt,
         );
         self.emit(AgentSessionEvent::RetryStart {
@@ -2357,7 +2439,7 @@ impl SessionCore {
                     },
                     max_retries: summary_retries(&settings),
                     retry_base_ms: settings.retry.base_delay_ms,
-                    retry_max_ms: settings.retry.max_delay_ms,
+                    retry_max_ms: settings.retry.max_agent_delay_ms,
                     on_retry: Some(&report),
                 };
                 compact(&preparation, &summarizer, custom_instructions)
@@ -2506,7 +2588,7 @@ impl SessionCore {
                     },
                     max_retries: summary_retries(&settings),
                     retry_base_ms: settings.retry.base_delay_ms,
-                    retry_max_ms: settings.retry.max_delay_ms,
+                    retry_max_ms: settings.retry.max_agent_delay_ms,
                     on_retry: Some(&report),
                 };
                 // The window, or Pi's 128k when it is unknown, less the reserve; with
