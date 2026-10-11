@@ -206,6 +206,7 @@
             atk
             bubblewrap
             cairo
+            cpio
             gdk-pixbuf
             glib
             glib-networking
@@ -822,6 +823,8 @@
             src = ./.;
           } ''
             cd "$src"
+            python3 scripts/ci/test_tauri_bundle_type.py
+            python3 scripts/ci/test_linux_rpm_packaging.py
             bash ./scripts/ci/test-release-gates.sh
             touch "$out"
           '';

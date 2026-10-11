@@ -413,9 +413,10 @@ verify_tauri_signatures_in_artifacts() {
 }
 
 verify_linux_installer_metadata() {
-  local appimage deb
+  local appimage deb rpm
   local -a appimages=()
   local -a debs=()
+  local -a rpms=()
 
   if [ "$(host_os)" != "linux" ]; then
     if [ "${allow_platform_skips}" = "1" ]; then
@@ -434,6 +435,10 @@ verify_linux_installer_metadata() {
     debs+=("${deb}")
   done < <(find "${artifacts_dir}" -type f -name '*.deb' -print0 | LC_ALL=C sort -z)
 
+  while IFS= read -r -d '' rpm; do
+    rpms+=("${rpm}")
+  done < <(find "${artifacts_dir}" -type f -name '*.rpm' -print0 | LC_ALL=C sort -z)
+
   if [ "${#appimages[@]}" -eq 0 ]; then
     echo "No Linux Maple AppImage artifact found for installer metadata verification." >&2
     return 1
@@ -444,12 +449,21 @@ verify_linux_installer_metadata() {
     return 1
   fi
 
+  if [ "${#rpms[@]}" -eq 0 ]; then
+    echo "No Linux .rpm artifact found for installer metadata verification." >&2
+    return 1
+  fi
+
   for appimage in "${appimages[@]}"; do
     verify_linux_appimage_executable_metadata "${appimage}"
   done
 
   for deb in "${debs[@]}"; do
     verify_linux_deb_package_executable_metadata "${deb}"
+  done
+
+  for rpm in "${rpms[@]}"; do
+    verify_linux_rpm_package_executable_metadata "${rpm}"
   done
 }
 

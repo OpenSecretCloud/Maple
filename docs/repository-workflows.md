@@ -80,6 +80,12 @@ job trusts its runner with the selected environment's secrets. PR builds have
 no signing credentials and retain their existing branch-scoped caches. No
 persistent vendor disks or Docker builders are configured by these workflows.
 
+Research Linux packaging builds AppImage and DEB through Tauri, then creates
+the final RPM once from the normalized DEB payload. Its staging executable is
+marked as RPM so Tauri selects the RPM updater entry and installer. Build and
+download verifiers check the executable identity in all three package formats;
+updater metadata, signing and publication keep their existing flow.
+
 Research's Unix compiler-cache statistics use `scripts/ci/sccache-stats.sh`,
 which shares the build's cache configuration. In Actions the sccache socket
 lives under `RUNNER_TEMP`, so separate Nix shells reach the same server despite
