@@ -352,6 +352,9 @@ pub struct AgentSessionOptions {
     /// Whether the project's own resources and settings were loaded, which extensions
     /// can ask, as Pi's `isProjectTrusted`.
     pub project_trusted: bool,
+    /// The settings file the session saves what its setters change to, as Pi saves the
+    /// user's settings file. Without one, changes stay in the session.
+    pub settings_file: Option<PathBuf>,
 }
 
 impl AgentSessionOptions {
@@ -377,6 +380,7 @@ impl AgentSessionOptions {
             custom_prompt: None,
             skill_load_hint: None,
             project_trusted: false,
+            settings_file: None,
         }
     }
 }
@@ -461,6 +465,7 @@ pub(crate) struct SessionCore {
     ui: Arc<dyn ExtensionUi>,
     cwd: PathBuf,
     settings: Mutex<Settings>,
+    settings_file: Option<PathBuf>,
     resources: Mutex<Resources>,
     /// The skill and template paths extensions gave in `resources_discover`.
     discovered: Mutex<ResourcesDiscoverResult>,
@@ -511,6 +516,49 @@ impl HostPrompt {
         base.context_files = resources.context_files.clone();
         base.skills = resources.skills.clone();
     }
+}
+
+/// Set each path in the JSON settings `file` to its value, keeping the rest of it, and
+/// write it back as Pi writes settings: indented by two spaces. A file that does not
+/// parse is left alone, as Pi does.
+fn write_settings(file: &Path, changes: Vec<(&[&str], Value)>) -> std::io::Result<()> {
+    let mut settings = match std::fs::read_to_string(file) {
+        Ok(text) if !text.trim().is_empty() => {
+            serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text))
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
+        }
+        Ok(_) => Value::Object(Default::default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Value::Object(Default::default())
+        }
+        Err(error) => return Err(error),
+    };
+    for (path, value) in changes {
+        let Some((last, parents)) = path.split_last() else {
+            continue;
+        };
+        let mut current = &mut settings;
+        for key in parents {
+            if !current.is_object() {
+                *current = Value::Object(Default::default());
+            }
+            let child = &mut current[*key];
+            if !child.is_object() {
+                *child = Value::Object(Default::default());
+            }
+            current = child;
+        }
+        if !current.is_object() {
+            *current = Value::Object(Default::default());
+        }
+        current[*last] = value;
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let staging = file.with_extension("json.tmp");
+    std::fs::write(&staging, serde_json::to_string_pretty(&settings)?)?;
+    std::fs::rename(&staging, file)
 }
 
 /// `ms` as Pi names an export: its UTC ISO time with `:` and `.` as `-`, such as
@@ -743,6 +791,7 @@ impl AgentSession {
                 ui: options.ui,
                 cwd: options.cwd,
                 settings: Mutex::new(options.settings),
+                settings_file: options.settings_file,
                 resources: Mutex::new(options.resources),
                 discovered: Mutex::new(ResourcesDiscoverResult::default()),
                 host_prompt,
@@ -1054,6 +1103,33 @@ impl AgentSession {
         self.core.set_thinking_level(level).await;
     }
 
+    /// Switch to `model` and make it the model new sessions start with, as Pi's
+    /// `setModel` with `persist`: saved as `defaultProvider` and `defaultModel`.
+    pub async fn set_model_as_default(&self, model: Model) {
+        let (provider, id) = (model.provider.clone(), model.id.clone());
+        self.core.set_model(model).await;
+        {
+            let mut settings = lock(&self.core.settings);
+            settings.default_provider = Some(provider.clone());
+            settings.default_model = Some(id.clone());
+        }
+        self.core.save_settings(vec![
+            (&["defaultProvider"], Value::String(provider)),
+            (&["defaultModel"], Value::String(id)),
+        ]);
+    }
+
+    /// Set the thinking level and make the requested level the default, as Pi's
+    /// `setThinkingLevel` with `persist`: saved as `defaultThinkingLevel`.
+    pub async fn set_thinking_level_as_default(&self, level: ThinkingLevel) {
+        self.core.set_thinking_level(level).await;
+        lock(&self.core.settings).default_thinking_level = Some(level);
+        self.core.save_setting(
+            &["defaultThinkingLevel"],
+            serde_json::to_value(level).unwrap_or_default(),
+        );
+    }
+
     pub fn model(&self) -> Option<Model> {
         lock(&self.core.model).clone()
     }
@@ -1174,6 +1250,8 @@ impl AgentSession {
     /// `setAutoCompactionEnabled` does. The settings files are the host's to change.
     pub fn set_auto_compaction_enabled(&self, enabled: bool) {
         lock(&self.core.settings).compaction.enabled = enabled;
+        self.core
+            .save_setting(&["compaction", "enabled"], Value::Bool(enabled));
     }
 
     pub fn auto_compaction_enabled(&self) -> bool {
@@ -1184,6 +1262,8 @@ impl AgentSession {
     /// does.
     pub fn set_auto_retry_enabled(&self, enabled: bool) {
         lock(&self.core.settings).retry.enabled = enabled;
+        self.core
+            .save_setting(&["retry", "enabled"], Value::Bool(enabled));
     }
 
     pub fn auto_retry_enabled(&self) -> bool {
@@ -1195,6 +1275,10 @@ impl AgentSession {
     pub fn set_steering_mode(&self, mode: QueueMode) {
         lock(&self.core.settings).steering_mode = mode;
         self.core.agent.set_steering_mode(mode);
+        self.core.save_setting(
+            &["steeringMode"],
+            serde_json::to_value(mode).unwrap_or_default(),
+        );
     }
 
     pub fn steering_mode(&self) -> QueueMode {
@@ -1205,6 +1289,10 @@ impl AgentSession {
     pub fn set_follow_up_mode(&self, mode: QueueMode) {
         lock(&self.core.settings).follow_up_mode = mode;
         self.core.agent.set_follow_up_mode(mode);
+        self.core.save_setting(
+            &["followUpMode"],
+            serde_json::to_value(mode).unwrap_or_default(),
+        );
     }
 
     pub fn follow_up_mode(&self) -> QueueMode {
@@ -1619,6 +1707,25 @@ impl SessionCore {
 
     fn model(&self) -> Option<Model> {
         lock(&self.model).clone()
+    }
+
+    /// Save one setting to the session's settings file, keeping everything else in it,
+    /// as Pi's settings manager writes a changed setting.
+    fn save_setting(&self, path: &[&str], value: Value) {
+        self.save_settings(vec![(path, value)]);
+    }
+
+    /// Save settings that change together in one write.
+    fn save_settings(&self, changes: Vec<(&[&str], Value)>) {
+        let Some(file) = &self.settings_file else {
+            return;
+        };
+        if let Err(error) = write_settings(file, changes) {
+            self.emit(AgentSessionEvent::PersistenceError(format!(
+                "Could not save {}: {error}",
+                file.display()
+            )));
+        }
     }
 
     fn report_persistence(&self) {

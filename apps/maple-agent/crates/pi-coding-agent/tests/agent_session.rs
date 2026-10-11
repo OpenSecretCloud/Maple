@@ -1946,3 +1946,53 @@ async fn the_branch_exports_as_a_session_file_of_its_own() {
     // The system prompt and the two exchanges.
     assert_eq!(messages, 5);
 }
+
+#[tokio::test]
+async fn settings_changed_in_a_session_are_saved_where_the_host_says() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("settings.json");
+    std::fs::write(
+        &file,
+        json!({ "retry": { "maxRetries": 5 }, "theme": "dark" }).to_string(),
+    )
+    .unwrap();
+    let harness = Harness::new();
+    let mut options = harness.options();
+    options.settings_file = Some(file.clone());
+    let session = AgentSession::new(options).await.unwrap();
+
+    session.set_auto_retry_enabled(false);
+    session.set_auto_compaction_enabled(false);
+    session.set_steering_mode(QueueMode::All);
+    session.set_follow_up_mode(QueueMode::All);
+    session
+        .set_thinking_level_as_default(ThinkingLevel::High)
+        .await;
+    session.set_model_as_default(harness.faux.model()).await;
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let model = harness.faux.model();
+    assert_eq!(
+        saved,
+        json!({
+            "retry": { "maxRetries": 5, "enabled": false },
+            "theme": "dark",
+            "compaction": { "enabled": false },
+            "steeringMode": "all",
+            "followUpMode": "all",
+            "defaultThinkingLevel": "high",
+            "defaultProvider": model.provider,
+            "defaultModel": model.id,
+        })
+    );
+    let settings = session.settings();
+    assert_eq!(settings.default_thinking_level, Some(ThinkingLevel::High));
+    assert_eq!(settings.default_provider.as_deref(), Some(&*model.provider));
+    assert_eq!(settings.default_model.as_deref(), Some(&*model.id));
+
+    // Without a file, changes stay in the session.
+    let session = harness.session().await;
+    session.set_auto_retry_enabled(false);
+    assert!(!session.auto_retry_enabled());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}

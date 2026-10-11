@@ -95,6 +95,10 @@ pub struct Settings {
     pub steering_mode: QueueMode,
     pub follow_up_mode: QueueMode,
     pub tool_execution: ToolExecutionMode,
+    /// The provider of the model new sessions start with, as Pi's `defaultProvider`.
+    pub default_provider: Option<String>,
+    /// That model's id, as Pi's `defaultModel`.
+    pub default_model: Option<String>,
     pub default_thinking_level: Option<ThinkingLevel>,
     /// Levels for particular models, by `provider/model-id`, as Pi's
     /// `modelThinkingLevels`. A model's own level wins over `default_thinking_level`
