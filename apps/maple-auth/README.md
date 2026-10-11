@@ -76,9 +76,11 @@ URL, app variant, or environment may be supplied in the request.
 Auth keeps the compiled environment, Agent identity, port and state in the
 pending target alongside the provider/session/request pair. These fields must
 still match after provider callbacks and minting. Account confirmation mints
-once and shows **Return to Maple Agent Dev** (Dev) or **Return to Maple Agent**
-(Prod). Agent return requires that separate button click; Auth never navigates
-to loopback automatically. The top-level destination is exactly:
+once and automatically returns to Agent, showing progress while preparing and
+returning. **Return to Maple Agent Dev** (Dev) or **Return to Maple Agent** (Prod)
+remains as a manual fallback if navigation does not complete; it reuses the same
+grant without minting again. No grant is minted before account confirmation.
+The top-level destination is exactly:
 
 ```text
 http://127.0.0.1:<port>/auth/callback?handoff_grant=<grant>&return_state=<state>

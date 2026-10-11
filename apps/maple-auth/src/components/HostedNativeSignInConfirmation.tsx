@@ -100,6 +100,25 @@ export function HostedNativeSignInConfirmation({
     setStatus("closed");
   };
 
+  const returnToAgent = (result: NativeAuthReturn) => {
+    if (
+      !ownsAccount() ||
+      isNativeOAuthRedirect() ||
+      (result.expiresAt !== undefined && Date.now() >= result.expiresAt)
+    ) {
+      cancel();
+      return;
+    }
+    setMessage(null);
+    try {
+      window.location.href = result.url;
+    } catch {
+      // Keep the same grant available for a user-initiated retry. Never expose
+      // the navigation exception: it may contain the credential-bearing URL.
+      setMessage(`Your browser could not return to ${appLabel}. Try the return button below.`);
+    }
+  };
+
   const approve = async () => {
     if (submitted.current || !active.current) return;
     submitted.current = true;
@@ -113,8 +132,10 @@ export function HostedNativeSignInConfirmation({
       if (!ownsAccount()) return;
       setHandoff(result);
       setStatus("complete");
-      // Loopback return must be a separate top-level navigation in a user click.
-      if (!isAgent) window.location.href = result.url;
+      // Account confirmation is the only required click. Keep the in-memory
+      // return as a fallback if the browser does not complete navigation.
+      if (isAgent) returnToAgent(result);
+      else window.location.href = result.url;
     } catch {
       if (!active.current || cancelled.current) return;
       setMessage(`This sign-in could not be completed. Start a new login in ${appLabel}.`);
@@ -133,7 +154,8 @@ export function HostedNativeSignInConfirmation({
       cancel();
       return;
     }
-    window.location.href = handoff.url;
+    if (isAgent) returnToAgent(handoff);
+    else window.location.href = handoff.url;
   };
 
   if (!account) {
@@ -151,6 +173,25 @@ export function HostedNativeSignInConfirmation({
         Continue only if you started this login in {appLabel}.
         {!isAgent && " Check that Maple shows the same account before signing in there."}
       </p>
+      {isAgent && (status === "minting" || status === "complete") && (
+        <div className="space-y-2 text-sm">
+          <p role="status" className="flex items-center justify-center gap-2">
+            {!message && (
+              <span
+                aria-hidden="true"
+                className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none"
+              />
+            )}
+            {message ||
+              (status === "minting" ? "Preparing your sign-in…" : `Returning to ${appLabel}…`)}
+          </p>
+          {status === "complete" && !message && (
+            <p className="text-muted-foreground">
+              If you are still here, use the return button below.
+            </p>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap justify-center gap-2">
         <Button type="button" variant="outline" onClick={cancel}>
           Cancel
