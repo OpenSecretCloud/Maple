@@ -20,6 +20,16 @@ Tables measure bounded cell widths before the horizontal scroller proposes its
 viewport width. Cells scale with Dynamic Type; the outer grid keeps each Markdown
 column's alignment and lets wide tables scroll rather than squeeze every column.
 
+The chat transcript takes its width from the detail viewport, capped at 850
+points and centered in wider windows. Its 20-point horizontal insets and leading
+alignment stay fixed as streamed rich blocks prepare or grow. Wide tables and
+code scroll within the reply instead of moving the transcript column.
+Programmatic vertical scrolls specify a zero horizontal offset. A content-local
+UIKit marker also keeps the outer transcript scroll view at its horizontal inset
+when SwiftUI repositions it as rich blocks grow, preserving its current vertical
+offset. It observes only its nearest ancestor scroll view while this chat and
+scene are active; nested table/code scrollers retain their own horizontal offset.
+
 Fenced code uses the app's bounded native lexer and explicit copy action. Unknown
 languages and excessive highlight work retain the entire code as plain text.
 Every actual code block, including quoted and nested fences, receives an owned
@@ -126,3 +136,11 @@ uses six completed rich turns through the production chat screen. It checks
 repeated earlier/later scrolling, native code/link controls, settled geometry,
 and the exact prepared projection retained when a lazy row disappears. Its
 debug-only diagnostics contain counts and booleans, never message contents.
+
+`ShippingViewportUITests/testStreamingRichReplyKeepsTheTranscriptColumnAndActionsInPlace`
+streams prose, a wide table and code through the production chat screen. It checks
+the horizontal geometry of a preceding tool row, the first paragraph and reply
+actions during the run and after completion on iPhone and iPad, then exercises
+nested table scrolling and vertical timeline dragging. Layout extrema remain
+diagnostic: geometry can expose an attempted offset before the native guard
+corrects it within the same update, so displayed positions are checked separately.

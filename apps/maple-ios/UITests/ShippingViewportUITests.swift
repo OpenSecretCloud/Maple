@@ -786,6 +786,195 @@ final class ShippingViewportUITests: XCTestCase {
         XCTAssertTrue(composer.isHittable)
     }
 
+    func testStreamingRichReplyKeepsTheTranscriptColumnAndActionsInPlace() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-stream-width-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        app.buttons["shipping-viewport.start"].tap()
+        waitSummary("running 1")
+        let advance = app.buttons["shipping-stream-width.advance"]
+        let streaming = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: advance)
+        XCTAssertEqual(XCTWaiter.wait(for: [streaming], timeout: 10), .completed)
+
+        let transcript = app.scrollViews["chat.transcript"]
+        // Overflow adds a nested native selection/scrolling surface. Its AX
+        // ancestry can change as a table appears, so select these unique
+        // synthetic glyphs and controls independently of the assistant container.
+        let paragraph = app.staticTexts.matching(NSPredicate(format: "label == %@", "Synthetic live reply.")).firstMatch
+        let nativeParagraph = app.textViews.matching(NSPredicate(format: "value == %@", "Synthetic live reply."))
+            .firstMatch
+        let tool = app.buttons["tool.activity.viewport-width-search"]
+        let copy = app.buttons["message.copy.viewport-live-assistant"]
+        let speak = app.buttons["message.speak.viewport-live-assistant"]
+        let columnWidth = min(transcript.frame.width, 850)
+        let expectedLeading = transcript.frame.midX - columnWidth / 2 + 20
+        var baseline: [CGRect]?
+
+        func recordToolGeometry(_ name: String) {
+            let diagnostic = app.staticTexts["shipping-stream-width.geometry"]
+            let attachment = XCTAttachment(
+                string: diagnostic.exists ? diagnostic.value as? String ?? "unavailable" : "unavailable")
+            attachment.name = name
+            attachment.lifetime = .keepAlways; add(attachment)
+            let scroll = app.staticTexts["shipping-stream-width.scroll-metrics"]
+            let viewport = XCTAttachment(
+                string: scroll.exists ? scroll.value as? String ?? "unavailable" : "unavailable")
+            viewport.name = "Horizontal viewport: " + name
+            viewport.lifetime = .keepAlways; add(viewport)
+        }
+        func measurePreparedStage(_ stage: Int, completed: Bool = false) throws {
+            // Each new revision supplies a separate native preparation witness.
+            // The earlier link cannot stand in for publication of a later table.
+            recordToolGeometry("Tool geometry before preparation wait for stage \(stage)")
+            let prepared = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    guard paragraph.exists, tool.exists, copy.exists, speak.exists else { return false }
+                    switch stage {
+                    case 1:
+                        return self.app.links["Synthetic width reference"].exists
+                    case 2:
+                        return self.app.staticTexts.matching(
+                            NSPredicate(format: "label == %@", "Synthetic table begins")
+                        )
+                        .firstMatch.exists
+                    case 3:
+                        return self.app.buttons["Copy code"].firstMatch.exists
+                            && self.app.staticTexts.matching(
+                                NSPredicate(format: "label == %@", "Synthetic table grows")
+                            )
+                            .firstMatch.exists
+                    default:
+                        return nativeParagraph.exists
+                    }
+                }, object: app)
+            let outcome = XCTWaiter.wait(for: [prepared], timeout: 10)
+            if outcome != .completed {
+                recordToolGeometry("Tool geometry after failed preparation wait for stage \(stage)")
+                capture("Synthetic streamed revision preparation failure at stage \(stage)")
+            }
+            XCTAssertEqual(outcome, .completed)
+            let frames = [paragraph.frame, tool.frame, copy.frame, speak.frame]
+            let geometry = XCTAttachment(string: "Stage \(stage), completed \(completed): \(frames)")
+            geometry.name = "Shipping streamed paragraph, tool and action geometry"
+            geometry.lifetime = .keepAlways; add(geometry)
+            capture("Shipping streamed rich reply stage \(stage), completed \(completed)")
+            for frame in frames {
+                XCTAssertTrue([frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite))
+                XCTAssertGreaterThan(frame.width, 0)
+                XCTAssertGreaterThan(frame.height, 0)
+            }
+            XCTAssertEqual(paragraph.frame.minX, expectedLeading, accuracy: 1)
+            XCTAssertEqual(tool.frame.minX, expectedLeading, accuracy: 1)
+            XCTAssertEqual(tool.frame.width, columnWidth - 40, accuracy: 1)
+            if let baseline {
+                for (index, pair) in zip(baseline, frames).enumerated() {
+                    let (before, after) = pair
+                    XCTAssertEqual(
+                        after.minX, before.minX, accuracy: 1, "Streaming must keep each horizontal anchor in place")
+                    // Textual's native selection overlay can expand with its
+                    // siblings; its left edge is the stable reading anchor.
+                    if index > 0 {
+                        XCTAssertEqual(
+                            after.width, before.width, accuracy: 1,
+                            "Rich content must not widen the tool or action rows")
+                    }
+                }
+            } else {
+                baseline = frames
+            }
+            let diagnostic = app.staticTexts["shipping-stream-width.geometry"]
+            let json = try XCTUnwrap(diagnostic.value as? String)
+            let extrema = try JSONDecoder().decode([String: Double].self, from: Data(json.utf8))
+            let samples = try XCTUnwrap(extrema["samples"])
+            let minimumWidth = try XCTUnwrap(extrema["minimumWidth"]),
+                maximumWidth = try XCTUnwrap(extrema["maximumWidth"])
+            let excursions = XCTAttachment(string: json)
+            excursions.name = "All laid-out synthetic tool geometry through stage \(stage)"
+            excursions.lifetime = .keepAlways; add(excursions)
+            XCTAssertGreaterThanOrEqual(samples, 1)
+            XCTAssertEqual(minimumWidth, Double(columnWidth - 40), accuracy: 1)
+            XCTAssertEqual(
+                maximumWidth, minimumWidth, accuracy: 1,
+                "Transient streamed revisions must not widen the transcript column")
+            let viewportJSON = try XCTUnwrap(app.staticTexts["shipping-stream-width.scroll-metrics"].value as? String)
+            let viewport = try JSONDecoder().decode([String: Double].self, from: Data(viewportJSON.utf8))
+            // Geometry can report an attempted offset before the synchronous
+            // native correction, within one display update. Keep its extrema
+            // as diagnostics; assert the published viewport and native glyphs.
+            XCTAssertEqual(
+                try XCTUnwrap(viewport["offsetX"]) + XCTUnwrap(viewport["leadingInset"]), 0, accuracy: 1)
+            XCTAssertEqual(speak.isEnabled, completed)
+        }
+
+        func proveNestedTableAndVerticalScrolling() throws {
+            let first = app.staticTexts.matching(
+                NSPredicate(format: "label == %@", "Synthetic table begins")
+            ).firstMatch
+            let last = app.staticTexts.matching(
+                NSPredicate(format: "label == %@", "Seventh wide column")
+            ).firstMatch
+            let viewport = transcript.frame.intersection(app.windows.firstMatch.frame)
+            let top = max(viewport.minY, app.staticTexts["shipping-stream-width.scroll-metrics"].frame.maxY + 12)
+            let region = CGRect(
+                x: expectedLeading, y: top, width: columnWidth - 40,
+                height: min(viewport.maxY, app.textViews["chat.composer"].frame.minY) - top)
+            let band = first.frame.intersection(region)
+            XCTAssertFalse(band.isNull)
+            XCTAssertGreaterThan(band.height, 5)
+            let origin = transcript.coordinate(withNormalizedOffset: .zero)
+            let left = origin.withOffset(
+                CGVector(dx: region.minX + 24 - viewport.minX, dy: band.midY - viewport.minY))
+            let right = origin.withOffset(
+                CGVector(dx: region.maxX - 24 - viewport.minX, dy: band.midY - viewport.minY))
+            let initialX = first.frame.minX
+            func lastColumnVisible() -> Bool {
+                guard last.exists else { return false }
+                let visible = last.frame.intersection(region)
+                return !visible.isNull && visible.width > 20 && visible.height > 5
+            }
+            XCTAssertFalse(lastColumnVisible())
+            for _ in 0..<4 where !lastColumnVisible() {
+                right.press(forDuration: 0.05, thenDragTo: left, withVelocity: .slow, thenHoldForDuration: 0.1)
+            }
+            XCTAssertTrue(lastColumnVisible(), "Wide tables must keep their own horizontal scrolling")
+            XCTAssertEqual(paragraph.frame.minX, expectedLeading, accuracy: 1)
+            XCTAssertEqual(tool.frame.minX, expectedLeading, accuracy: 1)
+            capture("Nested table scrolls while the outer timeline stays aligned")
+            for _ in 0..<4 where !first.exists || abs(first.frame.minX - initialX) > 2 {
+                left.press(forDuration: 0.05, thenDragTo: right, withVelocity: .slow, thenHoldForDuration: 0.1)
+            }
+            XCTAssertEqual(first.frame.minX, initialX, accuracy: 2)
+
+            let beforeY = paragraph.frame.minY
+            let upper = origin.withOffset(CGVector(dx: 8, dy: top + 70 - viewport.minY))
+            let lower = upper.withOffset(CGVector(dx: 0, dy: 100))
+            upper.press(forDuration: 0.05, thenDragTo: lower, withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertGreaterThan(abs(paragraph.frame.minY - beforeY), 40, "The timeline must still scroll vertically")
+            XCTAssertEqual(paragraph.frame.minX, expectedLeading, accuracy: 1)
+            lower.press(forDuration: 0.05, thenDragTo: upper, withVelocity: .slow, thenHoldForDuration: 0.1)
+            try measurePreparedStage(2)
+        }
+
+        try measurePreparedStage(0)
+        for stage in 1...3 {
+            XCTAssertTrue(advance.isEnabled && advance.isHittable)
+            advance.tap()
+            let expectedStage = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label == %@", "Stage \(stage); advancing 0"),
+                object: app.staticTexts["shipping-stream-width.stage"])
+            XCTAssertEqual(XCTWaiter.wait(for: [expectedStage], timeout: 10), .completed)
+            try measurePreparedStage(stage)
+            if stage == 2 { try proveNestedTableAndVerticalScrolling() }
+        }
+        app.buttons["shipping-viewport.finish"].tap()
+        waitSummary("running 0")
+        try measurePreparedStage(3, completed: true)
+        XCTAssertTrue(app.textViews["chat.composer"].exists && app.textViews["chat.composer"].isHittable)
+    }
+
     func testShippingStreamPreservesEarlierReadingAnchor() {
         launchFixture()
         app.buttons["shipping-viewport.start"].tap()

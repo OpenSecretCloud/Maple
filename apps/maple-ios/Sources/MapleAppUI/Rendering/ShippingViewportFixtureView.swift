@@ -70,6 +70,12 @@
                                                 "--maple-shipping-follow-scroll-proof")
                                         else { return }
                                         model?.scrollMetrics = metrics
+                                    },
+                                    fixtureItemHorizontalGeometryChanged: { [weak model] itemID, geometry in
+                                        model?.recordWidthToolHorizontalGeometry(itemID: itemID, geometry: geometry)
+                                    },
+                                    fixtureHorizontalScrollMetricsChanged: { [weak model] metrics in
+                                        model?.recordHorizontalScrollMetrics(metrics)
                                     }
                                 )
                                 .environment(\.messageRenderDisappearanceDiagnostic) {
@@ -264,7 +270,38 @@
         }
 
         @ViewBuilder private func controls(_ model: ShippingViewportFixtureModel) -> some View {
-            if model.historyRenderingProof {
+            if model.streamWidthProof {
+                VStack(spacing: 4) {
+                    HStack {
+                        Button("Start run") { model.startRun() }
+                            .accessibilityIdentifier("shipping-viewport.start")
+                            .disabled(!model.ready || model.started)
+                        Button("Advance reply") { Task { await model.advanceWidthReply() } }
+                            .accessibilityIdentifier("shipping-stream-width.advance")
+                            .disabled(
+                                model.runtime.phase != .streaming || model.advancingWidthReply
+                                    || model.widthReplyStage >= 3)
+                        Button("Finish") { Task { await model.finish() } }
+                            .accessibilityIdentifier("shipping-viewport.finish")
+                            .disabled(
+                                model.widthReplyStage != 3 || model.advancingWidthReply
+                                    || !model.runtime.hasUnresolvedRun)
+                    }.font(.caption)
+                    Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
+                        .accessibilityIdentifier("shipping-viewport.summary")
+                    Text("Stage \(model.widthReplyStage); advancing \(model.advancingWidthReply ? 1 : 0)").font(
+                        .caption2
+                    )
+                    .accessibilityIdentifier("shipping-stream-width.stage")
+                    Text("Synthetic tool horizontal geometry").font(.caption2)
+                        .accessibilityIdentifier("shipping-stream-width.geometry")
+                        .accessibilityValue(model.widthToolGeometryJSON)
+                    Text("Synthetic horizontal viewport metrics").font(.caption2)
+                        .accessibilityIdentifier("shipping-stream-width.scroll-metrics")
+                        .accessibilityValue(model.horizontalScrollMetricsJSON)
+                }
+                .frame(maxWidth: .infinity).frame(height: 96)
+            } else if model.historyRenderingProof {
                 VStack(spacing: 4) {
                     Text(model.summary).font(.caption2)
                         .accessibilityIdentifier("shipping-viewport.summary")
@@ -363,12 +400,14 @@
         private let service = ShippingViewportService(
             complexMarkup: ProcessInfo.processInfo.arguments.contains("--maple-shipping-complex-markdown-proof"),
             transcriptRows: ProcessInfo.processInfo.arguments.contains("--maple-shipping-transcript-rows-proof"),
-            historyRendering: ProcessInfo.processInfo.arguments.contains("--maple-shipping-history-rendering-proof"))
+            historyRendering: ProcessInfo.processInfo.arguments.contains("--maple-shipping-history-rendering-proof"),
+            streamWidth: ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof"))
         private let store: ShippingViewportStore
         let draftLoadProof: Bool
         let compactProjectionProof: Bool
         let historyRenderingProof = ProcessInfo.processInfo.arguments.contains(
             "--maple-shipping-history-rendering-proof")
+        let streamWidthProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof")
         private let cachedProjection: ChatRuntime?
         private let cachedProjectionInstance = UUID()
         private(set) var projectionIsNewChat = true
@@ -382,6 +421,10 @@
         var emitting = false
         var chunks = 0
         var appendedItems = 0
+        var widthReplyStage = 0
+        var advancingWidthReply = false
+        private var widthToolGeometry: [String: Double] = [:]
+        private var horizontalScrollMetrics: [String: Double] = [:]
         var scrollMetrics: TranscriptViewportMetrics?
         private var preparedDisappeared = 0
         private var preparedRetained = 0
@@ -451,6 +494,38 @@
         var scrollMetricsJSON: String {
             guard let scrollMetrics, let data = try? JSONEncoder().encode(scrollMetrics) else { return "{}" }
             return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        var widthToolGeometryJSON: String {
+            guard let data = try? JSONEncoder().encode(widthToolGeometry) else { return "{}" }
+            return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        var horizontalScrollMetricsJSON: String {
+            guard let data = try? JSONEncoder().encode(horizontalScrollMetrics) else { return "{}" }
+            return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        func recordHorizontalScrollMetrics(_ metrics: [String: CGFloat]) {
+            guard streamWidthProof, !retired, !metrics.isEmpty, metrics.values.allSatisfy(\.isFinite) else { return }
+            var values = metrics.mapValues(Double.init)
+            values["samples"] = (horizontalScrollMetrics["samples"] ?? 0) + 1
+            for key in ["offsetX", "contentWidth", "boundsMinX"] {
+                guard let value = values[key] else { continue }
+                let suffix = key.prefix(1).uppercased() + String(key.dropFirst())
+                let minimum = "minimum" + suffix, maximum = "maximum" + suffix
+                values[minimum] = min(horizontalScrollMetrics[minimum] ?? value, value)
+                values[maximum] = max(horizontalScrollMetrics[maximum] ?? value, value)
+            }
+            horizontalScrollMetrics = values
+        }
+        func recordWidthToolHorizontalGeometry(itemID: String, geometry: TranscriptItemHorizontalGeometry) {
+            guard streamWidthProof, !retired, itemID == "viewport-width-search" else { return }
+            let x = Double(geometry.minX), width = Double(geometry.width)
+            var values = widthToolGeometry
+            values["samples"] = (values["samples"] ?? 0) + 1
+            values["minimumX"] = min(values["minimumX"] ?? x, x)
+            values["maximumX"] = max(values["maximumX"] ?? x, x)
+            values["minimumWidth"] = min(values["minimumWidth"] ?? width, width)
+            values["maximumWidth"] = max(values["maximumWidth"] ?? width, width)
+            widthToolGeometry = values
         }
         var renderLifecyclesJSON: String {
             let values = [
@@ -589,6 +664,17 @@
         func finish() async {
             do { try await service.finish() } catch { failed = true }
         }
+        func advanceWidthReply() async {
+            guard streamWidthProof, !retired, !advancingWidthReply, widthReplyStage < 3,
+                runtime.phase == .streaming
+            else { return }
+            advancingWidthReply = true
+            defer { advancingWidthReply = false }
+            do {
+                try await service.advanceWidthReply(stage: widthReplyStage + 1)
+                widthReplyStage += 1
+            } catch { failed = true }
+        }
         func appendReplyItem() async {
             guard ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof"),
                 !retired, !emitting, chunks == 40, runtime.phase == .streaming
@@ -616,14 +702,19 @@
         private let complexMarkup: Bool
         private let transcriptRows: Bool
         private let historyRendering: Bool
+        private let streamWidth: Bool
         private var older: CheckedContinuation<APIPage<ConversationItem>, Error>?
         private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
         private var text = "Synthetic live reply."
         private var retired = false
 
-        init(complexMarkup: Bool = false, transcriptRows: Bool = false, historyRendering: Bool = false) {
+        init(
+            complexMarkup: Bool = false, transcriptRows: Bool = false, historyRendering: Bool = false,
+            streamWidth: Bool = false
+        ) {
             self.complexMarkup = complexMarkup; self.transcriptRows = transcriptRows
             self.historyRendering = historyRendering
+            self.streamWidth = streamWidth
         }
 
         func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) throws
@@ -800,8 +891,11 @@
             let pair = AsyncThrowingStream<ResponseStreamEvent, Error>.makeStream()
             stream = pair.continuation
             stream?.yield(.created(try lifecycle(status: .inProgress, output: [])))
-            struct Item: Encodable { let outputIndex = 0; let item: ConversationItem }
-            stream?.yield(.outputItemAdded(try event(Item(item: assistant(status: "in_progress")))))
+            struct Item: Encodable { let outputIndex: Int; let item: ConversationItem }
+            if streamWidth { stream?.yield(.outputItemAdded(try event(Item(outputIndex: 0, item: widthReplyTool)))) }
+            stream?.yield(
+                .outputItemAdded(
+                    try event(Item(outputIndex: streamWidth ? 1 : 0, item: assistant(status: "in_progress")))))
             return pair.stream
         }
         func append(index: Int) throws {
@@ -818,8 +912,55 @@
         }
         func finish() throws {
             guard !retired, let current = stream else { throw CancellationError() }
-            current.yield(.completed(try lifecycle(status: .completed, output: [assistant(status: "completed")])))
+            let output = (streamWidth ? [widthReplyTool] : []) + [assistant(status: "completed")]
+            current.yield(.completed(try lifecycle(status: .completed, output: output)))
             current.finish(); stream = nil
+        }
+        /// Held revisions use ordinary Responses events. The production parser,
+        /// publication throttle and transcript layout stay unchanged.
+        func advanceWidthReply(stage: Int) throws {
+            guard streamWidth, !retired, let stream, (1...3).contains(stage) else { throw CancellationError() }
+            let delta: String
+            switch stage {
+            case 1:
+                delta = """
+
+
+                    This **formatted follow-up** grows across several lines while the preceding tool and reply actions stay in the same transcript column.
+
+                    [Synthetic width reference](https://example.com/width)
+                    """
+            case 2:
+                delta = """
+
+
+                    | First wide column | Second wide column | Third wide column | Fourth wide column | Fifth wide column | Sixth wide column | Seventh wide column |
+                    |:---|:---|:---|:---|:---|:---|:---|
+                    | Synthetic table begins | Another synthetic observation | A third broad observation | A fourth broad observation | A fifth broad observation | A sixth broad observation | A seventh broad observation |
+                    """
+            default:
+                delta = """
+
+                    | Synthetic table grows | DeliberatelyUnbrokenSyntheticTableObservationForHorizontalOverflow | Earlier streamed prose keeps its left edge | Tool rows retain their column | Copy remains in the same place | Speech remains in the same place | The table scrolls within its reply |
+
+                    ```swift
+                    let syntheticWidth = "DeliberatelyUnbrokenSyntheticCodeLineThatMustScrollInsideTheReplyWithoutMovingTheTranscriptColumn"
+                    ```
+                    """
+            }
+            text += delta
+            struct Delta: Encodable {
+                let itemId = "viewport-live-assistant"
+                let outputIndex = 1
+                let contentIndex = 0
+                let delta: String
+            }
+            stream.yield(.outputTextDelta(try event(Delta(delta: delta))))
+        }
+        private var widthReplyTool: ConversationItem {
+            ConversationItem(
+                id: "viewport-width-search", responseId: "viewport-response", type: "web_search_call",
+                status: "completed", role: "assistant")
         }
         func appendReplyItem(index: Int) throws {
             guard !retired, let stream else { throw CancellationError() }

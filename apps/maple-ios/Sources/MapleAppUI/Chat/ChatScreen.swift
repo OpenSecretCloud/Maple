@@ -349,6 +349,12 @@ enum ChatComposerPresentation {
             let makeInstructionEditor: @MainActor (InstructionDestination) -> InstructionEditor
             let selectProject: @MainActor (String?) async -> Bool
         }
+
+        /// Content-free laid-out dimensions for synthetic transcript regressions.
+        struct TranscriptItemHorizontalGeometry: Equatable {
+            let minX: CGFloat
+            let width: CGFloat
+        }
     #endif
 
     struct ChatDetail: View {
@@ -363,6 +369,9 @@ enum ChatComposerPresentation {
             var fixtureProjectionIsCurrent: (@MainActor @Sendable (AccountScope, UUID) -> Bool)? = nil
             var fixtureOptions: ChatOptionsFixtureContext? = nil
             var fixtureScrollMetricsChanged: (@MainActor (TranscriptViewportMetrics) -> Void)? = nil
+            var fixtureItemHorizontalGeometryChanged: (@MainActor (String, TranscriptItemHorizontalGeometry) -> Void)? =
+                nil
+            var fixtureHorizontalScrollMetricsChanged: (@MainActor ([String: CGFloat]) -> Void)? = nil
         #endif
         @State private var queuePresented = false
         @State private var modelPresented = false
@@ -483,7 +492,9 @@ enum ChatComposerPresentation {
                 // the transcript. Consume this once so later text growth cannot
                 // keep dragging the reader to a moving bottom anchor.
                 pendingAppendFollow = nil
-                withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(y: target) }
+                // The timeline scrolls vertically; nested rich-content scrollers
+                // must not let an implicit horizontal target move its gutters.
+                withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(x: 0, y: target) }
             }
         }
 
@@ -518,7 +529,7 @@ enum ChatComposerPresentation {
                             current: scrollMetrics.offset + scrollMetrics.topInset, maximum: maximum)
                     }
                     guard let target else { return }
-                    withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(y: target) }
+                    withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(x: 0, y: target) }
                 }
             }
         }
@@ -577,7 +588,7 @@ enum ChatComposerPresentation {
                 readingAnchor = anchor
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
-                withTransaction(transaction) { readingPosition.scrollTo(y: point) }
+                withTransaction(transaction) { readingPosition.scrollTo(x: 0, y: point) }
             }
         }
 
@@ -699,6 +710,24 @@ enum ChatComposerPresentation {
                                             ) { url in
                                                 externalLink = url
                                             }
+                                            #if DEBUG
+                                                .onGeometryChange(for: TranscriptItemHorizontalGeometry?.self) {
+                                                    geometry in
+                                                    guard fixtureItemHorizontalGeometryChanged != nil else {
+                                                        return nil
+                                                    }
+                                                    let frame = geometry.frame(in: .global)
+                                                    return TranscriptItemHorizontalGeometry(
+                                                        minX: frame.minX, width: frame.width)
+                                                } action: { sample in
+                                                    guard let callback = fixtureItemHorizontalGeometryChanged,
+                                                        let sample,
+                                                        currentProjection, !menuState.occluded,
+                                                        sample.minX.isFinite, sample.width.isFinite, sample.width > 0
+                                                    else { return }
+                                                    callback(item.id, sample)
+                                                }
+                                            #endif
                                         }
                                     }
                                     .frame(
@@ -734,9 +763,17 @@ enum ChatComposerPresentation {
                                 }
                             }
                             .scrollTargetLayout()
+                            // Keep the content proposal and its gutters independent of streamed block widths.
+                            .frame(width: max(0, min(geometry.size.width, 850) - 40), alignment: .leading)
                             .padding(.horizontal, 20).padding(.vertical, 20)
-                            .frame(maxWidth: 850).frame(maxWidth: .infinity)
+                            .frame(maxWidth: .infinity)
                             .coordinateSpace(name: transcriptSpace)
+                            .background {
+                                TranscriptVerticalAxisGuard(active: currentProjection && !menuState.occluded)
+                                    .frame(width: 0, height: 0)
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
                         }
                         .scrollDismissesKeyboard(.interactively)
                         .scrollPosition($readingPosition)
@@ -774,6 +811,27 @@ enum ChatComposerPresentation {
                             scheduleAnchorCorrection()
                             scheduleAppendFollow()
                         }
+                        #if DEBUG
+                            .onScrollGeometryChange(for: [String: CGFloat]?.self) { geometry in
+                                guard fixtureHorizontalScrollMetricsChanged != nil else { return nil }
+                                return [
+                                    "offsetX": geometry.contentOffset.x,
+                                    "contentWidth": geometry.contentSize.width,
+                                    "viewportWidth": geometry.containerSize.width,
+                                    "boundsMinX": geometry.bounds.minX,
+                                    "boundsWidth": geometry.bounds.width,
+                                    "visibleMinX": geometry.visibleRect.minX,
+                                    "visibleWidth": geometry.visibleRect.width,
+                                    "leadingInset": geometry.contentInsets.leading,
+                                    "trailingInset": geometry.contentInsets.trailing,
+                                ]
+                            } action: { _, metrics in
+                                guard let callback = fixtureHorizontalScrollMetricsChanged, let metrics,
+                                    currentProjection, !menuState.occluded, metrics.values.allSatisfy(\.isFinite)
+                                else { return }
+                                callback(metrics)
+                            }
+                        #endif
                         .onScrollPhaseChange { _, phase in
                             if !menuState.occluded, phase == .tracking || phase == .interacting {
                                 readingAnchor = nil; correctionTask?.cancel()
