@@ -490,7 +490,20 @@ pub struct RegisteredCommand {
     pub description: String,
     pub extension: String,
     handler: CommandHandler,
+    completions: Option<CompletionHandler>,
 }
+
+/// A completion a host can offer for a command's arguments, as Pi's `AutocompleteItem`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutocompleteItem {
+    /// What the completion puts in.
+    pub value: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+type CompletionHandler =
+    Arc<dyn Fn(String) -> BoxFuture<'static, Option<Vec<AutocompleteItem>>> + Send + Sync>;
 
 /// Models and an API implementation an extension provides.
 #[derive(Clone)]
@@ -641,7 +654,28 @@ impl ExtensionApi<'_> {
             description: description.to_string(),
             extension: self.context.extension.to_string(),
             handler: Arc::new(move |args, context| handler(args, context).boxed()),
+            completions: None,
         });
+    }
+
+    /// Offer completions for the arguments of `name`, a command this extension
+    /// registered, as Pi's `getArgumentCompletions`: given what has been typed after the
+    /// command, the completions, or `None` for none.
+    pub fn register_command_completions<F, Fut>(&mut self, name: &str, completions: F)
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Option<Vec<AutocompleteItem>>> + Send + 'static,
+    {
+        let extension = &*self.context.extension;
+        if let Some(command) = self
+            .registry
+            .commands
+            .iter_mut()
+            .rev()
+            .find(|command| command.name == name && command.extension == extension)
+        {
+            command.completions = Some(Arc::new(move |prefix| completions(prefix).boxed()));
+        }
     }
 
     /// Add models, and the API implementation they use when it is new.
@@ -1168,6 +1202,21 @@ impl ExtensionRunner {
             }
         }
         answers
+    }
+
+    /// The completions the command `name` offers for `prefix`; `None` without any.
+    pub async fn argument_completions(
+        &self,
+        name: &str,
+        prefix: &str,
+    ) -> Option<Vec<AutocompleteItem>> {
+        let command = self
+            .registry
+            .commands
+            .iter()
+            .find(|command| command.name == name)?;
+        let completions = command.completions.as_ref()?;
+        completions(prefix.to_string()).await
     }
 
     /// Run a command; `None` when no extension registered it.

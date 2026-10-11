@@ -841,6 +841,38 @@ fn load_template_paths(
     }
 }
 
+/// A skill block, as an expanded `/skill:` command puts it in a user message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedSkillBlock {
+    pub name: String,
+    pub location: String,
+    pub content: String,
+    /// What the user wrote after the command, if anything.
+    pub user_message: Option<String>,
+}
+
+static SKILL_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n</skill>(?:\n\n([\s\S]+))?$"#,
+    )
+    .expect("the skill block pattern is valid")
+});
+
+/// The skill block `text` is, as Pi's `parseSkillBlock` reads it; `None` when it is not
+/// one.
+pub fn parse_skill_block(text: &str) -> Option<ParsedSkillBlock> {
+    let captures = SKILL_BLOCK.captures(text)?;
+    let group = |index: usize| captures.get(index).map(|text| text.as_str().to_string());
+    Some(ParsedSkillBlock {
+        name: group(1)?,
+        location: group(2)?,
+        content: group(3)?,
+        user_message: group(4)
+            .map(|message| message.trim().to_string())
+            .filter(|message| !message.is_empty()),
+    })
+}
+
 /// Split arguments on whitespace, keeping quoted strings together.
 pub fn parse_command_args(input: &str) -> Vec<String> {
     let mut args = Vec::new();
@@ -1251,6 +1283,16 @@ mod tests {
             expand_skill_command("/skill:missing", &skills),
             "/skill:missing"
         );
+
+        // Pi's parser reads the block back.
+        let block = parse_skill_block(&expanded).unwrap();
+        assert_eq!(block.name, "review");
+        assert_eq!(block.location, skills[0].file_path.display().to_string());
+        assert!(block.content.ends_with("Check the diff."));
+        assert_eq!(block.user_message.as_deref(), Some("src/lib.rs"));
+        let alone = parse_skill_block(&expand_skill_command("/skill:review", &skills)).unwrap();
+        assert_eq!(alone.user_message, None);
+        assert_eq!(parse_skill_block("Check the diff."), None);
     }
 
     #[test]

@@ -39,15 +39,15 @@ use crate::compaction::{
     summarize_branch,
 };
 use crate::extensions::{
-    AfterProviderResponse, AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderHeaders,
-    BeforeProviderRequest, CommandContext, CustomMessageDraft, Extension, ExtensionContext,
-    ExtensionErrorReport, ExtensionRunner, ExtensionUi, ForkPosition, Input, InputAction,
-    InputSource, MessageEnd, ModelSelect, ProviderStreamEvent, RegisteredTool, ResourcesDiscover,
-    ResourcesDiscoverReason, ResourcesDiscoverResult, SessionBeforeCompact, SessionBeforeFork,
-    SessionBeforeTree, SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionShutdown,
-    SessionStart, SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource,
-    ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult, TreePreparation, TreeSummary,
-    UserBash, UserBashResult,
+    AfterProviderResponse, AgentEventSeen, AgentSettled, AutocompleteItem, BeforeAgentStart,
+    BeforeProviderHeaders, BeforeProviderRequest, CommandContext, CustomMessageDraft, Extension,
+    ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, ForkPosition, Input,
+    InputAction, InputSource, MessageEnd, ModelSelect, ProviderStreamEvent, RegisteredTool,
+    ResourcesDiscover, ResourcesDiscoverReason, ResourcesDiscoverResult, SessionBeforeCompact,
+    SessionBeforeFork, SessionBeforeTree, SessionCompact, SessionCompactFailed, SessionInfoChanged,
+    SessionShutdown, SessionStart, SessionStartReason, SessionTree, SlashCommandInfo,
+    SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult,
+    TreePreparation, TreeSummary, UserBash, UserBashResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -511,6 +511,34 @@ impl HostPrompt {
         base.context_files = resources.context_files.clone();
         base.skills = resources.skills.clone();
     }
+}
+
+/// `ms` as Pi names an export: its UTC ISO time with `:` and `.` as `-`, such as
+/// `2026-10-11T04-30-00-123Z`.
+fn file_timestamp(ms: i64) -> String {
+    let (days, rest) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
+    // Days to a civil date, after Howard Hinnant's `civil_from_days`.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}-{:02}-{:02}-{:03}Z",
+        rest / 3_600_000,
+        rest / 60_000 % 60,
+        rest / 1_000 % 60,
+        rest % 1_000
+    )
 }
 
 /// What an image becomes when images are blocked, as in Pi.
@@ -1094,6 +1122,26 @@ impl AgentSession {
     /// commands, prompt templates, and skills as `skill:<name>`.
     pub fn commands(&self) -> Vec<SlashCommandInfo> {
         self.core.commands()
+    }
+
+    /// The completions an extension command offers for what was typed after it, as
+    /// Pi's `getArgumentCompletions`; `None` when it offers none.
+    pub async fn command_argument_completions(
+        &self,
+        name: &str,
+        prefix: &str,
+    ) -> Option<Vec<AutocompleteItem>> {
+        self.core.runner.argument_completions(name, prefix).await
+    }
+
+    /// Write the current branch to a session file of its own, as Pi's `exportToJsonl`
+    /// does, and its path. Without `path`, it is `session-<time>.jsonl`; a relative path
+    /// is relative to the session's folder, where Pi takes its process's.
+    pub fn export_to_jsonl(&self, path: Option<&Path>) -> std::io::Result<PathBuf> {
+        let name = format!("session-{}.jsonl", file_timestamp(now_ms()));
+        let path = self.core.cwd.join(path.unwrap_or(Path::new(&name)));
+        lock(&self.core.session).export_branch(&path)?;
+        Ok(path)
     }
 
     pub fn resources(&self) -> Resources {
@@ -3129,6 +3177,23 @@ impl ExtensionContext {
         Some(self.core()?.cwd.clone())
     }
 
+    /// Add models, and the API they use when it is new, at once, as Pi's
+    /// `registerProvider` does once extensions are loaded.
+    pub fn register_provider(&self, models: Vec<Model>, api: Option<(String, Arc<dyn StreamFn>)>) {
+        let Some(core) = self.core() else { return };
+        if let Some((api, implementation)) = api {
+            core.models.register_api(&api, implementation);
+        }
+        core.models.register_models(models);
+    }
+
+    /// Remove a provider's models at once, as Pi's `unregisterProvider`.
+    pub fn unregister_provider(&self, provider: &str) {
+        if let Some(core) = self.core() {
+            core.models.unregister_provider(provider);
+        }
+    }
+
     pub fn session_id(&self) -> Option<String> {
         Some(self.core()?.session_id())
     }
@@ -3426,6 +3491,16 @@ impl CommandContext {
 mod tests {
     use super::*;
     use pi_ai::transcript::system_message_text;
+
+    #[test]
+    fn export_names_carry_pis_timestamps() {
+        assert_eq!(file_timestamp(0), "1970-01-01T00-00-00-000Z");
+        assert_eq!(
+            file_timestamp(1_445_412_480_123),
+            "2015-10-21T07-28-00-123Z"
+        );
+        assert_eq!(file_timestamp(951_782_400_000), "2000-02-29T00-00-00-000Z");
+    }
 
     #[test]
     fn a_forced_prompt_replaces_text_but_keeps_tools() {

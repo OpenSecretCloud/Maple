@@ -23,7 +23,7 @@ use crate::ids::{new_entry_id, new_session_id};
 use crate::messages::{
     BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, SessionMessage,
 };
-use crate::store::{MemoryStore, SessionStore};
+use crate::store::{JsonlStore, MemoryStore, SessionStore};
 
 pub const SESSION_VERSION: u32 = 1;
 
@@ -473,6 +473,29 @@ impl SessionManager {
 
     pub fn cwd(&self) -> &str {
         &self.header.cwd
+    }
+
+    /// Write the current branch to `path` as a session file of its own, as Pi's
+    /// `exportSessionToJsonl` does: a header with the session's id and folder and the
+    /// time now, then the branch's entries, each the parent of the next.
+    pub fn export_branch(&self, path: &Path) -> io::Result<()> {
+        let header = SessionHeader {
+            version: SESSION_VERSION,
+            id: self.header.id.clone(),
+            timestamp: now_ms(),
+            cwd: self.header.cwd.clone(),
+            parent_session: None,
+        };
+        let mut parent_id = None;
+        let entries: Vec<SessionEntry> = self
+            .branch()
+            .into_iter()
+            .map(|entry| SessionEntry {
+                parent_id: parent_id.replace(entry.id.clone()),
+                ..entry.clone()
+            })
+            .collect();
+        JsonlStore::new(path).write_all(&header, &entries)
     }
 
     /// The file the session is kept in, when its store keeps one.

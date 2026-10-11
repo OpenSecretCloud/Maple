@@ -1911,3 +1911,38 @@ fn a_model_can_have_its_own_compaction_token_settings() {
         (1000, 2000)
     );
 }
+
+#[tokio::test]
+async fn the_branch_exports_as_a_session_file_of_its_own() {
+    let harness = Harness::new();
+    harness.faux.push_text("one");
+    harness.faux.push_text("two");
+    let session = harness.session().await;
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    session
+        .prompt("second", PromptOptions::default())
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+
+    let path = session
+        .export_to_jsonl(Some(&dir.path().join("out/branch.jsonl")))
+        .unwrap();
+    let (header, entries) = JsonlStore::load(&path).unwrap().unwrap();
+    assert_eq!(header.id, session.session_id());
+    assert_eq!(header.parent_session, None);
+    let mut parent = None;
+    for entry in &entries {
+        assert_eq!(entry.parent_id, parent);
+        parent = Some(entry.id.clone());
+    }
+    let messages = entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, EntryKind::Message { .. }))
+        .count();
+    // The system prompt and the two exchanges.
+    assert_eq!(messages, 5);
+}

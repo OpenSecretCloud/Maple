@@ -1452,3 +1452,66 @@ async fn extensions_can_take_over_a_users_shell_command() {
         Some("the remote is down")
     );
 }
+
+#[tokio::test]
+async fn commands_offer_argument_completions_and_providers_can_come_later() {
+    use pi_coding_agent::extensions::AutocompleteItem;
+
+    let late = FauxProvider::with_model({
+        let mut model = FauxProvider::default_model();
+        model.id = "late-model".into();
+        model.provider = "late".into();
+        model
+    });
+    let deploy = extension("deploy", move |api| {
+        let late = late.clone();
+        api.register_command("deploy", "Deploy somewhere", move |_args, ctx| {
+            let late = late.clone();
+            async move {
+                ctx.register_provider(vec![late.model()], None);
+                Ok(())
+            }
+        });
+        api.register_command_completions("deploy", |prefix| async move {
+            let targets = ["production", "preview", "staging"];
+            let items: Vec<AutocompleteItem> = targets
+                .iter()
+                .filter(|target| target.starts_with(&prefix))
+                .map(|target| AutocompleteItem {
+                    value: target.to_string(),
+                    label: target.to_string(),
+                    description: None,
+                })
+                .collect();
+            (!items.is_empty()).then_some(items)
+        });
+    });
+    let harness = Harness::new();
+    let session = harness.session_with_extensions(vec![deploy]).await;
+    let values = |items: Option<Vec<AutocompleteItem>>| {
+        items.map(|items| items.into_iter().map(|item| item.value).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        values(session.command_argument_completions("deploy", "pr").await),
+        Some(vec!["production".to_string(), "preview".to_string()])
+    );
+    assert_eq!(
+        session.command_argument_completions("deploy", "x").await,
+        None
+    );
+    assert_eq!(
+        session.command_argument_completions("missing", "").await,
+        None
+    );
+
+    // A provider registered after loading is there at once.
+    let models = session.extension_context().models().unwrap();
+    assert!(models.find("late", "late-model").is_none());
+    session
+        .prompt("/deploy", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(models.find("late", "late-model").is_some());
+    session.extension_context().unregister_provider("late");
+    assert!(models.find("late", "late-model").is_none());
+}
