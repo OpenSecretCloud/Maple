@@ -34,7 +34,7 @@ pub struct SessionHeader {
     pub id: String,
     pub timestamp: Timestamp,
     pub cwd: String,
-    /// The session this one was forked from.
+    /// The file of the session this one was forked from, as Pi records it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<String>,
 }
@@ -378,6 +378,9 @@ pub struct SessionManager {
     entries: Vec<SessionEntry>,
     index: HashMap<String, usize>,
     labels: HashMap<String, String>,
+    /// When each label in `labels` was set, which a fork keeps, as Pi's
+    /// `labelTimestampsById`.
+    label_times: HashMap<String, Timestamp>,
     leaf: Option<String>,
     store: Box<dyn SessionStore>,
     flushed: bool,
@@ -438,6 +441,7 @@ impl SessionManager {
             entries,
             index: HashMap::new(),
             labels: HashMap::new(),
+            label_times: HashMap::new(),
             leaf: None,
             store,
             flushed,
@@ -450,15 +454,29 @@ impl SessionManager {
     fn rebuild_index(&mut self) {
         self.index.clear();
         self.labels.clear();
+        self.label_times.clear();
         self.leaf = None;
-        for (position, entry) in self.entries.iter().enumerate() {
+        for position in 0..self.entries.len() {
+            let entry = &self.entries[position];
             self.index.insert(entry.id.clone(), position);
             self.leaf = Some(entry.id.clone());
             if let EntryKind::Label { target_id, label } = &entry.kind {
-                match label {
-                    Some(label) => self.labels.insert(target_id.clone(), label.clone()),
-                    None => self.labels.remove(target_id),
-                };
+                let (target_id, label, timestamp) =
+                    (target_id.clone(), label.clone(), entry.timestamp);
+                self.set_label(target_id, label, timestamp);
+            }
+        }
+    }
+
+    fn set_label(&mut self, target_id: String, label: Option<String>, timestamp: Timestamp) {
+        match label {
+            Some(label) => {
+                self.label_times.insert(target_id.clone(), timestamp);
+                self.labels.insert(target_id, label);
+            }
+            None => {
+                self.label_times.remove(&target_id);
+                self.labels.remove(&target_id);
             }
         }
     }
@@ -575,16 +593,14 @@ impl SessionManager {
     }
 
     fn append_with_id(&mut self, id: String, kind: EntryKind) -> String {
+        let timestamp = now_ms();
         if let EntryKind::Label { target_id, label } = &kind {
-            match label {
-                Some(label) => self.labels.insert(target_id.clone(), label.clone()),
-                None => self.labels.remove(target_id),
-            };
+            self.set_label(target_id.clone(), label.clone(), timestamp);
         }
         self.entries.push(SessionEntry {
             id: id.clone(),
             parent_id: self.leaf.clone(),
-            timestamp: now_ms(),
+            timestamp,
             kind,
         });
         self.index.insert(id.clone(), self.entries.len() - 1);
@@ -807,8 +823,10 @@ impl SessionManager {
     }
 
     /// Turn this into a new session holding only the path to `leaf_id`, or nothing for
-    /// `None`, stored in `store`. Labels on the path are carried over. A failed write is reported by
-    /// [`Self::take_persist_error`], like any other.
+    /// `None`, stored in `store`, as Pi's `createBranchedSession`. Labels on the path are
+    /// carried over with the time they were set. The new session names this one's file
+    /// as its parent, as Pi does, when this one was kept in a file. A failed write is
+    /// reported by [`Self::take_persist_error`], like any other.
     pub fn fork(
         &mut self,
         leaf_id: Option<&str>,
@@ -860,7 +878,7 @@ impl SessionManager {
                 SessionEntry {
                     id: id.clone(),
                     parent_id: parent.replace(id),
-                    timestamp: now_ms(),
+                    timestamp: self.label_times.get(target).copied().unwrap_or_else(now_ms),
                     kind: EntryKind::Label {
                         target_id: target.clone(),
                         label: Some(label.clone()),
@@ -874,7 +892,9 @@ impl SessionManager {
             id: new_session_id(),
             timestamp: now_ms(),
             cwd: self.header.cwd.clone(),
-            parent_session: Some(self.header.id.clone()),
+            parent_session: self
+                .session_file()
+                .map(|file| file.to_string_lossy().into_owned()),
         };
         self.entries = entries;
         self.store = store;
@@ -1069,24 +1089,48 @@ mod tests {
 
     #[test]
     fn forking_keeps_only_the_path_and_its_labels() {
-        let mut session = SessionManager::in_memory("/work");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("original.jsonl");
+        let mut session = SessionManager::create("/work", Box::new(JsonlStore::new(&file)));
         let question = session.append_message(user("question"));
-        session
+        let label = session
             .append_label(&question, Some("here".into()))
             .unwrap();
+        let labelled_at = session.entry(&label).unwrap().timestamp;
         let answer = session.append_message(assistant("answer"));
         session.set_leaf(&question).unwrap();
         session.append_message(assistant("other answer"));
         let original = session.id().to_string();
 
-        session.fork(Some(&answer), Box::new(MemoryStore)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let forked = dir.path().join("forked.jsonl");
+        session
+            .fork(Some(&answer), Box::new(JsonlStore::new(&forked)))
+            .unwrap();
+        assert_ne!(session.id(), original);
+        // The parent is named by its file, as in Pi.
         assert_eq!(
             session.header().parent_session.as_deref(),
-            Some(original.as_str())
+            Some(&*file.to_string_lossy())
         );
         assert_eq!(texts(&session), ["question", "answer"]);
         assert_eq!(session.label(&question), Some("here"));
+        let label_entry = session
+            .entries()
+            .iter()
+            .find(|entry| matches!(entry.kind, EntryKind::Label { .. }))
+            .unwrap();
+        assert_eq!(label_entry.timestamp, labelled_at);
         assert!(session.entries().iter().all(|entry| !matches!(&entry.kind, EntryKind::Message { message } if message.text() == "other answer")));
+        assert_eq!(
+            JsonlStore::load(&forked).unwrap().unwrap().0,
+            *session.header()
+        );
+
+        // A session kept nowhere has no file to name.
+        session.fork(Some(&answer), Box::new(MemoryStore)).unwrap();
+        session.fork(Some(&answer), Box::new(MemoryStore)).unwrap();
+        assert_eq!(session.header().parent_session, None);
     }
 
     #[test]

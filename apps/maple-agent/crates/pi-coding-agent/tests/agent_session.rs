@@ -659,9 +659,10 @@ async fn a_fork_continues_in_a_new_session_with_the_path_only() {
         .unwrap();
     assert_ne!(session.session_id(), original);
     assert_eq!(last_assistant_text(&session), "first answer");
+    // A session kept in memory has no file for the fork to name, as in Pi.
     assert_eq!(
         session.with_session(|tree| tree.header().parent_session.clone()),
-        Some(original)
+        None
     );
 }
 
