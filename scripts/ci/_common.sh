@@ -3686,11 +3686,12 @@ verify_linux_deb_package_executable_metadata() {
   tmp="$(mktemp -d)"
   status=0
   (
-    cd "${tmp}"
-    ar x "${deb}"
-    mkdir data
-    tar -xzf data.tar.gz -C data
-    verify_linux_package_executable_metadata "${tmp}/data/usr/bin/maple"
+    cd "${tmp}" &&
+    ar x "${deb}" &&
+    mkdir data &&
+    tar -xzf data.tar.gz -C data &&
+    verify_linux_package_executable_metadata "${tmp}/data/usr/bin/maple" &&
+    "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect deb "${tmp}/data/usr/bin/maple"
   ) || status=$?
   rm -rf "${tmp}"
   return "${status}"
@@ -3703,11 +3704,27 @@ verify_linux_appimage_executable_metadata() {
   tmp="$(mktemp -d)"
   status=0
   (
-    extract_appimage_tool "${appimage}" "${tmp}/AppDir"
-    verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple"
-    verify_linux_appdir_runtime_closure "${tmp}/AppDir"
-    verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir"
+    extract_appimage_tool "${appimage}" "${tmp}/AppDir" &&
+    verify_linux_package_executable_metadata "${tmp}/AppDir/usr/bin/maple" &&
+    "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect appimage "${tmp}/AppDir/usr/bin/maple" &&
+    verify_linux_appdir_runtime_closure "${tmp}/AppDir" &&
+    verify_linux_appdir_portable_runtime_paths "${tmp}/AppDir" &&
     verify_linux_appdir_webkit_runtime "${tmp}/AppDir"
+  ) || status=$?
+  rm -rf "${tmp}"
+  return "${status}"
+}
+
+verify_linux_rpm_package_executable_metadata() {
+  local rpm="$1"
+  local tmp status
+
+  tmp="$(mktemp -d)"
+  status=0
+  (
+    rpm2cpio "${rpm}" | cpio -i --quiet --to-stdout './usr/bin/maple' > "${tmp}/maple" &&
+    verify_linux_package_executable_metadata "${tmp}/maple" &&
+    "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect rpm "${tmp}/maple"
   ) || status=$?
   rm -rf "${tmp}"
   return "${status}"
@@ -3723,6 +3740,9 @@ verify_linux_desktop_package_metadata() {
         ;;
       *.deb)
         verify_linux_deb_package_executable_metadata "${artifact}"
+        ;;
+      *.rpm)
+        verify_linux_rpm_package_executable_metadata "${artifact}"
         ;;
     esac
   done
@@ -3753,17 +3773,19 @@ normalize_deb_package() {
 extract_deb_payload() {
   local deb="$1"
   local payload="$2"
-  local tmp
+  local tmp status
   tmp="$(mktemp -d)"
+  status=0
 
   (
-    cd "${tmp}"
-    ar x "${deb}"
-    mkdir -p "${payload}"
+    cd "${tmp}" &&
+    ar x "${deb}" &&
+    mkdir -p "${payload}" &&
     tar -xzf data.tar.gz -C "${payload}"
-  )
+  ) || status=$?
 
   rm -rf "${tmp}"
+  return "${status}"
 }
 
 touch_tree_to_source_date_epoch() {
@@ -3786,14 +3808,14 @@ rpm_arch() {
   esac
 }
 
-rebuild_rpm_package_from_payload() {
+build_rpm_package_from_payload() {
   local rpm="$1"
   local payload="$2"
   local topdir spec built_rpm
   local version release arch rpm_build_shell
 
   command -v rpmbuild >/dev/null 2>&1 || {
-    echo "rpmbuild is required to normalize RPM packages. Run through the flake CI shell." >&2
+    echo "rpmbuild is required to build RPM packages. Run through the flake CI shell." >&2
     return 1
   }
   rpm_build_shell="$(command -v bash)"
@@ -3848,7 +3870,10 @@ EOF
     --define "_buildhost (none)" \
     --define "use_source_date_epoch_as_buildtime 1" \
     --define "_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm" \
-    --define "_binary_payload w9.gzdio"
+    --define "_binary_payload w9.gzdio" || {
+      rm -rf "${topdir}"
+      return 1
+    }
 
   built_rpm="$(find "${topdir}/RPMS" -type f -name '*.rpm' | LC_ALL=C sort | head -n 1)"
   if [ -z "${built_rpm}" ]; then
@@ -3857,7 +3882,10 @@ EOF
     return 1
   fi
 
-  mv "${built_rpm}" "${rpm}"
+  mv "${built_rpm}" "${rpm}" || {
+    rm -rf "${topdir}"
+    return 1
+  }
   rm -rf "${topdir}"
 }
 
@@ -3866,35 +3894,33 @@ normalize_linux_desktop_packages() {
     return 0
   fi
 
-  local deb rpm payload
+  local deb rpm payload status
   local -a debs=()
-  local -a rpms=()
 
   while IFS= read -r -d '' deb; do
     debs+=("${deb}")
   done < <(find "${TAURI_DIR}/target/release/bundle/deb" -type f -name '*.deb' -print0 2>/dev/null | LC_ALL=C sort -z)
 
-  while IFS= read -r -d '' rpm; do
-    rpms+=("${rpm}")
-  done < <(find "${TAURI_DIR}/target/release/bundle/rpm" -type f -name '*.rpm' -print0 2>/dev/null | LC_ALL=C sort -z)
-
-  for deb in "${debs[@]}"; do
-    normalize_deb_package "${deb}"
-  done
-
-  if [ "${#rpms[@]}" -gt 0 ]; then
-    if [ "${#debs[@]}" -eq 0 ]; then
-      echo "Cannot normalize RPM packages without a Debian payload source." >&2
-      return 1
-    fi
-
-    payload="$(mktemp -d)"
-    extract_deb_payload "${debs[0]}" "${payload}"
-    for rpm in "${rpms[@]}"; do
-      rebuild_rpm_package_from_payload "${rpm}" "${payload}"
-    done
-    rm -rf "${payload}"
+  if [ "${#debs[@]}" -ne 1 ]; then
+    echo "Linux packaging requires exactly one Debian payload source." >&2
+    return 1
   fi
+
+  normalize_deb_package "${debs[0]}"
+  rpm="${TAURI_DIR}/target/release/bundle/rpm/$(jq -r --arg arch "$(rpm_arch)" \
+    '"Maple-\(.version)-\(.bundle.linux.rpm.release // "1").\($arch).rpm"' "${TAURI_DIR}/tauri.conf.json")"
+  mkdir -p "$(dirname "${rpm}")"
+  payload="$(mktemp -d)"
+  status=0
+  (
+    extract_deb_payload "${debs[0]}" "${payload}" &&
+    # Tauri selects both the update artifact and installer from this marker.
+    # Change only the RPM staging copy; the normalized DEB keeps its identity.
+    "$(python3_runner)" "${SCRIPT_DIR}/tauri_bundle_type.py" --expect deb --set rpm "${payload}/usr/bin/maple" &&
+    build_rpm_package_from_payload "${rpm}" "${payload}"
+  ) || status=$?
+  rm -rf "${payload}"
+  return "${status}"
 }
 
 linux_tauri_pr_config() {
@@ -3910,7 +3936,7 @@ linux_tauri_pr_config() {
     bundle: {
       createUpdaterArtifacts: false,
       useLocalToolsDir: true,
-      targets: ["appimage", "deb", "rpm"],
+      targets: ["appimage", "deb"],
       linux: {
         appimage: {
           bundleMediaFramework: true,
@@ -3919,11 +3945,6 @@ linux_tauri_pr_config() {
           }
         },
         deb: {
-          files: {
-            "/usr/lib/maple/libonnxruntime.so": $ort
-          }
-        },
-        rpm: {
           files: {
             "/usr/lib/maple/libonnxruntime.so": $ort
           }
@@ -3952,7 +3973,7 @@ linux_tauri_release_config() {
 	    bundle: {
 	      createUpdaterArtifacts: true,
 	      useLocalToolsDir: true,
-	      targets: ["appimage", "deb", "rpm"],
+	      targets: ["appimage", "deb"],
 	      linux: {
 	        appimage: {
           bundleMediaFramework: true,
@@ -3961,11 +3982,6 @@ linux_tauri_release_config() {
           }
         },
         deb: {
-          files: {
-            "/usr/lib/maple/libonnxruntime.so": $ort
-          }
-        },
-        rpm: {
           files: {
             "/usr/lib/maple/libonnxruntime.so": $ort
           }

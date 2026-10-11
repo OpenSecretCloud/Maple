@@ -100,7 +100,7 @@ That command verifies portable hashes and skips host-specific checks that cannot
 
 \`\`\`bash
 # Linux desktop installers: verifies final hashes, Tauri updater signatures,
-# AppImage executable metadata, and .deb executable metadata.
+# AppImage/DEB/RPM executable metadata and package-specific updater identity.
 nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/verify-release-artifacts.sh artifacts linux
 
 # macOS desktop installers: run on macOS with Xcode selected.
