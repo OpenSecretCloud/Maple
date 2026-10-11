@@ -75,7 +75,10 @@ export type SystemOneChoiceAnswer = {
   choice: string;
   /** Probability per option label, in the order the options were given. */
   probabilities: Record<string, number>;
-  /** Peakedness of the distribution, from 0 (uniform) to 1 (certain). */
+  /**
+   * TypeSafe's choice confidence, `(p_max - 1/n) / (1 - 1/n)`: 0 when the options are equally
+   * likely, 1 when one option takes all the probability.
+   */
   confidence: number;
   temperature: number;
   option_mass: number;
@@ -89,6 +92,10 @@ export type SystemOneScoreAnswer = {
   legend: Record<string, unknown>;
   /** Probability per level number. */
   probabilities: Record<string, number>;
+  /**
+   * TypeSafe's score confidence, `1 - sum(p_i |i - m|) / MAD_unif` with `m` the most likely
+   * level: 0 when the mass is spread like a uniform distribution, 1 when it sits on one level.
+   */
   confidence: number;
   temperature: number;
   option_mass: number;
