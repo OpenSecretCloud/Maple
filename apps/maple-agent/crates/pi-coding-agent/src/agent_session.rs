@@ -42,11 +42,12 @@ use crate::extensions::{
     AfterProviderResponse, AgentEventSeen, AgentSettled, BeforeAgentStart, BeforeProviderHeaders,
     BeforeProviderRequest, CommandContext, CustomMessageDraft, Extension, ExtensionContext,
     ExtensionErrorReport, ExtensionRunner, ExtensionUi, ForkPosition, Input, InputAction,
-    InputSource, MessageEnd, ModelSelect, ProviderStreamEvent, RegisteredTool,
-    SessionBeforeCompact, SessionBeforeFork, SessionBeforeTree, SessionCompact,
-    SessionCompactFailed, SessionInfoChanged, SessionShutdown, SessionStart, SessionStartReason,
-    SessionTree, SlashCommandInfo, SlashCommandSource, ThinkingLevelSelect, ToolCall, ToolInfo,
-    ToolPrompt, ToolResult, TreePreparation, TreeSummary,
+    InputSource, MessageEnd, ModelSelect, ProviderStreamEvent, RegisteredTool, ResourcesDiscover,
+    ResourcesDiscoverReason, ResourcesDiscoverResult, SessionBeforeCompact, SessionBeforeFork,
+    SessionBeforeTree, SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionShutdown,
+    SessionStart, SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource,
+    ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult, TreePreparation, TreeSummary,
+    UserBash, UserBashResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -461,6 +462,8 @@ pub(crate) struct SessionCore {
     cwd: PathBuf,
     settings: Mutex<Settings>,
     resources: Mutex<Resources>,
+    /// The skill and template paths extensions gave in `resources_discover`.
+    discovered: Mutex<ResourcesDiscoverResult>,
     host_prompt: HostPrompt,
     prompt_base: Mutex<SystemPromptOptions>,
     model: Mutex<Option<Model>>,
@@ -713,6 +716,7 @@ impl AgentSession {
                 cwd: options.cwd,
                 settings: Mutex::new(options.settings),
                 resources: Mutex::new(options.resources),
+                discovered: Mutex::new(ResourcesDiscoverResult::default()),
                 host_prompt,
                 prompt_base: Mutex::new(prompt_base),
                 model: Mutex::new(model),
@@ -787,7 +791,25 @@ impl AgentSession {
                 &core.weak,
             )
             .await;
+        core.discover_resources(ResourcesDiscoverReason::Startup)
+            .await;
         Ok(Self { core })
+    }
+
+    /// Ask extensions about a shell command the user runs, before it runs, as Pi's hosts
+    /// ask with `user_bash`: the first answer wins. `Err` is a failing handler's error,
+    /// reported already; the command should then not run.
+    pub async fn user_bash(
+        &self,
+        command: &str,
+        exclude_from_context: bool,
+    ) -> Result<Option<UserBashResult>, String> {
+        let event = UserBash {
+            command: command.to_string(),
+            exclude_from_context,
+            cwd: self.core.cwd.clone(),
+        };
+        self.core.runner.user_bash(event, &self.core.weak).await
     }
 
     pub fn subscribe(&self, listener: impl Fn(&AgentSessionEvent) + Send + Sync + 'static) -> u64 {
@@ -1082,7 +1104,14 @@ impl AgentSession {
     /// resource loader finds again: context files, skills and prompt templates, and
     /// `SYSTEM.md` and `APPEND_SYSTEM.md` where the host gave no text of its own. The
     /// transcript's prompt is brought up to date by the sections that changed.
-    pub fn set_resources(&self, resources: Resources) {
+    pub fn set_resources(&self, mut resources: Resources) {
+        // What extensions discovered stays.
+        let discovered = lock(&self.core.discovered).clone();
+        resources.extend_from_paths(
+            &self.core.cwd,
+            &discovered.skill_paths,
+            &discovered.prompt_paths,
+        );
         self.core
             .host_prompt
             .apply(&mut lock(&self.core.prompt_base), &resources);
@@ -1385,6 +1414,36 @@ fn custom_message(draft: CustomMessageDraft) -> SessionMessage {
 }
 
 impl SessionCore {
+    /// Add the skills and templates extensions name in `resources_discover`, after the
+    /// session's own, as Pi's `extendResourcesFromExtensions` does, and update the
+    /// prompt.
+    async fn discover_resources(&self, reason: ResourcesDiscoverReason) {
+        if !self.runner.has::<ResourcesDiscover>() {
+            return;
+        }
+        let event = ResourcesDiscover {
+            cwd: self.cwd.clone(),
+            reason,
+        };
+        let answers = self.runner.emit(&event, &self.weak).await;
+        let mut found = ResourcesDiscoverResult::default();
+        for answer in answers {
+            found.skill_paths.extend(answer.skill_paths);
+            found.prompt_paths.extend(answer.prompt_paths);
+        }
+        if found.skill_paths.is_empty() && found.prompt_paths.is_empty() {
+            return;
+        }
+        let mut resources = lock(&self.resources);
+        resources.extend_from_paths(&self.cwd, &found.skill_paths, &found.prompt_paths);
+        self.host_prompt
+            .apply(&mut lock(&self.prompt_base), &resources);
+        drop(resources);
+        let mut discovered = lock(&self.discovered);
+        discovered.skill_paths.extend(found.skill_paths);
+        discovered.prompt_paths.extend(found.prompt_paths);
+    }
+
     /// The options of the session's own request to `model`, as Pi's session gives them:
     /// the session's id, the provider settings (`buildRequestOptions`), and hooks for
     /// the provider events extensions handle. They are read as the request goes out.

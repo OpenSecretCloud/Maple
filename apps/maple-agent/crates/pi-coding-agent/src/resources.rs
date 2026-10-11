@@ -1009,6 +1009,60 @@ impl Resources {
             diagnostics,
         }
     }
+
+    /// Add the skills and templates at `skill_paths` and `prompt_paths`, files or
+    /// folders, relative ones against `cwd`, after those already here, as Pi's
+    /// `extendResources` adds the ones extensions discover. A name taken already keeps
+    /// its skill or template, and the newcomer is reported as a collision.
+    pub fn extend_from_paths(
+        &mut self,
+        cwd: &Path,
+        skill_paths: &[PathBuf],
+        prompt_paths: &[PathBuf],
+    ) {
+        let mut skills = Vec::new();
+        scan_skill_paths(cwd, skill_paths, &mut skills, &mut self.diagnostics);
+        for skill in skills {
+            let real = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            match self
+                .skills
+                .iter()
+                .find(|existing| existing.name == skill.name)
+            {
+                // The same file found again.
+                Some(winner) if real(&winner.file_path) == real(&skill.file_path) => {}
+                Some(winner) => self.diagnostics.push(diagnostic(
+                    &skill.file_path,
+                    format!(
+                        "name \"{}\" collides with {}",
+                        skill.name,
+                        winner.file_path.display()
+                    ),
+                )),
+                None => self.skills.push(skill),
+            }
+        }
+        let mut templates = Vec::new();
+        load_template_paths(cwd, prompt_paths, &mut templates, &mut self.diagnostics);
+        for template in templates {
+            match self
+                .prompt_templates
+                .iter()
+                .find(|existing| existing.name == template.name)
+            {
+                Some(winner) if winner.file_path == template.file_path => {}
+                Some(winner) => self.diagnostics.push(diagnostic(
+                    &template.file_path,
+                    format!(
+                        "name \"{}\" collides with {}",
+                        template.name,
+                        winner.file_path.display()
+                    ),
+                )),
+                None => self.prompt_templates.push(template),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

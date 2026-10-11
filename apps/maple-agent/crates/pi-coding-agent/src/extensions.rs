@@ -35,10 +35,12 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_session::{CompactionReason, SessionCore, StreamingBehavior};
+use crate::bash_executor::BashResult;
 use crate::compaction::{CompactionPreparation, CompactionResult};
 use crate::messages::SessionMessage;
 use crate::session::SessionEntry;
 use crate::system_prompt::SystemPromptOptions;
+use crate::tools::BashOperations;
 
 pub type ExtensionError = Box<dyn std::error::Error + Send + Sync>;
 pub type HandlerResult<T> = Result<T, ExtensionError>;
@@ -240,6 +242,48 @@ pub struct ProviderStreamEvent {
     pub data: Value,
 }
 
+/// Why extensions are asked for resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourcesDiscoverReason {
+    Startup,
+    Reload,
+}
+
+/// Asked after [`SessionStart`], as Pi's `resources_discover`: where the extension keeps
+/// skills and prompt templates of its own. They join the session's resources after the
+/// others.
+#[derive(Clone, Debug)]
+pub struct ResourcesDiscover {
+    pub cwd: PathBuf,
+    pub reason: ResourcesDiscoverReason,
+}
+
+/// Skill and prompt template files or folders; a relative path is relative to the
+/// session's folder.
+#[derive(Clone, Debug, Default)]
+pub struct ResourcesDiscoverResult {
+    pub skill_paths: Vec<PathBuf>,
+    pub prompt_paths: Vec<PathBuf>,
+}
+
+/// A shell command the user runs with `!`, or `!!` to keep it out of the context, as
+/// Pi's `user_bash` has it. Its host asks before it runs the command.
+#[derive(Clone, Debug)]
+pub struct UserBash {
+    pub command: String,
+    pub exclude_from_context: bool,
+    pub cwd: PathBuf,
+}
+
+/// How an extension takes over a user's shell command.
+#[derive(Clone)]
+pub enum UserBashResult {
+    /// Run it with these operations instead of this machine's shell.
+    Operations(Arc<dyn BashOperations>),
+    /// The extension ran it; this is what came of it.
+    Result(BashResult),
+}
+
 /// A compaction about to happen, as Pi's `session_before_compact` describes it.
 #[derive(Clone, Debug)]
 pub struct SessionBeforeCompact {
@@ -367,6 +411,8 @@ events! {
     Context => Option<Vec<SessionMessage>>, "context";
     ContextWithSystem => Option<Vec<SessionMessage>>, "context_with_system";
     BeforeProviderRequest => Option<Value>, "before_provider_request";
+    ResourcesDiscover => ResourcesDiscoverResult, "resources_discover";
+    UserBash => Option<UserBashResult>, "user_bash";
     BeforeProviderHeaders => Option<BTreeMap<String, Option<String>>>, "before_provider_headers";
     AfterProviderResponse => (), "after_provider_response";
     ProviderStreamEvent => (), "provider_stream_event";
@@ -950,6 +996,27 @@ impl ExtensionRunner {
             }
         }
         current
+    }
+
+    /// Ask about a user's shell command: the first answer wins. A failing handler is
+    /// reported, and its error returned, so the command does not run, as in Pi.
+    pub async fn user_bash(
+        &self,
+        event: UserBash,
+        core: &Weak<SessionCore>,
+    ) -> Result<Option<UserBashResult>, String> {
+        for (extension, handler) in self.handlers::<UserBash>() {
+            match handler(event.clone(), self.context(core, &extension)).await {
+                Ok(None) => {}
+                Ok(Some(answer)) => return Ok(Some(answer)),
+                Err(error) => {
+                    let message = error.to_string();
+                    self.report(&extension, UserBash::NAME, error);
+                    return Err(message);
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Chain header rewrites; each handler sees the headers the last one left.

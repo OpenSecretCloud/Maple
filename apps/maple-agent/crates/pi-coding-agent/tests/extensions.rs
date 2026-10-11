@@ -1343,3 +1343,112 @@ async fn extensions_register_classifiers_that_handlers_can_ask() {
     );
     assert_eq!(models.classifier_models(), [model]);
 }
+
+#[tokio::test]
+async fn extensions_add_resources_they_discover_after_the_sessions_own() {
+    use pi_coding_agent::extensions::{ResourcesDiscover, ResourcesDiscoverResult};
+    use pi_coding_agent::resources::Resources;
+
+    let dir = tempfile::tempdir().unwrap();
+    let skills = dir.path().join("skills");
+    std::fs::create_dir_all(skills.join("audit")).unwrap();
+    std::fs::write(
+        skills.join("audit/SKILL.md"),
+        "---\nname: audit\ndescription: Audits a change\n---\nSteps",
+    )
+    .unwrap();
+    let template = dir.path().join("ship.md");
+    std::fs::write(&template, "---\ndescription: Ship it\n---\nShip $ARGUMENTS").unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let (skill_dir, template_file) = (skills.clone(), template.clone());
+    let discoverer = extension("discoverer", move |api| {
+        let log = log.clone();
+        let (skill_dir, template_file) = (skill_dir.clone(), template_file.clone());
+        api.on(move |event: ResourcesDiscover, _ctx| {
+            log.lock()
+                .unwrap()
+                .push(format!("{:?} {}", event.reason, event.cwd.display()));
+            let result = ResourcesDiscoverResult {
+                skill_paths: vec![skill_dir.clone()],
+                prompt_paths: vec![template_file.clone()],
+            };
+            async move { Ok(result) }
+        });
+    });
+    let harness = Harness::new();
+    let session = harness.session_with_extensions(vec![discoverer]).await;
+    assert_eq!(*seen.lock().unwrap(), ["Startup /work"]);
+    let names = |session: &pi_coding_agent::AgentSession| {
+        let resources = session.resources();
+        (
+            resources
+                .skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect::<Vec<_>>(),
+            resources
+                .prompt_templates
+                .iter()
+                .map(|template| template.name.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(
+        names(&session),
+        (vec!["audit".to_string()], vec!["ship".to_string()])
+    );
+    let commands: Vec<String> = session
+        .commands()
+        .into_iter()
+        .map(|command| command.name)
+        .collect();
+    assert!(
+        commands.contains(&"skill:audit".to_string()),
+        "{commands:?}"
+    );
+    assert!(commands.contains(&"ship".to_string()), "{commands:?}");
+    // Resources the host replaces keep what the extensions discovered.
+    session.set_resources(Resources::default());
+    assert_eq!(
+        names(&session),
+        (vec!["audit".to_string()], vec!["ship".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn extensions_can_take_over_a_users_shell_command() {
+    use pi_coding_agent::BashResult;
+    use pi_coding_agent::extensions::{UserBash, UserBashResult};
+
+    let harness = Harness::new();
+    let session = harness.session().await;
+    assert!(session.user_bash("ls", false).await.unwrap().is_none());
+
+    let remote = extension("remote", |api| {
+        api.on(|event: UserBash, _ctx| async move {
+            if event.command == "fail" {
+                return Err("the remote is down".into());
+            }
+            Ok(Some(UserBashResult::Result(BashResult {
+                output: format!(
+                    "ran {} remotely, kept: {}",
+                    event.command, !event.exclude_from_context
+                ),
+                exit_code: Some(0),
+                cancelled: false,
+                truncated: false,
+                full_output_path: None,
+            })))
+        });
+    });
+    let session = harness.session_with_extensions(vec![remote]).await;
+    let Some(UserBashResult::Result(result)) = session.user_bash("ls", true).await.unwrap() else {
+        panic!("expected a result")
+    };
+    assert_eq!(result.output, "ran ls remotely, kept: false");
+    assert_eq!(
+        session.user_bash("fail", false).await.err().as_deref(),
+        Some("the remote is down")
+    );
+}
