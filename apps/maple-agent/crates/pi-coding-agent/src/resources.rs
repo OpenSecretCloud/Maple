@@ -115,10 +115,17 @@ fn context_file_in(dir: &Path) -> Option<ContextFile> {
     })
 }
 
-/// The user-level context file, then one per directory from the root down to `cwd`.
+/// The user-level context file, then one per directory from the root down to `cwd`. In
+/// a linked worktree inside the main checkout, the main checkout's file that the
+/// worktree's own shadows is left out, as in Pi: both stand for the same repository.
 pub fn load_context_files(cwd: &Path, agent_dir: &Path) -> Vec<ContextFile> {
     let mut files: Vec<ContextFile> = context_file_in(agent_dir).into_iter().collect();
-    let mut ancestors: Vec<ContextFile> = cwd.ancestors().filter_map(context_file_in).collect();
+    let shadowed = shadowed_context_file(cwd);
+    let mut ancestors: Vec<ContextFile> = cwd
+        .ancestors()
+        .filter_map(context_file_in)
+        .filter(|file| shadowed.as_ref() != Some(&canonical(&file.path)))
+        .collect();
     ancestors.reverse();
     for file in ancestors {
         if !files.iter().any(|existing| existing.path == file.path) {
@@ -126,6 +133,75 @@ pub fn load_context_files(cwd: &Path, agent_dir: &Path) -> Vec<ContextFile> {
         }
     }
     files
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Where git keeps a checkout's state, as Pi's `findGitPaths` finds it.
+struct GitPaths {
+    /// The folder the nearest `.git` is in.
+    repo_dir: PathBuf,
+    /// The git folder the checkout's worktrees share.
+    common_git_dir: PathBuf,
+}
+
+fn find_git_paths(cwd: &Path) -> Option<GitPaths> {
+    for dir in cwd.ancestors() {
+        let git = dir.join(".git");
+        let Ok(metadata) = fs::metadata(&git) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            if !git.join("HEAD").exists() {
+                return None;
+            }
+            return Some(GitPaths {
+                repo_dir: dir.to_path_buf(),
+                common_git_dir: git,
+            });
+        }
+        let content = fs::read_to_string(&git).ok()?;
+        // A `.git` file that names no git folder is passed over.
+        let Some(target) = content.trim().strip_prefix("gitdir: ") else {
+            continue;
+        };
+        let git_dir = dir.join(target.trim());
+        if !git_dir.join("HEAD").exists() {
+            return None;
+        }
+        let common_git_dir = match fs::read_to_string(git_dir.join("commondir")) {
+            Ok(common) => git_dir.join(common.trim()),
+            Err(_) => git_dir,
+        };
+        return Some(GitPaths {
+            repo_dir: dir.to_path_buf(),
+            common_git_dir,
+        });
+    }
+    None
+}
+
+/// The main checkout's context file that a linked worktree inside it shadows with its
+/// own, by the same name, as Pi's `findShadowedContextFile` finds it.
+fn shadowed_context_file(cwd: &Path) -> Option<PathBuf> {
+    let git = find_git_paths(cwd)?;
+    let common_git_dir = canonical(&git.common_git_dir);
+    let worktree_root = canonical(&git.repo_dir);
+    let main_root = common_git_dir.parent()?;
+    // Not an ordinary checkout, whose worktree is the main one, nor a worktree beside the
+    // main checkout.
+    if worktree_root == main_root || !worktree_root.starts_with(main_root) {
+        return None;
+    }
+    // The shared git folder must be the main checkout's own `.git`, not a bare layout's
+    // or a submodule's.
+    if canonical(&main_root.join(".git")) != common_git_dir {
+        return None;
+    }
+    let own = context_file_in(&worktree_root)?;
+    Some(main_root.join(own.path.file_name()?))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -981,6 +1057,40 @@ mod tests {
             .map(|file| file.content)
             .collect();
         assert_eq!(files, ["global", "repo", "app"]);
+    }
+
+    #[test]
+    fn a_worktree_inside_the_checkout_shadows_the_main_checkouts_context_file() {
+        let (root, _cwd, paths) = layout();
+        let repo = root.path().join("repo");
+        write(&repo.join(".git/HEAD"), "ref: refs/heads/main\n");
+        write(&repo.join("AGENTS.md"), "main");
+        let worktree = repo.join(".worktrees/feat");
+        let git_dir = repo.join(".git/worktrees/feat");
+        write(&git_dir.join("HEAD"), "ref: refs/heads/feat\n");
+        write(&git_dir.join("commondir"), "../..\n");
+        write(
+            &worktree.join(".git"),
+            &format!("gitdir: {}\n", git_dir.display()),
+        );
+        let cwd = worktree.join("src");
+        fs::create_dir_all(&cwd).unwrap();
+        let contents = |cwd: &Path| -> Vec<String> {
+            load_context_files(cwd, &paths.agent_dir)
+                .into_iter()
+                .map(|file| file.content)
+                .collect()
+        };
+        // Without a file of its own, the worktree inherits the main checkout's.
+        assert_eq!(contents(&cwd), ["main"]);
+        write(&worktree.join("AGENTS.md"), "worktree");
+        assert_eq!(contents(&cwd), ["worktree"]);
+        // A file by another name is not shadowed.
+        fs::remove_file(worktree.join("AGENTS.md")).unwrap();
+        write(&worktree.join("CLAUDE.md"), "worktree");
+        assert_eq!(contents(&cwd), ["main", "worktree"]);
+        // The main checkout itself loads its own.
+        assert_eq!(contents(&repo), ["main"]);
     }
 
     #[test]
