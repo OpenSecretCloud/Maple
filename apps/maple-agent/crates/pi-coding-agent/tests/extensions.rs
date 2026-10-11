@@ -1283,3 +1283,63 @@ async fn provider_events_see_and_change_the_sessions_requests() {
     assert!(options.on_provider_stream_event.is_none());
     assert!(options.on_payload.is_none());
 }
+
+#[tokio::test]
+async fn extensions_register_classifiers_that_handlers_can_ask() {
+    use pi_ai::faux::FauxClassifier;
+    use pi_ai::{
+        Calibration, ClassifierAnswer, ClassifierContext, ClassifierOptions, ClassifierQuestion,
+    };
+    use pi_coding_agent::{ModelRegistry, StaticKeys};
+
+    let classifier = FauxClassifier::new();
+    classifier.push([(
+        "urgent",
+        ClassifierAnswer::Bool {
+            probability: 0.9,
+            calibration: Calibration::default(),
+        },
+    )]);
+    let registered = classifier.clone();
+    let judge = extension("judge", move |api| {
+        api.register_classifiers(
+            vec![FauxClassifier::default_model()],
+            Some((FauxClassifier::API.into(), Arc::new(registered.clone()))),
+        );
+    });
+    let keys = StaticKeys([("faux".to_string(), "secret".to_string())].into());
+    let mut harness = Harness::new();
+    harness.models = ModelRegistry::new(Arc::new(keys));
+    harness
+        .models
+        .register_api(&harness.faux.model().api, Arc::new(harness.faux.clone()));
+    harness.models.register_models([harness.faux.model()]);
+    let session = harness.session_with_extensions(vec![judge]).await;
+
+    let models = session.extension_context().models().unwrap();
+    let model = models.find_classifier("faux", "faux-classifier-1").unwrap();
+    let context = ClassifierContext {
+        state: json!({ "ticket": "Charged twice" }),
+        questions: [(
+            "urgent".to_string(),
+            ClassifierQuestion::bool("Is it urgent?"),
+        )]
+        .into_iter()
+        .collect(),
+        ..ClassifierContext::default()
+    };
+    let result = models
+        .classify(&model, context, ClassifierOptions::default())
+        .await;
+    assert!(!result.is_failure(), "{:?}", result.error_message);
+    assert!(matches!(
+        result.answers["urgent"],
+        ClassifierAnswer::Bool { probability, .. } if probability == 0.9
+    ));
+    // The provider's key is looked up for the request.
+    assert_eq!(
+        classifier.requests()[0].options.api_key.as_deref(),
+        Some("secret")
+    );
+    assert_eq!(models.classifier_models(), [model]);
+}

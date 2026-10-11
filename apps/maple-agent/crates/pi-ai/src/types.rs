@@ -510,6 +510,19 @@ pub enum InputModality {
     Image,
 }
 
+impl ModelCost {
+    /// Price `usage` at these costs.
+    pub fn apply(&self, usage: &mut Usage) {
+        let per_token = |price: f64, tokens: u64| price * tokens as f64 / 1_000_000.0;
+        usage.cost.input = per_token(self.input, usage.input);
+        usage.cost.output = per_token(self.output, usage.output);
+        usage.cost.cache_read = per_token(self.cache_read, usage.cache_read);
+        usage.cost.cache_write = per_token(self.cache_write, usage.cache_write);
+        usage.cost.total =
+            usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
+    }
+}
+
 /// Prices in dollars per million tokens.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -580,7 +593,7 @@ pub enum SessionAffinityFormat {
     OpenRouter,
 }
 
-fn default_input() -> Vec<InputModality> {
+pub(crate) fn default_input() -> Vec<InputModality> {
     vec![InputModality::Text]
 }
 
@@ -686,13 +699,7 @@ impl Model {
 
     /// Fill in `usage.cost` from this model's prices.
     pub fn apply_cost(&self, usage: &mut Usage) {
-        let per_token = |price: f64, tokens: u64| price * tokens as f64 / 1_000_000.0;
-        usage.cost.input = per_token(self.cost.input, usage.input);
-        usage.cost.output = per_token(self.cost.output, usage.output);
-        usage.cost.cache_read = per_token(self.cost.cache_read, usage.cache_read);
-        usage.cost.cache_write = per_token(self.cost.cache_write, usage.cache_write);
-        usage.cost.total =
-            usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
+        self.cost.apply(usage);
     }
 }
 

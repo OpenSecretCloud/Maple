@@ -693,6 +693,12 @@ impl AgentSession {
                 models.register_api(api, implementation.clone());
             }
         }
+        for classifiers in core.runner.classifiers() {
+            models.register_classifier_models(classifiers.models.clone());
+            if let Some((api, implementation)) = &classifiers.api {
+                models.register_classifier_api(api, implementation.clone());
+            }
+        }
         // A provider an extension registers can serve the session's model, so look it up
         // again now that they are registered.
         if let Some(model) = projection

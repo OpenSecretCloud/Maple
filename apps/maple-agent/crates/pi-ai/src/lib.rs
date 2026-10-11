@@ -13,8 +13,10 @@
 //!   ([`constrained`]) and token estimates.
 //!
 //! It has no dependency on any application. Hosts register providers in an
-//! [`ApiRegistry`] keyed by [`Model::api`].
+//! [`ApiRegistry`] keyed by [`Model::api`], and classifiers ([`classifier`]), which answer
+//! questions about a state with probabilities, in a [`ClassifierRegistry`].
 
+pub mod classifier;
 pub mod constrained;
 mod estimate;
 pub mod faux;
@@ -24,10 +26,16 @@ mod overflow;
 mod provider;
 mod provider_retry;
 mod stream;
+pub mod system_one;
 pub mod transcript;
 mod types;
 mod validation;
 
+pub use classifier::{
+    BoolCriteria, Calibration, ClassifierAnswer, ClassifierContext, ClassifierModel,
+    ClassifierOptions, ClassifierQuestion, ClassifierRegistry, ClassifierResult,
+    ClassifierStopReason, ClassifyFn,
+};
 pub use estimate::{estimate_message_tokens, estimate_text_tokens, estimate_tool_tokens};
 pub use json::parse_streaming_json;
 pub use overflow::{

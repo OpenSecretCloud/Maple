@@ -27,7 +27,10 @@ use pi_agent_core::{
     AfterToolCallResult, AgentEvent, AgentMessage, AgentTool, BeforeToolCallResult,
 };
 use pi_ai::transcript::current_system_message;
-use pi_ai::{Content, ImageContent, Message, Model, StreamFn, ThinkingLevel, Usage};
+use pi_ai::{
+    ClassifierModel, ClassifyFn, Content, ImageContent, Message, Model, StreamFn, ThinkingLevel,
+    Usage,
+};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -450,6 +453,14 @@ pub struct ProviderRegistration {
     pub api: Option<(String, Arc<dyn StreamFn>)>,
 }
 
+/// Classifier models and a classifier API an extension provides, as the classifiers of
+/// Pi's `registerProvider`.
+#[derive(Clone)]
+pub struct ClassifierRegistration {
+    pub models: Vec<ClassifierModel>,
+    pub api: Option<(String, Arc<dyn ClassifyFn>)>,
+}
+
 /// An extension failure that did not stop the session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtensionErrorReport {
@@ -529,6 +540,7 @@ pub(crate) struct ExtensionRegistry {
     pub tools: Vec<RegisteredTool>,
     pub commands: Vec<RegisteredCommand>,
     pub providers: Vec<ProviderRegistration>,
+    pub classifiers: Vec<ClassifierRegistration>,
 }
 
 /// What an extension registers with while it loads.
@@ -595,6 +607,17 @@ impl ExtensionApi<'_> {
         self.registry
             .providers
             .push(ProviderRegistration { models, api });
+    }
+
+    /// Add classifier models, and the classifier API they use when it is new.
+    pub fn register_classifiers(
+        &mut self,
+        models: Vec<ClassifierModel>,
+        api: Option<(String, Arc<dyn ClassifyFn>)>,
+    ) {
+        self.registry
+            .classifiers
+            .push(ClassifierRegistration { models, api });
     }
 }
 
@@ -703,6 +726,10 @@ impl ExtensionRunner {
 
     pub fn providers(&self) -> &[ProviderRegistration] {
         &self.registry.providers
+    }
+
+    pub fn classifiers(&self) -> &[ClassifierRegistration] {
+        &self.registry.classifiers
     }
 
     pub fn has<E: ExtensionEvent>(&self) -> bool {

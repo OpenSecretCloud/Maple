@@ -356,7 +356,7 @@ fn with_raw_metadata(mut message: String, error: &Value) -> String {
     message
 }
 
-fn truncate_error_text(text: &str) -> String {
+pub(crate) fn truncate_error_text(text: &str) -> String {
     let length = text.chars().count();
     if length <= ERROR_BODY_CHARS {
         return text.to_string();

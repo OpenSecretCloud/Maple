@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use pi_ai::{ApiRegistry, Model, StreamFn};
+use pi_ai::{
+    ApiRegistry, ClassifierContext, ClassifierModel, ClassifierOptions, ClassifierRegistry,
+    ClassifierResult, ClassifyFn, Model, StreamFn,
+};
 
 /// Supplies credentials per provider, looked up for every request.
 #[async_trait]
@@ -21,11 +24,14 @@ impl ApiKeySource for StaticKeys {
     }
 }
 
-/// The models a session can use, the APIs that serve them and their credentials.
+/// The models a session can use, chat models and classifiers, the APIs that serve them
+/// and their credentials.
 #[derive(Clone)]
 pub struct ModelRegistry {
     models: Arc<RwLock<Vec<Model>>>,
+    classifier_models: Arc<RwLock<Vec<ClassifierModel>>>,
     apis: ApiRegistry,
+    classifiers: ClassifierRegistry,
     keys: Arc<dyn ApiKeySource>,
 }
 
@@ -33,7 +39,9 @@ impl ModelRegistry {
     pub fn new(keys: Arc<dyn ApiKeySource>) -> Self {
         Self {
             models: Arc::default(),
+            classifier_models: Arc::default(),
             apis: ApiRegistry::new(),
+            classifiers: ClassifierRegistry::new(),
             keys,
         }
     }
@@ -62,6 +70,59 @@ impl ModelRegistry {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|model| model.provider != provider);
+        self.classifier_models
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|model| model.provider != provider);
+    }
+
+    /// Serve classifier models whose `api` is `api` with `implementation`.
+    pub fn register_classifier_api(&self, api: &str, implementation: Arc<dyn ClassifyFn>) {
+        self.classifiers.register(api, implementation);
+    }
+
+    /// Add classifier models, replacing any with the same provider and id.
+    pub fn register_classifier_models(&self, models: impl IntoIterator<Item = ClassifierModel>) {
+        let mut known = self
+            .classifier_models
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for model in models {
+            known.retain(|existing| {
+                !(existing.provider == model.provider && existing.id == model.id)
+            });
+            known.push(model);
+        }
+    }
+
+    pub fn find_classifier(&self, provider: &str, id: &str) -> Option<ClassifierModel> {
+        self.classifier_models
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|model| model.provider == provider && model.id == id)
+            .cloned()
+    }
+
+    pub fn classifier_models(&self) -> Vec<ClassifierModel> {
+        self.classifier_models
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Classify with the provider's credentials looked up as the request goes, as Pi's
+    /// `classify`. Failures are in the result.
+    pub async fn classify(
+        &self,
+        model: &ClassifierModel,
+        context: ClassifierContext,
+        mut options: ClassifierOptions,
+    ) -> ClassifierResult {
+        if options.api_key.is_none() {
+            options.api_key = self.api_key(&model.provider).await;
+        }
+        self.classifiers.classify(model, context, options).await
     }
 
     pub fn find(&self, provider: &str, id: &str) -> Option<Model> {

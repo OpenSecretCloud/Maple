@@ -9,8 +9,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
+use indexmap::IndexMap;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
+
+use crate::classifier::{
+    ClassifierAnswer, ClassifierContext, ClassifierModel, ClassifierOptions, ClassifierResult,
+    ClassifierStopReason, ClassifyFn,
+};
 
 use crate::estimate::estimate_message_tokens;
 use crate::provider::{StreamFn, StreamOptions};
@@ -396,5 +403,98 @@ mod tests {
             .result()
             .await;
         assert_eq!(reply.text(), "1 messages");
+    }
+}
+
+/// A classification a [`FauxClassifier`] was asked for.
+#[derive(Clone, Debug)]
+pub struct FauxClassification {
+    pub model: ClassifierModel,
+    pub context: ClassifierContext,
+    pub options: ClassifierOptions,
+}
+
+#[derive(Default)]
+struct FauxClassifierState {
+    answers: VecDeque<IndexMap<String, ClassifierAnswer>>,
+    requests: Vec<FauxClassification>,
+}
+
+/// A scripted classifier for tests: it answers with the answers queued, in order, and
+/// records each classification it is asked for.
+#[derive(Clone, Default)]
+pub struct FauxClassifier {
+    state: Arc<Mutex<FauxClassifierState>>,
+}
+
+impl FauxClassifier {
+    pub const API: &'static str = "faux-classifier";
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn default_model() -> ClassifierModel {
+        serde_json::from_value(json!({
+            "id": "faux-classifier-1",
+            "name": "Faux Classifier",
+            "api": Self::API,
+            "provider": "faux",
+            "input": ["text", "image"],
+            "contextWindow": 32768,
+        }))
+        .expect("the faux classifier model is valid")
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FauxClassifierState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Queue the answers to the next classification.
+    pub fn push<K: Into<String>>(&self, answers: impl IntoIterator<Item = (K, ClassifierAnswer)>) {
+        let answers = answers.into_iter().map(|(id, answer)| (id.into(), answer));
+        self.lock().answers.push_back(answers.collect());
+    }
+
+    pub fn requests(&self) -> Vec<FauxClassification> {
+        self.lock().requests.clone()
+    }
+}
+
+#[async_trait]
+impl ClassifyFn for FauxClassifier {
+    async fn classify(
+        &self,
+        model: &ClassifierModel,
+        context: ClassifierContext,
+        options: ClassifierOptions,
+    ) -> ClassifierResult {
+        let cancelled = options.cancel.is_cancelled();
+        let mut state = self.lock();
+        state.requests.push(FauxClassification {
+            model: model.clone(),
+            context,
+            options,
+        });
+        if cancelled {
+            return ClassifierResult::failed(
+                model,
+                ClassifierStopReason::Aborted,
+                "Request was aborted",
+            );
+        }
+        match state.answers.pop_front() {
+            Some(answers) => ClassifierResult {
+                answers,
+                ..ClassifierResult::empty(model)
+            },
+            None => ClassifierResult::failed(
+                model,
+                ClassifierStopReason::Error,
+                "No faux classification is queued",
+            ),
+        }
     }
 }
