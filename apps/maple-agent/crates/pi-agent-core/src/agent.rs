@@ -1,12 +1,15 @@
+use std::any::Any;
 use std::collections::{BTreeSet, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
+use futures_util::FutureExt;
 use pi_ai::transcript::{current_system_message, current_system_prompt, initial_system_message};
 use pi_ai::{
-    AssistantMessage, Message, Model, StreamFn, StreamOptions, ThinkingLevel, UserMessage,
-    apply_event,
+    AssistantContent, AssistantMessage, Content, ImageContent, Message, Model, StopReason,
+    StreamFn, StreamOptions, ThinkingLevel, UserMessage, apply_event, now_ms,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -335,21 +338,43 @@ impl<M: AgentMessage> Agent<M> {
         }
     }
 
+    /// Remove the queued steering messages and return them.
+    pub fn clear_steering_queue(&self) -> Vec<M> {
+        lock(&self.inner.steering).messages.drain(..).collect()
+    }
+
+    /// Remove the queued follow-ups and return them.
+    pub fn clear_follow_up_queue(&self) -> Vec<M> {
+        lock(&self.inner.follow_up).messages.drain(..).collect()
+    }
+
     /// Remove every queued message and return the steering and follow-up queues.
     pub fn clear_queues(&self) -> (Vec<M>, Vec<M>) {
-        let steering = lock(&self.inner.steering).messages.drain(..).collect();
-        let follow_up = lock(&self.inner.follow_up).messages.drain(..).collect();
-        (steering, follow_up)
+        (self.clear_steering_queue(), self.clear_follow_up_queue())
     }
 
     // Runs
 
     /// Start a run with a text prompt.
     pub async fn prompt_text(&self, text: impl Into<String>) -> Result<(), AgentError> {
-        self.prompt(vec![M::from_message(Message::User(UserMessage::text(
-            text,
-        )))])
-        .await
+        self.prompt_with_images(text, Vec::new()).await
+    }
+
+    /// Start a run with a text prompt and images, which follow the text in one user
+    /// message.
+    pub async fn prompt_with_images(
+        &self,
+        text: impl Into<String>,
+        images: Vec<ImageContent>,
+    ) -> Result<(), AgentError> {
+        let mut content = vec![Content::text(text)];
+        content.extend(images.into_iter().map(Content::Image));
+        let message = UserMessage {
+            content,
+            timestamp: now_ms(),
+        };
+        self.prompt(vec![M::from_message(Message::User(message))])
+            .await
     }
 
     /// Start a run with `messages`.
@@ -488,17 +513,70 @@ impl<M: AgentMessage> Agent<M> {
             inner: self.inner.clone(),
             cancel: cancel.clone(),
         };
-        let result = match kind {
-            RunKind::Prompt(messages) => {
-                run_agent_loop(messages, context, config, &sink, &cancel).await;
+        let run = async {
+            match kind {
+                RunKind::Prompt(messages) => {
+                    run_agent_loop(messages, context, config, &sink, &cancel).await;
+                    Ok(())
+                }
+                RunKind::Continue => run_agent_loop_continue(context, config, &sink, &cancel)
+                    .await
+                    .map(drop),
+            }
+        };
+        match AssertUnwindSafe(run).catch_unwind().await {
+            Ok(result) => {
+                guard.finished = true;
+                result
+            }
+            // The guard then cancels what the run left behind.
+            Err(panic) => {
+                self.end_failed_run(&sink, &cancel, panic_message(panic.as_ref()))
+                    .await;
                 Ok(())
             }
-            RunKind::Continue => run_agent_loop_continue(context, config, &sink, &cancel)
-                .await
-                .map(drop),
+        }
+    }
+
+    /// End a run whose loop panicked as Pi ends one whose loop threw: with an empty
+    /// reply carrying the error, and the events that close a turn and the run.
+    async fn end_failed_run(&self, sink: &AgentSink<M>, cancel: &CancellationToken, error: String) {
+        let stop_reason = if cancel.is_cancelled() {
+            StopReason::Aborted
+        } else {
+            StopReason::Error
         };
-        guard.finished = true;
-        result
+        let mut reply = AssistantMessage::failed(&self.model(), stop_reason, error);
+        reply.content = vec![AssistantContent::text("")];
+        let message = M::from_message(Message::Assistant(reply));
+        sink.emit(AgentEvent::MessageStart {
+            message: message.clone(),
+        })
+        .await;
+        sink.emit(AgentEvent::MessageEnd {
+            message: message.clone(),
+        })
+        .await;
+        sink.emit(AgentEvent::TurnEnd {
+            message: message.clone(),
+            tool_results: Vec::new(),
+        })
+        .await;
+        sink.emit(AgentEvent::AgentEnd {
+            messages: vec![message],
+        })
+        .await;
+    }
+}
+
+/// A panic's message, as Pi reports a thrown error's.
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    if let Some(text) = panic.downcast_ref::<&str>() {
+        text.to_string()
+    } else if let Some(text) = panic.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "The agent run panicked".to_string()
     }
 }
 

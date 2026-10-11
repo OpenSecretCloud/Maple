@@ -10,7 +10,10 @@ use pi_agent_core::{
     Agent, AgentError, AgentEvent, AgentListener, AgentOptions, AgentToolResult, FnTool, QueueMode,
 };
 use pi_ai::faux::FauxProvider;
-use pi_ai::{Message, StopReason, Tool};
+use pi_ai::{
+    AssistantMessageStream, Content, Context, ImageContent, Message, Model, StopReason,
+    StreamOptions, Tool,
+};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -395,4 +398,88 @@ async fn changing_tools_declares_the_difference_on_the_next_request() {
     assert_eq!(update.tools_removed[0].name, "echo");
     let second = &faux.requests()[1];
     assert!(pi_ai::transcript::current_tools(&second.context.messages).is_empty());
+}
+
+#[tokio::test]
+async fn a_run_that_panics_still_ends_with_an_error_reply() {
+    let faux = FauxProvider::new();
+    faux.push_text("recovered");
+    let agent = agent(&faux);
+    agent.set_stream_fn(Arc::new(
+        |_: &Model, _: Context, _: StreamOptions| -> AssistantMessageStream {
+            panic!("the provider broke")
+        },
+    ));
+    let events = record(&agent);
+
+    agent.prompt_text("go").await.unwrap();
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        [
+            "agent_start",
+            "turn_start",
+            "message_start:user",
+            "message_end:user",
+            "message_start:assistant",
+            "message_end:assistant",
+            "turn_end",
+            "agent_end",
+        ]
+    );
+    let messages = agent.messages();
+    let Some(Message::Assistant(reply)) = messages.last() else {
+        panic!("expected an error reply, got {messages:?}")
+    };
+    assert_eq!(reply.stop_reason, StopReason::Error);
+    assert_eq!(reply.error_message.as_deref(), Some("the provider broke"));
+    assert_eq!(agent.error_message().as_deref(), Some("the provider broke"));
+    assert!(!agent.is_streaming());
+
+    // The agent takes the next prompt.
+    agent.set_stream_fn(Arc::new(faux.clone()));
+    agent.prompt_text("again").await.unwrap();
+    let Some(Message::Assistant(reply)) = agent.messages().last().cloned() else {
+        panic!()
+    };
+    assert_eq!(reply.text(), "recovered");
+}
+
+#[tokio::test]
+async fn a_text_prompt_can_carry_images() {
+    let faux = FauxProvider::new();
+    faux.push_text("a cat");
+    let agent = agent(&faux);
+    let image = ImageContent {
+        data: "aGk=".into(),
+        mime_type: "image/png".into(),
+    };
+
+    agent
+        .prompt_with_images("what is this?", vec![image.clone()])
+        .await
+        .unwrap();
+
+    let Message::User(prompt) = &agent.messages()[1] else {
+        panic!()
+    };
+    assert_eq!(
+        prompt.content,
+        [Content::text("what is this?"), Content::Image(image)]
+    );
+}
+
+#[tokio::test]
+async fn each_queue_can_be_cleared_alone() {
+    let faux = FauxProvider::new();
+    let agent = agent(&faux);
+    let (steer, later) = (user("steer"), user("later"));
+    agent.steer(steer.clone());
+    agent.follow_up(later.clone());
+
+    assert_eq!(agent.clear_steering_queue(), [steer]);
+    assert!(agent.has_queued_messages());
+    assert_eq!(agent.peek_queued_messages(), std::slice::from_ref(&later));
+    assert_eq!(agent.clear_follow_up_queue(), [later]);
+    assert!(!agent.has_queued_messages());
 }
