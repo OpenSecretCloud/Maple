@@ -50,6 +50,20 @@ prevents a late grant from opening the app. The manual Open Maple link remains a
 a successful mint. SDK credentials remain on this origin; finishing a handoff
 does not sign out another tab or the user.
 
+Failed GitHub/Google callbacks show a fixed diagnostic code without displaying
+provider parameters, account identifiers, saved state, or exception messages:
+
+- `AUTH-CB-TARGET`: the same-tab native sign-in target is missing or no longer valid
+  before calling the SDK.
+- `AUTH-CB-SDK`: the SDK callback rejected. The pinned SDK 4.1.1 does not
+  expose a safe category for its underlying error; this code can include local
+  continuation rejection and does not prove a network request reached the server.
+- `AUTH-CB-REPLACED`: the SDK callback completed, but the native target was no
+  longer current afterward. No native confirmation is offered.
+
+These codes identify the failed stage, not a per-request tracking identifier or
+a root cause. Restart from the native app; callback URLs must not be shared.
+
 ## Agent return contract
 
 Agent opens `/agent/start?transport=v2&provider=...&native_session_id=...&native_request_id=...&return_port=...&return_state=...`.

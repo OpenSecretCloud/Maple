@@ -177,6 +177,20 @@ describe("hosted authentication entry", () => {
     expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
   }
 
+  function expectSafeFailureCode(code: string): void {
+    const output = JSON.stringify(renderer!.toJSON());
+    expect(output).toContain(code);
+    for (const privateValue of [
+      "fixture-code",
+      "opaque-fixture-state",
+      "fixture-sensitive-error",
+      nativeSessionId,
+      nativeRequestId
+    ]) {
+      expect(output).not.toContain(privateValue);
+    }
+  }
+
   for (const path of [
     "/desktop-auth?provider=github",
     "/desktop-auth?transport=v1&provider=google",
@@ -289,6 +303,7 @@ describe("hosted authentication entry", () => {
     await renderAt(originalUrl);
     expectNoSdkCalls();
     expectFailureWithoutNavigation(originalUrl);
+    expectSafeFailureCode("AUTH-CB-TARGET");
   });
 
   test("offers restart guidance without a copy action for callbacks without a hosted target", async () => {
@@ -318,7 +333,7 @@ describe("hosted authentication entry", () => {
       nativeRequestId
     });
     handleGoogleCallback.mockImplementation(async () => {
-      throw new Error("Fixture callback rejection");
+      throw new Error("fixture-sensitive-error: fixture-code opaque-fixture-state");
     });
     const originalUrl = callbackUrl("google");
     await renderAt(originalUrl);
@@ -331,6 +346,7 @@ describe("hosted authentication entry", () => {
     expect(JSON.stringify(renderer!.toJSON())).not.toContain("Maple Agent");
     expect(handleGoogleCallback).toHaveBeenCalledTimes(1);
     expectFailureWithoutNavigation(originalUrl);
+    expectSafeFailureCode("AUTH-CB-SDK");
   });
 
   test("does not consume another provider's pending target", async () => {
@@ -346,6 +362,7 @@ describe("hosted authentication entry", () => {
     expectNoSdkCalls();
     expectFailureWithoutNavigation(originalUrl);
     expect(readTransportV2DesktopOAuth("apple")).toEqual(pending);
+    expectSafeFailureCode("AUTH-CB-TARGET");
   });
 
   for (const provider of ["github", "google"] as const) {
@@ -429,6 +446,7 @@ describe("hosted authentication entry", () => {
       });
       expectFailureWithoutNavigation(originalUrl);
       expect(readTransportV2DesktopOAuth("github")).toEqual(replacement);
+      expectSafeFailureCode(outcome === "resolve" ? "AUTH-CB-REPLACED" : "AUTH-CB-SDK");
     });
   }
 

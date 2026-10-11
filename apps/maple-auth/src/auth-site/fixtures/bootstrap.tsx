@@ -161,6 +161,7 @@ try {
       "configured callback must reach the SDK continuation boundary"
     );
     assert.ok(JSON.stringify(renderer!.toJSON()).includes("could not be completed"));
+    assert.ok(JSON.stringify(renderer!.toJSON()).includes("AUTH-CB-SDK"));
   } else {
     assert.ok(sessionStorage.getItem(pendingKey), "native attempt starts after bootstrap");
     assert.equal(

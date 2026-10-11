@@ -21,6 +21,7 @@ import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 import { startNativeOAuth } from "@/services/nativeOAuthAttempt";
+import { useOAuthProviderPending } from "@/services/useOAuthProviderPending";
 import { clearDesktopOAuthTransport } from "@/services/desktopOAuthTransport";
 
 type LoginSearchParams = {
@@ -55,20 +56,11 @@ function LoginPage() {
   const [loginMethod, setLoginMethod] = useState<LoginMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [pendingProvider, setPendingProvider] = useState<"github" | "google" | null>(null);
+  const { pendingProvider, beginProvider, clearPendingProvider } = useOAuthProviderPending();
 
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
-
-  // A provider redirect can leave this page in the browser's back-forward cache.
-  useEffect(() => {
-    const restoreLogin = (event: PageTransitionEvent) => {
-      if (event.persisted) setPendingProvider(null);
-    };
-    window.addEventListener("pageshow", restoreLogin);
-    return () => window.removeEventListener("pageshow", restoreLogin);
-  }, []);
 
   // Redirect if already logged in
   useEffect(() => {
@@ -133,8 +125,7 @@ function LoginPage() {
   };
 
   const handleGitHubLogin = async () => {
-    if (pendingProvider) return;
-    if (!isTauriEnv) setPendingProvider("github");
+    if (!beginProvider("github")) return;
     setError(null);
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
@@ -164,14 +155,16 @@ function LoginPage() {
       }
     } catch (error) {
       console.error("Failed to initiate GitHub login:", error);
-      setPendingProvider(null);
+      clearPendingProvider();
       setError("Failed to initiate GitHub login. Please try again.");
+    } finally {
+      // Opening the browser does not wait for its callback or dismissal.
+      if (isTauriEnv) clearPendingProvider();
     }
   };
 
   const handleGoogleLogin = async () => {
-    if (pendingProvider) return;
-    if (!isTauriEnv) setPendingProvider("google");
+    if (!beginProvider("google")) return;
     setError(null);
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
@@ -201,8 +194,11 @@ function LoginPage() {
       }
     } catch (error) {
       console.error("Failed to initiate Google login:", error);
-      setPendingProvider(null);
+      clearPendingProvider();
       setError("Failed to initiate Google login. Please try again.");
+    } finally {
+      // Opening the browser does not wait for its callback or dismissal.
+      if (isTauriEnv) clearPendingProvider();
     }
   };
 

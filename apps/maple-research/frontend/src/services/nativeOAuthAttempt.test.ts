@@ -284,6 +284,73 @@ describe("native OAuth Transport V2 handoff", () => {
     expect(openerArgs.url).not.toContain("refresh-token");
   });
 
+  test("rejects overlapping providers during preparation and opening without replacing the attempt", async () => {
+    const calls: InvokeCall[] = [];
+    const preparation = deferred<ReturnType<typeof beginResponse>>();
+    const opening = deferred<void>();
+    const opened = deferred<void>();
+    const invokeCommand = async (command: string, args?: unknown) => {
+      calls.push({ command, args });
+      if (command === "native_oauth_begin") return preparation.promise;
+      if (command === "plugin:opener|open_url") {
+        opened.resolve();
+        return opening.promise;
+      }
+      throw new Error("Unexpected command");
+    };
+
+    const first = startNativeOAuth("github", API_URL, {}, invokeCommand);
+    await expect(startNativeOAuth("google", API_URL, {}, invokeCommand)).rejects.toThrow(
+      "already starting"
+    );
+    expect(calls.map(({ command }) => command)).toEqual(["native_oauth_begin"]);
+    preparation.resolve(beginResponse());
+    await opened.promise;
+    await expect(startNativeOAuth("github", API_URL, {}, invokeCommand)).rejects.toThrow(
+      "already starting"
+    );
+    expect(calls.map(({ command }) => command)).toEqual([
+      "native_oauth_begin",
+      "plugin:opener|open_url"
+    ]);
+    opening.resolve();
+    await first;
+    expect(readPendingNativeOAuthAttempt()?.attemptId).toBe(ATTEMPT_ID);
+
+    // Browser dismissal is not a callback. A retry is allowed once opening has
+    // completed, while the original handoff remains intact until replaced.
+    await startNativeOAuth(
+      "google",
+      API_URL,
+      {},
+      nativeInvoke(calls, {
+        begin: beginResponse(SECOND_ATTEMPT_ID, "02".repeat(16), "cd".repeat(16))
+      })
+    );
+    expect(readPendingNativeOAuthAttempt()?.attemptId).toBe(SECOND_ATTEMPT_ID);
+    expect(calls.some(({ command }) => command === "native_oauth_cancel")).toBe(false);
+  });
+
+  for (const failedStage of ["native_oauth_begin", "plugin:opener|open_url"]) {
+    test(`allows retry after ${failedStage} fails`, async () => {
+      const calls: InvokeCall[] = [];
+      const invokeCommand = async (command: string, args?: unknown) => {
+        calls.push({ command, args });
+        if (command === failedStage) throw new Error("Fixture failure");
+        if (command === "native_oauth_begin") return beginResponse();
+      };
+      await expect(startNativeOAuth("github", API_URL, {}, invokeCommand)).rejects.toThrow(
+        "Fixture failure"
+      );
+      expect(readPendingNativeOAuthAttempt()).toBeNull();
+      expect(calls.filter(({ command }) => command === "native_oauth_cancel")).toHaveLength(
+        failedStage === "plugin:opener|open_url" ? 1 : 0
+      );
+      await startNativeOAuth("google", API_URL, {}, nativeInvoke(calls));
+      expect(readPendingNativeOAuthAttempt()?.attemptId).toBe(ATTEMPT_ID);
+    });
+  }
+
   test("redeems with the signed grant only and installs through the captured CAS fence", async () => {
     const calls: InvokeCall[] = [];
     await beginNativeOAuthAttempt(
