@@ -12,8 +12,8 @@ export function AuthSite() {
   return (
     <main className="auth-shell">
       <section className="auth-card" aria-labelledby="auth-title">
-        <img src="/maple-logo-dark.svg" alt="Maple" width="112" height="48" />
-        <h1 id="auth-title" className="text-xl font-semibold">
+        <img className="auth-logo" src="/maple-wordmark.svg" alt="Maple" width="124" height="24" />
+        <h1 id="auth-title" className="auth-title">
           {route.kind === "invalid" ? "Sign-in unavailable" : "Sign in to Maple"}
         </h1>
         {pendingBootstrap && <p role="status">Preparing sign-in…</p>}
