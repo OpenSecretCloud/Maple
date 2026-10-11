@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::extensions::ExtensionUi;
+use crate::extensions::{DialogOptions, ExtensionUi};
 use crate::resources::ResourcePaths;
 
 /// What to do with a folder that has project resources and no decision yet.
@@ -320,7 +320,7 @@ pub async fn resolve_project_trusted(
     let labels: Vec<String> = options.iter().map(|option| option.label.clone()).collect();
     let question = project_trust_prompt(request.app_name, request.paths, request.cwd);
     let Some(chosen) = ui
-        .select(&question, &labels)
+        .select(&question, &labels, &DialogOptions::default())
         .await
         .and_then(|index| options.get(index))
     else {

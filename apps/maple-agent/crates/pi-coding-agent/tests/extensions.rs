@@ -1515,3 +1515,103 @@ async fn commands_offer_argument_completions_and_providers_can_come_later() {
     session.extension_context().unregister_provider("late");
     assert!(models.find("late", "late-model").is_none());
 }
+
+#[tokio::test]
+async fn extensions_reach_the_hosts_interface() {
+    use pi_coding_agent::extensions::{DialogOptions, ExtensionUi, NotifyLevel, WidgetPlacement};
+
+    /// Records what extensions ask of it, and edits by adding a line.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl ExtensionUi for Recorder {
+        fn has_ui(&self) -> bool {
+            true
+        }
+        fn notify(&self, message: &str, level: NotifyLevel) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("notify {level:?}: {message}"));
+        }
+        async fn select(
+            &self,
+            title: &str,
+            _options: &[String],
+            dialog: &DialogOptions,
+        ) -> Option<usize> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("select {title} within {:?}", dialog.timeout_ms));
+            Some(1)
+        }
+        async fn editor(&self, title: &str, prefill: Option<&str>) -> Option<String> {
+            self.0.lock().unwrap().push(format!("editor {title}"));
+            Some(format!("{}\nedited", prefill.unwrap_or_default()))
+        }
+        fn set_status(&self, key: &str, text: Option<&str>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("status {key}: {text:?}"));
+        }
+        fn set_widget(&self, key: &str, lines: Option<&[String]>, placement: WidgetPlacement) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("widget {key} {placement:?}: {lines:?}"));
+        }
+        fn set_title(&self, title: &str) {
+            self.0.lock().unwrap().push(format!("title {title}"));
+        }
+    }
+
+    let ui = Arc::new(Recorder::default());
+    let asker = extension("asker", |api| {
+        api.register_command("ask", "Ask the user", |_args, ctx| async move {
+            let ui = ctx.ui();
+            ui.notify("Starting", NotifyLevel::Warning);
+            let dialog = DialogOptions {
+                timeout_ms: Some(5_000),
+                ..DialogOptions::default()
+            };
+            let choice = ui
+                .select("Pick", &["a".to_string(), "b".to_string()], &dialog)
+                .await;
+            let text = ui.editor("Edit", Some("draft")).await;
+            ui.set_status("asker", Some(&format!("{choice:?} {text:?}")));
+            ui.set_widget(
+                "asker",
+                Some(&["one".to_string()]),
+                WidgetPlacement::BelowEditor,
+            );
+            ui.set_title("Asking");
+            Ok(())
+        });
+    });
+    let harness = Harness::new();
+    let recorder = ui.clone();
+    let session = harness
+        .session_with(move |options| {
+            options.ui = recorder;
+            options.extensions.push(asker);
+        })
+        .await;
+    session
+        .prompt("/ask", PromptOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        *ui.0.lock().unwrap(),
+        [
+            "notify Warning: Starting",
+            "select Pick within Some(5000)",
+            "editor Edit",
+            "status asker: Some(\"Some(1) Some(\\\"draft\\\\nedited\\\")\")",
+            "widget asker BelowEditor: Some([\"one\"])",
+            "title Asking",
+        ]
+    );
+}

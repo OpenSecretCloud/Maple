@@ -535,20 +535,81 @@ pub trait ExtensionUi: Send + Sync {
         false
     }
 
-    fn notify(&self, _message: &str) {}
+    fn notify(&self, _message: &str, _level: NotifyLevel) {}
 
-    async fn confirm(&self, _title: &str, _message: &str) -> bool {
+    async fn confirm(&self, _title: &str, _message: &str, _dialog: &DialogOptions) -> bool {
         false
     }
 
     /// The index of the chosen option.
-    async fn select(&self, _title: &str, _options: &[String]) -> Option<usize> {
+    async fn select(
+        &self,
+        _title: &str,
+        _options: &[String],
+        _dialog: &DialogOptions,
+    ) -> Option<usize> {
         None
     }
 
-    async fn input(&self, _title: &str, _placeholder: Option<&str>) -> Option<String> {
+    async fn input(
+        &self,
+        _title: &str,
+        _placeholder: Option<&str>,
+        _dialog: &DialogOptions,
+    ) -> Option<String> {
         None
     }
+
+    /// A multi-line editor, filled with `prefill`: the edited text, or `None` when it
+    /// is dismissed.
+    async fn editor(&self, _title: &str, _prefill: Option<&str>) -> Option<String> {
+        None
+    }
+
+    /// Status text under `key`, as in a status bar; `None` clears it.
+    fn set_status(&self, _key: &str, _text: Option<&str>) {}
+
+    /// What shows while a run streams; `None` restores the host's own.
+    fn set_working_message(&self, _message: Option<&str>) {}
+
+    /// Lines shown by the editor under `key`; `None` removes them.
+    fn set_widget(&self, _key: &str, _lines: Option<&[String]>, _placement: WidgetPlacement) {}
+
+    fn set_title(&self, _title: &str) {}
+
+    /// Put text into the editor as a paste does.
+    fn paste_to_editor(&self, _text: &str) {}
+
+    fn set_editor_text(&self, _text: &str) {}
+
+    fn editor_text(&self) -> String {
+        String::new()
+    }
+}
+
+/// How serious a notice is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotifyLevel {
+    #[default]
+    Info,
+    Warning,
+    Error,
+}
+
+/// How a dialog may end without an answer, as Pi's dialog options: the host closes it
+/// when `cancel` fires or `timeout_ms` passes, showing the time left.
+#[derive(Clone, Debug, Default)]
+pub struct DialogOptions {
+    pub cancel: Option<CancellationToken>,
+    pub timeout_ms: Option<u64>,
+}
+
+/// Where a widget goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WidgetPlacement {
+    #[default]
+    AboveEditor,
+    BelowEditor,
 }
 
 /// No interface: confirmations are declined and questions go unanswered.

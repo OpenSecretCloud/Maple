@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use super::*;
-use crate::extensions::NoUi;
+use crate::extensions::{DialogOptions, NoUi};
 
 fn paths(root: &Path) -> ResourcePaths {
     ResourcePaths {
@@ -106,7 +106,12 @@ impl ExtensionUi for Picks {
         true
     }
 
-    async fn select(&self, title: &str, options: &[String]) -> Option<usize> {
+    async fn select(
+        &self,
+        title: &str,
+        options: &[String],
+        _dialog: &DialogOptions,
+    ) -> Option<usize> {
         self.asked
             .lock()
             .unwrap()
