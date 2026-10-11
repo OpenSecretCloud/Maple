@@ -17,11 +17,14 @@
         display: grid;
         min-height: 100vh;
         min-height: 100dvh;
-        place-items: center;
+        place-items: start center;
         padding: 24px;
+        padding-top: clamp(24px, 20vh, 160px);
+        padding-top: clamp(24px, 20dvh, 160px);
       }
       section {
         display: grid;
+        align-content: start;
         gap: 24px;
         width: min(100%, 480px);
         padding: 40px;

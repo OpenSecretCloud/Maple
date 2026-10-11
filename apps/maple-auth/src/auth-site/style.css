@@ -42,13 +42,16 @@
     display: grid;
     min-height: 100vh;
     min-height: 100dvh;
-    place-items: center;
+    place-items: start center;
     padding: 24px;
+    padding-top: clamp(24px, 20vh, 160px);
+    padding-top: clamp(24px, 20dvh, 160px);
     background: radial-gradient(ellipse at 50% 0%, rgb(255 151 113 / 12%), transparent 65%) #f7f7f9;
   }
 
   .auth-card {
     display: grid;
+    align-content: start;
     gap: 24px;
     width: min(100%, 480px);
     padding: 40px;
