@@ -78,11 +78,12 @@ pub async fn send_hello_email(
             EmailError::UnknownError
         })?;
 
-    // Only send welcome email for Maple project for now
-    if !is_maple_project(&project.name) {
+    // Only send welcome email for Maple project for now. It has no team
+    // sign-off, so it needs no organization name.
+    let Some(message) = account_message(AccountEmail::Welcome, &project.name, "")? else {
         tracing::debug!("Skipping welcome email for non-Maple project");
         return Ok(());
-    }
+    };
 
     tracing::debug!("Sending maple hello email");
 
@@ -90,14 +91,6 @@ pub async fn send_hello_email(
     let resend = Resend::new(&api_key);
 
     let to = [to_email];
-    let message = maple_templates::render(
-        maple_templates::Kind::Welcome,
-        &project.name,
-        &project.name,
-        account_support_email(&project.name),
-        "",
-        "",
-    );
 
     // Schedule the email to be sent 5 minutes from now
     let scheduled_time = Utc::now() + Duration::minutes(5);
@@ -132,8 +125,6 @@ fn sender(project_name: &str, address: &str) -> String {
         format!("{name} <{address}>")
     }
 }
-
-const MAPLE_MARK_HTML: &str = r#"<img src="https://www.trymaple.ai/apple-touch-icon.png" alt="Maple" width="48" height="48" style="display:block;width:48px;height:48px;border-radius:12px;margin:0 0 16px;">"#;
 
 fn is_maple_project(project_name: &str) -> bool {
     project_name == "Maple"
@@ -174,18 +165,76 @@ fn with_account_reply_to(
     }
 }
 
-fn account_mark_html(project_name: &str) -> &'static str {
-    if is_maple_project(project_name) {
-        MAPLE_MARK_HTML
-    } else {
-        ""
-    }
+/// An account email for one of a project's users, with the values it shows.
+#[derive(Clone, Copy)]
+enum AccountEmail<'a> {
+    Welcome,
+    Verification { url: &'a str, code: &'a str },
+    PasswordReset { code: &'a str },
+    PasswordResetConfirmation,
+    AccountDeletion { code: &'a str },
+    AccountDeletionConfirmation,
 }
+
+struct AccountMessage {
+    subject: String,
+    html: String,
+}
+
+/// Build a project's account email, or `None` when the project doesn't send
+/// it. Maple gets the redesigned templates. Every other project keeps its
+/// original subject and HTML, and gets no welcome email. Only the email that
+/// will be sent is rendered. Kept free of I/O so tests cover this switch.
+fn account_message(
+    email: AccountEmail<'_>,
+    project_name: &str,
+    org_name: &str,
+) -> Result<Option<AccountMessage>, EmailError> {
+    let team_name = account_team_name(project_name, org_name);
+    let support_email = account_support_email(project_name);
+
+    if is_maple_project(project_name) {
+        return maple_templates::render(email, project_name, &team_name, support_email)
+            .map(Some)
+            .map_err(|e| {
+                error!("Failed to render Maple account email: {:?}", e);
+                EmailError::UnknownError
+            });
+    }
+
+    let (subject, html) = match email {
+        AccountEmail::Welcome => return Ok(None),
+        AccountEmail::Verification { url, code } => (
+            format!("Verify Your {} Account", project_name),
+            legacy_verification_html(project_name, &team_name, url, code),
+        ),
+        AccountEmail::PasswordReset { code } => (
+            format!("Reset Your {} Password", project_name),
+            legacy_password_reset_html(project_name, &team_name, code),
+        ),
+        AccountEmail::PasswordResetConfirmation => (
+            format!("Your {} Password Has Been Reset", project_name),
+            legacy_password_reset_confirmation_html(project_name, &team_name, support_email),
+        ),
+        AccountEmail::AccountDeletion { code } => (
+            format!("Account Deletion Request for Your {} Account", project_name),
+            legacy_account_deletion_html(project_name, &team_name, code),
+        ),
+        AccountEmail::AccountDeletionConfirmation => (
+            format!("Your {} Account Has Been Deleted", project_name),
+            legacy_account_deletion_confirmation_html(project_name, &team_name, support_email),
+        ),
+    };
+    Ok(Some(AccountMessage { subject, html }))
+}
+
+// The legacy templates below are the original account emails, still sent by
+// every project except Maple. Each keeps a blank line where the Maple logo
+// used to go, so their HTML stays byte-identical to before.
 
 fn legacy_verification_html(
     project_name: &str,
     team_name: &str,
-    mark: &str,
     verification_url: &str,
     verification_code: &str,
 ) -> String {
@@ -207,7 +256,7 @@ fn legacy_verification_html(
         </head>
         <body>
             <div class="container">
-                {}
+                
                 <h1>Welcome to {}!</h1>
                 <p>Thank you for registering. To complete your account setup, please verify your email address by clicking the button below:</p>
                 <p>
@@ -225,7 +274,6 @@ fn legacy_verification_html(
         </html>
         "#,
         project_name,
-        mark,
         project_name,
         verification_url,
         verification_url,
@@ -238,7 +286,6 @@ fn legacy_verification_html(
 fn legacy_password_reset_html(
     project_name: &str,
     team_name: &str,
-    mark: &str,
     alphanumeric_code: &str,
 ) -> String {
     format!(
@@ -258,7 +305,7 @@ fn legacy_password_reset_html(
         </head>
         <body>
             <div class="container">
-                {}
+                
                 <h1>Reset Your {} Password</h1>
                 <p>We received a request to reset your {} account password. If you didn't make this request, you can ignore this email.</p>
                 <p>To reset your password, use the following code:</p>
@@ -270,14 +317,13 @@ fn legacy_password_reset_html(
         </body>
         </html>
         "#,
-        project_name, mark, project_name, project_name, alphanumeric_code, team_name
+        project_name, project_name, project_name, alphanumeric_code, team_name
     )
 }
 
 fn legacy_password_reset_confirmation_html(
     project_name: &str,
     team_name: &str,
-    mark: &str,
     support_email: &str,
 ) -> String {
     format!(
@@ -296,7 +342,7 @@ fn legacy_password_reset_confirmation_html(
         </head>
         <body>
             <div class="container">
-                {}
+                
                 <h1>Password Reset Confirmation</h1>
                 <p>Your {} account password has been successfully reset.</p>
                 <p>If you did not initiate this password reset, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
@@ -311,14 +357,13 @@ fn legacy_password_reset_confirmation_html(
         </body>
         </html>
         "#,
-        mark, project_name, support_email, support_email, team_name
+        project_name, support_email, support_email, team_name
     )
 }
 
 fn legacy_account_deletion_html(
     project_name: &str,
     team_name: &str,
-    mark: &str,
     confirmation_code: &str,
 ) -> String {
     format!(
@@ -339,7 +384,7 @@ fn legacy_account_deletion_html(
         </head>
         <body>
             <div class="container">
-                {}
+                
                 <h1>Account Deletion Request</h1>
                 <p>We received a request to delete your {} account. <span class="warning">This action is permanent and cannot be undone.</span></p>
                 <p>To confirm your account deletion, use the following confirmation code:</p>
@@ -351,14 +396,13 @@ fn legacy_account_deletion_html(
         </body>
         </html>
         "#,
-        mark, project_name, confirmation_code, team_name
+        project_name, confirmation_code, team_name
     )
 }
 
 fn legacy_account_deletion_confirmation_html(
     project_name: &str,
     team_name: &str,
-    mark: &str,
     support_email: &str,
 ) -> String {
     format!(
@@ -377,7 +421,7 @@ fn legacy_account_deletion_confirmation_html(
         </head>
         <body>
             <div class="container">
-                {}
+                
                 <h1>Account Deletion Confirmation</h1>
                 <p>Your {} account has been successfully deleted along with all associated data.</p>
                 <p>If you did not request this account deletion, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
@@ -387,7 +431,7 @@ fn legacy_account_deletion_confirmation_html(
         </body>
         </html>
         "#,
-        mark, project_name, support_email, support_email, team_name
+        project_name, support_email, support_email, team_name
     )
 }
 
@@ -421,38 +465,27 @@ pub async fn send_verification_email(
         .ok_or(EmailError::ProjectSettingsNotFound)?;
 
     let to = [to_email];
-    let legacy_subject = format!("Verify Your {} Account", project.name);
-    let team_name = account_team_name(&project.name, &org.name);
-    let mark = account_mark_html(&project.name);
 
     // Ensure base URL has exactly one trailing slash
     let base_url = email_settings.email_verification_url.trim_end_matches('/');
     let verification_url = format!("{}/{}", base_url, verification_code);
+    let verification_code = verification_code.to_string();
 
-    let legacy_html_content = legacy_verification_html(
+    let Some(message) = account_message(
+        AccountEmail::Verification {
+            url: &verification_url,
+            code: &verification_code,
+        },
         &project.name,
-        &team_name,
-        mark,
-        &verification_url,
-        &verification_code.to_string(),
-    );
-
-    let (subject, html_content) = if is_maple_project(&project.name) {
-        let message = maple_templates::render(
-            maple_templates::Kind::Verification,
-            &project.name,
-            &team_name,
-            account_support_email(&project.name),
-            &verification_code.to_string(),
-            verification_url.as_str(),
-        );
-        (message.subject, message.html)
-    } else {
-        (legacy_subject, legacy_html_content)
+        &org.name,
+    )?
+    else {
+        return Ok(());
     };
 
-    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
-        .with_html(&html_content);
+    let email =
+        CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, message.subject)
+            .with_html(&message.html);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -487,29 +520,21 @@ pub async fn send_password_reset_email(
     })?;
 
     let to = [to_email];
-    let legacy_subject = format!("Reset Your {} Password", project.name);
-    let team_name = account_team_name(&project.name, &org.name);
-    let mark = account_mark_html(&project.name);
 
-    let legacy_html_content =
-        legacy_password_reset_html(&project.name, &team_name, mark, &alphanumeric_code);
-
-    let (subject, html_content) = if is_maple_project(&project.name) {
-        let message = maple_templates::render(
-            maple_templates::Kind::PasswordReset,
-            &project.name,
-            &team_name,
-            account_support_email(&project.name),
-            alphanumeric_code.as_str(),
-            "",
-        );
-        (message.subject, message.html)
-    } else {
-        (legacy_subject, legacy_html_content)
+    let Some(message) = account_message(
+        AccountEmail::PasswordReset {
+            code: &alphanumeric_code,
+        },
+        &project.name,
+        &org.name,
+    )?
+    else {
+        return Ok(());
     };
 
-    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
-        .with_html(&html_content);
+    let email =
+        CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, message.subject)
+            .with_html(&message.html);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -543,30 +568,19 @@ pub async fn send_password_reset_confirmation_email(
     })?;
 
     let to = [to_email];
-    let legacy_subject = format!("Your {} Password Has Been Reset", project.name);
-    let team_name = account_team_name(&project.name, &org.name);
-    let support_email = account_support_email(&project.name);
-    let mark = account_mark_html(&project.name);
 
-    let legacy_html_content =
-        legacy_password_reset_confirmation_html(&project.name, &team_name, mark, support_email);
-
-    let (subject, html_content) = if is_maple_project(&project.name) {
-        let message = maple_templates::render(
-            maple_templates::Kind::PasswordResetConfirmation,
-            &project.name,
-            &team_name,
-            account_support_email(&project.name),
-            "",
-            "",
-        );
-        (message.subject, message.html)
-    } else {
-        (legacy_subject, legacy_html_content)
+    let Some(message) = account_message(
+        AccountEmail::PasswordResetConfirmation,
+        &project.name,
+        &org.name,
+    )?
+    else {
+        return Ok(());
     };
 
-    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
-        .with_html(&html_content);
+    let email =
+        CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, message.subject)
+            .with_html(&message.html);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -888,29 +902,21 @@ pub async fn send_account_deletion_email(
     })?;
 
     let to = [to_email];
-    let legacy_subject = format!("Account Deletion Request for Your {} Account", project.name);
-    let team_name = account_team_name(&project.name, &org.name);
-    let mark = account_mark_html(&project.name);
 
-    let legacy_html_content =
-        legacy_account_deletion_html(&project.name, &team_name, mark, &confirmation_code);
-
-    let (subject, html_content) = if is_maple_project(&project.name) {
-        let message = maple_templates::render(
-            maple_templates::Kind::AccountDeletion,
-            &project.name,
-            &team_name,
-            account_support_email(&project.name),
-            confirmation_code.as_str(),
-            "",
-        );
-        (message.subject, message.html)
-    } else {
-        (legacy_subject, legacy_html_content)
+    let Some(message) = account_message(
+        AccountEmail::AccountDeletion {
+            code: &confirmation_code,
+        },
+        &project.name,
+        &org.name,
+    )?
+    else {
+        return Ok(());
     };
 
-    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
-        .with_html(&html_content);
+    let email =
+        CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, message.subject)
+            .with_html(&message.html);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -944,30 +950,19 @@ pub async fn send_account_deletion_confirmation_email(
     })?;
 
     let to = [to_email];
-    let legacy_subject = format!("Your {} Account Has Been Deleted", project.name);
-    let team_name = account_team_name(&project.name, &org.name);
-    let support_email = account_support_email(&project.name);
-    let mark = account_mark_html(&project.name);
 
-    let legacy_html_content =
-        legacy_account_deletion_confirmation_html(&project.name, &team_name, mark, support_email);
-
-    let (subject, html_content) = if is_maple_project(&project.name) {
-        let message = maple_templates::render(
-            maple_templates::Kind::AccountDeletionConfirmation,
-            &project.name,
-            &team_name,
-            account_support_email(&project.name),
-            "",
-            "",
-        );
-        (message.subject, message.html)
-    } else {
-        (legacy_subject, legacy_html_content)
+    let Some(message) = account_message(
+        AccountEmail::AccountDeletionConfirmation,
+        &project.name,
+        &org.name,
+    )?
+    else {
+        return Ok(());
     };
 
-    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
-        .with_html(&html_content);
+    let email =
+        CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, message.subject)
+            .with_html(&message.html);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -980,12 +975,10 @@ pub async fn send_account_deletion_confirmation_email(
 #[cfg(test)]
 mod tests {
     use super::{
-        account_mark_html, account_reply_to, account_support_email, account_team_name,
-        legacy_account_deletion_confirmation_html, legacy_account_deletion_html,
-        legacy_password_reset_confirmation_html, legacy_password_reset_html,
-        legacy_verification_html, maple_templates, sender,
+        account_message, account_reply_to, maple_templates, sender, with_account_reply_to,
+        AccountEmail, AccountMessage,
     };
-    use maple_templates::Kind;
+    use resend_rs::types::CreateEmailBaseOptions;
 
     const VERIFY_CODE: &str = "3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
     const VERIFY_URL: &str =
@@ -993,161 +986,218 @@ mod tests {
     const RESET_CODE: &str = "7KQ2M9XA";
     const DELETE_CODE: &str = "b81e4f0a-2c6d-4a93-8e57-d1f3a9c20b64";
 
-    #[test]
-    fn non_maple_html_matches_pre_edit_snapshots() {
-        let project = "Other";
-        let team = account_team_name(project, "Acme Org");
-        let mark = account_mark_html(project);
-        let support = account_support_email(project);
-        assert_eq!(
-            legacy_verification_html(project, &team, mark, VERIFY_URL, VERIFY_CODE),
-            serde_json::from_str::<String>(include_str!(
-                "email/non_maple_snapshots/verification.json"
-            ))
-            .unwrap()
-        );
-        assert_eq!(
-            legacy_password_reset_html(project, &team, mark, RESET_CODE),
-            serde_json::from_str::<String>(include_str!(
-                "email/non_maple_snapshots/password_reset.json"
-            ))
-            .unwrap()
-        );
-        assert_eq!(
-            legacy_password_reset_confirmation_html(project, &team, mark, support),
-            serde_json::from_str::<String>(include_str!(
-                "email/non_maple_snapshots/password_reset_confirmation.json"
-            ))
-            .unwrap()
-        );
-        assert_eq!(
-            legacy_account_deletion_html(project, &team, mark, DELETE_CODE),
-            serde_json::from_str::<String>(include_str!(
-                "email/non_maple_snapshots/account_deletion.json"
-            ))
-            .unwrap()
-        );
-        assert_eq!(
-            legacy_account_deletion_confirmation_html(project, &team, mark, support),
-            serde_json::from_str::<String>(include_str!(
-                "email/non_maple_snapshots/account_deletion_confirmation.json"
-            ))
-            .unwrap()
-        );
-        assert_eq!(sender(project, "hi@acme.test"), "Other <hi@acme.test>");
-        assert_eq!(account_reply_to(project), None);
-        assert_eq!(support, "support@opensecret.cloud");
-        assert_eq!(
-            [
-                format!("Verify Your {project} Account"),
-                format!("Reset Your {project} Password"),
-                format!("Your {project} Password Has Been Reset"),
-                format!("Account Deletion Request for Your {project} Account"),
-                format!("Your {project} Account Has Been Deleted"),
-            ],
-            [
-                "Verify Your Other Account",
-                "Reset Your Other Password",
-                "Your Other Password Has Been Reset",
-                "Account Deletion Request for Your Other Account",
-                "Your Other Account Has Been Deleted",
-            ]
-        );
+    /// What an account email should be for Maple and for any other project.
+    struct Expected {
+        maple_subject: &'static str,
+        maple_campaign: &'static str,
+        /// The subject and pre-redesign HTML other projects get, or `None`
+        /// when they don't send this email.
+        other: Option<(&'static str, &'static str)>,
+    }
+
+    /// Every account email, with the values the snapshots were taken with.
+    /// The match is exhaustive, so a new `AccountEmail` variant fails to
+    /// compile here until it has a sample and expectations.
+    fn every_account_email() -> Vec<(AccountEmail<'static>, Expected)> {
+        [
+            AccountEmail::Welcome,
+            AccountEmail::Verification {
+                url: VERIFY_URL,
+                code: VERIFY_CODE,
+            },
+            AccountEmail::PasswordReset { code: RESET_CODE },
+            AccountEmail::PasswordResetConfirmation,
+            AccountEmail::AccountDeletion { code: DELETE_CODE },
+            AccountEmail::AccountDeletionConfirmation,
+        ]
+        .into_iter()
+        .map(|email| {
+            let expected = match email {
+                AccountEmail::Welcome => Expected {
+                    maple_subject: "Welcome to Maple",
+                    maple_campaign: "welcome",
+                    other: None,
+                },
+                AccountEmail::Verification { .. } => Expected {
+                    maple_subject: "Verify your Maple account",
+                    maple_campaign: "verify-email",
+                    other: Some((
+                        "Verify Your Other Account",
+                        include_str!("email/non_maple_snapshots/verification.json"),
+                    )),
+                },
+                AccountEmail::PasswordReset { .. } => Expected {
+                    maple_subject: "Reset your Maple password",
+                    maple_campaign: "password-reset",
+                    other: Some((
+                        "Reset Your Other Password",
+                        include_str!("email/non_maple_snapshots/password_reset.json"),
+                    )),
+                },
+                AccountEmail::PasswordResetConfirmation => Expected {
+                    maple_subject: "Your Maple password was changed",
+                    maple_campaign: "password-changed",
+                    other: Some((
+                        "Your Other Password Has Been Reset",
+                        include_str!("email/non_maple_snapshots/password_reset_confirmation.json"),
+                    )),
+                },
+                AccountEmail::AccountDeletion { .. } => Expected {
+                    maple_subject: "Confirm your Maple account deletion",
+                    maple_campaign: "delete-account",
+                    other: Some((
+                        "Account Deletion Request for Your Other Account",
+                        include_str!("email/non_maple_snapshots/account_deletion.json"),
+                    )),
+                },
+                AccountEmail::AccountDeletionConfirmation => Expected {
+                    maple_subject: "Your Maple account has been deleted",
+                    maple_campaign: "account-deleted",
+                    other: Some((
+                        "Your Other Account Has Been Deleted",
+                        include_str!(
+                            "email/non_maple_snapshots/account_deletion_confirmation.json"
+                        ),
+                    )),
+                },
+            };
+            (email, expected)
+        })
+        .collect()
+    }
+
+    fn maple_message(email: AccountEmail<'_>) -> AccountMessage {
+        account_message(email, "Maple", "OpenSecret")
+            .expect("Maple account email renders")
+            .expect("Maple sends every account email")
     }
 
     #[test]
-    fn maple_account_mail_branding_and_links() {
-        assert_eq!(account_team_name("Maple", "OpenSecret"), "Maple");
-        assert_eq!(account_support_email("Maple"), "support@trymaple.ai");
+    fn maple_projects_get_the_redesigned_emails() {
         assert_eq!(account_reply_to("Maple"), Some("support@trymaple.ai"));
-        let welcome = maple_templates::render(
-            Kind::Welcome,
-            "Maple",
-            "Maple",
-            "support@trymaple.ai",
-            "",
-            "",
-        );
-        assert_eq!(welcome.subject, "Welcome to Maple");
-        assert!(welcome.html.contains("href=\"https://trymaple.ai\""));
-        assert!(welcome
-            .html
-            .contains("<a href=\"https://www.trymaple.ai\"><img"));
+        for (email, expected) in every_account_email() {
+            let message = maple_message(email);
+            assert_eq!(message.subject, expected.maple_subject);
+            let html = &message.html;
+            assert!(html.starts_with("<!DOCTYPE html>"));
+            assert!(html.contains(&format!("{}wordmark.png", maple_templates::ASSET_BASE)));
+            assert!(html.contains("support@trymaple.ai"));
+            assert!(!html.contains("OpenSecret") && !html.contains("opensecret.cloud"));
+            assert!(!html.contains("{{") && !html.contains("}}"));
+            if !matches!(email, AccountEmail::Welcome) {
+                assert!(html.contains("The Maple team"), "{}", message.subject);
+            }
+        }
+    }
+
+    #[test]
+    fn other_projects_keep_their_original_emails() {
+        assert_eq!(sender("Other", "hi@acme.test"), "Other <hi@acme.test>");
+        assert_eq!(account_reply_to("Other"), None);
+        for (email, expected) in every_account_email() {
+            let message =
+                account_message(email, "Other", "Acme Org").expect("original email renders");
+            match expected.other {
+                None => assert!(message.is_none()),
+                Some((subject, snapshot)) => {
+                    let message = message.expect("other projects send this email");
+                    assert_eq!(message.subject, subject);
+                    assert_eq!(
+                        message.html,
+                        serde_json::from_str::<String>(snapshot).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maple_email_links_images_and_font() {
+        let welcome = maple_message(AccountEmail::Welcome).html;
+        assert!(welcome.contains("href=\"https://trymaple.ai\""));
+        assert!(welcome.contains("<a href=\"https://www.trymaple.ai\"><img"));
         for href in [
             "https://www.trymaple.ai/pricing?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=see-plans",
             "https://www.trymaple.ai/downloads?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=download-app",
             "https://www.trymaple.ai/research?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=details",
             "https://www.trymaple.ai/docs/proxy?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=proxy-docs",
         ] {
-            assert!(welcome.html.contains(&format!("href=\"{href}\"")), "{href}");
+            assert!(welcome.contains(&format!("href=\"{href}\"")), "{href}");
         }
-        assert!(welcome
-            .html
-            .contains("href=\"https://github.com/MaplePrivacyLabs/Maple\""));
-        assert!(!welcome.html.contains("research#download"));
-        assert!(!welcome.html.contains("research#pricing"));
-        assert!(!welcome.html.contains("OpenSecretCloud/Maple"));
-        assert!(welcome.html.contains("class=\"ink\" src=\"https://img.maple.ai/email/research-laptop.jpg\" width=\"536\" alt=\"Maple Research open on a laptop\""));
-        assert!(welcome
-            .html
-            .contains("app-icon.png\" width=\"48\" height=\"48\" alt=\"\""));
-        assert!(welcome
-            .html
-            .contains("footer-watermark-light.png\" width=\"600\" alt=\"\""));
-        assert!(welcome
-            .html
-            .contains("footer-watermark-dark.png\" width=\"600\" alt=\"\""));
-        assert!(welcome
-            .html
-            .contains("601 Congress Ave, Suite 250, Austin, TX 78701"));
-        assert!(welcome
-            .html
-            .contains("https://img.maple.ai/email/tile-welcome.png"));
-        assert!(!welcome.html.contains("tracking"));
+        assert!(welcome.contains("href=\"https://github.com/MaplePrivacyLabs/Maple\""));
+        assert!(!welcome.contains("research#download"));
+        assert!(!welcome.contains("research#pricing"));
+        assert!(!welcome.contains("OpenSecretCloud/Maple"));
+        assert!(welcome.contains("class=\"ink\" src=\"https://img.maple.ai/email/research-laptop.jpg\" width=\"536\" alt=\"Maple Research open on a laptop\""));
+        assert!(welcome.contains("app-icon.png\" width=\"48\" height=\"48\" alt=\"\""));
+        assert!(welcome.contains("footer-watermark-light.png\" width=\"600\" alt=\"\""));
+        assert!(welcome.contains("footer-watermark-dark.png\" width=\"600\" alt=\"\""));
+        assert!(welcome.contains("601 Congress Ave, Suite 250, Austin, TX 78701"));
+        assert!(welcome.contains("https://img.maple.ai/email/tile-welcome.png"));
+        assert!(!welcome.contains("tracking"));
 
-        for (kind, campaign, tag_count) in [
-            (Kind::Welcome, "welcome", 6),
-            (Kind::Verification, "verify-email", 2),
-            (Kind::PasswordReset, "password-reset", 2),
-            (Kind::PasswordResetConfirmation, "password-changed", 2),
-            (Kind::AccountDeletion, "delete-account", 2),
-            (Kind::AccountDeletionConfirmation, "account-deleted", 2),
-        ] {
-            let message = maple_templates::render(
-                kind,
-                "Maple",
-                "Maple",
-                "support@trymaple.ai",
-                "CODE",
-                "https://trymaple.ai/verify-email/CODE",
-            );
+        for (email, expected) in every_account_email() {
+            let html = maple_message(email).html;
+            let campaign = expected.maple_campaign;
             for (path, content) in [("", "footer-home"), ("/privacy", "footer-privacy")] {
                 let href = format!(
                     "href=\"https://www.trymaple.ai{path}?utm_source=email&amp;utm_medium=email&amp;utm_campaign={campaign}&amp;utm_content={content}\""
                 );
-                assert!(message.html.contains(&href), "{href}");
+                assert!(html.contains(&href), "{href}");
             }
-            assert_eq!(message.html.matches("utm_campaign=").count(), tag_count);
-            assert!(!message.html.contains("mailto:support@trymaple.ai?utm_"));
-            assert!(!message.html.contains("x.com/trymapleai?utm_"));
-            assert!(!message.html.contains("MaplePrivacyLabs/Maple?utm_"));
-            assert!(!message.html.contains("verify-email/CODE?utm_"));
+            let tagged = if matches!(email, AccountEmail::Welcome) {
+                6
+            } else {
+                2
+            };
+            assert_eq!(html.matches("utm_campaign=").count(), tagged);
+            assert!(!html.contains("mailto:support@trymaple.ai?utm_"));
+            assert!(!html.contains("x.com/trymapleai?utm_"));
+            assert!(!html.contains("MaplePrivacyLabs/Maple?utm_"));
+            assert!(!html.contains(&format!("{VERIFY_URL}?utm_")));
+
+            // Images and the font load only from Maple's asset host.
+            assert!(!html.contains("googleapis") && !html.contains("gstatic"));
+            assert!(html.contains(&format!(
+                "src: url('{}manrope-variable.woff2') format('woff2')",
+                maple_templates::ASSET_BASE
+            )));
+            for src in html.split("src=\"").skip(1) {
+                assert!(src.starts_with(maple_templates::ASSET_BASE), "{src}");
+            }
         }
     }
 
     #[test]
-    fn account_mail_keeps_sender_reply_to_and_html_payload() {
-        use super::with_account_reply_to;
-        use resend_rs::types::CreateEmailBaseOptions;
-
-        let maple = maple_templates::render(
-            Kind::Welcome,
-            "Maple",
-            "Maple",
-            "support@trymaple.ai",
-            "",
-            "",
+    fn codes_stay_out_of_subjects_and_preview_text() {
+        // Inboxes, lock screens and watches show the subject and the hidden
+        // preview text, so a code may only appear in the message itself.
+        for (email, code) in [
+            (AccountEmail::PasswordReset { code: RESET_CODE }, RESET_CODE),
+            (
+                AccountEmail::AccountDeletion { code: DELETE_CODE },
+                DELETE_CODE,
+            ),
+        ] {
+            let message = maple_message(email);
+            assert!(!message.subject.contains(code));
+            assert_eq!(message.html.matches(code).count(), 1, "{code}");
+        }
+        // The verification code is also part of the verification link.
+        let message = maple_message(AccountEmail::Verification {
+            url: VERIFY_URL,
+            code: VERIFY_CODE,
+        });
+        assert!(!message.subject.contains(VERIFY_CODE));
+        assert_eq!(
+            message.html.matches(VERIFY_CODE).count(),
+            1 + message.html.matches(VERIFY_URL).count()
         );
+    }
+
+    #[test]
+    fn account_mail_keeps_sender_reply_to_and_html_payload() {
+        let maple = maple_message(AccountEmail::Welcome);
         let email = CreateEmailBaseOptions::new(
             sender("Maple", "hello@email.trymaple.ai"),
             ["you@example.com"],
@@ -1175,13 +1225,12 @@ mod tests {
         let hostile = "<Org \"x\" & '{{TEAM}}'>";
         let url = "https://example.test/path?x=\"<>&";
         let msg = maple_templates::render(
-            Kind::Verification,
+            AccountEmail::Verification { url, code: hostile },
             hostile,
             hostile,
             "help@example.test",
-            hostile,
-            url,
-        );
+        )
+        .unwrap();
         assert!(msg
             .html
             .contains("&lt;Org &quot;x&quot; &amp; &#x27;{{TEAM}}&#x27;&gt;"));
@@ -1191,43 +1240,6 @@ mod tests {
         assert!(!msg.html.contains(hostile));
         assert!(!msg.html.contains(url));
         assert!(!msg.html.contains("<Org"));
-    }
-
-    // The comparison script sets this to capture exactly what the Rust renderer
-    // emits. No Resend client or network call is involved.
-    #[test]
-    fn dump_maple_html_for_preview_comparison() {
-        let Some(path) = std::env::var_os("MAPLE_EMAIL_DUMP_DIR") else {
-            return;
-        };
-        std::fs::create_dir_all(&path).unwrap();
-        let samples = [
-            ("welcome", Kind::Welcome, "", ""),
-            ("verification", Kind::Verification, VERIFY_CODE, VERIFY_URL),
-            ("password-reset", Kind::PasswordReset, RESET_CODE, ""),
-            (
-                "password-reset-confirmation",
-                Kind::PasswordResetConfirmation,
-                "",
-                "",
-            ),
-            ("account-deletion", Kind::AccountDeletion, DELETE_CODE, ""),
-            (
-                "account-deletion-confirmation",
-                Kind::AccountDeletionConfirmation,
-                "",
-                "",
-            ),
-        ];
-        for (slug, kind, code, url) in samples {
-            let message =
-                maple_templates::render(kind, "Maple", "Maple", "support@trymaple.ai", code, url);
-            std::fs::write(
-                std::path::Path::new(&path).join(format!("{slug}.html")),
-                message.html,
-            )
-            .unwrap();
-        }
     }
 
     #[test]

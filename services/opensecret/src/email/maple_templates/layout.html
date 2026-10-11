@@ -7,7 +7,11 @@
 <meta name="color-scheme" content="light dark">
 <meta name="supported-color-schemes" content="light dark">
 <title>{{TITLE}}</title>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!--[if !mso]><!-->
+<style>
+  @font-face { font-family:'Manrope'; font-style:normal; font-weight:200 800; font-display:swap; src: url('{{ASSET_BASE}}manrope-variable.woff2') format('woff2'); }
+</style>
+<!--<![endif]-->
 <style>
   :root { color-scheme: light dark; supported-color-schemes: light dark; }
   body { margin:0; padding:0; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
