@@ -933,6 +933,17 @@ impl SessionManager {
             .map(|file| file.to_string_lossy().into_owned())
     }
 
+    /// The current branch alone, in memory: where drafts are tried before they are
+    /// added, as Pi previews a boundary's entries.
+    pub(crate) fn branch_copy(&self) -> SessionManager {
+        Self::from_parts(
+            self.header.clone(),
+            self.branch().into_iter().cloned().collect(),
+            Box::new(MemoryStore),
+            true,
+        )
+    }
+
     /// [`Self::fork`] into a file of its own in `dir`, named as [`Self::create_in`]
     /// names one, as Pi's `createBranchedSession` keeps a fork in the session's folder.
     pub fn fork_in(&mut self, leaf_id: Option<&str>, dir: &Path) -> Result<(), SessionError> {

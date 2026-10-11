@@ -19,7 +19,7 @@ use futures_util::FutureExt;
 use pi_agent_core::{
     AfterToolCall, AfterToolCallResult, Agent, AgentContext, AgentError, AgentEvent, AgentHooks,
     AgentListener, AgentMessage, AgentOptions, AgentTool, BeforeToolCall, BeforeToolCallResult,
-    QueueMode, ToolError, TurnContext, TurnUpdate,
+    QueueMode, ToolError, TurnContext, TurnDecision, TurnUpdate,
 };
 use pi_ai::transcript::current_system_message;
 use pi_ai::{
@@ -39,16 +39,17 @@ use crate::compaction::{
     summarize_branch,
 };
 use crate::extensions::{
-    AfterProviderResponse, AgentEventSeen, AgentSettled, AutocompleteItem, BeforeAgentStart,
-    BeforeForkResult, BeforeProviderHeaders, BeforeProviderRequest, BeforeSwitchResult,
-    CommandContext, CustomMessageDraft, Extension, ExtensionContext, ExtensionErrorReport,
-    ExtensionRunner, ExtensionUi, ForkPosition, Input, InputAction, InputSource, MessageEnd,
-    ModelSelect, ProviderStreamEvent, RegisteredTool, ResourcesDiscover, ResourcesDiscoverReason,
+    ActivityOutcome, AfterProviderResponse, AgentBeforeSettle, AgentEventSeen, AgentSettled,
+    AutocompleteItem, BeforeAgentStart, BeforeForkResult, BeforeProviderHeaders,
+    BeforeProviderRequest, BeforeSwitchResult, BoundaryContext, BoundaryDraft, CommandContext,
+    CustomMessageDraft, Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner,
+    ExtensionUi, ForkPosition, Input, InputAction, InputSource, MessageEnd, ModelSelect,
+    ProviderStreamEvent, RegisteredTool, ResourcesDiscover, ResourcesDiscoverReason,
     ResourcesDiscoverResult, SessionBeforeCompact, SessionBeforeFork, SessionBeforeSwitch,
     SessionBeforeTree, SessionCompact, SessionCompactFailed, SessionInfoChanged, SessionShutdown,
     SessionStart, SessionStartReason, SessionTree, SlashCommandInfo, SlashCommandSource,
     ThinkingLevelSelect, ToolCall, ToolInfo, ToolPrompt, ToolResult, TreePreparation, TreeSummary,
-    UserBash, UserBashResult,
+    TurnEnd, UserBash, UserBashResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -486,6 +487,12 @@ struct RunState {
     pending_bash: Vec<SessionMessage>,
     steering_texts: Vec<String>,
     follow_up_texts: Vec<String>,
+    /// How the latest turn went, which `agent_before_settle` reports.
+    outcome: ActivityOutcome,
+    /// The turns of the agent's current run so far, which `turn_end` counts.
+    turn_index: usize,
+    /// Entries a `turn_end` handler added, which the next turn's context must hold.
+    boundary_changed: bool,
 }
 
 pub(crate) struct SessionCore {
@@ -656,6 +663,54 @@ impl StreamFn for SessionStream {
         }
         self.inner.stream(model, context, options)
     }
+}
+
+/// Add `drafts` to `session` as Pi's `_applyBoundaryDrafts` does, and the entries they
+/// made; an error when one does not apply, such as an edit of an entry the branch
+/// does not hold.
+fn apply_drafts(
+    session: &mut SessionManager,
+    drafts: &[BoundaryDraft],
+) -> Result<Vec<SessionEntry>, String> {
+    let mut appended = Vec::new();
+    for draft in drafts.iter().cloned() {
+        let id = match draft {
+            BoundaryDraft::Custom { custom_type, data } => {
+                session.append_custom_entry(&custom_type, data)
+            }
+            BoundaryDraft::CustomMessage {
+                custom_type,
+                content,
+                display,
+                details,
+            } => session.append_custom_message(&custom_type, content, display, details),
+            BoundaryDraft::ContextEdit {
+                target_id,
+                replacement,
+            } => session
+                .append_context_edit(&target_id, replacement)
+                .map_err(|error| error.to_string())?,
+            BoundaryDraft::Compaction {
+                summary,
+                first_kept_entry_id,
+                details,
+                usage,
+            } => {
+                let tokens_before =
+                    estimate_projected_context_tokens(&session.projection(), &session.branch());
+                session.append_compaction(
+                    summary,
+                    first_kept_entry_id,
+                    tokens_before,
+                    details,
+                    usage,
+                    true,
+                )
+            }
+        };
+        appended.extend(session.entry(&id).cloned());
+    }
+    Ok(appended)
 }
 
 /// Where a fork at `entry_id` ends and the text it gives back to edit, as Pi's `fork`
@@ -2341,6 +2396,7 @@ impl SessionCore {
             let mut run = lock(&self.run);
             run.abort_requested = false;
             run.overflow_recovery_attempted = false;
+            run.boundary_changed = false;
         }
         self.sync_tools();
         let result = match self.agent.prompt(messages).await {
@@ -2381,14 +2437,209 @@ impl SessionCore {
         }
     }
 
-    /// Retry, compact or continue with queued messages until the run is really over.
+    /// Retry, compact or continue with queued messages until the run is really over,
+    /// then let extensions add to it before it settles, as Pi's run does.
     async fn after_run(self: &Arc<Self>) -> Result<(), AgentSessionError> {
         loop {
-            if self.abort_requested() || !self.handle_post_run().await || self.abort_requested() {
+            if self.abort_requested() {
+                return Ok(());
+            }
+            if self.handle_post_run().await {
+                if self.abort_requested() {
+                    return Ok(());
+                }
+                self.agent.continue_run().await?;
+                continue;
+            }
+            if self.abort_requested()
+                || !self.before_settle_boundary().await
+                || self.abort_requested()
+            {
                 return Ok(());
             }
             self.agent.continue_run().await?;
         }
+    }
+
+    /// The context as `drafts` would leave it, as Pi's `_buildBoundaryContext`; an
+    /// error when they would not apply. A turn's end can go on with queued messages; a
+    /// run about to settle only after a reply, which they then answer.
+    fn boundary_context(
+        &self,
+        drafts: &[BoundaryDraft],
+        before_settle: bool,
+    ) -> Result<BoundaryContext, String> {
+        let mut preview = lock(&self.session).branch_copy();
+        apply_drafts(&mut preview, drafts)?;
+        let projection = preview.projection();
+        let pending_custom = lock(&self.run).pending_custom.clone();
+        let mut pending_messages = self.agent.peek_queued_messages();
+        pending_messages.extend(pending_custom.iter().cloned());
+        let llm_messages = convert_to_llm(&projection.messages);
+        let ends_with_reply = matches!(llm_messages.last(), Some(Message::Assistant(_)));
+        let has_conversation = llm_messages
+            .iter()
+            .any(|message| !matches!(message, Message::System(_)));
+        let queued = self.agent.has_queued_messages();
+        let can_continue = (has_conversation && !ends_with_reply)
+            || !pending_custom.is_empty()
+            || if before_settle {
+                ends_with_reply && queued
+            } else {
+                queued
+            };
+        Ok(BoundaryContext {
+            context_entries: projection.entries,
+            context_messages: projection.messages,
+            llm_messages,
+            pending_messages,
+            can_continue,
+        })
+    }
+
+    /// Add what a boundary's handlers asked for to the session, and go on from it.
+    fn commit_drafts(&self, drafts: &[BoundaryDraft]) {
+        if drafts.is_empty() {
+            return;
+        }
+        let appended = apply_drafts(&mut lock(&self.session), drafts);
+        self.report_persistence();
+        self.rebuild_messages();
+        lock(&self.run).boundary_changed = true;
+        match appended {
+            Ok(entries) => {
+                for entry in entries {
+                    self.emit(AgentSessionEvent::EntryAppended { entry });
+                }
+            }
+            Err(error) => self.runner.report("<boundary>", "boundary", error),
+        }
+    }
+
+    fn report_invalid_continuation(&self, event: &'static str) {
+        self.runner.report(
+            "<boundary>",
+            event,
+            format!("{event} requested continuation without runnable model context"),
+        );
+    }
+
+    /// Ask `turn_end` handlers about the turn just ended, as Pi's
+    /// `_dispatchTurnEndBoundary`; true when they ask for one more request that has
+    /// something to answer.
+    async fn turn_end_boundary(
+        self: &Arc<Self>,
+        message: &AssistantMessage,
+        tool_results: &[pi_ai::ToolResultMessage],
+    ) -> bool {
+        let outcome = match message.stop_reason {
+            pi_ai::StopReason::Aborted => ActivityOutcome::Aborted,
+            pi_ai::StopReason::Error => ActivityOutcome::Error,
+            _ => ActivityOutcome::Completed,
+        };
+        let turn_index = {
+            let mut run = lock(&self.run);
+            run.outcome = outcome;
+            run.turn_index
+        };
+        if !self.runner.has::<TurnEnd>() {
+            return false;
+        }
+        let (message_entry_id, tool_result_entry_ids) = {
+            let session = lock(&self.session);
+            let branch = session.branch();
+            let entry_of = |message: &Message| {
+                branch.iter().rev().find_map(|entry| match &entry.kind {
+                    EntryKind::Message {
+                        message: SessionMessage::Llm(recorded),
+                    } if recorded == message => Some(entry.id.clone()),
+                    _ => None,
+                })
+            };
+            (
+                entry_of(&Message::Assistant(message.clone())),
+                tool_results
+                    .iter()
+                    .filter_map(|result| entry_of(&Message::ToolResult(result.clone())))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let Some(message_entry_id) = message_entry_id else {
+            self.runner.report(
+                "<boundary>",
+                "turn_end",
+                "turn_end could not resolve the persisted assistant entry ID",
+            );
+            return false;
+        };
+        let dispatch = self
+            .runner
+            .emit_boundary(
+                &self.weak,
+                |entries, continue_run, context| TurnEnd {
+                    turn_index,
+                    message: message.clone(),
+                    tool_results: tool_results.to_vec(),
+                    message_entry_id: message_entry_id.clone(),
+                    tool_result_entry_ids: tool_result_entry_ids.clone(),
+                    outcome,
+                    entries,
+                    continue_run,
+                    context,
+                },
+                |drafts| self.boundary_context(drafts, false),
+            )
+            .await;
+        self.commit_drafts(&dispatch.entries);
+        let runnable = self
+            .boundary_context(&[], false)
+            .is_ok_and(|context| context.can_continue);
+        if dispatch.continue_run && !runnable {
+            self.report_invalid_continuation("turn_end");
+            return false;
+        }
+        dispatch.continue_run
+    }
+
+    /// Ask `agent_before_settle` handlers before the run settles, as Pi's
+    /// `_runBeforeSettleBoundary`; true when the run goes on, for their request or for
+    /// queued messages.
+    async fn before_settle_boundary(self: &Arc<Self>) -> bool {
+        if !self.runner.has::<AgentBeforeSettle>() {
+            return self.agent.has_queued_messages();
+        }
+        let outcome = lock(&self.run).outcome;
+        let dispatch = self
+            .runner
+            .emit_boundary(
+                &self.weak,
+                |entries, continue_run, context| AgentBeforeSettle {
+                    outcome,
+                    entries,
+                    continue_run,
+                    context,
+                },
+                |drafts| self.boundary_context(drafts, true),
+            )
+            .await;
+        self.commit_drafts(&dispatch.entries);
+        // A run that goes on starts from the session again, with the entries in it.
+        lock(&self.run).boundary_changed = false;
+        self.flush_pending_custom();
+        if self.abort_requested() {
+            return false;
+        }
+        let should_continue = dispatch.continue_run || self.agent.has_queued_messages();
+        let runnable = self
+            .boundary_context(&[], true)
+            .is_ok_and(|context| context.can_continue);
+        if should_continue && !runnable {
+            if dispatch.continue_run {
+                self.report_invalid_continuation("agent_before_settle");
+            }
+            return false;
+        }
+        should_continue
     }
 
     /// Decide what follows a finished run, as Pi's `_handlePostAgentRun` does: a retry, a
@@ -3247,6 +3498,17 @@ impl AgentHooks<SessionMessage> for SessionHooks {
         }))
     }
 
+    async fn finish_turn(
+        &self,
+        turn: TurnContext<'_, SessionMessage>,
+        _cancel: &CancellationToken,
+    ) -> Option<TurnDecision> {
+        let core = self.core.upgrade()?;
+        core.turn_end_boundary(turn.message, turn.tool_results)
+            .await
+            .then_some(TurnDecision::Continue)
+    }
+
     async fn finalize_message(&self, message: SessionMessage) -> SessionMessage {
         match self.core.upgrade() {
             Some(core) if core.runner.has::<MessageEnd>() => {
@@ -3285,7 +3547,10 @@ impl AgentHooks<SessionMessage> for SessionHooks {
             .tools
             .iter()
             .map(|tool| tool.name()));
-        let context = if compacted {
+        // Entries a turn_end handler added are in the session, and so in the next
+        // request's context.
+        let boundary_changed = std::mem::take(&mut lock(&core.run).boundary_changed);
+        let context = if compacted || boundary_changed {
             Some(AgentContext::new(core.agent.messages(), tools))
         } else if tools_changed {
             Some(AgentContext::new(turn.context.messages.clone(), tools))
@@ -3349,6 +3614,8 @@ impl AgentListener<SessionMessage> for SessionListener {
                     core.emit_queue();
                 }
             }
+            AgentEvent::AgentStart => lock(&core.run).turn_index = 0,
+            AgentEvent::TurnEnd { .. } => lock(&core.run).turn_index += 1,
             AgentEvent::AgentEnd { messages } => {
                 let will_retry = core.will_retry(messages);
                 core.emit(AgentSessionEvent::AgentEnd {

@@ -28,8 +28,8 @@ use pi_agent_core::{
 };
 use pi_ai::transcript::current_system_message;
 use pi_ai::{
-    ClassifierModel, ClassifyFn, Content, ImageContent, Message, Model, StreamFn, ThinkingLevel,
-    Usage,
+    AssistantMessage, ClassifierModel, ClassifyFn, Content, ImageContent, Message, Model, StreamFn,
+    ThinkingLevel, ToolResultMessage, Usage,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -38,7 +38,7 @@ use crate::agent_session::{CompactionReason, SessionCore, StreamingBehavior};
 use crate::bash_executor::BashResult;
 use crate::compaction::{CompactionPreparation, CompactionResult};
 use crate::messages::SessionMessage;
-use crate::session::SessionEntry;
+use crate::session::{ProjectedEntry, SessionEntry};
 use crate::system_prompt::SystemPromptOptions;
 use crate::tools::BashOperations;
 
@@ -149,6 +149,103 @@ pub struct BeforeSwitchResult {
 #[derive(Clone, Debug)]
 pub struct SessionInfoChanged {
     pub name: Option<String>,
+}
+
+/// How the run that reached a boundary went, as Pi's `AgentActivityOutcome`: from the
+/// last reply's stop reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActivityOutcome {
+    #[default]
+    Completed,
+    Aborted,
+    Error,
+}
+
+/// An entry an extension asks to add at a boundary, as Pi's `SessionBoundaryDraft`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BoundaryDraft {
+    /// Extension state, never in the context.
+    Custom {
+        custom_type: String,
+        data: Option<Value>,
+    },
+    /// An extension message in the context.
+    CustomMessage {
+        custom_type: String,
+        content: Vec<Content>,
+        display: bool,
+        details: Option<Value>,
+    },
+    /// Replace an earlier entry's content in the context, or omit it with `None`.
+    ContextEdit {
+        target_id: String,
+        replacement: Option<Vec<Content>>,
+    },
+    /// A compaction the extension made. Without `first_kept_entry_id` it keeps no
+    /// earlier entry.
+    Compaction {
+        summary: String,
+        first_kept_entry_id: Option<String>,
+        details: Option<Value>,
+        usage: Option<Usage>,
+    },
+}
+
+/// The context as the drafts so far would leave it, as Pi's `BoundaryContextPreview`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BoundaryContext {
+    pub context_entries: Vec<ProjectedEntry>,
+    pub context_messages: Vec<SessionMessage>,
+    pub llm_messages: Vec<Message>,
+    /// Messages waiting to go in: the queued ones the next turn takes, and extension
+    /// messages.
+    pub pending_messages: Vec<SessionMessage>,
+    /// Whether another request would have something to answer.
+    pub can_continue: bool,
+}
+
+/// A turn ended, as Pi's `turn_end`: its reply and tool results are in the session.
+/// Handlers can add entries and ask for one more request even when nothing else
+/// would make one. Each sees what the handlers before it asked for.
+#[derive(Clone, Debug)]
+pub struct TurnEnd {
+    /// The turn's place in the run, counted from zero.
+    pub turn_index: usize,
+    pub message: AssistantMessage,
+    pub tool_results: Vec<ToolResultMessage>,
+    pub message_entry_id: String,
+    pub tool_result_entry_ids: Vec<String>,
+    pub outcome: ActivityOutcome,
+    /// The entries asked for so far.
+    pub entries: Vec<BoundaryDraft>,
+    /// Whether one more request was asked for so far.
+    pub continue_run: bool,
+    pub context: BoundaryContext,
+}
+
+/// A run is about to settle, as Pi's `agent_before_settle`: its retries and
+/// compactions are done. Handlers can add entries and ask for one more request.
+#[derive(Clone, Debug)]
+pub struct AgentBeforeSettle {
+    pub outcome: ActivityOutcome,
+    pub entries: Vec<BoundaryDraft>,
+    pub continue_run: bool,
+    pub context: BoundaryContext,
+}
+
+/// A boundary handler's answer, as Pi's `BoundaryResult`: `entries` replace those asked
+/// for so far, and `continue_run` whether one more request follows.
+#[derive(Clone, Debug, Default)]
+pub struct BoundaryResult {
+    pub entries: Option<Vec<BoundaryDraft>>,
+    pub continue_run: Option<bool>,
+}
+
+/// What the handlers at a boundary asked for, or nothing when their entries would
+/// not apply.
+pub(crate) struct BoundaryDispatch {
+    pub entries: Vec<BoundaryDraft>,
+    pub continue_run: bool,
 }
 
 /// A prompt's run, its retries and compactions are over, as Pi's `agent_settled`.
@@ -456,6 +553,8 @@ events! {
     SessionShutdown => (), "session_shutdown";
     SessionInfoChanged => (), "session_info_changed";
     AgentSettled => (), "agent_settled";
+    TurnEnd => BoundaryResult, "turn_end";
+    AgentBeforeSettle => BoundaryResult, "agent_before_settle";
     Input => InputAction, "input";
     BeforeAgentStart => BeforeAgentStartResult, "before_agent_start";
     AgentEventSeen => (), "agent_event";
@@ -1268,6 +1367,64 @@ impl ExtensionRunner {
             outcome.compaction = answer.compaction.or(outcome.compaction);
         }
         outcome
+    }
+
+    /// Ask the handlers of a boundary event in turn, as Pi's `emitBoundary`: `event`
+    /// makes the event from what was asked so far, and `context` previews it, which
+    /// fails when the entries would not apply. A failing preview is reported, and the
+    /// last decides: when it failed, nothing is asked for.
+    pub async fn emit_boundary<E>(
+        &self,
+        core: &Weak<SessionCore>,
+        event: impl Fn(Vec<BoundaryDraft>, bool, BoundaryContext) -> E,
+        context: impl Fn(&[BoundaryDraft]) -> Result<BoundaryContext, String>,
+    ) -> BoundaryDispatch
+    where
+        E: ExtensionEvent<Output = BoundaryResult>,
+    {
+        let mut entries = Vec::new();
+        let mut continue_run = false;
+        let mut preview = context(&entries).unwrap_or_default();
+        let mut valid = true;
+        for (extension, handler) in self.handlers::<E>() {
+            let current = event(entries.clone(), continue_run, preview.clone());
+            match handler(current, self.context(core, &extension)).await {
+                Ok(answer) => {
+                    if let Some(next) = answer.entries {
+                        entries = next;
+                    }
+                    if let Some(next) = answer.continue_run {
+                        continue_run = next;
+                    }
+                }
+                Err(error) => self.report(&extension, E::NAME, error),
+            }
+            match context(&entries) {
+                Ok(next) => {
+                    preview = next;
+                    valid = true;
+                }
+                Err(error) => {
+                    valid = false;
+                    self.report(
+                        &extension,
+                        E::NAME,
+                        format!("Invalid boundary entries: {error}"),
+                    );
+                }
+            }
+        }
+        if valid {
+            BoundaryDispatch {
+                entries,
+                continue_run,
+            }
+        } else {
+            BoundaryDispatch {
+                entries: Vec::new(),
+                continue_run: false,
+            }
+        }
     }
 
     pub async fn before_switch(
