@@ -510,6 +510,48 @@ impl HostPrompt {
     }
 }
 
+/// What an image becomes when images are blocked, as in Pi.
+const IMAGES_BLOCKED: &str = "Image reading is disabled.";
+
+/// `messages` with each image in a user message or a tool result replaced by a note,
+/// one note for images in a row, as Pi sends them with `images.blockImages`.
+fn block_images(messages: Vec<Message>) -> Vec<Message> {
+    let without_images = |content: Vec<Content>| {
+        if !content
+            .iter()
+            .any(|block| matches!(block, Content::Image(_)))
+        {
+            return content;
+        }
+        let mut kept: Vec<Content> = Vec::new();
+        for block in content {
+            let block = match block {
+                Content::Image(_) => Content::text(IMAGES_BLOCKED),
+                other => other,
+            };
+            let note = |block: &Content| matches!(block, Content::Text(text) if text.text == IMAGES_BLOCKED);
+            if !(note(&block) && kept.last().is_some_and(note)) {
+                kept.push(block);
+            }
+        }
+        kept
+    };
+    messages
+        .into_iter()
+        .map(|message| match message {
+            Message::User(mut user) => {
+                user.content = without_images(user.content);
+                Message::User(user)
+            }
+            Message::ToolResult(mut result) => {
+                result.content = without_images(result.content);
+                Message::ToolResult(result)
+            }
+            other => other,
+        })
+        .collect()
+}
+
 /// The session's own requests go out through this, as Pi's session stream function
 /// sends them, with [`SessionCore::request_options`]. Compaction and summaries go to
 /// the models directly, as in Pi.
@@ -2090,13 +2132,13 @@ impl SessionCore {
         last: &AssistantMessage,
         skip_aborted: bool,
     ) -> bool {
-        let settings = lock(&self.settings).compaction.clone();
-        if !settings.enabled || (skip_aborted && last.stop_reason == pi_ai::StopReason::Aborted) {
-            return false;
-        }
         let Some(model) = self.model() else {
             return false;
         };
+        let settings = lock(&self.settings).compaction.for_model(Some(&model));
+        if !settings.enabled || (skip_aborted && last.stop_reason == pi_ai::StopReason::Aborted) {
+            return false;
+        }
         let same_model = last.provider == model.provider && last.model == model.id;
         let (stale, edited_after) = {
             let session = lock(&self.session);
@@ -2313,7 +2355,10 @@ impl SessionCore {
             let session = lock(&self.session);
             let branch = session.branch();
             (
-                prepare_compaction(&branch, &settings.compaction),
+                prepare_compaction(
+                    &branch,
+                    &settings.compaction.for_model(self.model().as_ref()),
+                ),
                 branch.into_iter().cloned().collect::<Vec<_>>(),
             )
         };
@@ -2792,7 +2837,12 @@ fn force_prompt(messages: &mut [SessionMessage], prompt: &str) {
 #[async_trait]
 impl AgentHooks<SessionMessage> for SessionHooks {
     async fn convert_to_llm(&self, messages: &[SessionMessage]) -> Vec<Message> {
-        convert_to_llm(messages)
+        let converted = convert_to_llm(messages);
+        // Read for each request, so a change during the session applies to the next.
+        match self.core.upgrade() {
+            Some(core) if lock(&core.settings).images.block_images => block_images(converted),
+            _ => converted,
+        }
     }
 
     async fn transform_context(
@@ -2895,7 +2945,7 @@ impl AgentHooks<SessionMessage> for SessionHooks {
         // Extension messages queued during the turn go in now, after its tool results.
         let mut messages = std::mem::take(&mut lock(&core.run).pending_custom);
         let model = core.model()?;
-        let settings = lock(&core.settings).compaction.clone();
+        let settings = lock(&core.settings).compaction.for_model(Some(&model));
         let tokens = core.context_tokens();
         // A long tool loop can outgrow the context within one run. An aborted run ends
         // with its next request, so it is not compacted first.

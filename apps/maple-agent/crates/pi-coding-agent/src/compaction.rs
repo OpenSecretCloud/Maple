@@ -5,7 +5,7 @@
 //! summarized separately. The summary and the kept entries replace everything before
 //! them in the context, while the session keeps the full history.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use pi_agent_core::AgentMessage;
@@ -28,10 +28,24 @@ pub struct CompactionSettings {
     /// Room kept free for the response and the summary request.
     pub reserve_tokens: u64,
     pub keep_recent_tokens: u64,
+    /// Token settings for particular models, by `provider/model-id`, as Pi's
+    /// `modelOverrides`; see [`CompactionSettings::for_model`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_overrides: BTreeMap<String, CompactionModelOverride>,
     /// Tools whose `path` argument a model reads, for the file lists kept in summaries.
     pub read_tools: Vec<String>,
     /// Tools whose `path` argument a model changes.
     pub write_tools: Vec<String>,
+}
+
+/// One model's own compaction token settings; what it leaves out follows the others.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CompactionModelOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserve_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_recent_tokens: Option<u64>,
 }
 
 impl Default for CompactionSettings {
@@ -40,9 +54,28 @@ impl Default for CompactionSettings {
             enabled: true,
             reserve_tokens: 16_384,
             keep_recent_tokens: 20_000,
+            model_overrides: BTreeMap::new(),
             read_tools: vec!["read".into()],
             write_tools: vec!["write".into(), "edit".into()],
         }
+    }
+}
+
+impl CompactionSettings {
+    /// The settings for `model`: its own token settings over the others, as Pi's
+    /// `getCompactionSettings` resolves them.
+    pub fn for_model(&self, model: Option<&Model>) -> CompactionSettings {
+        let mut settings = self.clone();
+        let entry = model.and_then(|model| {
+            self.model_overrides
+                .get(&format!("{}/{}", model.provider, model.id))
+        });
+        if let Some(entry) = entry {
+            settings.reserve_tokens = entry.reserve_tokens.unwrap_or(self.reserve_tokens);
+            settings.keep_recent_tokens =
+                entry.keep_recent_tokens.unwrap_or(self.keep_recent_tokens);
+        }
+        settings
     }
 }
 

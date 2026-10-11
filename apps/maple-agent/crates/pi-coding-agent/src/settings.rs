@@ -73,11 +73,16 @@ const DEFAULT_HTTP_IDLE_TIMEOUT_MS: u64 = 300_000;
 pub struct ImageSettings {
     /// Resize images the `read` tool sends so they fit inline image limits.
     pub auto_resize: bool,
+    /// Send no images to the model: each becomes a note that image reading is disabled.
+    pub block_images: bool,
 }
 
 impl Default for ImageSettings {
     fn default() -> Self {
-        Self { auto_resize: true }
+        Self {
+            auto_resize: true,
+            block_images: false,
+        }
     }
 }
 

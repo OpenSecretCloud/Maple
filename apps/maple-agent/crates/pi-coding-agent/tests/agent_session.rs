@@ -1846,3 +1846,68 @@ async fn the_sessions_requests_carry_its_id_and_provider_settings() {
     assert_eq!(options.max_retries, Some(2));
     assert_eq!(options.max_retry_delay_ms, Some(0));
 }
+
+#[tokio::test]
+async fn blocked_images_reach_the_model_as_a_note() {
+    use base64::Engine;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let image = ImageContent {
+        data: base64::engine::general_purpose::STANDARD.encode(png),
+        mime_type: "image/png".into(),
+    };
+    let harness = Harness::new();
+    harness.faux.push_text("one");
+    let mut options = harness.options();
+    options.settings.images.block_images = true;
+    let session = AgentSession::new(options).await.unwrap();
+    let prompt = PromptOptions {
+        images: vec![image.clone(), image],
+        ..PromptOptions::default()
+    };
+    session.prompt("Look", prompt).await.unwrap();
+
+    let request = &harness.faux.requests()[0];
+    let Some(Message::User(sent)) = request.context.messages.last() else {
+        panic!("{:?}", request.context.messages.last())
+    };
+    // Two images in a row become one note.
+    assert_eq!(
+        sent.content,
+        [
+            Content::text("Look"),
+            Content::text("Image reading is disabled.")
+        ]
+    );
+    // The session keeps them.
+    let kept = session
+        .messages()
+        .into_iter()
+        .find_map(|message| match message {
+            pi_coding_agent::SessionMessage::Llm(Message::User(user)) => Some(user),
+            _ => None,
+        });
+    assert_eq!(kept.unwrap().content.len(), 3);
+}
+
+#[test]
+fn a_model_can_have_its_own_compaction_token_settings() {
+    let settings: pi_coding_agent::settings::Settings = serde_json::from_value(json!({
+        "compaction": {
+            "reserveTokens": 1000,
+            "keepRecentTokens": 2000,
+            "modelOverrides": { "faux/faux-1": { "keepRecentTokens": 50 } }
+        }
+    }))
+    .unwrap();
+    let model = FauxProvider::default_model();
+    let own = settings.compaction.for_model(Some(&model));
+    assert_eq!((own.reserve_tokens, own.keep_recent_tokens), (1000, 50));
+    let other = settings.compaction.for_model(None);
+    assert_eq!(
+        (other.reserve_tokens, other.keep_recent_tokens),
+        (1000, 2000)
+    );
+}
