@@ -607,8 +607,30 @@ pub struct Model {
     /// sends nothing; `xhigh` and `max` must be listed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub thinking_levels: BTreeMap<ThinkingLevel, Option<String>>,
+    /// Headers sent with every request for this model, under the request's own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Sampling parameters for every request, merged in after the named fields.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub sampling_params: SamplingParams,
+    /// Sampling parameters for the thinking level a request runs at, over
+    /// `sampling_params`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sampling_params_by_thinking_level: BTreeMap<ThinkingLevel, SamplingParams>,
     #[serde(default)]
     pub compat: ModelCompat,
+}
+
+/// Request parameters a provider does not name, such as `top_p` or `top_k`. They go
+/// into the request body as they are.
+pub type SamplingParams = Map<String, Value>;
+
+/// Whether a model may call tools in a response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolChoice {
+    Auto,
+    None,
 }
 
 impl Model {

@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -17,14 +18,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::constrained::{make_strict_json_schema, resolve_strict_sampling};
 use crate::estimate::clamp_max_tokens_to_context;
-use crate::provider::{StreamFn, StreamOptions};
+use crate::provider::{ProviderEventHook, ProviderResponse, StreamFn, StreamOptions};
+use crate::provider_retry::RequestFailure;
 use crate::stream::{AssistantMessageBuilder, AssistantMessageStream};
 use crate::transcript::{
     collapse_system_messages, current_tools, render_system_message_update, system_message_text,
 };
 use crate::types::{
     AssistantContent, AssistantMessage, Content, Context, MaxTokensField, Message, Model,
-    SessionAffinityFormat, StopReason, ThinkingLevel, Tool, ToolResultMessage, Usage,
+    SamplingParams, SessionAffinityFormat, StopReason, ThinkingLevel, Tool, ToolResultMessage,
+    Usage,
 };
 
 pub const API: &str = "openai-completions";
@@ -44,6 +47,8 @@ pub struct HttpRequest {
 /// A response whose body arrives as a stream.
 pub struct HttpResponse {
     pub status: u16,
+    /// The response headers. Retries and response hooks read them.
+    pub headers: Vec<(String, String)>,
     pub body: BoxStream<'static, Result<Bytes, String>>,
 }
 
@@ -104,10 +109,13 @@ async fn run(
     transport: Arc<dyn HttpTransport>,
     model: &Model,
     context: Context,
-    options: StreamOptions,
+    mut options: StreamOptions,
     builder: AssistantMessageBuilder,
 ) {
     let cancel = options.cancel.clone();
+    if let Some(hook) = options.transform_headers.clone() {
+        options.headers = hook(std::mem::take(&mut options.headers)).await;
+    }
     let mut body = match build_request_body(model, &context, &options) {
         Ok(body) => body,
         Err(error) => {
@@ -123,35 +131,106 @@ async fn run(
         headers: request_headers(model, &options),
         body: serde_json::to_vec(&body).unwrap_or_default(),
     };
-    let response = tokio::select! {
-        _ = cancel.cancelled() => {
-            builder.fail(StopReason::Aborted, ABORTED);
+    let response = match send(transport.as_ref(), request, &options).await {
+        Ok(response) => response,
+        Err((stop_reason, error)) => {
+            builder.fail(stop_reason, error);
             return;
         }
-        response = transport.post(request, cancel.clone()) => response,
+    };
+    if let Some(hook) = &options.on_response {
+        let headers = response
+            .headers
+            .iter()
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
+            .collect();
+        hook(ProviderResponse {
+            status: response.status,
+            headers,
+        })
+        .await;
+    }
+    let on_event = options.on_provider_stream_event.as_ref();
+    read_events(model, response.body, builder, &cancel, on_event).await;
+}
+
+/// How long a response may take to start when the request does not say, as the OpenAI
+/// SDK waits.
+const DEFAULT_TIMEOUT_MS: u64 = 600_000;
+
+/// The OpenAI SDK's error for a response that did not start in time.
+const TIMED_OUT: &str = "Request timed out.";
+
+/// Pi's error for a request stopped while it waited to be sent again.
+const RETRY_ABORTED: &str = "Request aborted";
+
+/// Send `request` until a response starts, again after a failure as the options allow,
+/// as Pi sends one through `retryProviderRequest`. An error status ends with the
+/// provider's error.
+async fn send(
+    transport: &dyn HttpTransport,
+    request: HttpRequest,
+    options: &StreamOptions,
+) -> Result<HttpResponse, (StopReason, String)> {
+    let max_retries = options.max_retries.unwrap_or(0);
+    let mut retry_index = 0;
+    loop {
+        let failure = match attempt(transport, request.clone(), options).await? {
+            Ok(response) => return Ok(response),
+            Err(failure) => failure,
+        };
+        if retry_index >= max_retries || !failure.is_retryable() {
+            return Err((StopReason::Error, failure.message));
+        }
+        let delay = failure
+            .retry_delay(retry_index, options.max_retry_delay_ms)
+            .map_err(|error| (StopReason::Error, error))?;
+        retry_index += 1;
+        tokio::select! {
+            _ = options.cancel.cancelled() => {
+                return Err((StopReason::Aborted, RETRY_ABORTED.to_string()));
+            }
+            _ = tokio::time::sleep(delay) => {}
+        }
+    }
+}
+
+/// Send `request` once. It fails with an error status, or when no response starts.
+async fn attempt(
+    transport: &dyn HttpTransport,
+    request: HttpRequest,
+    options: &StreamOptions,
+) -> Result<Result<HttpResponse, RequestFailure>, (StopReason, String)> {
+    let cancel = &options.cancel;
+    let aborted = || (StopReason::Aborted, ABORTED.to_string());
+    // A timeout reaches the transport as the cancellation of this request alone.
+    let request_cancel = cancel.child_token();
+    let timeout = Duration::from_millis(options.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let response = tokio::select! {
+        _ = cancel.cancelled() => return Err(aborted()),
+        _ = tokio::time::sleep(timeout) => {
+            request_cancel.cancel();
+            return Ok(Err(RequestFailure::without_response(TIMED_OUT)));
+        }
+        response = transport.post(request, request_cancel.clone()) => response,
     };
     let response = match response {
         Ok(response) => response,
-        Err(error) => {
-            builder.fail(StopReason::Error, error);
-            return;
-        }
+        Err(error) => return Ok(Err(RequestFailure::without_response(error))),
     };
-    if !(200..300).contains(&response.status) {
-        let text = tokio::select! {
-            _ = cancel.cancelled() => {
-                builder.fail(StopReason::Aborted, ABORTED);
-                return;
-            }
-            text = read_error_body(response.body) => text,
-        };
-        builder.fail(
-            StopReason::Error,
-            http_error_message(response.status, &text),
-        );
-        return;
+    if (200..300).contains(&response.status) {
+        return Ok(Ok(response));
     }
-    read_events(model, response.body, builder, &cancel).await;
+    let text = tokio::select! {
+        _ = cancel.cancelled() => return Err(aborted()),
+        text = read_error_body(response.body) => text,
+    };
+    Ok(Err(RequestFailure {
+        status: Some(response.status),
+        headers: response.headers,
+        message: http_error_message(response.status, &text),
+        sdk_message: sdk_error(response.status, &text).0,
+    }))
 }
 
 fn request_headers(model: &Model, options: &StreamOptions) -> Vec<(String, String)> {
@@ -161,6 +240,10 @@ fn request_headers(model: &Model, options: &StreamOptions) -> Vec<(String, Strin
     ];
     if let Some(key) = &options.api_key {
         headers.push(("authorization".to_string(), format!("Bearer {key}")));
+    }
+    // The model's headers, the session's, then the request's own, each over the last.
+    for (name, value) in &model.headers {
+        set_header(&mut headers, name, Some(value));
     }
     if model.compat.send_session_affinity_headers
         && let Some(session_id) = session_id(options)
@@ -174,17 +257,22 @@ fn request_headers(model: &Model, options: &StreamOptions) -> Vec<(String, Strin
             }
             SessionAffinityFormat::OpenRouter => &["x-session-id"],
         };
-        headers.extend(
-            names
-                .iter()
-                .map(|name| (name.to_string(), session_id.to_string())),
-        );
+        for name in names {
+            set_header(&mut headers, name, Some(session_id));
+        }
     }
     for (name, value) in &options.headers {
-        headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
-        headers.push((name.clone(), value.clone()));
+        set_header(&mut headers, name, value.as_deref());
     }
     headers
+}
+
+/// Set a header, replacing any of the same name; `None` removes it.
+fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: Option<&str>) {
+    headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+    if let Some(value) = value {
+        headers.push((name.to_string(), value.to_string()));
+    }
 }
 
 /// How much of an error body is read for the message.
@@ -209,17 +297,10 @@ const ERROR_BODY_CHARS: usize = 4_000;
 /// error: the status and the provider's whole error object, or the body text when it is
 /// not JSON, followed by OpenRouter's `metadata.raw`.
 fn http_error_message(status: u16, text: &str) -> String {
-    // The SDK keeps the body's `error` field, or the whole body when it has none.
-    let error = match serde_json::from_str::<Value>(text) {
-        Ok(Value::Object(body)) => {
-            let inner = body.get("error").filter(|error| !error.is_null()).cloned();
-            inner.unwrap_or(Value::Object(body))
-        }
-        Ok(list @ Value::Array(_)) => list,
-        _ if text.is_empty() => return format!("{status} status code (no body)"),
-        _ => return format!("{status} {text}"),
+    let (message, error) = sdk_error(status, text);
+    let Some(error) = error else {
+        return message;
     };
-    let message = format!("{status} {}", error_object_message(&error));
     let message = match error.as_object().filter(|object| !object.is_empty()) {
         Some(_) => {
             let body = truncate_error_text(&error.to_string());
@@ -232,6 +313,24 @@ fn http_error_message(status: u16, text: &str) -> String {
         None => message,
     };
     with_raw_metadata(message, &error)
+}
+
+/// The OpenAI SDK's message for an error response, and the error object it keeps: the
+/// body's `error` field, or the whole body when it has none.
+fn sdk_error(status: u16, text: &str) -> (String, Option<Value>) {
+    let error = match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(body)) => {
+            let inner = body.get("error").filter(|error| !error.is_null()).cloned();
+            inner.unwrap_or(Value::Object(body))
+        }
+        Ok(list @ Value::Array(_)) => list,
+        _ if text.is_empty() => return (format!("{status} status code (no body)"), None),
+        _ => return (format!("{status} {text}"), None),
+    };
+    (
+        format!("{status} {}", error_object_message(&error)),
+        Some(error),
+    )
 }
 
 /// The SDK's text for an error object: its `message`, or the object as JSON.
@@ -367,13 +466,34 @@ pub fn build_request_body(
             .collect::<Result<Vec<Value>, String>>()?;
         body.insert("tools".into(), Value::Array(tools));
     }
+    if let Some(choice) = options.tool_choice {
+        body.insert("tool_choice".into(), json!(choice));
+    }
     let level = options.reasoning.unwrap_or(ThinkingLevel::Off);
     if compat.supports_reasoning_effort
         && let Some(effort) = model.provider_thinking_value(level)
     {
         body.insert("reasoning_effort".into(), json!(effort));
     }
+    // Last, so sampling parameters override the named fields.
+    let level = model.clamp_thinking_level(level);
+    body.extend(sampling_params(model, level, &options.sampling_params));
     Ok(Value::Object(body))
+}
+
+/// The model's sampling parameters, its parameters for `level` over them, and the
+/// request's over both.
+fn sampling_params(
+    model: &Model,
+    level: ThinkingLevel,
+    request: &SamplingParams,
+) -> SamplingParams {
+    let mut params = model.sampling_params.clone();
+    if let Some(for_level) = model.sampling_params_by_thinking_level.get(&level) {
+        params.extend(for_level.clone());
+    }
+    params.extend(request.clone());
+    params
 }
 
 /// Make a transcript replayable: drop failed responses, answer every tool call exactly
@@ -650,6 +770,7 @@ async fn read_events(
     mut body: BoxStream<'static, Result<Bytes, String>>,
     mut builder: AssistantMessageBuilder,
     cancel: &CancellationToken,
+    on_event: Option<&ProviderEventHook>,
 ) {
     let mut decoder = Utf8Decoder::default();
     let mut events = EventReader::default();
@@ -694,6 +815,9 @@ async fn read_events(
                 let message = with_raw_metadata(error_object_message(error), error);
                 builder.fail(StopReason::Error, message);
                 return;
+            }
+            if let Some(hook) = on_event {
+                hook(chunk.clone()).await;
             }
             apply_chunk(model, &chunk, &mut builder, &mut state);
         }
@@ -1020,11 +1144,20 @@ impl HttpTransport for ReqwestTransport {
         }
         let response = builder.send().await.map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_string())))
+            .collect();
         let body = response
             .bytes_stream()
             .map(|chunk| chunk.map_err(|error| error.to_string()))
             .boxed();
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -1032,7 +1165,8 @@ impl HttpTransport for ReqwestTransport {
 mod tests {
     use super::*;
     use crate::overflow::{is_context_overflow, is_retryable_error};
-    use crate::types::{SystemMessage, ThinkingContent, Tool, UserMessage};
+    use crate::types::{SystemMessage, ThinkingContent, Tool, ToolChoice, UserMessage};
+    use futures_util::FutureExt;
     use std::sync::Mutex;
 
     /// Replies with canned SSE chunks and records each request.
@@ -1057,6 +1191,7 @@ mod tests {
                 .collect();
             Ok(HttpResponse {
                 status: self.status,
+                headers: Vec::new(),
                 body: futures_util::stream::iter(chunks).boxed(),
             })
         }
@@ -1261,12 +1396,339 @@ mod tests {
 
         // A request's own headers win.
         let overridden = StreamOptions {
-            headers: [("X-Session-Id".to_string(), "mine".to_string())].into(),
+            headers: [("X-Session-Id".to_string(), Some("mine".to_string()))].into(),
             ..options
         };
         let headers = request_headers(&model, &overridden);
         assert!(headers.contains(&("X-Session-Id".into(), "mine".into())));
         assert!(!headers.iter().any(|(name, _)| name == "x-session-id"));
+    }
+
+    #[test]
+    fn the_models_headers_come_under_the_requests_and_a_request_can_remove_one() {
+        let mut model = model();
+        model.headers = [
+            ("X-Team".to_string(), "core".to_string()),
+            ("X-Trace".to_string(), "model".to_string()),
+        ]
+        .into();
+        let options = StreamOptions {
+            api_key: Some("key".into()),
+            headers: [
+                ("x-trace".to_string(), Some("request".to_string())),
+                ("Authorization".to_string(), None),
+            ]
+            .into(),
+            ..StreamOptions::default()
+        };
+        let headers = request_headers(&model, &options);
+        assert!(headers.contains(&("X-Team".into(), "core".into())));
+        assert!(headers.contains(&("x-trace".into(), "request".into())));
+        let traces = headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("x-trace"))
+            .count();
+        assert_eq!(traces, 1);
+        assert!(!headers.iter().any(|(name, _)| name == "authorization"));
+    }
+
+    #[tokio::test]
+    async fn a_header_hook_rewrites_the_requests_own_headers() {
+        let transport = transport(200, vec![REPLY]);
+        let options = StreamOptions {
+            headers: [("X-Keep".to_string(), Some("1".to_string()))].into(),
+            transform_headers: Some(Arc::new(|mut headers| {
+                headers.insert("X-Added".into(), Some("2".into()));
+                async move { headers }.boxed()
+            })),
+            ..StreamOptions::default()
+        };
+        let reply = OpenAiCompletions::new(transport.clone())
+            .stream(&model(), Context::default(), options)
+            .result()
+            .await;
+        assert_eq!(reply.text(), "hi");
+        let headers = transport.requests.lock().unwrap()[0].headers.clone();
+        assert!(headers.contains(&("X-Keep".into(), "1".into())));
+        assert!(headers.contains(&("X-Added".into(), "2".into())));
+    }
+
+    #[test]
+    fn tool_choice_and_sampling_parameters_reach_the_body() {
+        let mut model = model();
+        model.thinking_levels = [(ThinkingLevel::High, Some("high".into()))].into();
+        model.sampling_params = json!({ "top_p": 0.9, "top_k": 40 })
+            .as_object()
+            .unwrap()
+            .clone();
+        model.sampling_params_by_thinking_level = [(
+            ThinkingLevel::High,
+            json!({ "top_k": 20, "temperature": 1.0 })
+                .as_object()
+                .unwrap()
+                .clone(),
+        )]
+        .into();
+        let options = StreamOptions {
+            temperature: Some(0.2),
+            tool_choice: Some(ToolChoice::None),
+            reasoning: Some(ThinkingLevel::High),
+            sampling_params: json!({ "min_p": 0.05, "top_p": 0.8 })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ..StreamOptions::default()
+        };
+        let body = build_request_body(&model, &Context::default(), &options).unwrap();
+        assert_eq!(body["tool_choice"], "none");
+        // The level's parameters over the model's, the request's over both, and all of
+        // them over the named fields.
+        assert_eq!(body["top_p"], 0.8);
+        assert_eq!(body["top_k"], 20);
+        assert_eq!(body["min_p"], 0.05);
+        assert_eq!(body["temperature"], 1.0);
+
+        // A level the request does not run at adds nothing.
+        let options = StreamOptions {
+            temperature: Some(0.2),
+            ..StreamOptions::default()
+        };
+        let body = build_request_body(&model, &Context::default(), &options).unwrap();
+        assert_eq!(body["top_k"], 40);
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body.get("tool_choice"), None);
+    }
+
+    /// What a [`SequenceTransport`] answers a request with.
+    enum Reply {
+        Status(u16, Vec<(&'static str, &'static str)>, &'static str),
+        Fail(&'static str),
+        Hang,
+    }
+
+    /// Answers each request with the next reply, and records the requests and their
+    /// cancellation tokens.
+    #[derive(Default)]
+    struct SequenceTransport {
+        replies: Mutex<std::collections::VecDeque<Reply>>,
+        cancels: Mutex<Vec<CancellationToken>>,
+    }
+
+    impl SequenceTransport {
+        fn new(replies: Vec<Reply>) -> Arc<Self> {
+            Arc::new(Self {
+                replies: Mutex::new(replies.into()),
+                cancels: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn requests(&self) -> usize {
+            self.cancels.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl HttpTransport for SequenceTransport {
+        async fn post(
+            &self,
+            _request: HttpRequest,
+            cancel: CancellationToken,
+        ) -> Result<HttpResponse, String> {
+            self.cancels.lock().unwrap().push(cancel);
+            let reply = self.replies.lock().unwrap().pop_front();
+            match reply.expect("an unexpected request") {
+                Reply::Status(status, headers, body) => Ok(HttpResponse {
+                    status,
+                    headers: headers
+                        .into_iter()
+                        .map(|(name, value)| (name.to_string(), value.to_string()))
+                        .collect(),
+                    body: futures_util::stream::iter([Ok(Bytes::from_static(body.as_bytes()))])
+                        .boxed(),
+                }),
+                Reply::Fail(error) => Err(error.to_string()),
+                Reply::Hang => std::future::pending().await,
+            }
+        }
+    }
+
+    const REPLY: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
+    const RATE_LIMITED: Reply = Reply::Status(
+        429,
+        vec![],
+        "{\"error\":{\"message\":\"Too many requests\"}}",
+    );
+
+    /// How a rate limit's response fails: with the status and the provider's error.
+    const TOO_MANY: &str = "429: {\"message\":\"Too many requests\"}";
+
+    fn rate_limited(retry_after_ms: &'static str) -> Reply {
+        Reply::Status(
+            429,
+            vec![("Retry-After-Ms", retry_after_ms)],
+            "{\"error\":{\"message\":\"Too many requests\"}}",
+        )
+    }
+
+    async fn reply_with(
+        transport: Arc<SequenceTransport>,
+        options: StreamOptions,
+    ) -> AssistantMessage {
+        OpenAiCompletions::new(transport)
+            .stream(&model(), Context::default(), options)
+            .result()
+            .await
+    }
+
+    fn retries(count: u32) -> StreamOptions {
+        StreamOptions {
+            max_retries: Some(count),
+            ..StreamOptions::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_requests_are_sent_again_when_retries_are_set() {
+        let transport = SequenceTransport::new(vec![
+            rate_limited("1"),
+            Reply::Fail("connection reset"),
+            Reply::Status(200, vec![], REPLY),
+        ]);
+        let reply = reply_with(transport.clone(), retries(2)).await;
+        assert_eq!(
+            reply.stop_reason,
+            StopReason::Stop,
+            "{:?}",
+            reply.error_message
+        );
+        assert_eq!(reply.text(), "hi");
+        assert_eq!(transport.requests(), 3);
+
+        // Without retries, the first failure is the response's.
+        let transport = SequenceTransport::new(vec![rate_limited("1")]);
+        let reply = reply_with(transport.clone(), StreamOptions::default()).await;
+        assert_eq!(reply.error_message.as_deref(), Some(TOO_MANY));
+        assert_eq!(transport.requests(), 1);
+
+        // Retries run out on the last failure.
+        let transport = SequenceTransport::new(vec![rate_limited("1"), rate_limited("1")]);
+        let reply = reply_with(transport.clone(), retries(1)).await;
+        assert_eq!(reply.error_message.as_deref(), Some(TOO_MANY));
+        assert_eq!(transport.requests(), 2);
+
+        // A request the server refuses is not sent again.
+        let transport = SequenceTransport::new(vec![Reply::Status(
+            400,
+            vec![],
+            "{\"error\":{\"message\":\"bad request\"}}",
+        )]);
+        let reply = reply_with(transport.clone(), retries(3)).await;
+        assert_eq!(
+            reply.error_message.as_deref(),
+            Some("400: {\"message\":\"bad request\"}")
+        );
+        assert_eq!(transport.requests(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_server_asking_too_long_a_wait_fails_the_request_at_once() {
+        let transport = SequenceTransport::new(vec![Reply::Status(
+            429,
+            vec![("retry-after", "300")],
+            "{\"error\":{\"message\":\"Too many requests\"}}",
+        )]);
+        let reply = reply_with(transport.clone(), retries(3)).await;
+        assert_eq!(reply.stop_reason, StopReason::Error);
+        assert_eq!(
+            reply.error_message.as_deref(),
+            Some("Server requested 300s retry delay (max: 60s). 429 Too many requests")
+        );
+        assert_eq!(transport.requests(), 1);
+        // Such a reply is retried by the session instead.
+        assert!(is_retryable_error(&reply));
+    }
+
+    #[tokio::test]
+    async fn stopping_while_waiting_to_retry_aborts_the_request() {
+        let transport = SequenceTransport::new(vec![RATE_LIMITED]);
+        let cancel = CancellationToken::new();
+        let options = StreamOptions {
+            max_retries: Some(1),
+            cancel: cancel.clone(),
+            ..StreamOptions::default()
+        };
+        let stream =
+            OpenAiCompletions::new(transport.clone()).stream(&model(), Context::default(), options);
+        // The backoff for a first retry is at least 375 milliseconds.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel.cancel();
+        let reply = stream.result().await;
+        assert_eq!(reply.stop_reason, StopReason::Aborted);
+        assert_eq!(reply.error_message.as_deref(), Some("Request aborted"));
+        assert_eq!(transport.requests(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_response_that_does_not_start_in_time_fails_or_is_retried() {
+        let transport = SequenceTransport::new(vec![Reply::Hang]);
+        let options = StreamOptions {
+            timeout_ms: Some(20),
+            ..StreamOptions::default()
+        };
+        let reply = reply_with(transport.clone(), options).await;
+        assert_eq!(reply.stop_reason, StopReason::Error);
+        assert_eq!(reply.error_message.as_deref(), Some("Request timed out."));
+        assert!(is_retryable_error(&reply));
+        // The transport sees the timeout as its request's cancellation.
+        assert!(transport.cancels.lock().unwrap()[0].is_cancelled());
+
+        let transport =
+            SequenceTransport::new(vec![Reply::Hang, Reply::Status(200, vec![], REPLY)]);
+        let options = StreamOptions {
+            timeout_ms: Some(20),
+            max_retries: Some(1),
+            ..StreamOptions::default()
+        };
+        let reply = reply_with(transport.clone(), options).await;
+        assert_eq!(reply.text(), "hi");
+        assert_eq!(transport.requests(), 2);
+    }
+
+    #[tokio::test]
+    async fn hooks_see_the_response_and_each_streamed_event() {
+        let responses = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (seen_responses, seen_events) = (responses.clone(), events.clone());
+        let options = StreamOptions {
+            on_response: Some(Arc::new(move |response: ProviderResponse| {
+                seen_responses.lock().unwrap().push(response);
+                async {}.boxed()
+            })),
+            on_provider_stream_event: Some(Arc::new(move |event: Value| {
+                seen_events.lock().unwrap().push(event);
+                async {}.boxed()
+            })),
+            ..StreamOptions::default()
+        };
+        let transport = SequenceTransport::new(vec![Reply::Status(
+            200,
+            vec![("X-Request-Id", "r-1")],
+            REPLY,
+        )]);
+        let reply = reply_with(transport.clone(), options).await;
+        assert_eq!(reply.text(), "hi");
+        assert_eq!(
+            *responses.lock().unwrap(),
+            [ProviderResponse {
+                status: 200,
+                headers: [("x-request-id".to_string(), "r-1".to_string())].into(),
+            }]
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            [json!({ "choices": [{ "delta": { "content": "hi" }, "finish_reason": "stop" }] })]
+        );
     }
 
     #[test]

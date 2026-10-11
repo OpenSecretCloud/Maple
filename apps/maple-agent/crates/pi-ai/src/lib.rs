@@ -22,6 +22,7 @@ mod json;
 pub mod openai;
 mod overflow;
 mod provider;
+mod provider_retry;
 mod stream;
 pub mod transcript;
 mod types;
@@ -32,7 +33,10 @@ pub use json::parse_streaming_json;
 pub use overflow::{
     is_context_overflow, is_recoverable_length, is_retryable_error, retry_delay_ms,
 };
-pub use provider::{ApiRegistry, PayloadHook, StreamFn, StreamOptions, error_stream};
+pub use provider::{
+    ApiRegistry, HeadersHook, PayloadHook, ProviderEventHook, ProviderResponse, ResponseHook,
+    StreamFn, StreamOptions, error_stream,
+};
 pub use stream::{
     AssistantMessageBuilder, AssistantMessageEvent, AssistantMessageStream, AssistantStreamSender,
     apply_event,

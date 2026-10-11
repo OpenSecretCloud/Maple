@@ -521,6 +521,9 @@ fn placeholder_model() -> Model {
         context_window: 0,
         max_tokens: 0,
         thinking_levels: Default::default(),
+        headers: Default::default(),
+        sampling_params: Default::default(),
+        sampling_params_by_thinking_level: Default::default(),
         compat: Default::default(),
     }
 }
