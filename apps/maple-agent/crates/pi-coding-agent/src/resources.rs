@@ -250,17 +250,34 @@ enum LooseSkills {
 }
 
 /// A folder's `SKILL.md` makes the folder a skill; otherwise its subfolders are searched,
-/// and other Markdown files with a description count too, where `loose` says.
+/// and other Markdown files with a description count too, where `loose` says. As in Pi,
+/// names starting with `.` and `node_modules` are passed over, and so is what the
+/// ignore files of each folder searched leave out.
 fn scan_skills(
     dir: &Path,
     source: ResourceSource,
     loose: LooseSkills,
-    top: bool,
     skills: &mut Vec<Skill>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let mut search = Search::new(dir);
+    scan_skill_folder(dir, source, loose, true, &mut search, skills, diagnostics);
+}
+
+fn scan_skill_folder(
+    dir: &Path,
+    source: ResourceSource,
+    loose: LooseSkills,
+    top: bool,
+    search: &mut Search<'_>,
+    skills: &mut Vec<Skill>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(ignored) = search.enter(dir) else {
+        return;
+    };
     let skill_file = dir.join("SKILL.md");
-    if skill_file.is_file() {
+    if skill_file.is_file() && !ignored.matched(&skill_file, false).is_ignore() {
         skills.extend(load_skill(&skill_file, source, diagnostics));
         return;
     }
@@ -275,8 +292,12 @@ fn scan_skills(
         if name.starts_with('.') || name == "node_modules" {
             continue;
         }
-        if path.is_dir() {
-            scan_skills(&path, source, loose, false, skills, diagnostics);
+        let is_dir = path.is_dir();
+        if ignored.matched(&path, is_dir).is_ignore() {
+            continue;
+        }
+        if is_dir {
+            scan_skill_folder(&path, source, loose, false, search, skills, diagnostics);
         } else if name.ends_with(".md") {
             let counts = match loose {
                 LooseSkills::TopLevel => top,
@@ -328,7 +349,6 @@ pub fn load_skills(
             &paths.project_dir(cwd).join("skills"),
             ResourceSource::Project,
             LooseSkills::TopLevel,
-            true,
             &mut found,
             &mut diagnostics,
         );
@@ -337,7 +357,6 @@ pub fn load_skills(
                 &dir,
                 ResourceSource::Project,
                 LooseSkills::Nested,
-                true,
                 &mut found,
                 &mut diagnostics,
             );
@@ -347,7 +366,6 @@ pub fn load_skills(
         &paths.agent_dir.join("skills"),
         ResourceSource::User,
         LooseSkills::TopLevel,
-        true,
         &mut found,
         &mut diagnostics,
     );
@@ -356,7 +374,6 @@ pub fn load_skills(
             &dir,
             ResourceSource::User,
             LooseSkills::Nested,
-            true,
             &mut found,
             &mut diagnostics,
         );
@@ -399,7 +416,6 @@ fn scan_skill_paths(
                 &path,
                 ResourceSource::Path,
                 LooseSkills::TopLevel,
-                true,
                 found,
                 diagnostics,
             );
@@ -566,54 +582,80 @@ fn prefix_ignore_rule(line: &str, prefix: &str) -> Option<String> {
     Some(format!("{}{prefix}{rule}", if negated { "!" } else { "" }))
 }
 
+/// A search of a resource folder: the rules of the ignore files met so far, each
+/// rewritten relative to the folder searched as Pi rewrites them, and the folders
+/// searched already.
+struct Search<'a> {
+    root: &'a Path,
+    rules: Vec<String>,
+    seen: HashSet<PathBuf>,
+}
+
+impl<'a> Search<'a> {
+    fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            rules: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+
+    /// Read `dir`'s ignore files, and match what `dir` holds against the rules so far;
+    /// `None` when `dir` was searched already, as a folder linked from inside itself is.
+    fn enter(&mut self, dir: &Path) -> Option<Gitignore> {
+        if !self
+            .seen
+            .insert(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+        {
+            return None;
+        }
+        let prefix: String = dir
+            .strip_prefix(self.root)
+            .map(|relative| {
+                relative
+                    .components()
+                    .map(|part| format!("{}/", part.as_os_str().to_string_lossy()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for name in IGNORE_FILE_NAMES {
+            if let Ok(text) = fs::read_to_string(dir.join(name)) {
+                self.rules.extend(
+                    text.lines()
+                        .filter_map(|line| prefix_ignore_rule(line, &prefix)),
+                );
+            }
+        }
+        let mut builder = GitignoreBuilder::new(self.root);
+        // Pi's matcher ignores case.
+        let _ = builder.case_insensitive(true);
+        for rule in &self.rules {
+            // A rule that does not parse matches nothing.
+            let _ = builder.add_line(None, rule);
+        }
+        Some(builder.build().unwrap_or_else(|_| Gitignore::empty()))
+    }
+}
+
 /// The Markdown files in `root` that can be templates, as Pi finds them: names starting
 /// with `.` and `node_modules` are passed over, and so is what the ignore files of each
 /// folder searched leave out. With `recursive`, subfolders are searched too.
 fn template_files(root: &Path, recursive: bool) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let mut rules = Vec::new();
-    let mut seen = HashSet::new();
-    find_template_files(root, root, recursive, &mut rules, &mut seen, &mut files);
+    let mut search = Search::new(root);
+    find_template_files(root, recursive, &mut search, &mut files);
     files
 }
 
 fn find_template_files(
     dir: &Path,
-    root: &Path,
     recursive: bool,
-    rules: &mut Vec<String>,
-    seen: &mut HashSet<PathBuf>,
+    search: &mut Search<'_>,
     files: &mut Vec<PathBuf>,
 ) {
-    // A folder linked from inside itself is searched once.
-    if !seen.insert(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())) {
+    let Some(ignored) = search.enter(dir) else {
         return;
-    }
-    let prefix: String = dir
-        .strip_prefix(root)
-        .map(|relative| {
-            relative
-                .components()
-                .map(|part| format!("{}/", part.as_os_str().to_string_lossy()))
-                .collect()
-        })
-        .unwrap_or_default();
-    for name in IGNORE_FILE_NAMES {
-        if let Ok(text) = fs::read_to_string(dir.join(name)) {
-            rules.extend(
-                text.lines()
-                    .filter_map(|line| prefix_ignore_rule(line, &prefix)),
-            );
-        }
-    }
-    let mut builder = GitignoreBuilder::new(root);
-    // Pi's matcher ignores case.
-    let _ = builder.case_insensitive(true);
-    for rule in rules.iter() {
-        // A rule that does not parse matches nothing.
-        let _ = builder.add_line(None, rule);
-    }
-    let ignored = builder.build().unwrap_or_else(|_| Gitignore::empty());
+    };
     let Ok(read) = fs::read_dir(dir) else { return };
     let mut paths: Vec<PathBuf> = read.flatten().map(|entry| entry.path()).collect();
     paths.sort();
@@ -631,7 +673,7 @@ fn find_template_files(
         }
         if is_dir {
             if recursive {
-                find_template_files(&path, root, recursive, rules, seen, files);
+                find_template_files(&path, recursive, search, files);
             }
         } else if path.is_file() && name.ends_with(".md") {
             files.push(path);
@@ -939,6 +981,43 @@ mod tests {
             .map(|file| file.content)
             .collect();
         assert_eq!(files, ["global", "repo", "app"]);
+    }
+
+    #[test]
+    fn a_skills_folder_leaves_out_what_its_ignore_files_name() {
+        let (_root, cwd, paths) = layout();
+        let skills = paths.agent_dir.join("skills");
+        let skill = |name: &str| format!("---\nname: {name}\ndescription: Does {name}\n---\n");
+        write(&skills.join("review/SKILL.md"), &skill("review"));
+        write(&skills.join("drafts/idea/SKILL.md"), &skill("idea"));
+        write(&skills.join("commit.md"), &skill("commit"));
+        write(&skills.join("scratch.md"), &skill("scratch"));
+        // An ignored SKILL.md does not make its folder a skill; its subfolders still count.
+        write(&skills.join("tools/SKILL.md"), &skill("tools"));
+        write(&skills.join("tools/lint/SKILL.md"), &skill("lint"));
+        write(&skills.join(".gitignore"), "drafts/\n");
+        write(&skills.join(".ignore"), "scratch.md\n");
+        write(&skills.join("tools/.fdignore"), "/SKILL.md\n");
+
+        let (found, _) = load_skills(&cwd, &paths, &[], &[], true);
+        let names: Vec<&str> = found.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, ["commit", "review", "lint"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_skills_folder_linked_from_inside_itself_is_searched_once() {
+        let (root, cwd, paths) = layout();
+        let extra = root.path().join("extra");
+        write(
+            &extra.join("deploy/SKILL.md"),
+            "---\nname: deploy\ndescription: Deploys\n---\n",
+        );
+        std::os::unix::fs::symlink(&extra, extra.join("again")).unwrap();
+        let (found, diagnostics) = load_skills(&cwd, &paths, &[], &[extra], true);
+        let names: Vec<&str> = found.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, ["deploy"]);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
