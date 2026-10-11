@@ -53,8 +53,8 @@ has an independent dependency graph.
 ## Features
 
 - Sign in with email and password, or with GitHub, Google, or Apple OAuth.
-  Packaged Dev uses hosted browser sign-in and an automatic loopback return;
-  Prod and unpackaged builds retain the callback URL paste flow. Hosted Dev
+  Packaged Dev and Prod use hosted browser sign-in and an automatic loopback
+  return; unpackaged builds retain the callback URL paste flow. Hosted sign-in
   requires the matching Auth host and provider/backend callback configuration;
   building the client does not deploy those services.
   The session persists in `auth.json` (mode 0600) so the next launch and

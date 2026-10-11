@@ -16,13 +16,14 @@ Research Dev and Prod service selection. Billing browser pricing and checkout
 return pages use the unchanged `web_url`: `https://app-dev.trymaple.ai` for Dev
 and `https://trymaple.ai` for Prod.
 
-Packaged Dev selects the separate compiled `auth_origin`,
-`https://auth-dev.maple.ai`, for hosted native sign-in with a loopback return.
+Packaged Dev selects `https://auth-dev.maple.ai` and Prod selects
+`https://auth.maple.ai` as their compiled `auth_origin` for hosted native
+sign-in with a loopback return.
 The app waits for browser completion and allows cancellation; no callback URL
-needs to be pasted. Prod and unpackaged builds have `auth_origin: null` and
-retain their existing provider callback paste flow. Hosted sign-in cannot be
-enabled or redirected through an inherited environment variable. Activating
-it for production requires a separately reviewed profile change.
+needs to be pasted. Unpackaged builds have `auth_origin: null` and retain their
+existing provider callback paste flow. Hosted sign-in cannot be enabled or
+redirected through an inherited environment variable. This Agent profile does
+not change Research's Auth entry or the backend's default provider callbacks.
 
 Packaged builds ignore inherited `MAPLE_API_URL`, `MAPLE_BILLING_API_URL`,
 `MAPLE_CLIENT_ID`, and `MAPLE_UPDATE_REPO` overrides. A build fails if a supplied

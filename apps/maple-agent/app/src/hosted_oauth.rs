@@ -267,26 +267,21 @@ mod tests {
         let listener = HandoffListener::bind().unwrap();
         let session = "a".repeat(32);
         let request = "b".repeat(32);
-        let url = reqwest::Url::parse(&listener.start_url(
-            "https://auth-dev.maple.ai",
-            "google",
-            &session,
-            &request,
-        ))
-        .unwrap();
-        assert_eq!(
-            url.origin().ascii_serialization(),
-            "https://auth-dev.maple.ai"
-        );
-        assert_eq!(url.path(), "/agent/start");
-        let query: std::collections::BTreeMap<_, _> = url.query_pairs().collect();
-        assert_eq!(query.len(), 6);
-        assert_eq!(query["transport"], "v2");
-        assert_eq!(query["provider"], "google");
-        assert_eq!(query["native_session_id"], session);
-        assert_eq!(query["native_request_id"], request);
-        assert_eq!(query["return_port"], listener.port.to_string());
-        assert_eq!(query["return_state"], listener.state);
+        for origin in ["https://auth-dev.maple.ai", "https://auth.maple.ai"] {
+            let url =
+                reqwest::Url::parse(&listener.start_url(origin, "google", &session, &request))
+                    .unwrap();
+            assert_eq!(url.origin().ascii_serialization(), origin);
+            assert_eq!(url.path(), "/agent/start");
+            let query: std::collections::BTreeMap<_, _> = url.query_pairs().collect();
+            assert_eq!(query.len(), 6);
+            assert_eq!(query["transport"], "v2");
+            assert_eq!(query["provider"], "google");
+            assert_eq!(query["native_session_id"], session);
+            assert_eq!(query["native_request_id"], request);
+            assert_eq!(query["return_port"], listener.port.to_string());
+            assert_eq!(query["return_state"], listener.state);
+        }
     }
 
     #[tokio::test]
