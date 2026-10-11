@@ -8,8 +8,8 @@ GPUI desktop app for Maple. Workspace crates: `app` (package `maple-agent-app`, 
 `crates/maple-agent`, `crates/maple-billing`. See `README.md` for the
 layout, prerequisites, and command line modes.
 
-Packaged Dev OAuth uses the compiled Auth origin and a one-attempt loopback
-listener in `app/src/hosted_oauth.rs`; Prod and unpackaged builds retain the
+Packaged Dev and Prod OAuth use their compiled Auth origins and a one-attempt
+loopback listener in `app/src/hosted_oauth.rs`; unpackaged builds retain the
 provider callback paste flow. Keep the listener bound to `127.0.0.1` through
 completion, close it on cancellation/deadline/view disposal, and redeem the
 original SDK prepared handle only once. Publish through the existing backend

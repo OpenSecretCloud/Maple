@@ -66,7 +66,7 @@ pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
                 != if channel == "dev" {
                     Some("https://auth-dev.maple.ai")
                 } else {
-                    None
+                    Some("https://auth.maple.ai")
                 }
             || profile.client_id != "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
         {
@@ -106,7 +106,7 @@ pub fn select_profile(
         profile.display_name = "Maple Agent Debug".into();
         profile.bundle_id = "cloud.opensecret.maple.agent.debug".into();
         profile.data_namespace = "maple-agent".into();
-        // Hosted return is admitted only by the packaged Dev profile. Local
+        // Hosted return is admitted only by packaged profiles. Local
         // environment overrides must not opt an unpackaged client into it.
         profile.auth_origin = None;
         // Local/MDE builds keep the existing explicit PCR override. Invalid
@@ -207,7 +207,7 @@ mod tests {
             dev.auth_origin.as_deref(),
             Some("https://auth-dev.maple.ai")
         );
-        assert_eq!(prod.auth_origin, None);
+        assert_eq!(prod.auth_origin.as_deref(), Some("https://auth.maple.ai"));
         assert_ne!(dev.pcr_environment, prod.pcr_environment);
         assert_ne!(dev.update_tag_prefix, prod.update_tag_prefix);
         assert!(dev.prerelease);

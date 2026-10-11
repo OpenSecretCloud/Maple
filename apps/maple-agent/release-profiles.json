@@ -19,7 +19,7 @@
     "api_url": "https://enclave.trymaple.ai",
     "billing_api_url": "https://billing.opensecret.cloud",
     "web_url": "https://trymaple.ai",
-    "auth_origin": null,
+    "auth_origin": "https://auth.maple.ai",
     "client_id": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
     "pcr_environment": "production",
     "update_tag_prefix": "maple-agent-v",
