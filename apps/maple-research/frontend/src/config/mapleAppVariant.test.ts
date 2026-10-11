@@ -22,7 +22,8 @@ describe("Maple app identity", () => {
   test("separates native callback schemes and hosted sign-in sites", () => {
     expect(nativeCallbackScheme("production")).toBe("cloud.opensecret.maple");
     expect(nativeCallbackScheme("dev")).toBe("cloud.opensecret.maple.dev");
-    expect(nativeAuthOrigin("production")).toBe("https://trymaple.ai");
+    expect(nativeAuthOrigin("production")).toBe("https://auth.maple.ai");
+    expect(nativeAuthOrigin("production", DEV_AUTH_ORIGIN)).toBe("https://auth.maple.ai");
     expect(nativeAuthOrigin("dev", DEV_AUTH_ORIGIN)).toBe(DEV_AUTH_ORIGIN);
   });
 
