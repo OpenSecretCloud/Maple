@@ -58,6 +58,7 @@ export type NativeOAuthCallbackAuthorization =
 const ATTEMPT_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const TRANSPORT_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const NIL_ATTEMPT = "00000000-0000-0000-0000-000000000000";
+let startingNativeOAuth = false;
 
 export function isNativeOAuthAttemptId(value: unknown): value is string {
   return typeof value === "string" && value !== NIL_ATTEMPT && ATTEMPT_PATTERN.test(value);
@@ -196,19 +197,27 @@ export async function startNativeOAuth(
   navigation: NativeOAuthNavigation = {},
   invokeCommand: InvokeCommand = invoke
 ): Promise<void> {
-  const prepared = await beginNativeOAuthAttempt(apiUrl, navigation, Date.now(), invokeCommand);
-  const url = buildTransportV2DesktopAuthUrl({
-    provider,
-    nativeSessionId: prepared.sessionId,
-    nativeRequestId: prepared.requestId
-  });
+  if (startingNativeOAuth) throw new Error("Native sign-in is already starting");
+  startingNativeOAuth = true;
   try {
-    await invokeCommand("plugin:opener|open_url", { url });
-  } catch (error) {
-    await cancelNativeOAuthAttempt(prepared.nativeOAuthAttempt, invokeCommand).catch(
-      () => undefined
-    );
-    throw error;
+    const prepared = await beginNativeOAuthAttempt(apiUrl, navigation, Date.now(), invokeCommand);
+    try {
+      const url = buildTransportV2DesktopAuthUrl({
+        provider,
+        nativeSessionId: prepared.sessionId,
+        nativeRequestId: prepared.requestId
+      });
+      await invokeCommand("plugin:opener|open_url", { url });
+    } catch (error) {
+      await cancelNativeOAuthAttempt(prepared.nativeOAuthAttempt, invokeCommand).catch(
+        () => undefined
+      );
+      throw error;
+    }
+  } finally {
+    // Only preparation/opening is busy. Keep the prepared attempt for its
+    // callback, and allow a new try if the user dismisses the external browser.
+    startingNativeOAuth = false;
   }
 }
 
