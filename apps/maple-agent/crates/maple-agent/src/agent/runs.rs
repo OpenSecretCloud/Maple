@@ -1692,3 +1692,77 @@ impl AgentRuntime {
         self.failures.set(session_id, item);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::tests::{Harness, finished};
+
+    #[tokio::test]
+    async fn steering_before_session_setup_keeps_its_order_and_survives_stop() {
+        for stop in [false, true] {
+            let harness = Harness::new().await;
+            let runtime = harness.runtime().await;
+            let task = harness.create_task().await;
+            let request = AgentSendMessageRequest {
+                session_id: task.clone(),
+                text: "First".into(),
+                model: None,
+                context_limit: Some(200_000),
+                vision_capable: false,
+                steer: false,
+                queue_id: None,
+                attachments: Vec::new(),
+            };
+            let Plan::Start(run) = runtime
+                .plan_desktop_send(&request, &Outgoing::text("First"))
+                .unwrap()
+            else {
+                panic!("the first message starts a run");
+            };
+            for text in ["Second", "Third"] {
+                let steer = AgentSendMessageRequest {
+                    text: text.into(),
+                    steer: true,
+                    ..request.clone()
+                };
+                assert!(matches!(
+                    runtime
+                        .plan_desktop_send(&steer, &Outgoing::text(text))
+                        .unwrap(),
+                    Plan::Joined(_)
+                ));
+            }
+            if stop {
+                runtime
+                    .stop_run(&run.run_id, AgentRunSurface::Desktop)
+                    .unwrap();
+            } else {
+                harness.faux.push_text("Done.");
+            }
+            let mut handle = runtime.start_run(&request, run).await.unwrap();
+            let terminal = finished(&mut handle).await;
+            if stop {
+                assert_eq!(terminal, AgentRunTerminal::Cancelled);
+                assert!(harness.faux.requests().is_empty());
+                let queue = runtime.runs.queue_snapshot(&task);
+                let texts: Vec<_> = queue.items.iter().map(|item| item.text.as_str()).collect();
+                assert_eq!(texts, ["First", "Second", "Third"]);
+            } else {
+                assert_eq!(terminal, AgentRunTerminal::Completed);
+                let requests = harness.faux.requests();
+                assert_eq!(requests.len(), 1);
+                let texts: Vec<_> = requests[0]
+                    .context
+                    .messages
+                    .iter()
+                    .filter_map(|message| match message {
+                        Message::User(user) => Some(pi_ai::content_text(&user.content)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(texts, ["First", "Second", "Third"]);
+            }
+        }
+    }
+}
