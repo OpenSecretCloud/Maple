@@ -766,7 +766,9 @@ impl Sidebar {
             if seen_roots.insert(root) {
                 session_roots.push(root);
             }
-            if session.message_count == 0 {
+            // The cached count updates when a run ends. Its first run
+            // already makes the task visible while that count is still zero.
+            if session.message_count == 0 && !self.running.contains(&session.id) {
                 continue;
             }
             if scoped.is_some_and(|scoped| scoped != root) {

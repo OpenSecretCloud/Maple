@@ -3316,6 +3316,8 @@ mod state_tests {
     /// out of the sidebar, then joins the active inbox once it lands.
     #[gpui::test]
     fn test_draft_tasks_stay_out_until_the_first_message(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentRunEvent;
+
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -3328,9 +3330,31 @@ mod state_tests {
             // The draft's project still feeds the switcher.
             assert_eq!(this.switcher_root_paths(cx), ["/a"]);
 
-            // The first message moves it into the inbox.
-            this.sessions[0].message_count = 1;
-            this.sync_sidebar(cx);
+            // A first run is visible before the cached count catches up.
+            this.handle_run_event("s1", "run-1", AgentRunEvent::Started, cx);
+            assert_eq!(this.sessions[0].message_count, 0);
+            assert_eq!(this.sidebar_active(cx), vec![0, 1]);
+
+            // The generated title arrives while that count is still zero.
+            let mut named = this.sessions[0].clone();
+            named.title = "First task".into();
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                AgentRunEvent::SessionUpdated(named.clone()),
+                cx,
+            );
+            assert_eq!(this.sidebar_active(cx), vec![0, 1]);
+
+            // Completion refreshes the count before retiring the run.
+            named.message_count = 2;
+            this.handle_run_event("s1", "run-1", AgentRunEvent::SessionUpdated(named), cx);
+            this.handle_run_event(
+                "s1",
+                "run-1",
+                AgentRunEvent::Finished(maple_agent::agent::AgentRunTerminal::Completed),
+                cx,
+            );
             assert_eq!(this.sidebar_active(cx), vec![0, 1]);
         });
     }
