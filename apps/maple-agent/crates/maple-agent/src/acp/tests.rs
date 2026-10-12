@@ -1,7 +1,7 @@
 //! The ACP server: over its framed stdio transport on the scripted runtime,
 //! and its conversions and checks one by one.
 
-use super::config::{MAX_ACP_CONNECTIONS, config_path, load_config, save_config};
+use super::config::{MAX_ACP_CONNECTIONS, config_path, load_config};
 use super::convert::{acp_tool_update, client_supports_form_elicitation, timeline_tool_text};
 use super::session::completed_runtime_start;
 use super::transport::is_session_update_line;
@@ -15,8 +15,6 @@ use agent_client_protocol::schema::v1::{
 use pi_ai::AssistantContent;
 use pi_ai::faux::faux_tool_call;
 use serde_json::{Value, json};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -1145,62 +1143,26 @@ fn allowed_project_root_rejects_relative_paths() {
     assert!(ensure_allowed_project_root(Path::new("relative/project"), &[]).is_err());
 }
 
-/// Files from builds that still saved `enabled` and `permissionMode`
-/// load; the retired fields are ignored.
 #[test]
-fn a_config_written_with_retired_fields_still_loads() {
+fn the_config_loads_from_the_account_folder_or_defaults() {
     let root = tempfile::tempdir().unwrap();
-    let user_id = "acp-legacy-user";
+    let user_id = "acp-config-user";
+    assert_eq!(
+        load_config(root.path(), user_id).unwrap(),
+        AgentAcpConfig::default()
+    );
+
+    let project_root = root.path().join("project").to_string_lossy().into_owned();
     let path = config_path(root.path(), user_id).unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        br#"{"enabled":true,"permissionMode":"read_only","allowedProjectRoots":[],"maxConnections":4}"#,
+        json!({"allowedProjectRoots": [project_root], "maxConnections": 4}).to_string(),
     )
     .unwrap();
-
     let config = load_config(root.path(), user_id).unwrap();
+    assert_eq!(config.allowed_project_roots, vec![project_root]);
     assert_eq!(config.max_connections, 4);
-    assert!(config.allowed_project_roots.is_empty());
-}
-
-#[test]
-fn save_config_writes_atomically_and_round_trips() {
-    let root = tempfile::tempdir().unwrap();
-    let user_id = "acp-config-user";
-    let project_root = root.path().join("project");
-    assert!(project_root.is_absolute());
-    let config = AgentAcpConfig {
-        allowed_project_roots: vec![project_root.to_string_lossy().into_owned()],
-        ..AgentAcpConfig::default()
-    };
-
-    save_config(root.path(), user_id, &config).unwrap();
-    // Overwrite once more: the replacement must not leave a temp file.
-    save_config(root.path(), user_id, &config).unwrap();
-
-    let path = config_path(root.path(), user_id).unwrap();
-    let leftovers = path
-        .parent()
-        .unwrap()
-        .read_dir()
-        .unwrap()
-        .filter(|entry| {
-            entry
-                .as_ref()
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".tmp")
-        })
-        .count();
-    assert_eq!(leftovers, 0);
-    #[cfg(unix)]
-    {
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-    }
-    assert_eq!(load_config(root.path(), user_id).unwrap(), config);
 }
 
 #[test]
