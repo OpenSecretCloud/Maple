@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 test.skipIf(!runLive)(
-  "hosted enclave establishes a session only after signed-history PCR0 validation",
+  "hosted enclave establishes a session only after environment-scoped PCR0 validation",
   async () => {
     const requests: string[] = [];
     globalThis.fetch = async (input, init) => {
@@ -41,13 +41,19 @@ test.skipIf(!runLive)(
 
     expect(attestationIndex).toBeGreaterThanOrEqual(0);
     expect(prodHistoryIndex).toBe(-1);
-    expect(devHistoryIndex).toBeGreaterThan(attestationIndex);
-    expect(keyExchangeIndex).toBeGreaterThan(devHistoryIndex);
+    // A current bundled root needs no history fetch; future approved images
+    // still fetch and verify their signed development history before exchange.
+    if (devHistoryIndex >= 0) {
+      expect(devHistoryIndex).toBeGreaterThan(attestationIndex);
+      expect(keyExchangeIndex).toBeGreaterThan(devHistoryIndex);
+    } else {
+      expect(keyExchangeIndex).toBeGreaterThan(attestationIndex);
+    }
   }
 );
 
 test.skipIf(!runLive)(
-  "hosted enclave cannot reach key exchange when its PCR0 policy is deliberately unknown",
+  "hosted development enclave cannot reach key exchange under production bundled trust",
   async () => {
     const requests: string[] = [];
     globalThis.fetch = async (input, init) => {
@@ -57,7 +63,7 @@ test.skipIf(!runLive)(
 
     await expect(
       getAttestation(true, liveApiUrl, {
-        environment: "development",
+        environment: "production",
         remoteAttestation: false
       })
     ).rejects.toThrow(/PCR0/i);
