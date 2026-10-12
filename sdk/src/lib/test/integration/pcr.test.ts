@@ -26,9 +26,9 @@ global.sessionStorage = storageMock();
 
 // Sample PCR0 values for testing
 const VALID_PCR0_PROD =
-  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
+  "21d27bd19cdd02632485a6e8874753e42cf7f098f1335bb62a9c23e7f64da9100c02dba582da17ac68052fa6be16b7a9";
 const VALID_PCR0_DEV =
-  "62c0407056217a4c10764ed9045694c29fa93255d3cc04c2f989cdd9a1f8050c8b169714c71f1118ebce2fcc9951d1a9";
+  "a95956c3fb9457e509be6d614ffefcddf98fe594f77bb6a56891fc1f5bdec41da2add13db22e0908363c8d0929c04def";
 const CUSTOM_PCR0 = "11".repeat(48);
 const CUSTOM_PCR0_DEV = "22".repeat(48);
 
@@ -116,6 +116,61 @@ test("development rejects production PCR0 values", async () => {
   expect(result.isMatch).toBe(false);
 });
 
+test("current and rollback approvals remain trusted without history only in their environment", async () => {
+  const approvals = [
+    {
+      environment: "production",
+      pcr0s: [
+        "21d27bd19cdd02632485a6e8874753e42cf7f098f1335bb62a9c23e7f64da9100c02dba582da17ac68052fa6be16b7a9",
+        "643b3c293a4eac11ec14ab405d2405e46cb714263a12da6c62f485a0fa395cb3c3d5ef07b18d39a1f9715f25e7943b66"
+      ]
+    },
+    {
+      environment: "development",
+      pcr0s: [
+        "a95956c3fb9457e509be6d614ffefcddf98fe594f77bb6a56891fc1f5bdec41da2add13db22e0908363c8d0929c04def",
+        "e573a3ddc8a27f387e24cfb02a8fa594fe782674de6ee1fa9385126b9f8ec38f4a236e91c371bdd2b9444623c1c1cc34"
+      ]
+    }
+  ] as const;
+
+  for (const { environment, pcr0s } of approvals) {
+    for (const pcr0 of pcr0s) {
+      expect(
+        (await validatePcr0Hash(pcr0, { environment, remoteAttestation: false })).isMatch
+      ).toBe(true);
+      const oppositeEnvironment = environment === "production" ? "development" : "production";
+      expect(
+        (
+          await validatePcr0Hash(pcr0, {
+            environment: oppositeEnvironment,
+            remoteAttestation: false
+          })
+        ).isMatch
+      ).toBe(false);
+    }
+  }
+});
+
+test("older approvals require signed history rather than bundled trust", async () => {
+  expect(
+    (
+      await validatePcr0Hash(
+        "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b",
+        { remoteAttestation: false }
+      )
+    ).isMatch
+  ).toBe(false);
+  expect(
+    (
+      await validatePcr0Hash(
+        "62c0407056217a4c10764ed9045694c29fa93255d3cc04c2f989cdd9a1f8050c8b169714c71f1118ebce2fcc9951d1a9",
+        { environment: "development", remoteAttestation: false }
+      )
+    ).isMatch
+  ).toBe(false);
+});
+
 test("validates custom PCR0 values", async () => {
   const config: PcrConfig = {
     pcr0Values: [CUSTOM_PCR0]
@@ -179,6 +234,9 @@ test("rejects unknown PCR0 values when remote attestation is disabled", async ()
   };
   const result = await validatePcr0Hash(VERIFIED_PCR0, config);
   expect(result.isMatch).toBe(false);
+  expect(
+    (await validatePcr0Hash(VERIFIED_PCR0, { ...config, environment: "development" })).isMatch
+  ).toBe(false);
 });
 
 test("validates PCR0 from only the selected production history by default", async () => {
