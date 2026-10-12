@@ -63,8 +63,9 @@ def jobs_executed(jobs, required):
 
 def eligible_runs(runs, repo, workflow):
     expected_path = f".github/workflows/{workflow}"
+    events = {"push", "schedule", "workflow_dispatch"} if workflow == "codeql.yml" else {"push"}
     return sorted((run for run in runs
-                   if run.get("event") == "push" and run.get("head_branch") == "master"
+                   if run.get("event") in events and run.get("head_branch") == "master"
                    and run.get("head_repository", {}).get("full_name") == repo
                    and run.get("path") == expected_path),
                   key=lambda run: (run["created_at"], run["id"]), reverse=True)
@@ -86,7 +87,7 @@ def select_evidence(runs, head, required, get_jobs, compatible, exact_only=False
             continue
         return {"run_id": run["id"], "url": run["html_url"], "head_sha": sha,
                 "reused": sha != head}
-    raise EvidenceError("no successful executed master push found in the bounded run history")
+    raise EvidenceError("no successful executed master run found in the bounded run history")
 
 
 def trees_compatible(before, after):
@@ -127,7 +128,7 @@ def collect(repo, head):
 
     evidence = {}
     for workflow, required in WORKFLOWS.items():
-        # Filter locally: require the canonical workflow, master push and repo.
+        # Filter locally: require the canonical workflow, master source and permitted event.
         runs = api(repo, f"actions/workflows/{workflow}/runs?per_page=100")["workflow_runs"]
 
         def get_jobs(run_id):

@@ -89,11 +89,44 @@ class EvidenceTests(unittest.TestCase):
             self.select([])
 
     def test_only_canonical_master_push_can_supply_evidence(self):
-        wrong = [{"event": "pull_request"}, {"event": "workflow_dispatch"},
+        wrong = [{"event": "pull_request"}, {"event": "workflow_dispatch"}, {"event": "schedule"},
                  {"head_branch": "feature"}, {"head_repository": {"full_name": "attacker/Maple"}},
                  {"path": ".github/workflows/other.yml"}]
         runs = [run(**changes) for changes in wrong] + [run()]
         self.assertEqual(eligible_runs(runs, REPO, "frontend-tests.yml"), [run()])
+
+    def test_codeql_accepts_only_canonical_master_scan_events(self):
+        for event in ("push", "schedule", "workflow_dispatch"):
+            candidate = run(event=event, path=".github/workflows/codeql.yml")
+            with self.subTest(event=event):
+                self.assertEqual(eligible_runs([candidate], REPO, "codeql.yml"), [candidate])
+            wrong = [{"event": "pull_request"}, {"event": "workflow_run"},
+                     {"head_branch": "feature"},
+                     {"head_repository": {"full_name": "attacker/Maple"}},
+                     {"path": ".github/workflows/other.yml"}]
+            for changes in wrong:
+                with self.subTest(event=event, changes=changes):
+                    self.assertEqual(eligible_runs([candidate | changes], REPO, "codeql.yml"), [])
+
+    def test_nightly_and_manual_codeql_still_require_exact_successful_analysis(self):
+        analyses = [job(f"Analyze ({language})")
+                    for language in ("actions", "javascript-typescript", "python", "rust")]
+        for event in ("schedule", "workflow_dispatch"):
+            candidate = run(event=event, path=".github/workflows/codeql.yml")
+            def select(candidate, jobs):
+                return select_evidence(eligible_runs([candidate], REPO, "codeql.yml"),
+                                       HEAD, (), lambda _: jobs, lambda _: True, exact_only=True)
+            with self.subTest(event=event):
+                self.assertFalse(select(candidate, analyses)["reused"])
+            for changes, jobs in (
+                ({"head_sha": ANCESTOR}, analyses),
+                ({"conclusion": "failure"}, analyses),
+                ({"status": "in_progress", "conclusion": None}, analyses),
+                ({}, [job("Analyze (rust)", "skipped")]),
+                ({}, [job("Analyze (rust)", "failure")]),
+            ):
+                with self.subTest(event=event, changes=changes, jobs=jobs), self.assertRaises(EvidenceError):
+                    select(candidate | changes, jobs)
 
     def test_newest_push_orders_before_old_green(self):
         old = run(ANCESTOR, id=19, created_at="2026-10-04T08:00:00Z")
