@@ -31,6 +31,7 @@
         private let supplementary: (@MainActor () -> AnyView)?
         private let onClose: (@MainActor () -> Void)?
         private let drawerNavigation: Bool
+        private let compactRootBar: Bool
         private let navigationAvailable: Bool
         private let navigationFocusAvailable: Bool?
         private var focusAvailable: Bool { navigationFocusAvailable ?? navigationAvailable }
@@ -52,6 +53,7 @@
             settingsPresented: Binding<Bool>? = nil,
             onSettingsDismiss: (@MainActor () -> Void)? = nil,
             drawerNavigation: Bool = false,
+            compactRootBar: Bool = false,
             navigationAvailable: Bool = true,
             navigationFocusAvailable: Bool? = nil,
             onDrawerDestinationChanged: (@MainActor (Bool) -> Void)? = nil,
@@ -63,6 +65,7 @@
             self.settingsPresented = settingsPresented; self.onSettingsDismiss = onSettingsDismiss
             self.supplementary = supplementary
             self.drawerNavigation = drawerNavigation; self.navigationAvailable = navigationAvailable
+            self.compactRootBar = compactRootBar
             self.navigationFocusAvailable = navigationFocusAvailable
             self.onDrawerDestinationChanged = onDrawerDestinationChanged
             self.projectExpansion = projectExpansion?.scope == library.scope ? projectExpansion : nil
@@ -194,25 +197,9 @@
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar(removing: .sidebarToggle)
                     .toolbar {
-                        if let onClose, navigationAvailable {
+                        if !usesCompactRootBar, onClose != nil, navigationAvailable {
                             ToolbarItem(placement: .topBarTrailing) {
-                                Button {
-                                    suspendSearch(); onClose()
-                                } label: {
-                                    Label {
-                                        Text("Close menu", tableName: "Library", bundle: .module)
-                                    } icon: {
-                                        Image(systemName: "xmark")
-                                    }
-                                    .labelStyle(.iconOnly)
-                                    .foregroundStyle(MapleAccent.action)
-                                    .frame(minWidth: 44, minHeight: 44)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(Text("Close menu", tableName: "Library", bundle: .module))
-                                .accessibilityIdentifier("library.close")
-                                .accessibilityFocused($closeFocused)
+                                closeControl
                             }
                         }
                     }
@@ -239,11 +226,18 @@
                         }
                     }
                 }
-                .toolbarVisibility(navigationAvailable ? .visible : .hidden, for: .navigationBar)
+                .toolbarVisibility(
+                    navigationAvailable && (!usesCompactRootBar || !drawerPath.isEmpty) ? .visible : .hidden,
+                    for: .navigationBar
+                )
                 .navigationDestination(for: LibraryDrawerDestination.self) { destination in
                     switch destination {
                     case .settings:
-                        settings()
+                        if usesCompactRootBar {
+                            settings().toolbarVisibility(.visible, for: .navigationBar)
+                        } else {
+                            settings()
+                        }
                     }
                 }
                 .modifier(
@@ -256,7 +250,10 @@
                             } else {
                                 drawerPath.append(.settings)
                             }
-                        }))
+                        },
+                        compactRootBar: usesCompactRootBar,
+                        nativeRootBarHidden: !navigationAvailable || !drawerPath.isEmpty,
+                        nativeRootBarTrailing: onClose != nil && navigationAvailable ? AnyView(closeControl) : nil))
             }
             .onChange(of: drawerPath) { _, path in
                 guard drawerNavigation else { return }
@@ -300,6 +297,30 @@
                 }
             }
         }
+        private var usesCompactRootBar: Bool { compactRootBar && drawerNavigation }
+
+        @ViewBuilder private var closeControl: some View {
+            if let onClose, navigationAvailable {
+                Button {
+                    suspendSearch(); onClose()
+                } label: {
+                    Label {
+                        Text("Close menu", tableName: "Library", bundle: .module)
+                    } icon: {
+                        Image(systemName: "xmark")
+                    }
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(MapleAccent.action)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text("Close menu", tableName: "Library", bundle: .module))
+                .accessibilityIdentifier("library.close")
+                .accessibilityFocused($closeFocused)
+            }
+        }
+
         private func selectChat(_ id: String) {
             suspendSearch()
             if drawerNavigation { drawerPath = [] }

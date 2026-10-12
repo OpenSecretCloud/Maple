@@ -276,7 +276,7 @@ import XCTest
         app.launchArguments = arguments()
         app.launch()
         try waitForRoot(app)
-        let ltrMenu = app.buttons["chat.menu"].frame
+        let ltrMenu = app.mapleMenuButton.frame
         let ltrNew = app.buttons["chat.new"].frame
         XCTAssertLessThan(ltrMenu.midX, ltrNew.midX, "Baseline toolbar must actually be left-to-right")
         let baselineLibrary = try openLibrary(app)
@@ -296,7 +296,7 @@ import XCTest
         app.launch()
         try waitForRoot(app)
         try assertObservedTraits(app, rtl: mode == .rightToLeft)
-        let menu = app.buttons["chat.menu"], newChat = app.buttons["chat.new"]
+        let menu = app.mapleMenuButton, newChat = app.buttons["chat.new"]
         try assertTarget(menu, in: app)
         try assertTarget(newChat, in: app)
         if mode == .rightToLeft {
@@ -493,7 +493,7 @@ import XCTest
     @MainActor @discardableResult private func openLibrary(_ app: XCUIApplication) throws -> XCUIElement {
         try dismissTabletKeyboard(in: app)
         if let owner = visibleCollection(in: app, prefix: "library.") { return owner }
-        app.buttons["chat.menu"].tap()
+        app.mapleMenuButton.tap()
         let visible = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in self.visibleCollection(in: app, prefix: "library.") != nil },
             object: app)
@@ -577,7 +577,7 @@ import XCTest
             try assertTarget(close, in: app)
             close.tap()
         } else {
-            app.buttons["chat.menu"].tap()
+            app.mapleMenuButton.tap()
         }
         XCTAssertTrue(app.textViews["chat.composer"].waitForExistence(timeout: 10))
     }
@@ -704,7 +704,7 @@ import XCTest
         try assertTarget(composer, in: app)
         composer.tap()
         let window = windowFrame(in: app)
-        let navigation = app.navigationBars.containing(.button, identifier: "chat.menu").firstMatch
+        let navigation = app.mapleChatNavigationBar
         let keyboard = app.keyboards.firstMatch
         guard navigation.exists, keyboard.exists, app.keyboards.count == 1 else {
             XCTFail("Require the actual Chat navigation bar and one software keyboard")

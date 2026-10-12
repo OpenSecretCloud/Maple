@@ -40,7 +40,7 @@ import XCTest
         return value
     }
     private func tap(_ label: String) {
-        let button = app.buttons[label].firstMatch
+        let button = label == "chat.menu" ? app.mapleMenuButton : app.buttons[label].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: 15))
         for _ in 0..<5 where !button.isHittable { app.swipeUp() }
         XCTAssertTrue(button.isHittable); button.tap()
@@ -426,7 +426,7 @@ extension LibraryWorkflowUITests {
         attachment.name = "Exact owned local entities for cleanup"; attachment.lifetime = .keepAlways; add(attachment)
     }
     private func cleanupTap(_ identifier: String) throws {
-        let target = app.buttons[identifier].firstMatch
+        let target = identifier == "chat.menu" ? app.mapleMenuButton : app.buttons[identifier].firstMatch
         guard target.waitForExistence(timeout: 10) else { throw LibraryCleanupIssue.inaccessibleControl }
         for _ in 0..<12 where !target.isHittable { app.swipeUp() }
         guard target.isHittable else { throw LibraryCleanupIssue.inaccessibleControl }

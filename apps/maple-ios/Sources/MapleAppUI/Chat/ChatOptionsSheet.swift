@@ -47,7 +47,7 @@
                         get: { preferences.value.webSearchPreferred },
                         set: { if isCurrent() { preferences.setWebSearchPreferred($0) } }),
                     webSearchPreferences: preferences,
-                    projectRow: AnyView(projectRow), canInteract: isCurrent
+                    projectRow: AnyView(projectRow), topContentMargin: 40, canInteract: isCurrent
                 ) { id in
                     guard isCurrent() else { return }
                     onSelectModel(id)

@@ -30,7 +30,7 @@ import XCTest
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 15), .completed)
     }
     private func tap(_ identifier: String) {
-        let button = app.buttons[identifier].firstMatch
+        let button = identifier == "chat.menu" ? app.mapleMenuButton : app.buttons[identifier].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: 15))
         for _ in 0..<5 where !button.isHittable { app.swipeUp() }
         XCTAssertTrue(button.isHittable); button.tap()

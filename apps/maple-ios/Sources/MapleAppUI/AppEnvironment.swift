@@ -335,11 +335,14 @@
         }
 
         @discardableResult
-        func selectChat(_ id: String?, selectionTicket ticket: UUID = UUID()) async -> Bool {
+        func selectChat(
+            _ id: String?, selectionTicket ticket: UUID = UUID(),
+            onSelectionStaged: (@MainActor () -> Void)? = nil
+        ) async -> Bool {
             dictation?.stopCaptureForNavigation()
             guard let account = session.account, let api = accountAPI else { return false }
             if let id, deletion?.isConversationDeleted(id) == true {
-                return await selectChat(nil, selectionTicket: ticket)
+                return await selectChat(nil, selectionTicket: ticket, onSelectionStaged: onSelectionStaged)
             }
             navigation = ticket
             let previous = selectedChat
@@ -356,6 +359,10 @@
             if let existing = chats[key] {
                 existing.isVisible = true
                 updatePresentationVisibility()
+                onSelectionStaged?()
+                guard session.account?.scope == account.scope, navigation == ticket, selectedChat === existing else {
+                    return false
+                }
                 await existing.reconcileOnLifecycle(foreground: false)
                 guard session.account?.scope == account.scope, navigation == ticket else { return false }
                 if let id { await refreshConversationDetails(id, account: account, api: api) }
@@ -365,6 +372,10 @@
             runtime.isVisible = true
             chats[key] = runtime
             updatePresentationVisibility()
+            onSelectionStaged?()
+            guard session.account?.scope == account.scope, navigation == ticket, selectedChat === runtime else {
+                return false
+            }
             await runtime.load(chatID: id)
             if let id { await refreshConversationDetails(id, account: account, api: api) }
             return session.account?.scope == account.scope && navigation == ticket && selectedChat === runtime

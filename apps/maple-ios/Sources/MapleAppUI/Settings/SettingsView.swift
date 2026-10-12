@@ -301,6 +301,7 @@
         private let webSearchPreference: Binding<Bool>?
         private let webSearchPreferences: PreferencesController?
         private let projectRow: AnyView?
+        private let topContentMargin: CGFloat
         private let canInteract: @MainActor () -> Bool
         private let onSelection: (String) -> Void
         @State private var webSearchNoticePresented = false
@@ -308,10 +309,12 @@
         public init(
             entitlements: AccountEntitlements, webSearchPreference: Binding<Bool>? = nil,
             webSearchPreferences: PreferencesController? = nil, projectRow: AnyView? = nil,
+            topContentMargin: CGFloat = 24,
             canInteract: @escaping @MainActor () -> Bool = { true }, onSelection: @escaping (String) -> Void
         ) {
             self.entitlements = entitlements; self.webSearchPreference = webSearchPreference
             self.webSearchPreferences = webSearchPreferences; self.projectRow = projectRow
+            self.topContentMargin = topContentMargin
             self.canInteract = canInteract; self.onSelection = onSelection
         }
 
@@ -408,7 +411,7 @@
             .listStyle(.insetGrouped)
             .listRowSeparator(.hidden)
             .listSectionSpacing(16)
-            .contentMargins(.top, 24, for: .scrollContent)
+            .contentMargins(.top, topContentMargin, for: .scrollContent)
             .contentMargins(.bottom, 12, for: .scrollContent)
             .listRowBackground(MapleSurface.card)
             .scrollContentBackground(.hidden)

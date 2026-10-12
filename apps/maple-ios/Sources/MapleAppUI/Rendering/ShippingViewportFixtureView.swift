@@ -115,23 +115,11 @@
                     .scrollContentBackground(.hidden)
                     .background(MapleSurface.sidebar)
                     .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .principal) { paginationNavigationDiagnostics(model) }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                guard model.projectionIsCurrent(scope: scope, storageOwner: owner) else { return }
-                                model.projectionMenuPresented = false
-                            } label: {
-                                Label("Close menu", systemImage: "xmark")
-                                    .labelStyle(.iconOnly)
-                                    .frame(minWidth: 44, minHeight: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("shipping-pagination.close")
-                            .accessibilityFocused($paginationCloseFocused)
-                        }
-                    }
+                    .toolbarVisibility(.hidden, for: .navigationBar)
+                    .compactMenuRootBar(
+                        role: .library, title: "Synthetic retained Library",
+                        principal: AnyView(paginationNavigationDiagnostics(model)),
+                        trailing: AnyView(paginationCloseControl(model)))
                 }
                 .environment(\.layoutDirection, layoutDirection)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -139,38 +127,20 @@
                 .background(ShippingPaginationViewportProbe())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("shipping-pagination.library"),
-                chat: NavigationStack {
-                    ChatDetail(
-                        environment: model.environment, runtime: model.runtime,
-                        account: model.account, preferences: model.preferences,
-                        fixtureProjectionIsCurrent: { [weak model] scope, owner in
-                            model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
-                        }, fixtureOptions: model.optionsContext
-                    )
-                    .id(owner)
-                    .background(MapleSurface.canvas)
-                    .navigationTitle("Synthetic retained chat")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar(removing: .sidebarToggle)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                guard model.projectionIsCurrent(scope: scope, storageOwner: owner) else { return }
-                                model.projectionMenuPresented = true
-                            } label: {
-                                Label("Menu", systemImage: "line.3.horizontal")
-                                    .labelStyle(.iconOnly)
-                                    .frame(minWidth: 44, minHeight: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("shipping-pagination.open")
-                            .accessibilityFocused($paginationMenuFocused)
-                            .disabled(!model.ready || model.projectionMenuPresented)
-                        }
-                        ToolbarItem(placement: .principal) { paginationNavigationDiagnostics(model) }
-                    }
-                }
+                chat: ChatDetail(
+                    environment: model.environment, runtime: model.runtime,
+                    account: model.account, preferences: model.preferences,
+                    fixtureProjectionIsCurrent: { [weak model] scope, owner in
+                        model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
+                    }, fixtureOptions: model.optionsContext
+                )
+                .id(owner)
+                .background(MapleSurface.canvas)
+                .compactMenuRootBar(
+                    role: .chat, title: "Synthetic retained chat",
+                    backIdentifier: "shipping-pagination.open",
+                    principal: AnyView(paginationNavigationDiagnostics(model))
+                )
                 .environment(\.layoutDirection, layoutDirection)
                 .environment(\.compactMenuChatState) { [weak compactLease] scope, owner in
                     compactLease?.state(scope: scope, storageOwner: owner) ?? CompactMenuChatState()
@@ -208,6 +178,22 @@
             }
         }
 
+        private func paginationCloseControl(_ model: ShippingViewportFixtureModel) -> some View {
+            let scope = model.runtime.scope, owner = model.runtime.snapshot.storageOwner
+            return Button {
+                guard model.projectionIsCurrent(scope: scope, storageOwner: owner) else { return }
+                model.projectionMenuPresented = false
+            } label: {
+                Label("Close menu", systemImage: "xmark")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("shipping-pagination.close")
+            .accessibilityFocused($paginationCloseFocused)
+        }
+
         private func paginationNavigationDiagnostics(_ model: ShippingViewportFixtureModel) -> some View {
             VStack(spacing: 0) {
                 Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
@@ -225,17 +211,17 @@
             return CompactMenuNavigation(
                 scope: scope, storageOwner: selected.snapshot.storageOwner,
                 requestedMenu: model.projectionMenuPresented, reduceMotion: reduceMotion, lease: compactLease,
-                library: Text("Synthetic retained Library").frame(maxWidth: .infinity, maxHeight: .infinity),
-                chat: NavigationStack {
-                    ChatDetail(
-                        environment: model.environment, runtime: selected,
-                        account: model.account, preferences: model.preferences,
-                        fixtureProjectionIsCurrent: { [weak model] scope, owner in
-                            model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
-                        }, fixtureOptions: model.optionsContext
-                    )
-                    .id(selected.snapshot.storageOwner)
-                }
+                library: compactProjectionLibrary(model)
+                    .compactMenuRootBar(role: .library, title: "Synthetic retained Library"),
+                chat: ChatDetail(
+                    environment: model.environment, runtime: selected,
+                    account: model.account, preferences: model.preferences,
+                    fixtureProjectionIsCurrent: { [weak model] scope, owner in
+                        model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
+                    }, fixtureOptions: model.optionsContext
+                )
+                .id(selected.snapshot.storageOwner)
+                .compactMenuRootBar(role: .chat, title: "Synthetic cached chat", principal: AnyView(MaplePrivacyLock()))
                 .environment(\.compactMenuChatState) { [weak compactLease] scope, owner in
                     compactLease?.state(scope: scope, storageOwner: owner) ?? CompactMenuChatState()
                 }
@@ -246,26 +232,50 @@
                 isCurrent: { [weak model] in model?.projectionIsCurrent(scope: scope) ?? false },
                 presentationBlocked: { false },
                 requestMenu: { [weak model] in model?.projectionMenuPresented = $0 },
-                blockPresentation: { _, _ in }, chatShown: { _ in }
+                blockPresentation: { _, _ in },
+                chatShown: { _ in model.completeColdHistoryNavigation(scope: scope) }
             )
             .id(scope)
             .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 4) {
-                    HStack {
-                        Button("Select cached A") { model.selectProjection(newChat: true) }
-                            .accessibilityIdentifier("shipping-projection.select-a")
-                            .disabled(!model.ready || model.projectionIsNewChat)
-                        Button("Select cached B") { model.selectProjection(newChat: false) }
-                            .accessibilityIdentifier("shipping-projection.select-b")
-                            .disabled(!model.ready || !model.projectionIsNewChat)
-                    }.font(.caption)
-                    Text(model.summary).font(.caption2)
-                        .accessibilityIdentifier("shipping-viewport.summary")
-                    Text("Synthetic cached owners").font(.caption2)
-                        .accessibilityIdentifier("shipping-projection.ownership")
-                        .accessibilityValue(model.projectionOwnership)
+                Group {
+                    if model.coldHistoryProof {
+                        VStack(spacing: 4) {
+                            Button("Release first history") { Task { await model.releaseColdHistory() } }
+                                .accessibilityIdentifier("shipping-cold-history.release")
+                                .disabled(!model.draftLoadHeld || !model.coldHistoryNavigationSettled)
+                            Text(model.coldHistoryState).font(.caption2)
+                                .accessibilityIdentifier("shipping-cold-history.state")
+                        }
+                    } else {
+                        VStack(spacing: 4) {
+                            HStack {
+                                Button("Select cached A") { model.selectProjection(newChat: true) }
+                                    .accessibilityIdentifier("shipping-projection.select-a")
+                                    .disabled(!model.ready || model.projectionIsNewChat)
+                                Button("Select cached B") { model.selectProjection(newChat: false) }
+                                    .accessibilityIdentifier("shipping-projection.select-b")
+                                    .disabled(!model.ready || !model.projectionIsNewChat)
+                            }.font(.caption)
+                            Text(model.summary).font(.caption2)
+                                .accessibilityIdentifier("shipping-viewport.summary")
+                            Text("Synthetic cached owners").font(.caption2)
+                                .accessibilityIdentifier("shipping-projection.ownership")
+                                .accessibilityValue(model.projectionOwnership)
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity).frame(height: 80).background(.bar)
+            }
+        }
+
+        @ViewBuilder private func compactProjectionLibrary(_ model: ShippingViewportFixtureModel) -> some View {
+            if model.coldHistoryProof {
+                Button("Open existing synthetic chat") { Task { await model.selectColdHistory() } }
+                    .accessibilityIdentifier("shipping-cold-history.select")
+                    .disabled(!model.ready || !model.projectionIsNewChat || !compactLease.menuVisible)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Text("Synthetic retained Library").frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
 
@@ -401,10 +411,13 @@
             complexMarkup: ProcessInfo.processInfo.arguments.contains("--maple-shipping-complex-markdown-proof"),
             transcriptRows: ProcessInfo.processInfo.arguments.contains("--maple-shipping-transcript-rows-proof"),
             historyRendering: ProcessInfo.processInfo.arguments.contains("--maple-shipping-history-rendering-proof"),
-            streamWidth: ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof"))
+            streamWidth: ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof"),
+            nativeNestedScroll: ProcessInfo.processInfo.arguments.contains(
+                "--maple-shipping-native-nested-scroll-proof"))
         private let store: ShippingViewportStore
         let draftLoadProof: Bool
         let compactProjectionProof: Bool
+        let coldHistoryProof: Bool
         let historyRenderingProof = ProcessInfo.processInfo.arguments.contains(
             "--maple-shipping-history-rendering-proof")
         let streamWidthProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-stream-width-proof")
@@ -414,6 +427,7 @@
         var projectionMenuPresented = false
         private let instanceID = UUID()
         private(set) var draftLoadHeld = false
+        private(set) var coldHistoryNavigationSettled = false
         @ObservationIgnored private var draftLoadTask: Task<Void, Never>?
         @ObservationIgnored private var retired = false
         var ready = false
@@ -437,11 +451,18 @@
                 ProcessInfo.processInfo.arguments.contains("--maple-shipping-viewport-fixture")
                 && ProcessInfo.processInfo.arguments.contains("--maple-shipping-draft-load-proof")
             self.draftLoadProof = draftLoadProof
-            let compactProjectionProof =
+            let coldHistoryProof =
                 ProcessInfo.processInfo.arguments.contains("--maple-shipping-viewport-fixture")
-                && ProcessInfo.processInfo.arguments.contains("--maple-shipping-compact-projection-proof")
+                && ProcessInfo.processInfo.arguments.contains("--maple-shipping-cold-history-proof")
+            self.coldHistoryProof = coldHistoryProof
+            let compactProjectionProof =
+                coldHistoryProof
+                || (ProcessInfo.processInfo.arguments.contains("--maple-shipping-viewport-fixture")
+                    && ProcessInfo.processInfo.arguments.contains("--maple-shipping-compact-projection-proof"))
             self.compactProjectionProof = compactProjectionProof
-            let store = ShippingViewportStore(holdInitialLoad: draftLoadProof)
+            let store = ShippingViewportStore(
+                holdInitialLoad: draftLoadProof || coldHistoryProof,
+                heldChatID: coldHistoryProof ? ShippingViewportService.chatID : nil)
             self.store = store
             // This environment is never restored or activated. Inert loopback
             // origins isolate its SDK namespace from the local signed-in app.
@@ -548,6 +569,14 @@
             await account.refresh()
             await optionsLibrary.loadProjects()
             guard !retired, !Task.isCancelled else { return }
+            if coldHistoryProof, let cachedProjection {
+                await cachedProjection.load(chatID: nil)
+                guard !retired, !Task.isCancelled else { return }
+                cachedProjection.isVisible = true; runtime.isVisible = false
+                ready = preferences.state == .ready && account.chatAccess == .allowed
+                failed = !ready
+                return
+            }
             if draftLoadProof {
                 await store.seed(
                     ChatSnapshot(
@@ -592,6 +621,43 @@
             // Select an already-loaded runtime only. No load, draft mutation or
             // deferred model publication may repair the returned projection.
             projectionIsNewChat = newChat
+        }
+        var coldHistoryState: String {
+            "Ready \(ready ? 1 : 0); selected \(projectionIsNewChat ? "new" : "existing"); held \(draftLoadHeld ? 1 : 0); settled \(coldHistoryNavigationSettled ? 1 : 0); messages \(runtime.messages.count); loading \(runtime.isLoading ? 1 : 0)"
+        }
+        /// Synthetic selection models publication before presentation. It does
+        /// not replace or exercise AppEnvironment's real selection callback.
+        func selectColdHistory() async {
+            guard coldHistoryProof, ready, !retired, projectionIsNewChat,
+                projectionMenuPresented, let cachedProjection,
+                cachedProjection.scope == account.scope, runtime.scope == account.scope
+            else { return }
+            cachedProjection.isVisible = false; runtime.isVisible = true
+            projectionIsNewChat = false; coldHistoryNavigationSettled = false
+            projectionMenuPresented = false
+            let loading = Task { await runtime.load(chatID: ShippingViewportService.chatID) }
+            draftLoadTask = loading
+            await store.waitForInitialLoad()
+            guard projectionIsCurrent(scope: account.scope), selectedProjection === runtime,
+                !Task.isCancelled
+            else { loading.cancel(); await store.cancelInitialLoad(); return }
+            draftLoadHeld = true
+            await loading.value
+            draftLoadTask = nil; draftLoadHeld = false
+        }
+        func completeColdHistoryNavigation(scope: AccountScope) {
+            guard coldHistoryProof, projectionIsCurrent(scope: scope), selectedProjection === runtime,
+                !projectionIsNewChat, !projectionMenuPresented,
+                runtime.conversationID == ShippingViewportService.chatID
+            else { return }
+            coldHistoryNavigationSettled = true
+        }
+        func releaseColdHistory() async {
+            guard coldHistoryProof, coldHistoryNavigationSettled, draftLoadHeld,
+                projectionIsCurrent(scope: account.scope), selectedProjection === runtime,
+                !projectionMenuPresented, runtime.conversationID == ShippingViewportService.chatID
+            else { return }
+            await store.releaseInitialLoad()
         }
         var projectionOwnership: String {
             guard let cachedProjection else { return "{}" }
@@ -703,6 +769,7 @@
         private let transcriptRows: Bool
         private let historyRendering: Bool
         private let streamWidth: Bool
+        private let nativeNestedScroll: Bool
         private var older: CheckedContinuation<APIPage<ConversationItem>, Error>?
         private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
         private var text = "Synthetic live reply."
@@ -710,11 +777,12 @@
 
         init(
             complexMarkup: Bool = false, transcriptRows: Bool = false, historyRendering: Bool = false,
-            streamWidth: Bool = false
+            streamWidth: Bool = false, nativeNestedScroll: Bool = false
         ) {
             self.complexMarkup = complexMarkup; self.transcriptRows = transcriptRows
             self.historyRendering = historyRendering
             self.streamWidth = streamWidth
+            self.nativeNestedScroll = nativeNestedScroll
         }
 
         func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) throws
@@ -732,7 +800,9 @@
             if parameters.after == nil {
                 if historyRendering { return Self.historyPage() }
                 return transcriptRows
-                    ? try Self.transcriptPage() : Self.page(20..<24, hasMore: true, complexMarkup: complexMarkup)
+                    ? try Self.transcriptPage()
+                    : Self.page(
+                        20..<24, hasMore: true, complexMarkup: complexMarkup, nativeNestedScroll: nativeNestedScroll)
             }
             guard parameters.after == "viewport-user-20", older == nil else { throw ChatIssue.historyUnavailable }
             return try await withCheckedThrowingContinuation { older = $0 }
@@ -772,8 +842,9 @@
                 data: Array(ascending.reversed()), firstId: ascending.last?.id,
                 lastId: ascending.first?.id, hasMore: false)
         }
-        private static func page(_ indices: Range<Int>, hasMore: Bool, complexMarkup: Bool) -> APIPage<ConversationItem>
-        {
+        private static func page(
+            _ indices: Range<Int>, hasMore: Bool, complexMarkup: Bool, nativeNestedScroll: Bool = false
+        ) -> APIPage<ConversationItem> {
             let ascending = indices.flatMap { index in
                 [
                     ConversationItem(
@@ -785,9 +856,11 @@
                             MessageContent(
                                 type: "output_text",
                                 text:
-                                    complexMarkup
-                                    ? complexReply(index)
-                                    : "Synthetic reply \(index). **Bold**, *emphasis*, and `inline code` use the shipping renderer.\n\nA second paragraph makes this turn taller than a plain list row."
+                                    nativeNestedScroll && index == 20
+                                    ? nativeNestedReply()
+                                    : complexMarkup
+                                        ? complexReply(index)
+                                        : "Synthetic reply \(index). **Bold**, *emphasis*, and `inline code` use the shipping renderer.\n\nA second paragraph makes this turn taller than a plain list row."
                             )
                         ]),
                 ]
@@ -824,6 +897,25 @@
             This paragraph deliberately gives the accessibility container content beyond the visible viewport.
 
             Multilingual text remains selectable: مرحبا, こんにちは, שלום, 🌿.
+            """
+        }
+        /// Overflow exceeds the transcript's 850-point cap on both device families.
+        /// The native menu fixture exercises the real nested scrollers and pop admission.
+        private static func nativeNestedReply() -> String {
+            """
+            Native nested-scroll reading anchor.
+
+            | First synthetic nested column | Second synthetic nested column | Third synthetic nested column | Fourth synthetic nested column | Fifth synthetic nested column | Sixth synthetic nested column | Seventh synthetic nested column |
+            |:---|:---|:---|:---|:---|:---|:---|
+            | Native nested table first | Another deliberately broad observation | A third deliberately broad observation | A fourth deliberately broad observation | A fifth deliberately broad observation | A sixth deliberately broad observation | Native nested table last |
+
+            Native nested code reading anchor.
+
+            ```swift
+            let native_nested_scroll_identifier = "ThisDeliberatelyUnbrokenSyntheticCodeLineIsLongEnoughToOverflowTheFullEightHundredAndFiftyPointTranscriptColumnWhileOnlyItsOwnCodeViewportScrollsHorizontally"
+            ```
+
+            Native nested-scroll final reading anchor.
             """
         }
         /// A completed multi-turn topic keeps rich replies taller than the
@@ -1010,12 +1102,15 @@
     private actor ShippingViewportStore: ChatPersistence {
         private var values: [String: ChatSnapshot] = [:]
         private var holdInitialLoad: Bool
+        private let heldChatID: String?
         private var initialLoadEntered = false
         private var retired = false
         private var arrival: CheckedContinuation<Void, Never>?
         private var pendingLoad: (String, CheckedContinuation<ChatSnapshot?, Error>)?
 
-        init(holdInitialLoad: Bool = false) { self.holdInitialLoad = holdInitialLoad }
+        init(holdInitialLoad: Bool = false, heldChatID: String? = nil) {
+            self.holdInitialLoad = holdInitialLoad; self.heldChatID = heldChatID
+        }
         func seed(_ snapshot: ChatSnapshot) { values[snapshot.storageKey] = snapshot }
         func waitForInitialLoad() async {
             guard !initialLoadEntered, !retired else { return }
@@ -1023,7 +1118,7 @@
         }
         func load(chatID: String, scope: AccountScope) async throws -> ChatSnapshot? {
             guard !retired else { throw CancellationError() }
-            guard holdInitialLoad else { return values[chatID] }
+            guard holdInitialLoad, heldChatID == nil || heldChatID == chatID else { return values[chatID] }
             holdInitialLoad = false; initialLoadEntered = true
             return try await withCheckedThrowingContinuation { continuation in
                 pendingLoad = (chatID, continuation)

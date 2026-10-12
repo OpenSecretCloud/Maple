@@ -105,6 +105,9 @@
         @Binding var selecting: Bool
         var onMutation: (@MainActor () async -> Void)? = nil
         var onSettings: (@MainActor () -> Void)? = nil
+        var compactRootBar = false
+        var nativeRootBarHidden = false
+        var nativeRootBarTrailing: AnyView? = nil
         @State private var moving = false
         @State private var deleting = false
         @State private var deletingAll = false
@@ -112,69 +115,20 @@
             content
                 .modifier(LibraryChatDeletionConfirmation())
                 .toolbar {
-                    ToolbarItem(placement: .principal) {
-                        Menu {
-                            Section {
-                                if let onSettings {
-                                    Button(action: onSettings) {
-                                        Label {
-                                            libraryText("Settings")
-                                        } icon: {
-                                            Image(systemName: "gearshape")
-                                        }
-                                    }
-                                    .accessibilityIdentifier("library.settings")
-                                }
-                                Button {
-                                    selecting.toggle(); if !selecting { library.selectedIDs = [] }
-                                } label: {
-                                    Label {
-                                        libraryText(selecting ? "Done selecting" : "Select chats")
-                                    } icon: {
-                                        Image(systemName: selecting ? "checkmark" : "checkmark.circle")
-                                    }
-                                }
-                            }
-                            Section {
-                                Button(role: .destructive) {
-                                    deletingAll = true
-                                } label: {
-                                    Label {
-                                        libraryText("Delete all chats")
-                                    } icon: {
-                                        Image(systemName: "trash")
-                                    }
-                                }
-                            }
-                        } label: {
-                            MapleWordmark().frame(width: 103, height: 20)
-                                .overlay(alignment: .trailing) {
-                                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
-                                        .foregroundStyle(MapleAccent.action).offset(x: 29).accessibilityHidden(true)
-                                }
-                                .padding(.horizontal, 30)
-                                .frame(minHeight: 44).contentShape(Rectangle())
-                        }
-                        .menuStyle(.button)
-                        .buttonStyle(.plain)
-                        .frame(minHeight: 44)
-                        .accessibilityLabel(libraryText("Maple menu"))
-                        .accessibilityIdentifier("library.actions")
-                        .disabled(library.isMutating)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                    if selecting {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                selecting = false; library.selectedIDs = []
-                            } label: {
-                                libraryText("Done")
-                            }
-                            .accessibilityIdentifier("library.selection-done")
-                            .disabled(library.isMutating)
+                    if !compactRootBar {
+                        ToolbarItem(placement: .principal) { mapleMenu }
+                            .sharedBackgroundVisibility(.hidden)
+                        if selecting {
+                            ToolbarItem(placement: .topBarLeading) { selectionDone }
                         }
                     }
                 }
+                .modifier(
+                    LibraryCompactRootBar(
+                        enabled: compactRootBar, hidden: nativeRootBarHidden,
+                        leading: selecting ? AnyView(selectionDone) : nil,
+                        principal: AnyView(mapleMenu), trailing: nativeRootBarTrailing)
+                )
                 .safeAreaInset(edge: .bottom) {
                     if selecting {
                         VStack(spacing: 8) {
@@ -236,6 +190,84 @@
                         }
                     }
                 }
+        }
+
+        private var mapleMenu: some View {
+            Menu {
+                Section {
+                    if let onSettings {
+                        Button(action: onSettings) {
+                            Label {
+                                libraryText("Settings")
+                            } icon: {
+                                Image(systemName: "gearshape")
+                            }
+                        }
+                        .accessibilityIdentifier("library.settings")
+                    }
+                    Button {
+                        selecting.toggle(); if !selecting { library.selectedIDs = [] }
+                    } label: {
+                        Label {
+                            libraryText(selecting ? "Done selecting" : "Select chats")
+                        } icon: {
+                            Image(systemName: selecting ? "checkmark" : "checkmark.circle")
+                        }
+                    }
+                }
+                Section {
+                    Button(role: .destructive) {
+                        deletingAll = true
+                    } label: {
+                        Label {
+                            libraryText("Delete all chats")
+                        } icon: {
+                            Image(systemName: "trash")
+                        }
+                    }
+                }
+            } label: {
+                MapleWordmark().frame(width: 103, height: 20)
+                    .overlay(alignment: .trailing) {
+                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                            .foregroundStyle(MapleAccent.action).offset(x: 29).accessibilityHidden(true)
+                    }
+                    .padding(.horizontal, 30)
+                    .frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .frame(minHeight: 44)
+            .accessibilityLabel(libraryText("Maple menu"))
+            .accessibilityIdentifier("library.actions")
+            .disabled(library.isMutating)
+        }
+
+        private var selectionDone: some View {
+            Button {
+                selecting = false; library.selectedIDs = []
+            } label: {
+                libraryText("Done")
+            }
+            .accessibilityIdentifier("library.selection-done")
+            .disabled(library.isMutating)
+        }
+    }
+
+    private struct LibraryCompactRootBar: ViewModifier {
+        let enabled: Bool
+        let hidden: Bool
+        let leading: AnyView?
+        let principal: AnyView
+        let trailing: AnyView?
+
+        func body(content: Content) -> some View {
+            if enabled {
+                content.compactMenuRootBar(
+                    role: .library, hidden: hidden, leading: leading, principal: principal, trailing: trailing)
+            } else {
+                content
+            }
         }
     }
 

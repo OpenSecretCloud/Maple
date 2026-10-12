@@ -287,11 +287,12 @@ final class ShippingViewportUITests: XCTestCase {
             start.press(
                 forDuration: 0.1,
                 thenDragTo: start.withOffset(
-                    CGVector(dx: app.frame.width * 0.65, dy: 0)))
+                    CGVector(dx: app.frame.width * 0.65, dy: 0)),
+                withVelocity: .fast, thenHoldForDuration: 0)
             let close = app.buttons["shipping-pagination.close"]
             XCTAssertTrue(
                 close.waitForExistence(timeout: 15),
-                "A fresh physical-left contact must work after picker dismissal")
+                "A fresh physical-left flick must work after picker dismissal")
             XCTAssertTrue(app.otherElements["shipping-pagination.library"].exists)
             close.tap()
             XCTAssertTrue(composer.waitForExistence(timeout: 15))
@@ -364,6 +365,55 @@ final class ShippingViewportUITests: XCTestCase {
         XCTAssertTrue(frame.contains(point))
         XCTAssertTrue(app.windows.firstMatch.frame.contains(point))
         target.tap()
+    }
+
+    func testColdExistingHistoryEntersBlankChatBeforeItsFirstLoadCompletes() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-cold-history-proof"]
+        app.launch()
+        defer { app.terminate() }
+        let state = app.staticTexts["shipping-cold-history.state"]
+        XCTAssertTrue(state.waitForExistence(timeout: 15))
+        func waitState(_ expected: String) {
+            let match = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label == %@", expected), object: state)
+            XCTAssertEqual(XCTWaiter.wait(for: [match], timeout: 15), .completed)
+        }
+        waitState("Ready 1; selected new; held 0; settled 0; messages 0; loading 0")
+        let greeting = app.staticTexts["Research anything..."]
+        XCTAssertTrue(greeting.exists && greeting.isHittable, "The fixture begins with a genuine empty New Chat")
+        XCTAssertTrue(app.textViews["chat.composer"].exists)
+        let menu = app.mapleMenuButton
+        XCTAssertTrue(menu.exists && menu.isHittable); menu.tap()
+        let select = app.buttons["shipping-cold-history.select"]
+        XCTAssertTrue(select.waitForExistence(timeout: 15) && select.isEnabled && select.isHittable)
+        select.tap()
+
+        // UIKit's didShow callback must settle the Chat while its first history
+        // load is still explicitly held. Releasing it cannot make this pass.
+        waitState("Ready 1; selected existing; held 1; settled 1; messages 0; loading 1")
+        XCTAssertTrue(app.mapleChatNavigationBar.exists)
+        XCTAssertTrue(app.mapleMenuButton.isHittable, "Native Chat navigation is complete before history arrives")
+        XCTAssertFalse(select.exists, "The retained Library is no longer the active projection")
+        XCTAssertTrue(app.scrollViews["chat.transcript"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["chat.loading"].exists)
+        XCTAssertFalse(app.textViews["chat.composer"].exists)
+        XCTAssertFalse(greeting.exists, "An existing empty/loading conversation must never show the New Chat greeting")
+        XCTAssertFalse(app.buttons["message.copy.viewport-user-20"].exists)
+        let release = app.buttons["shipping-cold-history.release"]
+        XCTAssertTrue(release.exists && release.isEnabled && release.isHittable)
+        capture("Cold existing Chat finishes native navigation with a blank transcript before history release")
+
+        release.tap()
+        waitState("Ready 1; selected existing; held 0; settled 1; messages 8; loading 0")
+        XCTAssertTrue(app.textViews["chat.composer"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["message.copy.viewport-user-20"].exists)
+        XCTAssertTrue(app.buttons["message.speak.viewport-assistant-20"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["chat.loading"].exists)
+        XCTAssertFalse(greeting.exists)
+        XCTAssertTrue(app.mapleMenuButton.isHittable)
+        capture("The same existing Chat displays its released history without a New Chat projection")
     }
 
     func testShippingComposerWaitsForLoadedDraftAndRetainsNativeEdits() throws {
@@ -516,7 +566,7 @@ final class ShippingViewportUITests: XCTestCase {
         let before = anchor.frame.midY
         capture("Retained Chat anchor before pagination completes behind Menu")
 
-        let open = app.buttons["shipping-pagination.open"]
+        let open = app.mapleMenuButton
         XCTAssertTrue(open.exists && open.isEnabled && open.isHittable)
         open.tap()
         let menu = app.otherElements["shipping-pagination.library"]
@@ -552,6 +602,283 @@ final class ShippingViewportUITests: XCTestCase {
         XCTAssertFalse(load.exists)
         XCTAssertTrue(composer.isHittable)
         capture("Full-screen Menu returns the same Chat owner and pagination anchor")
+    }
+
+    func testNativeMenuFlickAndCancelledSlowDragRetainTheChat() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = [
+            "--maple-shipping-viewport-fixture", "--maple-shipping-pagination-menu-proof",
+            "--maple-shipping-complex-markdown-proof",
+        ]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let composer = app.textViews["chat.composer"]
+        let transcript = app.scrollViews["chat.transcript"]
+        let assistant = transcript.descendants(matching: .any).matching(
+            identifier: "assistant.message.viewport-assistant-20"
+        ).firstMatch
+        XCTAssertTrue(assistant.buttons["Copy code"].firstMatch.waitForExistence(timeout: 15))
+        let owners = try windowOwnership()
+        let menu = app.otherElements["shipping-pagination.library"]
+        let close = app.buttons["shipping-pagination.close"]
+
+        func cancellationCount() throws -> Int {
+            let diagnostics = app.staticTexts["compact-menu.native-diagnostics"]
+            let field = try XCTUnwrap(
+                diagnostics.label.components(separatedBy: ";").first {
+                    $0.trimmingCharacters(in: .whitespaces).hasPrefix("cancelled ")
+                })
+            let values = field.trimmingCharacters(in: .whitespaces).dropFirst(10).split(separator: ":")
+            return try XCTUnwrap(values.first.flatMap { Int($0) })
+        }
+
+        func assertHeaderPlacement() throws {
+            let diagnostics = app.staticTexts["compact-menu.native-diagnostics"]
+            let topField = try XCTUnwrap(
+                diagnostics.label.components(separatedBy: ";").first {
+                    $0.trimmingCharacters(in: .whitespaces).hasPrefix("top ")
+                })
+            let values = topField.trimmingCharacters(in: .whitespaces).dropFirst(4).split(separator: ":")
+            let windowTop = try XCTUnwrap(values.last.flatMap { Double($0) })
+            let header = app.mapleChatNavigationBar
+            XCTAssertTrue(header.exists)
+            XCTAssertEqual(
+                header.frame.minY, app.windows.firstMatch.frame.minY + windowTop, accuracy: 1,
+                "The retained Chat must not inherit an extra outer navigation-bar inset")
+        }
+        try assertHeaderPlacement()
+
+        for attempt in 1...2 {
+            XCTAssertTrue(composer.exists && composer.isHittable)
+            let start = app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
+            // A short, fast release lets native navigation finish the pop.
+            start.press(
+                forDuration: 0.05,
+                thenDragTo: start.withOffset(CGVector(dx: app.frame.width * 0.25, dy: 0)),
+                withVelocity: .fast, thenHoldForDuration: 0)
+            let diagnostics = app.staticTexts["compact-menu.native-diagnostics"]
+            let admission = XCTAttachment(string: diagnostics.exists ? diagnostics.label : "unavailable")
+            admission.name = "Native menu gesture admission after flick \(attempt)"
+            admission.lifetime = .keepAlways; add(admission)
+            XCTAssertTrue(close.waitForExistence(timeout: 15))
+            XCTAssertTrue(menu.exists && close.isHittable)
+            XCTAssertFalse(composer.exists)
+            XCTAssertEqual(try windowOwnership(), owners)
+            capture("Native menu flick completes — attempt \(attempt)")
+            close.tap()
+            let returned = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    !menu.exists && composer.exists && composer.isHittable && assistant.exists
+                }, object: composer)
+            XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 15), .completed)
+            try assertHeaderPlacement()
+            let original = assistant.frame
+            let leading = app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
+            let cancellationsBefore = try cancellationCount()
+            // XCTest's .slow is still 250 points/second, which UIKit can
+            // complete on iPad despite a hold. Use a genuinely slow contact.
+            leading.press(
+                forDuration: 0.05, thenDragTo: leading.withOffset(CGVector(dx: 40, dy: 0)),
+                withVelocity: 30, thenHoldForDuration: 0.3)
+            let cancellation = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    (try? cancellationCount()) == cancellationsBefore + 1
+                }, object: diagnostics)
+            XCTAssertEqual(XCTWaiter.wait(for: [cancellation], timeout: 15), .completed)
+            let release = diagnostics.label
+            let cancellationAttachment = XCTAttachment(string: release)
+            cancellationAttachment.name = "Native cancelled contact \(attempt)"
+            cancellationAttachment.lifetime = .keepAlways; add(cancellationAttachment)
+            print("Native cancelled contact \(attempt): \(release)")
+            let settled = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    guard !menu.exists, !close.exists, composer.exists, composer.isHittable, assistant.exists else {
+                        return false
+                    }
+                    let frame = assistant.frame
+                    return abs(frame.minX - original.minX) <= 3 && abs(frame.minY - original.minY) <= 3
+                        && abs(frame.height - original.height) <= 3
+                }, object: assistant)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 15), .completed)
+            XCTAssertEqual(try windowOwnership(), owners)
+            XCTAssertTrue(assistant.buttons["Copy code"].firstMatch.exists)
+            capture("Native slow preview cancels without replacing chat — attempt \(attempt)")
+        }
+    }
+
+    func testNativeMenuLeavesInteriorTableAndCodeFlicksToTheirNestedScrollers() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = [
+            "--maple-shipping-viewport-fixture", "--maple-shipping-pagination-menu-proof",
+            "--maple-shipping-complex-markdown-proof", "--maple-shipping-native-nested-scroll-proof",
+        ]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let transcript = app.scrollViews["chat.transcript"]
+        let composer = app.textViews["chat.composer"]
+        let menu = app.otherElements["shipping-pagination.library"]
+        let close = app.buttons["shipping-pagination.close"]
+        let diagnostics = app.staticTexts["compact-menu.native-diagnostics"]
+        let readingAnchor = app.staticTexts.matching(
+            NSPredicate(format: "label == %@", "Native nested-scroll reading anchor.")
+        ).firstMatch
+        let assistant = app.descendants(matching: .any).matching(
+            identifier: "assistant.message.viewport-assistant-20"
+        ).firstMatch
+        XCTAssertTrue(assistant.buttons["Copy code"].firstMatch.waitForExistence(timeout: 15))
+        let owners = try windowOwnership()
+
+        func menuCounts() throws -> [Int] {
+            let field = try XCTUnwrap(
+                diagnostics.label.components(separatedBy: ";").first {
+                    $0.trimmingCharacters(in: .whitespaces).hasPrefix("menu ")
+                })
+            let counts = field.trimmingCharacters(in: .whitespaces).dropFirst(5).split(separator: ":")
+                .compactMap { Int($0) }
+            XCTAssertEqual(counts.count, 2)
+            return counts
+        }
+        let originalMenuCounts = try menuCounts()
+        let columnWidth = min(transcript.frame.width, 850)
+        let expectedLeading = transcript.frame.midX - columnWidth / 2 + 20
+
+        func readableRegion() -> CGRect {
+            let window = app.windows.firstMatch.frame
+            let top = max(
+                transcript.frame.minY, window.minY, app.staticTexts["shipping-viewport.summary"].frame.maxY + 12)
+            let bottom = min(transcript.frame.maxY, window.maxY, composer.frame.minY - 12)
+            return CGRect(x: expectedLeading, y: top, width: columnWidth - 40, height: bottom - top)
+        }
+        func coordinate(_ point: CGPoint) -> XCUICoordinate {
+            app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: point.x - app.frame.minX, dy: point.y - app.frame.minY))
+        }
+        func assertChatStayedOpen(_ phase: String) throws {
+            XCTAssertFalse(menu.exists, phase)
+            XCTAssertFalse(close.exists, phase)
+            XCTAssertTrue(composer.exists && composer.isHittable, phase)
+            XCTAssertEqual(try menuCounts(), originalMenuCounts, "Even a cancelled pop preview must not start")
+            XCTAssertEqual(try windowOwnership(), owners)
+            XCTAssertTrue(readingAnchor.exists)
+            XCTAssertEqual(readingAnchor.frame.minX, expectedLeading, accuracy: 1)
+        }
+        func reveal(_ target: XCUIElement) throws {
+            for _ in 0..<16 {
+                let region = readableRegion()
+                if target.exists {
+                    let visible = target.frame.intersection(region)
+                    if !visible.isNull && visible.height >= min(target.frame.height, 24) { return }
+                }
+                let lower = coordinate(CGPoint(x: expectedLeading - 10, y: region.maxY - 24))
+                let upper = coordinate(CGPoint(x: expectedLeading - 10, y: region.minY + 24))
+                if target.exists && target.frame.maxY < region.minY {
+                    upper.press(forDuration: 0.05, thenDragTo: lower, withVelocity: .slow, thenHoldForDuration: 0.1)
+                } else {
+                    lower.press(forDuration: 0.05, thenDragTo: upper, withVelocity: .slow, thenHoldForDuration: 0.1)
+                }
+                try assertChatStayedOpen("Vertical reveal")
+            }
+            XCTFail("The nested viewport must be reachable in the actual chat transcript")
+        }
+        func interiorDrag(in band: CGRect, rightward: Bool, fast: Bool = false) {
+            let leftX = max(band.minX + 24, app.frame.minX + 72)
+            let rightX = band.maxX - 24
+            XCTAssertGreaterThan(rightX - leftX, 44)
+            XCTAssertGreaterThan(leftX - app.frame.minX, 44, "The contact starts outside the physical edge zone")
+            let left = coordinate(CGPoint(x: leftX, y: band.midY))
+            let right = coordinate(CGPoint(x: rightX, y: band.midY))
+            (rightward ? left : right).press(
+                forDuration: 0.05, thenDragTo: rightward ? right : left,
+                withVelocity: fast ? .fast : .slow, thenHoldForDuration: fast ? 0 : 0.1)
+        }
+
+        let firstCell = app.staticTexts.matching(NSPredicate(format: "label == %@", "Native nested table first"))
+            .firstMatch
+        let lastCell = app.staticTexts.matching(NSPredicate(format: "label == %@", "Native nested table last"))
+            .firstMatch
+        try reveal(firstCell)
+        XCTAssertTrue(firstCell.exists && lastCell.exists)
+        let tableBand = firstCell.frame.intersection(readableRegion())
+        XCTAssertFalse(tableBand.isNull)
+        XCTAssertGreaterThan(tableBand.height, 5)
+        // The row marker provides the vertical band; the transcript defines
+        // the nested table viewport's horizontal extent, not one narrow cell.
+        let tableViewport = CGRect(
+            x: expectedLeading, y: tableBand.minY, width: columnWidth - 40, height: tableBand.height)
+        let initialTableX = firstCell.frame.minX
+        XCTAssertGreaterThan(lastCell.frame.maxX - initialTableX, tableViewport.width + 40)
+        func lastTableCellVisible() -> Bool {
+            let visible = lastCell.frame.intersection(tableViewport)
+            return !visible.isNull && visible.width > 20 && visible.height > 5
+        }
+        XCTAssertFalse(lastTableCellVisible())
+        for _ in 0..<10 where !lastTableCellVisible() {
+            interiorDrag(in: tableViewport, rightward: false)
+            try assertChatStayedOpen("Nested table scroll")
+        }
+        XCTAssertTrue(lastTableCellVisible(), "The table must actually scroll to its final column")
+        let scrolledTableX = firstCell.frame.minX
+        XCTAssertLessThan(scrolledTableX, initialTableX - 20)
+        interiorDrag(in: tableViewport, rightward: true, fast: true)
+        let tableReturned = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in firstCell.exists && firstCell.frame.minX > scrolledTableX + 20 },
+            object: firstCell)
+        XCTAssertEqual(XCTWaiter.wait(for: [tableReturned], timeout: 5), .completed)
+        try assertChatStayedOpen("Interior rightward table flick")
+        capture("Native menu stays closed while a wide table flicks right")
+
+        let codeScroll = app.scrollViews["message.code.scroll"].firstMatch
+        let code = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "native_nested_scroll_identifier")
+        ).firstMatch
+        try reveal(codeScroll)
+        XCTAssertTrue(code.exists && codeScroll.exists)
+        XCTAssertGreaterThan(code.frame.width, codeScroll.frame.width + 40)
+        let codeBand = codeScroll.frame.intersection(readableRegion())
+        XCTAssertFalse(codeBand.isNull)
+        XCTAssertGreaterThan(codeBand.height, 5)
+        let initialCodeX = code.frame.minX
+        interiorDrag(in: codeBand, rightward: false)
+        let codeScrolled = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in code.exists && code.frame.minX < initialCodeX - 20 }, object: code)
+        XCTAssertEqual(XCTWaiter.wait(for: [codeScrolled], timeout: 5), .completed)
+        try assertChatStayedOpen("Nested code scroll")
+        let scrolledCodeX = code.frame.minX
+        interiorDrag(in: codeBand, rightward: true, fast: true)
+        let codeReturned = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in code.exists && code.frame.minX > scrolledCodeX + 20 }, object: code)
+        XCTAssertEqual(XCTWaiter.wait(for: [codeReturned], timeout: 5), .completed)
+        try assertChatStayedOpen("Interior rightward code flick")
+        capture("Native menu stays closed while wide code flicks right")
+
+        try reveal(readingAnchor)
+        let beforeY = readingAnchor.frame.minY
+        let region = readableRegion()
+        coordinate(CGPoint(x: expectedLeading - 10, y: region.midY + 60)).press(
+            forDuration: 0.05,
+            thenDragTo: coordinate(CGPoint(x: expectedLeading - 10, y: region.midY - 60)),
+            withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertGreaterThan(abs(readingAnchor.frame.minY - beforeY), 40, "The transcript still scrolls vertically")
+        try assertChatStayedOpen("Outer vertical scroll")
+
+        // The same native driver must still admit a genuine physical-left flick.
+        let edge = coordinate(CGPoint(x: app.frame.minX + 4, y: readableRegion().midY))
+        edge.press(
+            forDuration: 0.05,
+            thenDragTo: edge.withOffset(CGVector(dx: app.frame.width * 0.25, dy: 0)),
+            withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(close.waitForExistence(timeout: 15))
+        XCTAssertTrue(menu.exists && close.isHittable)
+        XCTAssertFalse(composer.exists)
+        XCTAssertEqual(try windowOwnership(), owners)
+        XCTAssertEqual(try menuCounts(), originalMenuCounts.map { $0 + 1 })
+        capture("Physical-left flick opens the native menu after nested and vertical scrolling")
     }
 
     func testCancelledLeadingEdgePreservesRetainedAssistantGeometryAndDraft() throws {
@@ -609,7 +936,7 @@ final class ShippingViewportUITests: XCTestCase {
                     throw NativeTextEntryIssue.unavailable
                 }
             })
-        app.buttons["shipping-pagination.open"].tap()
+        app.mapleMenuButton.tap()
         let menu = app.otherElements["shipping-pagination.library"]
         let close = app.buttons["shipping-pagination.close"]
         XCTAssertTrue(close.waitForExistence(timeout: 15))
@@ -625,7 +952,8 @@ final class ShippingViewportUITests: XCTestCase {
             CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
         leading.press(
             forDuration: 0.1,
-            thenDragTo: leading.withOffset(CGVector(dx: min(190, app.frame.width * 0.55), dy: 0)))
+            thenDragTo: leading.withOffset(CGVector(dx: app.frame.width * 0.65, dy: 0)),
+            withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(close.waitForExistence(timeout: 15), "A real edge gesture must open the retained menu")
         XCTAssertTrue(menu.exists)
         close.tap()
@@ -637,7 +965,9 @@ final class ShippingViewportUITests: XCTestCase {
         let original = anchor.frame
         let start = app.coordinate(withNormalizedOffset: .zero).withOffset(
             CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
-        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 44, dy: 0)))
+        start.press(
+            forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 44, dy: 0)),
+            withVelocity: 30, thenHoldForDuration: 0.3)
         let returnedAnchor = transcript.descendants(matching: .any).matching(identifier: anchor.identifier).firstMatch
         let settled = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in

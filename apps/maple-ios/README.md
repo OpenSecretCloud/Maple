@@ -130,6 +130,16 @@ protected local file excluded from backups. These presentation choices survive
 relaunch and sign-out, never sync to the server, and are removed after account
 deletion. Search can reveal project contents without changing the saved choice.
 
+On compact layouts, a retained `UINavigationController` owns the full-screen
+Main Menu and Chat routes, their root navigation bar, and the standard
+interactive back transition. UIKit controls drag progress, flick completion
+and cancellation. The admission gate limits this transition to an owned
+physical-left-edge contact so transcript and nested code/table scrolling keep
+their gestures. Library keeps its SwiftUI stack for Settings and deeper
+destinations; that stack takes over the bar while a destination is open.
+Root bar publications are fenced by the account/controller lease and the
+current chat owner, and retiring a lease removes their controls.
+
 ## Account status and catalog
 
 Billing status, team seats and the authenticated model catalog have independent

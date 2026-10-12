@@ -21,7 +21,7 @@ final class MapleUITests: XCTestCase {
         defer { UIPasteboard.general.items = [] }
         let app = XCUIApplication()
         app.launch()
-        if app.buttons["chat.menu"].waitForExistence(timeout: 3) {
+        if app.mapleMenuButton.waitForExistence(timeout: 3) {
             let settings = try openLocalSettings(in: app)
             let signOut = app.buttons["settings.sign-out"]
             try revealLocalControl(signOut, owner: settings, in: app)
@@ -57,7 +57,7 @@ final class MapleUITests: XCTestCase {
         }
         defer { UIPasteboard.general.items = [] }
         let app = XCUIApplication(); app.launch()
-        if app.buttons["chat.menu"].waitForExistence(timeout: 3) {
+        if app.mapleMenuButton.waitForExistence(timeout: 3) {
             let settings = try openLocalSettings(in: app)
             let signOut = app.buttons["settings.sign-out"]
             try revealLocalControl(signOut, owner: settings, in: app)
@@ -89,7 +89,7 @@ final class MapleUITests: XCTestCase {
     }
 
     @MainActor private func openLocalSettings(in app: XCUIApplication) throws -> XCUIElement {
-        app.buttons["chat.menu"].tap()
+        app.mapleMenuButton.tap()
         func library() -> XCUIElement? {
             app.collectionViews.allElementsBoundByIndex.first { owner in
                 let region = owner.frame.intersection(app.frame)
@@ -189,7 +189,7 @@ final class MapleUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["chat.error"].exists)
         composer.tap()
         composer.typeText("A retained local draft")
-        app.buttons["chat.menu"].tap()
+        app.mapleMenuButton.tap()
         XCTAssertTrue(app.buttons["library.close"].waitForExistence(timeout: 10))
         app.buttons["library.close"].tap()
         XCTAssertEqual(composer.value as? String, "A retained local draft")
@@ -229,7 +229,7 @@ final class MapleUITests: XCTestCase {
         app.buttons["audio.speed"].tap()
         let speed = app.buttons["1.5×"]
         XCTAssertTrue(speed.waitForExistence(timeout: 5)); speed.tap()
-        app.buttons["chat.menu"].tap()
+        app.mapleMenuButton.tap()
         XCTAssertTrue(app.buttons["audio.close"].waitForExistence(timeout: 10))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Local reply player in menu"; screenshot.lifetime = .keepAlways; add(screenshot)
@@ -379,7 +379,7 @@ final class MapleUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Existing chat survives foreground.")
         XCTAssertEqual(message.frame.minY, before.minY, accuracy: 3)
         XCTAssertEqual(message.frame.height, before.height, accuracy: 3)
-        app.buttons["chat.menu"].tap()
+        app.mapleMenuButton.tap()
         app.buttons["library.close"].tap()
         XCTAssertEqual(composer.value as? String, "Existing chat survives foreground.")
         app.terminate(); app.launch()
@@ -417,7 +417,7 @@ final class MapleUITests: XCTestCase {
     }
 
     @MainActor private func openColdLaunchConversation(_ id: String, in app: XCUIApplication) throws {
-        let menu = app.buttons["chat.menu"]
+        let menu = app.mapleMenuButton
         XCTAssertTrue(menu.waitForExistence(timeout: 10)); XCTAssertTrue(menu.isHittable); menu.tap()
         guard let row = try MenuChatUI.find(id, in: app, pageLimit: 24) else {
             XCTFail("The exact shared rich conversation must be selected; never substitute the latest row")

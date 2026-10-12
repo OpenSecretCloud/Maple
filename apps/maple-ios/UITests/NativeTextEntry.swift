@@ -1,5 +1,22 @@
 import XCTest
 
+extension XCUIApplication {
+    /// Regular-width Chat still supplies its SwiftUI Menu button. Compact Chat
+    /// uses UIKit's actual Back control, scoped to the owned Chat bar so an
+    /// Auth or Settings Back button cannot satisfy the query in any locale.
+    @MainActor var mapleMenuButton: XCUIElement {
+        let custom = buttons["chat.menu"].firstMatch
+        if custom.exists { return custom }
+        return navigationBars["chat.navigation"].buttons["BackButton"].firstMatch
+    }
+
+    @MainActor var mapleChatNavigationBar: XCUIElement {
+        let native = navigationBars["chat.navigation"].firstMatch
+        if native.exists { return native }
+        return navigationBars.containing(.button, identifier: "chat.menu").firstMatch
+    }
+}
+
 /// A SwiftUI Form exposes the full toggle row as an accessibility switch.
 /// Its center can be the label, so target the actual trailing native control.
 @MainActor func tapNativeSwitch(_ row: XCUIElement, in app: XCUIApplication) {

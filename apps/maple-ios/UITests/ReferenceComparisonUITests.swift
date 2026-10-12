@@ -424,7 +424,7 @@ import XCTest
     private func tap(
         _ id: String, down: Bool = false, attempts: Int = 8, in owner: XCUIElement? = nil
     ) {
-        let button = app.buttons[id].firstMatch
+        let button = id == "chat.menu" ? app.mapleMenuButton : app.buttons[id].firstMatch
         reveal(button, down: down, attempts: attempts, in: owner)
         XCTAssertTrue(button.isEnabled); button.tap()
     }
@@ -853,7 +853,7 @@ import XCTest
         dismissTabletKeyboard()
         func hiddenWelcomeFrames() -> [CGRect]? {
             let window = app.windows.firstMatch, transcript = app.scrollViews["chat.transcript"]
-            let navigation = app.navigationBars.containing(.button, identifier: "chat.menu").firstMatch
+            let navigation = app.mapleChatNavigationBar
             guard window.exists, transcript.exists, navigation.exists, composer.exists,
                 composer.isHittable, !keyboardIsVisible()
             else { return nil }
@@ -970,7 +970,7 @@ import XCTest
         _ transcript: XCUIElement, down: Bool, velocity: XCUIGestureVelocity, span: CGFloat = 0.5
     ) throws {
         let window = app.windows.firstMatch
-        let navigation = app.navigationBars.containing(.button, identifier: "chat.menu").firstMatch
+        let navigation = app.mapleChatNavigationBar
         let editor = composer
         guard transcript.exists, window.exists, navigation.exists, editor.exists else {
             XCTFail("Transcript scrolling requires its window, navigation and composer")
@@ -1045,7 +1045,7 @@ import XCTest
         let code = assistant.buttons["Copy code"].firstMatch
         func clearCodeHeader() -> Bool {
             let window = app.windows.firstMatch
-            let navigation = app.navigationBars.containing(.button, identifier: "chat.menu").firstMatch
+            let navigation = app.mapleChatNavigationBar
             guard transcript.exists, window.exists, navigation.exists, composer.exists,
                 code.exists, code.isHittable
             else { return false }
@@ -1064,7 +1064,7 @@ import XCTest
         for _ in 0..<16 {
             if clearCodeHeader() { break }
             try checkWorkBudget()
-            let navigation = app.navigationBars.containing(.button, identifier: "chat.menu").firstMatch
+            let navigation = app.mapleChatNavigationBar
             let towardEarlier =
                 code.exists && code.frame.midY.isFinite
                 && code.frame.midY < navigation.frame.maxY + 8
@@ -1143,8 +1143,8 @@ import XCTest
         let start = app.coordinate(withNormalizedOffset: .zero).withOffset(
             CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
         let end = app.coordinate(withNormalizedOffset: .zero).withOffset(
-            CGVector(dx: app.frame.minX + min(190, app.frame.width * 0.55), dy: transcript.frame.midY))
-        start.press(forDuration: 0.1, thenDragTo: end)
+            CGVector(dx: app.frame.minX + app.frame.width * 0.65, dy: transcript.frame.midY))
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(app.buttons["library.close"].waitForExistence(timeout: 15))
         try assertPhysicalLeftDrawer()
         capture("leading-edge-menu")
@@ -1157,13 +1157,15 @@ import XCTest
         XCTAssertTrue(afterEdgeClose.exists)
         XCTAssertEqual(afterEdgeClose.frame.minY, originalY, accuracy: 3)
         XCTAssertEqual(afterEdgeClose.frame.height, originalHeight, accuracy: 3)
-        // A short physical-left pull previews the menu, then releases below
-        // the commit distance. The chat must settle back without opening it.
+        // A slow short pull held before release has no flick momentum.
+        // Native navigation must settle back without opening the menu.
         let originalX = afterEdgeClose.frame.minX
         let cancelledStart = app.coordinate(withNormalizedOffset: .zero).withOffset(
             CGVector(dx: app.frame.minX + 4, dy: transcript.frame.midY))
         let cancelledEnd = cancelledStart.withOffset(CGVector(dx: 44, dy: 0))
-        cancelledStart.press(forDuration: 0.1, thenDragTo: cancelledEnd)
+        cancelledStart.press(
+            forDuration: 0.1, thenDragTo: cancelledEnd,
+            withVelocity: .slow, thenHoldForDuration: 0.3)
         let afterCancelledPreview = transcript.descendants(matching: .any).matching(identifier: identifier).firstMatch
         let settled = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in
@@ -1344,7 +1346,7 @@ import XCTest
         let image = app.buttons["View message image"].firstMatch
         let transcript = app.scrollViews["chat.transcript"]
         let window = app.windows.firstMatch
-        let navigation = app.navigationBars.containing(.button, identifier: "chat.menu").firstMatch
+        let navigation = app.mapleChatNavigationBar
         func imageIsVisible() -> Bool {
             guard image.exists, image.isEnabled, image.isHittable,
                 transcript.exists, window.exists, navigation.exists, composer.exists

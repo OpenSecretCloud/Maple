@@ -112,24 +112,26 @@ enum ChatComposerPresentation {
                         .background(MapleSurface.sidebar)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("library.drawer"),
-                    chat: NavigationStack {
-                        detail.safeAreaInset(edge: .bottom) { audioPlayer }
-                    }
-                    .environment(\.layoutDirection, layoutDirection)
-                    .environment(\.mapleLaunchTransition, launchTransition)
-                    .environment(\.compactMenuChatState) { [weak compactMenuLease] scope, owner in
-                        compactMenuLease?.state(scope: scope, storageOwner: owner) ?? CompactMenuChatState()
-                    }
-                    .background(MapleSurface.canvas)
-                    .modifier(
-                        CompactMenuChatAccessibility(
-                            lease: compactMenuLease, scope: scope,
-                            storageOwner: environment.selectedChat?.snapshot.storageOwner,
-                            isCurrent: { [weak environment] in
-                                environment?.session.account?.scope == scope
-                                    && environment?.libraryContext?.scope == scope
-                            })
-                    ),
+                    chat: detailContent.safeAreaInset(edge: .bottom) { audioPlayer }
+                        .compactMenuRootBar(
+                            role: .chat, title: chatTitle,
+                            principal: AnyView(chatHeader), trailing: AnyView(newChatControl)
+                        )
+                        .environment(\.layoutDirection, layoutDirection)
+                        .environment(\.mapleLaunchTransition, launchTransition)
+                        .environment(\.compactMenuChatState) { [weak compactMenuLease] scope, owner in
+                            compactMenuLease?.state(scope: scope, storageOwner: owner) ?? CompactMenuChatState()
+                        }
+                        .background(MapleSurface.canvas)
+                        .modifier(
+                            CompactMenuChatAccessibility(
+                                lease: compactMenuLease, scope: scope,
+                                storageOwner: environment.selectedChat?.snapshot.storageOwner,
+                                isCurrent: { [weak environment] in
+                                    environment?.session.account?.scope == scope
+                                        && environment?.libraryContext?.scope == scope
+                                })
+                        ),
                     isCurrent: { [weak environment] in
                         environment?.session.account?.scope == scope && environment?.libraryContext?.scope == scope
                     },
@@ -163,7 +165,7 @@ enum ChatComposerPresentation {
             if let listening = environment.listening { CompactReplyPlayer(session: listening).padding(.horizontal, 8) }
         }
 
-        private var detail: some View {
+        private var detailContent: some View {
             Group {
                 if let chat = environment.selectedChat, let details = environment.entitlements,
                     let preferences = environment.preferences
@@ -185,48 +187,59 @@ enum ChatComposerPresentation {
                 }
             #endif
             .background(MapleSurface.canvas)
-            .navigationTitle(chatTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar(removing: .sidebarToggle)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    HStack(spacing: 6) {
-                        if !chatTitle.isEmpty {
-                            Text(chatTitle).font(.headline).lineLimit(1)
+        }
+
+        private var detail: some View {
+            detailContent
+                .navigationTitle(chatTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar(removing: .sidebarToggle)
+                .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        chatHeader
+                    }
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            showMenu()
+                        } label: {
+                            Label(MapleStrings.text("Menu"), systemImage: "line.3.horizontal")
+                                .labelStyle(.iconOnly)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
-                        MaplePrivacyLock()
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("chat.menu")
+                        .accessibilityFocused($menuButtonFocused)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        newChatControl
                     }
                 }
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showMenu()
-                    } label: {
-                        Label(MapleStrings.text("Menu"), systemImage: "line.3.horizontal")
-                            .labelStyle(.iconOnly)
-                            .frame(minWidth: 44, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("chat.menu")
-                    .accessibilityFocused($menuButtonFocused)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        guard let scope = environment.session.account?.scope else { return }
-                        Task {
-                            guard scope == environment.session.account?.scope else { return }
-                            await environment.selectNewChat()
-                        }
-                    } label: {
-                        Label(MapleStrings.text("New chat"), systemImage: "square.and.pencil")
-                            .labelStyle(.iconOnly)
-                            .frame(minWidth: 44, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("chat.new")
-                }
+        }
+
+        private var chatHeader: some View {
+            HStack(spacing: 6) {
+                if !chatTitle.isEmpty { Text(chatTitle).font(.headline).lineLimit(1) }
+                MaplePrivacyLock()
             }
+        }
+
+        @ViewBuilder private var newChatControl: some View {
+            let scope = environment.session.account?.scope
+            Button {
+                guard let scope, scope == environment.session.account?.scope else { return }
+                Task {
+                    guard scope == environment.session.account?.scope else { return }
+                    await environment.selectNewChat()
+                }
+            } label: {
+                Label(MapleStrings.text("New chat"), systemImage: "square.and.pencil")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("chat.new")
         }
 
         @ViewBuilder private func library(wide: Bool) -> some View {
@@ -236,10 +249,12 @@ enum ChatComposerPresentation {
                     makeInstructionEditor: context.makeInstructionEditor,
                     onSelectChat: { id in
                         guard context.scope == environment.session.account?.scope else { return }
-                        environment.menuPresented = false
                         Task {
                             guard context.scope == environment.session.account?.scope else { return }
-                            await environment.selectChat(id)
+                            await environment.selectChat(id) {
+                                guard context.scope == environment.session.account?.scope else { return }
+                                environment.menuPresented = false
+                            }
                         }
                     },
                     onNewChat: { projectID in
@@ -263,6 +278,7 @@ enum ChatComposerPresentation {
                     settingsPresented: $environment.settingsPresented,
                     onSettingsDismiss: environment.finishNavigationDismissal,
                     drawerNavigation: !wide,
+                    compactRootBar: !wide,
                     navigationAvailable: true,
                     navigationFocusAvailable: wide || compactMenuLease.menuVisible,
                     supplementary: {
@@ -680,7 +696,7 @@ enum ChatComposerPresentation {
                                     }
                                     .frame(maxWidth: .infinity)
                                 }
-                                if runtime.messages.isEmpty {
+                                if runtime.messages.isEmpty, runtime.conversationID == nil {
                                     VStack(alignment: .leading, spacing: 12) {
                                         Text(MapleStrings.text("Research anything..."))
                                             .font(MapleTypography.display)

@@ -42,7 +42,7 @@ import XCTest
     }
 
     private func tapLiveControl(_ identifier: String) {
-        let button = app.buttons[identifier].firstMatch
+        let button = identifier == "chat.menu" ? app.mapleMenuButton : app.buttons[identifier].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: 15))
         XCTAssertTrue(button.isEnabled && button.isHittable, "Unavailable control: " + identifier)
         button.tap()
@@ -158,20 +158,20 @@ import XCTest
         XCTAssertEqual(XCTWaiter.wait(for: [online], timeout: 15), .completed)
         XCTAssertEqual(app.textViews["chat.composer"].value as? String, "Explicit local offline draft stays unsent.")
         XCTAssertFalse(app.buttons["chat.stop"].exists)
-        app.buttons["chat.menu"].tap(); app.buttons["library.close"].tap()
+        app.mapleMenuButton.tap(); app.buttons["library.close"].tap()
         XCTAssertEqual(app.textViews["chat.composer"].value as? String, "Explicit local offline draft stays unsent.")
     }
 
     func testRootMenuChatNavigationAndBackgroundStopCapture() throws {
         try launch(); try replaceDraft("Menu capture owner. ")
-        startCapture(); app.buttons["chat.menu"].tap()
+        startCapture(); app.mapleMenuButton.tap()
         XCTAssertTrue(app.buttons["library.close"].waitForExistence(timeout: 15))
         app.buttons["library.close"].tap(); waitForStops(1); completeTranscript()
         try replaceDraft("Background capture owner. ")
         startCapture(); XCUIDevice.shared.press(.home); app.activate()
         waitForStops(2); completeTranscript()
         let heldNewChatDraft = app.textViews["chat.composer"].value as? String
-        app.buttons["chat.menu"].tap()
+        app.mapleMenuButton.tap()
         let recent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.chat.")).firstMatch
         XCTAssertTrue(recent.waitForExistence(timeout: 20))
         let savedChatID = recent.identifier
@@ -181,7 +181,7 @@ import XCTest
         XCTAssertEqual(app.textViews["chat.composer"].value as? String, heldNewChatDraft)
         app.buttons["lifecycle.transcript"].tap()
         XCTAssertEqual(app.textViews["chat.composer"].value as? String, heldNewChatDraft)
-        app.buttons["chat.menu"].tap()
+        app.mapleMenuButton.tap()
         XCTAssertTrue(app.buttons[savedChatID].waitForExistence(timeout: 20)); app.buttons[savedChatID].tap()
         let originalOwner = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in

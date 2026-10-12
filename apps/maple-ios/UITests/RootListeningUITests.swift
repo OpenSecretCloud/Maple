@@ -53,7 +53,7 @@ import UIKit
         return try state()
     }
     private func tap(_ id: String) {
-        let button = app.buttons[id].firstMatch
+        let button = id == "chat.menu" ? app.mapleMenuButton : app.buttons[id].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: 15)); XCTAssertTrue(button.isEnabled)
         XCTAssertTrue(button.isHittable); button.tap()
     }
@@ -208,7 +208,7 @@ import UIKit
         XCTAssertEqual(XCTWaiter.wait(for: [committed], timeout: 10), .completed)
     }
     private func listButton(_ id: String, maximumSwipes: Int = 16) throws {
-        let button = app.buttons[id].firstMatch
+        let button = id == "chat.menu" ? app.mapleMenuButton : app.buttons[id].firstMatch
         for _ in 0..<maximumSwipes where !button.isHittable {
             guard let list = app.collectionViews.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
                 throw ListeningProofIssue.insufficientViewport
