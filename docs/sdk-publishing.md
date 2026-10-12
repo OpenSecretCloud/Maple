@@ -104,16 +104,21 @@ Use this order when an SDK change must reach shipped clients. Each step is a
 separate reviewed PR or a separate protected action; none of them implies the
 next.
 
-1. **SDK PR on `master`.** Land the fix together with the SDK version bumps
-   (`sdk/package.json`, `sdk/rust/Cargo.toml` and its `Cargo.lock`) because the
-   publish workflows publish the version committed on `master`. If the change
-   touches enclave trust, refresh the embedded PCR0 roots in `sdk/src/lib/pcr.ts`
-   and `sdk/rust/src/pcr.rs` from `services/opensecret/pcr*History.json` in the
-   same PR. Keep the TypeScript and Rust policies aligned.
-2. **Publish both SDKs** from `sdk/` on the merged `master`:
-   `just publish-npm X.Y.Z trusted false` and
-   `just publish-cargo X.Y.Z trusted false`. Each run validates, then waits for
-   the protected environment approval described below.
+1. **SDK PR on `master`.** Land the fix and, for each SDK being published, its
+   next version and affected lockfile. The publish workflows use the version
+   committed on `master`; an in-tree edit does not replace a published package.
+   For enclave trust changes, review the affected embedded PCR0 roots in
+   `sdk/src/lib/pcr.ts` and `sdk/rust/src/pcr.rs` against the signed environment
+   histories. Bundle refreshes are optional fast-path/offline compatibility
+   updates, separate from approving an EIF. Preserve the signed histories and
+   [legacy mirror](../services/opensecret/docs/pcr-compatibility.md).
+2. **Publish the affected SDKs** when the fix must reach external users or
+   consumers on published pins. From `sdk/` on merged `master`, use
+   `just publish-npm VERSION trusted false` for TypeScript or
+   `just publish-cargo VERSION trusted false` for Rust, with each SDK's own
+   version. Publish both only when both need the update. Each run validates,
+   then waits for its protected environment approval. A client building the
+   in-tree SDK can ship the fix without registry publication.
 3. **Consumer PR, for consumers on published pins only.** The in-repo Rust
    consumers (`proxy`, `apps/maple-agent`, the Research native shell) already
    build the in-tree SDK and need nothing here. A consumer still on a
@@ -128,17 +133,19 @@ next.
    `services/opensecret/pcrDevHistory.json` and `pcrProdHistory.json`:
    `apps/maple-research/frontend/src/config/openSecretClientConfig.ts` and
    `apps/maple-auth/src/config/openSecretClientConfig.ts`. Review each app's
-   combined app-provided and pinned-SDK roots for its intended approved enclave
-   measurements when signed-history fetching is unavailable, keeping development
-   and production policies separate.
-   Refresh affected lists and validate the affected app; identical lists or SDK
-   pins are not required. Record Auth's independently authorized build/publication
+   combined app-provided and pinned-SDK coverage when signed-history fetching is
+   unavailable, keeping development and production policies separate. Record
+   whether the intended measurements rely on fetching or are covered locally.
+   If the intended offline compatibility target needs a bundle refresh, update
+   and validate the affected app; identical lists or SDK pins are not required.
+   Record Auth's independently authorized build/publication
    when its fallback changes; a Research release does not publish Auth.
-4. **Isolated app version bump** with `just update-version X.Y.Z` on its own
-   branch, following `.agents/skills/release-maple/`.
+4. **Prepare the client release version** following `.agents/skills/release-maple/`.
+   Retain an already prepared version newer than the published release, or make
+   the isolated bump with the repository helper when needed.
 5. **Release** through the release skill when the team decides to ship. If the
-   proxy's SDK pin changed, decide the proxy version explicitly before the
-   release preflight asks.
+   proxy's consumed SDK runtime inputs changed, decide the proxy version
+   explicitly before the release preflight asks.
 
 ## Run a release
 

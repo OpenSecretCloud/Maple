@@ -41,7 +41,7 @@ commit, external effect, and authority provided by the user.
 - Maple GitHub Releases do not publish `maple-sdk` or `maple-proxy` to
   crates.io. A successful stable release starts a non-gating GHCR sibling that
   builds only for a new or missing non-baseline proxy version. It treats exact
-  version tags as immutable, verifies release provenance and container inputs,
+  version tags as immutable, checks release proofs and container inputs,
   and repairs minor, major, and `latest` aliases without rebuilding an existing
   exact image. Version `0.3.3` is the explicit unbackfilled migration baseline.
   The container remains separately versioned at
@@ -52,19 +52,17 @@ commit, external effect, and authority provided by the user.
 Never push or merge `master`, create a release, retry a workflow, upload to a
 store, submit for review, or alter a rollout merely to see whether it works.
 
-## Repository-transfer checkpoint
+## Canonical repository and package initialization
 
 Before creating a new release, verify that `repo.meta.json` identifies
-`MaplePrivacyLabs/Maple` as the canonical repository. Keep the existing updater
-Worker serving its deployed metadata until the first normal new-org release.
-Do not manually republish retained v3.3.10 updater metadata: its asset URLs use
-`OpenSecretCloud/Maple`, while the publisher and new Worker correctly require
-the current canonical owner. The next release generates new-owner URLs without
-changing the legacy updater fallback compiled into existing clients.
+`MaplePrivacyLabs/Maple` as the canonical repository. Normal releases generate
+canonical asset URLs; preserve the legacy updater fallback compiled into
+installed clients. Do not republish old-owner metadata to repair a current
+release: follow the updater publisher's exact-tag verification and recovery path.
 
-The first eligible proxy container publication initializes
-`ghcr.io/mapleprivacylabs/maple-proxy` with a manual `Publish proxy container`
-run from `master` and `bootstrap_only=true`. This validates the current release
+Only when initializing a package that does not yet exist, use a manual
+`Publish proxy container` run to initialize `ghcr.io/mapleprivacylabs/maple-proxy`
+from `master` with `bootstrap_only=true`. This validates the current release
 and uploads only content-addressed images, without version or alias tags. It
 does not treat failed package enumeration as an empty inventory. GitHub creates
 new packages privately; make that package public in its settings, retain Maple
@@ -72,7 +70,9 @@ Actions write access, then rerun only the proxy publisher with both manual
 inputs disabled. For read-only API diagnosis, use `diagnostics_only=true`;
 its success reports completed observations, not publication readiness. Do
 not create another release, change proxy versions, or overwrite exact tags to
-repair package visibility. Existing old-namespace images receive no updates.
+repair package visibility. An existing public package uses the normal publisher
+to verify or recover the eligible version and reconcile aliases; bootstrap is
+not a routine release step. Existing old-namespace images receive no updates.
 
 ## Prepare the version
 
@@ -147,14 +147,28 @@ clients will ship unpublished SDK changes, recommend publishing the SDK and
 pinning those consumers first; an intentional local-source release can proceed
 with the exact monorepo commit recorded. Unrelated SDK source changes do not
 require a pinned client to upgrade, and this preference adds no release gate.
+Publishing changed SDK source requires a new registry version; neither an app
+release nor an in-tree edit replaces an already published package.
+
+Bundled PCR roots are a local fast path: on a miss, the SDK verifies the signed
+history for the selected environment. Newly signed approvals can therefore
+support a new EIF without a client bundle refresh. Refreshing bundles can avoid
+that fetch and improve compatibility when fetching is unavailable; it is not
+another signing or enclave authorization step. Keep the canonical and legacy
+signed histories intact under the
+[PCR compatibility procedure](../../../services/opensecret/docs/pcr-compatibility.md).
+Pruning an app's roots does not remove roots from its pinned published SDK or
+revoke approvals in signed history.
 
 When preparing an enclave trust or PCR rotation change, review both browser
 consumers' embedded fallbacks against the approved development and production
 histories: `apps/maple-research/frontend/src/config/openSecretClientConfig.ts`
-and `apps/maple-auth/src/config/openSecretClientConfig.ts`. Verify each affected
-app's combined app-provided and pinned-SDK roots support its intended approved
-enclave measurements when signed-history fetching is unavailable, preserving
-development/production separation. Record affected artifacts and any pending rollout
+and `apps/maple-auth/src/config/openSecretClientConfig.ts`. Assess each affected
+app's combined app-provided and pinned-SDK coverage when signed-history fetching
+is unavailable, preserving development/production separation. Record whether
+the intended measurements are covered locally or rely on signed-history fetching;
+refresh only for the intended offline compatibility target. Record affected
+artifacts and any pending rollout
 in the handoff. Auth owns a separate SDK pin and publisher: refreshing Research
 does not update Auth, and an Auth publication remains a separately authorized
 operation under [the Pages guide](../../../docs/pages-deployments.md#independent-auth-site).
@@ -232,7 +246,9 @@ Stay with every platform build, signature/canonical proof, artifact upload,
 the four native proxy builds and their published-asset verification, updater
 `latest.json`, aggregate verification, and verification-guide step.
 Packaging success alone is not runtime smoke; inspect the workflow's actual
-verification and attestation results.
+verification and attestation results. Record attestation generation separately
+from independent verification of downloaded assets; an overall successful run
+does not prove every attestation was generated or cryptographically verified.
 
 After `Release` succeeds, inspect the two required publication handoffs. Do
 not rerun the core Release to repair either sibling:
@@ -259,9 +275,10 @@ run by its production job's validated source SHA. Do not filter either by the
 workflow checkout SHA; preview publication uses the same Pages workflow name.
 
 Also inspect the independent proxy-container publisher. It should either prove
-the expected immutable proxy version, public AMD64/ARM64 manifest, per-platform
-provenance, and aliases; publish a missing eligible version; or explicitly skip
-the unbackfilled `0.3.3` baseline. Retry it with manual dispatch; never create a
+the expected immutable proxy version, public AMD64/ARM64 manifest, image labels,
+build digests, linked provenance descriptors, and aliases; publish a missing
+eligible version; or explicitly skip the unbackfilled `0.3.3` baseline.
+Retry it with manual dispatch; never create a
 proxy tag or Release and never rerun the core Release to repair it:
 
 ```bash
@@ -359,18 +376,16 @@ Verify that the hosted updater serves the same metadata as the GitHub Release:
 
 ```bash
 updater_dir="$(mktemp -d)"
+version="${tag#v}"
 
+gh release download "$tag" --repo MaplePrivacyLabs/Maple \
+  --pattern latest.json --dir "$updater_dir/release"
 curl --fail --silent --show-error --location --max-time 20 \
   https://updates.trymaple.ai/latest.json >"$updater_dir/hosted.json"
-curl --fail --silent --show-error --location --max-time 20 \
-  https://github.com/OpenSecretCloud/Maple/releases/latest/download/latest.json \
-  >"$updater_dir/github.json"
 
 jq -e --arg version "$version" '.version == $version' \
-  "$updater_dir/hosted.json" "$updater_dir/github.json"
-jq -S . "$updater_dir/hosted.json" >"$updater_dir/hosted.canonical.json"
-jq -S . "$updater_dir/github.json" >"$updater_dir/github.canonical.json"
-cmp "$updater_dir/hosted.canonical.json" "$updater_dir/github.canonical.json"
+  "$updater_dir/hosted.json" "$updater_dir/release/latest.json"
+cmp "$updater_dir/hosted.json" "$updater_dir/release/latest.json"
 ```
 
 Do not report updater publication complete from workflow status alone: require
@@ -400,22 +415,29 @@ Apple and Google actions remain manual production operations. Do not open a
 store console, choose a track, add testers, upload a build, answer compliance
 questions, submit for review, release an approved version, or change a rollout
 without explicit authorization for that exact action.
+Use the authority already provided for the requested handoff; ask only for
+missing scope or a new external effect. Follow the
+[store handoff procedure](references/store-handoff.md) for build selection,
+Apple review submission, Google track retirement, and publishing state checks.
 
 For an authorized handoff:
 
-1. Identify the artifact from the exact tag and commit.
+1. Identify the exact source commit and artifact. For a GitHub release asset,
+   also record its tag; for an existing production TestFlight build, match its
+   verified Mobile App CI export and upload receipt.
 2. Verify its digest, platform signature, application/bundle ID, visible
-   version, build/version code, and repository release proof.
+   version, build/version code, and proof from that artifact's producing workflow.
 3. Record the destination application, tester group or release track,
    countries/audience, rollout choice, and any review/compliance state before
    submission.
 4. After the store reports a result, distinguish upload, processing, testing,
    review, approval, rollout, and public availability. Do not infer one state
    from another.
-5. If the approved client version is gated by a configured billing API, verify
-   that API recognizes the exact `vX.Y.Z` version. Any service-side version-gate
-   change or deployment is outside this repository and requires its own
-   reviewed workflow and authority.
+5. Trace the selected platform's actual billing path before applying a version
+   gate. A legacy products API result does not establish StoreKit availability.
+   If that client path uses a configured version gate, verify the exact version.
+   Any service-side gate change or deployment requires its own reviewed workflow
+   and authority.
 
 Keep time-specific build numbers, review outcomes, blockers, and rollout facts
 in the release handoff or issue that owns them, not in this evergreen skill.

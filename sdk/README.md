@@ -259,11 +259,14 @@ Tests that spend model/provider capacity are opt-in with `RUN_LIVE_AI=1` and
 are not part of the deterministic pull-request gate. Backend contract changes
 and SDK changes are validated together against that checkout; released clients
 and independently deployed backend versions still need compatibility review.
-Both SDKs fetch their selected environment's signed PCR history from
+Both SDKs accept local roots first, then fetch their selected environment's
+signed PCR history on a miss from
 `MaplePrivacyLabs/Maple/master/services/opensecret/`: `pcrProdHistory.json` for
 production and `pcrDevHistory.json` for development. The existing verification
-key, embedded roots, custom history URL overrides, and redirect rejection are
-unchanged. Older published SDKs and installed clients still use the legacy
+key, custom history URL overrides, and redirect rejection are unchanged.
+Embedded roots are versioned with each shipped SDK: editing or pruning in-tree
+roots does not replace the roots in published packages. Older published SDKs and
+installed clients still use the legacy
 `OpenSecretCloud/opensecret` URLs, which remain a manual compatibility mirror.
 Changing source defaults does not update those clients or publish an SDK. See
 the [backend compatibility procedure](../services/opensecret/docs/pcr-compatibility.md).
