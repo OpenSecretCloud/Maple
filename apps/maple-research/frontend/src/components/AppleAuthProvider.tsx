@@ -1,3 +1,4 @@
+import { webOAuthCallbackUrl } from "@/utils/webOAuth";
 import React, { useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
 import { Loader2 } from "lucide-react";
@@ -166,7 +167,8 @@ export function AppleAuthProvider({
     if (!isNativeOAuthRedirect()) clearDesktopOAuthTransport();
 
     // A retry is a new authorization attempt, so it gets a fresh backend state and nonce.
-    const initiateResult = await os.initiateAppleAuth(inviteCode || "");
+    const redirectURI = webOAuthCallbackUrl("apple");
+    const initiateResult = await os.initiateAppleAuth(inviteCode || "", redirectURI);
     if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
     const nonce = getAppleAuthorizationNonce(initiateResult.auth_url);
     const clientId = getAppleAuthorizationClientId(initiateResult.auth_url);
@@ -181,7 +183,7 @@ export function AppleAuthProvider({
     window.AppleID.auth.init({
       clientId,
       scope: "name email",
-      redirectURI: window.location.origin + "/auth/apple/callback",
+      redirectURI,
       state,
       nonce,
       usePopup: true

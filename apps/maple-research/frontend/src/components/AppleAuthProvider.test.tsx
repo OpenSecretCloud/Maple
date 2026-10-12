@@ -43,9 +43,11 @@ interface FakeScript {
   async: boolean;
   parentNode: FakeHead | null;
   src: string;
+  setAttribute(name: string, value: string): void;
 }
 
 interface FakeHead {
+  querySelector(): null;
   appendChild(script: FakeScript): FakeScript;
   removeChild(script: FakeScript): FakeScript;
 }
@@ -53,6 +55,7 @@ interface FakeHead {
 class FakeDocument extends EventTarget {
   readonly addedEventTypes: string[] = [];
   readonly head: FakeHead = {
+    querySelector: () => null,
     appendChild: (script) => {
       script.parentNode = this.head;
       return script;
@@ -73,7 +76,7 @@ class FakeDocument extends EventTarget {
   }
 
   createElement(): FakeScript {
-    return { async: false, parentNode: null, src: "" };
+    return { async: false, parentNode: null, src: "", setAttribute: () => {} };
   }
 }
 
@@ -106,6 +109,8 @@ const { AppleAuthProvider } = await import("./AppleAuthProvider");
 const { RootRuntimeLayout } = await import("./RootRuntimeLayout");
 const { Route: callbackRoute } = await import("@/routes/auth.$provider.callback");
 const { Route: desktopRoute } = await import("@/routes/desktop-auth");
+const { Route: loginRoute } = await import("@/routes/login");
+const { Route: signupRoute } = await import("@/routes/signup");
 
 const originalGlobals = {
   document: Object.getOwnPropertyDescriptor(globalThis, "document"),
@@ -184,7 +189,10 @@ describe("AppleAuthProvider", () => {
 
     const localStorage = new MemoryStorage();
     const sessionStorage = new MemoryStorage();
+    const windowEvents = new EventTarget();
     const windowValue = {
+      addEventListener: windowEvents.addEventListener.bind(windowEvents),
+      removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
       AppleID: {
         auth: {
           init: appleInit,
@@ -307,6 +315,28 @@ describe("AppleAuthProvider", () => {
     expectPending(true);
   });
 
+  for (const origin of [
+    "https://trymaple.ai",
+    "https://app.maple.ai",
+    "https://app-dev.trymaple.ai",
+    "https://app-dev.maple.ai"
+  ]) {
+    test(`uses the same ${origin} callback for Apple initiation and popup`, async () => {
+      Object.assign(window.location, { origin, href: `${origin}/login` });
+      await act(async () => {
+        renderer = create(<AppleAuthProvider onError={onError} />);
+      });
+      const attempt = await startAttempt();
+      const callback = `${origin}/auth/apple/callback`;
+      expect(initiateAppleAuth).toHaveBeenCalledWith("", callback);
+      expect(appleInit.mock.calls[0]?.[0].redirectURI).toBe(callback);
+      await act(async () => {
+        attempt.control.reject({ error: "popup_closed_by_user" });
+        await attempt.completion;
+      });
+    });
+  }
+
   for (const clientId of [
     "cloud.opensecret.maple.services",
     "cloud.opensecret.maple.dev.services"
@@ -320,7 +350,7 @@ describe("AppleAuthProvider", () => {
         renderer = create(<AppleAuthProvider onError={onError} />);
       });
       const attempt = await startAttempt();
-      expect(initiateAppleAuth).toHaveBeenCalledWith("");
+      expect(initiateAppleAuth).toHaveBeenCalledWith("", "https://trymaple.ai/auth/apple/callback");
       expect(appleInit).toHaveBeenCalledWith({
         clientId,
         scope: "name email",
@@ -482,10 +512,26 @@ describe("AppleAuthProvider", () => {
     });
 
     expect(initiateAppleAuth).toHaveBeenCalledTimes(4);
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(1, "invite-one");
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(2, "invite-one");
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(3, "invite-one");
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(4, "invite-two");
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(
+      1,
+      "invite-one",
+      "https://trymaple.ai/auth/apple/callback"
+    );
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(
+      2,
+      "invite-one",
+      "https://trymaple.ai/auth/apple/callback"
+    );
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(
+      3,
+      "invite-one",
+      "https://trymaple.ai/auth/apple/callback"
+    );
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(
+      4,
+      "invite-two",
+      "https://trymaple.ai/auth/apple/callback"
+    );
     expect(appleInit).toHaveBeenCalledTimes(4);
     expect(appleInit.mock.calls[0]?.[0]).toMatchObject({
       nonce: "11".repeat(32),
@@ -782,6 +828,54 @@ describe("AppleAuthProvider", () => {
         expect(window.location.href).toBe("https://trymaple.ai/login");
       }
     });
+  }
+
+  for (const origin of ["https://trymaple.ai", "https://app-dev.maple.ai"]) {
+    for (const provider of ["github", "google"] as const) {
+      for (const path of ["/login", "/signup", "/desktop-auth"] as const) {
+        test(`${path} initiates ${provider} on ${origin}`, async () => {
+          Object.assign(window.location, { origin, href: `${origin}${path}` });
+          currentOpenSecret.auth = { loading: false, user: undefined };
+          const initiate = mock(async () => ({ auth_url: "https://provider.example/authorize" }));
+          currentOpenSecret[provider === "github" ? "initiateGitHubAuth" : "initiateGoogleAuth"] =
+            initiate;
+          const rootRoute = createRootRoute();
+          const sourceRoute =
+            path === "/login" ? loginRoute : path === "/signup" ? signupRoute : desktopRoute;
+          const route = sourceRoute.update({ getParentRoute: () => rootRoute, path } as never);
+          const search =
+            path === "/desktop-auth"
+              ? `?provider=${provider}&transport=v2&native_session_id=${"01".repeat(16)}&native_request_id=${"ab".repeat(16)}`
+              : "?next=%2Fsettings%2Fapi%3Ftab%3Dkeys%23balance";
+          const router = createRouter({
+            routeTree: rootRoute.addChildren([route]),
+            history: createMemoryHistory({ initialEntries: [`${path}${search}`] })
+          });
+          await router.load();
+          await act(async () => {
+            renderer = create(<RouterProvider router={router} />);
+          });
+          if (path !== "/desktop-auth") {
+            const name = provider === "github" ? "GitHub" : "Google";
+            const button = renderer!.root
+              .findAllByType("button")
+              .find((button) =>
+                button.children.some((child) => typeof child === "string" && child.includes(name))
+              );
+            expect(button).toBeDefined();
+            await act(async () => {
+              await button!.props.onClick();
+            });
+            expect(sessionStorage.getItem("post_auth_redirect")).toBe(
+              "/settings/api?tab=keys#balance"
+            );
+          }
+          expect(initiate).toHaveBeenCalledTimes(1);
+          expect(initiate).toHaveBeenCalledWith("", `${origin}/auth/${provider}/callback`);
+          expect(window.location.href).toBe("https://provider.example/authorize");
+        });
+      }
+    }
   }
 
   for (const outcome of ["resolve", "reject"] as const) {

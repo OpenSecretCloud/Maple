@@ -1,3 +1,4 @@
+import { webOAuthCallbackUrl } from "@/utils/webOAuth";
 import { createFileRoute, Link, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import { useOpenSecret, type LoginResponse } from "@mapleai/sdk";
 import { useEffect, useState } from "react";
@@ -167,9 +168,9 @@ function SignupPage() {
           redemptionCode: code
         });
       } else {
-        // Web flow remains unchanged
+        // Keep the callback on the browser origin holding this sign-in state.
         clearDesktopOAuthTransport();
-        const { auth_url } = await os.initiateGitHubAuth("");
+        const { auth_url } = await os.initiateGitHubAuth("", webOAuthCallbackUrl("github"));
         sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
@@ -206,9 +207,9 @@ function SignupPage() {
           redemptionCode: code
         });
       } else {
-        // Web flow remains unchanged
+        // Keep the callback on the browser origin holding this sign-in state.
         clearDesktopOAuthTransport();
-        const { auth_url } = await os.initiateGoogleAuth("");
+        const { auth_url } = await os.initiateGoogleAuth("", webOAuthCallbackUrl("google"));
         sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);

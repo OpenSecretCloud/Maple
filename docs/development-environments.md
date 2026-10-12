@@ -125,8 +125,12 @@ development backend. Pointing `VITE_OPEN_SECRET_API_URL` at Local does **not**
 localize native OAuth. The Dev auth-origin parser requires canonical HTTPS;
 setting it to a loopback HTTP URL is not a supported local OAuth setup.
 
-Research web keeps its built-in auth and existing callback defaults; changing the
-native entry does not move web sign-in or redirect older installed clients. The independent
+Research web keeps its built-in auth and explicitly selects its current origin's
+`/auth/<provider>/callback`. Register that exact URL with the provider and in the
+backend's callback allowlist before deploying on another hostname; unregistered
+previews or localhost fail at initiation instead of falling back to another
+origin. Existing backend defaults stay unchanged. Changing the native entry does
+not move web sign-in or redirect older installed clients. The independent
 [Auth app](../apps/maple-auth/README.md) has its own SDK pin, configuration,
 routes, and publisher. Follow source and the applicable component guide for
 actual callback support rather than inferring it from a hostname.

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "./internalRedirect";
+import {
+  getAppEntryRedirect,
+  getSafeInternalRedirect,
+  navigateToSafeInternalRedirect
+} from "./internalRedirect";
 
 describe("getSafeInternalRedirect", () => {
   it("preserves an internal path, query, and hash", () => {
@@ -56,5 +60,25 @@ describe("navigateToSafeInternalRedirect", () => {
 
     expect(navigateToSafeInternalRedirect(history, "https://evil.example/settings")).toBe(false);
     expect(navigated).toBe(false);
+  });
+});
+
+describe("getAppEntryRedirect", () => {
+  it("keeps root payment feedback when removing a legacy login control", () => {
+    expect(getAppEntryRedirect("/?login=true&credits_success=true#balance")).toBe(
+      "/?credits_success=true#balance"
+    );
+  });
+
+  it("rejects unsafe explicit destinations and malformed entry paths", () => {
+    for (const next of [
+      "https://evil.example",
+      "//evil.example",
+      "/\\evil.example",
+      "/a/..//evil.example"
+    ]) {
+      expect(getAppEntryRedirect(`/?login=true&next=${encodeURIComponent(next)}`)).toBeUndefined();
+    }
+    expect(getAppEntryRedirect("//evil.example")).toBeUndefined();
   });
 });

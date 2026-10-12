@@ -1,3 +1,4 @@
+import { webOAuthCallbackUrl } from "@/utils/webOAuth";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
@@ -100,10 +101,16 @@ function DesktopAuth() {
         // Initiate appropriate OAuth flow for GitHub and Google
         let auth_url;
         if (provider === "github") {
-          const result = await currentOs.current.initiateGitHubAuth("");
+          const result = await currentOs.current.initiateGitHubAuth(
+            "",
+            webOAuthCallbackUrl("github")
+          );
           auth_url = result.auth_url;
         } else if (provider === "google") {
-          const result = await currentOs.current.initiateGoogleAuth("");
+          const result = await currentOs.current.initiateGoogleAuth(
+            "",
+            webOAuthCallbackUrl("google")
+          );
           auth_url = result.auth_url;
         } else {
           throw new Error("Unsupported provider");

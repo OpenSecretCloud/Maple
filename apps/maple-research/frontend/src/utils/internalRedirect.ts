@@ -42,3 +42,18 @@ export function navigateToSafeInternalRedirect(
   }
   return true;
 }
+
+/** Carry an entry page's destination through either login or signup. */
+export function getAppEntryRedirect(href: string): string | undefined {
+  const safeHref = getSafeInternalRedirect(href);
+  if (!safeHref) return undefined;
+  const location = new URL(safeHref, INTERNAL_REDIRECT_ORIGIN);
+  const next = getSafeInternalRedirect(location.searchParams.get("next"));
+  if (next) return next;
+
+  // Entry controls must not send a newly authenticated user back to login.
+  location.searchParams.delete("login");
+  location.searchParams.delete("next");
+  const destination = `${location.pathname}${location.search}${location.hash}`;
+  return destination === "/" ? undefined : destination;
+}

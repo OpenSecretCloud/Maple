@@ -1,9 +1,12 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { LogIn, UserPlus } from "lucide-react";
 import { AuthHeader } from "@/components/AuthHeader";
 import { Button } from "@/components/ui/button";
+import { getAppEntryRedirect } from "@/utils/internalRedirect";
 
 export function AppEntryPage() {
+  const location = useLocation();
+  const next = getAppEntryRedirect(location.href);
   return (
     <div className="flex min-h-dvh flex-col bg-[#e2e2e2] text-[#221a18] dark:bg-background dark:text-foreground">
       <AuthHeader />
@@ -20,7 +23,7 @@ export function AppEntryPage() {
 
           <div className="mt-6 grid gap-3">
             <Button asChild variant="primary" size="lg" className="h-12">
-              <Link to="/signup">
+              <Link to="/signup" search={next ? { next } : undefined}>
                 <UserPlus className="mr-2 h-4 w-4" />
                 Sign up
               </Link>
@@ -31,7 +34,7 @@ export function AppEntryPage() {
               size="lg"
               className="h-12 bg-white/40 dark:bg-white/0"
             >
-              <Link to="/login">
+              <Link to="/login" search={next ? { next } : undefined}>
                 <LogIn className="mr-2 h-4 w-4" />
                 Log in
               </Link>
