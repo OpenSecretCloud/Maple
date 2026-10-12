@@ -435,16 +435,20 @@ rejects requests that do not provide their own bearer credential.
 
 ### Pre-built Image
 
-New container publications use `ghcr.io/mapleprivacylabs/maple-proxy` after the
-Maple repository transfer. The release-following publisher builds the eligible
+Published containers use `ghcr.io/mapleprivacylabs/maple-proxy`.
+The release-following publisher builds the eligible
 proxy version from a successful stable Maple Release and verifies its exact tag,
-platforms, provenance, and aliases. The first publication in this namespace must
-complete and the package must be public before the commands below will work.
-GitHub creates new packages privately. For the first publication, manually run
+platforms, image labels, build digests, linked provenance descriptors, and aliases.
+Normal runs verify an existing exact version or recover a missing eligible version;
+they do not overwrite immutable version tags. The package must be public for
+anonymous pulls.
+
+Only when initializing a package that does not yet exist, manually run
 `Publish proxy container` from `master` with `bootstrap_only` enabled. It validates
 the current release and uploads its AMD64/ARM64 images by digest, creating the
-package without writing version or alias tags. Set the package to public in
-GitHub package settings, retain Maple Actions write access, then rerun only this
+package without writing version or alias tags. GitHub creates new packages
+privately; set the package to public in GitHub package settings, retain Maple
+Actions write access, then rerun only this
 publisher with `bootstrap_only` disabled. The normal run requires readable,
 canonical public package metadata and a complete anonymous tag inventory before
 writing tags. A retry verifies an existing exact version rather than overwriting it.
@@ -453,9 +457,7 @@ The old `ghcr.io/opensecretcloud/maple-proxy` package remains available at its
 existing versions but receives no new publications. Existing deployments must
 change their image URL to receive future updates; registry image names do not
 follow the repository transfer redirect. Version `0.3.3` remains the explicit
-unbackfilled baseline. The next prepared proxy version is `0.4.2`.
-
-After the first new-namespace publication is verified:
+unbackfilled baseline.
 
 ```bash
 # Pull the latest image
