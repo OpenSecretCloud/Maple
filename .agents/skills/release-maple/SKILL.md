@@ -127,8 +127,11 @@ head_sha="$(printf '%s' "$preflight" | jq -r .head_sha)"
 ```
 
 The script requires a clean current `master`, exact manifest version parity, a
-newer version and unused tag, and successful executed master-push CI jobs.
-CodeQL must run on the exact release commit. Research test/build evidence may
+newer version and unused tag, and successful executed master CI jobs.
+CodeQL must run on the exact release commit; canonical master push, nightly,
+or manual CodeQL runs qualify. If the nightly scan has not covered that commit,
+run CodeQL manually from master before preflight. Other workflows still require
+master-push evidence. Research test/build evidence may
 come from an ancestor only when the complete Git tree diff contains exclusively
 independent Agent, documentation, agent guidance, or release-gate test-harness
 changes. Unknown paths and changes to Research, SDK, proxy, shared scripts,

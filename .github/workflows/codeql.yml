@@ -1,11 +1,9 @@
-# No pull_request: rust analysis takes 30-40 minutes here and is not a merge gate.
+# Nightly security analysis stays outside merge CI; manual runs support releases.
 name: CodeQL
 
 on:
-  push:
-    branches: [master]
   schedule:
-    - cron: "28 5 * * 1"
+    - cron: "28 5 * * *"
   workflow_dispatch:
 
 permissions:

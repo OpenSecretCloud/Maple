@@ -1,4 +1,4 @@
-"""Lock CodeQL advanced setup to master and weekly scans, not pull requests."""
+"""Keep full CodeQL scans nightly and manual, outside ordinary merge CI."""
 
 import functools
 import json
@@ -22,11 +22,10 @@ def workflow():
 
 
 class CodeQLWorkflowTests(unittest.TestCase):
-    def test_scans_master_and_weekly_not_pull_requests(self):
+    def test_scans_nightly_and_manually_not_pushes_or_pull_requests(self):
         config = workflow()
-        self.assertEqual(set(config["on"]), {"push", "schedule", "workflow_dispatch"})
-        self.assertEqual(config["on"]["push"]["branches"], ["master"])
-        self.assertTrue(config["on"]["schedule"][0]["cron"])
+        self.assertEqual(set(config["on"]), {"schedule", "workflow_dispatch"})
+        self.assertEqual(config["on"]["schedule"], [{"cron": "28 5 * * *"}])
         self.assertEqual(config["permissions"], {"contents": "read"})
 
     def test_analyzes_default_setup_languages_without_a_build(self):
