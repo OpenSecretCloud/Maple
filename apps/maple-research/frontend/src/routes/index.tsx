@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
 import { AppEntryPage } from "@/components/AppEntryPage";
 import { GuestPaymentWarningDialog } from "@/components/GuestPaymentWarningDialog";
 import { PromoDialog, hasSeenPromo, markPromoAsSeen } from "@/components/PromoDialog";
@@ -10,7 +10,7 @@ import { useBillingState } from "@/state/useLocalState";
 import type { DiscountResponse } from "@/billing/billingApi";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
-import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import { getAppEntryRedirect, getSafeInternalRedirect } from "@/utils/internalRedirect";
 import { isAndroid, isIOS } from "@/utils/platform";
 
 const appHomeUrl = appUrl("/");
@@ -42,6 +42,7 @@ export const Route = createFileRoute("/")({
 
 function Index() {
   const navigate = useNavigate();
+  const location = useLocation();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
   const showWebPromotions = !isIOS() && !isAndroid();
@@ -55,7 +56,7 @@ function Index() {
     canonicalUrl: appHomeUrl
   });
 
-  const { login, next, team_setup, credits_success, api_settings } = Route.useSearch();
+  const { login, team_setup, credits_success, api_settings } = Route.useSearch();
 
   const [showGuestPaymentWarning, setShowGuestPaymentWarning] = useState(false);
   const [promoDialogOpen, setPromoDialogOpen] = useState(false);
@@ -75,12 +76,13 @@ function Index() {
   // Handle login redirect
   useEffect(() => {
     if (login === "true") {
+      const next = getAppEntryRedirect(location.href);
       navigate({
         to: "/login",
         search: next ? { next } : undefined
       });
     }
-  }, [login, next, navigate]);
+  }, [login, location.href, navigate]);
 
   // Fetch active discount/promotion for promo dialog
   const { data: discount } = useQuery<DiscountResponse>({
