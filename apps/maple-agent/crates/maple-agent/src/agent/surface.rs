@@ -1,11 +1,10 @@
 //! Tasks a calling surface drives, such as an ACP client's sessions.
 //!
 //! A surface holds each task it drives with a lease. While the lease lasts,
-//! the task's tools run with the surface's tool context (the bridge's
-//! variables), its runs are the surface's alone, and the desktop's own tools
-//! stay out of it: the plan and questions, external agents and computer use.
-//! The surface's own MCP servers run beside the task's. Releasing the lease
-//! revokes the context and unloads the task's session, so whoever drives the
+//! the task's runs are the surface's alone, and the desktop's own tools stay
+//! out of it: the plan and questions, external agents and computer use. The
+//! surface's own MCP servers run beside the task's. Releasing the lease ends
+//! its hold at once and unloads the task's session, so whoever drives the
 //! task next builds it afresh.
 //!
 //! A task a surface creates is provisional until its first prompt: no list
@@ -18,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::config::{
     account_attachment_store, apply_project_trust, load_agent_config_inner, normalize_project_root,
@@ -26,15 +26,14 @@ use super::config::{
 use super::mcp::{name_to_key, normalize_mcp_servers};
 use super::runtime::AgentRuntime;
 use super::store::{TaskKind, TaskRow, TaskStore};
-use super::tool_context::SharedAgentToolContext;
 use super::{
     AgentCreateSessionRequest, AgentMcpServer, AgentPathLayout, AgentProjectTrustStatus,
-    AgentRuntimeHandle, AgentSessionDetail, AgentToolContextSpec,
+    AgentRuntimeHandle, AgentSessionDetail,
 };
 
 /// Refused when a surface's lease no longer holds its task: the lease was
 /// released, or the task is gone.
-pub const AGENT_SURFACE_INACTIVE_ERROR: &str = "Agent tool context access is no longer active";
+pub const AGENT_SURFACE_INACTIVE_ERROR: &str = "Agent surface access is no longer active";
 /// Refused to anyone else while a surface holds the task.
 pub(super) const SURFACE_CONTROLLED_ERROR: &str =
     "This Agent task is controlled by another Agent surface";
@@ -48,7 +47,8 @@ static NEXT_INSTALLATION: AtomicU64 = AtomicU64::new(1);
 /// What a surface's lease gives the task it holds.
 pub(super) struct SurfaceTask {
     pub(super) installation: u64,
-    pub(super) context: SharedAgentToolContext,
+    /// Cancelled once the lease no longer holds the task.
+    pub(super) revoked: CancellationToken,
     /// The surface's own MCP servers.
     pub(super) mcp_servers: Vec<AgentMcpServer>,
 }
@@ -70,12 +70,12 @@ impl AgentSurfaceAccess {
     }
 }
 
-/// A surface's hold on one task. Dropping it revokes the tool context at
-/// once and releases the task in the background.
+/// A surface's hold on one task. Dropping it ends the hold at once and
+/// releases the task in the background.
 pub struct AgentSurfaceLease {
     runtime: Arc<AgentRuntime>,
     access: AgentSurfaceAccess,
-    context: SharedAgentToolContext,
+    revoked: CancellationToken,
     /// The surface created the task, which may then be discarded.
     created: bool,
     settled: bool,
@@ -92,14 +92,14 @@ impl AgentSurfaceLease {
         self.access.clone()
     }
 
-    /// Revoke the tool context: a command the task starts once this returns
-    /// gets none of the surface's variables.
+    /// End the hold at once: nothing is accepted under it once this
+    /// returns, before the task is released.
     pub fn revoke(&self) {
-        self.context.revoke();
+        self.revoked.cancel();
     }
 
-    /// Release the task: revoke the context, stop the task's run and unload
-    /// its session.
+    /// Release the task: end the hold, stop the task's run and unload its
+    /// session.
     pub async fn release(mut self) {
         self.settled = true;
         self.revoke();
@@ -129,7 +129,7 @@ impl Drop for AgentSurfaceLease {
         if self.settled {
             return;
         }
-        self.context.revoke();
+        self.revoked.cancel();
         let runtime = Arc::clone(&self.runtime);
         let access = self.access.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -223,17 +223,16 @@ impl AgentRuntime {
     async fn lease(
         self: &Arc<Self>,
         session_id: &str,
-        tool_context: AgentToolContextSpec,
         mcp_servers: Vec<AgentMcpServer>,
         created: bool,
     ) -> Result<AgentSurfaceLease, String> {
-        let context = SharedAgentToolContext::new(tool_context);
+        let revoked = CancellationToken::new();
         let installation = NEXT_INSTALLATION.fetch_add(1, Ordering::Relaxed);
         self.install_surface(
             session_id,
             SurfaceTask {
                 installation,
-                context: context.clone(),
+                revoked: revoked.clone(),
                 mcp_servers,
             },
         )
@@ -244,7 +243,7 @@ impl AgentRuntime {
                 session_id: Arc::from(session_id),
                 installation,
             },
-            context,
+            revoked,
             created,
             settled: false,
         })
@@ -280,26 +279,20 @@ impl AgentRuntime {
 
 impl AgentRuntimeHandle {
     /// Create a task for a calling surface and hold it: an ACP task in the
-    /// requested project, provisional until its first prompt. Its tools run
-    /// with `tool_context`, and `mcp_servers` run beside the account's.
+    /// requested project, provisional until its first prompt, with
+    /// `mcp_servers` beside the account's.
     pub async fn create_surface_session(
         &self,
         request: AgentCreateSessionRequest,
-        tool_context: AgentToolContextSpec,
         mcp_servers: Vec<AgentMcpServer>,
     ) -> Result<AgentSurfaceSession, String> {
         self.ensure_accepting_new_work()?;
         let runtime = self.runtime().await?;
         let mcp_servers = normalize_mcp_servers(mcp_servers)?;
-        let system_prompt = request.system_prompt.clone();
         let mut row = self.new_task_row(&runtime, request, TaskKind::Acp).await?;
         set_provisional(&mut row);
         runtime.store.insert(&row)?;
-        runtime.set_system_prompt(&row.id, system_prompt);
-        let lease = match runtime
-            .lease(&row.id, tool_context, mcp_servers, true)
-            .await
-        {
+        let lease = match runtime.lease(&row.id, mcp_servers, true).await {
             Ok(lease) => lease,
             Err(error) => {
                 runtime.discard_if_provisional(&row.id).await;
@@ -322,7 +315,6 @@ impl AgentRuntimeHandle {
     pub async fn attach_surface_session(
         &self,
         session_id: &str,
-        tool_context: AgentToolContextSpec,
         mcp_servers: Vec<AgentMcpServer>,
     ) -> Result<AgentSurfaceSession, String> {
         self.ensure_accepting_new_work()?;
@@ -331,9 +323,7 @@ impl AgentRuntimeHandle {
         if runtime.store.get(session_id)?.is_none() {
             return Err(format!("Failed to find Agent task {session_id}"));
         }
-        let lease = runtime
-            .lease(session_id, tool_context, mcp_servers, false)
-            .await?;
+        let lease = runtime.lease(session_id, mcp_servers, false).await?;
         let detail = self.load_session(session_id.to_string()).await?;
         Ok(AgentSurfaceSession { detail, lease })
     }

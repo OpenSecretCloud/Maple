@@ -667,7 +667,7 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle, String> {
         let session_id = request.session_id.clone();
         if session_id != access.session_id() {
-            return Err("Agent tool context access does not match this task".to_string());
+            return Err("Agent surface access does not match this task".to_string());
         }
         if request.steer || request.queue_id.is_some() {
             return Err("A calling surface's message is never queued".to_string());

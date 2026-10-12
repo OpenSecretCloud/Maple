@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use pi_agent_core::{ToolInvocation, ToolUpdates};
@@ -6,7 +5,7 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::agent::{AgentEventDispatcher, AgentEventSink, AgentServiceEvent, AgentToolContextSpec};
+use crate::agent::{AgentEventDispatcher, AgentEventSink, AgentServiceEvent};
 
 struct NullSink;
 
@@ -42,11 +41,10 @@ impl MapleWebTransport for NoWeb {
 
 /// A task of `kind`: no login PATH, a broker nobody answers, and the web
 /// switch on.
-fn task(kind: TaskKind, tool_context: SharedAgentToolContext) -> TaskToolsFor {
+fn task(kind: TaskKind) -> TaskToolsFor {
     TaskToolsFor {
         session_id: "task-1".to_string(),
         kind,
-        tool_context,
         login_path: None,
         questions: broker(),
         web: Arc::new(NoWeb),
@@ -65,10 +63,6 @@ fn task(kind: TaskKind, tool_context: SharedAgentToolContext) -> TaskToolsFor {
     }
 }
 
-fn default_context() -> SharedAgentToolContext {
-    SharedAgentToolContext::new(AgentToolContextSpec::default())
-}
-
 fn spawn(env: &[(&str, &str)]) -> BashSpawnContext {
     BashSpawnContext {
         command: "true".to_string(),
@@ -81,24 +75,13 @@ fn spawn(env: &[(&str, &str)]) -> BashSpawnContext {
 }
 
 #[test]
-fn commands_get_the_login_path_the_task_id_and_its_tool_context() {
-    let context = SharedAgentToolContext::new(
-        AgentToolContextSpec::try_new(
-            BTreeMap::from([("FOR_TOOLS".to_string(), "value".to_string())]),
-            BTreeSet::from(["BUZZ_AUTH_TAG".to_string()]),
-        )
-        .unwrap(),
-    );
+fn commands_get_the_login_path_and_the_task_id() {
     let tools = task_tools(TaskToolsFor {
         login_path: Some("/login/bin:/usr/bin".to_string()),
-        ..task(TaskKind::Desktop, context)
+        ..task(TaskKind::Desktop)
     });
     let hook = tools.options.bash.spawn_hook.unwrap();
-    let started = hook(spawn(&[
-        ("PATH", "/usr/bin"),
-        ("BUZZ_AUTH_TAG", "secret"),
-        ("HOME", "/home/me"),
-    ]));
+    let started = hook(spawn(&[("PATH", "/usr/bin"), ("HOME", "/home/me")]));
     assert_eq!(
         started.env.get("PATH").map(String::as_str),
         Some("/login/bin:/usr/bin")
@@ -108,34 +91,25 @@ fn commands_get_the_login_path_the_task_id_and_its_tool_context() {
         Some("task-1")
     );
     assert_eq!(
-        started.env.get("FOR_TOOLS").map(String::as_str),
-        Some("value")
-    );
-    assert_eq!(
         started.env.get("HOME").map(String::as_str),
         Some("/home/me")
     );
-    assert!(!started.env.contains_key("BUZZ_AUTH_TAG"));
 }
 
 #[test]
-fn a_revoked_context_stops_adding_its_values_but_keeps_scrubbing() {
-    let context = SharedAgentToolContext::new(
-        AgentToolContextSpec::try_new(
-            BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
-            BTreeSet::from(["TOKEN".to_string()]),
-        )
-        .unwrap(),
+fn without_a_login_path_commands_keep_the_path_they_start_with() {
+    let tools = task_tools(task(TaskKind::Acp));
+    let hook = tools.options.bash.spawn_hook.unwrap();
+    let started = hook(spawn(&[("PATH", "/client/bin:/usr/bin")]));
+    assert_eq!(
+        started.env.get("PATH").map(String::as_str),
+        Some("/client/bin:/usr/bin")
     );
-    let tools = task_tools(task(TaskKind::Desktop, context.clone()));
-    context.revoke();
-    let started = tools.options.bash.spawn_hook.unwrap()(spawn(&[("TOKEN", "inherited")]));
-    assert!(!started.env.contains_key("TOKEN"));
 }
 
 #[test]
 fn the_model_gets_read_a_shell_edit_and_write() {
-    let tools = task_tools(task(TaskKind::Desktop, default_context()));
+    let tools = task_tools(task(TaskKind::Desktop));
     let shell = if cfg!(windows) {
         tools.builtin[1].as_str()
     } else {
@@ -155,7 +129,7 @@ fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {
 }
 
 fn desktop_tools() -> TaskTools {
-    task_tools(task(TaskKind::Desktop, default_context()))
+    task_tools(task(TaskKind::Desktop))
 }
 
 fn maple_tool_names(tools: &TaskTools) -> Vec<(String, bool)> {
@@ -181,7 +155,7 @@ fn every_task_reads_images_and_the_web_and_desktop_tasks_plan_and_ask() {
     );
     let acp = task_tools(TaskToolsFor {
         web_enabled: false,
-        ..task(TaskKind::Acp, default_context())
+        ..task(TaskKind::Acp)
     });
     assert_eq!(
         maple_tool_names(&acp),
@@ -286,7 +260,7 @@ async fn an_unanswered_question_is_taken_back_when_the_run_stops() {
     let questions = broker();
     let tools = task_tools(TaskToolsFor {
         questions: questions.clone(),
-        ..task(TaskKind::Desktop, default_context())
+        ..task(TaskKind::Desktop)
     });
     let ask = tool(&tools, "request_user_input");
     let cancel = CancellationToken::new();

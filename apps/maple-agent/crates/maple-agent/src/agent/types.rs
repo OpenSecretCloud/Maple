@@ -3,7 +3,7 @@
 //! Everything here is plain data that crosses the boundary between the
 //! runtime and whoever drives it: request and response shapes, the timeline
 //! item a UI renders, the event enums, the run handle, and the lease that
-//! ties an external surface's tool context to that surface's lifetime.
+//! ties a task an external surface holds to that surface's lifetime.
 //! Logic lives in the parent module; this file holds the nouns.
 
 use std::collections::HashMap;
@@ -511,10 +511,6 @@ pub struct AgentCreateSessionRequest {
     #[serde(default)]
     pub context_limit: Option<usize>,
     pub mcp_server_names: Option<Vec<String>>,
-    /// Caller-owned system prompt, appended to Maple's own. Surfaces such
-    /// as ACP pass the persona text their client supplies with the task.
-    #[serde(default)]
-    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -835,7 +831,7 @@ pub struct AgentSessionSummary {
     pub web_enabled: bool,
     /// Where the task sits in the sidebar ladder.
     pub state: AgentTaskState,
-    /// Created by an ACP client (an editor or Buzz), not in the desktop app.
+    /// Created by an ACP client, such as an editor, not in the desktop app.
     pub acp: bool,
 }
 

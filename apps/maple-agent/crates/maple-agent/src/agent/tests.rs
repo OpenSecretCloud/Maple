@@ -102,7 +102,6 @@ fn service(data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
         AgentPathLayout::from_app_roots(data.join("config"), data.join("local"))
             .with_home(Some(data.join("home"))),
         recorder,
-        AgentToolContextSpec::default(),
         "You are Maple.".to_string(),
     ))
 }
@@ -1941,7 +1940,6 @@ async fn built_in_cua_follows_the_device_and_the_tasks_switch() {
                 model: None,
                 context_limit: None,
                 mcp_server_names: names,
-                system_prompt: None,
             }))
     };
 

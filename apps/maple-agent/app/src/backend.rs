@@ -744,12 +744,9 @@ impl AgentBackend {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let paths =
             maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root());
-        // Keeps ACP bridge credentials out of desktop tool environments.
-        let default_tool_context = maple_agent::agent::default_tool_context_spec()?;
         let service = MapleAgentService::new(MapleAgentHostResources::new(
             paths,
             Arc::new(ChannelEventSink(event_tx)),
-            default_tool_context,
             harness_instructions,
         ));
         let runtime =

@@ -78,8 +78,8 @@ default mode, opens Maple's question card and the answer goes back in
 Codex's own shape; an asynchronous answer that arrives after the turn
 ended starts a follow-up turn on the same thread.
 
-The child runs in the requested project directory, on the user's login PATH, with the same
-environment scrubbing as the shell tool, in its own process group (on
+The child runs in the requested project directory, on the user's login PATH, with the
+task's id as the shell tool has it, in its own process group (on
 Windows, its process tree) so teardown reaches every descendant. It is killed when the runtime stops,
 on logout, and when its task is deleted. Threads are not ephemeral, so
 `codex resume` works from a terminal afterwards.

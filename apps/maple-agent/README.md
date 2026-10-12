@@ -420,16 +420,16 @@ Each ACP session is a Maple task. `session/new` creates one in the client's
 working directory; session lists show it from its first prompt, and one
 closed before that is removed. `session/load` opens any task of that
 directory and replays its history. While a session is open its task runs
-for that client only: its commands get the bridge's allowlisted variables
-(Buzz's credentials and `PATH`), the client's HTTP MCP servers run beside
-the account's, and the desktop's own tools (the plan, questions, external
-agents and computer use) are left out. Tasks created over ACP stay out of
-the desktop task list. Maple has no session modes: every tool call runs
-without asking, and a project with skills or instructions of its own asks
-the client's user once whether to trust it. Use a task in one place at a
-time: the desktop app and `maple-agent acp` are separate processes, and
-running one task from both at once can split its history. Both parts stay
-in the task's file, but only one shows.
+for that client only: its commands keep the PATH the client started Maple
+with, the client's HTTP MCP servers run beside the account's, and the
+desktop's own tools (the plan, questions, external agents and computer use)
+are left out. Tasks created over ACP stay out of the desktop task list.
+Maple has no session modes: every tool call runs without asking, and a
+project with skills or instructions of its own asks the client's user once
+whether to trust it. Use a task in one place at a time: the desktop app and
+`maple-agent acp` are separate processes, and running one task from both at
+once can split its history. Both parts stay in the task's file, but only
+one shows.
 
 ### `maple-agent proxy`
 

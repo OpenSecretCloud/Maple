@@ -110,7 +110,7 @@ impl StdioAcpClient {
     async fn initialize(&mut self, capabilities: Value) -> Value {
         self.call(
             "initialize",
-            json!({"protocolVersion": 2, "clientCapabilities": capabilities}),
+            json!({"protocolVersion": 1, "clientCapabilities": capabilities}),
         )
         .await
     }
@@ -222,7 +222,7 @@ async fn sessions_offer_the_model_selector_and_no_modes() {
     let (mut client, serving) = connect(&harness.handle, no_answers());
     let initialize = client.initialize(json!({})).await;
     assert_eq!(initialize["agentInfo"]["name"], "maple");
-    assert_eq!(initialize["protocolVersion"], 2);
+    assert_eq!(initialize["protocolVersion"], 1);
     assert_eq!(initialize["agentCapabilities"]["loadSession"], true);
 
     let result = client
@@ -423,8 +423,8 @@ async fn cancel_stops_the_turn_in_progress() {
     finish(serving).await;
 }
 
-/// A failed turn tells its error once and still ends the turn: Buzz takes
-/// an error response as a turn that changed nothing, which it may retry.
+/// A failed turn tells its error once and still ends the turn: a client may
+/// take an error response as a turn that changed nothing, and retry it.
 #[tokio::test]
 async fn a_failed_turn_tells_its_error_and_ends_the_turn() {
     let harness = Harness::new().await;
@@ -601,54 +601,6 @@ async fn project_trust_is_asked_once_and_kept() {
     finish(serving).await;
 }
 
-/// `session/new` takes Buzz's system prompt and session title: the prompt
-/// follows Maple's own, and the title stays the task's name.
-#[tokio::test]
-async fn the_callers_system_prompt_and_title_shape_the_task() {
-    let harness = Harness::new().await;
-    let (mut client, serving) = connect(&harness.handle, no_answers());
-    client.initialize(json!({})).await;
-    let session_id = client
-        .new_session_with(json!({
-            "cwd": harness.project.path(),
-            "mcpServers": [],
-            "systemPrompt": "You are Buzz's Maple persona.",
-            "_meta": {"sessionTitle": "general"},
-        }))
-        .await;
-    harness.faux.push_text("Hello.");
-    client.prompt(&session_id, "Hi").await;
-    let system =
-        pi_ai::transcript::current_system_prompt(&harness.faux.requests()[0].context.messages);
-    assert!(system.contains("You are Buzz's Maple persona."), "{system}");
-    let listed = client.call("session/list", json!({})).await;
-    assert_eq!(listed["sessions"][0]["title"], "general");
-    client.shutdown().await;
-    finish(serving).await;
-}
-
-#[test]
-fn caller_session_fields_come_from_the_raw_session_new_params() {
-    let fields = AcpCallerSessionFields::from_params(&json!({
-        "cwd": "/tmp/project",
-        "mcpServers": [],
-        "systemPrompt": "  You are Buzz's Maple persona.  ",
-        "_meta": { "sessionTitle": "general" },
-    }));
-    assert_eq!(
-        fields,
-        AcpCallerSessionFields {
-            system_prompt: Some("You are Buzz's Maple persona.".to_string()),
-            session_title: Some("general".to_string()),
-        }
-    );
-    let empty = AcpCallerSessionFields::from_params(&json!({
-        "cwd": "/tmp/project",
-        "systemPrompt": "   ",
-    }));
-    assert_eq!(empty, AcpCallerSessionFields::default());
-}
-
 #[test]
 fn default_config_allows_eight_connections() {
     let config = AgentAcpConfig::default();
@@ -803,7 +755,7 @@ fn slash_commands_parse_like_the_desktop_composer() {
 fn available_commands_lead_with_the_built_ins_plus_skills() {
     let encoded =
         serde_json::to_value(acp_available_commands(&[crate::agent::AgentSlashCommand {
-            name: "buzz-worklog".to_string(),
+            name: "worklog".to_string(),
             description: "Publish a coding update".to_string(),
             input_hint: None,
         }]))
@@ -811,7 +763,7 @@ fn available_commands_lead_with_the_built_ins_plus_skills() {
     assert_eq!(encoded["sessionUpdate"], "available_commands_update");
     let commands = encoded["availableCommands"].as_array().unwrap();
     assert_eq!(commands[0]["name"], "compact");
-    assert_eq!(commands[1]["name"], "buzz-worklog");
+    assert_eq!(commands[1]["name"], "worklog");
     assert_eq!(commands[1]["description"], "Publish a coding update");
 }
 
@@ -1252,44 +1204,30 @@ fn save_config_writes_atomically_and_round_trips() {
 }
 
 #[test]
-fn bridge_environment_is_strictly_allowlisted() {
-    let filtered = filter_bridge_environment(HashMap::from([
-        (
-            "BUZZ_RELAY_URL".to_string(),
-            "ws://localhost:3000".to_string(),
-        ),
-        ("UNRELATED_SECRET".to_string(), "nope".to_string()),
-    ]));
-    assert_eq!(filtered.len(), 1);
-    assert!(filtered.contains_key("BUZZ_RELAY_URL"));
-}
-
-#[test]
 fn arbitrary_stdio_mcp_is_rejected_before_any_process_can_start() {
     let server = McpServer::Stdio(
         McpServerStdio::new("untrusted", "/bin/sh")
             .args(vec!["-c".to_string(), "exit 0".to_string()]),
     );
 
-    assert!(prepare_session_mcp(&HashMap::new(), &[server]).is_err());
+    assert!(prepare_session_mcp(&[server]).is_err());
 }
 
 #[test]
 fn an_http_mcp_server_runs_beside_the_tasks_own() {
-    let server = McpServer::Http(McpServerHttp::new("bridge", "https://bridge.example/mcp"));
-    let (environment, servers) = prepare_session_mcp(&HashMap::new(), &[server]).unwrap();
-    assert!(environment.is_empty());
+    let server = McpServer::Http(McpServerHttp::new("remote", "https://remote.example/mcp"));
+    let servers = prepare_session_mcp(&[server]).unwrap();
     assert_eq!(servers.len(), 1);
-    assert_eq!(servers[0].name, "bridge");
+    assert_eq!(servers[0].name, "remote");
     assert!(servers[0].enabled);
     assert!(matches!(
         &servers[0].transport,
-        crate::agent::AgentMcpTransport::StreamableHttp { url, .. } if url == "https://bridge.example/mcp"
+        crate::agent::AgentMcpTransport::StreamableHttp { url, .. } if url == "https://remote.example/mcp"
     ));
 }
 
 #[test]
-fn prompt_blocks_preserve_buzz_order() {
+fn prompt_blocks_keep_their_order() {
     let blocks = vec![
         ContentBlock::Text(TextContent::new("[Base]\nbase")),
         ContentBlock::Text(TextContent::new("[System]\nsystem")),

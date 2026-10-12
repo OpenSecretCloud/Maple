@@ -31,7 +31,6 @@ use super::store::{TaskKind, TaskRow, TaskStore};
 use super::surface::{
     AgentSurfaceAccess, SURFACE_CONTROLLED_ERROR, SurfaceTask, with_surface_servers,
 };
-use super::tool_context::SharedAgentToolContext;
 use super::{
     AgentMcpServer, AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources,
     emit_agent_event, login_path, tools,
@@ -108,10 +107,6 @@ pub(super) struct AgentRuntime {
     /// a session's build, under the sessions' lock, so a session is built
     /// with what the task has.
     surfaces: Mutex<HashMap<String, SurfaceTask>>,
-    /// The system prompts calling surfaces gave the tasks they created, for
-    /// as long as the runtime runs: the caller owns the prompt and gives it
-    /// again with a new task.
-    system_prompts: Mutex<HashMap<String, String>>,
     pub(super) runs: Runs,
     pub(super) failures: Failures,
     /// The external agents of the account's tasks.
@@ -146,7 +141,6 @@ impl AgentRuntime {
             lifetime,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             surfaces: Mutex::new(HashMap::new()),
-            system_prompts: Mutex::new(HashMap::new()),
             runs: Runs::default(),
             failures: Failures::default(),
         })
@@ -306,13 +300,6 @@ impl AgentRuntime {
         }
     }
 
-    /// The tool context of a task a calling surface holds.
-    pub(super) fn surface_context(&self, session_id: &str) -> Option<SharedAgentToolContext> {
-        lock(&self.surfaces)
-            .get(session_id)
-            .map(|task| task.context.clone())
-    }
-
     /// Whether a calling surface holds the task.
     pub(super) fn is_surfaced(&self, session_id: &str) -> bool {
         lock(&self.surfaces).contains_key(session_id)
@@ -336,32 +323,19 @@ impl AgentRuntime {
             .unwrap_or_default()
     }
 
-    /// Whether `access` still holds its task, with its context in force.
+    /// Whether `access` still holds its task.
     pub(super) fn surface_holds(&self, access: &AgentSurfaceAccess) -> bool {
         lock(&self.surfaces)
             .get(access.session_id())
             .is_some_and(|task| {
-                task.installation == access.installation() && !task.context.is_revoked()
+                task.installation == access.installation() && !task.revoked.is_cancelled()
             })
-    }
-
-    /// The system prompt a calling surface gave the task it created.
-    pub(super) fn system_prompt(&self, session_id: &str) -> Option<String> {
-        lock(&self.system_prompts).get(session_id).cloned()
-    }
-
-    pub(super) fn set_system_prompt(&self, session_id: &str, prompt: Option<String>) {
-        let mut prompts = lock(&self.system_prompts);
-        match prompt.filter(|prompt| !prompt.trim().is_empty()) {
-            Some(prompt) => prompts.insert(session_id.to_string(), prompt),
-            None => prompts.remove(session_id),
-        };
     }
 
     /// Give a calling surface its hold on a task. The task's loaded session,
     /// built for whoever drove it before, is unloaded, so its next run
-    /// builds it with the surface's context. Refused while the task runs or
-    /// another surface holds it.
+    /// builds it for the surface. Refused while the task runs or another
+    /// surface holds it.
     pub(super) async fn install_surface(
         &self,
         session_id: &str,
@@ -412,7 +386,7 @@ impl AgentRuntime {
             surfaces.remove(session_id);
             drop(surfaces);
             // A run that would not stop keeps its session, with the
-            // surface's context revoked.
+            // surface's hold already ended.
             if self.runs.is_running(session_id) {
                 None
             } else {
@@ -573,9 +547,8 @@ impl AgentRuntime {
         if self.lifetime.is_cancelled() {
             return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
         }
-        // A task a calling surface holds runs with the surface's tool
-        // context, and without the desktop's own tools.
-        let surface_context = self.surface_context(&row.id);
+        // A task a calling surface holds runs without the desktop's own
+        // tools.
         let kind = self.driven_kind(row);
         let providers = if kind == TaskKind::Desktop {
             task_providers(&agents_on, row)
@@ -613,16 +586,15 @@ impl AgentRuntime {
         let mut options =
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
         options.model = Some(model);
-        options.settings = self.settings(self.system_prompt(&row.id));
+        options.settings = self.settings();
         options.resources = resources.unwrap_or_default();
         let attachments = Arc::new(account_attachment_store(&self.host.paths, &self.user_id)?);
-        let tool_context = surface_context
-            .unwrap_or_else(|| SharedAgentToolContext::new(self.host.default_tool_context.clone()));
         let tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
             kind,
-            tool_context: tool_context.clone(),
-            login_path: search_path.clone(),
+            // A calling surface's commands keep the PATH its client started
+            // Maple with.
+            login_path: search_path.clone().filter(|_| kind == TaskKind::Desktop),
             questions: self.questions.clone(),
             web: self.api.clone(),
             web_enabled: row.web_enabled,
@@ -648,7 +620,6 @@ impl AgentRuntime {
                     session_id: row.id.clone(),
                     working_dir: PathBuf::from(&row.project_root),
                     login_path: search_path.clone(),
-                    tool_context,
                     providers: agents.clone(),
                 }));
         }
@@ -696,15 +667,9 @@ impl AgentRuntime {
 
     /// The settings of every session: Maple's retry budget, queued messages
     /// delivered together, the saved thinking default, and the host's opening
-    /// instructions after Pi's own, then the caller's `system_prompt`.
-    fn settings(&self, system_prompt: Option<String>) -> Settings {
-        let appended = [Some(self.host.harness_instructions()), system_prompt]
-            .into_iter()
-            .flatten()
-            .map(|text| text.trim().to_string())
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+    /// instructions after Pi's own.
+    fn settings(&self) -> Settings {
+        let appended = self.host.harness_instructions().trim().to_string();
         Settings {
             retry: RETRY,
             // The transport times out a response that does not start or

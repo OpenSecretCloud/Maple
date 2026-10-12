@@ -7,36 +7,18 @@ use super::convert::acp_session_config_options;
 use super::transport::AcpOutboundTracker;
 use crate::agent::{
     AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle, AgentSessionSummary,
-    AgentSurfaceLease, AgentToolContextSpec, CatalogEntry, SENSITIVE_BRIDGE_ENV,
+    AgentSurfaceLease, CatalogEntry,
 };
 
-use agent_client_protocol::JsonRpcNotification;
 use agent_client_protocol::schema::v1::{McpServer, SessionConfigOption, SessionId};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
-
 pub(super) const ACP_SESSION_MCP_TIMEOUT_SECONDS: u64 = 30;
-pub(super) const ALLOWED_BRIDGE_ENV: [&str; 6] = [
-    "BUZZ_RELAY_URL",
-    "BUZZ_PRIVATE_KEY",
-    "BUZZ_AUTH_TAG",
-    "BUZZ_API_TOKEN",
-    "BUZZ_ACP_DISPLAY_NAME",
-    "PATH",
-];
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
-#[notification(method = "_maple/bridge/hello")]
-pub(super) struct BridgeHelloNotification {
-    pub(super) environment: HashMap<String, String>,
-}
 
 /// A start gate that is already satisfied; used when the runtime is known
 /// to be running (tests, desktop-owned runs).
@@ -50,7 +32,6 @@ pub(super) struct AcpConnectionContext {
     pub(super) runtime_start: SharedRuntimeStart,
     pub(super) config: Arc<RwLock<AgentAcpConfig>>,
     pub(super) stats: Arc<AgentAcpStats>,
-    pub(super) bridge_environment: Mutex<HashMap<String, String>>,
     pub(super) sessions: Mutex<HashMap<String, AcpSession>>,
     pub(super) session_operations: Mutex<HashMap<String, Arc<AcpSessionOperation>>>,
     pub(super) closing_sessions: Mutex<HashSet<String>>,
@@ -59,7 +40,6 @@ pub(super) struct AcpConnectionContext {
     pub(super) finalization: Mutex<()>,
     pub(super) lifetime: CancellationToken,
     pub(super) closed: AtomicBool,
-    pub(super) has_credentials: AtomicBool,
     pub(super) client_supports_form_elicitation: AtomicBool,
     pub(super) outbound: Arc<AcpOutboundTracker>,
 }
@@ -189,65 +169,16 @@ pub(super) fn ensure_allowed_project_root(
     Err("ACP session cwd is outside the configured project roots".to_string())
 }
 
-/// The caller's MCP servers for a session: the bridge's variables a Buzz
-/// `buzz-dev-mcp` definition carries, and the HTTP servers, which run beside
-/// the task's own. Other stdio servers are refused before anything starts:
-/// they would run caller-supplied native code here.
+/// The caller's MCP servers for a session: HTTP servers, which run beside the
+/// task's own. Stdio servers are refused before anything starts: they would
+/// run caller-supplied native code here.
 pub(super) fn prepare_session_mcp(
-    bridge_environment: &HashMap<String, String>,
     servers: &[McpServer],
-) -> Result<(HashMap<String, String>, Vec<AgentMcpServer>), agent_client_protocol::Error> {
-    let mut environment = bridge_environment.clone();
+) -> Result<Vec<AgentMcpServer>, agent_client_protocol::Error> {
     let mut session_servers = Vec::new();
     for server in servers {
         match server {
             McpServer::Stdio(server) => {
-                let command = server.command.as_path();
-                let is_buzz_dev_mcp = server.name == "buzz-dev-mcp"
-                    && command
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name == "buzz-dev-mcp" || name == "buzz-dev-mcp.exe")
-                    && server.args.is_empty();
-                if is_buzz_dev_mcp {
-                    if !command.is_absolute() {
-                        return Err(agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command must be absolute"));
-                    }
-                    let metadata = std::fs::metadata(command).map_err(|_| {
-                        agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command does not exist")
-                    })?;
-                    if !metadata.is_file() {
-                        return Err(agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command is not a file"));
-                    }
-                    #[cfg(unix)]
-                    if metadata.permissions().mode() & 0o111 == 0 {
-                        return Err(agent_client_protocol::Error::invalid_params()
-                            .data("Buzz buzz-dev-mcp command is not executable"));
-                    }
-                    // Preserve the historical Buzz adapter: its exact MCP
-                    // definition contributes only the allowlisted shell env.
-                    for variable in &server.env {
-                        if !ALLOWED_BRIDGE_ENV.contains(&variable.name.as_str()) {
-                            continue;
-                        }
-                        if let Some(existing) = environment.get(&variable.name) {
-                            if existing != &variable.value {
-                                return Err(agent_client_protocol::Error::invalid_params().data(
-                                    format!(
-                                        "Conflicting ACP environment value for {}",
-                                        variable.name
-                                    ),
-                                ));
-                            }
-                        } else {
-                            environment.insert(variable.name.clone(), variable.value.clone());
-                        }
-                    }
-                    continue;
-                }
                 return Err(agent_client_protocol::Error::invalid_params().data(format!(
                     "Transient stdio MCP server '{}' is disabled because it would execute caller-supplied native code on this machine",
                     server.name
@@ -290,43 +221,7 @@ pub(super) fn prepare_session_mcp(
             }
         }
     }
-    Ok((environment, session_servers))
-}
-
-pub(super) fn filter_bridge_environment(
-    environment: HashMap<String, String>,
-) -> HashMap<String, String> {
-    environment
-        .into_iter()
-        .filter(|(key, value)| {
-            ALLOWED_BRIDGE_ENV.contains(&key.as_str())
-                && !value.contains('\0')
-                && value.len() <= 16 * 1024
-        })
-        .collect()
-}
-
-pub(super) fn bridge_tool_context_spec(
-    environment: &HashMap<String, String>,
-) -> Result<AgentToolContextSpec, String> {
-    let values = environment
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let scrub_from_parent = SENSITIVE_BRIDGE_ENV
-        .into_iter()
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>();
-    AgentToolContextSpec::try_new(values, scrub_from_parent)
-}
-
-pub(super) fn has_buzz_credentials(environment: &HashMap<String, String>) -> bool {
-    environment
-        .get("BUZZ_RELAY_URL")
-        .is_some_and(|value| !value.is_empty())
-        && environment
-            .get("BUZZ_PRIVATE_KEY")
-            .is_some_and(|value| !value.is_empty())
+    Ok(session_servers)
 }
 
 pub(super) fn canonical_session_id(

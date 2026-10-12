@@ -2160,7 +2160,6 @@ impl ChatScreen {
             // this list too. External agents are not servers and are
             // applied after creation.
             mcp_server_names: self.draft_mcp_names(),
-            system_prompt: None,
         })
     }
 

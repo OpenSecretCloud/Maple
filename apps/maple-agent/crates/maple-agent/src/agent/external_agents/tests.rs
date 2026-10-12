@@ -19,7 +19,6 @@ use pi_ai::content_text;
 
 use super::*;
 use crate::agent::AgentEventSink;
-use crate::agent::tool_context::{SharedAgentToolContext, default_tool_context_spec};
 
 mod claude_fixture;
 mod end_to_end;
@@ -159,8 +158,6 @@ impl Harness {
             working_dir: self.project.clone(),
             row_id: Some(row_id.to_string()),
             login_path: Some(self.fixtures.search_path()),
-            tool_context: SharedAgentToolContext::new(default_tool_context_spec().unwrap())
-                .snapshot(),
             cancel_token: CancellationToken::new(),
         }
     }

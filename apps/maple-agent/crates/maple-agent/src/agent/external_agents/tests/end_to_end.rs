@@ -221,7 +221,6 @@ async fn a_working_agent_shows_until_it_stops_and_goes_with_its_task() {
         working_dir: harness.project.path().to_path_buf(),
         row_id: Some("row-1".to_string()),
         login_path: Some(fixtures.search_path()),
-        tool_context: SharedAgentToolContext::new(default_tool_context_spec().unwrap()).snapshot(),
         cancel_token: CancellationToken::new(),
     };
     let started = runtime

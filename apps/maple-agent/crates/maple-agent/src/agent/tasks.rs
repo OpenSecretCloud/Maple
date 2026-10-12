@@ -105,7 +105,6 @@ impl AgentRuntimeHandle {
             model: None,
             context_limit: None,
             mcp_server_names: None,
-            system_prompt: None,
         });
         let row = self
             .new_task_row(&runtime, request, TaskKind::Desktop)

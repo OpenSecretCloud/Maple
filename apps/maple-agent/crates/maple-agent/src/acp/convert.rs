@@ -500,10 +500,10 @@ pub(super) fn prompt_result_from_terminal(
         AgentRunTerminal::Completed => Ok(PromptResponse::new(StopReason::EndTurn)),
         AgentRunTerminal::Cancelled => Ok(PromptResponse::new(StopReason::Cancelled)),
         // A failed terminal is emitted only after a run was admitted. Pi may
-        // already have saved output or run tools, and Buzz treats a JSON-RPC
-        // AgentError as pre-mutation and retryable. The preceding update
-        // carries the failure text; settle the turn successfully here so
-        // non-idempotent work is never replayed automatically.
+        // already have saved output or run tools, while a client may take a
+        // JSON-RPC error to mean nothing happened and send the turn again.
+        // The preceding update carries the failure text; settle the turn
+        // successfully here so non-idempotent work is never replayed.
         AgentRunTerminal::Failed => Ok(PromptResponse::new(StopReason::EndTurn)),
     }
 }

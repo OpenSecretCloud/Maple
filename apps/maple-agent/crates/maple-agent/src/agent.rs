@@ -30,7 +30,6 @@ mod surface;
 mod tasks;
 mod thinking;
 mod timeline;
-mod tool_context;
 mod tools;
 mod types;
 
@@ -57,9 +56,6 @@ pub use surface::{
     AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess, AgentSurfaceLease, AgentSurfaceSession,
 };
 pub use tasks::NOTHING_TO_COMPACT_ERROR;
-#[cfg(any(feature = "acp", test))]
-pub(crate) use tool_context::SENSITIVE_BRIDGE_ENV;
-pub use tool_context::{AgentToolContextSpec, default_tool_context_spec};
 pub use types::*;
 
 /// The model a new account starts on.
@@ -129,13 +125,11 @@ pub(crate) fn emit_agent_event(events: &AgentEventDispatcher, event: AgentServic
 }
 
 /// What the host gives the runtime: where to keep files, where to send
-/// events, the environment of task tools, and the opening of the system
-/// prompt.
+/// events, and the opening of the system prompt.
 #[derive(Clone)]
 pub struct MapleAgentHostResources {
     paths: AgentPathLayout,
     events: AgentEventDispatcher,
-    default_tool_context: AgentToolContextSpec,
     /// Opening system prompt text from the host: who the agent is and how
     /// it behaves. The host may change it at any time; sessions built
     /// afterwards use the new text.
@@ -146,13 +140,11 @@ impl MapleAgentHostResources {
     pub fn new(
         paths: AgentPathLayout,
         event_sink: Arc<dyn AgentEventSink>,
-        default_tool_context: AgentToolContextSpec,
         harness_instructions: String,
     ) -> Self {
         Self {
             paths,
             events: AgentEventDispatcher::new(event_sink),
-            default_tool_context,
             harness_instructions: Arc::new(RwLock::new(harness_instructions)),
         }
     }

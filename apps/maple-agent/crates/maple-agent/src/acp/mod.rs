@@ -1,9 +1,9 @@
-//! The Agent Client Protocol server (`maple-agent acp`): an editor, or a
-//! bridge such as Buzz, drives Maple's agent over stdio.
+//! The Agent Client Protocol server (`maple-agent acp`): an editor drives
+//! Maple's agent over stdio.
 //!
 //! Each ACP session is one Maple task the connection holds with a lease
-//! (`AgentSurfaceLease`): its tools get the bridge's variables, its runs
-//! answer the caller alone, and the desktop's own tools stay out of it.
+//! (`AgentSurfaceLease`): its runs answer the caller alone, and the
+//! desktop's own tools stay out of it.
 //! `session/new` creates an ACP task, which no list shows until its first
 //! prompt; `session/load` holds an existing task and replays its history.
 //! Maple has no session modes: every tool call runs without asking.
@@ -24,12 +24,11 @@ use convert::{
     project_trust_permission_decision, project_trust_permission_options, prompt_images,
     prompt_result_from_terminal, prompt_text, text_chunk, timeline_update,
 };
-use handler::{AcpCallerSessionFields, MapleAcpHandler};
+use handler::MapleAcpHandler;
 use session::{
-    ALLOWED_BRIDGE_ENV, AcpConnectionContext, AcpProjectTrustResolution, AcpPromptState,
-    AcpSession, AcpSessionOperation, UnpublishedAcpSession, bridge_tool_context_spec,
-    canonical_session_id, canonical_session_id_text, close_registration_may_be_released,
-    ensure_allowed_project_root, filter_bridge_environment, find_acp_session, has_buzz_credentials,
+    AcpConnectionContext, AcpProjectTrustResolution, AcpPromptState, AcpSession,
+    AcpSessionOperation, UnpublishedAcpSession, canonical_session_id, canonical_session_id_text,
+    close_registration_may_be_released, ensure_allowed_project_root, find_acp_session,
     prepare_session_mcp,
 };
 use transport::{
@@ -85,9 +84,7 @@ where
 ///
 /// `maple-agent acp` calls this with the agent runtime's start. The editor
 /// that spawned the process owns the connection: when its stdin closes,
-/// every open session is cleaned up and the call returns. The bridge
-/// environment (Buzz credentials and `PATH`) is read from this process's
-/// own environment.
+/// every open session is cleaned up and the call returns.
 pub async fn serve_stdio(
     agent: AgentRuntimeHandle,
     config: AgentAcpConfig,
@@ -96,15 +93,6 @@ pub async fn serve_stdio(
     let config = Arc::new(RwLock::new(normalize_config(config)?));
     let stats = Arc::new(AgentAcpStats::default());
     let context = AcpConnectionContext::new(agent, config, stats, runtime_start);
-    let environment = ALLOWED_BRIDGE_ENV
-        .iter()
-        .filter_map(|key| {
-            std::env::var(key)
-                .ok()
-                .map(|value| ((*key).to_string(), value))
-        })
-        .collect::<HashMap<_, _>>();
-    context.set_bridge_environment(environment).await;
     serve(context, tokio::io::stdin(), tokio::io::stdout()).await
 }
 
@@ -167,7 +155,6 @@ impl AcpConnectionContext {
             runtime_start,
             config,
             stats,
-            bridge_environment: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             session_operations: Mutex::new(HashMap::new()),
             closing_sessions: Mutex::new(HashSet::new()),
@@ -176,32 +163,15 @@ impl AcpConnectionContext {
             finalization: Mutex::new(()),
             lifetime: CancellationToken::new(),
             closed: AtomicBool::new(false),
-            has_credentials: AtomicBool::new(false),
             client_supports_form_elicitation: AtomicBool::new(false),
             outbound: AcpOutboundTracker::new(),
         })
-    }
-
-    async fn set_bridge_environment(&self, environment: HashMap<String, String>) {
-        let _finalization = self.finalization.lock().await;
-        if self.closed.load(Ordering::SeqCst) {
-            return;
-        }
-        let environment = filter_bridge_environment(environment);
-        let has_credentials = has_buzz_credentials(&environment);
-        *self.bridge_environment.lock().await = environment;
-        if has_credentials && !self.has_credentials.swap(true, Ordering::SeqCst) {
-            self.stats
-                .credential_connections
-                .fetch_add(1, Ordering::SeqCst);
-        }
     }
 
     async fn new_session(
         &self,
         cx: &ConnectionTo<Client>,
         request: NewSessionRequest,
-        caller: AcpCallerSessionFields,
     ) -> Result<NewSessionResponse, agent_client_protocol::Error> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(agent_client_protocol::Error::internal_error()
@@ -226,22 +196,17 @@ impl AcpConnectionContext {
             .first()
             .cloned()
             .ok_or_else(|| internal_acp_error("Maple returned no models".to_string()))?;
-        let bridge_environment = self.bridge_environment.lock().await.clone();
-        let (environment, session_servers) =
-            prepare_session_mcp(&bridge_environment, &request.mcp_servers)?;
-        let tool_context = bridge_tool_context_spec(&environment).map_err(internal_acp_error)?;
+        let session_servers = prepare_session_mcp(&request.mcp_servers)?;
         let created = self
             .agent
             .create_surface_session(
                 AgentCreateSessionRequest {
                     project_root: Some(project_root.to_string_lossy().into_owned()),
-                    title: caller.session_title,
+                    title: None,
                     model: Some(model.clone()),
                     context_limit: None,
                     mcp_server_names: None,
-                    system_prompt: caller.system_prompt,
                 },
-                tool_context,
                 session_servers,
             )
             .await
@@ -287,12 +252,6 @@ impl AcpConnectionContext {
         drop(operations);
         drop(sessions);
         self.stats.active_sessions.fetch_add(1, Ordering::SeqCst);
-        if has_buzz_credentials(&environment) && !self.has_credentials.swap(true, Ordering::SeqCst)
-        {
-            self.stats
-                .credential_connections
-                .fetch_add(1, Ordering::SeqCst);
-        }
         drop(finalization);
         self.send_available_commands(cx, &session_id, &project_root)
             .await;
@@ -442,10 +401,7 @@ impl AcpConnectionContext {
                 "This Maple Agent task uses model '{model}', which is no longer available; the task remains available in Maple Desktop"
             )));
         }
-        let bridge_environment = self.bridge_environment.lock().await.clone();
-        let (environment, session_servers) =
-            prepare_session_mcp(&bridge_environment, &request.mcp_servers)?;
-        let tool_context = bridge_tool_context_spec(&environment).map_err(internal_acp_error)?;
+        let session_servers = prepare_session_mcp(&request.mcp_servers)?;
         let protocol_session_id = SessionId::new(session_id.clone());
         let operation = AcpSessionOperation::new(&self.lifetime);
         // Held until the history is replayed, so a prompt's updates follow it.
@@ -476,7 +432,7 @@ impl AcpConnectionContext {
         }
         let attached = match self
             .agent
-            .attach_surface_session(&session_id, tool_context, session_servers)
+            .attach_surface_session(&session_id, session_servers)
             .await
         {
             Ok(attached) => attached,
@@ -1597,19 +1553,13 @@ impl AcpConnectionContext {
             let _finalization = self.finalization.lock().await;
             self.closed.store(true, Ordering::SeqCst);
             self.lifetime.cancel();
-            self.bridge_environment.lock().await.clear();
-            if self.has_credentials.swap(false, Ordering::SeqCst) {
-                self.stats
-                    .credential_connections
-                    .fetch_sub(1, Ordering::SeqCst);
-            }
         }
         // Every prompt and run stops with the connection's lifetime.
         for state in self.prompt_states.lock().await.values() {
             state.cancellation.cancel();
         }
-        // Revoke every lease before awaiting anything else: no task can
-        // launch another credential-bearing tool once this returns.
+        // End every lease's hold before awaiting anything else: nothing is
+        // accepted under one once this returns.
         let session_ids = {
             let sessions = self.sessions.lock().await;
             for session in sessions.values() {

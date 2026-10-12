@@ -18,7 +18,6 @@ use super::{
     AgentSendParams, AgentStartParams, EXTERNAL_AGENT_TOOLS, ExternalAgentCall,
     ExternalAgentRegistry, LIST_AGENT_PROVIDERS_TOOL,
 };
-use crate::agent::tool_context::SharedAgentToolContext;
 
 /// The providers a task may use now: switched on in Settings and for the
 /// task. Its tools read them at each call; each run brings them up to date.
@@ -48,7 +47,6 @@ pub(crate) struct ExternalAgentToolsFor {
     /// The task's folder, where its agents work.
     pub(crate) working_dir: PathBuf,
     pub(crate) login_path: Option<String>,
-    pub(crate) tool_context: SharedAgentToolContext,
     pub(crate) providers: TaskProviders,
 }
 
@@ -178,7 +176,6 @@ impl ExternalAgentTool {
                 .task
                 .registry
                 .search_path(self.task.login_path.as_deref()),
-            tool_context: self.task.tool_context.snapshot(),
             cancel_token: invocation.cancel.clone(),
         }
     }

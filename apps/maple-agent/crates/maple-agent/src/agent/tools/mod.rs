@@ -2,9 +2,8 @@
 //!
 //! Pi's session gives every task `read`, `bash`, `edit` and `write`, or
 //! `powershell` in place of `bash` on Windows without Git Bash. Maple sets up
-//! how their commands start: from the login shell's PATH, with the task's id,
-//! and with the task's tool context, so the ACP bridge's variables reach only
-//! the tasks of its sessions. `MAPLE_SHELL` names the bash to run.
+//! how their commands start: from the login shell's PATH, with the task's id.
+//! `MAPLE_SHELL` names the bash to run.
 //!
 //! Maple's own tools join these: every task gets `read_image`, desktop tasks
 //! get the plan the user watches (`todo_write`) and questions the user
@@ -19,7 +18,6 @@ pub(crate) mod web;
 pub(super) use desktop::parse_user_questions;
 pub(crate) use read_image::ReadImageFor;
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -31,7 +29,6 @@ use pi_coding_agent::tools::{
 
 use super::questions::QuestionBroker;
 use super::store::TaskKind;
-use super::tool_context::SharedAgentToolContext;
 use crate::maple_api::MapleWebTransport;
 
 /// The developer's choice of bash.
@@ -52,7 +49,6 @@ pub(crate) struct TaskTools {
 pub(crate) struct TaskToolsFor {
     pub(crate) session_id: String,
     pub(crate) kind: TaskKind,
-    pub(crate) tool_context: SharedAgentToolContext,
     /// The login shell's PATH, when it could be read.
     pub(crate) login_path: Option<String>,
     /// Takes the questions the user answers.
@@ -69,7 +65,7 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
     let shell_path = std::env::var_os(SHELL_ENV)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
-    let hook = spawn_hook(task.session_id.clone(), task.tool_context, task.login_path);
+    let hook = spawn_hook(task.session_id.clone(), task.login_path);
     let mut options = ToolsOptions::default();
     options.bash.shell_path = shell_path.clone();
     options.bash.spawn_hook = Some(hook.clone());
@@ -120,38 +116,16 @@ pub(crate) fn sync_web_tools(session: &AgentSession, web_enabled: bool) {
     session.set_active_tools(&next);
 }
 
-/// How every command of the task starts: the login PATH, the task's id, and
-/// the task's tool context, read when the command starts.
-fn spawn_hook(
-    session_id: String,
-    tool_context: SharedAgentToolContext,
-    login_path: Option<String>,
-) -> BashSpawnHook {
+/// How every command of the task starts: on the login PATH, with the task's
+/// id.
+fn spawn_hook(session_id: String, login_path: Option<String>) -> BashSpawnHook {
     Arc::new(move |mut spawn: BashSpawnContext| {
         if let Some(path) = &login_path {
             set_env_var(&mut spawn.env, "PATH", path.clone());
         }
         set_env_var(&mut spawn.env, "AGENT_SESSION_ID", session_id.clone());
-        let context = tool_context.snapshot();
-        for key in &context.scrub_from_parent {
-            remove_env_var(&mut spawn.env, key);
-        }
-        for (key, value) in &context.values {
-            set_env_var(&mut spawn.env, key, value.clone());
-        }
         spawn
     })
-}
-
-/// Remove `key`, ignoring case on Windows, where variable names do.
-fn remove_env_var(env: &mut BTreeMap<String, String>, key: &str) {
-    env.retain(|existing, _| {
-        if cfg!(windows) {
-            !existing.eq_ignore_ascii_case(key)
-        } else {
-            existing != key
-        }
-    });
 }
 
 #[cfg(test)]

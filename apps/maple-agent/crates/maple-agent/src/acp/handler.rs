@@ -2,7 +2,8 @@
 //! each incoming method into a call on the connection context.
 
 use super::convert::client_supports_form_elicitation;
-use super::session::{AcpConnectionContext, BridgeHelloNotification};
+use super::session::AcpConnectionContext;
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
     DeleteSessionRequest, DeleteSessionResponse, Implementation, InitializeRequest,
@@ -51,41 +52,6 @@ pub(super) struct MapleAcpHandler {
     pub(super) context: Arc<AcpConnectionContext>,
 }
 
-/// `session/new` fields that Buzz adds beyond the ACP 1 schema: a top-level
-/// `systemPrompt` (its protocol 2 system role) and `_meta.sessionTitle`.
-/// They are read from the raw request before typed dispatch drops them.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct AcpCallerSessionFields {
-    pub(super) system_prompt: Option<String>,
-    pub(super) session_title: Option<String>,
-}
-
-impl AcpCallerSessionFields {
-    pub(super) fn from_dispatch(message: &Dispatch) -> Self {
-        let Dispatch::Request(request, _) = message else {
-            return Self::default();
-        };
-        if request.method() != "session/new" {
-            return Self::default();
-        }
-        Self::from_params(request.params())
-    }
-
-    pub(super) fn from_params(params: &serde_json::Value) -> Self {
-        let text = |value: Option<&serde_json::Value>| {
-            value
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(str::to_owned)
-        };
-        Self {
-            system_prompt: text(params.get("systemPrompt")),
-            session_title: text(params.pointer("/_meta/sessionTitle")),
-        }
-    }
-}
-
 impl HandleDispatchFrom<Client> for MapleAcpHandler {
     fn describe_chain(&self) -> impl std::fmt::Debug {
         "maple-acp"
@@ -98,17 +64,8 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
     ) -> impl std::future::Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send
     {
         let context = Arc::clone(&self.context);
-        let caller_fields = AcpCallerSessionFields::from_dispatch(&message);
         Box::pin(async move {
             MatchDispatchFrom::new(message, &cx)
-                .if_notification({
-                    let context = Arc::clone(&context);
-                    |notification: BridgeHelloNotification| async move {
-                        context.set_bridge_environment(notification.environment).await;
-                        Ok(())
-                    }
-                })
-                .await
                 .if_request({
                     let context = Arc::clone(&context);
                     move |request: InitializeRequest, responder: Responder<InitializeResponse>| async move {
@@ -132,15 +89,12 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                                     .delete(SessionDeleteCapabilities::new()),
                             );
                         responder.respond(
-                            // Protocol 2 tells Buzz that `session/new`
-                            // accepts its `systemPrompt` field. The schema
-                            // crate keeps `V2` behind an unstable feature,
-                            // so build the value from the number.
-                            InitializeResponse::new(
-                                agent_client_protocol::schema::ProtocolVersion::from(2u16),
-                            )
-                            .agent_info(Implementation::new("maple", env!("CARGO_PKG_VERSION")))
-                            .agent_capabilities(capabilities),
+                            InitializeResponse::new(ProtocolVersion::LATEST)
+                                .agent_info(Implementation::new(
+                                    "maple",
+                                    env!("CARGO_PKG_VERSION"),
+                                ))
+                                .agent_capabilities(capabilities),
                         )
                     }
                 })
@@ -151,7 +105,7 @@ impl HandleDispatchFrom<Client> for MapleAcpHandler {
                     |request: NewSessionRequest, responder: Responder<NewSessionResponse>| async move {
                         let task_context = Arc::clone(&context);
                         respond_in_background(&context, responder, async move {
-                            task_context.new_session(&cx, request, caller_fields).await
+                            task_context.new_session(&cx, request).await
                         })
                         .await
                     }

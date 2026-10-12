@@ -1,7 +1,6 @@
 //! A calling surface holding tasks: its leases, its runs and its
 //! provisional tasks, on the scripted runtime.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use pi_ai::faux::{FauxProvider, faux_tool_call};
@@ -12,29 +11,16 @@ use super::*;
 use crate::agent::tests::{Harness, finished};
 use crate::agent::{
     AgentMcpKeyValue, AgentMcpTransport, AgentRunTerminal, AgentSendMessageRequest,
-    AgentServiceEvent, SENSITIVE_BRIDGE_ENV,
+    AgentServiceEvent,
 };
 
-/// The context an ACP bridge gives its tasks' tools.
-fn bridge_context() -> AgentToolContextSpec {
-    AgentToolContextSpec::try_new(
-        BTreeMap::from([("BUZZ_RELAY_URL".to_string(), "ws://relay".to_string())]),
-        SENSITIVE_BRIDGE_ENV
-            .into_iter()
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>(),
-    )
-    .unwrap()
-}
-
-fn new_task(harness: &Harness, system_prompt: Option<&str>) -> AgentCreateSessionRequest {
+fn new_task(harness: &Harness) -> AgentCreateSessionRequest {
     AgentCreateSessionRequest {
         project_root: Some(harness.project.path().to_string_lossy().into_owned()),
         title: None,
         model: Some("glm-5-3".to_string()),
         context_limit: None,
         mcp_server_names: None,
-        system_prompt: system_prompt.map(str::to_string),
     }
 }
 
@@ -67,7 +53,7 @@ async fn a_surface_task_is_unlisted_until_prompted_and_discarded_untouched() {
     let harness = Harness::new().await;
     let created = harness
         .handle
-        .create_surface_session(new_task(&harness, None), bridge_context(), Vec::new())
+        .create_surface_session(new_task(&harness), Vec::new())
         .await
         .unwrap();
     let untouched = created.detail.session.id.clone();
@@ -81,7 +67,7 @@ async fn a_surface_task_is_unlisted_until_prompted_and_discarded_untouched() {
     // Prompted, a task stays, under its prompt's title.
     let created = harness
         .handle
-        .create_surface_session(new_task(&harness, None), bridge_context(), Vec::new())
+        .create_surface_session(new_task(&harness), Vec::new())
         .await
         .unwrap();
     let prompted = created.detail.session.id.clone();
@@ -104,28 +90,20 @@ async fn a_surface_task_is_unlisted_until_prompted_and_discarded_untouched() {
 }
 
 #[tokio::test]
-async fn a_surface_task_runs_with_the_surface_context_and_without_desktop_tools() {
+async fn a_surface_task_runs_without_desktop_tools() {
     let harness = Harness::new().await;
     let created = harness
         .handle
-        .create_surface_session(
-            new_task(&harness, Some("You are Buzz's Maple persona.")),
-            bridge_context(),
-            Vec::new(),
-        )
+        .create_surface_session(new_task(&harness), Vec::new())
         .await
         .unwrap();
     let task = created.detail.session.id.clone();
-    harness.faux.push_message(vec![faux_tool_call(
-        "bash",
-        json!({"command": "printenv BUZZ_RELAY_URL"}),
-    )]);
     harness.faux.push_text("Done.");
     let mut run = harness
         .handle
         .send_surface_message(
             &created.lease.access(),
-            prompt(&task, "Where is the relay?"),
+            prompt(&task, "Hello"),
             CancellationToken::new(),
         )
         .await
@@ -144,24 +122,6 @@ async fn a_surface_task_runs_with_the_surface_context_and_without_desktop_tools(
     for name in desktop {
         assert!(!declared.contains(&name.to_string()), "{declared:?}");
     }
-    // The caller's prompt follows Maple's own.
-    let system = pi_ai::transcript::current_system_prompt(&requests[0].context.messages);
-    let maple = system.find("You are Maple.").expect("Maple's prompt");
-    let persona = system
-        .find("You are Buzz's Maple persona.")
-        .expect("the caller's prompt");
-    assert!(maple < persona, "{system}");
-    // The bridge's variable reached the command.
-    let output = requests[1]
-        .context
-        .messages
-        .iter()
-        .find_map(|message| match message {
-            pi_ai::Message::ToolResult(result) => Some(pi_ai::content_text(&result.content)),
-            _ => None,
-        })
-        .unwrap();
-    assert!(output.contains("ws://relay"), "{output}");
     // A surface's run is the surface's alone: the host hears none of it.
     assert!(!harness.recorder.events().iter().any(
         |event| matches!(event, AgentServiceEvent::Run { run_id, .. } if *run_id == run.run_id)
@@ -175,7 +135,7 @@ async fn the_desktop_waits_for_a_surface_to_release_its_task() {
     let task = harness.create_task().await;
     let attached = harness
         .handle
-        .attach_surface_session(&task, bridge_context(), Vec::new())
+        .attach_surface_session(&task, Vec::new())
         .await
         .unwrap();
     assert_eq!(attached.detail.session.id, task);
@@ -190,7 +150,7 @@ async fn the_desktop_waits_for_a_surface_to_release_its_task() {
     // A second surface cannot hold it either.
     let second = harness
         .handle
-        .attach_surface_session(&task, bridge_context(), Vec::new())
+        .attach_surface_session(&task, Vec::new())
         .await
         .err()
         .unwrap();
@@ -239,7 +199,7 @@ async fn cancelling_a_surface_send_stops_its_run() {
         Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(10))).await;
     let created = harness
         .handle
-        .create_surface_session(new_task(&harness, None), bridge_context(), Vec::new())
+        .create_surface_session(new_task(&harness), Vec::new())
         .await
         .unwrap();
     let task = created.detail.session.id.clone();
@@ -277,7 +237,7 @@ async fn a_surface_brings_its_own_mcp_servers() {
     let harness = Harness::new().await;
     let fake = crate::agent::mcp::fake_server::FakeServer::start(None).await;
     let server = AgentMcpServer {
-        name: "Bridge".to_string(),
+        name: "Client".to_string(),
         description: "ACP session MCP server".to_string(),
         enabled: true,
         timeout_seconds: 30,
@@ -292,13 +252,13 @@ async fn a_surface_brings_its_own_mcp_servers() {
     };
     let created = harness
         .handle
-        .create_surface_session(new_task(&harness, None), bridge_context(), vec![server])
+        .create_surface_session(new_task(&harness), vec![server])
         .await
         .unwrap();
     let task = created.detail.session.id.clone();
     harness.faux.push_message(vec![faux_tool_call(
-        "mcp__bridge__echo",
-        json!({"text": "through the bridge"}),
+        "mcp__client__echo",
+        json!({"text": "through the client"}),
     )]);
     harness.faux.push_text("Echoed.");
     let mut run = harness
@@ -313,7 +273,7 @@ async fn a_surface_brings_its_own_mcp_servers() {
     assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
     assert_eq!(
         fake.calls(),
-        [("echo".to_string(), json!({"text": "through the bridge"}))]
+        [("echo".to_string(), json!({"text": "through the client"}))]
     );
     assert!(
         fake.authorization()
@@ -341,7 +301,7 @@ fn a_surface_server_takes_the_place_of_a_saved_one_of_its_name() {
             server("GitHub", "https://saved.example/github"),
             server("Docs", "https://saved.example/docs"),
         ],
-        vec![server("github", "https://bridge.example/github")],
+        vec![server("github", "https://client.example/github")],
     );
     let urls: Vec<String> = servers
         .iter()
@@ -354,7 +314,7 @@ fn a_surface_server_takes_the_place_of_a_saved_one_of_its_name() {
         urls,
         [
             "https://saved.example/docs",
-            "https://bridge.example/github"
+            "https://client.example/github"
         ]
     );
 }

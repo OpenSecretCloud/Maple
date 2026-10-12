@@ -52,7 +52,6 @@ use super::timeline::{
     MAPLE_NOTICE_ENTRY, MAX_AGENT_SESSION_TITLE_CHARS, bounded_timeline_text, notice_entry_data,
     notice_item, stored_tool_row_id,
 };
-use super::tool_context::AgentToolContextSnapshot;
 use super::{
     AgentEventDispatcher, AgentPermissionDecision, AgentPermissionRequest, AgentRunEvent,
     AgentRuntimeHandle, AgentServiceEvent, AgentSubagent, AgentTimelineItem, ExternalAgentRef,
@@ -375,7 +374,6 @@ pub(crate) struct ExternalAgentCall {
     /// The timeline row of the tool call, which the turn's progress joins.
     pub(crate) row_id: Option<String>,
     pub(crate) login_path: Option<String>,
-    pub(crate) tool_context: AgentToolContextSnapshot,
     pub(crate) cancel_token: CancellationToken,
 }
 
@@ -851,7 +849,6 @@ struct ActiveTurn {
 struct StoredCall {
     working_dir: PathBuf,
     login_path: Option<String>,
-    tool_context: AgentToolContextSnapshot,
 }
 
 /// An agent's process, in its own process group, which goes with it.
@@ -1035,7 +1032,6 @@ impl ExternalAgent {
             biased;
             _ = self.cancel.cancelled() => Err("This external agent has been shut down.".to_string()),
             _ = call.cancel_token.cancelled() => Err("The external agent launch was cancelled.".to_string()),
-            _ = call.tool_context.revoked.cancelled() => Err("The external agent context was revoked.".to_string()),
             result = tokio::time::timeout(LAUNCH_TIMEOUT, self.ensure_process(call, input.model.as_deref(), input.effort.as_deref())) =>
                 result.unwrap_or_else(|_| Err("The external agent did not initialize in time.".to_string())),
         }?;
@@ -1061,7 +1057,6 @@ impl ExternalAgent {
             state.last_call = Some(StoredCall {
                 working_dir: call.working_dir.clone(),
                 login_path: call.login_path.clone(),
-                tool_context: call.tool_context.clone(),
             });
             state.turn = Some(ActiveTurn {
                 turn_id: None,
@@ -1113,15 +1108,12 @@ impl ExternalAgent {
 
         enum Wait {
             RunCancelled,
-            ContextRevoked,
             Done,
         }
-        let revoked = call.tool_context.revoked.clone();
         let mut done_rx = done_rx;
         let wait = tokio::select! {
             biased;
             _ = call.cancel_token.cancelled() => Wait::RunCancelled,
-            _ = revoked.cancelled() => Wait::ContextRevoked,
             _ = &mut done_rx => Wait::Done,
         };
         match wait {
@@ -1132,7 +1124,6 @@ impl ExternalAgent {
                 drop(done_rx);
                 self.stop_turn().await;
             }
-            Wait::ContextRevoked => self.shutdown().await,
             Wait::Done => {}
         }
         let activity = self.activity().await;
@@ -1190,18 +1181,17 @@ impl ExternalAgent {
             &self.cwd,
             call.login_path.as_deref(),
             &self.session_id,
-            &call.tool_context,
         )?;
         if self.provider == claude::PROVIDER_ID {
             command.env_remove("CLAUDECODE");
         }
-        let mut child = {
-            let _launch = call.tool_context.begin_process_launch(&call.cancel_token)?;
-            ContainedChild {
-                child: command.spawn().map_err(|error| {
-                    format!("Failed to start {}: {error}", self.provider_name())
-                })?,
-            }
+        if call.cancel_token.is_cancelled() {
+            return Err("Agent run was cancelled before command launch".to_string());
+        }
+        let mut child = ContainedChild {
+            child: command
+                .spawn()
+                .map_err(|error| format!("Failed to start {}: {error}", self.provider_name()))?,
         };
         let stdin = child
             .child
@@ -1656,7 +1646,6 @@ impl ExternalAgent {
                 working_dir: stored.working_dir,
                 row_id: None,
                 login_path: stored.login_path,
-                tool_context: stored.tool_context,
                 cancel_token: CancellationToken::new(),
             };
             if let Err(error) = self
@@ -2042,15 +2031,14 @@ impl AgentRuntimeHandle {
 }
 
 /// The command that starts an agent process such as `codex app-server`: in
-/// the project, on the user's login PATH, with the task's id and its tool
-/// context as the shell tool has them, in its own process group.
+/// the project, on the user's login PATH, with the task's id as the shell
+/// tool has it, in its own process group.
 fn agent_command(
     executable: &Path,
     args: &[String],
     working_dir: &Path,
     login_path: Option<&str>,
     session_id: &str,
-    tool_context: &AgentToolContextSnapshot,
 ) -> Result<tokio::process::Command, String> {
     #[cfg(not(windows))]
     if Path::new("/.flatpak-info").exists() {
@@ -2062,12 +2050,6 @@ fn agent_command(
         command.env("PATH", path);
     }
     command.env("AGENT_SESSION_ID", session_id);
-    for key in &tool_context.scrub_from_parent {
-        command.env_remove(key);
-    }
-    for (key, value) in &tool_context.values {
-        command.env(key, value);
-    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -35,7 +35,6 @@ impl Default for AgentAcpConfig {
 pub(super) struct AgentAcpStats {
     pub(super) active_sessions: AtomicUsize,
     pub(super) active_runs: AtomicUsize,
-    pub(super) credential_connections: AtomicUsize,
 }
 /// Per-account ACP configuration saved under `local_data_root`.
 pub fn load_acp_config(local_data_root: &Path, user_id: &str) -> Result<AgentAcpConfig, String> {
