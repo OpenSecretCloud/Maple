@@ -250,6 +250,88 @@ private final class LibraryObservationChanges: Sendable {
         #expect(model.conversations == changed)
     }
 
+    @Test func recentsPollMergesServerOrderWithoutReloadingOlderPagesOrChangingSelection() async {
+        let (model, service, _, _, _) = fixture()
+        let rows = (0..<45).map { libraryConversation(String($0)) }
+        await service.configure(conversations: rows)
+        await model.load(.recent); await model.loadMore()
+        model.selectedIDs = ["25"]; model.searchText = "Title"
+        var renamed = rows[1]; renamed.metadata = ["title": .string("Renamed elsewhere")]
+        await service.configure(
+            conversations: [libraryConversation("new"), renamed, rows[0]] + Array(rows.dropFirst(2)))
+        await model.pollRecentConversations()
+        #expect(model.conversations.map(\.id) == ["new", "1", "0"] + (2..<30).map(String.init))
+        #expect(model.conversations[1] == renamed && model.selectedIDs == ["25"] && model.searchText == "Title")
+        #expect(model.hasMore && !model.isLoading)
+        await model.loadMore()
+        #expect(model.conversations.count == 41)
+        #expect(await service.conversationListCalls.map(\.page.limit) == [20, 10, 20, 10])
+        #expect(await service.conversationListCalls.map(\.page.after) == [nil, "19", nil, "29"])
+    }
+
+    @Test func unchangedRecentsTitleKeepsCachedValueAndDoesNotInvalidateRows() async {
+        let (model, service, _, _, _) = fixture(), original = libraryConversation("one")
+        await service.configure(conversations: [original]); await model.load(.recent)
+        let changes = LibraryObservationChanges()
+        _ = withObservationTracking {
+            model.conversations
+        } onChange: {
+            changes.record()
+        }
+        var sameTitle = original
+        sameTitle.metadata?["other"] = .string("changed"); sameTitle.lastActivityAt = 20
+        await service.configure(conversations: [sameTitle]); await model.pollRecentConversations()
+        #expect(model.conversations == [original] && changes.value == 0)
+        sameTitle.metadata?["title"] = .string("New title")
+        await service.configure(conversations: [sameTitle]); await model.pollRecentConversations()
+        #expect(model.conversations == [sameTitle] && changes.value == 1)
+    }
+
+    @Test(arguments: [true, false])
+    func failedOrEmptyRecentsTickRetainsRowsAndExistingIssue(_ fails: Bool) async {
+        let (model, service, _, _, _) = fixture(), rows = [libraryConversation("one")]
+        await service.configure(conversations: rows); await model.load(.recent)
+        model.selectedIDs = ["one"]; await model.renameConversation(id: "one", title: "")
+        await service.configure(conversations: [], failList: fails); await model.pollRecentConversations()
+        #expect(model.conversations == rows && model.selectedIDs == ["one"] && model.issue == .invalidInput)
+    }
+
+    @Test func manualRefreshSupersedesRecentsReadAlreadyInFlight() async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("old")]); await model.load(.recent)
+        let poll = Task {
+            await service.configure(conversations: [libraryConversation("stale")], listGate: gate)
+            await model.pollRecentConversations()
+        }
+        await gate.waitForArrival()
+        await service.configure(conversations: [libraryConversation("fresh")])
+        await model.refresh()
+        await gate.release(); await poll.value
+        #expect(model.conversations.map(\.id) == ["fresh"])
+    }
+
+    enum RecentsChange: CaseIterable, Sendable { case renamed, deleted, retired, cancelled }
+
+    @Test(arguments: RecentsChange.allCases)
+    func staleRecentsReadCannotReverseAccountChanges(_ change: RecentsChange) async {
+        let (model, service, _, _, _) = fixture(), gate = ChatTestGate(), original = libraryConversation("one")
+        await service.configure(conversations: [original]); await model.load(.recent)
+        await service.configure(conversations: [libraryConversation("stale"), original], listGate: gate)
+        let poll = Task { await model.pollRecentConversations() }
+        await gate.waitForArrival()
+        switch change {
+        case .renamed:
+            var updated = original; updated.metadata?["title"] = .string("Renamed locally")
+            model.receiveConversationUpdate(updated, from: model.scope)
+        case .deleted: model.receiveDeletion(["one"], all: false, from: model.scope)
+        case .retired: model.invalidate()
+        case .cancelled: poll.cancel()
+        }
+        let expected = model.conversations
+        await gate.release(); await poll.value
+        #expect(model.conversations == expected)
+    }
+
     @Test func failedOrCancelledRefreshKeepsLastSuccessfulPageAndCursor() async {
         let (model, service, _, _, _) = fixture(), gate = ChatTestGate()
         let rows = (0..<102).map { libraryConversation(String($0)) }

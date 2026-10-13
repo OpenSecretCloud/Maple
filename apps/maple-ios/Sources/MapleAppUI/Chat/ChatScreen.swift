@@ -320,6 +320,18 @@ enum ChatComposerPresentation {
                     }
                 )
                 .id(context.scope)
+                .onAppear {
+                    guard wide, context.scope == environment.session.account?.scope else { return }
+                    environment.sidebarVisible = environment.preferences?.value.sidebarIsOpen != false
+                }
+                .onChange(of: environment.preferences?.value.sidebarIsOpen) { _, open in
+                    guard wide, context.scope == environment.session.account?.scope else { return }
+                    environment.sidebarVisible = open != false
+                }
+                .onDisappear {
+                    guard wide, context.scope == environment.session.account?.scope else { return }
+                    environment.sidebarVisible = false
+                }
                 .safeAreaInset(edge: .bottom) { if !wide { audioPlayer } }
                 .safeAreaInset(edge: libraryFixtureInsetEdge(wide: wide)) {
                     #if DEBUG

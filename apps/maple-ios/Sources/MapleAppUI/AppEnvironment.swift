@@ -40,6 +40,7 @@
         private var itemPollRuntimeID: ObjectIdentifier?
         private var itemPollConversationID: String?
         private var itemPollTicket: UUID?
+        var sidebarVisible = false { didSet { updateRecentsPolling() } }
         var accountFlow: AccountFlow? { didSet { updatePresentationVisibility() } }
         var menuPresented = false {
             didSet {
@@ -539,6 +540,13 @@
             }
         }
 
+        private func updateRecentsPolling() {
+            libraryContext?.menu.updateRecentsPolling(
+                visible: (menuPresented || sidebarVisible) && !settingsPresented && accountFlow == nil
+                    && presentationBlocks.isEmpty,
+                foreground: foreground)
+        }
+
         /// Title generation outlives the response request. Keep checking only
         /// the selected conversation, with the same 0.5→10 second backoff as Research.
         private func updateTitlePolling() {
@@ -666,7 +674,12 @@
                     self.lifecycleFixture?.listeningProof?.assigned(
                         scope: runtime.scope, chatID: assignedID, armedMessageID: arm?.messageID)
                 #endif
-                Task { await self.refreshConversationDetails(assignedID, account: account, api: api) }
+                Task {
+                    guard self.session.account?.scope == account.scope else { return }
+                    await self.refreshConversationDetails(assignedID, account: account, api: api)
+                    guard self.session.account?.scope == account.scope else { return }
+                    await self.libraryContext?.menu.refreshRecents()
+                }
             }
             runtime.onTurnAccepted = { [weak self] accepted in
                 guard let self, self.session.account?.scope == accepted.scope else { return }
@@ -732,6 +745,7 @@
             }
             listening?.setVisibility(chatID: visible ? selectedChat?.conversationID : nil, foreground: foreground)
             updateItemPolling()
+            updateRecentsPolling()
         }
 
         func send(_ runtime: ChatRuntime, options: ChatSendOptions) -> Bool {

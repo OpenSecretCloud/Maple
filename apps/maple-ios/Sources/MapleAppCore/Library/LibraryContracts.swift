@@ -93,6 +93,22 @@ public enum ConversationTitlePolling {
     }
 }
 
+/// The account-owned menu stops polling when it is hidden or backgrounded.
+/// An injected sleep keeps lifecycle and stale-result checks deterministic.
+public enum LibraryRecentsPolling {
+    @MainActor public static func run(
+        shouldContinue: @MainActor () -> Bool,
+        refresh: @MainActor () async -> Void,
+        sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async {
+        while !Task.isCancelled, shouldContinue() {
+            do { try await sleep(.seconds(60)) } catch { return }
+            guard !Task.isCancelled, shouldContinue() else { return }
+            await refresh()
+        }
+    }
+}
+
 public enum LibraryIssue: Error, Sendable, Equatable {
     case connection, invalidInput, invalidResponse, busy, retired, quiescence, cleanupRequired, partialMutation
     static func present(_ error: Error) -> LibraryIssue {

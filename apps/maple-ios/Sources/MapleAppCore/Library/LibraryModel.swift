@@ -82,7 +82,7 @@ import Observation
     /// resets its pagination cursor while a request is in flight.
     public func refresh() async {
         guard valid, !isLoading, !Task.isCancelled else { return }
-        let ticket = loadID, generation = revision, requested = filter
+        let ticket = UUID(), generation = revision, requested = filter; loadID = ticket
         isLoading = true; issue = nil
         defer { if valid, loadID == ticket { isLoading = false } }
         do {
@@ -112,7 +112,7 @@ import Observation
     }
     public func loadMore() async {
         guard valid, !isLoading, hasMore, !Task.isCancelled else { return }
-        let ticket = loadID, generation = revision, requested = filter
+        let ticket = UUID(), generation = revision, requested = filter; loadID = ticket
         isLoading = true; issue = nil
         do {
             let page = try await service.listConversations(parameters(requested, after: cursor))
@@ -135,6 +135,39 @@ import Observation
         } catch is CancellationError {
         } catch { if valid, loadID == ticket, revision == generation { issue = LibraryIssue.present(error) } }
         if valid, loadID == ticket { isLoading = false }
+    }
+
+    /// Research polls the newest twenty recents without re-reading older pages.
+    /// Unchanged titles keep their cached row; server order precedes the loaded
+    /// older window. Silent failures never replace an existing library issue.
+    public func pollRecentConversations(shouldApply: @MainActor () -> Bool = { true }) async {
+        guard valid, filter == .recent, hasLoadedConversations, !isLoading, !isMutating,
+            !Task.isCancelled, shouldApply()
+        else { return }
+        let ticket = loadID, generation = revision
+        do {
+            let page = try await service.listConversations(parameters(.recent, after: nil))
+            try Task.checkCancellation()
+            guard valid, loadID == ticket, revision == generation, !isLoading, !isMutating, shouldApply(),
+                !page.data.isEmpty, page.data.count <= 20
+            else { return }
+            let cached = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            var merged: [Conversation] = [], ids = Set<String>()
+            for value in page.data where ids.insert(value.id).inserted {
+                if let existing = cached[value.id], existing.metadata?["title"] == value.metadata?["title"] {
+                    merged.append(existing)
+                } else {
+                    merged.append(value)
+                }
+            }
+            for value in conversations where ids.insert(value.id).inserted { merged.append(value) }
+            if conversations != merged { conversations = merged }
+            for value in page.data {
+                deletions.updateProject(conversationID: value.id, projectID: value.projectId)
+            }
+        } catch {
+            // Periodic reads leave the previous complete menu and issue intact.
+        }
     }
     public func loadProjects() async {
         guard valid, !isLoadingProjects, !Task.isCancelled else { return }

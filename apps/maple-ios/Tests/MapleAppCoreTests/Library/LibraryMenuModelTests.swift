@@ -121,4 +121,70 @@ import Testing
         #expect(menu.project("first").visibleConversations.map(\.id) == ["one"])
         #expect(menu.project("second").visibleConversations.map(\.id) == ["two"])
     }
+
+    @Test func visibleMenuPollsOnlyRecentsOnceWithoutRecreatingItsOwners() async {
+        let (menu, service) = fixture(), first = ChatTestGate(), next = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("old")])
+        await menu.prepare { _ in false }
+        let recent = menu.recent, pinned = menu.pinned
+        let clock = LibraryRecentsSleepRecorder(gates: [first, next])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await first.waitForArrival()
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await service.configure(conversations: [libraryConversation("new"), libraryConversation("old")])
+        await first.release(); await next.waitForArrival()
+        #expect(menu.recent === recent && menu.pinned === pinned)
+        #expect(menu.recent.conversations.map(\.id) == ["new", "old"])
+        #expect(await service.conversationListCalls.count == 3)
+        #expect(await service.projectListCalls.count == 1)
+        #expect(await clock.delays == [.seconds(60), .seconds(60)])
+        menu.updateRecentsPolling(visible: false, foreground: true)
+        await next.release()
+    }
+
+    enum RecentsOwnerChange: CaseIterable, Sendable, Equatable { case hidden, backgrounded, retired }
+
+    @Test(arguments: RecentsOwnerChange.allCases)
+    func recentsOwnershipLossDuringReadCannotPublishLateRows(_ change: RecentsOwnerChange) async {
+        let (menu, service) = fixture(), request = ChatTestGate(), sleeping = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("old")]); await menu.prepare { _ in false }
+        let clock = LibraryRecentsSleepRecorder(gates: [sleeping])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await sleeping.waitForArrival()
+        await service.configure(conversations: [libraryConversation("late")], listGate: request)
+        let refreshing = Task { await menu.refreshRecents() }
+        await request.waitForArrival()
+        switch change {
+        case .hidden: menu.updateRecentsPolling(visible: false, foreground: true)
+        case .backgrounded: menu.updateRecentsPolling(visible: true, foreground: false)
+        case .retired: menu.invalidate()
+        }
+        await request.release(); await refreshing.value; await sleeping.release()
+        #expect(menu.recent.conversations.map(\.id) == (change == .retired ? [] : ["old"]))
+    }
+
+    @Test func conversationCreatedRefreshesHiddenRecentsButNotBackgroundedOrRetiredMenu() async {
+        let (menu, service) = fixture()
+        await service.configure(conversations: [libraryConversation("old")]); await menu.prepare { _ in false }
+        await service.configure(conversations: [libraryConversation("created"), libraryConversation("old")])
+        await menu.refreshRecents()
+        #expect(menu.recent.conversations.map(\.id) == ["created", "old"])
+        menu.updateRecentsPolling(visible: false, foreground: false)
+        await menu.refreshRecents()
+        menu.invalidate(); await menu.refreshRecents()
+        #expect(await service.conversationListCalls.count == 3)
+    }
+
+    @Test func hidingMenuDoesNotCancelExplicitLoadedWindowRefresh() async {
+        let (menu, service) = fixture(), request = ChatTestGate(), sleeping = ChatTestGate()
+        await service.configure(conversations: [libraryConversation("old")]); await menu.prepare { _ in false }
+        let clock = LibraryRecentsSleepRecorder(gates: [sleeping])
+        menu.updateRecentsPolling(visible: true, foreground: true, sleep: { try await clock.sleep($0) })
+        await sleeping.waitForArrival()
+        await service.configure(conversations: [libraryConversation("fresh")], listGate: request)
+        let refreshing = Task { await menu.refresh { _ in false } }
+        await request.waitForArrival(); menu.updateRecentsPolling(visible: false, foreground: true)
+        await request.release(); await refreshing.value; await sleeping.release()
+        #expect(menu.recent.conversations.map(\.id) == ["fresh"])
+    }
 }
