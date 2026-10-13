@@ -5250,7 +5250,7 @@ dependencies = [
 
 [[package]]
 name = "maple-proxy"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5271,7 +5271,7 @@ dependencies = [
 
 [[package]]
 name = "maple-sdk"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
