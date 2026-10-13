@@ -35,6 +35,9 @@ public final class ChatRuntime {
     public var onTurnAccepted: (@MainActor (ChatSendAcceptance) -> Void)?
     public var onSuccessfulCompletion: (@MainActor (String) -> Void)?
     public var onSuccessfulVisibleCompletion: (@MainActor (String) -> Void)?
+    /// Queue admission and later promotion are distinct ownership transitions.
+    /// Unread completion belongs to the latest actually started run.
+    public var onRunStarted: (@MainActor () -> Void)?
     public var canAdmitSnapshot: (@MainActor (ChatSnapshot) -> Bool)?
     public var onDraftOwnerChanging: (@MainActor (UUID) -> Void)?
     public var onDraftOwnerRetired: (@MainActor (UUID) -> Void)?
@@ -325,6 +328,7 @@ public final class ChatRuntime {
         messages.append(Self.userItem(run)); lastIssue = nil; lastOutcome = nil
         let operation = hooks.uuid(); operationID = operation; waitingForCapacity = false
         runTask = Task { await execute(runID: run.id, operation: operation) }
+        onRunStarted?()
     }
 
     /// Exchanges two complete drafts rather than losing edits made during a send.
@@ -525,6 +529,7 @@ public final class ChatRuntime {
         messages.append(Self.userItem(run)); lastIssue = nil; lastOutcome = nil
         let operation = hooks.uuid(); operationID = operation; waitingForCapacity = false
         runTask = Task { await execute(runID: run.id, operation: operation) }
+        onRunStarted?()
         return true
     }
 
@@ -624,6 +629,7 @@ public final class ChatRuntime {
         valid = false; operationID = hooks.uuid()
         itemPollID = nil; newestSeenItemID = nil
         onDeletionFenceChanged = nil
+        onRunStarted = nil
         for owner in Set(snapshot.ownedDrafts.map(\.id)) { onDraftOwnerRetired?(owner) }
         cancelSubmission()
         waitingForCapacity = false

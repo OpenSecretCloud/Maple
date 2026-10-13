@@ -53,6 +53,7 @@
         var dragEnabled = true
         var dropDestination: LibraryConversationDestination? = nil
         var selectedChatID: String? = nil
+        var activity: ConversationActivity = .idle
         var body: some View {
             Group {
                 if selecting {
@@ -69,13 +70,16 @@
                                     ? "checkmark.circle.fill" : "circle")
                             ConversationTitle(
                                 conversation: conversation,
-                                emphasized: selectionLibrary.selectedIDs.contains(conversation.id))
+                                emphasized: selectionLibrary.selectedIDs.contains(conversation.id), activity: activity)
                             Spacer(minLength: 0)
                         }
                         .frame(minHeight: 50).contentShape(Rectangle()).foregroundStyle(.primary)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("library.chat." + conversation.id)
+                    .accessibilityLabel(
+                        conversationActivityLabel(title: displayedTitle(conversation), activity: activity)
+                    )
                     .accessibilityAddTraits(selectionLibrary.selectedIDs.contains(conversation.id) ? [.isSelected] : [])
                     .disabled(library.isMutating || selectionLibrary.isMutating)
                 } else {
@@ -84,7 +88,7 @@
                         onSelectForSelection: {
                             selectionLibrary.selectedIDs.insert(conversation.id); selecting = true
                         }, leadingInset: leadingInset, contextMenuEnabled: dragContext == nil || !dragEnabled,
-                        selectedChatID: selectedChatID)
+                        selectedChatID: selectedChatID, activity: activity)
                 }
             }
             .modifier(
@@ -284,6 +288,7 @@
     struct ConversationTitle: View {
         let conversation: Conversation
         var emphasized = false
+        var activity: ConversationActivity = .idle
         var body: some View {
             let title = LibraryModel.title(conversation)
             HStack(spacing: 6) {
@@ -295,9 +300,44 @@
                 }
                 .fontWeight(emphasized ? .bold : .regular)
                 .lineLimit(1).truncationMode(.tail)
+                ConversationActivityIndicator(activity: activity)
             }
         }
     }
+
+    struct ConversationActivityIndicator: View {
+        let activity: ConversationActivity
+        @ViewBuilder var body: some View {
+            switch activity {
+            case .idle: EmptyView()
+            case .running:
+                ProgressView().controlSize(.mini).tint(MapleAccent.action)
+                    .accessibilityLabel(libraryText("Response in progress"))
+                    .accessibilityHidden(true)
+            case .unread:
+                Circle().fill(.green).frame(width: 8, height: 8).accessibilityHidden(true)
+            }
+        }
+    }
+
+    @MainActor private func displayedTitle(_ conversation: Conversation) -> String {
+        let title = LibraryModel.title(conversation)
+        return title.isEmpty ? String(localized: "Untitled chat", table: "Library", bundle: .module) : title
+    }
+
+    func conversationActivityLabel(title: String, activity: ConversationActivity) -> Text {
+        switch activity {
+        case .idle: Text(verbatim: title)
+        case .running:
+            Text(String(localized: "%@, running", defaultValue: "\(title), running", table: "Library", bundle: .module))
+        case .unread:
+            Text(
+                String(
+                    localized: "%@, completed, unread", defaultValue: "\(title), completed, unread", table: "Library",
+                    bundle: .module))
+        }
+    }
+
 
     /// A swipe cell can be recycled as its actions close. Keep confirmation on
     /// the list host, and capture the exact account owner before presenting it.
@@ -366,6 +406,7 @@
         var leadingInset: CGFloat = 20
         var contextMenuEnabled = true
         var selectedChatID: String? = nil
+        var activity: ConversationActivity = .idle
         @Environment(\.requestChatDeletion) private var requestChatDeletion
         @State private var renaming = false
         @State private var name = ""
@@ -444,12 +485,15 @@
             Button {
                 onSelect(conversation.id)
             } label: {
-                ConversationTitle(conversation: conversation, emphasized: selectedChatID == conversation.id)
-                    .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
-                    .contentShape(Rectangle()).foregroundStyle(.primary)
+                ConversationTitle(
+                    conversation: conversation, emphasized: selectedChatID == conversation.id, activity: activity
+                )
+                .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+                .contentShape(Rectangle()).foregroundStyle(.primary)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("library.chat." + conversation.id)
+            .accessibilityLabel(conversationActivityLabel(title: displayedTitle(conversation), activity: activity))
             .accessibilityAddTraits(selectedChatID == conversation.id ? [.isSelected] : [])
         }
         @ViewBuilder private var actions: some View {

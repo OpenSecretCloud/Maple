@@ -39,6 +39,8 @@
         private let onDrawerDestinationChanged: (@MainActor (Bool) -> Void)?
         private let projectExpansion: LibraryProjectExpansionController?
         private let onManageProjects: (@MainActor (String?) -> Void)?
+        private let conversationActivity: @MainActor (String) -> ConversationActivity
+        private let projectActivity: @MainActor (String) -> ConversationActivity
 
         public init(
             library: LibraryModel, makeLibrary: @escaping @MainActor () -> LibraryModel,
@@ -47,6 +49,8 @@
             onNewChat: @escaping @MainActor (String?) -> Void,
             selectedChatID: String? = nil,
             settings: @escaping @MainActor () -> AnyView,
+            conversationActivity: @escaping @MainActor (String) -> ConversationActivity = { _ in .idle },
+            projectActivity: @escaping @MainActor (String) -> ConversationActivity = { _ in .idle },
             projectExpansion: LibraryProjectExpansionController? = nil,
             menu: LibraryMenuModel? = nil,
             onManageProjects: (@MainActor (String?) -> Void)? = nil,
@@ -64,6 +68,7 @@
             self.library = library; self.makeInstructionEditor = makeInstructionEditor
             self.onSelectChat = onSelectChat; self.onNewChat = onNewChat; self.settings = settings;
             self.selectedChatID = selectedChatID
+            self.conversationActivity = conversationActivity; self.projectActivity = projectActivity
             self.onClose = onClose; self.settingsFullScreen = settingsFullScreen
             self.settingsPresented = settingsPresented; self.onSettingsDismiss = onSettingsDismiss
             self.supplementary = supplementary
@@ -123,6 +128,8 @@
                                             project: project, model: projectModel, search: search,
                                             onSelectChat: selectChat, onNewChat: selectNewChat,
                                             selectedChatID: selectedChatID,
+                                            conversationActivity: conversationActivity,
+                                            projectActivity: projectActivity(project.id),
                                             onManageProject: manageProject,
                                             onMutation: refresh, selectionLibrary: library, selecting: $selecting,
                                             drag: drag, dragEnabled: navigationAvailable,
@@ -440,7 +447,8 @@
                 LibrarySelectableConversationRow(
                     conversation: conversation, library: model, selectionLibrary: library, selecting: $selecting,
                     onSelect: selectChat, onMutation: refresh, dragContext: drag,
-                    dragEnabled: navigationAvailable, dropDestination: destination, selectedChatID: selectedChatID
+                    dragEnabled: navigationAvailable, dropDestination: destination, selectedChatID: selectedChatID,
+                    activity: conversationActivity(conversation.id)
                 )
                 .onScrollVisibilityChange(threshold: 0.1) { visible in
                     guard visible, destination == .recent, navigationAvailable, focusAvailable else { return }
@@ -481,6 +489,8 @@
         let onSelectChat: @MainActor (String) -> Void
         let onNewChat: @MainActor (String?) -> Void
         let selectedChatID: String?
+        let conversationActivity: @MainActor (String) -> ConversationActivity
+        let projectActivity: ConversationActivity
         let onManageProject: @MainActor (String) -> Void
         let onMutation: @MainActor () async -> Void
         @Bindable var selectionLibrary: LibraryModel
@@ -499,6 +509,7 @@
                     HStack(spacing: 12) {
                         Image(systemName: "folder")
                         Text(project.name).fontWeight(.semibold).lineLimit(1)
+                        ConversationActivityIndicator(activity: folderActivity)
                         Spacer(minLength: 0)
                     }
                     .frame(minHeight: 48).contentShape(Rectangle())
@@ -580,6 +591,13 @@
                 }
                 if let issue = model.issue { LibraryIssueView(issue: issue) }
             }
+        }
+        private var folderActivity: ConversationActivity {
+            guard !showingChildren else { return .idle }
+            let children = model.conversations.map { conversationActivity($0.id) }
+            if projectActivity == .running || children.contains(.running) { return .running }
+            if projectActivity == .unread || children.contains(.unread) { return .unread }
+            return .idle
         }
         #if DEBUG
             private var cleanupState: String {

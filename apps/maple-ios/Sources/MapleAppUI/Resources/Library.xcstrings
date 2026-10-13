@@ -817,6 +817,42 @@
           }
         }
       }
+    },
+    "Response in progress": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Response in progress"
+          }
+        }
+      }
+    },
+    "%@, running": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, running"
+          }
+        }
+      }
+    },
+    "%@, completed, unread": {
+      "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, completed, unread"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
