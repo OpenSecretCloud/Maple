@@ -229,18 +229,6 @@
         }
       }
     },
-    "Choose a model that supports web search.": {
-      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose a model that supports web search."
-          }
-        }
-      }
-    },
     "Close image": {
       "comment": "Attached-image preview, fullscreen zoom, dismissal, or VoiceOver action.",
       "extractionState": "manual",
@@ -482,7 +470,7 @@
       }
     },
     "Encrypted and private at every step": {
-      "comment": "Research composer privacy assurance displayed beside a lock glyph.",
+      "comment": "Research privacy assurance shown only below the empty new-chat composer beside a lock glyph.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -1728,18 +1716,6 @@
         }
       }
     },
-    "Web search requires an eligible paid plan.": {
-      "comment": "Read-only explanation or VoiceOver state for an unavailable image, dictation, read-aloud, or web-search control. Distinguish unknown account details from a confirmed plan, quota, or capability restriction; this screen does not offer purchases.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Web search requires an eligible paid plan."
-          }
-        }
-      }
-    },
     "Web sources": {
       "comment": "Compact chat tool disclosure. Use a friendly description instead of an internal tool identifier; failures remain visible and actionable.",
       "extractionState": "manual",
@@ -2005,7 +1981,7 @@
       }
     },
     "You've reached your daily usage limit. Upgrade to Pro for more chats.": {
-      "comment": "Research usage-limit feedback for a known Free account; upgrade is explanatory copy only.",
+      "comment": "Research usage-limit feedback for a Free account or missing/empty billing product name; upgrade is explanatory copy only.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -2017,7 +1993,7 @@
       }
     },
     "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage.": {
-      "comment": "Research usage-limit feedback for a known Pro account; preserve the plan names and multiplier.",
+      "comment": "Research usage-limit feedback for product names containing Pro and not Max; preserve the plan names and multiplier.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -2029,7 +2005,7 @@
       }
     },
     "You've reached your monthly usage limit. Please wait for the next billing cycle.": {
-      "comment": "Research usage-limit feedback for all other or unknown plans.",
+      "comment": "Research usage-limit feedback for any other nonempty billing product name, including unrecognized names.",
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -2245,7 +2221,7 @@
       }
     },
     "AI can make mistakes. Check important info.": {
-      "comment": "Research informational footnote shown below the docked composer.",
+      "comment": "Research informational footnote shown below the docked composer; the empty new-chat composer shows the privacy reassurance instead.",
       "extractionState": "manual",
       "localizations": {
         "en": {

@@ -46,13 +46,22 @@ private final class AccountLiveMemoryStore: SecureStore, Sendable {
             #expect(account.team.value != nil)
             #expect(account.catalog.value != nil)
             #expect(!account.primaryModels.isEmpty)
+            let originalSelection = account.selectedModelID
+            let gemma = try #require(account.advancedModels.first { $0.id == "gemma4-31b" })
+            #expect(gemma.accessTier != "free")
+            let expectedGemmaAccess: AccountAccess = role == "PRO" ? .allowed : .paidPlanRequired
+            #expect(account.modelAccess(gemma) == expectedGemmaAccess)
+            #expect(account.selectModel(gemma.id) == expectedGemmaAccess)
+            #expect(account.selectedModelID == (role == "PRO" ? gemma.id : originalSelection))
+            #expect(account.selectModel(originalSelection) == .allowed)
+            #expect(account.selectedModelID == originalSelection)
             if role == "PRO" {
                 #expect(account.plan.isPaid)
                 #expect(account.chatAccess == .allowed)
                 #expect(account.effectiveWebSearch)
             } else {
                 #expect(account.plan == .free)
-                #expect(!account.effectiveWebSearch)
+                #expect(account.effectiveWebSearch)
             }
             // SDK credential refresh preserves the captured account handle and
             // is independent of the third-party token cache.

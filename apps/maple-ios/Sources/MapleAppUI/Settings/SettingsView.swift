@@ -178,10 +178,7 @@
                                 ? "Expires on" : "Renews on")
                     }
                 }
-                if status.plan == .unknown {
-                    settingsText(
-                        "Plan details are unavailable. Paid features remain unavailable until your plan is known.")
-                } else if !status.canChat || status.chatsRemaining == 0 {
+                if !status.canChat || status.chatsRemaining == 0 {
                     settingsText("Your account has reached its current chat allowance.")
                 }
                 if entitlements.team.value?.seatMismatch != nil {
@@ -244,12 +241,6 @@
                 ) { settingsText("Web search") }
                 .disabled(entitlements.webSearchAccess != .allowed)
                 .accessibilityIdentifier("settings.web-search")
-                if entitlements.webSearchAccess != .allowed {
-                    settingsText(
-                        "Your web search preference is saved. Web search requires an eligible paid plan."
-                    )
-                    .font(.footnote).foregroundStyle(.secondary)
-                }
                 Picker(selection: Binding(get: { preferences.value.voice }, set: { preferences.setVoice($0) })) {
                     ForEach(["Default voices", "Reference accents"], id: \.self) { group in
                         Section {
@@ -324,7 +315,6 @@
         private let topContentMargin: CGFloat
         private let canInteract: @MainActor () -> Bool
         private let onSelection: (String) -> Void
-        @State private var webSearchNoticePresented = false
         @State private var modelNotice: ModelNotice?
 
         private struct ModelNotice: Identifiable {
@@ -385,18 +375,6 @@
                                 case .ready: EmptyView()
                                 }
                             }
-                            if entitlements.webSearchAccess != .allowed {
-                                Button {
-                                    webSearchNoticePresented = true
-                                } label: {
-                                    Image(systemName: "info.circle")
-                                }
-                                .frame(minWidth: 44, minHeight: 44)
-                                .accessibilityLabel(settingsText("Why is web search unavailable?"))
-                                .accessibilityValue(MapleStrings.text("Unavailable"))
-                                .accessibilityHint(MapleStrings.text("Learn why this feature is unavailable."))
-                                .accessibilityIdentifier("model.web-search-unavailable")
-                            }
                         }
                     }
                     .listRowSeparator(.hidden)
@@ -445,9 +423,6 @@
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .disabled(!canInteract())
             .accessibilityIdentifier("settings.models")
-            .sheet(isPresented: $webSearchNoticePresented) {
-                MediaFeatureNotice(feature: .webSearch, account: entitlements)
-            }
             .sheet(item: $modelNotice) { notice in
                 MediaFeatureNotice(feature: .model, account: entitlements, modelName: notice.name)
             }

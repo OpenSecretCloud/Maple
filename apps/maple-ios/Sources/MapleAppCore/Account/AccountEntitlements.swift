@@ -32,7 +32,7 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
     public private(set) var team: AccountLoadState<TeamStatus> = .unknown
     public private(set) var catalog: AccountLoadState<ModelCatalog> = .unknown
     public private(set) var selectedModelID: String
-    /// A gated preference is retained; effectiveWebSearch is the dispatch value.
+    /// The explicit preference is the dispatch value while this session is active.
     public var webSearchPreferred: Bool
     private var active = true
     private var billingRequest = UUID()
@@ -179,11 +179,7 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
 
     public func modelAccess(_ model: AccountModelChoice) -> AccountAccess {
         guard active else { return .retired }
-        switch model.accessTier {
-        case "free": return .allowed
-        case "pro": return plan.isPaid ? .allowed : .paidPlanRequired
-        default: return .modelUnavailable
-        }
+        return model.accessTier == "free" ? .allowed : (plan.isPaid ? .allowed : .paidPlanRequired)
     }
 
     @discardableResult public func selectModel(_ id: String) -> AccountAccess {
@@ -204,13 +200,9 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
     public var chatAccess: AccountAccess {
         let account = accountChatAccess
         guard account == .allowed else { return account }
-        guard let selectedModel else { return .modelUnavailable }
-        // The picker gates new paid selections. Existing selections reach the
-        // server, which owns plan and usage authorization for each request.
-        return switch modelAccess(selectedModel) {
-        case .allowed, .paidPlanRequired: .allowed
-        case let access: access
-        }
+        // Catalog availability controls the picker, not sending an existing
+        // selection. The server owns model, plan and usage authorization.
+        return LocalPreferences.isValidModelID(selectedModelID) ? .allowed : .modelUnavailable
     }
 
     public var paidFeatureAccess: AccountAccess {
@@ -221,7 +213,7 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
         return plan.isPaid ? .allowed : .paidPlanRequired
     }
 
-    public var webSearchAccess: AccountAccess { paidFeatureAccess }
+    public var webSearchAccess: AccountAccess { active ? .allowed : .retired }
 
     public var effectiveWebSearch: Bool { webSearchPreferred && webSearchAccess == .allowed }
     public var imageAccess: AccountAccess { paidFeatureAccess }
@@ -241,11 +233,6 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
     }
     public var speechAccess: AccountAccess {
         guard active else { return .retired }
-        guard let status = billing.value, status.plan != .unknown else { return .unavailable }
-        guard status.plan.isPaid else { return .paidPlanRequired }
-        let paid = paidFeatureAccess
-        guard paid == .allowed else { return paid }
-        guard let speech = catalog.value?.audio?.speech else { return .unavailable }
-        return speech.available ? .allowed : .modelIncompatible
+        return billing.value?.plan == .free ? .paidPlanRequired : .allowed
     }
 }

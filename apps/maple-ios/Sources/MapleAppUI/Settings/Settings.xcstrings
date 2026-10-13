@@ -649,18 +649,6 @@
         }
       }
     },
-    "Plan details are unavailable. Paid features remain unavailable until your plan is known.": {
-      "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Plan details are unavailable. Paid features remain unavailable until your plan is known."
-          }
-        }
-      }
-    },
     "Playback speed": {
       "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
       "extractionState": "manual",
@@ -1081,18 +1069,6 @@
         }
       }
     },
-    "Why is web search unavailable?": {
-      "comment": "Explanation action under the disabled web-search switch at the top of the chat model selector. Opens the existing account, plan, or model compatibility explanation without changing the saved preference.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Why is web search unavailable?"
-          }
-        }
-      }
-    },
     "Your account has reached its current chat allowance.": {
       "comment": "Native Settings screen. Keep complete messages and allow wrapping at large text sizes.",
       "extractionState": "manual",
@@ -1125,18 +1101,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your team has more members than paid seats. Contact your team administrator."
-          }
-        }
-      }
-    },
-    "Your web search preference is saved. Web search requires an eligible paid plan.": {
-      "comment": "Saved web-search preference explanation; access is determined by plan.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Your web search preference is saved. Web search requires an eligible paid plan."
           }
         }
       }

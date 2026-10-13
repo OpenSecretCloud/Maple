@@ -24,7 +24,7 @@ import Testing
             selectedModelID: "auto:powerful")
         #expect(account.billing == .unknown)
         #expect(account.plan == .unknown)
-        #expect(account.chatAccess == .modelUnavailable)
+        #expect(account.chatAccess == .allowed)
         await account.refreshCatalog()
         #expect(account.chatAccess == .allowed)
         let load = Task { await account.refresh() }
@@ -32,12 +32,13 @@ import Testing
         #expect(account.billing == .loading)
         #expect(account.plan == .unknown)
         #expect(account.webSearchPreferred)
-        #expect(!account.effectiveWebSearch)
+        #expect(account.effectiveWebSearch && account.speechAvailable)
         #expect(account.chatAccess == .allowed)
         await gate.release(); await load.value
         #expect(account.billing == .failed(.unavailable))
         #expect(account.plan == .unknown)
         #expect(account.chatAccess == .allowed)
+        #expect(account.effectiveWebSearch && account.speechAvailable)
     }
 
     @Test func explicitFreeEmailAndGuestDifferWithoutPurchaseActions() async throws {
@@ -45,12 +46,13 @@ import Testing
         let guest = try fixture(plan: "Free", guest: true)
         await email.refresh(); await guest.refresh()
         #expect(email.chatAccess == .allowed)
-        #expect(email.webSearchAccess == .paidPlanRequired)
-        #expect(email.webSearchPreferred && !email.effectiveWebSearch)
+        #expect(email.webSearchAccess == .allowed)
+        #expect(email.webSearchPreferred && email.effectiveWebSearch)
         #expect(!email.transcriptionAvailable && !email.speechAvailable)
         #expect(email.selectModel("auto:powerful") == .paidPlanRequired)
         #expect(email.selectedModelID == "auto:quick")
         #expect(guest.chatAccess == .freeGuest)
+        #expect(guest.webSearchAccess == .allowed && guest.effectiveWebSearch)
     }
 
     @Test(arguments: ["Pro", "Max monthly", "Team Annual"])
@@ -71,7 +73,7 @@ import Testing
             await account.refresh()
             #expect(account.plan == .unknown)
             #expect(account.chatAccess == .allowed)
-            #expect(!account.effectiveWebSearch)
+            #expect(account.effectiveWebSearch)
         }
         for account in [try fixture(canChat: false), try fixture(remaining: 0)] {
             await account.refresh()
@@ -94,6 +96,25 @@ import Testing
         #expect(guest.chatAccess == .allowed)
     }
 
+    @Test func webSearchKeepsPreferenceAcrossUnavailableAccountDetailsAndRetirement() async throws {
+        let service = AccountServingStub(
+            statuses: [.failure(.unavailable)], teams: [.failure(.unavailable)],
+            catalogs: [.failure(.unavailable)])
+        let account = AccountEntitlements(scope: accountScope(), isGuest: true, billing: service, catalog: service)
+        #expect(account.webSearchAccess == .allowed && account.effectiveWebSearch)
+        await account.refresh()
+        #expect(account.billing == .failed(.unavailable) && account.catalog == .failed(.unavailable))
+        #expect(account.webSearchAccess == .allowed && account.effectiveWebSearch)
+        #expect(account.speechAccess == .allowed)
+        account.webSearchPreferred = false
+        #expect(!account.effectiveWebSearch)
+        account.webSearchPreferred = true
+        #expect(account.effectiveWebSearch)
+        await account.retire()
+        #expect(account.webSearchPreferred && !account.effectiveWebSearch)
+        #expect(account.webSearchAccess == .retired && account.speechAccess == .retired)
+    }
+
     @Test func selectedPaidModelMayChatWithUnknownPlanWhilePickerRemainsPaidGated() async throws {
         for plan: String? in [nil, "", "Future Premium"] {
             let account = try fixture(plan: plan, selected: "auto:powerful")
@@ -102,7 +123,7 @@ import Testing
             #expect(account.chatAccess == .allowed)
             #expect(account.selectModel("auto:powerful") == .paidPlanRequired)
             #expect(account.selectedModelID == "auto:powerful")
-            #expect(!account.effectiveWebSearch)
+            #expect(account.effectiveWebSearch)
         }
     }
 
@@ -122,7 +143,7 @@ import Testing
             #expect(account.plan == .free)
             #expect(account.chatAccess == (guest ? .freeGuest : .allowed))
             #expect(account.selectModel("auto:powerful") == .paidPlanRequired)
-            #expect(account.webSearchAccess == (guest ? .freeGuest : .paidPlanRequired))
+            #expect(account.webSearchAccess == .allowed && account.effectiveWebSearch)
             await account.refreshBilling()
             #expect(account.billing == .failed(.unavailable))
             #expect(account.chatAccess == .allowed)
@@ -160,7 +181,7 @@ import Testing
         #expect(account.billing.value?.plan == .paid(.team))
     }
 
-    @Test func catalogFiltersDisabledDeprecatedNonChatAndUnknownTier() async throws {
+    @Test func catalogFiltersDisabledDeprecatedNonChatAndPaidGatesEveryNonFreeTier() async throws {
         let catalog = accountCatalog(items: [
             catalogItem(), catalogItem("power-target", access: "pro"), catalogItem("off", enabled: false),
             catalogItem("old", deprecated: true), catalogItem("audio", chat: false),
@@ -172,10 +193,18 @@ import Testing
         #expect(Set(account.advancedModels.map(\.id)) == ["quick-target", "power-target", "future"])
         #expect(account.advancedModels.count == 3)
         #expect(account.primaryModels.map(\.id) == ["auto:quick", "auto:powerful"])
-        #expect(account.selectModel("future") == .modelUnavailable)
+        #expect(account.selectModel("future") == .allowed)
+        #expect(account.selectedModelID == "future")
+        let free = try fixture(plan: "Free", catalog: catalog)
+        await free.refresh()
+        #expect(free.selectModel("future") == .paidPlanRequired)
+        #expect(free.selectedModelID == "auto:quick")
+        for id in ["off", "old", "audio"] {
+            #expect(account.selectModel(id) == .modelUnavailable)
+        }
     }
 
-    @Test func catalogFailurePreservesSelectionAndDoesNotAdoptFallback() async throws {
+    @Test func catalogFailurePreservesSelectionAndStillAdmitsSending() async throws {
         let service = AccountServingStub(
             statuses: [.success(try billingStatus())], teams: [.success(try basicTeam())],
             catalogs: [.success(accountCatalog()), .failure(.unavailable)])
@@ -187,9 +216,41 @@ import Testing
         await account.refreshCatalog()
         #expect(account.selectedModelID == "power-target")
         #expect(account.catalog == .failed(.unavailable))
-        #expect(account.chatAccess == .modelUnavailable)
+        #expect(account.chatAccess == .allowed)
         #expect(account.plan == .paid(.pro))
         #expect(account.primaryModels.isEmpty)
+    }
+
+    @Test(arguments: ["auto:quick", "auto:powerful", "saved-model"])
+    func missingLoadingAndFailedCatalogAllowValidSavedSelection(_ selected: String) async throws {
+        let gate = AccountGate()
+        let service = AccountServingStub(
+            statuses: [.success(try billingStatus())], teams: [.success(try basicTeam())],
+            catalogs: [.failure(.unavailable)], catalogGates: [1: gate])
+        let account = AccountEntitlements(
+            scope: accountScope(), isGuest: false, billing: service, catalog: service,
+            selectedModelID: selected)
+        #expect(account.catalog == .unknown && account.selectedModel == nil)
+        #expect(account.chatAccess == .allowed && account.selectedModelID == selected)
+        let refresh = Task { await account.refreshCatalog() }
+        await gate.waitUntilEntered()
+        #expect(account.catalog == .loading && account.chatAccess == .allowed)
+        #expect(account.selectedModelID == selected)
+        await gate.release(); await refresh.value
+        #expect(account.catalog == .failed(.unavailable) && account.selectedModel == nil)
+        #expect(account.chatAccess == .allowed && account.selectedModelID == selected)
+        await account.retire()
+        #expect(account.chatAccess == .retired)
+    }
+
+    @Test func missingCatalogDoesNotBypassKnownFreeGuestOrInvalidSelection() async throws {
+        let guest = try fixture(plan: "Free", guest: true)
+        await guest.refreshBilling()
+        #expect(guest.catalog == .unknown && guest.chatAccess == .freeGuest)
+        for invalid in ["", "invalid model", "model\n", String(repeating: "a", count: 257)] {
+            let account = try fixture(selected: invalid)
+            #expect(account.catalog == .unknown && account.chatAccess == .modelUnavailable)
+        }
     }
 
     @Test func successfulCatalogReconcilesRemovedConcreteModelAndKeepsAliases() async throws {
@@ -262,7 +323,7 @@ import Testing
         #expect(await service.statusCalls == calls)
     }
 
-    @Test func billingRefreshRetainsVerifiedAccessUntilDenialAndNeverRevivesFailedValue() async throws {
+    @Test func billingRefreshRetainsPaidImageAccessUntilDenialAndNeverRevivesFailedValue() async throws {
         let denied = AccountGate(), failed = AccountGate(), retried = AccountGate()
         let service = AccountServingStub(
             statuses: [
@@ -273,27 +334,30 @@ import Testing
         await account.refresh()
         let refresh = Task { await account.refreshBilling() }
         await denied.waitUntilEntered()
-        #expect(account.speechAccess == .allowed && account.speechAvailable && account.plan.isPaid)
+        #expect(account.imageAccess == .allowed && account.plan.isPaid)
         await denied.release(); await refresh.value
-        #expect(account.speechAccess == .paidPlanRequired && account.plan == .free)
+        #expect(account.imageAccess == .paidPlanRequired && account.plan == .free)
         let failure = Task { await account.refreshBilling() }
         await failed.waitUntilEntered()
-        #expect(account.speechAccess == .paidPlanRequired)
+        #expect(account.imageAccess == .paidPlanRequired && account.speechAccess == .paidPlanRequired)
         await failed.release(); await failure.value
-        #expect(account.speechAccess == .unavailable && account.billing == .failed(.unavailable))
+        #expect(account.imageAccess == .unavailable && account.billing == .failed(.unavailable))
+        #expect(account.speechAccess == .allowed && account.effectiveWebSearch)
         let retry = Task { await account.refreshBilling() }
         await retried.waitUntilEntered()
-        #expect(account.billing == .loading && account.plan == .unknown && account.speechAccess == .unavailable)
+        #expect(account.billing == .loading && account.plan == .unknown && account.imageAccess == .unavailable)
+        #expect(account.speechAccess == .allowed && account.effectiveWebSearch)
         await retried.release(); await retry.value
-        #expect(account.speechAccess == .allowed)
+        #expect(account.imageAccess == .allowed && account.speechAccess == .allowed)
         await account.retire()
         #expect(account.speechAccess == .retired && account.billing == .unknown && account.catalog == .unknown)
+        #expect(account.webSearchAccess == .retired && !account.effectiveWebSearch)
     }
 
     @Test func catalogRefreshRetainsKnownCapabilityUntilFailureThenRetryStartsUnknown() async throws {
         let failed = AccountGate(), retried = AccountGate()
         var unavailable = accountCatalog()
-        unavailable.audio?.speech = AudioModelAvailability(available: false, model: "voxtral-tts")
+        unavailable.audio?.transcription = AudioModelAvailability(available: false, model: "whisper-large-v3")
         let service = AccountServingStub(
             statuses: [.success(try billingStatus())], teams: [.success(try basicTeam())],
             catalogs: [.success(accountCatalog()), .failure(.unavailable), .success(unavailable)],
@@ -302,26 +366,35 @@ import Testing
         await account.refresh()
         let failure = Task { await account.refreshCatalog() }
         await failed.waitUntilEntered()
-        #expect(account.speechAccess == .allowed && !account.primaryModels.isEmpty)
+        #expect(account.transcriptionAccess == .allowed && !account.primaryModels.isEmpty)
         await failed.release(); await failure.value
-        #expect(account.speechAccess == .unavailable && account.catalog == .failed(.unavailable))
+        #expect(account.transcriptionAccess == .unavailable && account.catalog == .failed(.unavailable))
+        #expect(account.speechAccess == .allowed)
         let retry = Task { await account.refreshCatalog() }
         await retried.waitUntilEntered()
-        #expect(account.catalog == .loading && account.speechAccess == .unavailable)
+        #expect(account.catalog == .loading && account.transcriptionAccess == .unavailable)
         await retried.release(); await retry.value
-        #expect(account.speechAccess == .modelIncompatible && !account.speechAvailable)
+        #expect(account.transcriptionAccess == .modelIncompatible && !account.transcriptionAvailable)
+        #expect(account.speechAvailable)
     }
 
-    @Test func speechAdmissionDistinguishesUnknownFreeAndMissingCapabilityWithoutQuotaGates() async throws {
+    @Test func speechAdmissionBlocksOnlyKnownFreePlanAndRetiredSession() async throws {
         let unknown = try fixture(plan: "Future Premium"), free = try fixture(plan: "Free", guest: true)
         let exhausted = try fixture(remaining: 0)
         var missing = accountCatalog(); missing.audio = nil
         let absent = try fixture(catalog: missing)
-        #expect(unknown.speechAccess == .unavailable)
+        #expect(unknown.speechAccess == .allowed)
         await unknown.refresh(); await free.refresh(); await exhausted.refresh(); await absent.refresh()
-        #expect(unknown.speechAccess == .unavailable)
+        #expect(unknown.speechAccess == .allowed)
         #expect(free.speechAccess == .paidPlanRequired)
         #expect(exhausted.speechAccess == .allowed)
-        #expect(absent.speechAccess == .unavailable)
+        #expect(absent.speechAccess == .allowed)
+        var disabled = accountCatalog()
+        disabled.audio?.speech = AudioModelAvailability(available: false, model: "voxtral-tts")
+        let disabledSpeech = try fixture(catalog: disabled)
+        await disabledSpeech.refresh()
+        #expect(disabledSpeech.speechAccess == .allowed)
+        await disabledSpeech.retire()
+        #expect(disabledSpeech.speechAccess == .retired && !disabledSpeech.speechAvailable)
     }
 }

@@ -113,7 +113,7 @@
             case .images: MapleStrings.text("Image attachments require an eligible paid plan.")
             case .dictation: MapleStrings.text("Dictation requires an eligible paid plan.")
             case .speech: MapleStrings.text("Read aloud requires an eligible paid plan.")
-            case .webSearch: MapleStrings.text("Web search requires an eligible paid plan.")
+            case .webSearch: MapleStrings.text("This feature is available for your account.")
             case .model:
                 String(
                     localized: "Get access to our most advanced AI models for superior performance",
@@ -124,7 +124,7 @@
         private var capabilityMessage: String {
             switch feature {
             case .images: MapleStrings.text("Choose a model that supports images.")
-            case .webSearch: MapleStrings.text("Choose a model that supports web search.")
+            case .webSearch: MapleStrings.text("This feature is available for your account.")
             case .dictation: MapleStrings.text("Dictation is currently unavailable. Try again later.")
             case .speech: MapleStrings.text("Read aloud is currently unavailable. Try again later.")
             case .model:

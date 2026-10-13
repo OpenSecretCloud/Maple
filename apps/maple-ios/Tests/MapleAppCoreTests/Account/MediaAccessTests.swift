@@ -71,12 +71,12 @@ import Testing
         var unknownTier = catalogItem(access: "future"); unknownTier.capabilities.vision = true
         let unsupported = try account(catalog: accountCatalog(items: [unknownTier]))
         await unsupported.refresh()
-        #expect(unsupported.chatAccess == .modelUnavailable)
+        #expect(unsupported.chatAccess == .allowed)
         #expect(unsupported.imageAccess == .allowed && unsupported.webSearchAccess == .allowed)
         #expect(unsupported.transcriptionAccess == .allowed)
 
         let missing = try account(catalog: accountCatalog(items: [])); await missing.refresh()
-        #expect(missing.chatAccess == .modelUnavailable)
+        #expect(missing.chatAccess == .allowed)
         #expect(missing.imageAccess == .allowed && missing.webSearchAccess == .allowed)
     }
 

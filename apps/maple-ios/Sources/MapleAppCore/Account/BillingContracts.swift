@@ -65,17 +65,17 @@ public enum BillingPlan: Equatable, Sendable {
 }
 
 public struct BillingConflict: Decodable, Equatable, Sendable {
-    public let otherProvider: String
+    public let otherProvider: String?
     /// Inert server data. It must never be interpreted as a route or action.
-    public let action: String
+    public let action: String?
 }
 
 public struct BillingPendingPlanChange: Decodable, Equatable, Sendable {
-    public let id: String
-    public let type: String
-    public let targetPlanName: String
-    public let status: String
-    public let expiresAt: String
+    public let id: String?
+    public let type: String?
+    public let targetPlanName: String?
+    public let status: String?
+    public let expiresAt: String?
 }
 
 public struct BillingStatus: Decodable, Equatable, Sendable {

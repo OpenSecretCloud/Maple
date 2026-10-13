@@ -103,13 +103,23 @@ import XCTest
 
     func testBillingLoadingAndFailurePreserveAvailableChatAndDraft() {
         launch()
-        XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
+        XCTAssertTrue(app.buttons["entitlement.send"].isEnabled)
         notice("images", containing: "unavailable")
+        for feature in ["speech", "webSearch"] {
+            XCTAssertEqual(app.buttons["entitlement.media." + feature].value as? String, "available")
+        }
+        waitLabel("entitlement.web-effective", "Effective web on")
         scenario("loading", billing: "loading")
         waitSendEnabled(true)
         notice("dictation", containing: "still loading")
+        for feature in ["speech", "webSearch"] {
+            XCTAssertEqual(app.buttons["entitlement.media." + feature].value as? String, "available")
+        }
         scenario("failed", billing: "failed")
         waitSendEnabled(true)
+        for feature in ["speech", "webSearch"] {
+            XCTAssertEqual(app.buttons["entitlement.media." + feature].value as? String, "available")
+        }
         XCTAssertFalse(app.staticTexts["Account access is unavailable. Your draft is preserved."].exists)
         tap("entitlement.settings")
         XCTAssertTrue(
@@ -150,9 +160,10 @@ import XCTest
         notice("images", containing: "paid plan")
         notice("dictation", containing: "paid plan")
         notice("speech", containing: "paid plan")
-        notice("webSearch", containing: "paid plan")
+        XCTAssertEqual(app.buttons["entitlement.media.webSearch"].value as? String, "available")
+        notice("webSearch", containing: "available for your account")
         waitLabel("entitlement.web-preference", "Web preference on")
-        waitLabel("entitlement.web-effective", "Effective web off")
+        waitLabel("entitlement.web-effective", "Effective web on")
         scenario("pro", billing: "paid")
         for feature in ["images", "dictation", "speech", "webSearch"] {
             XCTAssertEqual(app.buttons["entitlement.media." + feature].value as? String, "available")
@@ -169,7 +180,7 @@ import XCTest
         XCTAssertEqual(editor.value as? String, "Keep this unsent draft")
     }
 
-    func testOnlyKnownFreeGuestsAreBlockedAndUnknownPlansKeepPaidFeaturesUnavailable() {
+    func testOnlyKnownFreeGuestsAreBlockedAndUnknownPlansKeepImagesAndDictationUnavailable() {
         launch(guest: true); scenario("free", billing: "Free")
         waitSendEnabled(false)
         XCTAssertTrue(
@@ -185,11 +196,16 @@ import XCTest
         XCTAssertEqual(app.buttons["entitlement.media.dictation"].value as? String, "available")
         scenario("unknownPlan", billing: "unknownPlan")
         waitSendEnabled(true)
-        notice("webSearch", containing: "plan details are unavailable")
+        for feature in ["speech", "webSearch"] {
+            XCTAssertEqual(app.buttons["entitlement.media." + feature].value as? String, "available")
+        }
+        waitLabel("entitlement.web-effective", "Effective web on")
+        notice("images", containing: "plan details are unavailable")
+        notice("dictation", containing: "plan details are unavailable")
         tap("entitlement.settings")
-        XCTAssertTrue(
+        XCTAssertFalse(
             app.staticTexts["Plan details are unavailable. Paid features remain unavailable until your plan is known."]
-                .waitForExistence(timeout: 5))
+                .exists)
         XCTAssertEqual(app.staticTexts["settings.plan-name"].label, "Unrecognized fixture plan Plan")
         for label in ["Upgrade", "Manage subscription", "Restore purchases", "Developer API", "Manage team"] {
             XCTAssertFalse(app.buttons[label].exists)

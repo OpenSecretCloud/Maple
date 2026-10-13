@@ -189,6 +189,47 @@ struct BillingServiceTests {
         }
     }
 
+    @Test(arguments: ["other_provider", "action", "id", "type", "target_plan_name", "status", "expires_at"])
+    func missingOrNullBillingHintSubfieldsDoNotInvalidateStatus(_ field: String) throws {
+        for nulls in [false, true] {
+            var payload = try #require(JSONSerialization.jsonObject(with: billingBody()) as? [String: Any])
+            var conflict: [String: Any] = ["other_provider": "apple", "action": "future_action"]
+            var pending: [String: Any] = [
+                "id": "fixture-change", "type": "downgrade", "target_plan_name": "Max", "status": "pending",
+                "expires_at": "2025-01-01T00:00:00Z",
+            ]
+            if conflict[field] != nil {
+                if nulls { conflict[field] = NSNull() } else { conflict.removeValue(forKey: field) }
+            } else {
+                if nulls { pending[field] = NSNull() } else { pending.removeValue(forKey: field) }
+            }
+            payload["conflict"] = conflict; payload["pending_plan_change"] = pending
+            let status: BillingStatus = try accountDecode(payload)
+            try status.validate()
+            #expect(status.plan == .paid(.pro) && status.canChat)
+            let decodedConflict = try #require(status.conflict), decodedPending = try #require(status.pendingPlanChange)
+            #expect(decodedConflict.otherProvider == (field == "other_provider" ? nil : "apple"))
+            #expect(decodedConflict.action == (field == "action" ? nil : "future_action"))
+            #expect(decodedPending.id == (field == "id" ? nil : "fixture-change"))
+            #expect(decodedPending.type == (field == "type" ? nil : "downgrade"))
+            #expect(decodedPending.targetPlanName == (field == "target_plan_name" ? nil : "Max"))
+            #expect(decodedPending.status == (field == "status" ? nil : "pending"))
+            #expect(decodedPending.expiresAt == (field == "expires_at" ? nil : "2025-01-01T00:00:00Z"))
+        }
+    }
+
+    @Test func emptyBillingHintObjectsDoNotInvalidateStatus() throws {
+        var payload = try #require(JSONSerialization.jsonObject(with: billingBody()) as? [String: Any])
+        payload["conflict"] = [String: String](); payload["pending_plan_change"] = [String: String]()
+        let status: BillingStatus = try accountDecode(payload)
+        try status.validate()
+        #expect(status.plan == .paid(.pro) && status.canChat)
+        let conflict = try #require(status.conflict), pending = try #require(status.pendingPlanChange)
+        #expect(conflict.otherProvider == nil && conflict.action == nil)
+        #expect(pending.id == nil && pending.type == nil && pending.targetPlanName == nil)
+        #expect(pending.status == nil && pending.expiresAt == nil)
+    }
+
     @Test func mixedDatesAndFutureManagementValuesStayInert() throws {
         let seconds: BillingDate = try JSONDecoder().decode(BillingDate.self, from: Data("1735689600".utf8))
         let iso: BillingDate = try JSONDecoder().decode(BillingDate.self, from: Data(#""2025-01-01T00:00:00Z""#.utf8))
