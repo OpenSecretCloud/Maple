@@ -71,6 +71,36 @@ import XCTest
         visible.first?.tap()
     }
 
+    private func tapSettingsRow(_ id: String) {
+        let forms = app.collectionViews.matching(identifier: "settings.screen")
+        let form = forms.firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 5))
+        XCTAssertEqual(forms.count, 1)
+        let controls = form.buttons.matching(identifier: id)
+        let button = controls.firstMatch
+        func rowIsClear() -> Bool {
+            let window = app.windows.firstMatch, navigation = app.navigationBars["Settings"].firstMatch
+            guard controls.count == 1, button.exists, button.isEnabled, button.isHittable,
+                window.exists, navigation.exists
+            else { return false }
+            let region = window.frame.intersection(form.frame)
+            return !region.isNull && !region.isEmpty && region.contains(button.frame)
+                && button.frame.minY >= navigation.frame.maxY + 8
+                && button.frame.maxY <= region.maxY - 8
+        }
+        // A Settings List may not create a row until it scrolls into view.
+        // Reveal the exact owned control before requiring existence or tapping.
+        for _ in 0..<8 {
+            if rowIsClear() { break }
+            form.swipeUp()
+        }
+        XCTAssertEqual(controls.count, 1)
+        let clear = rowIsClear()
+        XCTAssertTrue(clear, "The Settings picker must clear the navigation and window boundaries")
+        guard clear else { return }
+        button.tap()
+    }
+
     func testBillingLoadingAndFailurePreserveAvailableChatAndDraft() {
         launch()
         XCTAssertFalse(app.buttons["entitlement.send"].isEnabled)
@@ -193,7 +223,7 @@ import XCTest
         let fontDescription = app.staticTexts["settings.font-description"]
         if !fontDescription.isHittable { app.swipeUp() }
         XCTAssertEqual(fontDescription.label, "Maple's default, with a compact modern feel.")
-        tap("settings.voice")
+        tapSettingsRow("settings.voice")
         XCTAssertTrue(
             app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Default voices")).firstMatch
                 .exists)
@@ -201,7 +231,7 @@ import XCTest
             app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Reference accents")).firstMatch
                 .exists)
         tapPickerChoice("Casual — Female")
-        tap("settings.speed")
+        tapSettingsRow("settings.speed")
         tapPickerChoice("1.2×")
         tap("entitlement.settings.close")
         for id in ["pass", "zaprite"] {
