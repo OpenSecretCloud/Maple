@@ -148,7 +148,9 @@ public struct ChatSendAcceptance: Sendable, Equatable {
 public enum ChatIssue: String, Error, Sendable {
     case offline, busy, emptyDraft, invalidImages, draftTooLarge, storageUnavailable
     case conversationUnavailable, uncertainResponse, responseUnavailable, cancellationUnavailable
-    case historyUnavailable, requestRejected, contextLimit, usageLimit, modelUnavailable, signedOut
+    case historyUnavailable, requestRejected, contextLimit, freeTierTokenLimit, usageLimit, modelUnavailable, signedOut
+    case unsupportedValue, imageDescriptionUnavailable, inferenceCapacityUnavailable, generationFailed
+    case stoppedBeforeSending, stoppingWhenResponseReady, responseFinishedBeforeStop, recoveredCompletion, recoveredStop
     case queueLimit, unfinishedQueueEdit, draftInUse
 }
 

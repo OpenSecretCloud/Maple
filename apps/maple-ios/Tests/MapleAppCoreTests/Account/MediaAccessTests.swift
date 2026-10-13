@@ -37,45 +37,47 @@ import Testing
         #expect(!value.transcriptionAvailable)
     }
 
-    @Test func confirmedPlanQuotaAndSeatReasonsPropagateBeforeCapabilities() async throws {
+    @Test func confirmedPlanGatesMediaWhileQuotaAndSeatsRemainServerOwned() async throws {
         let cases: [(AccountEntitlements, AccountAccess)] = [
             (try account(plan: "Free"), .paidPlanRequired),
             (try account(plan: "Free", guest: true), .freeGuest),
             (try account(plan: "Future Premium"), .unknownPlan),
-            (try account(canChat: false), .usageLimit),
-            (try account(remaining: 0), .usageLimit),
+            (try account(canChat: false), .allowed),
+            (try account(remaining: 0), .allowed),
             (
                 try account(
                     team: accountDecode([
                         "has_team_subscription": true, "team_created": true, "seat_limit_exceeded": true,
-                    ])), .seatMismatch
+                    ])), .allowed
             ),
         ]
         for (value, reason) in cases {
             await value.refresh()
             #expect(value.imageAccess == reason)
             #expect(value.transcriptionAccess == reason)
-            #expect(!value.transcriptionAvailable)
+            #expect(value.transcriptionAvailable == (reason == .allowed))
         }
     }
 
-    @Test func imageUsesActualTargetVisionAndModelAdmission() async throws {
+    @Test func imagesAndWebSearchDoNotDependOnSelectedModelCapabilitiesOrCatalog() async throws {
         let value = try account(); await value.refresh()
         #expect(value.imageAccess == .allowed)
         #expect(value.selectedModel?.capabilities.vision == true)
         #expect(value.selectModel("auto:powerful") == .allowed)
-        #expect(value.imageAccess == .modelIncompatible)
+        #expect(value.imageAccess == .allowed)
         // Audio does not depend on the text model's vision capability.
         #expect(value.transcriptionAccess == .allowed && value.transcriptionAvailable)
 
         var unknownTier = catalogItem(access: "future"); unknownTier.capabilities.vision = true
         let unsupported = try account(catalog: accountCatalog(items: [unknownTier]))
         await unsupported.refresh()
-        #expect(unsupported.imageAccess == .modelUnavailable)
+        #expect(unsupported.chatAccess == .allowed)
+        #expect(unsupported.imageAccess == .allowed && unsupported.webSearchAccess == .allowed)
         #expect(unsupported.transcriptionAccess == .allowed)
 
         let missing = try account(catalog: accountCatalog(items: [])); await missing.refresh()
-        #expect(missing.imageAccess == .modelUnavailable)
+        #expect(missing.chatAccess == .allowed)
+        #expect(missing.imageAccess == .allowed && missing.webSearchAccess == .allowed)
     }
 
     @Test func absentAndConfirmedUnavailableTranscriptionHaveDifferentReasons() async throws {
@@ -92,7 +94,7 @@ import Testing
         #expect(value.transcriptionAccess == .modelIncompatible && !value.transcriptionAvailable)
     }
 
-    @Test func catalogRefreshRetainsVerifiedAccessThenFailureRevokesIt() async throws {
+    @Test func catalogFailureOnlyRevokesCatalogOwnedAudioAvailability() async throws {
         let failureGate = AccountGate(), retryGate = AccountGate()
         let service = AccountServingStub(
             statuses: [.success(try billingStatus())], teams: [.success(try basicTeam())],
@@ -104,13 +106,13 @@ import Testing
         await failureGate.waitUntilEntered()
         #expect(value.imageAccess == .allowed && value.transcriptionAccess == .allowed)
         await failureGate.release(); await failure.value
-        #expect(value.webSearchAccess == .unavailable)
-        #expect(value.imageAccess == .unavailable && value.transcriptionAccess == .unavailable)
+        #expect(value.webSearchAccess == .allowed)
+        #expect(value.imageAccess == .allowed && value.transcriptionAccess == .unavailable)
         let retry = Task { await value.refreshCatalog() }
         await retryGate.waitUntilEntered()
         #expect(value.catalog == .loading)
-        #expect(value.webSearchAccess == .unavailable)
-        #expect(value.imageAccess == .unavailable && value.transcriptionAccess == .unavailable)
+        #expect(value.webSearchAccess == .allowed)
+        #expect(value.imageAccess == .allowed && value.transcriptionAccess == .unavailable)
         await retryGate.release(); await retry.value
         #expect(value.imageAccess == .allowed && value.transcriptionAccess == .allowed)
     }

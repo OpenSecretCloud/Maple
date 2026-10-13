@@ -10,9 +10,9 @@
         @State private var mode = Mode.email
         @State private var email = ""
         @State private var password = ""
-        @State private var name = ""
+        @State private var externalLink: URL?
         @FocusState private var focused: Field?
-        private enum Field { case name, email, password }
+        private enum Field { case email, password }
 
         var body: some View {
             NavigationStack {
@@ -28,14 +28,6 @@
                         )
                         .font(MapleTypography.title)
                         VStack(spacing: 16) {
-                            if mode == .signup {
-                                TextField(
-                                    MapleStrings.text("Name (optional)"), text: $name,
-                                    prompt: Text(MapleStrings.text("Name (optional)")).foregroundStyle(
-                                        MapleFieldPrompt())
-                                )
-                                .textContentType(.name).focused($focused, equals: .name)
-                            }
                             TextField(
                                 mode == .guest ? MapleStrings.text("Guest account ID") : MapleStrings.text("Email"),
                                 text: $email,
@@ -57,6 +49,10 @@
                             .onSubmit { submit() }.accessibilityIdentifier("auth.password")
                         }
                         .textFieldStyle(.roundedBorder)
+                        if mode == .signup {
+                            Text("Use at least eight characters.", tableName: "Auth", bundle: .module)
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                         if let issue = session.issue {
                             Text(message(for: issue)).foregroundStyle(MapleRedText()).accessibilityIdentifier(
                                 "auth.error")
@@ -90,16 +86,42 @@
                         ) {
                             mode = mode == .guest ? .email : .guest; email = ""; password = ""
                         }.disabled(session.phase == .authenticating)
+                        VStack(spacing: 8) {
+                            Text(
+                                String(
+                                    localized: "auth.copyright",
+                                    defaultValue:
+                                        "© \(String(Calendar(identifier: .gregorian).component(.year, from: Date()))) Maple Privacy Labs Inc.",
+                                    table: "Auth", bundle: .module)
+                            )
+                            .foregroundStyle(.secondary)
+                            HStack(spacing: 24) {
+                                Button {
+                                    externalLink = URL(string: "https://trymaple.ai/terms")
+                                } label: {
+                                    Text("Terms", tableName: "Auth", bundle: .module)
+                                        .frame(minWidth: 44, minHeight: 44)
+                                }.accessibilityIdentifier("auth.terms")
+                                Button {
+                                    externalLink = URL(string: "https://trymaple.ai/privacy")
+                                } label: {
+                                    Text("Privacy", tableName: "Auth", bundle: .module)
+                                        .frame(minWidth: 44, minHeight: 44)
+                                }.accessibilityIdentifier("auth.privacy")
+                            }
+                        }
+                        .font(.footnote).frame(maxWidth: .infinity)
                     }
                     .padding(28).frame(maxWidth: 480).frame(maxWidth: .infinity)
                 }
                 .scrollDismissesKeyboard(.interactively)
             }
+            .externalLinks($externalLink)
         }
 
         private var canSubmit: Bool {
             session.phase == .signedOut && !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !password.isEmpty
+                && !password.isEmpty && (mode != .signup || AuthCeremonies.validPassword(password))
         }
 
         private func submit() {
@@ -112,8 +134,7 @@
                 case .email: await session.signIn(email: submittedID, password: submittedPassword)
                 case .guest: await session.signInGuest(id: submittedID, password: submittedPassword)
                 case .signup:
-                    await session.signUp(
-                        email: submittedID, password: submittedPassword, name: name.isEmpty ? nil : name)
+                    await session.signUp(email: submittedID, password: submittedPassword)
                 }
                 password = ""
             }

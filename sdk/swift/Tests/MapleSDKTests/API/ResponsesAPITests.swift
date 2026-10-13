@@ -164,6 +164,43 @@ private struct FixtureStreamTransport: MapleTransport {
     func send(_ request: MapleRequest) async throws -> MapleResponse { response }
 }
 
+private actor StalledResponseFixture {
+    private let chunks: [Data]
+    private var index = 0
+    private(set) var reads = 0
+    init(_ chunks: [Data]) { self.chunks = chunks }
+    func next() -> Data? {
+        reads += 1
+        guard index < chunks.count else { return nil }
+        defer { index += 1 }
+        return chunks[index]
+    }
+}
+
+@Test func stalledResponseConsumerPreservesEveryEventAndTerminal() async throws {
+    let chunks =
+        Array(repeating: Data(sse("response.output_text.delta", delta).utf8), count: 600)
+        + [Data(sse("response.completed", lifecycle("response.completed", status: "completed")).utf8)]
+    let source = StalledResponseFixture(chunks)
+    let api = ResearchAPI(
+        transport: FixtureStreamTransport(
+            response: MapleResponse(
+                status: 200, headers: ["content-type": "text/event-stream"],
+                body: AsyncThrowingStream(unfolding: { await source.next() }))))
+    let events = try await api.createResponse(.init(input: .text("Synthetic"), conversation: "c"))
+    // Allow more than the old 256-event capacity to accumulate before reading.
+    try await Task.sleep(for: .milliseconds(30))
+    var iterator = events.makeAsyncIterator()
+    #expect(try await iterator.next()?.isTerminal == false)
+    try await Task.sleep(for: .milliseconds(30))
+    var deltas = 1, terminal = 0
+    while let event = try await iterator.next() {
+        if event.isTerminal { terminal += 1 } else { deltas += 1 }
+    }
+    #expect(deltas == 600 && terminal == 1)
+    #expect(await source.reads == chunks.count + 1)
+}
+
 @Test func authenticatedTunnelFailureAfterTerminalIsNotSuccess() async throws {
     let fixture = sse("response.completed", lifecycle("response.completed", status: "completed"))
     let body = AsyncThrowingStream<Data, Error> { continuation in
@@ -187,6 +224,8 @@ private struct FixtureStreamTransport: MapleTransport {
 private actor StreamCancellationProbe {
     private var wasCancelled = false
     private var waiter: CheckedContinuation<Void, Never>?
+    private var consumed = false
+    private var consumedWaiter: CheckedContinuation<Void, Never>?
     func cancel() {
         wasCancelled = true
         waiter?.resume()
@@ -195,6 +234,14 @@ private actor StreamCancellationProbe {
     func wait() async {
         if wasCancelled { return }
         await withCheckedContinuation { waiter = $0 }
+    }
+    func didConsume() {
+        consumed = true
+        consumedWaiter?.resume(); consumedWaiter = nil
+    }
+    func waitUntilConsumed() async {
+        if consumed { return }
+        await withCheckedContinuation { consumedWaiter = $0 }
     }
 }
 
@@ -213,6 +260,29 @@ private actor StreamCancellationProbe {
         let events = try await api.createResponse(.init(input: .text("Synthetic"), conversation: "c"))
         for try await _ in events { try Task.checkCancellation() }
     }
+    consumer.cancel()
+    _ = await consumer.result
+    await probe.wait()
+}
+
+@Test(arguments: [1, 600])
+func responseCancellationAfterFirstChunkCancelsBufferedUpstream(eventCount: Int) async throws {
+    let probe = StreamCancellationProbe()
+    let body = AsyncThrowingStream<Data, Error> { continuation in
+        continuation.onTermination = { @Sendable _ in Task { await probe.cancel() } }
+        continuation.yield(Data(String(repeating: sse("response.output_text.delta", delta), count: eventCount).utf8))
+    }
+    let api = ResearchAPI(
+        transport: FixtureStreamTransport(
+            response: MapleResponse(status: 200, headers: ["content-type": "text/event-stream"], body: body)))
+    let consumer = Task {
+        let events = try await api.createResponse(.init(input: .text("Synthetic"), conversation: "c"))
+        for try await _ in events {
+            await probe.didConsume()
+            try await Task.sleep(for: .seconds(60))
+        }
+    }
+    await probe.waitUntilConsumed()
     consumer.cancel()
     _ = await consumer.result
     await probe.wait()

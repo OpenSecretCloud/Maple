@@ -478,6 +478,27 @@ import XCTest
         tap("library.settings", attempts: 24, in: app)
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 20))
     }
+    private func dismissChatOptions() throws {
+        let pickers = app.collectionViews.matching(identifier: "settings.models")
+        let picker = pickers.firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+        XCTAssertEqual(pickers.count, 1)
+        let window = app.windows.firstMatch.frame
+        let sheet = picker.frame
+        let outsideHeight = sheet.minY - window.minY
+        let point = CGPoint(x: window.midX, y: window.minY + outsideHeight / 2)
+        guard pickers.count == 1, picker.exists,
+            [window, sheet].allSatisfy({
+                [$0.minX, $0.minY, $0.width, $0.height].allSatisfy { $0.isFinite }
+                    && $0.width > 0 && $0.height > 0
+            }), outsideHeight > 44, window.contains(point), !sheet.contains(point)
+        else { throw ReferenceCaptureIssue.missingControl }
+        app.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: point.x - app.frame.minX, dy: point.y - app.frame.minY)
+        ).tap()
+        XCTAssertTrue(picker.waitForNonExistence(timeout: 10))
+    }
+
     private func returnFromModelPicker() {
         XCTAssertTrue(app.collectionViews["settings.models"].exists)
         let back = app.navigationBars.buttons.matching(
@@ -497,8 +518,10 @@ import XCTest
     private var cellKey: String { "\(input.orientation).\(input.appearance)" }
 
     private func verifyPlan() {
-        reveal(app.staticTexts["Current plan"], down: true)
-        XCTAssertTrue(app.staticTexts[input.account == "pro" ? "Pro" : "Free"].exists)
+        let plan = app.staticTexts["settings.plan-name"]
+        XCTAssertTrue(plan.waitForExistence(timeout: 20))
+        reveal(plan, down: true)
+        XCTAssertEqual(plan.label, input.account == "pro" ? "Pro Plan" : "Free Plan")
     }
 
     private func selectAndVerifyAppearance() {
@@ -518,13 +541,7 @@ import XCTest
         reveal(web)
         if web.isEnabled && web.value as? String == "1" { turnWebPreferenceOff(web) }
         let value = web.value as? String
-        if input.account == "pro" {
-            XCTAssertTrue(web.isEnabled); XCTAssertEqual(value, "0")
-        } else {
-            // A confirmed Free account cannot change this disabled preference.
-            // Record its real saved state and authority without fabricating off.
-            XCTAssertFalse(web.isEnabled); XCTAssertTrue(value == "0" || value == "1")
-        }
+        XCTAssertTrue(web.isEnabled); XCTAssertEqual(value, "0")
         observedWebPreference = value
     }
 
@@ -706,8 +723,7 @@ import XCTest
             "observed_appearance_setting": observedAppearance ?? "signed-out-system-appearance",
             "appearance_evidence": "Native Settings picker value; rendered screenshot requires visual review",
             "observed_web_preference": observedWebPreference ?? "not-applicable",
-            "web_authority": !accountVerified
-                ? "not-applicable" : (input.account == "free" ? "disabled-confirmed-free" : "eligible-pro-aligned-off"),
+            "web_authority": accountVerified ? "saved-preference-aligned-off" : "not-applicable",
         ]
         if let data = try? JSONSerialization.data(withJSONObject: metadata, options: .sortedKeys),
             let text = String(data: data, encoding: .utf8)
@@ -1494,38 +1510,63 @@ import XCTest
         let web = app.switches["model.web-search"]
         XCTAssertTrue(web.waitForExistence(timeout: 20))
         XCTAssertEqual(web.value as? String, observedWebPreference)
-        XCTAssertEqual(web.isEnabled, input.account == "pro")
+        XCTAssertTrue(web.isEnabled)
         XCTAssertFalse(app.buttons["chat.web-search"].exists)
         capture("model-selection")
-        if input.account == "free" {
-            XCTAssertEqual(app.buttons["model.web-search-unavailable"].value as? String, "Unavailable")
-            tap("model.web-search-unavailable")
-            XCTAssertTrue(app.staticTexts["media.access.message"].waitForExistence(timeout: 15))
-            capture("web-access"); tap("media.access.close")
-            XCTAssertTrue(web.exists); XCTAssertFalse(web.isEnabled)
-            XCTAssertEqual(web.value as? String, observedWebPreference)
-        } else {
-            let original = try XCTUnwrap(observedWebPreference)
-            XCTAssertTrue(original == "0" || original == "1")
-            let changed = original == "1" ? "0" : "1"
-            tapWebPreference(web)
-            let flipped = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "value == %@", changed), object: web)
-            XCTAssertEqual(XCTWaiter.wait(for: [flipped], timeout: 10), .completed)
-            tap("Done")
-            XCTAssertEqual(composer.value as? String, "Unsent comparison draft")
-            composer.tap()
-            tap("chat.model")
-            let reopened = app.switches["model.web-search"]
-            XCTAssertTrue(reopened.waitForExistence(timeout: 20)); XCTAssertTrue(reopened.isEnabled)
-            XCTAssertEqual(reopened.value as? String, changed, "The picker must read back the saved preference")
-            tapWebPreference(reopened)
-            let restored = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "value == %@", original), object: reopened)
-            XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed)
-        }
-        tap("Done")
+        let original = try XCTUnwrap(observedWebPreference)
+        XCTAssertTrue(original == "0" || original == "1")
+        let changed = original == "1" ? "0" : "1"
+        tapWebPreference(web)
+        let flipped = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", changed), object: web)
+        XCTAssertEqual(XCTWaiter.wait(for: [flipped], timeout: 10), .completed)
+        try dismissChatOptions()
         XCTAssertEqual(composer.value as? String, "Unsent comparison draft")
+        composer.tap()
+        tap("chat.model")
+        let reopened = app.switches["model.web-search"]
+        XCTAssertTrue(reopened.waitForExistence(timeout: 20)); XCTAssertTrue(reopened.isEnabled)
+        XCTAssertEqual(reopened.value as? String, changed, "The picker must read back the saved preference")
+        tapWebPreference(reopened)
+        let restored = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", original), object: reopened)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed)
+        try dismissChatOptions()
+        XCTAssertEqual(composer.value as? String, "Unsent comparison draft")
+
+        // Test ordinary toolbar touches immediately after dismissal. No edge
+        // gesture, focus mutation or projection reset may repair admission first.
+        let libraryWasVisible = visibleLibrary() != nil
+        let menu = app.mapleMenuButton
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        XCTAssertTrue(menu.isEnabled && menu.isHittable)
+        menu.tap()
+        let menuChanged = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in (self.visibleLibrary() != nil) != libraryWasVisible }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [menuChanged], timeout: 15), .completed)
+        let close = app.buttons["library.close"].firstMatch
+        if close.exists {
+            XCTAssertTrue(close.isEnabled && close.isHittable); close.tap()
+        } else {
+            // A regular-width sidebar uses the same Menu toggle to close.
+            let sidebarToggle = app.mapleMenuButton
+            XCTAssertTrue(sidebarToggle.exists && sidebarToggle.isEnabled && sidebarToggle.isHittable)
+            sidebarToggle.tap()
+        }
+        let menuRestored = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in (self.visibleLibrary() != nil) == libraryWasVisible }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [menuRestored], timeout: 15), .completed)
+        let newChat = app.buttons["chat.new"].firstMatch
+        XCTAssertTrue(newChat.waitForExistence(timeout: 10))
+        XCTAssertTrue(newChat.isEnabled && newChat.isHittable); newChat.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "Unsent comparison draft")
+        XCTAssertTrue(newChat.exists && newChat.isEnabled && newChat.isHittable)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+        // This test is already on New Chat: its saved draft is intentionally
+        // reused. These checks establish touch admission and draft retention,
+        // while changing from an existing conversation is verified separately.
+        capture("options-dismissal-toolbar-touch-and-draft-retention")
         if input.account == "free" {
             for (control, surface) in [("dictation.start", "dictation-access")] {
                 XCTAssertEqual(app.buttons[control].value as? String, "Unavailable")

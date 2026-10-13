@@ -261,8 +261,9 @@ import Observation
         }
     }
 
-    public func deleteConversations(ids: Set<String>) async {
-        guard !ids.isEmpty, ids.count <= 10_000 else { issue = .invalidInput; return }
+    @discardableResult public func deleteConversations(ids: Set<String>) async -> Bool {
+        guard !ids.isEmpty, ids.count <= 10_000 else { issue = .invalidInput; return false }
+        var completed = false
         await mutate { [self] in
             let lease = try deletions.begin(.conversations(ids)); defer { deletions.release(lease) }
             try await deletions.quiesce(lease); try check(); try deletions.assertQuiescent(lease)
@@ -278,7 +279,9 @@ import Observation
                 try await deletions.finish(lease, deletedConversationIDs: deleted)
             }
             if deletedAll != ids { throw LibraryIssue.partialMutation }
+            completed = true
         }
+        return completed && valid
     }
     public func deleteAllConversations() async {
         await mutate { [self] in

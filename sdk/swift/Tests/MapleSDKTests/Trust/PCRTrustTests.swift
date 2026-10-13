@@ -3,6 +3,26 @@ import Testing
 @testable import MapleSDK
 
 struct PCRTrustTests {
+    @Test func embeddedRootsMatchCurrentAndRollbackApprovals() {
+        let production = PCRTrustPolicy.productionRoots
+        let development = PCRTrustPolicy.developmentRoots
+        for root in production + development {
+            #expect(root.utf8.count == 96)
+            #expect(root.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) })
+        }
+        #expect(Set(production).isDisjoint(with: development))
+        #expect(
+            PCRTrustPolicy.productionRoots == [
+                "21d27bd19cdd02632485a6e8874753e42cf7f098f1335bb62a9c23e7f64da9100c02dba582da17ac68052fa6be16b7a9",
+                "643b3c293a4eac11ec14ab405d2405e46cb714263a12da6c62f485a0fa395cb3c3d5ef07b18d39a1f9715f25e7943b66",
+            ])
+        #expect(
+            PCRTrustPolicy.developmentRoots == [
+                "a95956c3fb9457e509be6d614ffefcddf98fe594f77bb6a56891fc1f5bdec41da2add13db22e0908363c8d0929c04def",
+                "e573a3ddc8a27f387e24cfb02a8fa594fe782674de6ee1fa9385126b9f8ec38f4a236e91c371bdd2b9444623c1c1cc34",
+            ])
+    }
+
     static let signedPCR0 =
         "3637534c33a8bafc5034d5763e441a481f161bbbe888e375ce14b016c7497dc4e550afe866bd8e65969b409d54766481"
     static let signature =

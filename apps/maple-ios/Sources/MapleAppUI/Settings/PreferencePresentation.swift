@@ -41,9 +41,22 @@
             case .serif: "Serif"
             }
         }
+        var settingsDescription: String {
+            switch self {
+            case .manrope: "Maple's default, with a compact modern feel."
+            case .system: "The familiar interface font for your device."
+            case .serif: "A traditional reading style with distinct letterforms."
+            }
+        }
     }
 
     extension MapleVoice {
+        var settingsGroup: String {
+            switch self {
+            case .neutralFemale, .neutralMale, .casualFemale, .casualMale, .cheerfulFemale: "Default voices"
+            default: "Reference accents"
+            }
+        }
         var settingsLabel: String {
             switch self {
             case .neutralFemale: "Neutral — Female"

@@ -17,7 +17,12 @@
         let signIn: NativeSignInCoordinator
         let preferenceStore = PreferencesStore()
         private(set) var chats: [String: ChatRuntime] = [:]
-        private(set) var selectedKey = ChatSnapshot.newChatKey { didSet { updatePresentationVisibility() } }
+        private(set) var selectedKey = ChatSnapshot.newChatKey {
+            didSet {
+                updatePresentationVisibility()
+                updateTitlePolling()
+            }
+        }
         private(set) var accountAPI: ResearchAPI?
         private(set) var entitlements: AccountEntitlements?
         private(set) var deletion: ChatDeletionCoordinator?
@@ -28,6 +33,9 @@
         private(set) var readyScope: AccountScope?
         private(set) var conversationDetails: [String: Conversation] = [:]
         private var conversationDetailTickets: [String: UUID] = [:]
+        @ObservationIgnored private var titlePoll: Task<Void, Never>?
+        private var titlePollConversationID: String?
+        private var titlePollTicket: UUID?
         var accountFlow: AccountFlow? { didSet { updatePresentationVisibility() } }
         var menuPresented = false {
             didSet {
@@ -65,6 +73,7 @@
                 }
                 for runtime in chats.values { runtime.isForeground = foreground }
                 updatePresentationVisibility()
+                updateTitlePolling()
                 if foreground && !oldValue { reconcileAfterForeground() }
             }
         }
@@ -105,6 +114,7 @@
             }
             session.onRetire = { [weak self] scope in
                 guard let self else { return }
+                self.cancelTitlePolling()
                 for ceremony in self.accountCeremonies { ceremony.invalidate() }
                 self.accountCeremonies.removeAll()
                 self.accountFlow?.ceremonies.invalidate(); self.accountFlow = nil
@@ -299,6 +309,7 @@
                     guard let self, self.session.account?.scope == account.scope else { return }
                     self.conversationDetails[conversation.id] = conversation
                     self.conversationDetailTickets[conversation.id] = UUID()
+                    self.updateTitlePolling()
                 }
                 context.onConversationProjectUpdated = { [weak self] ids, projectID in
                     guard let self, self.session.account?.scope == account.scope else { return }
@@ -459,11 +470,56 @@
             do {
                 let conversation = try await api.getConversation(id: id)
                 guard session.account?.scope == account.scope, conversation.id == id,
-                    deletion?.isConversationDeleted(id) != true, conversationDetailTickets[id] == ticket
+                    deletion?.isConversationDeleted(id) != true, conversationDetailTickets[id] == ticket,
+                    !Task.isCancelled
                 else { return }
+                let changed = conversationDetails[id] != conversation
                 conversationDetails[id] = conversation
                 deletion?.updateProject(conversationID: id, projectID: conversation.projectId)
+                if changed, let context = libraryContext, context.scope == account.scope {
+                    context.receiveConversationDetails(conversation)
+                }
+                updateTitlePolling()
             } catch { /* History and drafts remain available when metadata cannot refresh. */  }
+        }
+
+        private func cancelTitlePolling() {
+            titlePoll?.cancel()
+            titlePoll = nil
+            titlePollConversationID = nil
+            titlePollTicket = nil
+        }
+
+        /// Title generation outlives the response request. Keep checking only
+        /// the selected conversation, with the same 0.5→10 second backoff as Research.
+        private func updateTitlePolling() {
+            guard foreground, let account = session.account, let api = accountAPI,
+                let id = selectedChat?.conversationID,
+                deletion?.isConversationDeleted(id) != true,
+                conversationDetails[id]?.metadata?["title"] == .string("New Conversation")
+            else {
+                cancelTitlePolling()
+                return
+            }
+            guard titlePollConversationID != id || titlePoll == nil else { return }
+            cancelTitlePolling()
+            let ticket = UUID()
+            titlePollConversationID = id
+            titlePollTicket = ticket
+            titlePoll = Task { [weak self] in
+                await ConversationTitlePolling.run(
+                    shouldContinue: { [weak self] in
+                        guard let self else { return false }
+                        return self.titlePollTicket == ticket && self.foreground
+                            && self.session.account?.scope == account.scope
+                            && self.selectedChat?.conversationID == id
+                            && self.deletion?.isConversationDeleted(id) != true
+                            && self.conversationDetails[id]?.metadata?["title"] == .string("New Conversation")
+                    },
+                    refresh: { [weak self] in
+                        await self?.refreshConversationDetails(id, account: account, api: api)
+                    })
+            }
         }
 
         var unfinishedChats: [ChatRuntime] {

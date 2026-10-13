@@ -78,6 +78,38 @@ import XCTest
     }
     private func closeForm() { tap("auth.fixture.close") }
 
+    func testEmailSignupRequiresEightCharactersAndLegalLinksUseConfirmation() {
+        launchFixture()
+        tap("auth.terms")
+        XCTAssertTrue(app.alerts["Open external link?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.alerts.staticTexts.containing(
+                NSPredicate(
+                    format: "label CONTAINS %@", "https://trymaple.ai/terms")
+            ).firstMatch.exists)
+        app.alerts.buttons["Cancel"].tap()
+        let year = Calendar(identifier: .gregorian).component(.year, from: Date())
+        XCTAssertTrue(app.staticTexts["© \(year) Maple Privacy Labs Inc."].exists)
+        tap("auth.privacy")
+        XCTAssertTrue(app.alerts["Open external link?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.alerts.staticTexts.containing(
+                NSPredicate(
+                    format: "label CONTAINS %@", "https://trymaple.ai/privacy")
+            ).firstMatch.exists)
+        app.alerts.buttons["Cancel"].tap()
+        app.swipeDown()
+        tap("Create an account")
+        XCTAssertFalse(app.textFields["Name (optional)"].exists)
+        text("auth.identifier", "fixture@example.test")
+        text("auth.password", "1234567", secure: true)
+        XCTAssertFalse(app.buttons["auth.submit"].isEnabled)
+        app.secureTextFields["auth.password"].typeText("8")
+        let valid = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true"), object: app.buttons["auth.submit"])
+        XCTAssertEqual(XCTWaiter.wait(for: [valid], timeout: 5), .completed)
+    }
+
     /// Terminal refresh rejection is injected; authority events, ownership
     /// retirement, and the native shipping sign-in screen are actual code.
     func testTerminalRefreshRejectionRetiresAuthorityAndShowsSignInWithoutAutomaticRetry() {

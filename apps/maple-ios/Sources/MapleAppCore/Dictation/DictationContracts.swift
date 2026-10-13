@@ -3,7 +3,7 @@ import MapleSDK
 
 public enum DictationIssue: String, Error, Sendable {
     case permissionDenied, captureUnavailable, emptyRecording, recordingTooLarge
-    case transcriptionUnavailable, invalidTranscription, tooManyOperations, draftUnavailable
+    case transcriptionUnavailable, emptyTranscription, invalidTranscription, tooManyOperations, draftUnavailable
 }
 
 public enum DictationPhase: String, Sendable {

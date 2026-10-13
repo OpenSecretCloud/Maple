@@ -374,6 +374,18 @@
         }
       }
     },
+    "Maximum of 10 projects reached": {
+      "comment": "Accessibility hint for the disabled New project control when the account has reached Research's ten-project maximum.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum of 10 projects reached"
+          }
+        }
+      }
+    },
     "Move selected chats": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -434,6 +446,18 @@
         }
       }
     },
+    "No chats found matching \"%@\"": {
+      "comment": "Library empty search result. The placeholder is the complete trimmed search query. Preserve its quotes and do not translate the query.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No chats found matching \"%@\""
+          }
+        }
+      }
+    },
     "No chats yet": {
       "comment": "Library, chat history, project management, or explicit-save instructions interface. Preserve the meaning of this action or status; allow flexible text length.",
       "extractionState": "manual",
@@ -454,6 +478,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "No project"
+          }
+        }
+      }
+    },
+    "No recent chats.": {
+      "comment": "Empty state under the Recent section of the main menu.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No recent chats."
           }
         }
       }
@@ -706,6 +742,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "This permanently deletes the project and every chat in it."
+          }
+        }
+      }
+    },
+    "Try a different search term": {
+      "comment": "Library empty search result suggestion below the searched query.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try a different search term"
           }
         }
       }

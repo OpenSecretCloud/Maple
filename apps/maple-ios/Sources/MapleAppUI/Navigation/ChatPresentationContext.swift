@@ -31,9 +31,18 @@
         let makeCover: (Item) -> Cover
         @State private var lease = ChatPresentationLeaseOwner()
         @Environment(\.chatPresentationChanged) private var changed
+        @Environment(\.compactMenuPresentationDismissed) private var compactMenuPresentationDismissed
         func body(content: Content) -> some View {
             content
-                .fullScreenCover(item: $item, onDismiss: { lease.update(item != nil, changed: changed) }) { value in
+                .fullScreenCover(
+                    item: $item,
+                    onDismiss: {
+                        lease.update(item != nil, changed: changed)
+                        // Binding changes can release the lease before native
+                        // dismissal completes; notify even if it is already inactive.
+                        compactMenuPresentationDismissed()
+                    }
+                ) { value in
                     // Retain the lease with the presented content too: lazy
                     // transcript eviction must not release a still-visible cover.
                     RetainedPresentationContent(lease: lease, content: makeCover(value))

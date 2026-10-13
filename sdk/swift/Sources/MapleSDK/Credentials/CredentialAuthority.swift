@@ -128,7 +128,7 @@ public actor CredentialAuthority {
     private var state: State
     private var cleanupFailed = false
     private var observers: [UUID: AsyncStream<CredentialAuthorityChange>.Continuation] = [:]
-    private var refreshing: (snapshot: CredentialSnapshot, task: Task<Void, Error>)?
+    private var refreshing: (id: UUID, snapshot: CredentialSnapshot, task: Task<Void, Error>)?
 
     private struct State: Codable {
         var version = 1
@@ -145,17 +145,25 @@ public actor CredentialAuthority {
         self.store = store
         storageKey = "authority:" + apiOrigin
         if let data = try store.read(key: storageKey) {
-            guard data.count <= 96 * 1024, let saved = try? JSONDecoder().decode(State.self, from: data),
-                saved.version == 1, saved.origin == apiOrigin,
-                saved.cacheRoot == nil || saved.cacheRoot?.count == 32,
-                (saved.access == nil) == (saved.refresh == nil)
-            else { throw TransportError.invalidCredentials }
-            if let access = saved.access, let refresh = saved.refresh {
-                _ = try CredentialPair(access: access, refresh: refresh)
+            do {
+                guard data.count <= 96 * 1024, let saved = try? JSONDecoder().decode(State.self, from: data),
+                    saved.version == 1, saved.origin == apiOrigin,
+                    saved.cacheRoot == nil || saved.cacheRoot?.count == 32,
+                    (saved.access == nil) == (saved.refresh == nil)
+                else { throw TransportError.invalidCredentials }
+                if let access = saved.access, let refresh = saved.refresh {
+                    _ = try CredentialPair(access: access, refresh: refresh)
+                }
+                state = saved
+                // A new process never adopts another process's in-flight ownership leases.
+                state.generation = UUID()
+            } catch {
+                // A malformed origin has no usable authority. Subscribers receive
+                // this new signed-out generation, or a cleanup requirement if the
+                // corrupt durable state could not be removed.
+                state = State(origin: apiOrigin)
+                do { try store.remove(key: storageKey) } catch { cleanupFailed = true }
             }
-            state = saved
-            // A new process never adopts another process's in-flight ownership leases.
-            state.generation = UUID()
         } else {
             state = State(origin: apiOrigin)
         }
@@ -289,12 +297,21 @@ public actor CredentialAuthority {
         if state.revision != expected.revision { return }
         if let pending = refreshing, pending.snapshot == expected {
             try await pending.task.value
+            try Task.checkCancellation()
             return
         }
-        let task = Task { try await operation() }
-        refreshing = (expected, task)
-        defer { if refreshing?.snapshot == expected { refreshing = nil } }
+        let id = UUID()
+        let task = Task {
+            defer { finishRefresh(id: id) }
+            try await operation()
+        }
+        refreshing = (id, expected, task)
         try await task.value
+        try Task.checkCancellation()
+    }
+
+    private func finishRefresh(id: UUID) {
+        if refreshing?.id == id { refreshing = nil }
     }
 
     func cacheRoot() throws -> Data {
@@ -303,7 +320,10 @@ public actor CredentialAuthority {
         var updated = state
         let root = try TransportCrypto.random(count: 32)
         updated.cacheRoot = root
-        try commit(updated)
+        // The namespace can remain process-local when its cache cannot be saved.
+        // Credential replacement and revocation still require durable commits.
+        state = updated
+        try? commit(updated)
         return root
     }
 }

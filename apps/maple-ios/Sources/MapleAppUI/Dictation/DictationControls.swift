@@ -85,6 +85,8 @@
                     tableName: "Dictation", bundle: .module)
             case .emptyRecording:
                 Text("No audio was recorded. Your draft is unchanged.", tableName: "Dictation", bundle: .module)
+            case .emptyTranscription:
+                Text("No speech detected. Please try again.", tableName: "Dictation", bundle: .module)
             case .recordingTooLarge:
                 Text(
                     "This recording could not be processed. Record up to five minutes at a time.",

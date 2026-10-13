@@ -46,6 +46,18 @@ import Testing
 }
 
 @MainActor @Suite struct DictationWorkflowTests {
+    @Test(arguments: ["", " \n\t"])
+    func emptyTranscriptionShowsNoSpeechIssueAndReleasesDraftWithoutChangingIt(_ text: String) async throws {
+        let (runtime, dictation, capture, service, _) = dictationFixture()
+        runtime.draftText = "Keep this draft"; let original = runtime.snapshot.draft
+        #expect(dictation.start(runtime: runtime)); try await dictationWait { capture.starts == 1 }
+        dictation.stop(runtime: runtime); try await service.waitForCalls(); await service.complete(text: text)
+        try await dictationWait { dictation.statuses.isEmpty }
+        #expect(dictation.issue(for: runtime) == .emptyTranscription)
+        #expect(runtime.snapshot.draft == original && runtime.canSend && !runtime.hasUnresolvedRun)
+        dictation.invalidate(); runtime.invalidate()
+    }
+
     @Test func pendingTextUsesStopMarkerDespiteLaterCaretAndEditsAndNeverSends() async throws {
         let (runtime, dictation, capture, service, _) = dictationFixture()
         runtime.draftText = "Hello world"; dictationEditor(runtime, dictation, offset: 5)

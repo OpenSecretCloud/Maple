@@ -89,6 +89,7 @@ actor ChatFixtureService: ChatServing {
     var retrieved = chatResponse("response", .completed)
     var cancelError: (any Error)?
     var page = APIPage<ConversationItem>(data: [])
+    var pageError: (any Error)?
     var pageRequests: [ListParameters] = []
     var pageGate: ChatTestGate?
     func setPageGate(_ gate: ChatTestGate?) { pageGate = gate }
@@ -105,6 +106,7 @@ actor ChatFixtureService: ChatServing {
     func setRetrieved(_ value: ResearchResponse) { retrieved = value }
     func setCancelError(_ value: (any Error)?) { cancelError = value }
     func setPage(_ value: APIPage<ConversationItem>) { page = value }
+    func setPageError(_ value: (any Error)?) { pageError = value }
 
     func createConversation(metadata: [String: JSONValue]?, projectId: String?, pinned: Bool?) async throws
         -> Conversation
@@ -155,6 +157,7 @@ actor ChatFixtureService: ChatServing {
         pageRequests.append(parameters)
         let captured = page
         if let pageGate { await pageGate.hold() }
+        if let pageError { throw pageError }
         return captured
     }
     func emit(_ event: ResponseStreamEvent) { continuation?.yield(event) }

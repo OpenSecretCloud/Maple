@@ -174,7 +174,7 @@ public enum AuthCeremonyIssue: Error, Sendable, Equatable {
 
     public func confirmPasswordReset(code: String, newPassword: String, confirmation: String) async {
         guard case .resetCode(let email) = state, let challenge, !retired else { return }
-        guard validCode(code), validPassword(newPassword), newPassword == confirmation else {
+        guard validCode(code), Self.validPassword(newPassword), newPassword == confirmation else {
             issue = .invalidInput; return
         }
         await perform(recovering: .resetCode(email: email)) { [self] in
@@ -231,7 +231,7 @@ public enum AuthCeremonyIssue: Error, Sendable, Equatable {
 
     public func changePassword(currentPassword: String, newPassword: String, confirmation: String) async {
         guard mayStart, scope != nil else { return }
-        guard !currentPassword.isEmpty, validPassword(newPassword), newPassword == confirmation else {
+        guard !currentPassword.isEmpty, Self.validPassword(newPassword), newPassword == confirmation else {
             issue = .invalidInput; return
         }
         await perform(recovering: .idle) { [self] in
@@ -479,7 +479,9 @@ public enum AuthCeremonyIssue: Error, Sendable, Equatable {
     private func validCode(_ value: String) -> Bool {
         value.utf8.count == 8 && value.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) }
     }
-    private func validPassword(_ value: String) -> Bool { value.utf16.count >= 8 && value.utf8.count <= 16 * 1024 }
+    public nonisolated static func validPassword(_ value: String) -> Bool {
+        value.utf16.count >= 8 && value.utf8.count <= 16 * 1024
+    }
 
     private var supportsBrowserCallback: Bool {
         configuration.callbackScheme == "cloud.opensecret.maple"
@@ -650,7 +652,7 @@ public actor SDKAuthCeremonyService: AuthCeremonyServing {
     public func cancelBrowser(id: UUID) async {
         guard activeBrowserID == id else { return }
         activeBrowserID = nil; prepared = nil; confirmation = nil
-        try? await client.transport.cancelNativeOAuthHandoff()
+        await client.transport.cancelNativeOAuthHandoff()
     }
 
     private func accountAPI(_ expected: CredentialSnapshot) async throws -> ResearchAPI {

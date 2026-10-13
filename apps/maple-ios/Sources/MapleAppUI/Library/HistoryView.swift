@@ -52,6 +52,7 @@
         var dragContext: LibraryChatDragContext? = nil
         var dragEnabled = true
         var dropDestination: LibraryConversationDestination? = nil
+        var selectedChatID: String? = nil
         var body: some View {
             Group {
                 if selecting {
@@ -66,7 +67,9 @@
                             Image(
                                 systemName: selectionLibrary.selectedIDs.contains(conversation.id)
                                     ? "checkmark.circle.fill" : "circle")
-                            ConversationTitle(conversation: conversation)
+                            ConversationTitle(
+                                conversation: conversation,
+                                emphasized: selectionLibrary.selectedIDs.contains(conversation.id))
                             Spacer(minLength: 0)
                         }
                         .frame(minHeight: 50).contentShape(Rectangle()).foregroundStyle(.primary)
@@ -80,7 +83,8 @@
                         conversation: conversation, library: library, onSelect: onSelect, onMutation: onMutation,
                         onSelectForSelection: {
                             selectionLibrary.selectedIDs.insert(conversation.id); selecting = true
-                        }, leadingInset: leadingInset, contextMenuEnabled: dragContext == nil || !dragEnabled)
+                        }, leadingInset: leadingInset, contextMenuEnabled: dragContext == nil || !dragEnabled,
+                        selectedChatID: selectedChatID)
                 }
             }
             .modifier(
@@ -164,8 +168,10 @@
                     Button(role: .destructive) {
                         let ids = library.selectedIDs
                         Task {
-                            await library.deleteConversations(ids: ids)
-                            if library.issue == nil { await onMutation?() }
+                            if await library.deleteConversations(ids: ids) {
+                                selecting = false; library.selectedIDs = []
+                                await onMutation?()
+                            }
                         }
                     } label: {
                         libraryText("Delete selected chats")
@@ -174,7 +180,11 @@
                     libraryText("Deleted chats cannot be restored.")
                 }
                 .sheet(isPresented: $moving, onDismiss: { Task { await onMutation?() } }) {
-                    NavigationStack { MoveChatsView(library: library, ids: library.selectedIDs) }
+                    NavigationStack {
+                        MoveChatsView(library: library, ids: library.selectedIDs) {
+                            selecting = false; library.selectedIDs = []
+                        }
+                    }
                 }
                 .sheet(isPresented: $deletingAll) {
                     NavigationStack {
@@ -273,12 +283,19 @@
 
     struct ConversationTitle: View {
         let conversation: Conversation
+        var emphasized = false
         var body: some View {
             let title = LibraryModel.title(conversation)
-            Group {
-                if title.isEmpty { libraryText("Untitled chat") } else { Text(verbatim: title) }
+            HStack(spacing: 6) {
+                if conversation.pinned {
+                    Image(systemName: "pin").font(.caption).accessibilityHidden(true)
+                }
+                Group {
+                    if title.isEmpty { libraryText("Untitled chat") } else { Text(verbatim: title) }
+                }
+                .fontWeight(emphasized ? .bold : .regular)
+                .lineLimit(1).truncationMode(.tail)
             }
-            .lineLimit(1).truncationMode(.tail)
         }
     }
 
@@ -348,6 +365,7 @@
         var onSelectForSelection: (@MainActor () -> Void)? = nil
         var leadingInset: CGFloat = 20
         var contextMenuEnabled = true
+        var selectedChatID: String? = nil
         @Environment(\.requestChatDeletion) private var requestChatDeletion
         @State private var renaming = false
         @State private var name = ""
@@ -426,12 +444,13 @@
             Button {
                 onSelect(conversation.id)
             } label: {
-                ConversationTitle(conversation: conversation)
+                ConversationTitle(conversation: conversation, emphasized: selectedChatID == conversation.id)
                     .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
                     .contentShape(Rectangle()).foregroundStyle(.primary)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("library.chat." + conversation.id)
+            .accessibilityAddTraits(selectedChatID == conversation.id ? [.isSelected] : [])
         }
         @ViewBuilder private var actions: some View {
             if let onSelectForSelection {
@@ -492,6 +511,7 @@
     struct MoveChatsView: View {
         @Bindable var library: LibraryModel
         let ids: Set<String>
+        var onMoved: (@MainActor () -> Void)? = nil
         @Environment(\.dismiss) private var dismiss
         var body: some View {
             List {
@@ -523,7 +543,9 @@
         }
         private func move(_ project: String?) {
             Task {
-                await library.moveConversations(ids: ids, projectID: project); if library.issue == nil { dismiss() }
+                if await library.moveConversations(ids: ids, projectID: project) {
+                    onMoved?(); dismiss()
+                }
             }
         }
     }

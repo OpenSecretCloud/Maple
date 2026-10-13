@@ -364,12 +364,8 @@ public struct ResearchAPI: Sendable {
         var reason: ResearchAPIError.RejectionReason = .unspecified
         // Recognize only stable, bounded public contracts. Never expose the body.
         let text = String(data: body, encoding: .utf8) ?? ""
-        if response.status == 413 && text.contains("Message exceeds context limit") {
-            reason = .contextLimit
-        } else if response.status == 403 && text.contains("Free tier token limit exceeded") {
-            reason = .freeTierTokenLimit
-        } else if response.status == 403 && text.contains("Usage limit reached") {
-            reason = .usageLimit
+        if let chatReason = Self.chatRejection(response, body: body) {
+            reason = chatReason
         } else if response.status == 503 && response.header("x-opensecret-error-contract") == "1"
             && response.header("x-opensecret-error-code") == "image_description_unavailable"
         {
@@ -392,8 +388,6 @@ public struct ResearchAPI: Sendable {
             reason = .oauthEmailUnavailable
         } else if response.status == 400 && text.contains("User is already verified") {
             reason = .alreadyVerified
-        } else if response.status == 403 && text.contains("Model not available on current plan") {
-            reason = .modelUnavailable
         } else if response.status == 413 {
             reason = .payloadTooLarge
         } else if response.status == 429 {
@@ -406,6 +400,74 @@ public struct ResearchAPI: Sendable {
             reason = .notFound
         }
         throw ResearchAPIError.http(status: response.status, reason: reason)
+    }
+
+    private static func chatRejection(_ response: MapleResponse, body: Data) -> ResearchAPIError.RejectionReason? {
+        let contract = response.header("x-opensecret-error-contract")
+        guard contract == nil || contract == "1" else { return nil }
+        let headerCode = response.header("x-opensecret-error-code")
+        guard headerCode == nil || contract == "1" else { return nil }
+        // Unrelated payload fields must not hide a supplied conflicting code.
+        let fields = try? JSONDecoder().decode(ChatErrorBody.self, from: body)
+        let codes = [headerCode.map(ChatErrorBody.Code.value), fields?.code, fields?.nestedCode]
+            .compactMap { $0 }
+            .filter { $0 != .absent }
+        let code: String
+        if let first = codes.first {
+            // Every supplied source must agree. Unknown or conflicting codes
+            // must never fall back to a human-readable limit message.
+            guard case let .value(value) = first, codes.allSatisfy({ $0 == first }) else { return nil }
+            code = value
+        } else {
+            // Older servers publish only the flat status and exact message.
+            // Bound that compatibility path and reject arbitrary substrings.
+            guard body.count <= 4_096, fields?.status == Int64(response.status), let message = fields?.message
+            else { return nil }
+            switch message {
+            case "Usage limit reached": code = "usage_limit_reached"
+            case "Free tier token limit exceeded": code = "free_tier_token_limit_exceeded"
+            case "Message exceeds context limit": code = "message_exceeds_context_limit"
+            case "Model not available on current plan": code = "model_not_available_on_plan"
+            default: return nil
+            }
+        }
+        switch (response.status, code) {
+        case (403, "usage_limit_reached"): return .usageLimit
+        case (403, "free_tier_token_limit_exceeded"): return .freeTierTokenLimit
+        case (413, "message_exceeds_context_limit"): return .contextLimit
+        case (403, "model_not_available_on_plan"): return .modelUnavailable
+        case (400, "unsupported_value"): return .unsupportedValue
+        default: return nil
+        }
+    }
+
+    private struct ChatErrorBody: Decodable {
+        enum Code: Equatable {
+            case absent, value(String), invalid
+        }
+        let code: Code
+        let nestedCode: Code
+        let status: Int64?
+        let message: String?
+        enum CodingKeys: String, CodingKey { case code, error, status, message }
+
+        init(from decoder: any Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            code = Self.readCode(fields)
+            if let error = try? fields.nestedContainer(keyedBy: CodingKeys.self, forKey: .error) {
+                nestedCode = Self.readCode(error)
+            } else {
+                nestedCode = .absent
+            }
+            status = try? fields.decode(Int64.self, forKey: .status)
+            message = try? fields.decode(String.self, forKey: .message)
+        }
+
+        private static func readCode(_ fields: KeyedDecodingContainer<CodingKeys>) -> Code {
+            guard fields.contains(.code), (try? fields.decodeNil(forKey: .code)) != true else { return .absent }
+            guard let value = try? fields.decode(String.self, forKey: .code) else { return .invalid }
+            return .value(value)
+        }
     }
 
     internal func collect(_ stream: AsyncThrowingStream<Data, Error>, limit: Int? = nil) async throws -> Data {

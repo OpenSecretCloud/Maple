@@ -145,6 +145,8 @@ final class RendererUITests: XCTestCase {
         XCTAssertTrue(paragraph.waitForExistence(timeout: 15))
         XCTAssertTrue(app.buttons["Copy code"].waitForExistence(timeout: 10))
         app.buttons["Copy code"].tap()
+        XCTAssertTrue(app.buttons["Copied"].waitForExistence(timeout: 1))
+        XCTAssertTrue(app.buttons["Copy code"].waitForExistence(timeout: 4))
         pasteSelection()
         let expected = "let synthetic = \"copy code\" // preserved\nprint(synthetic)"
         let copied = XCTNSPredicateExpectation(

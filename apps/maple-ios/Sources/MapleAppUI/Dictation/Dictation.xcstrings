@@ -209,6 +209,18 @@
           }
         }
       }
+    },
+    "No speech detected. Please try again.": {
+      "comment": "Dictation result contained no speech; exact Research copy.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No speech detected. Please try again."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

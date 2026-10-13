@@ -146,10 +146,11 @@ Billing status, team seats and the authenticated model catalog have independent
 loading/failure states. A missing or failed plan is never Free. Only a known
 Free guest is restricted as a Free guest; read-only plan, quota and seat
 messages do not provide purchasing or management actions. Quick/Powerful
-remain server-owned aliases. Disabled, deprecated and non-chat models cannot
-be selected, and unknown future access tiers remain unavailable. Web search
-retains its explicit preference while its effective value also requires a
-known paid plan and compatible selected model.
+remain server-owned aliases; catalog failures keep the saved model sendable.
+Disabled, deprecated and non-chat models cannot
+be selected; every non-Free catalog tier requires a paid plan for selection.
+Web search starts enabled and follows its saved preference, and read-aloud
+blocks only a known Free plan; the server authorizes every request.
 
 Billing uses a captured account SDK API to mint a third-party token for the
 configured billing origin. It caches that token only in memory and remints

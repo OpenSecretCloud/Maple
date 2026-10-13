@@ -144,8 +144,11 @@ public enum SessionIssue: Sendable, Equatable {
         await authenticate { try await self.service.signInGuest(id: id, password: password) }
     }
 
-    public func signUp(email: String, password: String, name: String?) async {
-        await authenticate { try await self.service.signUp(email: email, password: password, name: name) }
+    public func signUp(email: String, password: String) async {
+        await authenticate {
+            guard AuthCeremonies.validPassword(password) else { throw ResearchAPIError.invalidArgument }
+            try await self.service.signUp(email: email, password: password, name: "ANON")
+        }
     }
 
     public func beginExternalAuthentication() -> UUID? {

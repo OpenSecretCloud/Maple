@@ -58,7 +58,7 @@ struct LiveTransportTests {
         // Reserve a real attested native handoff without minting or redeeming a grant.
         let prepared = try await client.transport.prepareNativeOAuthHandoff()
         #expect(prepared.sessionID.count == 32 && prepared.requestID.count == 32)
-        try await client.transport.cancelNativeOAuthHandoff()
+        await client.transport.cancelNativeOAuthHandoff()
     }
 }
 

@@ -38,6 +38,9 @@ import Observation
     @discardableResult public func setWebSearchPreferred(_ enabled: Bool) -> Bool {
         update { $0.webSearchPreferred = enabled }
     }
+    @discardableResult public func setSidebarIsOpen(_ isOpen: Bool) -> Bool {
+        update { $0.sidebarIsOpen = isOpen }
+    }
     @discardableResult public func setSelectedModelID(_ id: String) -> Bool {
         guard LocalPreferences.isValidModelID(id) else { return false }
         return update { $0.selectedModelID = id }

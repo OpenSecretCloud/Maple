@@ -48,8 +48,56 @@ import Testing
         #expect(await network.handshakes == 1)
         let seen = await network.observations
         #expect(seen.count == 2 && seen[0].requestID != seen[1].requestID)
-        #expect(seen[0].cacheRoot == seen[1].cacheRoot && seen[0].cacheRoot != nil)
+        #expect(seen.allSatisfy { $0.cacheRoot == nil && $0.credentialKind == nil })
         #expect(!seen[0].bodyPresent)
+    }
+
+    @Test func anonymousOAuthRequestsNeverCreateOrAttachCacheRoot() async throws {
+        let network = FixtureNetwork(), store = TestSecureStore()
+        let transport = try await make(network, store: store)
+        let (response, binding) = try await transport.beginOAuth(
+            MapleRequest(method: .post, target: "/auth/google", auth: .none))
+        _ = try await collect(response)
+        _ = try await collect(
+            transport.completeOAuth(
+                MapleRequest(method: .post, target: "/auth/google/callback", auth: .none), binding: binding))
+        #expect(await network.observations.map(\.target) == ["/auth/google", "/auth/google/callback"])
+        #expect(await network.observations.allSatisfy { $0.cacheRoot == nil && $0.credentialKind == nil })
+        #expect(try store.read(key: "authority:http://127.0.0.1:3000") == nil)
+    }
+
+    @Test func cacheWriteFailuresKeepVerifiedSessionAndAuthenticatedNamespaceInMemory() async throws {
+        let network = FixtureNetwork(), store = TestSecureStore()
+        let transport = try await make(network, store: store, signedIn: true)
+        let original = try await transport.credentials.snapshot()
+        store.setWriteFailure(true)
+        let authenticated = MapleRequest(method: .get, target: "/protected/user", expectedPrincipalId: "a")
+        _ = try await collect(transport.send(authenticated))
+        _ = try await collect(transport.send(authenticated))
+        #expect(await network.handshakes == 1)
+        let seen = await network.observations
+        #expect(seen.count == 2 && seen.allSatisfy { $0.credentialKind == "bearer" })
+        #expect(seen[0].cacheRoot != nil && seen[0].cacheRoot == seen[1].cacheRoot)
+        #expect(try await transport.credentials.snapshot() == original)
+        await #expect(throws: TransportError.persistence) {
+            try await transport.credentials.install(
+                accessToken: fixtureJWT(principal: "b", kind: "access"),
+                refreshToken: fixtureJWT(principal: "b", kind: "refresh"), expected: original)
+        }
+        #expect(try await transport.credentials.snapshot() == original)
+    }
+
+    @Test func sessionCacheReadAndRemovalFailuresDoNotBlockOrRestoreRetiredSession() async throws {
+        let network = FixtureNetwork(), store = TestSecureStore()
+        let transport = try await make(network, store: store)
+        store.setReadFailure(true)
+        _ = try await collect(transport.send(request))
+        store.setReadFailure(false)
+        store.setWriteFailure(true)
+        await transport.invalidateSession()
+        _ = try await collect(transport.send(request))
+        #expect(await network.handshakes == 2)
+        #expect(await network.observations.count == 2)
     }
 
     @Test func onlyExactRecoveryHintAllowsOneResend() async throws {

@@ -48,6 +48,13 @@
             await menu.refresh { [weak projectExpansion] in projectExpansion?.isExpanded(id: $0) ?? false }
         }
 
+        func receiveConversationDetails(_ conversation: Conversation) {
+            guard active else { return }
+            for model in models.compactMap(\.value) {
+                model.receiveConversationUpdate(conversation, from: scope)
+            }
+        }
+
         func makeLibrary() -> LibraryModel {
             let model = LibraryModel(scope: scope, service: service, deletions: deletions)
             attach(model)

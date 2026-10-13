@@ -115,13 +115,119 @@ struct BillingServiceTests {
     @Test func malformedCountsAndUnknownPlanAreNotFree() throws {
         #expect(try billingStatus(plan: nil).plan == .unknown)
         #expect(try billingStatus(plan: "Future Premium").plan == .unknown)
+        #expect(try billingStatus(plan: "Free plan").plan == .unknown)
+        #expect(try billingStatus(plan: "").plan == .unknown)
         #expect(try billingStatus(plan: "  FREE\n").plan == .free)
+        #expect(try billingStatus(plan: "  Pro annual\n").plan == .paid(.pro))
+        #expect(try billingStatus(plan: "MAX monthly").plan == .paid(.max))
+        #expect(try billingStatus(plan: "Team Annual").plan == .paid(.team))
         #expect(throws: AccountServiceError.invalidResponse) { try billingStatus(remaining: -1).validate() }
         #expect(throws: (any Error).self) {
             let _: TeamStatus = try accountDecode([
                 "has_team_subscription": true, "team_created": true, "seats_used": 1.5,
             ])
         }
+    }
+
+    @Test func fullBillingStatusFixtureDecodesOptionalContractFields() throws {
+        let status: BillingStatus = try accountDecode([
+            "is_subscribed": true, "stripe_customer_id": "fixture-customer", "product_id": "fixture-product",
+            "product_name": "Max", "subscription_status": "active", "current_period_end": 1_735_689_600,
+            "can_chat": true, "chats_remaining": 42, "payment_provider": "stripe",
+            "total_tokens": 1_000_000, "used_tokens": 123_456, "usage_reset_date": "2025-01-01",
+            "api_credit_balance": 12_345.5, "ios_iap_enabled": true, "ios_us_external_link_enabled": false,
+            "subscriptions": [
+                [
+                    "provider": "stripe", "plan": "Max", "product_id": "fixture-product", "state": "active",
+                    "renews_at": 1_735_689_600, "manage": "portal", "selected": true,
+                    "environment": "fixture", "auto_renew_enabled": true,
+                ]
+            ],
+            "conflict": ["other_provider": "apple", "action": "future_action"],
+            "pending_plan_change": [
+                "id": "fixture-change", "type": "downgrade", "target_plan_name": "Pro", "status": "pending",
+                "expires_at": "2025-01-01T00:00:00Z",
+            ],
+        ])
+        try status.validate()
+        #expect(status.isSubscribed && status.stripeCustomerId == "fixture-customer")
+        #expect(status.productId == "fixture-product" && status.productName == "Max")
+        #expect(status.subscriptionStatus == "active" && status.currentPeriodEnd == .seconds(1_735_689_600))
+        #expect(status.canChat && status.chatsRemaining == 42 && status.paymentProvider == "stripe")
+        #expect(status.totalTokens == 1_000_000 && status.usedTokens == 123_456)
+        #expect(status.usageResetDate == "2025-01-01")
+        #expect(status.apiCreditBalance == 12_345.5)
+        #expect(status.iosIapEnabled == true && status.iosUsExternalLinkEnabled == false)
+        let subscription = try #require(status.subscriptions?.first)
+        #expect(subscription.provider == "stripe" && subscription.plan == "Max")
+        #expect(subscription.productId == "fixture-product" && subscription.state == "active")
+        #expect(subscription.renewsAt == 1_735_689_600 && subscription.manage == "portal")
+        #expect(subscription.selected == true && subscription.environment == "fixture")
+        #expect(subscription.autoRenewEnabled == true)
+        let conflict = try #require(status.conflict)
+        #expect(conflict.otherProvider == "apple" && conflict.action == "future_action")
+        let pending = try #require(status.pendingPlanChange)
+        #expect(pending.id == "fixture-change" && pending.type == "downgrade")
+        #expect(pending.targetPlanName == "Pro" && pending.status == "pending")
+        #expect(pending.expiresAt == "2025-01-01T00:00:00Z")
+    }
+
+    @Test func optionalBillingFieldsMayBeAbsentOrNull() throws {
+        var payload = try #require(JSONSerialization.jsonObject(with: billingBody()) as? [String: Any])
+        let optional = [
+            "stripe_customer_id", "api_credit_balance", "ios_iap_enabled", "ios_us_external_link_enabled",
+            "conflict", "pending_plan_change",
+        ]
+        for nulls in [false, true] {
+            for key in optional {
+                if nulls { payload[key] = NSNull() } else { payload.removeValue(forKey: key) }
+            }
+            let status: BillingStatus = try accountDecode(payload)
+            #expect(status.stripeCustomerId == nil && status.apiCreditBalance == nil)
+            #expect(status.iosIapEnabled == nil && status.iosUsExternalLinkEnabled == nil)
+            #expect(status.conflict == nil && status.pendingPlanChange == nil)
+        }
+    }
+
+    @Test(arguments: ["other_provider", "action", "id", "type", "target_plan_name", "status", "expires_at"])
+    func missingOrNullBillingHintSubfieldsDoNotInvalidateStatus(_ field: String) throws {
+        for nulls in [false, true] {
+            var payload = try #require(JSONSerialization.jsonObject(with: billingBody()) as? [String: Any])
+            var conflict: [String: Any] = ["other_provider": "apple", "action": "future_action"]
+            var pending: [String: Any] = [
+                "id": "fixture-change", "type": "downgrade", "target_plan_name": "Max", "status": "pending",
+                "expires_at": "2025-01-01T00:00:00Z",
+            ]
+            if conflict[field] != nil {
+                if nulls { conflict[field] = NSNull() } else { conflict.removeValue(forKey: field) }
+            } else {
+                if nulls { pending[field] = NSNull() } else { pending.removeValue(forKey: field) }
+            }
+            payload["conflict"] = conflict; payload["pending_plan_change"] = pending
+            let status: BillingStatus = try accountDecode(payload)
+            try status.validate()
+            #expect(status.plan == .paid(.pro) && status.canChat)
+            let decodedConflict = try #require(status.conflict), decodedPending = try #require(status.pendingPlanChange)
+            #expect(decodedConflict.otherProvider == (field == "other_provider" ? nil : "apple"))
+            #expect(decodedConflict.action == (field == "action" ? nil : "future_action"))
+            #expect(decodedPending.id == (field == "id" ? nil : "fixture-change"))
+            #expect(decodedPending.type == (field == "type" ? nil : "downgrade"))
+            #expect(decodedPending.targetPlanName == (field == "target_plan_name" ? nil : "Max"))
+            #expect(decodedPending.status == (field == "status" ? nil : "pending"))
+            #expect(decodedPending.expiresAt == (field == "expires_at" ? nil : "2025-01-01T00:00:00Z"))
+        }
+    }
+
+    @Test func emptyBillingHintObjectsDoNotInvalidateStatus() throws {
+        var payload = try #require(JSONSerialization.jsonObject(with: billingBody()) as? [String: Any])
+        payload["conflict"] = [String: String](); payload["pending_plan_change"] = [String: String]()
+        let status: BillingStatus = try accountDecode(payload)
+        try status.validate()
+        #expect(status.plan == .paid(.pro) && status.canChat)
+        let conflict = try #require(status.conflict), pending = try #require(status.pendingPlanChange)
+        #expect(conflict.otherProvider == nil && conflict.action == nil)
+        #expect(pending.id == nil && pending.type == nil && pending.targetPlanName == nil)
+        #expect(pending.status == nil && pending.expiresAt == nil)
     }
 
     @Test func mixedDatesAndFutureManagementValuesStayInert() throws {

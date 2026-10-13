@@ -74,6 +74,25 @@ public enum LibraryFilter: Sendable, Equatable { case all, pinned, recent, unass
 public enum LibraryConversationDestination: Sendable, Equatable, Hashable {
     case project(String), pinned, recent
 }
+
+/// The caller owns the selected chat and account lease. Recheck that ownership
+/// after each delay before refreshing a title generated in the background.
+public enum ConversationTitlePolling {
+    @MainActor public static func run(
+        shouldContinue: @MainActor () -> Bool,
+        refresh: @MainActor () async -> Void,
+        sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async {
+        var delay: Duration = .milliseconds(500)
+        while !Task.isCancelled, shouldContinue() {
+            do { try await sleep(delay) } catch { return }
+            guard !Task.isCancelled, shouldContinue() else { return }
+            await refresh()
+            delay = min(delay * 2, .seconds(10))
+        }
+    }
+}
+
 public enum LibraryIssue: Error, Sendable, Equatable {
     case connection, invalidInput, invalidResponse, busy, retired, quiescence, cleanupRequired, partialMutation
     static func present(_ error: Error) -> LibraryIssue {

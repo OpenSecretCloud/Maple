@@ -152,7 +152,8 @@ public enum ResponseStreamEvent: Sendable, Equatable {
 }
 
 extension ResearchAPI {
-    /// The producer is bounded, cancellation cancels the network consumer, and a
+    /// Event buffering preserves every event across consumer stalls; SSE event
+    /// sizes remain bounded and cancellation cancels the network consumer. A
     /// terminal event is withheld until authenticated transport EOF is verified.
     public func createResponse(
         _ request: ResponsesCreateRequest,
@@ -174,22 +175,16 @@ extension ResearchAPI {
         else {
             throw ResearchAPIError.invalidResponse
         }
-        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
+        return AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
             let task = Task {
                 do {
                     var decoder = ResponsesSSEDecoder()
                     for try await chunk in response.body {
                         try Task.checkCancellation()
-                        for event in try decoder.append(chunk) {
-                            if case .dropped = continuation.yield(event) {
-                                throw ResearchAPIError.streamConsumerTooSlow
-                            }
-                        }
+                        for event in try decoder.append(chunk) { continuation.yield(event) }
                     }
                     try Task.checkCancellation()
-                    for event in try decoder.finish() {
-                        if case .dropped = continuation.yield(event) { throw ResearchAPIError.streamConsumerTooSlow }
-                    }
+                    for event in try decoder.finish() { continuation.yield(event) }
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }
             }

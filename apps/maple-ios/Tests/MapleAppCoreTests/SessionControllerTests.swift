@@ -4,6 +4,7 @@ import Testing
 @testable import MapleAppCore
 
 private actor SessionFixture: SessionServing {
+    struct SignupRequest: Equatable, Sendable { let email: String; let password: String; let name: String? }
     let principal = "test-principal"
     var current: SessionIdentity?
     var failUser = false
@@ -12,6 +13,7 @@ private actor SessionFixture: SessionServing {
     var userWaiter: CheckedContinuation<Void, Never>?
     var entryWaiter: CheckedContinuation<Void, Never>?
     var loginCount = 0
+    var signupRequests: [SignupRequest] = []
     var verified = false
     init(signedIn: Bool = true) {
         if signedIn {
@@ -38,7 +40,10 @@ private actor SessionFixture: SessionServing {
         current = SessionIdentity(origin: "http://127.0.0.1:1234", principal: principal, generation: UUID())
     }
     func signInGuest(id: String, password: String) { signIn(email: "", password: password) }
-    func signUp(email: String, password: String, name: String?) { signIn(email: email, password: password) }
+    func signUp(email: String, password: String, name: String?) {
+        signupRequests.append(.init(email: email, password: password, name: name))
+        signIn(email: email, password: password)
+    }
     func signOut() { current = nil }
 }
 
@@ -61,7 +66,48 @@ private actor LifecycleFixture: AccountDataLifecycle {
 
 @MainActor private final class RetirementFailureControl { var shouldFail = true }
 
+enum SignupPasswordSample: String, Sendable {
+    case empty, sevenASCII, sixUTF16, aboveByteLimit, eightASCII, eightUTF16, maximumBytes
+
+    var value: String {
+        switch self {
+        case .empty: ""
+        case .sevenASCII: "seven77"
+        case .sixUTF16: "😀😀😀"
+        case .aboveByteLimit: String(repeating: "a", count: 16 * 1024 + 1)
+        case .eightASCII: "eight888"
+        case .eightUTF16: "😀😀😀😀"
+        case .maximumBytes: String(repeating: "a", count: 16 * 1024)
+        }
+    }
+}
+
 @MainActor struct SessionControllerTests {
+    @Test(arguments: [SignupPasswordSample.empty, .sevenASCII, .sixUTF16, .aboveByteLimit])
+    func signupRejectsInvalidPasswordWithoutSendingIt(sample: SignupPasswordSample) async {
+        let service = SessionFixture(signedIn: false), storage = LifecycleFixture()
+        let controller = SessionController(service: service, storage: storage)
+        await controller.restore()
+        await controller.signUp(email: "fixture@example.test", password: sample.value)
+        #expect(controller.phase == .signedOut && controller.issue == .invalidInput)
+        #expect(await service.signupRequests.isEmpty)
+        #expect(await storage.activations.isEmpty)
+        #expect(await service.identity() == nil)
+    }
+
+    @Test(arguments: [SignupPasswordSample.eightASCII, .eightUTF16, .maximumBytes])
+    func signupUsesResearchNameAndPasswordUTF16Contract(sample: SignupPasswordSample) async {
+        let service = SessionFixture(signedIn: false), storage = LifecycleFixture()
+        let controller = SessionController(service: service, storage: storage)
+        await controller.restore()
+        await controller.signUp(email: "fixture@example.test", password: sample.value)
+        #expect(controller.phase == .signedIn && controller.issue == nil)
+        #expect(
+            await service.signupRequests
+                == [.init(email: "fixture@example.test", password: sample.value, name: "ANON")])
+        #expect(await storage.activations.count == 1)
+    }
+
     @Test func verificationRefreshPreservesScopeAndIgnoresReplacementAuthority() async throws {
         let service = SessionFixture(); let storage = LifecycleFixture()
         let controller = SessionController(service: service, storage: storage)
