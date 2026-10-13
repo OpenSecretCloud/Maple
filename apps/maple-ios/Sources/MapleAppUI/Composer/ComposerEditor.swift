@@ -499,6 +499,9 @@
             func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String)
                 -> Bool
             {
+                if text == "\n", let view = textView as? ComposerTextView, view.continueList(range: range) {
+                    return false
+                }
                 recordReplacement(before: textView.text ?? "", range: range, replacement: text)
                 #if DEBUG
                     observeInputOrder("proposed")
@@ -947,6 +950,7 @@
         var submit: (() -> Void)?
         var willReplace: ((String, NSRange, String) -> Void)?
         private var operationDepth = 0
+        private var pastingText = false
         var performingInputOperation: Bool { operationDepth > 0 }
         private var returnCommandIdentity = UUID()
         private(set) var hardwareReturnInProgress = false
@@ -1127,6 +1131,8 @@
 
         override func paste(_ sender: Any?) {
             cancelHardwareReturn()
+            pastingText = true
+            defer { pastingText = false }
             super.paste(sender)
         }
         override func resignFirstResponder() -> Bool {
@@ -1283,6 +1289,7 @@
             #if DEBUG
                 observeInputOperation("insert.begin", inputLength: text.utf16.count)
             #endif
+            if text == "\n", continueList(range: selectedRange) { return }
             captureReplacement(range: markedReplacementRange, text: text)
             operationDepth += 1
             super.insertText(text)
@@ -1291,6 +1298,27 @@
                 observeInputOperation("insert.end", inputLength: text.utf16.count)
             #endif
             if operationDepth == 0 { changed?() }
+        }
+
+        @discardableResult fileprivate func continueList(range: NSRange) -> Bool {
+            guard markedTextRange == nil, !performingInputOperation, !pastingText, isEditable,
+                let coordinator = delegate as? ComposerEditor.Coordinator, coordinator.valid, !coordinator.installing,
+                coordinator.parent.isCurrentOwner(), coordinator.parent.isCurrentPresentation(),
+                let edit = ComposerListContinuation.edit(text: text ?? "", selectionUTF16: range),
+                let start = position(from: beginningOfDocument, offset: edit.rangeUTF16.location),
+                let end = position(from: start, offset: edit.rangeUTF16.length),
+                let nativeRange = textRange(from: start, to: end)
+            else { return false }
+            let scrollToEnd = NSMaxRange(range) == (text ?? "").utf16.count
+            // replace(_:withText:) records the actual transaction through
+            // recordNativeReplacement, retaining UIKit's ordinary undo behavior.
+            operationDepth += 1
+            replace(nativeRange, withText: edit.replacement)
+            selectedRange = edit.selectionUTF16
+            operationDepth -= 1
+            if scrollToEnd { scrollRangeToVisible(edit.selectionUTF16) }
+            changed?()
+            return true
         }
         override func deleteBackward() {
             #if DEBUG

@@ -56,6 +56,10 @@
                     "ordinaryTextInputPreservesNewlinesWithoutSubmitting",
                     ordinaryTextInputPreservesNewlinesWithoutSubmitting
                 ),
+                (
+                    "markdownNewlineRetainsExactDictationAnchorAndComposition",
+                    markdownNewlineRetainsExactDictationAnchorAndComposition
+                ),
                 ("markedInputDoesNotExposeOrExecuteReturnCommands", markedInputDoesNotExposeOrExecuteReturnCommands),
                 ("retiredOwnerCannotExecuteCachedReturnCommand", retiredOwnerCannotExecuteCachedReturnCommand),
                 (
@@ -525,6 +529,44 @@
             check(harness.capture.submitted.isEmpty)
             check(harness.capture.edits.map(\.replacement) == ["\n", "left\nright"])
             check(harness.capture.rebaseFailures == 0)
+        }
+
+        private static func markdownNewlineRetainsExactDictationAnchorAndComposition(_ check: (Bool) -> Void) {
+            for delegatePath in [false, true] {
+                let text = "- 🐝", caret = text.utf16.count
+                let harness = Harness(text: text, marker: caret, focus: true)
+                defer { harness.close() }
+                wireNativeInput(harness)
+                harness.view.selectedRange = NSRange(location: caret, length: 0)
+                if delegatePath {
+                    check(
+                        !harness.coordinator.textView(
+                            harness.view, shouldChangeTextIn: harness.view.selectedRange, replacementText: "\n"))
+                } else {
+                    harness.view.insertText("\n")
+                }
+                check(harness.capture.text == text + "\n- ")
+                check(harness.view.selectedRange == NSRange(location: caret + 3, length: 0))
+                check(
+                    harness.capture.edits == [
+                        DictationTextEdit(
+                            beforeText: text, rangeUTF16: NSRange(location: caret, length: 0), replacement: "\n- ")
+                    ])
+                check(harness.capture.marker?.offsetUTF16 == caret + 3 && harness.capture.rebaseFailures == 0)
+                check(harness.capture.submitted.isEmpty)
+            }
+            let composing = Harness(text: "- item", marker: 6, focus: true)
+            defer { composing.close() }
+            wireNativeInput(composing)
+            composing.view.selectedRange = NSRange(location: 6, length: 0)
+            composing.view.setMarkedText("pending", selectedRange: NSRange(location: 7, length: 0))
+            let before = composing.view.text
+            check(composing.view.markedTextRange != nil)
+            check(
+                composing.coordinator.textView(
+                    composing.view, shouldChangeTextIn: composing.view.selectedRange, replacementText: "\n"))
+            check(composing.view.text == before && composing.view.markedTextRange != nil)
+            check(composing.capture.submitted.isEmpty)
         }
 
         private static func hardwareReturnAndKeypadCommandsUseSameGuardedPath(_ check: (Bool) -> Void) {

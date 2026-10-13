@@ -991,6 +991,7 @@ final class OwnedComposerUITests: XCTestCase {
             "resignationOrdersPriorInputBeforeShiftNewline",
             "hardwareReturnAndKeypadCommandsUseSameGuardedPath",
             "ordinaryTextInputPreservesNewlinesWithoutSubmitting",
+            "markdownNewlineRetainsExactDictationAnchorAndComposition",
             "markedInputDoesNotExposeOrExecuteReturnCommands",
             "retiredOwnerCannotExecuteCachedReturnCommand",
             "reentrantHardwareCommandCannotSubmitTwice",
