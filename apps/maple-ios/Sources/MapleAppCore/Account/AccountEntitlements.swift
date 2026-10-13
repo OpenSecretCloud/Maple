@@ -179,11 +179,9 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
 
     public func modelAccess(_ model: AccountModelChoice) -> AccountAccess {
         guard active else { return .retired }
-        guard billing.value != nil else { return .unavailable }
-        guard plan != .unknown else { return .unknownPlan }
         switch model.accessTier {
         case "free": return .allowed
-        case "starter", "pro": return plan.isPaid ? .allowed : .paidPlanRequired
+        case "pro": return plan.isPaid ? .allowed : .paidPlanRequired
         default: return .modelUnavailable
         }
     }
@@ -199,11 +197,7 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
 
     private var accountChatAccess: AccountAccess {
         guard active else { return .retired }
-        guard let status = billing.value else { return .unavailable }
-        guard status.plan != .unknown else { return .unknownPlan }
-        if isGuest, status.plan == .free { return .freeGuest }
-        if team.value?.seatMismatch != nil { return .seatMismatch }
-        guard status.canChat, status.chatsRemaining != 0 else { return .usageLimit }
+        if isGuest, billing.value?.plan == .free { return .freeGuest }
         return .allowed
     }
 
@@ -211,35 +205,26 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
         let account = accountChatAccess
         guard account == .allowed else { return account }
         guard let selectedModel else { return .modelUnavailable }
-        return modelAccess(selectedModel)
+        // The picker gates new paid selections. Existing selections reach the
+        // server, which owns plan and usage authorization for each request.
+        return switch modelAccess(selectedModel) {
+        case .allowed, .paidPlanRequired: .allowed
+        case let access: access
+        }
     }
 
     public var paidFeatureAccess: AccountAccess {
         let chat = accountChatAccess
         guard chat == .allowed else { return chat }
+        guard billing.value != nil else { return .unavailable }
+        guard plan != .unknown else { return .unknownPlan }
         return plan.isPaid ? .allowed : .paidPlanRequired
     }
 
-    public var webSearchAccess: AccountAccess {
-        let paid = paidFeatureAccess
-        guard paid == .allowed else { return paid }
-        guard catalog.value != nil else { return .unavailable }
-        guard let selectedModel else { return .modelUnavailable }
-        let model = modelAccess(selectedModel)
-        guard model == .allowed else { return model }
-        return selectedModel.capabilities.toolUse ? .allowed : .modelIncompatible
-    }
+    public var webSearchAccess: AccountAccess { paidFeatureAccess }
 
     public var effectiveWebSearch: Bool { webSearchPreferred && webSearchAccess == .allowed }
-    public var imageAccess: AccountAccess {
-        let paid = paidFeatureAccess
-        guard paid == .allowed else { return paid }
-        guard catalog.value != nil else { return .unavailable }
-        guard let selectedModel else { return .modelUnavailable }
-        let model = modelAccess(selectedModel)
-        guard model == .allowed else { return model }
-        return selectedModel.capabilities.vision ? .allowed : .modelIncompatible
-    }
+    public var imageAccess: AccountAccess { paidFeatureAccess }
 
     public var transcriptionAccess: AccountAccess {
         let paid = paidFeatureAccess
