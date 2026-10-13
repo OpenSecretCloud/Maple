@@ -247,6 +247,10 @@
             case .attachmentLimit:
                 MapleStrings.text(
                     "This selection exceeds your current attachment limits. Existing images are unchanged.")
+            case .accountImageLimit:
+                MapleStrings.text("Chat drafts and queued messages can retain up to 640 images across your account")
+            case .accountAttachmentLimit:
+                MapleStrings.text("Chat drafts and queued attachments can use up to 256 MiB across your account")
             case .unsupported, .invalidImage:
                 MapleStrings.text("This image could not be read. Choose a PNG, JPEG, WebP, or HEIF image.")
             case .retired: MapleStrings.text("The draft for this image is no longer open.")

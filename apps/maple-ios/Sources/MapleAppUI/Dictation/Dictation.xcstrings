@@ -56,13 +56,14 @@
         }
       }
     },
-    "Transcription unavailable": {
-      "comment": "Sanitized failed transcription message; recording remains only in memory.",
+    "Failed to transcribe audio. Please try again.": {
+      "comment": "Research microphone/transcription feedback; transient after five seconds.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Transcription unavailable"
+            "value": "Failed to transcribe audio. Please try again."
           }
         }
       }
@@ -122,13 +123,14 @@
         }
       }
     },
-    "Allow microphone access in Settings to dictate. Your draft is unchanged.": {
-      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+    "Microphone access denied. Please enable microphone permissions in Settings > Maple.": {
+      "comment": "Research microphone/transcription feedback; transient after five seconds.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allow microphone access in Settings to dictate. Your draft is unchanged."
+            "value": "Microphone access denied. Please enable microphone permissions in Settings > Maple."
           }
         }
       }
@@ -144,13 +146,14 @@
         }
       }
     },
-    "No audio was recorded. Your draft is unchanged.": {
-      "comment": "Visible scoped dictation error or its recovery action; never contains server error details.",
+    "No audio was recorded. Please try again.": {
+      "comment": "Research microphone/transcription feedback; transient after five seconds.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No audio was recorded. Your draft is unchanged."
+            "value": "No audio was recorded. Please try again."
           }
         }
       }

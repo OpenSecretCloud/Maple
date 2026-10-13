@@ -2268,6 +2268,30 @@
         }
       }
     },
+    "Chat drafts and queued attachments can use up to 256 MiB across your account": {
+      "comment": "Research account retained-attachment byte budget notice.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat drafts and queued attachments can use up to 256 MiB across your account"
+          }
+        }
+      }
+    },
+    "Chat drafts and queued messages can retain up to 640 images across your account": {
+      "comment": "Research account retained-image budget notice.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat drafts and queued messages can retain up to 640 images across your account"
+          }
+        }
+      }
+    },
     "Default": {
       "comment": "Research thinking-level option shown beside the chat options trigger.",
       "extractionState": "manual",
@@ -2528,6 +2552,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open URLs: %lld pages"
+          }
+        }
+      }
+    },
+    "chat_issue_conversation_deleting": {
+      "comment": "Research deletion admission notice. Do not expose server error bodies.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending paused because this conversation is being deleted."
           }
         }
       }

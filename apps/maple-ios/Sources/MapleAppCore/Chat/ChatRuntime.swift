@@ -149,7 +149,9 @@ public final class ChatRuntime {
     }
 
     private func enqueueDraft(options: ChatSendOptions, bodyValidated: Bool) -> Bool {
-        guard deletionFenceIDs.isEmpty, deletionAdmission?(options) ?? true else { lastIssue = .busy; return false }
+        guard deletionFenceIDs.isEmpty, deletionAdmission?(options) ?? true else {
+            lastIssue = .conversationDeleting; return false
+        }
         guard valid, !isLoading, !isEditingQueue else { lastIssue = .unfinishedQueueEdit; return false }
         guard submissionID == nil else { lastIssue = .busy; return false }
         guard !busyDraftIDs.contains(snapshot.draft.id) else { lastIssue = .draftInUse; return false }
@@ -485,7 +487,9 @@ public final class ChatRuntime {
 
     private func send(options: ChatSendOptions, bodyValidated: Bool) -> Bool {
         guard valid else { return false }
-        guard deletionFenceIDs.isEmpty, deletionAdmission?(options) ?? true else { lastIssue = .busy; return false }
+        guard deletionFenceIDs.isEmpty, deletionAdmission?(options) ?? true else {
+            lastIssue = .conversationDeleting; return false
+        }
         guard submissionID == nil else { lastIssue = .busy; return false }
         guard !isLoading else { lastIssue = .busy; return false }
         guard !isEditingQueue else { lastIssue = .unfinishedQueueEdit; return false }

@@ -7,6 +7,7 @@ public enum DictationActivity: Sendable { case capturing, transcribing, idle }
     public let scope: AccountScope
     public private(set) var statuses: [UUID: DictationStatus] = [:]
     public private(set) var lastIssue: DictationIssue?
+    public private(set) var lastIssueID: UUID?
     /// Fires once at admitted permission request, before its playback hold. A
     /// denied/cancelled request still owns its later review; navigation cannot
     /// redirect a Send from another draft into that review.
@@ -51,10 +52,28 @@ public enum DictationActivity: Sendable { case capturing, transcribing, idle }
     }
 
     public func issue(for runtime: ChatRuntime) -> DictationIssue? {
-        issueRuntime === runtime && issueDraftID == runtime.snapshot.draft.id ? lastIssue : nil
+        issueID(for: runtime) == nil ? nil : lastIssue
     }
 
-    public func dismissIssue() { lastIssue = nil; issueRuntime = nil; issueDraftID = nil }
+    public func issueID(for runtime: ChatRuntime) -> UUID? {
+        guard valid, !runtime.isRetired, runtime.scope == scope, issueRuntime === runtime,
+            issueDraftID == runtime.snapshot.draft.id, lastIssue != nil
+        else { return nil }
+        return lastIssueID
+    }
+
+    /// The visible controls own this delay. Disappearance cancels their task;
+    /// an old occurrence must never clear a later error with the same value.
+    public func expireIssueAfterDelay(id: UUID, runtime: ChatRuntime) async {
+        guard issueID(for: runtime) == id, !Task.isCancelled else { return }
+        do { try await hooks.sleep(.seconds(5)) } catch { return }
+        guard issueID(for: runtime) == id, !Task.isCancelled else { return }
+        dismissIssue()
+    }
+
+    public func dismissIssue() {
+        lastIssue = nil; lastIssueID = nil; issueRuntime = nil; issueDraftID = nil
+    }
 
     public func editorState(runtime: ChatRuntime, draftID: UUID) -> DictationEditorState? {
         guard valid, runtime.scope == scope, editorRuntimes[draftID] == ObjectIdentifier(runtime),
@@ -200,7 +219,8 @@ public enum DictationActivity: Sendable { case capturing, transcribing, idle }
         guard let job = jobs[owner], job.runtime === runtime, owns(job),
             statuses[owner]?.phase == .failed, job.wav != nil
         else { return }
-        statuses[owner]?.phase = .transcribing; statuses[owner]?.issue = nil; lastIssue = nil
+        statuses[owner]?.phase = .transcribing; statuses[owner]?.issue = nil
+        if issueRuntime === runtime && issueDraftID == owner { dismissIssue() }
         publishActivity()
         job.task = Task { [self] in await transcribe(job) }
     }
@@ -294,7 +314,7 @@ public enum DictationActivity: Sendable { case capturing, transcribing, idle }
     }
 
     private func setIssue(_ issue: DictationIssue, runtime: ChatRuntime, owner: UUID) {
-        issueRuntime = runtime; issueDraftID = owner; lastIssue = issue
+        issueRuntime = runtime; issueDraftID = owner; lastIssue = issue; lastIssueID = hooks.uuid()
     }
 
     private func startTimer(_ job: Job) {

@@ -153,7 +153,7 @@ public struct ChatSendAcceptance: Sendable, Equatable {
 /// prompt, token, callback or underlying error description crosses this boundary.
 public enum ChatIssue: String, Error, Sendable {
     case offline, busy, emptyDraft, invalidImages, draftTooLarge, storageUnavailable
-    case conversationUnavailable, uncertainResponse, responseUnavailable, cancellationUnavailable
+    case conversationUnavailable, conversationDeleting, uncertainResponse, responseUnavailable, cancellationUnavailable
     case historyUnavailable, requestRejected, contextLimit, freeTierTokenLimit, usageLimit, modelUnavailable, signedOut
     case unsupportedValue, imageDescriptionUnavailable, inferenceCapacityUnavailable, generationFailed
     case stoppedBeforeSending, stoppingWhenResponseReady, responseFinishedBeforeStop, recoveredCompletion, recoveredStop

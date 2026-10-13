@@ -1283,6 +1283,11 @@ enum ChatComposerPresentation {
                     Label(MapleStrings.text("Offline — your draft stays here"), systemImage: "wifi.slash")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                if !runtime.deletionFenceIDs.isEmpty, runtime.lastIssue != .conversationDeleting {
+                    Text(ChatRecoveryPresentation.deletionPauseMessage)
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("chat.deletion.paused")
+                }
                 if account.chatAccess != .allowed {
                     AccountAccessNotice(account: account)
                 }
@@ -1520,7 +1525,23 @@ enum ChatComposerPresentation {
         @State private var copied = false
         @State private var copyRevision = UUID()
         @State private var thinkingPulse = false
+        @State private var legacyDocument: ChatLegacyContent.Document?
+        @State private var legacyParts: [ChatLegacyContent.Part] = []
+        @State private var legacySource: LegacySource?
         @State private var readyFragments: Set<Int> = []
+        private struct LegacySource: Equatable, Sendable {
+            let text: String
+            let user: Bool
+            let assistant: Bool
+            let streaming: Bool
+            let generation: UUID
+        }
+        private var currentLegacySource: LegacySource {
+            LegacySource(
+                text: text, user: isUserMessage,
+                assistant: item.role == "assistant" && item.type == "message" && text.contains("<think>"),
+                streaming: isStreamingText, generation: generation)
+        }
         private var text: String { (item.content ?? []).compactMap(\.text).joined(separator: "\n\n") }
         private var readableContent: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1539,7 +1560,25 @@ enum ChatComposerPresentation {
         private var isStreamingText: Bool {
             isGenerating && ["in_progress", "streaming"].contains(item.status ?? "in_progress")
         }
-        private var requiredFragments: Set<Int> { [0] }
+        private var thinkingActive: Bool {
+            isThinking || (item.role == "assistant" && legacyParts.contains(where: \.isThinking))
+        }
+        private var requiredFragments: Set<Int> {
+            if isUserMessage, text.contains("{\"document\":") {
+                guard legacySource == currentLegacySource else { return [] }
+                if let document = legacyDocument {
+                    var fragments: Set<Int> = [-1]
+                    if !document.before.isEmpty { fragments.insert(-2) }
+                    if !document.after.isEmpty { fragments.insert(-3) }
+                    return fragments
+                }
+            }
+            if currentLegacySource.assistant {
+                guard legacySource?.generation == generation, legacySource?.assistant == true else { return [] }
+                return legacyParts.isEmpty ? [0] : Set(legacyParts.map(\.id))
+            }
+            return [0]
+        }
         private func fragmentPrepared(_ id: Int) {
             if !readyFragments.contains(id) { readyFragments.insert(id) }
             publishPreparationIfReady()
@@ -1590,9 +1629,25 @@ enum ChatComposerPresentation {
                 try? await Task<Never, Never>.sleep(nanoseconds: 2_000_000_000)
                 if !Task.isCancelled { copied = false }
             }
-            .onChange(of: isThinking, initial: true) { _, thinking in
+            .onChange(of: thinkingActive, initial: true) { _, thinking in
                 thinkingPulse = thinking
             }
+            .task(id: currentLegacySource) {
+                let source = currentLegacySource
+                let work = Task.detached(priority: .userInitiated) {
+                    (
+                        source.user ? ChatLegacyContent.document(in: source.text) : nil,
+                        source.assistant
+                            ? ChatLegacyContent.assistantParts(source.text, streaming: source.streaming) : []
+                    )
+                }
+                let (document, parts) = await work.value
+                guard !Task.isCancelled else { return }
+                legacyDocument = document; legacyParts = parts; legacySource = source
+                if document != nil { fragmentPrepared(-1) }
+                if source.assistant, parts.isEmpty { fragmentPrepared(0) }
+            }
+            .onChange(of: requiredFragments) { _, _ in publishPreparationIfReady() }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier((item.role == "assistant" ? "assistant.message." : "message.") + item.id)
         }
@@ -1603,27 +1658,31 @@ enum ChatComposerPresentation {
                     MessageImages(content: item.content ?? [])
                 }
                 if item.type == "reasoning" {
-                    DisclosureGroup {
-                        MessageView(
-                            text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
-                    } label: {
-                        Text(ChatTranscriptPresentation.thinkingLabel(text: text, streaming: isThinking))
-                            .foregroundStyle(.secondary)
-                            .opacity(isThinking && thinkingPulse && !reduceMotion ? 0.5 : 1)
-                            .animation(
-                                isThinking && !reduceMotion
-                                    ? .easeInOut(duration: 1).repeatForever(autoreverses: true) : nil,
-                                value: thinkingPulse)
-                    }
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("message.thinking." + item.id)
+                    thinkingContent(
+                        text, streaming: isThinking, identifier: "message.thinking." + item.id, fragmentID: 0)
                 } else if ChatTranscriptRow.isTool(item) {
                     ToolActivityView(
                         item: item, result: toolResult, theme: theme, font: font, generation: generation,
                         onOpenLink: onOpenLink, onPrepared: { fragmentPrepared(0) })
                 } else if !text.isEmpty {
-                    MessageView(
-                        text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
+                    if isUserMessage, legacySource == currentLegacySource, let document = legacyDocument {
+                        if !document.before.isEmpty { ordinaryText(document.before, fragmentID: -2) }
+                        LegacyDocumentChip(document: document, itemID: item.id, generation: generation)
+                        if !document.after.isEmpty { ordinaryText(document.after, fragmentID: -3) }
+                    } else if currentLegacySource.assistant, legacySource?.generation == generation {
+                        ForEach(legacyParts) { part in
+                            if part.kind == .thinking {
+                                thinkingContent(
+                                    part.text, streaming: part.isThinking,
+                                    identifier: "message.thinking." + item.id + "." + String(part.id),
+                                    fragmentID: part.id)
+                            } else {
+                                ordinaryText(part.text, fragmentID: part.id)
+                            }
+                        }
+                    } else {
+                        ordinaryText(text)
+                    }
                 } else if item.role == "assistant", isGenerating,
                     !["completed", "incomplete", "failed"].contains(item.status ?? "")
                 {
@@ -1637,6 +1696,23 @@ enum ChatComposerPresentation {
         private func ordinaryText(_ text: String, fragmentID: Int = 0) -> some View {
             MessageView(text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
                 .onPrepared { fragmentPrepared(fragmentID) }
+        }
+
+        private func thinkingContent(_ text: String, streaming: Bool, identifier: String, fragmentID: Int) -> some View
+        {
+            DisclosureGroup {
+                ordinaryText(text, fragmentID: fragmentID)
+            } label: {
+                Text(ChatTranscriptPresentation.thinkingLabel(text: text, streaming: streaming))
+                    .foregroundStyle(.secondary)
+                    .opacity(streaming && thinkingPulse && !reduceMotion ? 0.5 : 1)
+                    .animation(
+                        streaming && !reduceMotion ? .easeInOut(duration: 1).repeatForever(autoreverses: true) : nil,
+                        value: thinkingPulse)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier(identifier)
+            .onAppear { fragmentPrepared(fragmentID) }
         }
 
         private var messageActions: some View {

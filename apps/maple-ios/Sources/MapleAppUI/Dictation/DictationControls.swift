@@ -14,62 +14,72 @@
         }
 
         public var body: some View {
-            if let status = coordinator.status(for: runtime) {
-                HStack(spacing: 12) {
-                    switch status.phase {
-                    case .requestingPermission:
-                        EmptyView()
-                    case .recording:
-                        Image(systemName: "record.circle.fill").foregroundStyle(.red)
-                        Text(Duration.seconds(status.elapsedSeconds), format: .time(pattern: .minuteSecond))
-                            .monospacedDigit()
-                            .accessibilityLabel(Text("Recording time", tableName: "Dictation", bundle: .module))
-                    case .transcribing:
-                        Image(systemName: "waveform")
-                            .symbolEffect(.variableColor, isActive: !reduceMotion)
-                            .accessibilityLabel(Text("Transcribing…", tableName: "Dictation", bundle: .module))
-                    case .waitingForComposition:
-                        Text("Finish typing to insert dictation", tableName: "Dictation", bundle: .module)
-                    case .waitingForInsertionPoint:
-                        Text("Place the cursor to insert dictation", tableName: "Dictation", bundle: .module)
-                        Button(action: { coordinator.insertAtCurrentPosition(runtime: runtime) }) {
-                            Text("Insert", tableName: "Dictation", bundle: .module)
-                        }.accessibilityIdentifier("dictation.insert")
-                    case .failed:
-                        Text("Transcription unavailable", tableName: "Dictation", bundle: .module)
-                        Button(action: { coordinator.retry(runtime: runtime) }) {
-                            Text("Retry", tableName: "Dictation", bundle: .module)
-                        }.accessibilityIdentifier("dictation.retry")
+            Group {
+                if let status = coordinator.status(for: runtime) {
+                    HStack(spacing: 12) {
+                        switch status.phase {
+                        case .requestingPermission:
+                            EmptyView()
+                        case .recording:
+                            Image(systemName: "record.circle.fill").foregroundStyle(.red)
+                            Text(Duration.seconds(status.elapsedSeconds), format: .time(pattern: .minuteSecond))
+                                .monospacedDigit()
+                                .accessibilityLabel(Text("Recording time", tableName: "Dictation", bundle: .module))
+                        case .transcribing:
+                            Image(systemName: "waveform")
+                                .symbolEffect(.variableColor, isActive: !reduceMotion)
+                                .accessibilityLabel(Text("Transcribing…", tableName: "Dictation", bundle: .module))
+                        case .waitingForComposition:
+                            Text("Finish typing to insert dictation", tableName: "Dictation", bundle: .module)
+                        case .waitingForInsertionPoint:
+                            Text("Place the cursor to insert dictation", tableName: "Dictation", bundle: .module)
+                            Button(action: { coordinator.insertAtCurrentPosition(runtime: runtime) }) {
+                                Text("Insert", tableName: "Dictation", bundle: .module)
+                            }.accessibilityIdentifier("dictation.insert")
+                        case .failed:
+                            if coordinator.issue(for: runtime) != nil {
+                                Text(
+                                    "Failed to transcribe audio. Please try again.", tableName: "Dictation",
+                                    bundle: .module)
+                            }
+                            Button(action: { coordinator.retry(runtime: runtime) }) {
+                                Text("Retry", tableName: "Dictation", bundle: .module)
+                            }.accessibilityIdentifier("dictation.retry")
+                        }
+                        Spacer(minLength: 0)
+                        Button(action: { coordinator.cancel(runtime: runtime) }) {
+                            Image(systemName: "xmark")
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel(Text("Discard", tableName: "Dictation", bundle: .module))
+                        .accessibilityIdentifier("dictation.discard")
                     }
-                    Spacer(minLength: 0)
-                    Button(action: { coordinator.cancel(runtime: runtime) }) {
-                        Image(systemName: "xmark")
-                            .frame(minWidth: 44, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .accessibilityLabel(Text("Discard", tableName: "Dictation", bundle: .module))
-                    .accessibilityIdentifier("dictation.discard")
-                }
-                .font(.subheadline)
-                .accessibilityElement(children: .contain)
-                .padding(.vertical, 8)
-            } else if let issue = coordinator.issue(for: runtime) {
-                VStack(alignment: .leading, spacing: 8) {
-                    issueMessage(issue)
-                    HStack {
-                        if issue == .permissionDenied {
-                            Button(action: {
-                                guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-                                openURL(url)
-                            }) {
-                                Text("Open Settings", tableName: "Dictation", bundle: .module)
+                    .font(.subheadline)
+                    .accessibilityElement(children: .contain)
+                    .padding(.vertical, 8)
+                } else if let issue = coordinator.issue(for: runtime) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        issueMessage(issue)
+                        HStack {
+                            if issue == .permissionDenied {
+                                Button(action: {
+                                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                                    openURL(url)
+                                }) {
+                                    Text("Open Settings", tableName: "Dictation", bundle: .module)
+                                }
+                            }
+                            Button(action: { coordinator.dismissIssue() }) {
+                                Text("Dismiss", tableName: "Dictation", bundle: .module)
                             }
                         }
-                        Button(action: { coordinator.dismissIssue() }) {
-                            Text("Dismiss", tableName: "Dictation", bundle: .module)
-                        }
-                    }
-                }.font(.subheadline).accessibilityIdentifier("dictation.error")
+                    }.font(.subheadline).accessibilityIdentifier("dictation.error")
+                }
+            }
+            .task(id: coordinator.issueID(for: runtime)) {
+                guard let id = coordinator.issueID(for: runtime) else { return }
+                await coordinator.expireIssueAfterDelay(id: id, runtime: runtime)
             }
         }
 
@@ -77,14 +87,15 @@
             switch issue {
             case .permissionDenied:
                 Text(
-                    "Allow microphone access in Settings to dictate. Your draft is unchanged.", tableName: "Dictation",
+                    "Microphone access denied. Please enable microphone permissions in Settings > Maple.",
+                    tableName: "Dictation",
                     bundle: .module)
             case .captureUnavailable:
                 Text(
                     "The microphone is unavailable. Try again when another audio operation has finished.",
                     tableName: "Dictation", bundle: .module)
             case .emptyRecording:
-                Text("No audio was recorded. Your draft is unchanged.", tableName: "Dictation", bundle: .module)
+                Text("No audio was recorded. Please try again.", tableName: "Dictation", bundle: .module)
             case .emptyTranscription:
                 Text("No speech detected. Please try again.", tableName: "Dictation", bundle: .module)
             case .recordingTooLarge:
@@ -100,7 +111,7 @@
                     "Finish the current draft operation before starting dictation.", tableName: "Dictation",
                     bundle: .module)
             case .transcriptionUnavailable, .invalidTranscription:
-                Text("Transcription unavailable", tableName: "Dictation", bundle: .module)
+                Text("Failed to transcribe audio. Please try again.", tableName: "Dictation", bundle: .module)
             }
         }
     }

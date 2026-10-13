@@ -630,6 +630,18 @@
             if imageImporters[ObjectIdentifier(runtime)] == nil {
                 imageImporters[ObjectIdentifier(runtime)] = ImageImportController(
                     runtime: runtime, processor: imageProcessor, budget: imageBudget,
+                    capacityIssue: { [weak self, weak runtime] proposed in
+                        guard let self, let runtime, self.session.account?.scope == account.scope else {
+                            return .retired
+                        }
+                        let loadedOwners = Set(self.chats.values.map { $0.snapshot.storageOwner })
+                        let retained = self.retainedSnapshots.filter { !loadedOwners.contains($0.storageOwner) }
+                        let others = self.chats.values.filter { $0 !== runtime }.map(\.snapshot)
+                        let usage = ChatResourceUsage(snapshots: retained + others + [proposed])
+                        if usage.images > 640 { return .accountImageLimit }
+                        if usage.imageBytes > 256 * 1_024 * 1_024 { return .accountAttachmentLimit }
+                        return nil
+                    },
                     admission: { [weak self] in
                         self?.session.account?.scope == account.scope && self?.entitlements?.imageAccess == .allowed
                     })

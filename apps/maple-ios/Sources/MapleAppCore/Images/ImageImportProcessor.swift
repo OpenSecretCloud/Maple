@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 public enum ImageImportIssue: Error, Equatable, Sendable {
     case unsupported, tooLarge, invalidImage, unavailable, retired, attachmentLimit
+    case accountImageLimit, accountAttachmentLimit
 }
 
 /// ImageIO decodes one bounded thumbnail at a time off the UI actor. Re-encoding

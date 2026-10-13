@@ -1,3 +1,4 @@
+import Foundation
 import MapleAppCore
 
 /// Read-only chat feedback copied from the Research client.
@@ -46,8 +47,16 @@ enum ChatRecoveryPresentation {
         case .invalidImages: return MapleStrings.text("Check the image attachments and try again.")
         case .draftTooLarge: return MapleStrings.text("This message is too large. Shorten it and try again.")
         case .signedOut: return MapleStrings.text("Your session has ended. Sign in again.")
+        case .conversationDeleting: return deletionPauseMessage
         default: return MapleStrings.text("The request couldn’t finish. Your unsent work is preserved.")
         }
+    }
+
+    static var deletionPauseMessage: String {
+        String(
+            localized: "chat_issue_conversation_deleting",
+            defaultValue: "Sending paused because this conversation is being deleted.",
+            table: "Localizable", bundle: .module)
     }
 
     static var contextLimitMessage: String {
