@@ -66,8 +66,12 @@
         var body: some View {
             if ProcessInfo.processInfo.arguments.contains("--maple-composer-order-check") {
                 VStack {
-                    Button("Check input ordering") { orderingStatus = ComposerEditOrderingProbe.run() }
-                        .accessibilityIdentifier("composer.order-check")
+                    Button("Check input ordering") {
+                        orderingStatus = "Checking"
+                        Task { @MainActor in orderingStatus = await ComposerEditOrderingProbe.run() }
+                    }
+                    .disabled(orderingStatus == "Checking")
+                    .accessibilityIdentifier("composer.order-check")
                     Text(orderingStatus).font(.caption2).lineLimit(12)
                         .accessibilityLabel(orderingStatus).accessibilityIdentifier("composer.order-status")
                 }.padding()

@@ -1248,6 +1248,14 @@ enum ChatComposerPresentation {
                     guard environment.session.account?.scope == runtime.scope else { return nil }
                     return self.composerEditor(owner: runtime.snapshot.draft.id)
                 },
+                onPasteImages: { providers in
+                    guard runtime.scope == account.scope, runtime.snapshot.draft.id == owner,
+                        currentProjection, !menuState.occluded, !runtime.isEditingQueue,
+                        let importer = environment.imageImporters[ObjectIdentifier(runtime)]
+                    else { return }
+                    guard account.imageAccess == .allowed else { mediaNotice = .images; return }
+                    ClipboardImageSource.importImages(providers, using: importer, draftID: owner)
+                },
                 onSubmit: {
                     guard runtime.snapshot.draft.id == owner else { return }
                     send()

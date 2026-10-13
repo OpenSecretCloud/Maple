@@ -15,9 +15,19 @@
         }
     }
 
-    @MainActor private final class ClipboardImageSource {
+    @MainActor final class ClipboardImageSource {
         let provider: NSItemProvider
         init(provider: NSItemProvider) { self.provider = provider }
+
+        static func importImages(_ providers: [NSItemProvider], using importer: ImageImportController, draftID: UUID) {
+            guard providers.count <= 10 else { importer.report(.attachmentLimit); return }
+            importer.importImages(
+                providers.map { provider in
+                    let source = ClipboardImageSource(provider: provider)
+                    return SelectedImageSource { try await source.read() }
+                }, draftID: draftID)
+        }
+
         func read() async throws -> Data {
             guard
                 let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true })
@@ -117,14 +127,7 @@
                     VStack(spacing: 16) {
                         Text(MapleStrings.text("Paste an image from the clipboard."))
                         PasteButton(supportedContentTypes: [.image]) { providers in
-                            guard providers.count <= 10 else {
-                                importer.report(.attachmentLimit); pasteOwner = nil; return
-                            }
-                            importer.importImages(
-                                providers.map { provider in
-                                    let source = ClipboardImageSource(provider: provider)
-                                    return SelectedImageSource { try await source.read() }
-                                }, draftID: owner.id)
+                            ClipboardImageSource.importImages(providers, using: importer, draftID: owner.id)
                             pasteOwner = nil
                         }.tint(MapleAccent.nativeFilled).accessibilityIdentifier("images.paste")
                     }.padding()

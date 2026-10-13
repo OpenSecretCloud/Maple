@@ -2,6 +2,7 @@
     import MapleAppCore
     import SwiftUI
     import UIKit
+    import UniformTypeIdentifiers
 
     @MainActor
     enum ComposerEditOrderingProbe {
@@ -14,7 +15,7 @@
 
         // Same production Coordinator and native UITextView; each case controls
         // callback ordering without a real delegate silently repairing the sequence.
-        static func run() -> String {
+        static func run() async -> String {
             let cases: [(String, ((Bool) -> Void) -> Void)] = [
                 (
                     "proposedEditSurvivesPreMutationSelectionAndPublishesExactlyOnce",
@@ -152,13 +153,21 @@
                 ),
                 ("nativeTextInsetsKeepCaretAndPlaceholderAligned", nativeTextInsetsKeepCaretAndPlaceholderAligned),
             ]
-            return cases.map { name, exercise in
+            var lines = cases.map { name, exercise in
                 var failures = 0
                 failureDetails.removeAll(keepingCapacity: true)
                 exercise { if !$0 { failures += 1 } }
                 let details = failureDetails.isEmpty ? "" : "; " + failureDetails.joined(separator: ",")
                 return "\(name): \(failures == 0 ? "passed" : "FAILED(\(failures)\(details))")"
-            }.joined(separator: "\n")
+            }
+            var failures = 0
+            failureDetails.removeAll(keepingCapacity: true)
+            await nativeImagePasteRoutesProvidersAndPreservesTextFallback { if !$0 { failures += 1 } }
+            let details = failureDetails.isEmpty ? "" : "; " + failureDetails.joined(separator: ",")
+            lines.append(
+                "nativeImagePasteRoutesProvidersAndPreservesTextFallback: \(failures == 0 ? "passed" : "FAILED(\(failures)\(details))")"
+            )
+            return lines.joined(separator: "\n")
         }
 
         private static func proposedEditSurvivesPreMutationSelectionAndPublishesExactlyOnce(_ check: (Bool) -> Void) {
@@ -289,6 +298,7 @@
             defer { harness.close() }
             let coordinator = harness.coordinator
             harness.view.delegate = coordinator
+            harness.view.pasteDelegate = coordinator
             harness.view.willReplace = { [weak coordinator] before, range, replacement in
                 coordinator?.recordNativeReplacement(before: before, range: range, replacement: replacement)
             }
@@ -348,6 +358,7 @@
         private static func wireNativeInput(_ harness: Harness) {
             let coordinator = harness.coordinator
             harness.view.delegate = coordinator
+            harness.view.pasteDelegate = coordinator
             harness.view.willReplace = { [weak coordinator] before, range, replacement in
                 coordinator?.recordNativeReplacement(before: before, range: range, replacement: replacement)
             }
@@ -740,6 +751,8 @@
             defer { harness.close() }
             wireNativeInput(harness)
             guard let command = returnCommand(harness.view), let action = command.action else { check(false); return }
+            let previous = UIPasteboard.general.items
+            defer { UIPasteboard.general.setItems(previous, options: [.localOnly: true]) }
             UIPasteboard.general.items = []
             harness.view.beforeResignFirstResponderForProbe = {
                 harness.view.beforeResignFirstResponderForProbe = nil
@@ -747,6 +760,120 @@
             }
             _ = harness.view.perform(action, with: command)
             check(harness.capture.text == "abc" && harness.capture.submitted.isEmpty)
+        }
+
+        private static func nativeImagePasteRoutesProvidersAndPreservesTextFallback(_ check: (Bool) -> Void) async {
+            let board = UIPasteboard.general, previous = board.items
+            defer { board.setItems(previous, options: [.localOnly: true]) }
+            let text = "- 🐝", caret = text.utf16.count
+            let harness = Harness(text: text, marker: caret, focus: true)
+            defer { harness.close() }
+            wireNativeInput(harness)
+            harness.view.selectedRange = NSRange(location: caret, length: 0)
+            var callbacks = 0, expectedProvider = false
+            harness.coordinator.parent.onPasteImages = { providers in
+                callbacks += 1
+                expectedProvider =
+                    providers.count == 1 && providers[0].hasItemConformingToTypeIdentifier(UTType.png.identifier)
+            }
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).pngData { context in
+                context.cgContext.setFillColor(UIColor.black.cgColor)
+                context.cgContext.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            board.setItems([[UTType.png.identifier: image]], options: [.localOnly: true])
+            labeledCheck(
+                harness.view.canPerformAction(#selector(ComposerTextView.paste(_:)), withSender: nil),
+                label: "paste.image.action", check: check)
+            harness.view.paste(nil)
+            labeledCheck(
+                callbacks == 1 && expectedProvider && harness.capture.text == text && harness.capture.edits.isEmpty,
+                label: "paste.image.route[callbacks=\(callbacks);expectedType=\(expectedProvider)]", check: check)
+            board.setItems([[UTType.utf8PlainText.identifier: Data("\n".utf8)]], options: [.localOnly: true])
+            harness.view.paste(nil)
+            // UIKit may finish text-provider decoding after paste(_:) returns.
+            // Keep this exact view and pasteboard alive until the Coordinator
+            // publishes an actual edit; the bound is only a test failure deadline.
+            let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(2))
+            while harness.capture.edits.isEmpty, clock.now < deadline, !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
+            }
+            labeledCheck(
+                callbacks == 1 && harness.capture.text == text + "\n",
+                label:
+                    "paste.text.literal[length=\(harness.capture.text.utf16.count);continued=\(harness.capture.text.hasSuffix("\n- "))]",
+                check: check)
+            labeledCheck(
+                harness.capture.edits == [
+                    DictationTextEdit(
+                        beforeText: text, rangeUTF16: NSRange(location: caret, length: 0), replacement: "\n")
+                ], label: "paste.text.exact[edits=\(harness.capture.edits.count)]", check: check)
+            labeledCheck(
+                harness.capture.marker?.offsetUTF16 == caret + 1 && harness.capture.rebaseFailures == 0,
+                label:
+                    "paste.text.anchor[offset=\(harness.capture.marker?.offsetUTF16 ?? -1);failures=\(harness.capture.rebaseFailures)]",
+                check: check)
+            labeledCheck(
+                harness.view.selectedRange == NSRange(location: caret + 1, length: 0),
+                label: "paste.text.caret", check: check)
+            labeledCheck(harness.capture.submitted.isEmpty, label: "paste.noSubmit", check: check)
+
+            for boundary in ["replacement", "reinstalled", "retired", "composition"] {
+                let candidate = Harness(text: "old", marker: 3, focus: true)
+                defer { candidate.close() }
+                wireNativeInput(candidate)
+                candidate.view.selectedRange = NSRange(location: 3, length: 0)
+                board.setItems([[UTType.utf8PlainText.identifier: Data("late".utf8)]], options: [.localOnly: true])
+                candidate.view.paste(nil)
+                labeledCheck(
+                    candidate.coordinator.pendingTextPasteReads > 0,
+                    label: "paste.\(boundary).initiatingOwnerCaptured", check: check)
+                let original = candidate.coordinator.parent, next = Capture(text: "Successor", marker: 9)
+                if boundary == "replacement" || boundary == "reinstalled" {
+                    let successor = ComposerEditor(
+                        text: Binding(get: { next.text }, set: { next.text = $0 }),
+                        focused: .constant(true), ownerID: UUID(), accountGeneration: UUID(),
+                        placeholder: "Synthetic successor", onChange: { next.receive($0, $1) }, onSubmit: {})
+                    candidate.coordinator.install(successor, in: candidate.view)
+                    if boundary == "reinstalled" { candidate.coordinator.install(original, in: candidate.view) }
+                } else if boundary == "retired" {
+                    candidate.coordinator.valid = false
+                } else {
+                    candidate.view.setMarkedText("IME", selectedRange: NSRange(location: 3, length: 0))
+                }
+                let expectedText = candidate.view.text
+                let ownerDeadline = clock.now.advanced(by: .seconds(2))
+                while candidate.coordinator.pendingTextPasteReads > 0, clock.now < ownerDeadline,
+                    !Task.isCancelled
+                {
+                    do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
+                }
+                labeledCheck(
+                    candidate.coordinator.pendingTextPasteReads == 0 && candidate.view.text == expectedText,
+                    label: "paste.\(boundary).lateReadRejected", check: check)
+                labeledCheck(
+                    next.text == "Successor" && next.edits.isEmpty, label: "paste.\(boundary).successorUnchanged",
+                    check: check)
+                if boundary == "composition" {
+                    labeledCheck(
+                        candidate.view.markedTextRange != nil, label: "paste.composition.retained", check: check)
+                }
+                guard let start = candidate.view.position(from: candidate.view.beginningOfDocument, offset: 0),
+                    let end = candidate.view.position(from: start, offset: 1),
+                    let selected = candidate.view.textRange(from: start, to: end)
+                else { check(false); continue }
+                let previousSelection = candidate.view.selectedRange
+                let returnedSelection = candidate.coordinator.textPasteConfigurationSupporting(
+                    candidate.view, performPasteOf: NSAttributedString(string: ""), to: selected)
+                labeledCheck(
+                    candidate.view.text == expectedText, label: "paste.\(boundary).emptyResultIgnored", check: check)
+                labeledCheck(
+                    candidate.view.selectedRange == previousSelection
+                        && candidate.view.offset(from: candidate.view.beginningOfDocument, to: returnedSelection.start)
+                            == previousSelection.location
+                        && candidate.view.offset(from: returnedSelection.start, to: returnedSelection.end)
+                            == previousSelection.length,
+                    label: "paste.\(boundary).selectionRetained", check: check)
+            }
         }
 
         private static func publicationRevocationCancelsHardwareSend(_ check: (Bool) -> Void) {
@@ -1974,6 +2101,7 @@
                 view.resignFirstResponder()
                 view.removeFromSuperview()
                 view.delegate = nil
+                view.pasteDelegate = nil
                 view.changed = nil
                 view.willReplace = nil
                 view.submit = nil
