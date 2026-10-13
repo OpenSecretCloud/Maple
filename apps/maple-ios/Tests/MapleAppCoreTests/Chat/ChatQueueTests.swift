@@ -286,7 +286,7 @@ import Testing
         let saved = try #require(try await store.load(chatID: "conversation", scope: scope))
         #expect(saved.storageOwner == owner && saved == runtime.snapshot)
         #expect(saved.draft.text == "Edited A" && saved.queue?.edit?.heldDraft.text == "Held B")
-        #expect(saved.unsentTurn?.text == "Original turn" && runtime.lastIssue == nil)
+        #expect(saved.unsentTurn?.text == "Original turn" && runtime.lastIssue == .stoppedBeforeSending)
         #expect(await service.posts.isEmpty)
         runtime.invalidate(); await autosave.release(); try await store.retire(scope)
     }

@@ -466,6 +466,7 @@ public final class ChatRuntime {
         run.stopRequested = true; run.phase = .stopping; snapshot.pendingRun = run; changed()
         scheduleAutosave()
         if waitingForCapacity { runTask?.cancel(); return }
+        if run.dispatched, run.responseID == nil { lastIssue = .stoppingWhenResponseReady }
         if run.dispatched, run.responseID != nil {
             startCancellation(runID: run.id, operation: operationID)
         }
@@ -726,7 +727,14 @@ public final class ChatRuntime {
                 runOutputIDs[runID, default: []].insert(value.item.id)
             case let .contentPartAdded(value), let .contentPartDone(value):
                 runOutputIDs[runID, default: []].insert(value.itemId)
-            case let .outputTextDelta(value), let .outputTextDone(value):
+            case let .outputTextDelta(value), let .outputTextDone(value), let .reasoningTextDelta(value),
+                let .reasoningTextDone(value):
+                runOutputIDs[runID, default: []].insert(value.itemId)
+            case let .toolCallCreated(value):
+                runOutputIDs[runID, default: []].insert(value.toolCallId)
+            case let .toolOutputCreated(value):
+                runOutputIDs[runID, default: []].insert(value.toolOutputId)
+            case let .webSearchInProgress(value), let .webSearchSearching(value), let .webSearchCompleted(value):
                 runOutputIDs[runID, default: []].insert(value.itemId)
             default: break
             }
@@ -867,13 +875,15 @@ public final class ChatRuntime {
         guard owns(runID, operation), let finishedRun = snapshot.pendingRun else { return }
         let chatID = conversationID
         let wasStopped = finishedRun.stopRequested
-        let outputIDs = (runOutputIDs.removeValue(forKey: runID) ?? []).union(response?.output?.map(\.id) ?? [])
         // Sparse terminal responses can omit output already received as text deltas.
         // Associate only this run's output; older history and explicit links retain their owners.
         let responseID = response?.id ?? finishedRun.responseID
-        for index in messages.indices where outputIDs.contains(messages[index].id) && messages[index].responseId == nil
-        {
-            messages[index].responseId = responseID
+        let outputIDs = (runOutputIDs.removeValue(forKey: runID) ?? [])
+            .union(response?.output?.map(\.id) ?? [])
+            .union(messages.filter { responseID != nil && $0.responseId == responseID && $0.role != "user" }.map(\.id))
+        for index in messages.indices where outputIDs.contains(messages[index].id) {
+            if messages[index].responseId == nil { messages[index].responseId = responseID }
+            if outcome == .cancelled { messages[index].status = "incomplete" }
         }
         let completion = chatID.map { id in
             ChatCompletion(
@@ -883,6 +893,17 @@ public final class ChatRuntime {
                 recovered: recovered, wasStopped: wasStopped, wasVisible: isVisible, wasForeground: isForeground)
         }
         snapshot.pendingRun = nil; changed(); lastOutcome = outcome
+        if outcome == .failed, !wasStopped {
+            lastIssue = .generationFailed
+        } else if outcome == .completed, wasStopped {
+            lastIssue = .responseFinishedBeforeStop
+        } else if recovered, outcome == .completed {
+            lastIssue = .recoveredCompletion
+        } else if recovered, outcome == .cancelled || outcome == .failed {
+            lastIssue = .recoveredStop
+        } else {
+            lastIssue = nil
+        }
         runTask?.cancel(); cancelTask?.cancel()
         runTask = nil; cancelTask = nil
         if outcome != .completed || recovered || wasStopped { snapshot.queue?.paused = true }
@@ -925,7 +946,7 @@ public final class ChatRuntime {
         messages.removeAll { $0.id == run.messageID }
         snapshot.pendingRun = nil; changed(); lastOutcome = run.stopRequested ? .cancelled : .rejected;
         snapshot.queue?.paused = true
-        lastIssue = issue
+        lastIssue = run.stopRequested && (issue == nil || issue == .requestRejected) ? .stoppedBeforeSending : issue
         do { try await persistCurrent() } catch { if owns(operation) { lastIssue = .storageUnavailable } }
     }
 
@@ -1128,13 +1149,17 @@ public final class ChatRuntime {
     }
 
     private static func issue(_ error: any Error) -> ChatIssue {
+        if findOpenSecretInferenceCapacityError(error) != nil { return .inferenceCapacityUnavailable }
         guard case let ResearchAPIError.http(_, reason) = error else {
             return error is ChatIssue ? (error as? ChatIssue ?? .requestRejected) : .requestRejected
         }
         return switch reason {
-        case .contextLimit, .freeTierTokenLimit: .contextLimit
+        case .contextLimit: .contextLimit
+        case .freeTierTokenLimit: .freeTierTokenLimit
         case .usageLimit: .usageLimit
         case .modelUnavailable: .modelUnavailable
+        case .unsupportedValue: .unsupportedValue
+        case .imageDescriptionUnavailable: .imageDescriptionUnavailable
         default: .requestRejected
         }
     }
@@ -1269,6 +1294,9 @@ public final class ChatRuntime {
             parts[value.contentIndex].text = (parts[value.contentIndex].text ?? "") + (value.delta ?? "")
         }
         items[index].content = parts
+        if reasoning, items[index].status != "incomplete" {
+            items[index].status = final ? "completed" : "in_progress"
+        }
     }
 }
 

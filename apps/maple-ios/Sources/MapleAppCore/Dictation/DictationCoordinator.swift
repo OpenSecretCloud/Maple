@@ -226,6 +226,9 @@ public enum DictationActivity: Sendable { case capturing, transcribing, idle }
             guard text.utf8.count <= 256 * 1024 else {
                 fail(job, issue: .invalidTranscription, retainingClip: true); return
             }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                fail(job, issue: .emptyTranscription, retainingClip: false); return
+            }
             job.result = text; job.wav = nil; job.task = nil
             insertResult(job)
         } catch {
