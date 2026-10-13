@@ -289,6 +289,18 @@
         }
       }
     },
+    "Privacy": {
+      "comment": "Auth footer link to Privacy policy.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy"
+          }
+        }
+      }
+    },
     "Request deletion code": {
       "comment": "Native account recovery, verification, or provider sign-in interface. Keep security meaning and field names explicit.",
       "extractionState": "manual",
@@ -369,6 +381,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Start the reset in this app to use your code. A code alone cannot restore the private confirmation secret."
+          }
+        }
+      }
+    },
+    "Terms": {
+      "comment": "Auth footer link to Terms of service.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terms"
           }
         }
       }
@@ -573,6 +597,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your sign-in changed. Reopen this screen to continue."
+          }
+        }
+      }
+    },
+    "auth.copyright": {
+      "comment": "Auth footer with the current Gregorian year as a string placeholder.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "© %@ Maple Privacy Labs Inc."
           }
         }
       }

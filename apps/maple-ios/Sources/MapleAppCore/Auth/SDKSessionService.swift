@@ -22,7 +22,7 @@ public struct SDKSessionService: SessionServing {
         _ = try await client.signInGuest(id: id, password: password)
     }
     public func signUp(email: String, password: String, name: String?) async throws {
-        _ = try await client.signUp(email: email, password: password, name: name)
+        _ = try await client.signUp(email: email, password: password, inviteCode: "", name: name)
     }
     public func signOut() async throws { try await client.signOut() }
     public func signOut(ifOwnedBy identity: SessionIdentity?) async throws {
