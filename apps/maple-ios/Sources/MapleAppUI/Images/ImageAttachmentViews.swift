@@ -49,6 +49,7 @@
         @State private var selectionOwner: UUID?
         @State private var cameraOwner: ImportOwner?
         @State private var pasteOwner: ImportOwner?
+        @Environment(\.compactMenuPresentationDismissed) private var compactMenuPresentationDismissed
 
         var body: some View {
             Menu {
@@ -111,7 +112,7 @@
                 case .failure: importer.report(.unavailable)
                 }
             }
-            .sheet(item: $pasteOwner) { owner in
+            .sheet(item: $pasteOwner, onDismiss: compactMenuPresentationDismissed) { owner in
                 NavigationStack {
                     VStack(spacing: 16) {
                         Text(MapleStrings.text("Paste an image from the clipboard."))

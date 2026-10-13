@@ -973,7 +973,7 @@ enum ChatComposerPresentation {
             .externalLinks($externalLink) { presented in
                 environment.setPresentationBlocked(presented, id: browserPresentationID, scope: runtime.scope)
             }
-            .sheet(item: $mediaNotice) { feature in
+            .sheet(item: $mediaNotice, onDismiss: compactMenuPresentationDismissed) { feature in
                 MediaFeatureNotice(feature: feature, account: account)
             }
             .sheet(isPresented: $modelPresented, onDismiss: compactMenuPresentationDismissed) {
@@ -1026,7 +1026,7 @@ enum ChatComposerPresentation {
                 environment.setPresentationBlocked(false, id: browserPresentationID, scope: runtime.scope)
                 runtime.isVisible = false; Task { await runtime.saveDraft() }
             }
-            .sheet(isPresented: $queuePresented) {
+            .sheet(isPresented: $queuePresented, onDismiss: compactMenuPresentationDismissed) {
                 QueueReview(runtime: runtime) { composerFocused = true }
                     .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
             }

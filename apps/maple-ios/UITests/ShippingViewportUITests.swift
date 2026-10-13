@@ -401,6 +401,73 @@ final class ShippingViewportUITests: XCTestCase {
         }
     }
 
+    func testQueueDismissalRestoresDirectNativeMenuAndRetainsOwners() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = [
+            "--maple-shipping-viewport-fixture", "--maple-shipping-pagination-menu-proof",
+            "--maple-shipping-window-proof",
+        ]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let queue = app.buttons["queue.open"]
+        XCTAssertTrue(queue.waitForExistence(timeout: 10))
+        let composer = app.textViews["chat.composer"]
+        XCTAssertEqual(composer.value as? String, "Window held draft B")
+        let owners = try windowOwnership()
+        XCTAssertEqual(owners["queueCount"], "1")
+        XCTAssertEqual(owners["queuePaused"], "true")
+        XCTAssertEqual(owners["queuedText"], "Window queued A remains paused")
+        XCTAssertEqual(owners["running"], "false")
+
+        let menu = app.mapleMenuButton
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        XCTAssertTrue(menu.isEnabled && menu.isHittable)
+        menu.tap()
+        let close = app.buttons["shipping-pagination.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10)); close.tap()
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+
+        for swipeDismissal in [false, true] {
+            XCTAssertTrue(queue.exists && queue.isHittable); queue.tap()
+            let resume = app.buttons["queue.resume"]
+            XCTAssertTrue(resume.waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts["Window queued A remains paused"].exists)
+            XCTAssertFalse(app.buttons["queue.pause"].exists)
+            if swipeDismissal {
+                let navigation = app.navigationBars["Queued messages"]
+                XCTAssertTrue(navigation.exists)
+                let window = app.windows.firstMatch.frame
+                let origin = app.coordinate(withNormalizedOffset: .zero)
+                let handle = origin.withOffset(
+                    CGVector(
+                        dx: window.midX - app.frame.minX,
+                        dy: max(window.minY + 8, navigation.frame.minY - 8) - app.frame.minY))
+                handle.press(
+                    forDuration: 0.1,
+                    thenDragTo: origin.withOffset(
+                        CGVector(dx: window.midX - app.frame.minX, dy: window.maxY - 15 - app.frame.minY)),
+                    withVelocity: .fast, thenHoldForDuration: 0)
+            } else {
+                app.buttons["Done"].tap()
+            }
+            XCTAssertTrue(resume.waitForNonExistence(timeout: 10))
+
+            // A native touch must work before focus, state mutation or any edge
+            // navigation could repair the retained bar after this sheet.
+            XCTAssertTrue(menu.waitForExistence(timeout: 10))
+            XCTAssertTrue(menu.isEnabled && menu.isHittable)
+            menu.tap()
+            XCTAssertTrue(close.waitForExistence(timeout: 10))
+            XCTAssertTrue(close.isEnabled && close.isHittable); close.tap()
+            XCTAssertTrue(menu.waitForExistence(timeout: 10))
+            XCTAssertEqual(composer.value as? String, "Window held draft B")
+            XCTAssertEqual(try windowOwnership(), owners)
+            capture("Queue \(swipeDismissal ? "swipe" : "Done") dismissal restores native Menu and retains owners")
+        }
+    }
+
     private func waitForExpandedSoftwareKeyboard(composer: XCUIElement, model: XCUIElement) {
         let expanded = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in

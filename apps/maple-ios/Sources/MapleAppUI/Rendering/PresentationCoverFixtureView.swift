@@ -12,7 +12,25 @@
     struct PresentationCoverFixtureView: View {
         @State private var model = PresentationCoverFixtureModel()
         @State private var preview: ChatImageAttachment?
+        @State private var compactLease = CompactMenuLease()
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @Environment(\.layoutDirection) private var layoutDirection
+
+        private var navigationProof: Bool {
+            ProcessInfo.processInfo.arguments.contains("--maple-presentation-cover-navigation-proof")
+        }
+
         var body: some View {
+            Group {
+                if navigationProof {
+                    nativeNavigation
+                } else {
+                    coverContent
+                }
+            }
+        }
+
+        private var coverContent: some View {
             VStack(spacing: 20) {
                 Text("Image cover completion eligibility").font(.headline)
                 Text(model.summary).accessibilityIdentifier("cover.summary")
@@ -36,6 +54,65 @@
             }
             .environment(\.chatPresentationChanged) { id, active in model.presentationChanged(id: id, active: active) }
         }
+
+        /// The same viewer and lease run inside the shipping retained native
+        /// navigation. This flag adds no alternate dismissal or recovery path.
+        private var nativeNavigation: some View {
+            let scope = model.runtime.scope, owner = model.runtime.snapshot.storageOwner
+            return CompactMenuNavigation(
+                scope: scope, storageOwner: owner,
+                requestedMenu: model.menuPresented, reduceMotion: reduceMotion, lease: compactLease,
+                library: NavigationStack {
+                    Text("Synthetic retained Library")
+                        .accessibilityIdentifier("cover.library")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(MapleSurface.sidebar)
+                        .toolbarVisibility(.hidden, for: .navigationBar)
+                        .compactMenuRootBar(
+                            role: .library, title: "Synthetic retained Library",
+                            trailing: AnyView(closeMenu(scope: scope, owner: owner)))
+                }
+                .environment(\.layoutDirection, layoutDirection),
+                chat:
+                    coverContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(MapleSurface.canvas)
+                    .compactMenuRootBar(role: .chat, title: "Synthetic cover chat")
+                    .environment(\.layoutDirection, layoutDirection)
+                    .modifier(
+                        CompactMenuChatAccessibility(
+                            lease: compactLease, scope: scope, storageOwner: owner,
+                            isCurrent: { [weak model] in
+                                model?.isCurrent(scope: scope, storageOwner: owner) ?? false
+                            })),
+                isCurrent: { [weak model] in model?.isCurrent(scope: scope) ?? false },
+                presentationBlocked: { [weak model] in !(model?.blocks.isEmpty ?? false) },
+                requestMenu: { [weak model] in model?.setMenu($0, scope: scope) },
+                blockPresentation: { [weak model] id, active in
+                    guard let model, model.isCurrent(scope: scope) else { return }
+                    model.presentationChanged(id: id, active: active)
+                },
+                chatShown: { _ in }
+            )
+            .id(scope)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container)
+        }
+
+        private func closeMenu(scope: AccountScope, owner: UUID) -> some View {
+            Button {
+                guard model.isCurrent(scope: scope, storageOwner: owner) else { return }
+                model.setMenu(false, scope: scope)
+            } label: {
+                Label("Close menu", systemImage: "xmark")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("cover.library-close")
+            .disabled(!compactLease.menuVisible)
+        }
     }
 
     @MainActor @Observable private final class PresentationCoverFixtureModel {
@@ -48,6 +125,7 @@
         var blockedCompletions = 0
         var hapticEligible = 0
         var failure = false
+        private(set) var menuPresented = false
 
         init() {
             let scope = AccountScope(apiOrigin: "https://synthetic.invalid", principalID: "cover-fixture")
@@ -86,9 +164,24 @@
             if active { blocks.insert(id) } else { blocks.remove(id) }
             // Same visibility inputs as AppEnvironment.updatePresentationVisibility.
             // The fixture deliberately does not claim to exercise account/root wiring.
-            runtime.isVisible = blocks.isEmpty
-            listening.setVisibility(chatID: blocks.isEmpty ? "cover-chat" : nil, foreground: true)
+            updateVisibility()
+        }
 
+        func isCurrent(scope: AccountScope, storageOwner: UUID? = nil) -> Bool {
+            !runtime.isRetired && runtime.scope == scope
+                && (storageOwner == nil || runtime.snapshot.storageOwner == storageOwner)
+        }
+
+        func setMenu(_ presented: Bool, scope: AccountScope) {
+            guard isCurrent(scope: scope) else { return }
+            menuPresented = presented
+            updateVisibility()
+        }
+
+        private func updateVisibility() {
+            let visible = !runtime.isRetired && !menuPresented && blocks.isEmpty
+            runtime.isVisible = visible
+            listening.setVisibility(chatID: visible ? "cover-chat" : nil, foreground: true)
         }
 
         func send() {
