@@ -31,6 +31,7 @@ PROJECT = "maple"
 SUBDOMAIN = "maple-ca8.pages.dev"
 PRODUCTION_BRANCH = "pages-production"
 PREVIEW_WORKFLOW = "pages-preview-build.yml"
+PRODUCTION_BUILD_WORKFLOW = "pages-production-build.yml"
 RELEASE_WORKFLOW = "release.yml"
 MAX_DOWNLOAD = 200 * 1024 * 1024
 
@@ -53,7 +54,7 @@ class Destination:
 
 
 APP_DESTINATION = Destination(PROJECT, SUBDOMAIN, PRODUCTION_BRANCH,
-                              "pages-production", "https://trymaple.ai")
+                              "pages-production", "https://app.maple.ai")
 
 
 class Rejected(ValueError):
@@ -223,6 +224,12 @@ def release_asset(release, name):
 
 
 def production_plan(gh, event):
+    inputs = event.get("inputs", {})
+    require(isinstance(inputs, dict) and set(inputs) <= {"build_run_id", "build_run_attempt"},
+            "Unexpected production inputs")
+    if inputs.get("build_run_id", "") != "" or inputs.get("build_run_attempt", "") != "":
+        require("workflow_run" not in event, "Web production builds require manual publication")
+        return production_build_plan(gh, inputs)
     release = gh.get("/releases/latest")
     require(not release["draft"] and not release["prerelease"], "Release is not stable")
     tag = release["tag_name"]
@@ -250,6 +257,36 @@ def production_plan(gh, event):
             "checksum": release_asset(release, "web-final.sha256")}
 
 
+def production_build_plan(gh, inputs):
+    identifiers = []
+    for name in ("build_run_id", "build_run_attempt"):
+        value = inputs.get(name)
+        require(isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,19}", value),
+                "Provide both exact build run ID and attempt")
+        identifiers.append(int(value))
+    run_id, attempt = identifiers
+    run = gh.run(run_id, PRODUCTION_BUILD_WORKFLOW, "workflow_dispatch", attempt)
+    require(run["id"] == run_id and run["head_branch"] == "master", "Unexpected production build identity")
+    if gh.get("/git/ref/heads/master")["object"]["sha"] != run["head_sha"]:
+        raise Superseded("Production web build is no longer current master; rebuild before publishing")
+    current_sha = sha(gh.get(f"/git/ref/heads/{PRODUCTION_BRANCH}")["object"]["sha"])
+    if current_sha != run["head_sha"]:
+        require(gh.get(f"/compare/{current_sha}...{run['head_sha']}")["status"] == "ahead",
+                "Non-forward production change")
+    artifacts = gh.get(f"/actions/runs/{run_id}/artifacts?per_page=100")
+    require(type(artifacts["total_count"]) is int and 0 < artifacts["total_count"] <= 100,
+            "Invalid production artifact count")
+    artifact_name = f"maple-pages-production-{run_id}-{attempt}"
+    matches = [a for a in artifacts["artifacts"] if a["name"] == artifact_name and a["expired"] is False]
+    require(len(matches) == 1, "Expected one production artifact from this attempt")
+    artifact = matches[0]
+    require(type(artifact["size_in_bytes"]) is int and 0 < artifact["size_in_bytes"] <= MAX_DOWNLOAD,
+            "Production artifact size invalid")
+    return {"target": "production", "profile": "release", "sha": run["head_sha"], "branch": PRODUCTION_BRANCH,
+            "previous_sha": current_sha, "run_id": run_id, "run_attempt": attempt,
+            "artifact_id": number(artifact["id"]), "artifact_digest": digest(artifact["digest"])}
+
+
 def select_plan(gh, event, target):
     repo = gh.get("")
     require(repo["id"] == gh.repository_id and repo["default_branch"] == "master", "Unexpected repository identity")
@@ -262,8 +299,8 @@ def prepare(gh, event, target, state):
     state.mkdir(mode=0o700, parents=False)
     plan = select_plan(gh, event, target)
     archive = state / "web.tar.gz"
-    if target == "preview":
-        archive_digest = download_build_artifact(gh, plan, state)
+    if "artifact_id" in plan:
+        archive_digest = download_build_artifact(gh, plan, state, expected_profile=plan["profile"])
     else:
         for key, path in (("archive", archive), ("checksum", state / "web.sha256")):
             asset = plan[key]
@@ -431,7 +468,7 @@ def deploy(gh, event, state, *, destination=APP_DESTINATION, selector=select_pla
         verify_deployment(cf, account, plan, result, destination)
     if plan["target"] == "production":
         if selector(gh, event, "production") != plan:
-            raise Superseded("Release changed during deployment; inspect the deployed result")
+            raise Superseded("Production source changed during deployment; inspect the deployed result")
         if plan["previous_sha"] != plan["sha"]:
             updated = gh.write(f"/git/refs/heads/{destination.production_branch}", {"sha": plan["sha"], "force": False}, "PATCH")
             require(updated["object"]["sha"] == plan["sha"], "Production ref update failed")

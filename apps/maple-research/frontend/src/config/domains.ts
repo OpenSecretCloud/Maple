@@ -1,7 +1,7 @@
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
 export const APP_ORIGIN = trimTrailingSlash(
-  import.meta.env.VITE_APP_ORIGIN || "https://trymaple.ai"
+  import.meta.env.VITE_APP_ORIGIN || "https://app.maple.ai"
 );
 
 export const MARKETING_ORIGIN = trimTrailingSlash(

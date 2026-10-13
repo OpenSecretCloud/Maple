@@ -18,7 +18,8 @@ publisher settings or deployed state.
 | --- | --- | --- |
 | Open internal PR targeting `master` | `pr` | `pr-N` Pages preview |
 | Current `master` push | `pr` | `master` Pages preview |
-| Latest stable Maple release with successful `Release` run | `release` | `pages-production` / `trymaple.ai` |
+| Latest stable Maple release with successful `Release` run | `release` | `pages-production` / `app.maple.ai` |
+| Manually selected successful `Pages production build` at current `master` | `release` | Same production destination, after separate protected publish dispatch |
 
 `Pages preview build` calls `scripts/ci/web.sh` with
 `MAPLE_WEB_ENVIRONMENT=pr` for both PRs and master. It builds the PR head SHA,
@@ -37,17 +38,52 @@ The fixed build settings come from `scripts/ci/_common.sh`:
 | Flags | `https://flags-dev.opensecret.cloud` | `https://flags.opensecret.cloud` |
 | Billing | `https://billing-dev.opensecret.cloud` | `https://billing.opensecret.cloud` |
 
+`scripts/ci/web.sh` also fixes `VITE_APP_ORIGIN` to `https://app-dev.maple.ai`
+for previews and `https://app.maple.ai` for production canonical metadata.
+OAuth callbacks continue to use the actual browser origin, including on a preview
+or a temporarily retained hostname; this metadata setting does not select them.
+
 Both profiles retain the same public client ID. Vite embeds these public values
 at build time; deployment does not substitute Cloudflare dashboard variables.
-Production downloads the existing `maple-web-dist.tar.gz` and `web-final.sha256`
+The stable-release path downloads the existing `maple-web-dist.tar.gz` and `web-final.sha256`
 from the successful stable GitHub release, checks GitHub digests and checksums,
 and uploads those bytes without rebuilding. A master push alone cannot publish
 production. The existing master verification artifact is unchanged.
 
+Production web changes can also ship independently of native application releases:
+
+1. Dispatch `Pages production build` (`pages-production-build.yml`) on `master`.
+   It uses `MAPLE_WEB_ENVIRONMENT=release` and uploads only `maple-web-dist.tar.gz`
+   and `pages-artifact.json` as `maple-pages-production-RUN-ATTEMPT`, retained for
+   five days. The build has read-only repository access, no environment, secrets,
+   restored caches, signing, or publication step.
+2. After reviewing that successful run, dispatch `Publish Pages`
+   (`pages-publish.yml`) on `master` with both `build_run_id` and
+   `build_run_attempt`. Its existing `pages-production` protected environment and
+   activation flag still apply. Leaving both inputs blank keeps the existing
+   latest-stable-release publication; partial or malformed selections are rejected.
+
+The selected web run must be the successful current attempt of the fixed manual
+producer, from this repository's `master`, with source SHA equal to current
+master. Its exact artifact name, ID, GitHub digest, manifest `release` profile,
+source SHA, run ID, and attempt are validated. A newer master commit or a rerun
+invalidates the selection; build again or select the new successful attempt.
+Finishing this producer does **not** automatically trigger production publication.
+The producer does not move DNS, configure callbacks, or select a destination from
+inputs. The reported production URL is `https://app.maple.ai`; the existing fixed
+Pages project remains `maple`, so a publish updates every hostname attached to that
+project. Domain attachment and cutover remain separate operator actions.
+
+Both production sources share the same publication lock and forward-only
+`pages-production` ref. After publishing newer master web code, an older stable
+release is rejected even if it is still GitHub's latest release. A subsequent
+stable release must contain the published web commit before it can advance this
+ref; this prevents automatic release publication from reverting the web change.
+
 ## Credential and artifact boundaries
 
-The preview build has only `contents: read`, no protected environment, no CF
-secrets, and no restored caches. It uploads exactly the archive and its manifest
+The preview and manual production web builds have only `contents: read`, no protected environment, no CF
+secrets, and no restored caches. Each uploads exactly the archive and its manifest
 under a name containing the GitHub run ID and attempt. `Publish Pages` executes
 only its trusted default-branch checkout; it never executes PR scripts, installs
 PR dependencies, or loads PR Wrangler configuration. Checkout credentials are
@@ -56,9 +92,12 @@ addresses the [GitHub Security Lab privileged PR execution pattern](https://secu
 
 The publisher rechecks repository IDs, workflow ID/path, event, successful run,
 run attempt, source SHA, and the current open internal PR head or master head.
-Production additionally checks the exact stable tag, successful release build,
-reachability from master, latest-release identity, and forward-only production
-ref movement. Superseded sources fail closed, including rerun attempts.
+Stable-release publication additionally checks the exact stable tag, successful
+release build, reachability from master, and latest-release identity. Manual web
+publication checks the exact current master build described above. Both enforce
+forward-only production ref movement and recheck selection before upload and
+after Cloudflare confirms deployment. Superseded sources fail closed, including
+rerun attempts.
 
 Artifacts remain untrusted data. ZIP/tar parsing bounds compressed and expanded
 bytes, individual file sizes, entries, and paths. It rejects links, special

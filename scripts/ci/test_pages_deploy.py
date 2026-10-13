@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
@@ -54,7 +55,7 @@ class DeploymentReportingTests(unittest.TestCase):
                 self.assertEqual(success.args[1]["state"], "success")
                 self.assertEqual(
                     success.args[1]["environment_url"],
-                    "https://trymaple.ai" if target == "production" else result["url"],
+                    "https://app.maple.ai" if target == "production" else result["url"],
                 )
 
 
@@ -183,6 +184,170 @@ class ProvenanceTests(unittest.TestCase):
 
     def production(self):
         return pages.select_plan(self.gh, self.event, "production")
+
+    def setup_production_build(self):
+        self.run.update(event="workflow_dispatch", head_branch="master",
+                        path=".github/workflows/pages-production-build.yml", workflow_id=12)
+        self.artifact["name"] = "maple-pages-production-100-2"
+        self.event = {"inputs": {"build_run_id": "100", "build_run_attempt": "2"}}
+        self.values.update({self.root + "/actions/workflows/pages-production-build.yml": {"id": 12},
+                            self.root + "/git/ref/heads/pages-production": {"object": {"sha": OLD_SHA}},
+                            self.root + f"/compare/{OLD_SHA}...{SHA}": {"status": "ahead"}})
+
+    def test_manual_production_selects_exact_master_build_and_attempt(self):
+        self.setup_production_build()
+        plan = self.production()
+        self.assertEqual((plan["profile"], plan["branch"], plan["sha"], plan["previous_sha"]),
+                         ("release", "pages-production", SHA, OLD_SHA))
+        self.assertEqual((plan["run_id"], plan["run_attempt"], plan["artifact_id"]), (100, 2, 300))
+        self.assertNotIn("release_id", plan)
+        self.values[self.root + "/git/ref/heads/pages-production"]["object"]["sha"] = SHA
+        self.assertEqual(self.production()["previous_sha"], SHA)
+
+    def test_manual_production_rejects_malformed_and_partial_selection_without_release_fallback(self):
+        self.setup_production_build()
+        for field in ("build_run_id", "build_run_attempt"):
+            for invalid in (None, True, 100, "", "0", "01", "-1", "1.0", " 1", "1\n", "1;echo no", "1" * 21):
+                with self.subTest(field=field, invalid=invalid):
+                    event = copy.deepcopy(self.event)
+                    event["inputs"][field] = invalid
+                    with self.assertRaises(pages.Rejected):
+                        pages.select_plan(self.gh, event, "production")
+        for inputs in ([], {"workflow": "evil.yml"}, {"build_run_id": "100"}, {"build_run_attempt": "2"}):
+            with self.subTest(inputs=inputs), self.assertRaises(pages.Rejected):
+                pages.select_plan(self.gh, {"inputs": inputs}, "production")
+        self.event["workflow_run"] = copy.deepcopy(self.run)
+        with self.assertRaises(pages.Rejected):
+            self.production()
+
+    def test_manual_production_rejects_wrong_run_workflow_event_branch_and_repository(self):
+        self.setup_production_build()
+        for key, value in (("id", 101), ("workflow_id", 13), ("path", ".github/workflows/pages-preview-build.yml"),
+                           ("event", "push"), ("head_branch", "feature"), ("conclusion", "failure"),
+                           ("status", "in_progress"), ("repository", {"id": 99}), ("head_repository", {"id": 99})):
+            with self.subTest(key=key):
+                old = self.run[key]
+                self.run[key] = value
+                with self.assertRaises(pages.Rejected):
+                    self.production()
+                self.run[key] = old
+
+    def test_manual_production_rejects_superseded_master_attempt_and_nonforward_ref(self):
+        self.setup_production_build()
+        self.run["run_attempt"] = 3
+        with self.assertRaises(pages.Superseded):
+            self.production()
+        self.run["run_attempt"] = 2
+        self.values[self.root + "/git/ref/heads/master"]["object"]["sha"] = OTHER_SHA
+        with self.assertRaises(pages.Superseded):
+            self.production()
+        self.values[self.root + "/git/ref/heads/master"]["object"]["sha"] = SHA
+        self.values[self.root + f"/compare/{OLD_SHA}...{SHA}"]["status"] = "behind"
+        with self.assertRaises(pages.Rejected):
+            self.production()
+
+    def test_manual_production_rejects_missing_ambiguous_expired_or_unsigned_artifact(self):
+        self.setup_production_build()
+        for key, value in (("name", "maple-pages-production-100-1"), ("name", "maple-pages-preview-100-2"),
+                           ("expired", True), ("digest", None), ("size_in_bytes", True),
+                           ("size_in_bytes", pages.MAX_DOWNLOAD + 1)):
+            with self.subTest(key=key, value=value):
+                old = self.artifact[key]
+                self.artifact[key] = value
+                with self.assertRaises(pages.Rejected):
+                    self.production()
+                self.artifact[key] = old
+        self.values[self.root + "/actions/runs/100/artifacts?per_page=100"]["artifacts"].append(self.artifact)
+        with self.assertRaises(pages.Rejected):
+            self.production()
+
+    def production_build_api(self, manifest_changes=None, wrong_digest=False):
+        archive = io.BytesIO()
+        contents = b"<html>Production web fixture</html>"
+        with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+            member = tarfile.TarInfo("index.html")
+            member.size = len(contents)
+            bundle.addfile(member, io.BytesIO(contents))
+        manifest = {"schema_version": 1, "profile": "release", "source_sha": SHA, "run_id": 100,
+                    "run_attempt": 2, "archive_sha256": hashlib.sha256(archive.getvalue()).hexdigest()}
+        manifest.update(manifest_changes or {})
+        zipped = io.BytesIO()
+        with zipfile.ZipFile(zipped, "w") as bundle:
+            bundle.writestr("maple-web-dist.tar.gz", archive.getvalue())
+            bundle.writestr("pages-artifact.json", json.dumps(manifest))
+        body = zipped.getvalue()
+        self.artifact.update(size_in_bytes=len(body), digest="sha256:" + (
+            "0" * 64 if wrong_digest else hashlib.sha256(body).hexdigest()))
+        api = pages.API("https://api.github.com", "fake-web-build-canary")
+
+        def request(path, method="GET", data=None, accept="application/vnd.github+json"):
+            self.assertEqual(method, "GET")
+            self.assertIsNone(data)
+            self.assertEqual(accept, "application/vnd.github+json")
+            if path == self.root + "/actions/artifacts/300/zip":
+                return io.BytesIO(body)
+            return io.BytesIO(json.dumps(self.values[path]).encode())
+
+        api.request = Mock(side_effect=request)
+        return pages.GitHub(api, self.repo, REPO_ID), contents
+
+    def test_manual_production_prepares_real_release_profile_zip(self):
+        self.setup_production_build()
+        gh, contents = self.production_build_api()
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "prepared"
+            plan = pages.prepare(gh, self.event, "production", state)
+            self.assertEqual(plan["artifact_id"], 300)
+            self.assertEqual((state / "assets/index.html").read_bytes(), contents)
+            saved = json.loads((state / "plan.json").read_text())
+            self.assertEqual(saved["files"], {"index.html": hashlib.sha256(contents).hexdigest()})
+
+    def test_manual_production_rejects_profile_identity_and_digest_substitution_before_extraction(self):
+        self.setup_production_build()
+        for changes, wrong_digest in (({"profile": "pr"}, False), ({"profile": "auth-release"}, False),
+                                      ({"source_sha": OTHER_SHA}, False), ({"run_id": 101}, False),
+                                      ({"run_attempt": 1}, False), ({"archive_sha256": "0" * 64}, False), ({}, True)):
+            with self.subTest(changes=changes, wrong_digest=wrong_digest), tempfile.TemporaryDirectory() as tmp:
+                gh, _ = self.production_build_api(changes, wrong_digest)
+                state = Path(tmp) / "prepared"
+                with self.assertRaises(ValueError):
+                    pages.prepare(gh, self.event, "production", state)
+                self.assertFalse((state / "assets").exists())
+
+    def test_manual_production_rechecks_selection_before_and_after_upload(self):
+        self.setup_production_build()
+        gh, _ = self.production_build_api()
+        for change_after_upload in (False, True):
+            with self.subTest(change_after_upload=change_after_upload), tempfile.TemporaryDirectory() as tmp:
+                self.values[self.root + "/git/ref/heads/master"]["object"]["sha"] = SHA
+                state = Path(tmp) / "prepared"
+                pages.prepare(gh, self.event, "production", state)
+
+                def change_source(*args):
+                    self.values[self.root + "/git/ref/heads/master"]["object"]["sha"] = OTHER_SHA
+
+                if not change_after_upload:
+                    change_source()
+                with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "fake"}), \
+                     patch.object(pages, "cloudflare_project"), patch.object(pages, "run_wrangler") as upload, \
+                     patch.object(pages, "verify_deployment", side_effect=change_source), \
+                     patch.object(gh, "write") as write, self.assertRaises(pages.Superseded):
+                    pages.deploy(gh, self.event, state)
+                self.assertEqual(upload.call_count, 1 if change_after_upload else 0)
+                write.assert_not_called()
+
+    def test_blank_manual_inputs_keep_stable_release_selection(self):
+        self.setup_release()
+        self.event = {"inputs": {"build_run_id": "", "build_run_attempt": ""}}
+        self.assertEqual(self.production()["release_id"], 900)
+
+    def test_older_stable_release_cannot_overwrite_newer_manual_web_source(self):
+        self.setup_release()
+        self.values[self.root + "/git/ref/heads/pages-production"]["object"]["sha"] = OTHER_SHA
+        self.values[self.root + f"/compare/{OTHER_SHA}...{SHA}"] = {"status": "behind"}
+        for event in (self.event, {}):
+            with self.subTest(event=event), self.assertRaises(pages.Rejected):
+                pages.select_plan(self.gh, event, "production")
 
     def test_release_selects_exact_production_asset(self):
         self.setup_release()

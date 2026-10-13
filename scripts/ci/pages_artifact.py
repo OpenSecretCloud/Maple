@@ -157,7 +157,7 @@ def read_preview_zip(
 ) -> dict:
     """Unwrap precisely the two expected GitHub artifact files, without extraction."""
     if (expected_profile, archive_name) not in {
-        ("pr", ARCHIVE_NAME), ("auth-release", AUTH_ARCHIVE_NAME),
+        ("pr", ARCHIVE_NAME), ("release", ARCHIVE_NAME), ("auth-release", AUTH_ARCHIVE_NAME),
         ("auth-dev", AUTH_ARCHIVE_NAME),
     }:
         raise ArtifactError("Unsupported artifact archive/profile pair")
