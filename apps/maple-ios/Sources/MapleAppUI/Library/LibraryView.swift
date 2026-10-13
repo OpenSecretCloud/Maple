@@ -39,6 +39,7 @@
         private let onDrawerDestinationChanged: (@MainActor (Bool) -> Void)?
         private let projectExpansion: LibraryProjectExpansionController?
         private let onManageProjects: (@MainActor (String?) -> Void)?
+        private let account: AccountEntitlements?
         private let conversationActivity: @MainActor (String) -> ConversationActivity
         private let projectActivity: @MainActor (String) -> ConversationActivity
 
@@ -49,6 +50,7 @@
             onNewChat: @escaping @MainActor (String?) -> Void,
             selectedChatID: String? = nil,
             settings: @escaping @MainActor () -> AnyView,
+            account: AccountEntitlements? = nil,
             conversationActivity: @escaping @MainActor (String) -> ConversationActivity = { _ in .idle },
             projectActivity: @escaping @MainActor (String) -> ConversationActivity = { _ in .idle },
             projectExpansion: LibraryProjectExpansionController? = nil,
@@ -68,6 +70,7 @@
             self.library = library; self.makeInstructionEditor = makeInstructionEditor
             self.onSelectChat = onSelectChat; self.onNewChat = onNewChat; self.settings = settings;
             self.selectedChatID = selectedChatID
+            self.account = account
             self.conversationActivity = conversationActivity; self.projectActivity = projectActivity
             self.onClose = onClose; self.settingsFullScreen = settingsFullScreen
             self.settingsPresented = settingsPresented; self.onSettingsDismiss = onSettingsDismiss
@@ -211,10 +214,13 @@
                     .allowsHitTesting(navigationAvailable)
                     .accessibilityHidden(!navigationAvailable)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
-                        searchControls
-                            .padding(.horizontal, 16).padding(.vertical, 8)
-                            .allowsHitTesting(navigationAvailable)
-                            .accessibilityHidden(!navigationAvailable)
+                        VStack(spacing: 8) {
+                            if let account { LibraryUsageTile(account: account) }
+                            searchControls
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .allowsHitTesting(navigationAvailable)
+                        .accessibilityHidden(!navigationAvailable)
                     }
                     .listStyle(.plain)
                     .environment(\.defaultMinListRowHeight, 50)
@@ -275,6 +281,7 @@
                 .modifier(
                     LibraryChatManagement(
                         library: library, selecting: $selecting, onMutation: refresh,
+                        account: account,
                         onSettings: {
                             suspendSearch()
                             if settingsFullScreen {

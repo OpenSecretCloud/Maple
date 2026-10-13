@@ -112,10 +112,13 @@
         @Bindable var library: LibraryModel
         @Binding var selecting: Bool
         var onMutation: (@MainActor () async -> Void)? = nil
+        var account: AccountEntitlements? = nil
         var onSettings: (@MainActor () -> Void)? = nil
         var compactRootBar = false
         var nativeRootBarHidden = false
         var nativeRootBarTrailing: AnyView? = nil
+        @Environment(\.colorScheme) private var colorScheme
+        @Environment(\.displayScale) private var displayScale
         @State private var moving = false
         @State private var deleting = false
         @State private var deletingAll = false
@@ -212,9 +215,9 @@
                     if let onSettings {
                         Button(action: onSettings) {
                             Label {
-                                libraryText("Settings")
+                                settingsTitle
                             } icon: {
-                                Image(systemName: "gearshape")
+                                settingsIcon
                             }
                         }
                         .accessibilityIdentifier("library.settings")
@@ -255,6 +258,35 @@
             .accessibilityLabel(libraryText("Maple menu"))
             .accessibilityIdentifier("library.actions")
             .disabled(library.isMutating)
+        }
+
+        private var settingsTitle: Text {
+            guard let attention = account.flatMap({ LibraryAccountAttention(team: $0.team.value) }) else {
+                return libraryText("Settings")
+            }
+            return Text(
+                String(
+                    localized: "Settings, %@", defaultValue: "Settings, \(attention.accessibilityLabel)",
+                    table: "Library", bundle: .module))
+        }
+
+        private var settingsIcon: Image {
+            guard let account, LibraryAccountAttention(team: account.team.value) != nil else {
+                return Image(systemName: "gearshape")
+            }
+            // Native menus export one title and image from Label. Render the
+            // existing badge into that image so its color survives menu export.
+            let renderer = ImageRenderer(
+                content: Image(systemName: "gearshape").font(.system(size: 19)).foregroundStyle(.primary)
+                    .frame(width: 24, height: 24)
+                    .overlay(alignment: .topTrailing) {
+                        LibraryAccountAttentionBadge(account: account).font(.system(size: 10))
+                            .background(.background, in: Circle()).offset(x: 3, y: -3)
+                    }
+                    .padding(3).environment(\.colorScheme, colorScheme))
+            renderer.scale = displayScale
+            guard let image = renderer.uiImage else { return Image(systemName: "exclamationmark.circle.fill") }
+            return Image(uiImage: image).renderingMode(.original)
         }
 
         private var selectionDone: some View {

@@ -116,6 +116,82 @@ public struct BillingStatus: Decodable, Equatable, Sendable {
     }
 }
 
+/// Presentation data only. A usage meter never grants or denies account access.
+public struct BillingUsageSummary: Equatable, Sendable {
+    public enum PlanLabel: Equatable, Sendable {
+        case loading, product(String), productPlan(String)
+    }
+
+    public struct Meter: Equatable, Sendable {
+        public let percentUsed: Double
+        public var roundedPercentUsed: Int { Int(percentUsed.rounded()) }
+        public let reset: BillingUsageReset
+        public let creditBalance: Double?
+    }
+
+    public let planLabel: PlanLabel
+    public let meter: Meter?
+}
+
+public enum BillingUsageReset: Equatable, Sendable {
+    case monthly, lessThanOneHour, hours(Int), tomorrow, days(Int), date(Date)
+
+    static func resolve(_ value: String?, now: Date, calendar: Calendar) -> Self {
+        guard let value, let date = resetDate(value),
+            date >= now,
+            let days = calendar.dateComponents(
+                [.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: date)
+            ).day
+        else { return .monthly }
+        if days == 0 {
+            let hours = Int(date.timeIntervalSince(now) / 3_600)
+            return hours < 1 ? .lessThanOneHour : .hours(hours)
+        }
+        if days == 1 { return .tomorrow }
+        if (2...7).contains(days) { return .days(days) }
+        return .date(date)
+    }
+
+    private static func resetDate(_ value: String) -> Date? {
+        if let date = BillingDate.text(value).date { return date }
+        // Research's ISO date-only reset values describe UTC midnight, not a
+        // local calendar date. Keep this fallback separate from renewal dates.
+        guard value.range(of: #"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter.date(from: value)
+    }
+}
+
+extension BillingStatus {
+    public func usageSummary(now: Date = Date(), calendar: Calendar = .current) -> BillingUsageSummary {
+        let name = productName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let label: BillingUsageSummary.PlanLabel
+        if name.isEmpty {
+            label = .loading
+        } else if name.range(
+            of: #"(?<![A-Za-z0-9_])[pP][lL][aA][nN](?![A-Za-z0-9_])"#, options: .regularExpression) != nil
+        {
+            label = .product(name)
+        } else {
+            label = .productPlan(name)
+        }
+        guard let totalTokens, totalTokens > 0, let usedTokens else {
+            return BillingUsageSummary(planLabel: label, meter: nil)
+        }
+        let percent = min(100, max(0, Double(usedTokens) / Double(totalTokens) * 100))
+        let credits = apiCreditBalance.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        return BillingUsageSummary(
+            planLabel: label,
+            meter: .init(
+                percentUsed: percent, reset: .resolve(usageResetDate, now: now, calendar: calendar),
+                creditBalance: credits))
+    }
+}
+
 public struct TeamSeatMismatch: Equatable, Sendable {
     public let memberCount: Int?
     public let billedSeatCount: Int?

@@ -818,6 +818,174 @@
         }
       }
     },
+    "Loading...": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading..."
+          }
+        }
+      }
+    },
+    "Resets Monthly": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets Monthly"
+          }
+        }
+      }
+    },
+    "Resets in less than 1 hour": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets in less than 1 hour"
+          }
+        }
+      }
+    },
+    "Resets Tomorrow": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets Tomorrow"
+          }
+        }
+      }
+    },
+    "Team usage paused": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Team usage paused"
+          }
+        }
+      }
+    },
+    "Team setup required": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Team setup required"
+          }
+        }
+      }
+    },
+    "library.usage.product-plan": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Plan"
+          }
+        }
+      }
+    },
+    "library.usage.percent-used": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@%% used"
+          }
+        }
+      }
+    },
+    "library.usage.credits": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%@ credits"
+          }
+        }
+      }
+    },
+    "library.usage.reset-date": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets %@"
+          }
+        }
+      }
+    },
+    "library.usage.reset-hours": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld hour"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld hours"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "library.usage.reset-days": {
+      "comment": "Read-only Research sidebar usage summary. No pricing or purchase action.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld day"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Resets in %lld days"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Response in progress": {
       "comment": "Research library parity copy. User titles and project names are interpolation values, never localization keys.",
       "extractionState": "manual",
@@ -850,6 +1018,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@, completed, unread"
+          }
+        }
+      }
+    },
+    "Settings, %@": {
+      "comment": "Native Settings menu action title with the read-only team attention status; the argument is localized status text.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings, %@"
           }
         }
       }

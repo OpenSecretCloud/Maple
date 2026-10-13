@@ -300,6 +300,7 @@ enum ChatComposerPresentation {
                     },
                     selectedChatID: environment.selectedChat?.conversationID,
                     settings: { AnyView(SettingsScreen(environment: environment, context: context)) },
+                    account: environment.entitlements?.scope == context.scope ? environment.entitlements : nil,
                     conversationActivity: {
                         guard context.scope == environment.session.account?.scope else { return .idle }
                         return environment.activity(for: $0)
