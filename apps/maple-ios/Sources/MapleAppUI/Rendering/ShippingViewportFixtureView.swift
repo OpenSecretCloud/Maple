@@ -74,6 +74,7 @@
                                         else { return }
                                         model?.scrollMetrics = metrics
                                     },
+                                    fixtureScrollStateChanged: { [weak model] state in model?.scrollState = state },
                                     fixtureItemHorizontalGeometryChanged: { [weak model] itemID, geometry in
                                         model?.recordWidthToolHorizontalGeometry(itemID: itemID, geometry: geometry)
                                     },
@@ -135,7 +136,8 @@
                     account: model.account, preferences: model.preferences,
                     fixtureProjectionIsCurrent: { [weak model] scope, owner in
                         model?.projectionIsCurrent(scope: scope, storageOwner: owner) ?? false
-                    }, fixtureOptions: model.optionsContext
+                    }, fixtureOptions: model.optionsContext,
+                    fixtureScrollStateChanged: { [weak model] state in model?.scrollState = state }
                 )
                 .id(owner)
                 .background(MapleSurface.canvas)
@@ -164,9 +166,21 @@
                 requestMenu: { [weak model] in model?.projectionMenuPresented = $0 },
                 blockPresentation: { _, _ in },
                 chatShown: { reason in
-                    guard model.projectionIsCurrent(scope: scope, storageOwner: owner),
-                        !model.projectionMenuPresented
+                    model.paginationChatShownCalls += 1
+                    // The controller retains this callback across initial
+                    // loading, which can replace the snapshot's storage owner.
+                    // Read the controller lease's acknowledged owner now.
+                    guard compactLease.scope == scope, let shownOwner = compactLease.storageOwner,
+                        model.projectionIsCurrent(scope: scope, storageOwner: shownOwner),
+                        !model.projectionMenuPresented,
+                        compactLease.state(scope: scope, storageOwner: shownOwner).returnRevision > 0,
+                        !compactLease.state(scope: scope, storageOwner: shownOwner).occluded
                     else { return }
+                    model.paginationChatShownAdmissions += 1
+                    // The isolated environment owns no signed-in chat registry.
+                    // Mirror production's acknowledged visibility publication
+                    // for this exact retained synthetic runtime.
+                    model.runtime.isVisible = true
                     if reason == .navigation { paginationMenuFocused = true }
                 }
             )
@@ -176,8 +190,16 @@
             .onChange(of: model.projectionMenuPresented) { _, presented in
                 if presented { paginationMenuFocused = false }
             }
-            .onChange(of: compactLease.menuVisible) { _, available in
-                paginationCloseFocused = available
+            .onChange(of: compactLease.state(scope: scope, storageOwner: owner), initial: true) { _, state in
+                guard compactLease.scope == scope, compactLease.storageOwner == owner,
+                    model.projectionIsCurrent(scope: scope, storageOwner: owner)
+                else { return }
+                model.paginationLeasePublications += 1
+                model.runtime.isVisible = state.returnRevision > 0 && !state.occluded
+                paginationCloseFocused = compactLease.menuVisible
+            }
+            .onChange(of: model.runtime.isVisible) { _, _ in
+                model.paginationVisibilityChanges += 1
             }
         }
 
@@ -198,14 +220,7 @@
         }
 
         private func paginationNavigationDiagnostics(_ model: ShippingViewportFixtureModel) -> some View {
-            VStack(spacing: 0) {
-                Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
-                    .accessibilityIdentifier("shipping-viewport.summary")
-                Text("Synthetic retained Chat owners").font(.caption2)
-                    .accessibilityIdentifier("shipping-window.ownership")
-                    .accessibilityValue(model.windowOwnership)
-            }
-            .accessibilityElement(children: .contain)
+            ShippingPaginationNavigationDiagnostics(model: model, lease: compactLease)
         }
 
         private func compactViewport(_ model: ShippingViewportFixtureModel) -> some View {
@@ -387,7 +402,10 @@
                 }.font(.caption)
                 Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
                     .accessibilityIdentifier("shipping-viewport.summary")
-                if ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof") {
+                    .accessibilityValue(model.scrollState)
+                if ProcessInfo.processInfo.arguments.contains("--maple-shipping-follow-scroll-proof")
+                    || ProcessInfo.processInfo.arguments.contains("--maple-shipping-item-poll-proof")
+                {
                     Text("Synthetic native viewport geometry").font(.caption2)
                         .accessibilityIdentifier("shipping-viewport.scroll-metrics")
                         .accessibilityValue(model.scrollMetricsJSON)
@@ -417,6 +435,25 @@
         }
 
         func updateUIView(_ uiView: UIView, context: Context) {}
+    }
+
+    /// The native title slot retains its content. Read observable inputs in the
+    /// hosted body rather than handing it a Text containing an earlier snapshot.
+    private struct ShippingPaginationNavigationDiagnostics: View {
+        @Bindable var model: ShippingViewportFixtureModel
+        @Bindable var lease: CompactMenuLease
+
+        var body: some View {
+            VStack(spacing: 0) {
+                Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
+                    .accessibilityIdentifier("shipping-viewport.summary")
+                    .accessibilityValue(model.paginationVisibilityJSON(lease: lease))
+                Text("Synthetic retained Chat owners").font(.caption2)
+                    .accessibilityIdentifier("shipping-window.ownership")
+                    .accessibilityValue(model.windowOwnership)
+            }
+            .accessibilityElement(children: .contain)
+        }
     }
 
     @MainActor @Observable private final class ShippingViewportFixtureModel {
@@ -462,6 +499,11 @@
         private var widthToolGeometry: [String: Double] = [:]
         private var horizontalScrollMetrics: [String: Double] = [:]
         var scrollMetrics: TranscriptViewportMetrics?
+        var scrollState = ""
+        var paginationChatShownCalls = 0
+        var paginationChatShownAdmissions = 0
+        var paginationLeasePublications = 0
+        var paginationVisibilityChanges = 0
         private var preparedDisappeared = 0
         private var preparedRetained = 0
         private var preparedCleared = 0
@@ -536,6 +578,25 @@
         }
         var scrollMetricsJSON: String {
             guard let scrollMetrics, let data = try? JSONEncoder().encode(scrollMetrics) else { return "{}" }
+            return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        func paginationVisibilityJSON(lease: CompactMenuLease) -> String {
+            let owner = runtime.snapshot.storageOwner
+            let state = lease.state(scope: runtime.scope, storageOwner: owner)
+            let value: [String: String] = [
+                "visible": String(runtime.isVisible), "foreground": String(runtime.isForeground),
+                "scopeCurrent": String(lease.scope == runtime.scope && account.scope == runtime.scope),
+                "ownerCurrent": String(lease.storageOwner == owner),
+                "runtimeOwner": owner.uuidString, "leaseOwner": lease.storageOwner?.uuidString ?? "nil",
+                "returnRevision": String(state.returnRevision), "occluded": String(state.occluded),
+                "menuVisible": String(lease.menuVisible), "menuRequested": String(projectionMenuPresented),
+                "projectionCurrent": String(projectionIsCurrent(scope: runtime.scope, storageOwner: owner)),
+                "chatShownCalls": String(paginationChatShownCalls),
+                "chatShownAdmissions": String(paginationChatShownAdmissions),
+                "leasePublications": String(paginationLeasePublications),
+                "visibilityChanges": String(paginationVisibilityChanges), "scrollCallback": scrollState,
+            ]
+            guard let data = try? JSONEncoder().encode(value) else { return "{}" }
             return String(data: data, encoding: .utf8) ?? "{}"
         }
         var widthToolGeometryJSON: String {

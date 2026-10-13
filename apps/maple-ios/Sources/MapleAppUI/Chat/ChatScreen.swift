@@ -432,6 +432,7 @@ enum ChatComposerPresentation {
             var fixtureProjectionIsCurrent: (@MainActor @Sendable (AccountScope, UUID) -> Bool)? = nil
             var fixtureOptions: ChatOptionsFixtureContext? = nil
             var fixtureScrollMetricsChanged: (@MainActor (TranscriptViewportMetrics) -> Void)? = nil
+            var fixtureScrollStateChanged: (@MainActor (String) -> Void)? = nil
             var fixtureItemHorizontalGeometryChanged: (@MainActor (String, TranscriptItemHorizontalGeometry) -> Void)? =
                 nil
             var fixtureHorizontalScrollMetricsChanged: (@MainActor ([String: CGFloat]) -> Void)? = nil
@@ -457,10 +458,24 @@ enum ChatComposerPresentation {
         @State private var transcriptSpace = UUID()
         @State private var followPolicy = TranscriptScrollPolicy()
         @State private var userScrollPhase = false
+        @State private var directScrollPhase = false
         @State private var followTasks: [UUID: Task<Void, Never>] = [:]
         @State private var appendFollowTask: Task<Void, Never>?
         @State private var pendingAppendFollow: AppendFollowRequest?
         @State private var scrollGestureRevision = 0
+        @State private var historyPagination = TranscriptHistoryPagination()
+        @State private var historyLoadTask: Task<Void, Never>?
+        @State private var historyRestorePending = false
+        #if DEBUG
+            @State private var appliedAppendFollows = 0
+            private var fixtureScrollState: String {
+                guard fixtureScrollStateChanged != nil else { return "" }
+                let request = pendingAppendFollow
+                let tail = turns.last.flatMap { turnFrames[$0.id] }
+                return
+                    "visible \(runtime.isVisible); foreground \(runtime.isForeground); user \(userScrollPhase); direct \(directScrollPhase); reader-away \(followPolicy.isUserScrolling); anchor \(readingAnchor != nil); history-owned \(historyPagination.isLoadInFlight); loading \(runtime.isLoadingOlder); pending-append \(request != nil); applied \(appliedAppendFollows); tail-current \(tail?.lastMessageID == runtime.messages.last?.id); gesture-current \(request == nil || request?.gestureRevision == scrollGestureRevision); return-current \(request == nil || request?.returnRevision == menuState.returnRevision)"
+            }
+        #endif
 
         private struct ReadingAnchor {
             let token = UUID()
@@ -552,11 +567,26 @@ enum ChatComposerPresentation {
                     currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
                     runtime.snapshot.storageOwner == request.storageOwner,
                     menuState.returnRevision == request.returnRevision,
-                    scrollGestureRevision == request.gestureRevision, !followPolicy.isUserScrolling,
-                    !runtime.isLoadingOlder, readingAnchor == nil, !userScrollPhase,
-                    runtime.messages.last?.id == request.lastItemID,
-                    let lastTurnID = turns.last?.id, let sample = turnFrames[lastTurnID],
+                    scrollGestureRevision == request.gestureRevision,
+                    request.fromPolling || !followPolicy.isUserScrolling,
+                    !runtime.isLoadingOlder, !historyPagination.isLoadInFlight, readingAnchor == nil, !userScrollPhase,
+                    runtime.messages.last?.id == request.lastItemID, let lastTurnID = turns.last?.id
+                else { return }
+                if request.fromPolling, turnFrames[lastTurnID] == nil, !request.materialized {
+                    // Materialization shares every owner, gesture and history
+                    // fence with the final scroll. The lazy tail cannot report
+                    // its native layout until it joins the viewport.
+                    pendingAppendFollow?.materialized = true
+                    readingPosition.scrollTo(id: lastTurnID, anchor: .bottom)
+                    return
+                }
+                guard
+                    let tailGeometry, tailGeometry.itemID == request.lastItemID, tailGeometry.ready,
+                    tailGeometry.returnRevision == request.returnRevision,
+                    tailGeometry.contentFrame.minY.isFinite, tailGeometry.contentFrame.height > 0,
+                    let sample = turnFrames[lastTurnID],
                     sample.returnRevision == request.returnRevision,
+                    sample.contentFrame.maxY >= tailGeometry.contentFrame.maxY - 0.5,
                     let target = TranscriptScrollPolicy.appendedItemOffset(
                         expectedItemID: request.lastItemID, renderedItemID: sample.lastMessageID,
                         tailBottom: sample.contentFrame.maxY,
@@ -566,6 +596,9 @@ enum ChatComposerPresentation {
                 // the transcript. Consume this once so later text growth cannot
                 // keep dragging the reader to a moving bottom anchor.
                 pendingAppendFollow = nil
+                #if DEBUG
+                    appliedAppendFollows += 1
+                #endif
                 // The timeline scrolls vertically; nested rich-content scrollers
                 // must not let an implicit horizontal target move its gutters.
                 withAnimation(.smooth(duration: 0.25)) { readingPosition.scrollTo(x: 0, y: target) }
@@ -574,7 +607,10 @@ enum ChatComposerPresentation {
 
         private func followAppendedReplies(_ mutation: TranscriptScrollPolicy.Mutation) {
             let requests = followPolicy.receive(mutation)
-            guard currentProjection, !menuState.occluded, !runtime.isLoadingOlder, readingAnchor == nil else { return }
+            guard currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
+                !runtime.isLoadingOlder,
+                !historyPagination.isLoadInFlight, readingAnchor == nil
+            else { return }
             for request in requests {
                 if request == .appendedItem, let lastItemID = mutation.lastItemID {
                     pendingAppendFollow = AppendFollowRequest(
@@ -655,15 +691,94 @@ enum ChatComposerPresentation {
                 // Content coordinates keep this target independent of a separately
                 // delivered scroll-offset update from another layout pass.
                 let point = max(0, sample.contentFrame.minY - anchor.viewportY + scrollMetrics.topInset)
-                guard point.isFinite, abs(point - (scrollMetrics.offset + scrollMetrics.topInset)) > 0.5 else {
+                guard point.isFinite else { return }
+                guard abs(point - (scrollMetrics.offset + scrollMetrics.topInset)) > 0.5 else {
+                    finishHistoryRestoration()
                     return
                 }
-                guard anchor.corrections < 64 else { readingAnchor = nil; return }
+                guard anchor.corrections < 64 else {
+                    readingAnchor = nil; historyRestorePending = false
+                    historyPagination.finishLoad()
+                    return
+                }
                 anchor.corrections += 1
                 readingAnchor = anchor
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 withTransaction(transaction) { readingPosition.scrollTo(x: 0, y: point) }
+            }
+        }
+
+        private func visibleReadingAnchor(firstMessageID: String?, returnRevision: Int) -> ReadingAnchor? {
+            let visible = turnFrames.filter {
+                let frame = $0.value.contentFrame.offsetBy(dx: 0, dy: -scrollMetrics.offset)
+                return $0.value.firstMessageID == firstMessageID && $0.value.returnRevision == returnRevision
+                    && scrollMetrics.returnRevision == returnRevision
+                    && frame.maxY > 0 && frame.minY < scrollMetrics.height
+            }.min { $0.value.contentFrame.minY < $1.value.contentFrame.minY }
+            return visible.map {
+                ReadingAnchor(turnID: $0.key, viewportY: $0.value.contentFrame.minY - scrollMetrics.offset)
+            }
+        }
+
+        private func finishHistoryRestoration() {
+            guard historyRestorePending else { return }
+            historyRestorePending = false
+            let canLoad =
+                currentProjection && !menuState.occluded && runtime.isVisible && runtime.isForeground
+                && !runtime.isLoadingOlder && runtime.hasOlderMessages
+            historyPagination.finishLoad(preserveQueued: canLoad)
+            // The queue records a physical gesture at the previous boundary.
+            // The prepend's programmatic offset is not new forward intent.
+            if historyPagination.startQueuedLoad(canLoad: canLoad) { loadOlderMessages() }
+        }
+
+        private func loadOlderMessages() {
+            guard currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
+                !runtime.isLoadingOlder, runtime.hasOlderMessages
+            else {
+                return
+            }
+            cancelFollowTasks()
+            let previousFirst = runtime.messages.first?.id
+            let returnRevision = menuState.returnRevision
+            readingAnchor = visibleReadingAnchor(firstMessageID: previousFirst, returnRevision: returnRevision)
+            historyRestorePending = false
+            historyLoadTask?.cancel()
+            historyLoadTask = Task { @MainActor in
+                await runtime.loadOlderMessages()
+                guard !Task.isCancelled, currentProjection else { return }
+                guard runtime.messages.first?.id != previousFirst else {
+                    readingAnchor = nil; historyRestorePending = false; historyPagination.finishLoad(); return
+                }
+                // The reader may have made a second gesture while this page was
+                // pending. Prefer that latest visible position at commit time.
+                readingAnchor =
+                    visibleReadingAnchor(firstMessageID: previousFirst, returnRevision: returnRevision)
+                    ?? readingAnchor
+                historyRestorePending = true
+                guard let anchor = readingAnchor else {
+                    if turnFrames.values.contains(where: {
+                        $0.firstMessageID == runtime.messages.first?.id
+                            && $0.returnRevision == menuState.returnRevision
+                    }) {
+                        finishHistoryRestoration()
+                    }
+                    return
+                }
+                readingAnchor?.restoring = true
+                guard !menuState.occluded, runtime.isVisible, runtime.isForeground else {
+                    historyRestorePending = false; historyPagination.finishLoad(); return
+                }
+                let token = anchor.token
+                // Materialize the retained visible turn before restoring its
+                // exact content-space position after the history prepend.
+                readingPosition.scrollTo(id: anchor.turnID, anchor: .top)
+                await Task.yield()
+                guard !Task.isCancelled, currentProjection, !menuState.occluded, readingAnchor?.token == token else {
+                    return
+                }
+                scheduleAnchorCorrection()
             }
         }
 
@@ -714,46 +829,11 @@ enum ChatComposerPresentation {
                     ScrollViewReader { reader in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 24) {
-                                if runtime.hasOlderMessages {
-                                    Button(MapleStrings.text("Load earlier messages")) {
-                                        guard !runtime.isLoadingOlder else { return }
-                                        cancelFollowTasks()
-                                        let previousFirst = runtime.messages.first?.id
-                                        let returnRevision = menuState.returnRevision
-                                        let visible = turnFrames.filter {
-                                            let frame = $0.value.contentFrame.offsetBy(dx: 0, dy: -scrollMetrics.offset)
-                                            return $0.value.firstMessageID == previousFirst
-                                                && $0.value.returnRevision == returnRevision
-                                                && scrollMetrics.returnRevision == returnRevision
-                                                && frame.maxY > 0 && frame.minY < scrollMetrics.height
-                                        }.min { $0.value.contentFrame.minY < $1.value.contentFrame.minY }
-                                        readingAnchor = visible.map {
-                                            ReadingAnchor(
-                                                turnID: $0.key,
-                                                viewportY: $0.value.contentFrame.minY - scrollMetrics.offset)
-                                        }
-                                        let token = readingAnchor?.token
-                                        Task { @MainActor in
-                                            await runtime.loadOlderMessages()
-                                            guard currentProjection, readingAnchor?.token == token,
-                                                let anchor = readingAnchor
-                                            else { return }
-                                            guard runtime.messages.first?.id != previousFirst else {
-                                                readingAnchor = nil; return
-                                            }
-                                            readingAnchor?.restoring = true
-                                            guard !menuState.occluded else { return }
-                                            // A LazyVStack can evict the previously visible row while
-                                            // prepending. Materialize it before restoring its exact offset.
-                                            readingPosition.scrollTo(id: anchor.turnID, anchor: .top)
-                                            await Task.yield()
-                                            guard currentProjection, !menuState.occluded,
-                                                readingAnchor?.token == token
-                                            else { return }
-                                            scheduleAnchorCorrection()
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity)
+                                if runtime.isLoadingOlder {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                        .accessibilityLabel(MapleStrings.text("Loading earlier messages"))
+                                        .accessibilityIdentifier("chat.history.loading")
                                 }
                                 if runtime.messages.isEmpty, runtime.conversationID == nil {
                                     VStack(alignment: .leading, spacing: 12) {
@@ -864,6 +944,7 @@ enum ChatComposerPresentation {
                                             turnFrames[turn.id] != sample
                                         else { return }
                                         turnFrames[turn.id] = sample
+                                        if historyRestorePending, readingAnchor == nil { finishHistoryRestoration() }
                                         scheduleAnchorCorrection()
                                         scheduleAppendFollow()
                                     }
@@ -898,7 +979,7 @@ enum ChatComposerPresentation {
                                 visibleMinY: geometry.visibleRect.minY, visibleHeight: geometry.visibleRect.height,
                                 boundsMinY: geometry.bounds.minY, boundsHeight: geometry.bounds.height,
                                 returnRevision: returnRevision)
-                        } action: { _, metrics in
+                        } action: { previous, metrics in
                             guard !menuState.occluded, metrics.returnRevision == menuState.returnRevision else {
                                 return
                             }
@@ -917,8 +998,22 @@ enum ChatComposerPresentation {
                                             boundsMinY: metrics.boundsMinY, boundsHeight: metrics.boundsHeight))
                                 }
                             #endif
-                            if userScrollPhase {
+                            if userScrollPhase, readingAnchor?.restoring != true {
                                 followPolicy.readerScrolled(distanceFromBottom: metrics.distanceFromBottom)
+                                if runtime.isLoadingOlder, historyPagination.isLoadInFlight {
+                                    readingAnchor = visibleReadingAnchor(
+                                        firstMessageID: runtime.messages.first?.id,
+                                        returnRevision: menuState.returnRevision)
+                                }
+                                if historyPagination.shouldLoad(
+                                    previousOffset: previous.offset + previous.topInset,
+                                    offset: metrics.offset + metrics.topInset,
+                                    canLoad: currentProjection && runtime.hasOlderMessages,
+                                    requestInFlight: runtime.isLoadingOlder || readingAnchor?.restoring == true,
+                                    directUserInput: directScrollPhase)
+                                {
+                                    loadOlderMessages()
+                                }
                             }
                             scheduleAnchorCorrection()
                             scheduleAppendFollow()
@@ -944,14 +1039,30 @@ enum ChatComposerPresentation {
                                 callback(metrics)
                             }
                         #endif
-                        .onScrollPhaseChange { _, phase in
-                            if !menuState.occluded, phase == .tracking || phase == .interacting {
+                        .onScrollPhaseChange { previous, phase in
+                            if !menuState.occluded, phase == .tracking || phase == .interacting,
+                                previous != .tracking && previous != .interacting
+                            {
                                 readingAnchor = nil; correctionTask?.cancel()
                                 scrollGestureRevision += 1; cancelFollowTasks()
+                                historyPagination.gestureChanged(active: false)
+                                // A new reader gesture ends the previous
+                                // request's correction once its page is laid
+                                // out; it must not strand the owned gate.
+                                if historyRestorePending, !runtime.isLoadingOlder,
+                                    turnFrames.values.contains(where: {
+                                        $0.firstMessageID == runtime.messages.first?.id
+                                            && $0.returnRevision == menuState.returnRevision
+                                    })
+                                {
+                                    finishHistoryRestoration()
+                                }
                             }
                             if !menuState.occluded {
                                 let wasUserScrolling = userScrollPhase
                                 userScrollPhase = phase == .tracking || phase == .interacting || phase == .decelerating
+                                directScrollPhase = phase == .tracking || phase == .interacting
+                                historyPagination.gestureChanged(active: userScrollPhase)
                                 if userScrollPhase || wasUserScrolling {
                                     followPolicy.readerScrolled(distanceFromBottom: scrollMetrics.distanceFromBottom)
                                 }
@@ -968,6 +1079,16 @@ enum ChatComposerPresentation {
                         }
                         .onChange(of: menuState.returnRevision) { _, _ in
                             resumeReadingAfterMenu(reader: reader)
+                        }
+                        .onChange(of: runtime.isForeground) { _, foreground in
+                            if foreground {
+                                resumeReadingAfterMenu(reader: reader)
+                            } else {
+                                historyPagination.resetIntent()
+                            }
+                        }
+                        .onChange(of: runtime.isVisible) { _, visible in
+                            if !visible { historyPagination.resetIntent() }
                         }
                         .onChange(of: transcriptMutation) { _, mutation in
                             followAppendedReplies(mutation)
@@ -993,6 +1114,12 @@ enum ChatComposerPresentation {
             .onDisappear {
                 correctionTask?.cancel(); correctionTask = nil
                 acceptedTurnScrollTask?.cancel(); acceptedTurnScrollTask = nil
+                historyPagination.resetIntent()
+                directScrollPhase = false
+                if !menuState.occluded {
+                    historyLoadTask?.cancel(); historyLoadTask = nil
+                    historyRestorePending = false; historyPagination.finishLoad()
+                }
                 cancelFollowTasks()
                 if !menuState.occluded { readingAnchor = nil; pendingScrollMessage = nil }
             }
@@ -1020,6 +1147,11 @@ enum ChatComposerPresentation {
                 if occluded {
                     composerFocused = false; correctionTask?.cancel(); acceptedTurnScrollTask?.cancel()
                     cancelFollowTasks(); userScrollPhase = false
+                    directScrollPhase = false
+                    historyPagination.resetIntent()
+                    if historyRestorePending {
+                        historyRestorePending = false; historyPagination.finishLoad()
+                    }
                 } else {
                     presentContextLimitIfNeeded()
                 }
@@ -1029,6 +1161,11 @@ enum ChatComposerPresentation {
                     composerFocused = true
                 }
             }
+            #if DEBUG
+                .onChange(of: fixtureScrollState, initial: true) { _, state in
+                    fixtureScrollStateChanged?(state)
+                }
+            #endif
             .onAppear {
                 environment.updatePresentationVisibility()
                 presentContextLimitIfNeeded()

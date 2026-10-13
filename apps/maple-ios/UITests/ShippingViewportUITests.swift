@@ -680,11 +680,12 @@ final class ShippingViewportUITests: XCTestCase {
         launchFixture()
         let anchor = readingAnchor(20)
         waitForReadingAnchor(anchor, index: 20)
-        // Invoke the real in-transcript pagination action, then hold its service
-        // result while recording the exact visible text position.
-        let load = app.buttons["Load earlier messages"]
-        XCTAssertTrue(load.isHittable)
-        load.tap()
+        XCTAssertFalse(app.buttons["Load earlier messages"].exists)
+        // Initial layout at the history boundary must not load. A real native
+        // backward gesture triggers pagination; hold its synthetic service page
+        // while recording the exact visible reading position.
+        waitSummary("older 0; messages 8")
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
         waitSummary("older 1; messages 8")
         waitForReadingAnchor(anchor, index: 20)
         let before = anchor.frame.midY
@@ -692,7 +693,7 @@ final class ShippingViewportUITests: XCTestCase {
         waitSummary("older 0; messages 28")
         waitForReadingAnchor(anchor, index: 20)
         XCTAssertEqual(anchor.frame.midY, before, accuracy: 3)
-        XCTAssertFalse(load.exists)
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
         XCTAssertTrue(app.textViews["chat.composer"].isHittable)
         capture("Shipping history prepend retains reading anchor and composer inset")
     }
@@ -709,12 +710,21 @@ final class ShippingViewportUITests: XCTestCase {
         waitForReadingAnchor(anchor, index: 20)
         XCTAssertTrue(composer.exists && composer.isHittable)
         let owners = try windowOwnership()
+        let visibilityValue = try XCTUnwrap(app.staticTexts["shipping-viewport.summary"].value as? String)
+        let visibilityData = try XCTUnwrap(visibilityValue.data(using: .utf8))
+        let visibility = try JSONDecoder().decode([String: String].self, from: visibilityData)
+        attachScrollState("Retained Chat visibility before input")
+        XCTAssertTrue(
+            visibility["visible"] == "true" && visibility["scopeCurrent"] == "true"
+                && visibility["ownerCurrent"] == "true" && visibility["occluded"] == "false"
+                && (UInt64(visibility["returnRevision"] ?? "") ?? 0) > 0,
+            "The retained fixture must publish the actual acknowledged Chat visibility before input: \(visibilityValue)"
+        )
         for key in ["instance", "storageOwner", "draftOwner"] {
             XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(owners[key])))
         }
-        let load = app.buttons["Load earlier messages"]
-        XCTAssertTrue(load.exists && load.isEnabled && load.isHittable)
-        load.tap()
+        XCTAssertFalse(app.buttons["Load earlier messages"].exists)
+        app.scrollViews["chat.transcript"].swipeDown(velocity: .slow)
         waitSummary("older 1; messages 8")
         waitForReadingAnchor(anchor, index: 20)
         let before = anchor.frame.midY
@@ -753,7 +763,7 @@ final class ShippingViewportUITests: XCTestCase {
         waitForReadingAnchor(anchor, index: 20)
         XCTAssertEqual(anchor.frame.midY, before, accuracy: 3)
         XCTAssertEqual(try windowOwnership(), owners)
-        XCTAssertFalse(load.exists)
+        XCTAssertFalse(app.otherElements["chat.history.loading"].exists)
         XCTAssertTrue(composer.isHittable)
         capture("Full-screen Menu returns the same Chat owner and pagination anchor")
     }
@@ -1567,7 +1577,9 @@ final class ShippingViewportUITests: XCTestCase {
                 appendedTail.exists && appendedTail.isHittable && transcript.frame.contains(appendedTail.frame)
                     && (distanceFromBottom().map { $0 < 30 } ?? false)
             }, object: appendedTail)
-        XCTAssertEqual(XCTWaiter.wait(for: [followed], timeout: 10), .completed)
+        let result = XCTWaiter.wait(for: [followed], timeout: 10)
+        attachScrollState("Streaming append scroll state")
+        XCTAssertEqual(result, .completed)
         capture("New streaming reply item follows the reader at the bottom")
 
         let anchor = readingAnchor(20)
@@ -1767,5 +1779,10 @@ final class ShippingViewportUITests: XCTestCase {
     private func capture(_ name: String) {
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = name; shot.lifetime = .keepAlways; add(shot)
+    }
+    private func attachScrollState(_ name: String) {
+        let attachment = XCTAttachment(
+            string: app.staticTexts["shipping-viewport.summary"].value as? String ?? "missing")
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 }

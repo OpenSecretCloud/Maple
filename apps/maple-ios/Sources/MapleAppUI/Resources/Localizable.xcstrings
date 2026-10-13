@@ -2532,6 +2532,18 @@
         }
       }
     },
+    "Loading earlier messages": {
+      "comment": "Accessibility for the older-history loading spinner.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading earlier messages"
+          }
+        }
+      }
+    },
     "No content available": {
       "comment": "Empty legacy document history preview.",
       "extractionState": "manual",
