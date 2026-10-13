@@ -14,7 +14,7 @@ use maple_agent::agent::{
     AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentProjectTrustStatus,
     AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent, AgentSessionIntegrationKind,
     AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
-    AgentTimelineItem, SideQuestionEvent,
+    AgentThinkingState, AgentTimelineItem, CatalogEntry, SideQuestionEvent, ThinkingLevel,
 };
 
 use crate::backend::{AgentBackend, PendingQuestion};
@@ -40,6 +40,7 @@ mod speech;
 mod summaries;
 #[cfg(test)]
 mod tests;
+mod thinking;
 mod transcript;
 
 use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
@@ -178,6 +179,7 @@ pub(super) enum ChatPopup {
     /// The header chip's project menu.
     Project,
     Model,
+    Thinking,
     Integrations,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
@@ -392,6 +394,9 @@ pub struct ChatScreen {
     selected_model: Option<String>,
     /// Last explicit pick / saved default. New tasks restore this.
     default_model: Option<String>,
+    thinking: Option<AgentThinkingState>,
+    thinking_generation: u64,
+    thinking_saving: bool,
     /// The task on screen has a persisted model after its first message.
     model_locked: bool,
     /// Desktop notifications enabled (settings).
@@ -459,8 +464,9 @@ pub struct ChatScreen {
     draft_counter: u64,
     /// True while the native file dialog is open.
     image_picking: bool,
-    /// Catalog vision flag per model id, looked up when a model is chosen.
-    model_vision: HashMap<String, bool>,
+    /// The catalog's vision and context window per model id, looked up
+    /// when a model is chosen.
+    model_catalog: HashMap<String, CatalogEntry>,
     /// MCP servers with their enabled state for the selected task.
     session_mcp: Vec<AgentSessionMcpServer>,
     /// Count of enabled servers in `session_mcp`, for the composer chip.
@@ -1024,6 +1030,9 @@ impl ChatScreen {
             models: Vec::new(),
             selected_model: None,
             default_model: None,
+            thinking: None,
+            thinking_generation: 0,
+            thinking_saving: false,
             model_locked: false,
             notify_enabled: settings.desktop_notifications,
             window_active: true,
@@ -1044,7 +1053,7 @@ impl ChatScreen {
             draft_images: Vec::new(),
             draft_counter: 0,
             image_picking: false,
-            model_vision: HashMap::new(),
+            model_catalog: HashMap::new(),
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
             composer_expanded: false,
@@ -1674,7 +1683,8 @@ impl ChatScreen {
                         this.selected_model = this.default_model.clone();
                     }
                     this.models = models;
-                    this.refresh_vision(cx);
+                    this.refresh_model_catalog(cx);
+                    this.refresh_thinking(cx);
                 }
                 cx.notify();
             },
@@ -2150,7 +2160,6 @@ impl ChatScreen {
             // this list too. External agents are not servers and are
             // applied after creation.
             mcp_server_names: self.draft_mcp_names(),
-            system_prompt: None,
         })
     }
 
@@ -2407,10 +2416,10 @@ impl ChatScreen {
                     .await
             },
             cx,
-            |this, result, cx| {
-                if let Ok(Some((tokens, limit))) = result {
-                    this.apply_context_usage(tokens, limit, cx);
-                }
+            |this, result, cx| match result {
+                Ok(Some((tokens, limit))) => this.apply_context_usage(tokens, limit, cx),
+                Ok(None) => this.apply_context_usage(0, 0, cx),
+                Err(_) => {}
             },
         );
     }
@@ -2729,36 +2738,49 @@ impl ChatScreen {
         }
     }
 
-    /// Look up the catalog vision flag for the selected model once.
-    fn refresh_vision(&mut self, cx: &mut Context<Self>) {
+    /// Look up what the catalog says about the selected model once.
+    fn refresh_model_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(model) = self.selected_model.clone() else {
             return;
         };
-        if self.model_vision.contains_key(&model) {
+        if self.model_catalog.contains_key(&model) {
             return;
         }
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let lookup = model.clone();
         self.call(
-            async move { backend.model_supports_vision(&user_id, &lookup).await },
+            async move { backend.model_catalog_entry(&user_id, &lookup).await },
             cx,
             move |this, result, cx| {
-                if let Ok(Some(vision)) = result {
-                    this.model_vision.insert(model, vision);
+                if let Ok(Some(entry)) = result {
+                    this.model_catalog.insert(model, entry);
                     cx.notify();
                 }
             },
         );
     }
 
-    fn selected_model_supports_vision(&self) -> bool {
+    fn selected_model_entry(&self) -> Option<&CatalogEntry> {
         self.selected_model
             .as_ref()
-            .and_then(|model| self.model_vision.get(model))
-            .copied()
+            .and_then(|model| self.model_catalog.get(model))
+    }
+
+    fn selected_model_supports_vision(&self) -> bool {
+        self.selected_model_entry()
+            .and_then(|entry| entry.vision)
             .unwrap_or(false)
     }
+
+    /// The selected model's context window, which its runs compact at. An
+    /// unknown one leaves the runtime's default.
+    fn selected_model_context_window(&self) -> Option<usize> {
+        self.selected_model_entry()
+            .and_then(|entry| entry.context_window)
+            .and_then(|window| usize::try_from(window).ok())
+    }
+
     /// Reload the skill slash commands for the current project root.
     pub fn refresh_slash_commands(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
@@ -3606,6 +3628,11 @@ impl ChatScreen {
     }
 
     fn send_text_with(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+        if self.thinking_saving {
+            self.notice = Some("The thinking level is still being saved".into());
+            cx.notify();
+            return;
+        }
         if self.booting {
             self.notice = Some("Agent runtime is still starting".into());
             cx.notify();
@@ -3881,6 +3908,7 @@ impl ChatScreen {
                     return true;
                 };
                 let backend = self.backend.clone();
+                let user_id = self.user_id.clone();
                 let working_dir = self.project_root.clone();
                 let command = name.to_string();
                 let arguments = args.to_string();
@@ -3889,7 +3917,7 @@ impl ChatScreen {
                 self.call(
                     async move {
                         backend
-                            .resolve_slash_command(working_dir, command, arguments)
+                            .resolve_slash_command(&user_id, working_dir, command, arguments)
                             .await
                     },
                     cx,
@@ -3929,6 +3957,7 @@ impl ChatScreen {
         let user_id = self.user_id.clone();
         let model = self.selected_model.clone();
         let vision_capable = self.selected_model_supports_vision();
+        let context_limit = self.selected_model_context_window();
         let run_active = self.active_runs.contains_key(&session_id);
         // A queued chip keeps its own attachments; new images stay staged.
         let drafts = if queue_id.is_some() {
@@ -3940,7 +3969,7 @@ impl ChatScreen {
             session_id: session_id.clone(),
             text: text.clone(),
             model,
-            context_limit: None,
+            context_limit,
             vision_capable,
             steer: steer && run_active,
             queue_id,
@@ -4363,9 +4392,10 @@ impl ChatScreen {
         }
         self.selected_model = Some(model.clone());
         self.default_model = Some(model.clone());
+        self.refresh_thinking(cx);
         self.popup.close(cx);
         cx.notify();
-        self.refresh_vision(cx);
+        self.refresh_model_catalog(cx);
         // Remember the choice across launches via the agent config.
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
@@ -4383,7 +4413,7 @@ impl ChatScreen {
             return;
         }
         self.selected_model = model;
-        self.refresh_vision(cx);
+        self.refresh_model_catalog(cx);
         self.refresh_context_usage(cx);
     }
 
@@ -4392,6 +4422,7 @@ impl ChatScreen {
     fn restore_default_model(&mut self, cx: &mut Context<Self>) {
         self.model_locked = false;
         self.set_composer_model(self.default_model.clone(), cx);
+        self.refresh_thinking(cx);
     }
 
     fn apply_session_model(&mut self, session: &AgentSessionSummary, cx: &mut Context<Self>) {
@@ -4399,6 +4430,7 @@ impl ChatScreen {
         if locked {
             self.model_locked = true;
             self.set_composer_model(session.model.clone(), cx);
+            self.refresh_thinking(cx);
         } else {
             self.restore_default_model(cx);
         }
@@ -4789,6 +4821,8 @@ impl ChatScreen {
                     self.notice = Some(message.into());
                 }
             }
+            // The reload that follows shows the compaction's notice.
+            AgentRunEvent::Compacting | AgentRunEvent::Compacted => return false,
             AgentRunEvent::HistoryReplaced => {
                 if self.is_selected(session_id) {
                     // Replace history only; the run keeps flowing.

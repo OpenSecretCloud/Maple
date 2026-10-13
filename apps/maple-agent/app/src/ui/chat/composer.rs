@@ -952,6 +952,23 @@ impl ChatScreen {
                         cx,
                         |this, _| this.model_menu(),
                     ))
+                    .when_some(self.thinking.as_ref(), |row, thinking| {
+                        row.child(self.with_menu(
+                            ChatPopup::Thinking,
+                            chip(
+                                "thinking-picker",
+                                None,
+                                format!("Thinking: {}", thinking.current.as_str()),
+                                false,
+                                self.popup.is_open(&ChatPopup::Thinking),
+                                false,
+                            ),
+                            Placement::AboveStart,
+                            window,
+                            cx,
+                            |this, _| this.thinking_menu(),
+                        ))
+                    })
                     .child(self.with_menu(
                         ChatPopup::Integrations,
                         chip(

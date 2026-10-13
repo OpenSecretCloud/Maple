@@ -164,9 +164,9 @@ fn main() {
     match cli.mode {
         Some(Mode::Acp { .. }) => {
             // stdout is the ACP channel. Logs go to the log file only, so
-            // the client's stderr capture stays quiet. The inherited
-            // RUST_LOG belongs to the client (Buzz sets `buzz_acp=info`),
-            // so it is ignored here or it would silence Maple's own log.
+            // the client's stderr capture stays quiet. An inherited
+            // RUST_LOG belongs to the client, which may set it for its own
+            // log, so it is ignored here or it would silence Maple's log.
             #[cfg(not(feature = "acp"))]
             disabled_mode("acp", "acp");
             #[cfg(feature = "acp")]
@@ -374,8 +374,7 @@ fn init_logging(output: LogOutput) {
             .open(log_dir.join("maple-agent.log"))
             .ok()
     });
-    // goose is chatty at info during a run; its warnings still show.
-    const DEFAULT_FILTER: &str = "info,goose=warn";
+    const DEFAULT_FILTER: &str = "info";
     let mut builder = match output {
         LogOutput::FileAndStderr => env_logger::Builder::from_env(
             env_logger::Env::default().default_filter_or(DEFAULT_FILTER),
