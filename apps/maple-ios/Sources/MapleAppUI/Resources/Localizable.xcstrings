@@ -2363,6 +2363,30 @@
           }
         }
       }
+    },
+    "No content available": {
+      "comment": "Empty legacy document history preview.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No content available"
+          }
+        }
+      }
+    },
+    "chat.document-preview": {
+      "comment": "History document chip. Placeholder is its original filename.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview document: %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

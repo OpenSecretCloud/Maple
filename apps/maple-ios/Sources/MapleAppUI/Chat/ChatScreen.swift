@@ -1391,6 +1391,9 @@ enum ChatComposerPresentation {
             item.type == "reasoning" && isGenerating
                 && (["in_progress", "streaming"].contains(item.status ?? "") || item.status == nil)
         }
+        private var isStreamingText: Bool {
+            isGenerating && ["in_progress", "streaming"].contains(item.status ?? "in_progress")
+        }
         private var requiredFragments: Set<Int> { [0] }
         private func fragmentPrepared(_ id: Int) {
             if !readyFragments.contains(id) { readyFragments.insert(id) }
@@ -1486,6 +1489,11 @@ enum ChatComposerPresentation {
             }
         }
 
+        private func ordinaryText(_ text: String, fragmentID: Int = 0) -> some View {
+            MessageView(text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
+                .onPrepared { fragmentPrepared(fragmentID) }
+        }
+
         private var messageActions: some View {
             HStack(spacing: 8) {
                 Button(
@@ -1523,6 +1531,57 @@ enum ChatComposerPresentation {
                 withAnimation(.easeOut(duration: 0.18).delay(revealDelay)) { appeared = true }
             } else {
                 appeared = true
+            }
+        }
+    }
+
+    private struct LegacyDocumentChip: View {
+        let document: ChatLegacyContent.Document
+        let itemID: String
+        let generation: UUID
+        @State private var presented = false
+        @Environment(\.compactMenuPresentationDismissed) private var compactMenuPresentationDismissed
+
+        var body: some View {
+            Button {
+                presented = true
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "doc.text").font(.title2)
+                    Text(verbatim: document.filename).font(.caption).lineLimit(1)
+                }
+                .frame(width: 64, height: 64).padding(8)
+                .background(MapleSurface.card, in: RoundedRectangle(cornerRadius: 12))
+                .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(MapleSurface.border) }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                Text(
+                    String(
+                        localized: "chat.document-preview", defaultValue: "Preview document: \(document.filename)",
+                        table: "Localizable", bundle: .module))
+            )
+            .accessibilityIdentifier("message.document." + itemID)
+            .tracksChatPresentation(presented)
+            .onChange(of: generation) { _, _ in presented = false }
+            .sheet(isPresented: $presented, onDismiss: compactMenuPresentationDismissed) {
+                NavigationStack {
+                    ScrollView {
+                        Text(
+                            verbatim: document.text.isEmpty ? MapleStrings.text("No content available") : document.text
+                        )
+                        .font(.body).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding()
+                        .accessibilityIdentifier("message.document.content." + itemID)
+                    }
+                    .navigationTitle(document.filename).navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(MapleStrings.text("Done")) { presented = false }
+                                .frame(minWidth: 44, minHeight: 44)
+                        }
+                    }
+                }
             }
         }
     }
