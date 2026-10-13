@@ -5,8 +5,15 @@ final class TestSecureStore: SecureStore, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]
     private var failWrites = false
+    private var failReads = false
     func setWriteFailure(_ fail: Bool) { lock.withLock { failWrites = fail } }
-    func read(key: String) throws -> Data? { lock.withLock { values[key] } }
+    func setReadFailure(_ fail: Bool) { lock.withLock { failReads = fail } }
+    func read(key: String) throws -> Data? {
+        try lock.withLock {
+            if failReads { throw TransportError.persistence }
+            return values[key]
+        }
+    }
     func write(_ data: Data, key: String) throws {
         try lock.withLock {
             if failWrites { throw TransportError.persistence }

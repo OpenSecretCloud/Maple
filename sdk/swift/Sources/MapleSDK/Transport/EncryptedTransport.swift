@@ -28,6 +28,7 @@ public actor EncryptedTransport: OAuthSessionTransport {
     private let store: any SecureStore
     private let now: @Sendable () -> Date
     private var session: AttestedSession?
+    private var restoreSessionCache = true
     private var establishing: (id: UUID, task: Task<AttestedSession, Error>)?
     private var oauthBindings: [UUID: (AttestedSession, CredentialSnapshot, String)] = [:]
     private var nativeBindings: [UUID: (AttestedSession, CredentialSnapshot, Data, Date)] = [:]
@@ -69,13 +70,15 @@ public actor EncryptedTransport: OAuthSessionTransport {
             try Task.checkCancellation()
             return value
         }
-        if let data = try store.read(key: sessionStorageKey) {
+        let cached = restoreSessionCache ? try? store.read(key: sessionStorageKey) : nil
+        restoreSessionCache = false
+        if let data = cached {
             if data.count <= 16 * 1024, let restored = try? JSONDecoder().decode(AttestedSession.self, from: data),
                 (try? restored.validate(endpoint: endpoint, policy: policy, now: now())) != nil
             {
                 session = restored; return restored
             }
-            try store.remove(key: sessionStorageKey)
+            try? store.remove(key: sessionStorageKey)
         }
         let id = UUID()
         let task = Task { [endpoint, policy, network, now] in
@@ -95,7 +98,9 @@ public actor EncryptedTransport: OAuthSessionTransport {
         do {
             let established = try await task.value
             guard establishing?.id == id else { throw TransportError.expiredSession }
-            try store.write(JSONEncoder().encode(established), key: sessionStorageKey)
+            // Attestation remains authoritative; a cache failure cannot discard
+            // a verified session that is usable in this process.
+            try? store.write(JSONEncoder().encode(established), key: sessionStorageKey)
             session = established; establishing = nil
             try Task.checkCancellation()
             return established
@@ -169,8 +174,11 @@ public actor EncryptedTransport: OAuthSessionTransport {
 
     public func invalidateSession() throws {
         establishing?.task.cancel(); establishing = nil; session = nil
+        // Never restore a retired session in this process, even if deleting its
+        // best-effort durable cache fails.
+        restoreSessionCache = false
         oauthBindings.removeAll(); nativeBindings.removeAll()
-        try store.remove(key: sessionStorageKey)
+        try? store.remove(key: sessionStorageKey)
     }
 
     private func retire(_ old: AttestedSession) throws {
@@ -246,10 +254,9 @@ public actor EncryptedTransport: OAuthSessionTransport {
         else { throw TransportError.invalidEnvelope }
         let snapshot = try await credentials.snapshot()
         guard snapshot.principalId == nil else { throw TransportError.authorityChanged }
-        let root = try await credentials.cacheRoot()
         let current = try await ensureSession()
         let response = try await dispatch(
-            request, credential: nil, cacheRoot: root, snapshot: snapshot,
+            request, credential: nil, cacheRoot: nil, snapshot: snapshot,
             session: current, requestID: TransportCrypto.random(count: 16), inferenceSendCount: 0)
         try await credentials.assertCurrent(snapshot)
         guard session?.identity == current.identity else { throw TransportError.expiredSession }
@@ -271,10 +278,9 @@ public actor EncryptedTransport: OAuthSessionTransport {
         else {
             throw TransportError.invalidSession
         }
-        let root = try await credentials.cacheRoot()
         do {
             let response = try await dispatch(
-                request, credential: nil, cacheRoot: root, snapshot: snapshot,
+                request, credential: nil, cacheRoot: nil, snapshot: snapshot,
                 session: retained, requestID: TransportCrypto.random(count: 16), inferenceSendCount: 0)
             var data = Data()
             for try await chunk in response.body {
@@ -297,7 +303,6 @@ public actor EncryptedTransport: OAuthSessionTransport {
     public func prepareNativeOAuthHandoff() async throws -> PreparedNativeOAuthHandoff {
         let snapshot = try await credentials.snapshot()
         guard snapshot.principalId == nil else { throw TransportError.authorityChanged }
-        _ = try await credentials.cacheRoot()
         let current = try await ensureSession()
         try await credentials.assertCurrent(snapshot)
         guard session?.identity == current.identity, current.expiresAt > now() else {
@@ -421,7 +426,7 @@ public actor EncryptedTransport: OAuthSessionTransport {
             limit = min(limit, headerLimit)
         }
         guard !inference || (1...2).contains(limit) else { throw TransportError.invalidEnvelope }
-        let root = try await credentials.cacheRoot()
+        let root = credential == nil ? nil : try await credentials.cacheRoot()
         var current = try await ensureSession()
         for attempt in 1...2 {
             do {
