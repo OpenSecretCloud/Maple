@@ -24,6 +24,7 @@
         private let makeInstructionEditor: @MainActor (InstructionDestination) -> InstructionEditor
         private let onSelectChat: @MainActor (String) -> Void
         private let onNewChat: @MainActor (String?) -> Void
+        private let selectedChatID: String?
         private let settings: @MainActor () -> AnyView
         private let settingsFullScreen: Bool
         private let settingsPresented: Binding<Bool>?
@@ -44,6 +45,7 @@
             makeInstructionEditor: @escaping @MainActor (InstructionDestination) -> InstructionEditor,
             onSelectChat: @escaping @MainActor (String) -> Void,
             onNewChat: @escaping @MainActor (String?) -> Void,
+            selectedChatID: String? = nil,
             settings: @escaping @MainActor () -> AnyView,
             projectExpansion: LibraryProjectExpansionController? = nil,
             menu: LibraryMenuModel? = nil,
@@ -61,6 +63,7 @@
         ) {
             self.library = library; self.makeInstructionEditor = makeInstructionEditor
             self.onSelectChat = onSelectChat; self.onNewChat = onNewChat; self.settings = settings;
+            self.selectedChatID = selectedChatID
             self.onClose = onClose; self.settingsFullScreen = settingsFullScreen
             self.settingsPresented = settingsPresented; self.onSettingsDismiss = onSettingsDismiss
             self.supplementary = supplementary
@@ -99,83 +102,105 @@
                         }
                         .listSectionMargins(.vertical, 0)
                         if let supplementary { supplementary() }
-                        Section {
-                            ForEach(visibleProjects, id: \.id) { project in
-                                if let projectModel = models.projects[project.id] {
-                                    ProjectFolderView(
-                                        project: project, model: projectModel, search: search,
-                                        onSelectChat: selectChat, onNewChat: selectNewChat,
-                                        onManageProject: manageProject,
-                                        onMutation: refresh, selectionLibrary: library, selecting: $selecting,
-                                        drag: drag, dragEnabled: navigationAvailable,
-                                        expanded: Binding(
-                                            get: {
-                                                projectExpansion?.isExpanded(id: project.id)
-                                                    ?? models.expandedProjects.contains(project.id)
-                                            },
-                                            set: { value in
-                                                if let projectExpansion {
-                                                    projectExpansion.setExpanded(id: project.id, expanded: value)
-                                                } else if value {
-                                                    models.expandedProjects.insert(project.id)
-                                                } else {
-                                                    models.expandedProjects.remove(project.id)
-                                                }
-                                            }))
-                                }
+                        if showsNoSearchResults {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(
+                                    String(
+                                        localized: "No chats found matching \"%@\"",
+                                        defaultValue: "No chats found matching \"\(trimmedSearch)\"",
+                                        table: "Library", bundle: .module))
+                                libraryText("Try a different search term").font(.footnote)
                             }
-                        } header: {
-                            HStack {
-                                libraryText("Projects").font(.headline).foregroundStyle(.primary)
-                                Spacer()
-                                Button {
-                                    suspendSearch()
-                                    if let onManageProjects {
-                                        onManageProjects(nil)
-                                    } else {
-                                        projectDestination = .create
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 8)
+                            .accessibilityIdentifier("library.search.empty")
+                            .listRowSeparator(.hidden).listRowBackground(Color.clear)
+                        } else {
+                            Section {
+                                ForEach(visibleProjects, id: \.id) { project in
+                                    if let projectModel = models.projects[project.id] {
+                                        ProjectFolderView(
+                                            project: project, model: projectModel, search: search,
+                                            onSelectChat: selectChat, onNewChat: selectNewChat,
+                                            selectedChatID: selectedChatID,
+                                            onManageProject: manageProject,
+                                            onMutation: refresh, selectionLibrary: library, selecting: $selecting,
+                                            drag: drag, dragEnabled: navigationAvailable,
+                                            expanded: Binding(
+                                                get: {
+                                                    projectExpansion?.isExpanded(id: project.id)
+                                                        ?? models.expandedProjects.contains(project.id)
+                                                },
+                                                set: { value in
+                                                    if let projectExpansion {
+                                                        projectExpansion.setExpanded(id: project.id, expanded: value)
+                                                    } else if value {
+                                                        models.expandedProjects.insert(project.id)
+                                                    } else {
+                                                        models.expandedProjects.remove(project.id)
+                                                    }
+                                                }))
                                     }
-                                } label: {
-                                    Image(systemName: "folder.badge.plus").foregroundStyle(MapleAccent.action)
-                                        .frame(minWidth: 44, minHeight: 44)
                                 }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(libraryText("New project"))
-                                .accessibilityIdentifier("library.new-project")
+                            } header: {
+                                HStack {
+                                    libraryText("Projects").font(.headline).foregroundStyle(.primary)
+                                    Spacer()
+                                    Button {
+                                        suspendSearch()
+                                        if let onManageProjects {
+                                            onManageProjects(nil)
+                                        } else {
+                                            projectDestination = .create
+                                        }
+                                    } label: {
+                                        Image(systemName: "folder.badge.plus").foregroundStyle(MapleAccent.action)
+                                            .frame(minWidth: 44, minHeight: 44)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(library.projects.count >= 10)
+                                    .accessibilityLabel(libraryText("New project"))
+                                    .accessibilityHint(
+                                        libraryText("Maximum of 10 projects reached"),
+                                        isEnabled: library.projects.count >= 10
+                                    )
+                                    .accessibilityIdentifier("library.new-project")
+                                }
+                                .listRowInsets(.top, 8).listRowInsets(.bottom, 0)
                             }
-                            .listRowInsets(.top, 8).listRowInsets(.bottom, 0)
-                        }
-                        .textCase(nil)
-                        .listSectionMargins(.vertical, 0)
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        if drag.isDragging || !models.pinned.visibleConversations.isEmpty || models.pinned.hasMore
-                            || models.pinned.issue != nil
-                        {
+                            .textCase(nil)
+                            .listSectionMargins(.vertical, 0)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            if drag.isDragging || !models.pinned.visibleConversations.isEmpty || models.pinned.hasMore
+                                || models.pinned.issue != nil
+                            {
+                                Section {
+                                    conversationRows(
+                                        models.pinned, loadMoreID: "library.pinned.load-more", destination: .pinned)
+                                } header: {
+                                    dropHeading("Pinned", destination: .pinned, id: "library.drop.pinned")
+                                }
+                                .textCase(nil)
+                                .listSectionMargins(.vertical, 0)
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                            }
                             Section {
                                 conversationRows(
-                                    models.pinned, loadMoreID: "library.pinned.load-more", destination: .pinned)
+                                    models.recent, loadMoreID: "library.recent.load-more", destination: .recent)
                             } header: {
-                                dropHeading("Pinned", destination: .pinned, id: "library.drop.pinned")
+                                dropHeading("Recent", destination: .recent, id: "library.drop.recent")
                             }
                             .textCase(nil)
                             .listSectionMargins(.vertical, 0)
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                         }
-                        Section {
-                            conversationRows(
-                                models.recent, loadMoreID: "library.recent.load-more", destination: .recent)
-                        } header: {
-                            dropHeading("Recent", destination: .recent, id: "library.drop.recent")
-                        }
-                        .textCase(nil)
-                        .listSectionMargins(.vertical, 0)
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
                         if let issue = library.issue { LibraryIssueView(issue: issue) }
                     }
                     .accessibilityIdentifier("library.sidebar-list")
+                    .refreshable { await refresh() }
                     .allowsHitTesting(navigationAvailable)
                     .accessibilityHidden(!navigationAvailable)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -376,13 +401,26 @@
             .shadow(color: .black.opacity(0.16), radius: 14, x: 0, y: 6)
         }
         private var visibleProjects: [ConversationProjectListItem] {
-            let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+            let query = trimmedSearch
             return library.projects.filter { project in
                 query.isEmpty || project.name.localizedCaseInsensitiveContains(query)
                     || models.projects[project.id]?.conversations.contains {
                         LibraryModel.title($0).localizedCaseInsensitiveContains(query)
                     } == true
             }
+        }
+        private var trimmedSearch: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
+        private var showsNoSearchResults: Bool {
+            !trimmedSearch.isEmpty && models.searchText == search && models.isPrepared
+                && !library.isLoadingProjects && library.issue == nil && visibleProjects.isEmpty
+                && models.pinned.hasLoadedConversations && !models.pinned.isLoading && models.pinned.issue == nil
+                && models.pinned.visibleConversations.isEmpty
+                && models.recent.hasLoadedConversations && !models.recent.isLoading && models.recent.issue == nil
+                && models.recent.visibleConversations.isEmpty
+                && library.projects.allSatisfy { project in
+                    guard let model = models.projects[project.id] else { return false }
+                    return model.hasLoadedConversations && !model.isLoading && model.issue == nil
+                }
         }
         private func dropHeading(_ title: String, destination: LibraryConversationDestination, id: String) -> some View
         {
@@ -402,7 +440,7 @@
                 LibrarySelectableConversationRow(
                     conversation: conversation, library: model, selectionLibrary: library, selecting: $selecting,
                     onSelect: selectChat, onMutation: refresh, dragContext: drag,
-                    dragEnabled: navigationAvailable, dropDestination: destination
+                    dragEnabled: navigationAvailable, dropDestination: destination, selectedChatID: selectedChatID
                 )
                 .onScrollVisibilityChange(threshold: 0.1) { visible in
                     guard visible, destination == .recent, navigationAvailable, focusAvailable else { return }
@@ -421,6 +459,12 @@
                 }.disabled(model.isLoading).accessibilityIdentifier(loadMoreID)
             }
             if let issue = model.issue { LibraryIssueView(issue: issue) }
+            if destination == .recent, model.hasLoadedConversations, !model.isLoading,
+                model.visibleConversations.isEmpty, model.issue == nil
+            {
+                libraryText("No recent chats.").font(.footnote).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("library.recent.empty")
+            }
         }
         private func refresh() async {
             models.setSearch(search)
@@ -436,6 +480,7 @@
         let search: String
         let onSelectChat: @MainActor (String) -> Void
         let onNewChat: @MainActor (String?) -> Void
+        let selectedChatID: String?
         let onManageProject: @MainActor (String) -> Void
         let onMutation: @MainActor () async -> Void
         @Bindable var selectionLibrary: LibraryModel
@@ -511,12 +556,12 @@
             }
             .onChange(of: search) { _, value in model.searchText = value }
             if showingChildren {
-                ForEach(model.visibleConversations.filter { !$0.pinned }, id: \.id) { conversation in
+                ForEach(model.visibleConversations, id: \.id) { conversation in
                     LibrarySelectableConversationRow(
                         conversation: conversation, library: model, selectionLibrary: selectionLibrary,
                         selecting: $selecting, onSelect: onSelectChat, onMutation: onMutation,
                         leadingInset: 56, dragContext: drag, dragEnabled: dragEnabled,
-                        dropDestination: .project(project.id)
+                        dropDestination: .project(project.id), selectedChatID: selectedChatID
                     )
                     .listRowInsets(.vertical, 0)
                     .listRowInsets(.leading, 56).listRowInsets(.trailing, 12)

@@ -78,6 +78,9 @@ import XCTest
         launch(); openHistory(); tap("library.actions"); tap("Select chats")
         selectAlphaAndBeta(); tap("Move selected chats"); tap("Synthetic project")
         label("library.fixture.moved", equals: "alpha,beta to fixture-project")
+        XCTAssertFalse(app.buttons["Move selected chats"].exists)
+        XCTAssertFalse(app.buttons["library.selection-done"].exists)
+        tap("library.actions"); tap("Select chats")
         selectAlphaAndBeta(); tap("Delete selected chats")
         XCTAssertTrue(app.staticTexts["Delete selected chats?"].waitForExistence(timeout: 10))
         let confirmationReady = XCTNSPredicateExpectation(
@@ -97,6 +100,9 @@ import XCTest
         label("library.fixture.deleted", equals: "alpha,beta")
         label("library.fixture.remaining", equals: "Remaining active,outside")
         label("library.fixture.project-state", equals: "project retained")
+        XCTAssertFalse(app.buttons["Delete selected chats"].exists)
+        XCTAssertFalse(app.buttons["library.selection-done"].exists)
+        XCTAssertTrue(app.buttons["library.chat-actions.active"].isHittable)
         screenshot("Bulk selection preserves unrelated chats and project")
     }
 

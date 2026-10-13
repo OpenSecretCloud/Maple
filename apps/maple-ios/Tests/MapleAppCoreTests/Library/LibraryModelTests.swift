@@ -68,11 +68,33 @@ private final class LibraryObservationChanges: Sendable {
         #expect(moved)
         #expect(await service.moveCalls.map(\.count) == [20, 20, 5])
         #expect(model.conversations.allSatisfy { $0.projectId == "project" })
+        #expect(model.selectedIDs.isEmpty)
         model.selectedIDs = ids
-        await model.deleteConversations(ids: ids)
+        let deleted = await model.deleteConversations(ids: ids)
+        #expect(!deleted)
         #expect(await service.deleteCalls.map(\.count) == [20, 20, 5])
         #expect(model.conversations.map(\.id) == ["3"])
         #expect(model.selectedIDs == ["3"] && model.issue == .partialMutation)
+    }
+    @Test func bulkDeleteSignalsSuccessOnlyAfterEverySelectedChatIsDeleted() async {
+        let (model, service, _, _, _) = fixture()
+        let rows = (0..<25).map { libraryConversation(String($0)) }, ids = Set(rows.map(\.id))
+        await service.configure(conversations: rows)
+        await model.load(); model.selectedIDs = ids
+        #expect(await model.deleteConversations(ids: ids))
+        #expect(await service.deleteCalls.map(\.count) == [20, 5])
+        #expect(model.selectedIDs.isEmpty && model.conversations.isEmpty && model.issue == nil)
+    }
+    @Test func failedBulkDeleteKeepsSelectionAndDoesNotSignalSuccess() async {
+        let (model, service, _, _, _) = fixture()
+        await service.configure(conversations: [libraryConversation("a")], failDelete: true)
+        await model.load(); model.selectedIDs = ["a"]
+        #expect(await model.deleteConversations(ids: ["a"]) == false)
+        #expect(model.selectedIDs == ["a"] && model.conversations.map(\.id) == ["a"])
+        #expect(model.issue == .connection)
+        model.invalidate()
+        #expect(await model.deleteConversations(ids: ["a"]) == false)
+        #expect(await service.deleteCalls.count == 1)
     }
     @Test func projectDiscoveryFencesBeforeAwaitAndFailureReleasesWithoutDeleting() async throws {
         let (model, service, deletion, chat, store) = fixture(), gate = ChatTestGate()
