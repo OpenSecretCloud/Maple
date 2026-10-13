@@ -434,6 +434,8 @@ enum ChatComposerPresentation {
         @State private var softwareKeyboardVisible: Bool?
         @State private var readingPosition = ScrollPosition(idType: String.self)
         @State private var turnFrames: [String: TranscriptTurnGeometry] = [:]
+        @State private var preparedItems: Set<String> = []
+        @State private var tailGeometry: TranscriptTailGeometry?
         @State private var readingAnchor: ReadingAnchor?
         @State private var scrollMetrics = TranscriptScrollMetrics(returnRevision: 0)
         @State private var correctionTask: Task<Void, Never>?
@@ -461,6 +463,8 @@ enum ChatComposerPresentation {
             let storageOwner: UUID
             let returnRevision: Int
             let gestureRevision: Int
+            var fromPolling = false
+            var materialized = false
         }
         private struct TranscriptScrollMetrics: Equatable {
             var offset: CGFloat = 0
@@ -485,6 +489,12 @@ enum ChatComposerPresentation {
             let contentFrame: CGRect
             let firstMessageID: String?
             let lastMessageID: String?
+            let returnRevision: Int
+        }
+        private struct TranscriptTailGeometry: Equatable {
+            let itemID: String
+            let ready: Bool
+            let contentFrame: CGRect
             let returnRevision: Int
         }
 
@@ -527,7 +537,7 @@ enum ChatComposerPresentation {
             appendFollowTask = Task { @MainActor in
                 await Task.yield()
                 guard !Task.isCancelled, pendingAppendFollow?.id == request.id,
-                    currentProjection, !menuState.occluded,
+                    currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
                     runtime.snapshot.storageOwner == request.storageOwner,
                     menuState.returnRevision == request.returnRevision,
                     scrollGestureRevision == request.gestureRevision, !followPolicy.isUserScrolling,
@@ -566,7 +576,8 @@ enum ChatComposerPresentation {
                 followTasks[id] = Task { @MainActor in
                     defer { followTasks.removeValue(forKey: id) }
                     try? await Task.sleep(for: .milliseconds(100))
-                    guard !Task.isCancelled, currentProjection, !menuState.occluded,
+                    guard !Task.isCancelled, currentProjection, !menuState.occluded, runtime.isVisible,
+                        runtime.isForeground,
                         runtime.snapshot.storageOwner == owner, menuState.returnRevision == returnRevision,
                         scrollGestureRevision == gestureRevision, !followPolicy.isUserScrolling,
                         !runtime.isLoadingOlder, readingAnchor == nil, !userScrollPhase,
@@ -749,6 +760,7 @@ enum ChatComposerPresentation {
                                     VStack(alignment: .leading, spacing: 24) {
                                         ForEach(ChatTranscriptRow.rows(turn.items)) { row in
                                             let item = row.item
+                                            let visibleItemID = row.toolResult?.id ?? item.id
                                             TranscriptItem(
                                                 item: item, toolResult: row.toolResult,
                                                 generation: runtime.scope.generation,
@@ -760,9 +772,35 @@ enum ChatComposerPresentation {
                                                     && ChatTranscriptPresentation.isGenerating(runtime.phase),
                                                 speechAccess: account.speechAccess,
                                                 onReadAloud: { environment.readAloud(item, runtime: runtime) },
-                                                onSpeechUnavailable: { mediaNotice = .speech }
+                                                onSpeechUnavailable: { mediaNotice = .speech },
+                                                onPrepared: {
+                                                    guard currentProjection, runtime.scope == account.scope,
+                                                        runtime.messages.contains(where: { $0.id == visibleItemID }),
+                                                        !preparedItems.contains(visibleItemID)
+                                                    else { return }
+                                                    preparedItems.insert(visibleItemID)
+                                                }
                                             ) { url in
                                                 externalLink = url
+                                            }
+                                            .onGeometryChange(for: TranscriptTailGeometry?.self) {
+                                                [
+                                                    returnRevision = menuState.returnRevision,
+                                                    ready = preparedItems.contains(visibleItemID),
+                                                    lastItemID = runtime.messages.last?.id, transcriptSpace
+                                                ] geometry in
+                                                guard visibleItemID == lastItemID else { return nil }
+                                                return TranscriptTailGeometry(
+                                                    itemID: visibleItemID, ready: ready,
+                                                    contentFrame: geometry.frame(in: .named(transcriptSpace)),
+                                                    returnRevision: returnRevision)
+                                            } action: { sample in
+                                                guard currentProjection, !menuState.occluded, let sample,
+                                                    sample.itemID == runtime.messages.last?.id,
+                                                    sample.returnRevision == menuState.returnRevision
+                                                else { return }
+                                                tailGeometry = sample
+                                                scheduleAppendFollow()
                                             }
                                             #if DEBUG
                                                 .onGeometryChange(for: TranscriptItemHorizontalGeometry?.self) {
@@ -905,6 +943,7 @@ enum ChatComposerPresentation {
                                 if userScrollPhase || wasUserScrolling {
                                     followPolicy.readerScrolled(distanceFromBottom: scrollMetrics.distanceFromBottom)
                                 }
+                                scheduleAppendFollow()
                             }
                         }
                         .accessibilityIdentifier("chat.transcript")
@@ -920,6 +959,19 @@ enum ChatComposerPresentation {
                         }
                         .onChange(of: transcriptMutation) { _, mutation in
                             followAppendedReplies(mutation)
+                        }
+                        .onChange(of: runtime.polledMessagesRevision) { _, _ in
+                            guard currentProjection, !menuState.occluded, runtime.isVisible, runtime.isForeground,
+                                let last = runtime.messages.last?.id
+                            else {
+                                return
+                            }
+                            cancelFollowTasks(); readingAnchor = nil; correctionTask?.cancel()
+                            pendingAppendFollow = AppendFollowRequest(
+                                lastItemID: last, storageOwner: runtime.snapshot.storageOwner,
+                                returnRevision: menuState.returnRevision, gestureRevision: scrollGestureRevision,
+                                fromPolling: true)
+                            scheduleAppendFollow()
                         }
                         .onAppear { resumeReadingAfterMenu(reader: reader) }
                     }
@@ -1024,7 +1076,7 @@ enum ChatComposerPresentation {
                 // Selection replacement and account teardown still retire it normally.
                 guard !menuState.occluded else { return }
                 environment.setPresentationBlocked(false, id: browserPresentationID, scope: runtime.scope)
-                runtime.isVisible = false; Task { await runtime.saveDraft() }
+                environment.updatePresentationVisibility(); Task { await runtime.saveDraft() }
             }
             .sheet(isPresented: $queuePresented, onDismiss: compactMenuPresentationDismissed) {
                 QueueReview(runtime: runtime) { composerFocused = true }
@@ -1304,12 +1356,14 @@ enum ChatComposerPresentation {
         let speechAccess: AccountAccess
         let onReadAloud: () -> Void
         let onSpeechUnavailable: () -> Void
+        let onPrepared: @MainActor @Sendable () -> Void
         let onOpenLink: (URL) -> Void
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var appeared = false
         @State private var copied = false
         @State private var copyRevision = UUID()
         @State private var thinkingPulse = false
+        @State private var readyFragments: Set<Int> = []
         private var text: String { (item.content ?? []).compactMap(\.text).joined(separator: "\n\n") }
         private var readableContent: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1324,6 +1378,15 @@ enum ChatComposerPresentation {
         private var isThinking: Bool {
             item.type == "reasoning" && isGenerating
                 && (["in_progress", "streaming"].contains(item.status ?? "") || item.status == nil)
+        }
+        private var requiredFragments: Set<Int> { [0] }
+        private func fragmentPrepared(_ id: Int) {
+            if !readyFragments.contains(id) { readyFragments.insert(id) }
+            publishPreparationIfReady()
+        }
+        private func publishPreparationIfReady() {
+            let required = requiredFragments
+            if !required.isEmpty, required.isSubset(of: readyFragments) { onPrepared() }
         }
 
         var body: some View {
@@ -1357,7 +1420,10 @@ enum ChatComposerPresentation {
             }
             .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
             .opacity(readableContent && revealsContent && !appeared && !reduceMotion ? 0 : 1)
-            .onAppear { revealContent() }
+            .onAppear {
+                revealContent()
+                if text.isEmpty, !ChatTranscriptRow.isTool(item) { fragmentPrepared(0) }
+            }
             .onChange(of: readableContent) { _, _ in revealContent() }
             .task(id: copyRevision) {
                 guard copied else { return }
@@ -1394,7 +1460,7 @@ enum ChatComposerPresentation {
                 } else if ChatTranscriptRow.isTool(item) {
                     ToolActivityView(
                         item: item, result: toolResult, theme: theme, font: font, generation: generation,
-                        onOpenLink: onOpenLink)
+                        onOpenLink: onOpenLink, onPrepared: { fragmentPrepared(0) })
                 } else if !text.isEmpty {
                     MessageView(
                         text: text, theme: theme, font: font, accountGeneration: generation, onOpenLink: onOpenLink)
@@ -1456,6 +1522,7 @@ enum ChatComposerPresentation {
         let font: MessageRenderFont
         let generation: UUID
         let onOpenLink: (URL) -> Void
+        let onPrepared: @MainActor @Sendable () -> Void
         @State private var expanded = false
         @State private var details = ""
         @State private var detailsRevision = UUID()

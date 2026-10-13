@@ -20,9 +20,16 @@ public final class ChatRuntime {
     public private(set) var isLoading = false
     public private(set) var isLoadingOlder = false
     public private(set) var hasOlderMessages = false
-    public var isOnline = true { didSet { if !isOnline { pauseQueue() } } }
-    public var isVisible = false
-    public var isForeground = true
+    /// Polling scroll requests are separate from streaming and older-page merges.
+    public private(set) var polledMessagesRevision: UInt64 = 0
+    public var isOnline = true {
+        didSet {
+            if isOnline != oldValue { itemPollID = nil }
+            if !isOnline { pauseQueue() }
+        }
+    }
+    public var isVisible = false { didSet { if isVisible != oldValue { itemPollID = nil } } }
+    public var isForeground = true { didSet { if isForeground != oldValue { itemPollID = nil } } }
     public var onConversationAssigned: (@MainActor (String) -> Void)?
     public var onCompletion: (@MainActor (ChatCompletion) -> Void)?
     public var onTurnAccepted: (@MainActor (ChatSendAcceptance) -> Void)?
@@ -32,6 +39,9 @@ public final class ChatRuntime {
     public var onDraftOwnerChanging: (@MainActor (UUID) -> Void)?
     public var onDraftOwnerRetired: (@MainActor (UUID) -> Void)?
     public var onQuiesceForDeletion: (@MainActor () -> Void)?
+    /// Discovery can temporarily fence an unrelated selected conversation.
+    /// Its presentation owner restarts refreshes when that fence is released.
+    public var onDeletionFenceChanged: (@MainActor () -> Void)?
     /// Recording/transcription blocks only submission of its own draft owner.
     public var busyDraftIDs: Set<UUID> = []
     public private(set) var deletionFenceIDs: Set<UUID> = []
@@ -50,6 +60,8 @@ public final class ChatRuntime {
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var oldestItemID: String?
     @ObservationIgnored private var paginationID: UUID?
+    @ObservationIgnored private var newestSeenItemID: String?
+    @ObservationIgnored private var itemPollID: UUID?
     @ObservationIgnored private var pendingRekeyFrom: String?
     @ObservationIgnored private var waitingForCapacity = false
     @ObservationIgnored private var detachmentSource: ChatSnapshot?
@@ -354,7 +366,7 @@ public final class ChatRuntime {
             restored.conversationID.map({ $0 == restored.storageKey })
                 ?? (restored.storageKey == ChatSnapshot.newChatKey || restored.storageKey.hasPrefix("pending:"))
         else { return false }
-        autosaveTask?.cancel(); operationID = hooks.uuid()
+        autosaveTask?.cancel(); operationID = hooks.uuid(); itemPollID = nil; newestSeenItemID = nil
         snapshot = restored
         snapshot.storageOwnerID = restored.storageOwner
         snapshot.pendingRun?.phase = .recovering; changed()
@@ -369,7 +381,7 @@ public final class ChatRuntime {
     public func load(chatID: String?) async {
         guard valid, deletionFenceIDs.isEmpty, !hasUnresolvedRun else { return }
         autosaveTask?.cancel()
-        paginationID = nil; isLoadingOlder = false
+        paginationID = nil; isLoadingOlder = false; itemPollID = nil; newestSeenItemID = nil
         let operation = hooks.uuid(); operationID = operation; waitingForCapacity = false; isLoading = true
         let key = chatID ?? ChatSnapshot.newChatKey
         var loadingStorage = true
@@ -402,6 +414,7 @@ public final class ChatRuntime {
                 messages = Array(page.data.reversed())
                 for item in optimistic where !messages.contains(where: { $0.id == item.id }) { messages.append(item) }
                 oldestItemID = page.lastId; hasOlderMessages = page.hasMore
+                newestSeenItemID = page.data.first { $0.status != "in_progress" }?.id
             }
         } catch {
             if owns(operation) { lastIssue = loadingStorage ? .storageUnavailable : .historyUnavailable }
@@ -430,6 +443,37 @@ public final class ChatRuntime {
             messages.insert(contentsOf: page.data.reversed().filter { !existing.contains($0.id) }, at: 0)
             oldestItemID = page.lastId; hasOlderMessages = page.hasMore
         } catch { if owns(operation), paginationID == request { lastIssue = .historyUnavailable } }
+    }
+
+    /// Poll only the selected, presented conversation. Failed refreshes leave
+    /// transcript, run ownership and existing feedback untouched.
+    public func pollNewItems() async {
+        guard canPollItems, itemPollID == nil, let chatID = conversationID else { return }
+        let operation = operationID, request = hooks.uuid(), cursor = newestSeenItemID
+        itemPollID = request
+        defer { if itemPollID == request { itemPollID = nil } }
+        do {
+            let page = try await service.listConversationItems(
+                conversationId: chatID,
+                parameters: ListParameters(limit: 20, after: cursor, order: cursor == nil ? .desc : .asc))
+            guard owns(operation), canPollItems, !Task.isCancelled, conversationID == chatID,
+                itemPollID == request
+            else { return }
+            let chronological = cursor == nil ? Array(page.data.reversed()) : page.data
+            let existing = Set(messages.map(\.id))
+            mergeHistory(chronological, authoritative: false)
+            // An in-progress tail must be fetched again on the next tick.
+            newestSeenItemID = chronological.last { $0.status != "in_progress" }?.id ?? newestSeenItemID
+            if chronological.contains(where: { !existing.contains($0.id) }) { polledMessagesRevision &+= 1 }
+        } catch {
+            // Polling is background refresh, never run failure or composer feedback.
+        }
+    }
+
+    private var canPollItems: Bool {
+        valid && isVisible && isForeground && isOnline && !isLoading && deletionFenceIDs.isEmpty
+            && !Task.isCancelled
+            && !(snapshot.pendingRun?.responseID != nil && (phase == .streaming || phase == .stopping))
     }
 
     /// Admission is synchronous so two taps cannot detach the same draft. The
@@ -574,6 +618,8 @@ public final class ChatRuntime {
     /// invalidation comes first and rejects even same-account late callbacks.
     public func invalidate() {
         valid = false; operationID = hooks.uuid()
+        itemPollID = nil; newestSeenItemID = nil
+        onDeletionFenceChanged = nil
         for owner in Set(snapshot.ownedDrafts.map(\.id)) { onDraftOwnerRetired?(owner) }
         cancelSubmission()
         waitingForCapacity = false
@@ -778,6 +824,7 @@ public final class ChatRuntime {
             case let .outputItemAdded(value), let .outputItemDone(value):
                 Self.merge(
                     value.item, into: &next, authoritative: false, responseID: snapshot.pendingRun?.responseID)
+                if case .outputItemDone = event { newestSeenItemID = value.item.id }
             case let .contentPartAdded(value), let .contentPartDone(value):
                 try Self.part(value, into: &next)
             case let .outputTextDelta(value): try Self.text(value, reasoning: false, final: false, into: &next)
@@ -890,6 +937,7 @@ public final class ChatRuntime {
                 conversationId: chatID, parameters: ListParameters(limit: 100, order: .desc))
             guard owns(runID, operation) else { return }
             mergeHistory(page.data.reversed(), authoritative: outcome != nil)
+            newestSeenItemID = page.data.first { $0.status != "in_progress" }?.id ?? newestSeenItemID
             if let priorHistoryIssueID, lastIssue == .historyUnavailable, lastIssueID == priorHistoryIssueID {
                 lastIssue = nil
             }
@@ -1048,16 +1096,20 @@ public final class ChatRuntime {
 
     public func beginDeletionFence(_ id: UUID) {
         guard valid else { return }
-        deletionFenceIDs.insert(id)
+        guard deletionFenceIDs.insert(id).inserted else { return }
+        itemPollID = nil
         // Discovery fences admission without interrupting unrelated inference.
         // The coordinator requests Stop only after the exact affected set is known.
+        onDeletionFenceChanged?()
     }
 
     public func releaseDeletionFence(_ id: UUID) {
-        deletionFenceIDs.remove(id); quiescingFenceIDs.remove(id)
+        let changed = deletionFenceIDs.remove(id) != nil
+        quiescingFenceIDs.remove(id)
         // Quiescence calls Stop, so affected queues remain explicitly paused.
         // A merely fenced unrelated queue may continue after discovery narrows.
         promoteIfEligible()
+        if changed { onDeletionFenceChanged?() }
     }
 
     /// Starts one owned, nonblocking recovery attempt. A deletion coordinator
@@ -1288,20 +1340,69 @@ public final class ChatRuntime {
             items.append(replacement); return
         }
         let old = items[index]
+        if !authoritative, !compatiblePayloadOwners(old, replacement) {
+            replacement.responseId = replacement.responseId ?? responseID
+            items[index] = replacement; return
+        }
         if let oldParts = old.content {
             if replacement.content?.isEmpty != false {
                 replacement.content = oldParts
             } else if !authoritative {
-                for (partIndex, part) in oldParts.enumerated() where partIndex < replacement.content!.count {
-                    if (part.text?.count ?? 0) > (replacement.content![partIndex].text?.count ?? 0) {
-                        replacement.content![partIndex] = part
-                    }
+                if contentLength(oldParts, reasoning: old.type == "reasoning")
+                    >= contentLength(replacement.content ?? [], reasoning: replacement.type == "reasoning")
+                {
+                    replacement.content = oldParts
                 }
+            }
+        }
+        if !authoritative {
+            replacement.arguments = richerPayload(replacement.arguments, retained: old.arguments)
+            replacement.output = richerPayload(replacement.output, retained: old.output)
+            replacement.callId = replacement.callId ?? old.callId
+            replacement.name = replacement.name ?? old.name
+            if !["completed", "incomplete", "error", "failed", "cancelled"].contains(replacement.status ?? "") {
+                replacement.status = old.status ?? replacement.status
             }
         }
         replacement.responseId = replacement.responseId ?? old.responseId ?? responseID
         replacement.role = replacement.role ?? old.role
         items[index] = replacement
+    }
+
+    private static func contentLength(_ content: [MessageContent], reasoning: Bool) -> Int {
+        content.reduce(0) { count, part in
+            if reasoning || ["input_text", "output_text", "text"].contains(part.type) {
+                return count + (part.text?.utf16.count ?? 0)
+            }
+            return count + (part.type == "input_image" ? 1 : 0)
+        }
+    }
+
+    private static func compatiblePayloadOwners(_ old: ConversationItem, _ incoming: ConversationItem) -> Bool {
+        let calls = ["function_call", "tool_call"], outputs = ["function_call_output", "tool_output"]
+        guard
+            old.type == incoming.type || (calls.contains(old.type) && calls.contains(incoming.type))
+                || (outputs.contains(old.type) && outputs.contains(incoming.type))
+        else { return false }
+        if let oldID = old.callId, let newID = incoming.callId, oldID != newID { return false }
+        if let oldID = old.responseId, let newID = incoming.responseId, oldID != newID { return false }
+        if let oldName = old.name, let newName = incoming.name, oldName != newName { return false }
+        if let oldRole = old.role, let newRole = incoming.role, oldRole != newRole { return false }
+        return true
+    }
+
+    private static func richerPayload(_ incoming: JSONValue?, retained: JSONValue?) -> JSONValue? {
+        guard let retained else { return incoming }
+        guard let incoming else { return retained }
+        return payloadLength(retained) >= payloadLength(incoming) ? retained : incoming
+    }
+
+    private static func payloadLength(_ value: JSONValue) -> Int {
+        if case let .string(text) = value { return text.utf16.count }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(value), let text = String(data: data, encoding: .utf8) else { return 0 }
+        return text.utf16.count
     }
 
     private static func part(_ value: ResponseContentEvent, into items: inout [ConversationItem]) throws {

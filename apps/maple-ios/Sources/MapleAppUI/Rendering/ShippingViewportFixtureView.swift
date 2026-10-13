@@ -69,6 +69,8 @@
                                         guard
                                             ProcessInfo.processInfo.arguments.contains(
                                                 "--maple-shipping-follow-scroll-proof")
+                                                || ProcessInfo.processInfo.arguments.contains(
+                                                    "--maple-shipping-item-poll-proof")
                                         else { return }
                                         model?.scrollMetrics = metrics
                                     },
@@ -376,6 +378,11 @@
                         Button("Append item") { Task { await model.appendReplyItem() } }
                             .accessibilityIdentifier("shipping-viewport.append-item")
                             .disabled(model.chunks != 40 || model.emitting || !model.runtime.hasUnresolvedRun)
+                    }
+                    if ProcessInfo.processInfo.arguments.contains("--maple-shipping-item-poll-proof") {
+                        Button("Poll new items") { Task { await model.pollItems() } }
+                            .accessibilityIdentifier("shipping-viewport.poll")
+                            .disabled(!model.ready || model.runtime.hasUnresolvedRun)
                     }
                 }.font(.caption)
                 Text(model.summary).font(.caption2).lineLimit(1).minimumScaleFactor(0.6)
@@ -720,6 +727,12 @@
             return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         }
         func releaseOlder() async { await service.releaseOlder() }
+        func pollItems() async {
+            guard ready, !retired,
+                projectionIsCurrent(scope: runtime.scope, storageOwner: runtime.snapshot.storageOwner)
+            else { return }
+            await runtime.pollNewItems()
+        }
         func rejectContext() {
             guard contextLimitProof, ready, !retired, !runtime.hasUnresolvedRun else { return }
             runtime.draftText = "Synthetic rejected context message"
@@ -794,6 +807,7 @@
         private var stream: AsyncThrowingStream<ResponseStreamEvent, Error>.Continuation?
         private var text = "Synthetic live reply."
         private var retired = false
+        private let pollingProof = ProcessInfo.processInfo.arguments.contains("--maple-shipping-item-poll-proof")
 
         init(
             complexMarkup: Bool = false, transcriptRows: Bool = false, historyRendering: Bool = false,
@@ -814,9 +828,28 @@
         func listConversationItems(conversationId: String, parameters: ListParameters) async throws -> APIPage<
             ConversationItem
         > {
-            guard !retired, conversationId == Self.chatID, parameters.order == .desc else {
+            guard !retired, conversationId == Self.chatID else {
                 throw ChatIssue.historyUnavailable
             }
+            if pollingProof, parameters.order == .asc, parameters.limit == 20,
+                parameters.after == "viewport-assistant-23"
+            {
+                return APIPage(
+                    data: [
+                        ConversationItem(
+                            id: "viewport-polled-user", type: "message", status: "completed", role: "user",
+                            content: [MessageContent(type: "input_text", text: "Synthetic poll from another device")]),
+                        ConversationItem(
+                            id: "viewport-polled-answer", type: "message", status: "completed", role: "assistant",
+                            content: [
+                                MessageContent(type: "output_text", text: "A newly polled answer reaches the bottom.")
+                            ]),
+                    ], hasMore: false)
+            }
+            if pollingProof, parameters.order == .asc, parameters.after == "viewport-polled-answer" {
+                return APIPage(data: [], hasMore: false)
+            }
+            guard parameters.order == .desc else { throw ChatIssue.historyUnavailable }
             if parameters.after == nil {
                 if historyRendering { return Self.historyPage() }
                 return transcriptRows

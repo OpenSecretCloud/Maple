@@ -756,6 +756,44 @@ final class ShippingViewportUITests: XCTestCase {
         capture("Full-screen Menu returns the same Chat owner and pagination anchor")
     }
 
+    func testIdlePolledConversationItemsScrollToTheBottom() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--maple-shipping-viewport-fixture", "--maple-shipping-item-poll-proof"]
+        app.launch()
+        defer { app.terminate() }
+        waitSummary("Ready 1; older 0; messages 8")
+        let anchor = readingAnchor(20)
+        waitForReadingAnchor(anchor, index: 20)
+        func distanceFromBottom() -> Double? {
+            let diagnostic = app.staticTexts["shipping-viewport.scroll-metrics"]
+            guard diagnostic.exists, let raw = diagnostic.value as? String,
+                let data = raw.data(using: .utf8),
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Double]
+            else { return nil }
+            return object["distanceFromBottom"]
+        }
+        XCTAssertGreaterThan(try XCTUnwrap(distanceFromBottom()), 100)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+        let poll = app.buttons["shipping-viewport.poll"]
+        XCTAssertTrue(poll.exists && poll.isEnabled && poll.isHittable)
+        poll.tap()
+        waitSummary("older 0; messages 10")
+        let tail = app.buttons["message.copy.viewport-polled-answer"]
+        let followed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                tail.exists && tail.isHittable && (distanceFromBottom().map { $0 < 30 } ?? false)
+            }, object: tail)
+        let result = XCTWaiter.wait(for: [followed], timeout: 15)
+        attachScrollState("Polled append scroll state")
+        XCTAssertEqual(result, .completed)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+        poll.tap()
+        waitSummary("older 0; messages 10")
+        XCTAssertLessThan(try XCTUnwrap(distanceFromBottom()), 30)
+        capture("Idle polling appends real runtime items and follows their rendered bottom without starting inference")
+    }
+
     func testNativeMenuFlickAndCancelledSlowDragRetainTheChat() throws {
         continueAfterFailure = false
         app = XCUIApplication()

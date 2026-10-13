@@ -39,6 +39,7 @@
         private let font: MessageRenderFont
         private let accountGeneration: UUID?
         private let onOpenLink: (URL) -> Void
+        private var preparedPublication: (@MainActor @Sendable () -> Void)?
         #if DEBUG
             private var diagnosticAppearance: ((Bool) -> Void)?
             private var diagnosticPublication: ((Int, Int) -> Void)?
@@ -71,6 +72,12 @@
                     defer { renderer.invalidate() }
                     return try await renderer.render(formulas).mapValues { AnyAttachment($0) }
                 }))
+        }
+
+        /// Internal presentation receipt; callers receive no message contents.
+        /// Publication is useful only for this exact submitted text and owner.
+        @MainActor func onPrepared(_ action: @escaping @MainActor @Sendable () -> Void) -> Self {
+            var copy = self; copy.preparedPublication = action; return copy
         }
 
         #if DEBUG
@@ -149,6 +156,9 @@
             .onChange(of: Request(text: text, generation: accountGeneration)) {
                 model.submit(text: text, generation: accountGeneration)
             }
+            .onChange(of: isCurrentPreparation, initial: true) { _, ready in
+                if ready { preparedPublication?() }
+            }
             .onChange(of: scenePhase) {
                 if scenePhase == .active {
                     windowHost.resumeMount()
@@ -184,6 +194,9 @@
         }
 
         private struct Request: Equatable { let text: String; let generation: UUID? }
+        private var isCurrentPreparation: Bool {
+            model.generation == accountGeneration && model.prepared?.revision == text
+        }
         private func equationAccessibilityText(_ prepared: PreparedMessage) -> Text? {
             // Accessibility must not wait for rasterization or disappear when an
             // unsupported equation stays as its original selectable source.

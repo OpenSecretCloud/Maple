@@ -36,6 +36,10 @@
         @ObservationIgnored private var titlePoll: Task<Void, Never>?
         private var titlePollConversationID: String?
         private var titlePollTicket: UUID?
+        @ObservationIgnored private var itemPoll: Task<Void, Never>?
+        private var itemPollRuntimeID: ObjectIdentifier?
+        private var itemPollConversationID: String?
+        private var itemPollTicket: UUID?
         var accountFlow: AccountFlow? { didSet { updatePresentationVisibility() } }
         var menuPresented = false {
             didSet {
@@ -115,6 +119,7 @@
             session.onRetire = { [weak self] scope in
                 guard let self else { return }
                 self.cancelTitlePolling()
+                self.cancelItemPolling()
                 for ceremony in self.accountCeremonies { ceremony.invalidate() }
                 self.accountCeremonies.removeAll()
                 self.accountFlow?.ceremonies.invalidate(); self.accountFlow = nil
@@ -492,6 +497,48 @@
             titlePollTicket = nil
         }
 
+        private func cancelItemPolling() {
+            itemPoll?.cancel()
+            itemPoll = nil
+            itemPollRuntimeID = nil
+            itemPollConversationID = nil
+            itemPollTicket = nil
+        }
+
+        /// The selected projection owns polling, independently of the account-owned run.
+        private func updateItemPolling() {
+            guard foreground, let account = session.account, let runtime = selectedChat,
+                runtime.scope == account.scope, runtime.isVisible, !runtime.isRetired,
+                runtime.deletionFenceIDs.isEmpty, let id = runtime.conversationID,
+                deletion?.isConversationDeleted(id) != true
+            else {
+                cancelItemPolling()
+                return
+            }
+            let owner = ObjectIdentifier(runtime)
+            guard itemPollRuntimeID != owner || itemPollConversationID != id || itemPoll == nil else { return }
+            cancelItemPolling()
+            let ticket = UUID()
+            itemPollRuntimeID = owner
+            itemPollConversationID = id
+            itemPollTicket = ticket
+            itemPoll = Task { [weak self, weak runtime] in
+                defer {
+                    if self?.itemPollTicket == ticket { self?.cancelItemPolling() }
+                }
+                await ConversationItemPolling.run(
+                    shouldContinue: { [weak self, weak runtime] in
+                        guard let self, let runtime else { return false }
+                        return self.itemPollTicket == ticket && self.foreground
+                            && self.session.account?.scope == account.scope
+                            && self.selectedChat === runtime && runtime.conversationID == id
+                            && runtime.isVisible && !runtime.isRetired && runtime.deletionFenceIDs.isEmpty
+                            && self.deletion?.isConversationDeleted(id) != true
+                    },
+                    poll: { [weak runtime] in await runtime?.pollNewItems() })
+            }
+        }
+
         /// Title generation outlives the response request. Keep checking only
         /// the selected conversation, with the same 0.5→10 second backoff as Research.
         private func updateTitlePolling() {
@@ -566,6 +613,12 @@
                 scope: account.scope, service: service, persistence: storage,
                 conversationID: id)
             let runtime = deletion?.register(candidate) ?? candidate
+            runtime.onDeletionFenceChanged = { [weak self, weak runtime] in
+                guard let self, let runtime, self.session.account?.scope == runtime.scope,
+                    self.selectedChat === runtime
+                else { return }
+                self.updateItemPolling()
+            }
             if imageImporters[ObjectIdentifier(runtime)] == nil {
                 imageImporters[ObjectIdentifier(runtime)] = ImageImportController(
                     runtime: runtime, processor: imageProcessor, budget: imageBudget,
@@ -587,6 +640,7 @@
             }
             runtime.onQuiesceForDeletion = { [weak self, weak runtime] in
                 guard let runtime else { return }
+                if self?.selectedChat === runtime { self?.cancelItemPolling() }
                 for draft in runtime.snapshot.ownedDrafts {
                     self?.dictation?.ownerRetired(runtime: runtime, draftID: draft.id)
                     self?.dictationSend.retire(
@@ -677,6 +731,7 @@
                 if runtime.isVisible != isVisible { runtime.isVisible = isVisible }
             }
             listening?.setVisibility(chatID: visible ? selectedChat?.conversationID : nil, foreground: foreground)
+            updateItemPolling()
         }
 
         func send(_ runtime: ChatRuntime, options: ChatSendOptions) -> Bool {
