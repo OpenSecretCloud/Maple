@@ -672,7 +672,8 @@ public final class ChatRuntime {
             let source = try await createResponse(
                 ResponsesCreateRequest(
                     model: run.options.model, input: input, conversation: conversationID,
-                    metadata: ["internal_message_id": .string(run.messageID)], webSearch: run.options.webSearch),
+                    metadata: ["internal_message_id": .string(run.messageID)], webSearch: run.options.webSearch,
+                    reasoningEffort: run.options.reasoningEffort),
                 runID: runID, operation: operation)
             guard owns(runID, operation) else { return }
             for try await batch in ChatStreamBatcher.batches(from: source, sleep: hooks.sleep) {

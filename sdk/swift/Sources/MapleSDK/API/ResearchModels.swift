@@ -300,6 +300,27 @@ public struct ModelCapabilities: Codable, Sendable, Equatable {
     }
 }
 
+/// OpenAI wire spellings; each model or alias publishes the subset it accepts.
+public enum ReasoningEffort: String, Codable, CaseIterable, Sendable {
+    case none, minimal, low, medium, high, xhigh, max
+}
+
+public struct ModelReasoning: Codable, Sendable, Equatable {
+    public var mandatory: Bool
+    public var defaultEnabled: Bool?
+    /// Preserve future catalog values without making the entire catalog unreadable.
+    public var supportedEfforts: [String]?
+    public var defaultEffort: String?
+
+    public init(
+        mandatory: Bool, defaultEnabled: Bool? = nil, supportedEfforts: [String]? = nil,
+        defaultEffort: String? = nil
+    ) {
+        self.mandatory = mandatory; self.defaultEnabled = defaultEnabled
+        self.supportedEfforts = supportedEfforts; self.defaultEffort = defaultEffort
+    }
+}
+
 public struct ModelCatalogItem: Codable, Sendable, Equatable {
     public var id: String
     public var object: String
@@ -312,8 +333,10 @@ public struct ModelCatalogItem: Codable, Sendable, Equatable {
     public var description: String?
     public var contextWindow: Int
     public var maxContextTokens: Int
+    public var maxCompletionTokens: Int?
     public var access: String
     public var capabilities: ModelCapabilities
+    public var reasoning: ModelReasoning?
     public var tasks: [String]?
     public var badges: [String]?
     public var enabled: Bool
@@ -324,7 +347,7 @@ public struct ModelCatalogItem: Codable, Sendable, Equatable {
         id: String, object: String, created: Int64, ownedBy: String, provider: String? = nil, providerId: String? = nil,
         displayName: String, shortName: String, description: String? = nil, contextWindow: Int, maxContextTokens: Int,
         access: String, capabilities: ModelCapabilities, tasks: [String]? = nil, badges: [String]? = nil, enabled: Bool,
-        deprecated: Bool, sortOrder: Int? = nil
+        deprecated: Bool, sortOrder: Int? = nil, maxCompletionTokens: Int? = nil, reasoning: ModelReasoning? = nil
     ) {
         self.id = id
         self.object = object
@@ -337,8 +360,10 @@ public struct ModelCatalogItem: Codable, Sendable, Equatable {
         self.description = description
         self.contextWindow = contextWindow
         self.maxContextTokens = maxContextTokens
+        self.maxCompletionTokens = maxCompletionTokens
         self.access = access
         self.capabilities = capabilities
+        self.reasoning = reasoning
         self.tasks = tasks
         self.badges = badges
         self.enabled = enabled
@@ -355,10 +380,12 @@ public struct ModelAlias: Codable, Sendable, Equatable {
     public var targetModel: String
     public var access: String
     public var capabilities: ModelCapabilities
+    public var maxCompletionTokens: Int?
+    public var reasoning: ModelReasoning?
 
     public init(
         id: ModelAliasId, label: String, shortName: String, description: String, targetModel: String, access: String,
-        capabilities: ModelCapabilities
+        capabilities: ModelCapabilities, maxCompletionTokens: Int? = nil, reasoning: ModelReasoning? = nil
     ) {
         self.id = id
         self.label = label
@@ -367,6 +394,8 @@ public struct ModelAlias: Codable, Sendable, Equatable {
         self.targetModel = targetModel
         self.access = access
         self.capabilities = capabilities
+        self.maxCompletionTokens = maxCompletionTokens
+        self.reasoning = reasoning
     }
 }
 

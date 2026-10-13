@@ -32,7 +32,7 @@ enum ChatRequestBudget {
                 model: options.model, input: .messages([ResponseInputMessage(content: content)]),
                 conversation: conversationID ?? String(repeating: "x", count: 128),
                 metadata: ["internal_message_id": .string("00000000-0000-0000-0000-000000000000")],
-                webSearch: options.webSearch)
+                webSearch: options.webSearch, reasoningEffort: options.reasoningEffort)
             let encoder = JSONEncoder()
             // Matches SDK APIJSON.encode, including its default slash escaping.
             encoder.keyEncodingStrategy = .convertToSnakeCase

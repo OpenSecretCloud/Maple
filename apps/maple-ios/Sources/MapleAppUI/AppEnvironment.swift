@@ -233,11 +233,13 @@
                         tokenSource: SDKBillingTokenSource(api: api)),
                     catalog: SDKModelCatalogSource(api: api),
                     selectedModelID: preferences.value.selectedModelID,
-                    webSearchPreferred: preferences.value.webSearchPreferred)
+                    webSearchPreferred: preferences.value.webSearchPreferred,
+                    thinkingLevel: preferences.value.thinkingLevel)
                 entitlements = details
                 preferences.onChange = { [weak self, weak details] value in
                     guard self?.session.account?.scope == account.scope else { return }
                     details?.webSearchPreferred = value.webSearchPreferred
+                    details?.thinkingLevel = value.thinkingLevel
                     details?.selectModel(value.selectedModelID)
                     self?.listening?.updatePreferences(voice: value.voice, speed: value.playbackSpeed)
                 }

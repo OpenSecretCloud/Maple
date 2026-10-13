@@ -46,14 +46,21 @@ public struct ResponsesCreateRequest: Encodable, Sendable {
     public var stream = true
     public var store = true
     public var tools: [ResponseTool]?
+    public var reasoning: ResponseReasoning?
 
     public init(
         model: String = "auto:quick", input: ResponseInput, conversation: String,
-        metadata: [String: JSONValue]? = nil, webSearch: Bool = false
+        metadata: [String: JSONValue]? = nil, webSearch: Bool = false, reasoningEffort: ReasoningEffort? = nil
     ) {
         self.model = model; self.input = input; self.conversation = conversation
         self.metadata = metadata; self.tools = webSearch ? [ResponseTool()] : nil
+        self.reasoning = reasoningEffort.map { ResponseReasoning(effort: $0) }
     }
+}
+
+public struct ResponseReasoning: Encodable, Sendable, Equatable {
+    public var effort: ReasoningEffort
+    public init(effort: ReasoningEffort) { self.effort = effort }
 }
 
 public struct ResponseTool: Encodable, Sendable {

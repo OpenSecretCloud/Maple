@@ -23,6 +23,19 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
     public let sortOrder: Int
 }
 
+public struct ThinkingLevelOption: Equatable, Sendable, Identifiable {
+    public let value: MapleThinkingLevel
+    public let defaultEffort: MapleThinkingLevel?
+    public var id: MapleThinkingLevel { value }
+    public var label: String { value.label }
+}
+
+public struct ResolvedThinkingLevel: Equatable, Sendable {
+    public let options: [ThinkingLevelOption]
+    public let effective: MapleThinkingLevel
+    public var effort: ReasoningEffort? { effective.effort }
+}
+
 /// Read-only entitlement state for exactly one app session. It never changes SDK
 /// authentication and does not execute purchase, management or feature-flag actions.
 @Observable @MainActor public final class AccountEntitlements {
@@ -34,6 +47,7 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
     public private(set) var selectedModelID: String
     /// The explicit preference is the dispatch value while this session is active.
     public var webSearchPreferred: Bool
+    public var thinkingLevel: MapleThinkingLevel
     private var active = true
     private var billingRequest = UUID()
     private var teamRequest = UUID()
@@ -44,7 +58,7 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
     public init(
         scope: AccountScope, isGuest: Bool, billing: any BillingServing,
         catalog: any ModelCatalogServing, selectedModelID: String = ModelAliasId.quick.rawValue,
-        webSearchPreferred: Bool = true
+        webSearchPreferred: Bool = true, thinkingLevel: MapleThinkingLevel = .default
     ) {
         self.scope = scope
         self.isGuest = isGuest
@@ -52,6 +66,7 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
         self.catalogService = catalog
         self.selectedModelID = selectedModelID
         self.webSearchPreferred = webSearchPreferred
+        self.thinkingLevel = thinkingLevel
     }
 
     public var plan: BillingPlan { billing.value?.plan ?? .unknown }
@@ -175,6 +190,41 @@ public struct AccountModelChoice: Equatable, Sendable, Identifiable {
 
     public var selectedModel: AccountModelChoice? {
         (primaryModels + advancedModels).first { $0.id == selectedModelID }
+    }
+
+    /// Aliases publish their own reasoning contract; do not infer it from their target.
+    public var selectedModelReasoning: ModelReasoning? {
+        guard active, let catalog = catalog.value else { return nil }
+        if let alias = catalog.aliases.first(where: { $0.id.rawValue == selectedModelID }) {
+            return alias.reasoning
+        }
+        return catalog.data.first(where: { $0.id == selectedModelID })?.reasoning
+    }
+
+    public var resolvedThinkingLevel: ResolvedThinkingLevel {
+        Self.resolveThinkingLevel(thinkingLevel, reasoning: selectedModelReasoning)
+    }
+
+    public static func thinkingLevelOptions(_ reasoning: ModelReasoning?) -> [ThinkingLevelOption] {
+        guard let reasoning else { return [] }
+        var options = [
+            ThinkingLevelOption(
+                value: .default, defaultEffort: reasoning.defaultEffort.flatMap(MapleThinkingLevel.init(rawValue:)))
+        ]
+        if !reasoning.mandatory { options.append(.init(value: .none, defaultEffort: nil)) }
+        let supported = Set(reasoning.supportedEfforts ?? [])
+        for choice in MapleThinkingLevel.allCases where choice != .default && choice != .none {
+            if supported.contains(choice.rawValue) { options.append(.init(value: choice, defaultEffort: nil)) }
+        }
+        return options
+    }
+
+    public static func resolveThinkingLevel(
+        _ choice: MapleThinkingLevel, reasoning: ModelReasoning?
+    ) -> ResolvedThinkingLevel {
+        let options = thinkingLevelOptions(reasoning)
+        let effective = options.contains(where: { $0.value == choice }) ? choice : .default
+        return ResolvedThinkingLevel(options: options, effective: effective)
     }
 
     public func modelAccess(_ model: AccountModelChoice) -> AccountAccess {

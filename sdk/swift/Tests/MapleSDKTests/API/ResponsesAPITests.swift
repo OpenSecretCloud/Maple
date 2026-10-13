@@ -143,6 +143,7 @@ func sseDistinguishesTerminalFailureAndCancellation(_ type: String) throws {
     #expect(body["stream"] == .bool(true) && body["store"] == .bool(true))
     #expect(body["metadata"] == .object(["internal_message_id": .string("correlation")]))
     #expect(body["tools"] == .array([.object(["type": .string("web_search")])]))
+    #expect(body["reasoning"] == nil)
     #expect(
         body["input"]
             == .array([
@@ -157,6 +158,24 @@ func sseDistinguishesTerminalFailureAndCancellation(_ type: String) throws {
                     ]),
                 ])
             ]))
+}
+
+@Test(arguments: ReasoningEffort.allCases)
+func responsesThinkingEffortUsesNestedResponsesWireContract(effort: ReasoningEffort) async throws {
+    let transport = APIRecorder([
+        .init(
+            body: sse("response.completed", lifecycle("response.completed", status: "completed")),
+            headers: ["content-type": "text/event-stream"])
+    ])
+    let api = ResearchAPI(transport: transport, expectedPrincipalId: "owner")
+    let stream = try await api.createResponse(
+        .init(input: .text("Synthetic"), conversation: "c", reasoningEffort: effort), maximumInferenceSends: 1)
+    for try await _ in stream {}
+    let request = try #require(await transport.snapshot().first)
+    let body = try JSONDecoder().decode([String: JSONValue].self, from: #require(request.body))
+    #expect(body["reasoning"] == .object(["effort": .string(effort.rawValue)]))
+    #expect(body["reasoning_effort"] == nil)
+    #expect(request.expectedPrincipalId == "owner" && request.maximumInferenceSends == 1)
 }
 
 private struct FixtureStreamTransport: MapleTransport {

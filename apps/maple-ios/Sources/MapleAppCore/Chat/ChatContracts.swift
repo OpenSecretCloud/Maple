@@ -51,9 +51,15 @@ public struct ChatSendOptions: Codable, Sendable, Equatable {
     public var model: String
     public var webSearch: Bool
     public var projectID: String?
+    /// Effective catalog-supported choice captured when this turn is submitted.
+    public var reasoningEffort: ReasoningEffort?
 
-    public init(model: String = "auto:quick", webSearch: Bool = false, projectID: String? = nil) {
+    public init(
+        model: String = "auto:quick", webSearch: Bool = false, projectID: String? = nil,
+        reasoningEffort: ReasoningEffort? = nil
+    ) {
         self.model = model; self.webSearch = webSearch; self.projectID = projectID
+        self.reasoningEffort = reasoningEffort
     }
 }
 

@@ -1212,13 +1212,33 @@ enum ChatComposerPresentation {
                     Image(systemName: "slider.horizontal.3")
                     Text(verbatim: modelShortName)
                         .font(.footnote.weight(.medium))
+                    if account.resolvedThinkingLevel.effective != .default {
+                        Text(verbatim: thinkingLevelLabel)
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
             }
             .accessibilityLabel(Text("Chat options", tableName: "Settings", bundle: .module))
-            .accessibilityValue(Text(verbatim: modelShortName))
+            .accessibilityValue(Text(verbatim: modelShortName + thinkingLevelSuffix))
             .accessibilityIdentifier("chat.model")
+        }
+        private var thinkingLevelSuffix: String {
+            let level = account.resolvedThinkingLevel.effective
+            return level == .default ? "" : ", " + thinkingLevelLabel
+        }
+        private var thinkingLevelLabel: String {
+            switch account.resolvedThinkingLevel.effective {
+            case .default: String(localized: "Default", table: "Settings", bundle: .module)
+            case .none: String(localized: "Off", table: "Settings", bundle: .module)
+            case .minimal: String(localized: "Minimal", table: "Settings", bundle: .module)
+            case .low: String(localized: "Low", table: "Settings", bundle: .module)
+            case .medium: String(localized: "Medium", table: "Settings", bundle: .module)
+            case .high: String(localized: "High", table: "Settings", bundle: .module)
+            case .xhigh: String(localized: "Extra high", table: "Settings", bundle: .module)
+            case .max: String(localized: "Max", table: "Settings", bundle: .module)
+            }
         }
         @ViewBuilder private var microphoneButton: some View {
             if let dictation = environment.dictation {
@@ -1264,7 +1284,7 @@ enum ChatComposerPresentation {
                 runtime,
                 options: ChatSendOptions(
                     model: account.selectedModelID, webSearch: account.effectiveWebSearch,
-                    projectID: environment.selectedProjectID))
+                    projectID: environment.selectedProjectID, reasoningEffort: account.resolvedThinkingLevel.effort))
             {
                 composerFocused = false
             }

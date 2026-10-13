@@ -260,4 +260,56 @@ import XCTest
             tap("entitlement.settings.close")
         }
     }
+
+    func testThinkingOptionsFollowTheModelAndPreserveTheSavedChoice() {
+        launch(); scenario("free", billing: "Free")
+        tap("entitlement.models")
+        let thinking = app.buttons["model.thinking-level"]
+        XCTAssertTrue(thinking.waitForExistence(timeout: 5))
+        XCTAssertEqual(thinking.value as? String, "Default")
+        thinking.tap()
+        referenceScreenshot("thinking native menu default subtitle")
+        let defaultChoice = app.buttons["model.thinking-level.default"]
+        let offChoice = app.buttons["model.thinking-level.none"]
+        XCTAssertTrue(defaultChoice.waitForExistence(timeout: 5))
+        XCTAssertEqual(defaultChoice.label, "Default")
+        XCTAssertTrue(defaultChoice.isHittable && offChoice.isHittable)
+        // iOS renders the subtitle but exposes only the action title to XCTest.
+        // Keep its exact copy in the screenshot and require its native second
+        // line's layout; the missing-subtitle baseline has equal-height rows.
+        XCTAssertGreaterThan(defaultChoice.frame.height, offChoice.frame.height)
+        for label in ["Off", "Low", "High"] {
+            XCTAssertTrue(
+                app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+                    .exists)
+        }
+        tapPickerChoice("High")
+        XCTAssertEqual(thinking.value as? String, "High")
+        tap("settings.model.synthetic-low")
+        waitLabel("entitlement.selected-model", "synthetic-low")
+        tap("entitlement.models")
+        XCTAssertEqual(thinking.value as? String, "Default")
+        thinking.tap()
+        for label in ["Off", "High"] {
+            XCTAssertFalse(
+                app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch.exists)
+        }
+        tapPickerChoice("Low")
+        XCTAssertEqual(thinking.value as? String, "Low")
+        tap("settings.model.auto:quick")
+        waitLabel("entitlement.selected-model", "auto:quick")
+        tap("entitlement.models")
+        XCTAssertEqual(thinking.value as? String, "Low")
+        thinking.tap(); tapPickerChoice("High")
+        tap("settings.model.synthetic-text")
+        waitLabel("entitlement.selected-model", "synthetic-text")
+        tap("entitlement.models")
+        XCTAssertFalse(thinking.exists)
+        tap("settings.model.auto:quick")
+        waitLabel("entitlement.selected-model", "auto:quick")
+        tap("entitlement.models")
+        XCTAssertEqual(thinking.value as? String, "High")
+        referenceScreenshot("thinking selection retained across non-reasoning model")
+        tap("entitlement.models.close")
+    }
 }

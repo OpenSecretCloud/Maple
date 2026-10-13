@@ -2267,6 +2267,102 @@
           }
         }
       }
+    },
+    "Default": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default"
+          }
+        }
+      }
+    },
+    "Extra high": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extra high"
+          }
+        }
+      }
+    },
+    "High": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "High"
+          }
+        }
+      }
+    },
+    "Low": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Low"
+          }
+        }
+      }
+    },
+    "Max": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Max"
+          }
+        }
+      }
+    },
+    "Medium": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Medium"
+          }
+        }
+      }
+    },
+    "Minimal": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimal"
+          }
+        }
+      }
+    },
+    "Off": {
+      "comment": "Research thinking-level option shown beside the chat options trigger.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
