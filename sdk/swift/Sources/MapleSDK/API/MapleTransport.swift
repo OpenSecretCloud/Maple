@@ -74,7 +74,6 @@ public enum ResearchAPIError: Error, Sendable, Equatable, LocalizedError {
     case http(status: Int, reason: RejectionReason)
     case truncatedStream
     case invalidStream
-    case streamConsumerTooSlow
     case invalidCallback
     case expiredAuthenticationAttempt
 
@@ -94,7 +93,6 @@ public enum ResearchAPIError: Error, Sendable, Equatable, LocalizedError {
         case .http: "The service could not complete the request."
         case .truncatedStream: "The response was interrupted before its final status arrived."
         case .invalidStream: "The service returned an invalid response stream."
-        case .streamConsumerTooSlow: "The response could not be processed quickly enough."
         case .invalidCallback: "The authentication callback is invalid. Restart sign-in."
         case .expiredAuthenticationAttempt: "Sign-in expired. Please try again."
         }

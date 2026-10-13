@@ -172,7 +172,7 @@ public actor EncryptedTransport: OAuthSessionTransport {
         return result
     }
 
-    public func invalidateSession() throws {
+    public func invalidateSession() {
         establishing?.task.cancel(); establishing = nil; session = nil
         // Never restore a retired session in this process, even if deleting its
         // best-effort durable cache fails.
@@ -181,8 +181,8 @@ public actor EncryptedTransport: OAuthSessionTransport {
         try? store.remove(key: sessionStorageKey)
     }
 
-    private func retire(_ old: AttestedSession) throws {
-        if session?.identity == old.identity { try invalidateSession() }
+    private func retire(_ old: AttestedSession) {
+        if session?.identity == old.identity { invalidateSession() }
     }
 
     public func send(_ request: MapleRequest) async throws -> MapleResponse {
@@ -297,7 +297,7 @@ public actor EncryptedTransport: OAuthSessionTransport {
                 body: AsyncThrowingStream {
                     $0.yield(data); $0.finish()
                 }, inferenceSendCount: 0)
-        } catch { try? retire(retained); throw error }
+        } catch { retire(retained); throw error }
     }
 
     public func prepareNativeOAuthHandoff() async throws -> PreparedNativeOAuthHandoff {
@@ -348,12 +348,12 @@ public actor EncryptedTransport: OAuthSessionTransport {
                 throw TransportError.authorityChanged
             }
             try await credentials.assertCurrent(snapshot)
-            try retire(retained)
+            retire(retained)
             let id = UUID()
             confirmations.removeAll()
             confirmations[id] = (snapshot, login, deadline)
             return NativeSignInConfirmation(id: id, principalID: login.id, email: login.email)
-        } catch { try? retire(retained); throw error }
+        } catch { retire(retained); throw error }
     }
 
     public func confirmNativeOAuthHandoff(_ confirmation: NativeSignInConfirmation) async throws -> CredentialSnapshot {
@@ -364,9 +364,9 @@ public actor EncryptedTransport: OAuthSessionTransport {
             accessToken: login.accessToken, refreshToken: login.refreshToken, expected: snapshot)
     }
 
-    public func cancelNativeOAuthHandoff() throws {
+    public func cancelNativeOAuthHandoff() {
         confirmations.removeAll()
-        try invalidateSession()
+        invalidateSession()
     }
 
     private func refreshCredentials(expected: CredentialSnapshot) async throws {
@@ -435,7 +435,7 @@ public actor EncryptedTransport: OAuthSessionTransport {
                     session: current, requestID: TransportCrypto.random(count: 16),
                     inferenceSendCount: inference ? attempt : 0)
             } catch TransportError.untrustedRecoveryHint(let code) {
-                try retire(current)
+                retire(current)
                 guard attempt == 1, request.allowSessionRecovery,
                     ![
                         "/auth/google/callback", "/auth/github/callback", "/auth/apple/callback",

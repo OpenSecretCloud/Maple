@@ -427,6 +427,7 @@ public struct ResearchAPI: Sendable {
             case "Usage limit reached": code = "usage_limit_reached"
             case "Free tier token limit exceeded": code = "free_tier_token_limit_exceeded"
             case "Message exceeds context limit": code = "message_exceeds_context_limit"
+            case "Model not available on current plan": code = "model_not_available_on_plan"
             default: return nil
             }
         }

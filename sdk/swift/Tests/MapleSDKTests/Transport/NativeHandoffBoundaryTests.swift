@@ -36,9 +36,9 @@ import Testing
         let transport = try await EncryptedTransportTests().make(network)
         let prepared = try await transport.prepareNativeOAuthHandoff()
         if cancel {
-            try await transport.cancelNativeOAuthHandoff()
+            await transport.cancelNativeOAuthHandoff()
         } else {
-            try await transport.invalidateSession()
+            await transport.invalidateSession()
         }
         let replacement = try await transport.prepareNativeOAuthHandoff()
         #expect(replacement.sessionID != prepared.sessionID)

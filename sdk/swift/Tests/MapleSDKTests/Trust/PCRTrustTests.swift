@@ -4,6 +4,13 @@ import Testing
 
 struct PCRTrustTests {
     @Test func embeddedRootsMatchCurrentAndRollbackApprovals() {
+        let production = PCRTrustPolicy.productionRoots
+        let development = PCRTrustPolicy.developmentRoots
+        for root in production + development {
+            #expect(root.utf8.count == 96)
+            #expect(root.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) })
+        }
+        #expect(Set(production).isDisjoint(with: development))
         #expect(
             PCRTrustPolicy.productionRoots == [
                 "21d27bd19cdd02632485a6e8874753e42cf7f098f1335bb62a9c23e7f64da9100c02dba582da17ac68052fa6be16b7a9",

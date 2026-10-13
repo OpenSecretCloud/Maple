@@ -323,6 +323,7 @@ private func object(_ request: MapleRequest) throws -> [String: JSONValue] {
         (403, "Usage limit reached", .usageLimit),
         (403, "Free tier token limit exceeded", .freeTierTokenLimit),
         (413, "Message exceeds context limit", .contextLimit),
+        (403, "Model not available on current plan", .modelUnavailable),
     ]
     for (status, message, reason) in cases {
         let body = String(
@@ -340,7 +341,6 @@ private func object(_ request: MapleRequest) throws -> [String: JSONValue] {
         #"{"status":"403","message":"Usage limit reached"}"#,
         #"{"status":413,"message":"Usage limit reached"}"#,
         #"{"status":403,"message":"Usage limit reached soon"}"#,
-        #"{"status":403,"message":"Model not available on current plan"}"#,
         #"{"status":403,"message":"Usage limit reached""#,
         #"{"status":403,"message":"Usage limit reached"} trailing"#,
         #"{"status":403,"message":"Usage limit reached","padding":""# + String(repeating: "x", count: 4_096) + #""}"#,
@@ -362,6 +362,46 @@ private func object(_ request: MapleRequest) throws -> [String: JSONValue] {
             $0.finish(throwing: ResearchAPIError.invalidStream)
         })
     await #expect(throws: ResearchAPIError.invalidStream) { try await api.checked(response) }
+}
+
+@Test func legacyModelPlanDenialKeepsStructuredCodePrecedence() async throws {
+    let message = "Model not available on current plan"
+    let legacy = #"{"status":403,"message":"Model not available on current plan"}"#
+    let cases: [(String, [String: String], ResearchAPIError.RejectionReason)] = [
+        (legacy, [:], .modelUnavailable),
+        (#"{"message":"Model not available on current plan"}"#, [:], .forbidden),
+        (#"{"status":403,"message":"Model not available on current plan","code":null}"#, [:], .modelUnavailable),
+        (#"{"status":413,"message":"Model not available on current plan"}"#, [:], .forbidden),
+        (#"{"status":403,"message":"Model not available on current plan soon"}"#, [:], .forbidden),
+        (legacy, ["x-opensecret-error-contract": "2"], .forbidden),
+        (#"{"status":403,"message":"Model not available on current plan","code":"unknown"}"#, [:], .forbidden),
+        (#"{"status":403,"message":"Model not available on current plan","error":{"code":false}}"#, [:], .forbidden),
+        (
+            #"{"status":403,"message":"Model not available on current plan","code":"usage_limit_reached"}"#, [:],
+            .usageLimit
+        ),
+        (
+            legacy, ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "usage_limit_reached"],
+            .usageLimit
+        ),
+        (
+            #"{"status":403,"message":"Model not available on current plan","code":"model_not_available_on_plan"}"#,
+            ["x-opensecret-error-contract": "1", "x-opensecret-error-code": "usage_limit_reached"], .forbidden
+        ),
+        (
+            String(
+                data: try JSONEncoder().encode([
+                    "status": JSONValue.integer(403), "message": .string(message),
+                    "padding": .string(String(repeating: "x", count: 4_096)),
+                ]), encoding: .utf8)!, [:], .forbidden
+        ),
+    ]
+    for (body, headers, reason) in cases {
+        let api = ResearchAPI(transport: APIRecorder([.init(status: 403, body: body, headers: headers)]))
+        await #expect(throws: ResearchAPIError.http(status: 403, reason: reason)) {
+            try await api.getConversation(id: "c")
+        }
+    }
 }
 
 @Test(arguments: ["0", "60", "61", "999999999999999999999", "01", "not-a-delay"])
@@ -406,12 +446,14 @@ func capacityContractAndBoundedRetryAfter(_ delay: String) throws {
         (404, "User not found", .userNotFound),
         (400, "No valid email found for the Oauth account", .oauthEmailUnavailable),
         (400, "User is already verified", .alreadyVerified),
-        (403, "Model not available on current plan", .forbidden),
+        (403, "Model not available on current plan", .modelUnavailable),
         (413, "Payload too large", .payloadTooLarge),
         (429, "Too many requests", .rateLimited),
     ]
     for (status, message, expected) in cases {
-        let body = String(data: try JSONEncoder().encode(["message": message]), encoding: .utf8)!
+        let body = String(
+            data: try JSONEncoder().encode(["status": JSONValue.integer(Int64(status)), "message": .string(message)]),
+            encoding: .utf8)!
         let api = ResearchAPI(transport: APIRecorder([.init(status: status, body: body)]))
         await #expect(throws: ResearchAPIError.http(status: status, reason: expected)) { try await api.getUser() }
     }

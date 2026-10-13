@@ -652,7 +652,7 @@ public actor SDKAuthCeremonyService: AuthCeremonyServing {
     public func cancelBrowser(id: UUID) async {
         guard activeBrowserID == id else { return }
         activeBrowserID = nil; prepared = nil; confirmation = nil
-        try? await client.transport.cancelNativeOAuthHandoff()
+        await client.transport.cancelNativeOAuthHandoff()
     }
 
     private func accountAPI(_ expected: CredentialSnapshot) async throws -> ResearchAPI {

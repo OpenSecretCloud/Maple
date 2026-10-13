@@ -67,7 +67,7 @@ public final class MapleClient: Sendable {
     /// cleanup. Replacement credentials, including same-account re-login, are preserved.
     public func signOut(expected: CredentialSnapshot? = nil) async throws {
         let refresh = try await credentials.revoke(expected: expected)
-        try await transport.cancelNativeOAuthHandoff()
+        await transport.cancelNativeOAuthHandoff()
         if let refresh { try? await anonymousAPI.signOut(refreshToken: refresh) }
     }
 
@@ -110,7 +110,7 @@ public final class MapleClient: Sendable {
             expectedPrincipalId: snapshot.principalId)
         try await api.confirmAccountDeletion(code: code, plaintextSecret: plaintextSecret)
         try await credentials.clearAccount(expected: snapshot)
-        try await transport.cancelNativeOAuthHandoff()
+        await transport.cancelNativeOAuthHandoff()
     }
 }
 

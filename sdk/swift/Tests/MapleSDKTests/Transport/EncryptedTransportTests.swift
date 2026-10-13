@@ -94,7 +94,7 @@ import Testing
         _ = try await collect(transport.send(request))
         store.setReadFailure(false)
         store.setWriteFailure(true)
-        try await transport.invalidateSession()
+        await transport.invalidateSession()
         _ = try await collect(transport.send(request))
         #expect(await network.handshakes == 2)
         #expect(await network.observations.count == 2)
